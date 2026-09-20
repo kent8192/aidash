@@ -106,7 +106,8 @@ pub async fn conversation(
         let task=f.store.create_task_in(&mut access.tx,workspace.id,&NewTask{
             title:title.into(),description:goal.into(),requirements:json!({}),dependencies:vec![],parent_id:None,
         },&identity.subject,None).await?;
-        access.require(&access.resource("task",task.id,json!({"created_by":task.created_by})),"task.read").await?;
+        let task_resource=access.task_resource(&task).await?;
+        access.require(&task_resource,"task.read").await?;
         let delegation=execution::delegate_in(f,&mut access,task.id,&agent).await?;
         let task=sqlx::query_as("SELECT * FROM tasks WHERE id=$1").bind(task.id).fetch_one(&mut *access.tx).await?;
         Ok(ConversationResponse{conversation,workspace,task,delegation})
@@ -143,6 +144,7 @@ pub async fn message(
                 None,
             )
             .await
+            .map(|_| ())
     }
     .await;
     access.finish(result).await?;
@@ -197,7 +199,7 @@ pub async fn abandon(
         let workspace = access.workspace(task.workspace_id).await?;
         access.context = workspace.attributes.clone();
         access.require(&workspace, "workspace.read").await?;
-        let resource = access.resource("task", id, json!({"created_by":task.created_by}));
+        let resource = access.task_resource(&task).await?;
         access.require(&resource, "task.read").await?;
         access.require(&resource, "task.abandon").await?;
         f.store

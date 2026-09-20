@@ -1,6 +1,6 @@
 //! Transactional workspace access for authenticated subjects. Workspace read
-//! permission covers the workspace's contents; event delivery has a separate
-//! permission. Run contents additionally require run and memory read access.
+//! permission opens the workspace; each contained resource and event requires
+//! its own read permission. Run contents retain their source read requirements.
 use super::{
     access::Access,
     catalog,
@@ -97,6 +97,10 @@ impl Access {
     }
 
     pub(crate) async fn run_visible(&mut self, run: &Run) -> Result<bool> {
+        Ok(self.run_base_visible(run).await? && self.run_reads_visible(run.id).await?)
+    }
+
+    pub(crate) async fn run_base_visible(&mut self, run: &Run) -> Result<bool> {
         if let Some(allowed) = self.cached_runs.get(&(run.workspace_id, run.id)) {
             return if *allowed {
                 self.human_reads(run.workspace_id, run.id).await
@@ -106,16 +110,28 @@ impl Access {
         }
         let workspace = self.workspace(run.workspace_id).await?;
         let resource = self.resource("run", run.id, workspace.attributes.clone());
-        let mut attributes = workspace.attributes;
-        attributes["version"] = json!(run.agent_version);
-        let memory = self.resource("memory", &run.agent_id, attributes);
-        let allowed = self.decide(&resource, "run.read").await?
+        let memory = self.memory_resource(run).await?;
+        let task: Option<Task> =
+            sqlx::query_as("SELECT * FROM tasks WHERE id=$1 AND workspace_id=$2")
+                .bind(run.task_id)
+                .bind(run.workspace_id)
+                .fetch_optional(&mut *self.tx)
+                .await?;
+        let task_visible = match task {
+            Some(task) => self.task_visible(&task).await?,
+            None => false,
+        };
+        let allowed = task_visible
+            && self.decide(&resource, "run.read").await?
             && self.decide(&memory, "memory.read").await?;
         self.cached_runs.insert((run.workspace_id, run.id), allowed);
         Ok(allowed && self.human_reads(run.workspace_id, run.id).await?)
     }
 
     async fn event_visible(&mut self, event: &Event) -> Result<bool> {
+        if let Some(visible) = self.resource_event_visible(event).await? {
+            return Ok(visible);
+        }
         if event.kind.starts_with("generation.") {
             let Some(id) = event.data["id"]
                 .as_str()
@@ -180,12 +196,12 @@ impl Access {
                 .then(|| event.data.get("id"))
                 .flatten()
         });
-        if candidate.is_none()
-            && !["run.", "model.", "human."]
-                .iter()
-                .any(|p| event.kind.starts_with(p))
-        {
-            return Ok(true);
+        if candidate.is_none() {
+            // Newly added event families require an explicit scoped reader.
+            return Ok(matches!(
+                event.kind.as_str(),
+                "workspace.created" | "workspace.updated"
+            ));
         }
         let Some(id) = candidate
             .and_then(Value::as_str)
@@ -193,15 +209,6 @@ impl Access {
         else {
             return Ok(false);
         };
-        if let Some(workspace) = event.workspace_id
-            && let Some(allowed) = self.cached_runs.get(&(workspace, id))
-        {
-            return if *allowed {
-                self.human_reads(workspace, id).await
-            } else {
-                Ok(false)
-            };
-        }
         let run: Option<Run> = sqlx::query_as("SELECT * FROM runs WHERE id=$1 AND workspace_id=$2")
             .bind(id)
             .bind(event.workspace_id)
@@ -233,13 +240,36 @@ impl Access {
             vec![]
         };
         let events = self.filter_events(events).await?;
-        Ok(WorkspaceSnapshot {
+        let mut snapshot = WorkspaceSnapshot {
             workspace: sqlx::query_as("SELECT * FROM workspaces WHERE id=$1").bind(id).fetch_one(&mut *self.tx).await?,
             tasks: sqlx::query_as("SELECT * FROM tasks WHERE workspace_id=$1 ORDER BY created_at,id").bind(id).fetch_all(&mut *self.tx).await?,
             artifacts: sqlx::query_as("SELECT * FROM artifacts WHERE workspace_id=$1 ORDER BY created_at,id").bind(id).fetch_all(&mut *self.tx).await?,
             messages: sqlx::query_as("SELECT * FROM (SELECT * FROM messages WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 100) m ORDER BY created_at").bind(id).fetch_all(&mut *self.tx).await?,
             events,
-        })
+        };
+        let mut tasks = vec![];
+        for task in snapshot.tasks {
+            if self.task_visible(&task).await? {
+                tasks.push(task);
+            }
+        }
+        snapshot.tasks = tasks;
+        let mut artifacts = vec![];
+        for artifact in snapshot.artifacts {
+            if self.artifact_visible(&artifact).await? {
+                artifacts.push(artifact);
+            }
+        }
+        snapshot.artifacts = artifacts;
+        let mut messages = vec![];
+        for message in snapshot.messages {
+            if self.message_visible(&message).await? {
+                messages.push(message);
+            }
+        }
+        snapshot.messages = messages;
+        self.track_snapshot(&snapshot).await?;
+        Ok(snapshot)
     }
 }
 
@@ -268,6 +298,7 @@ impl Workspaces {
     pub async fn create_task(&self, id: Uuid, input: &NewTask, key: Option<&str>) -> Result<Task> {
         let mut access = Access::begin(&self.store, &self.identity).await?;
         let result = async {
+            access.require_workspace(id, "workspace.read").await?;
             access.require_workspace(id, "task.create").await?;
             // Keep one caller's idempotency key from colliding with another
             // workspace, subject, or the legacy operator namespace.
@@ -282,7 +313,9 @@ impl Workspaces {
                     ]))
                 )
             });
-            self.store
+            access.related_tasks(id, input).await?;
+            let task = self
+                .store
                 .create_task_in(
                     &mut access.tx,
                     id,
@@ -290,7 +323,10 @@ impl Workspaces {
                     &self.identity.subject,
                     key.as_deref(),
                 )
-                .await
+                .await?;
+            let resource = access.task_resource(&task).await?;
+            access.require(&resource, "task.read").await?;
+            Ok(task)
         }
         .await;
         access.finish(result).await
@@ -303,6 +339,7 @@ impl Workspaces {
             self.store
                 .message_in(&mut access.tx, id, &self.identity.subject, content, None)
                 .await
+                .map(|_| ())
         }
         .await;
         access.finish(result).await
@@ -331,6 +368,8 @@ impl Workspaces {
                 conversations: sqlx::query_as("SELECT * FROM conversations WHERE workspace_id=ANY($1) ORDER BY created_at DESC,id LIMIT 500").bind(&visible).fetch_all(&mut *access.tx).await?,
                 events: sqlx::query_as("SELECT * FROM (SELECT * FROM events WHERE workspace_id=ANY($1) ORDER BY sequence DESC LIMIT 100) e ORDER BY sequence").bind(&event_workspaces).fetch_all(&mut *access.tx).await?,
             };
+            let mut tasks=vec![];for task in state.tasks {if access.task_visible(&task).await? {tasks.push(task);}}state.tasks=tasks;
+            let mut artifacts=vec![];for artifact in state.artifacts {if access.artifact_visible(&artifact).await? {artifacts.push(artifact);}}state.artifacts=artifacts;
             let mut runs=vec![];
             for run in state.runs {if access.run_visible(&run).await? {runs.push(run);}}
             let run_ids:std::collections::BTreeSet<Uuid>=runs.iter().map(|r|r.id).collect();

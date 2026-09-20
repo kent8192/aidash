@@ -178,7 +178,8 @@ fn workspace_policy(tenant: &str) -> Value {
             "actions":["workspace.create","workspace.read","workspace.update","task.create","message.create","workspace.events"],
             "resources":{"kinds":["workspace"]},
             "condition":{"op":"eq","left":{"source":"resource","path":"/owner"},
-                "right":{"source":"literal","value":"alice"}}}]})
+                "right":{"source":"literal","value":"alice"}}},
+            {"id":"workspace-content","effect":"allow","subjects":{"ids":["alice"]},"actions":["task.read","artifact.read","message.read"],"resources":{"kinds":["task","artifact","message"]},"condition":{"op":"eq","left":{"source":"resource","path":"/owner"},"right":{"source":"literal","value":"alice"}}}]})
 }
 
 #[tokio::test]

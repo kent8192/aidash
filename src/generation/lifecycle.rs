@@ -54,6 +54,19 @@ impl Request {
             access.context = json!({});
         }
         let workspace = access.workspace(self.workspace_id).await?;
+        let task: Option<crate::domain::Task> =
+            sqlx::query_as("SELECT * FROM tasks WHERE id=$1 AND workspace_id=$2")
+                .bind(self.task_id)
+                .bind(self.workspace_id)
+                .fetch_optional(&mut *access.tx)
+                .await?;
+        let Some(task) = task else {
+            return Ok(false);
+        };
+        if !access.task_visible(&task).await? {
+            return Ok(false);
+        }
+
         access.context = workspace.attributes.clone();
         Ok(access.decide(&workspace, "workspace.read").await?
             && access

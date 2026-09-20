@@ -5,6 +5,7 @@ pub mod execution;
 pub mod identity;
 pub mod interaction;
 pub mod policy;
+mod resources;
 pub mod workspace;
 
 use crate::{Error, Result};

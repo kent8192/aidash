@@ -381,7 +381,13 @@ impl Home {
         if self.local() {
             self.federation
                 .store
-                .complete(self.run.task_id, &self.owner(), key, artifact)
+                .complete_from_run(
+                    self.run.task_id,
+                    &self.owner(),
+                    key,
+                    artifact,
+                    self.authority.as_ref().map(|_| self.run.id),
+                )
                 .await
         } else {
             self.command("complete", json!({"key":key,"artifact":artifact}))
@@ -392,7 +398,13 @@ impl Home {
         if self.local() {
             self.federation
                 .store
-                .publish_artifact(self.run.task_id, &self.owner(), key, artifact)
+                .publish_artifact_from_run(
+                    self.run.task_id,
+                    &self.owner(),
+                    key,
+                    artifact,
+                    self.authority.as_ref().map(|_| self.run.id),
+                )
                 .await
         } else {
             self.command("artifact", json!({"key":key,"artifact":artifact}))
@@ -452,7 +464,12 @@ impl Home {
         }
     }
     pub async fn message(&self, key: &str, content: &str) -> Result<()> {
-        if self.local() {
+        if self.authority.is_some() {
+            self.federation
+                .store
+                .message_from_run(&self.run, &self.owner(), content, key)
+                .await
+        } else if self.local() {
             self.federation
                 .store
                 .message(self.run.workspace_id, &self.owner(), content, Some(key))
