@@ -27,6 +27,7 @@ use uuid::Uuid;
 
 fn management_routes() -> OpenApiRouter<Federation> {
     OpenApiRouter::new()
+        .merge(crate::authorization::api::routes())
         .routes(routes!(state))
         .routes(routes!(registry_list))
         .routes(routes!(registry_create))
@@ -889,7 +890,7 @@ mod schema_tests {
                 .values()
                 .map(|path| path.as_object().unwrap().len())
                 .sum::<usize>(),
-            26
+            32
         );
         for (path, operations) in paths {
             assert!(path.starts_with("/api/"));

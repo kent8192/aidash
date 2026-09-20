@@ -1,4 +1,5 @@
 pub mod api;
+pub mod authorization;
 pub mod bus;
 pub mod config;
 pub mod context;

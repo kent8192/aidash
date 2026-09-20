@@ -6,6 +6,264 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/authorization/{tenant}": {
+      "get": {
+        "operationId": "authorization_snapshot",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Snapshot"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "authorization_replace",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthorizationUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Snapshot"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/api/authorization/{tenant}/decisions": {
+      "get": {
+        "operationId": "authorization_decisions",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {}
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/api/authorization/{tenant}/evaluate": {
+      "post": {
+        "operationId": "authorization_evaluate",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Evaluation"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Decision"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/api/authorization/{tenant}/revisions": {
+      "get": {
+        "operationId": "authorization_revisions",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {}
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/api/authorization/{tenant}/simulate": {
+      "post": {
+        "operationId": "authorization_simulate",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Evaluation"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Decision"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/api/conversations": {
       "post": {
         "operationId": "conversation_create",
@@ -1121,6 +1379,20 @@
           }
         }
       },
+      "AuthorizationUpdate": {
+        "type": "object",
+        "required": ["expected_revision", "bundle"],
+        "properties": {
+          "bundle": {
+            "$ref": "#/components/schemas/PolicyBundle"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
       "BTreeMap": {
         "type": "object",
         "additionalProperties": {
@@ -1142,6 +1414,103 @@
             "format": "int64"
           }
         }
+      },
+      "Condition": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["conditions", "op"],
+            "properties": {
+              "conditions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Condition"
+                }
+              },
+              "op": {
+                "type": "string",
+                "enum": ["all"]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["conditions", "op"],
+            "properties": {
+              "conditions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Condition"
+                }
+              },
+              "op": {
+                "type": "string",
+                "enum": ["any"]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["left", "right", "op"],
+            "properties": {
+              "left": {
+                "$ref": "#/components/schemas/Operand"
+              },
+              "op": {
+                "type": "string",
+                "enum": ["eq"]
+              },
+              "right": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["left", "right", "op"],
+            "properties": {
+              "left": {
+                "$ref": "#/components/schemas/Operand"
+              },
+              "op": {
+                "type": "string",
+                "enum": ["not_eq"]
+              },
+              "right": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["left", "right", "op"],
+            "properties": {
+              "left": {
+                "$ref": "#/components/schemas/Operand"
+              },
+              "op": {
+                "type": "string",
+                "enum": ["contains"]
+              },
+              "right": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["value", "op"],
+            "properties": {
+              "op": {
+                "type": "string",
+                "enum": ["exists"]
+              },
+              "value": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        ]
       },
       "Context": {
         "type": "object",
@@ -1275,6 +1644,41 @@
           }
         }
       },
+      "Decision": {
+        "type": "object",
+        "required": [
+          "allowed",
+          "reason",
+          "matched_policies",
+          "effective_roles",
+          "revision"
+        ],
+        "properties": {
+          "allowed": {
+            "type": "boolean"
+          },
+          "effective_roles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "matched_policies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "DelegateInput": {
         "type": "object",
         "required": ["node_id", "agent"],
@@ -1344,6 +1748,10 @@
             }
           }
         }
+      },
+      "Effect": {
+        "type": "string",
+        "enum": ["allow", "deny"]
       },
       "EntityRef": {
         "type": "object",
@@ -1428,6 +1836,23 @@
           }
         }
       },
+      "Evaluation": {
+        "type": "object",
+        "required": ["subject", "action", "resource"],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "environment": {},
+          "resource": {
+            "$ref": "#/components/schemas/Resource"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "Event": {
         "type": "object",
         "required": ["sequence", "id", "node_id", "kind", "data", "created_at"],
@@ -1456,6 +1881,19 @@
             "format": "uuid"
           }
         }
+      },
+      "Group": {
+        "type": "object",
+        "properties": {
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          }
+        },
+        "additionalProperties": false
       },
       "HumanRequest": {
         "type": "object",
@@ -1703,6 +2141,60 @@
           }
         }
       },
+      "Operand": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["path", "source"],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string",
+                "enum": ["subject"]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["path", "source"],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string",
+                "enum": ["resource"]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["path", "source"],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string",
+                "enum": ["environment"]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["value", "source"],
+            "properties": {
+              "source": {
+                "type": "string",
+                "enum": ["literal"]
+              },
+              "value": {}
+            }
+          }
+        ]
+      },
       "Package": {
         "type": "object",
         "required": ["entity", "author", "permissions", "dependencies"],
@@ -1784,6 +2276,85 @@
           }
         }
       },
+      "Policy": {
+        "type": "object",
+        "required": ["id", "effect", "subjects", "actions", "resources"],
+        "properties": {
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "condition": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Condition"
+              }
+            ]
+          },
+          "effect": {
+            "$ref": "#/components/schemas/Effect"
+          },
+          "id": {
+            "type": "string"
+          },
+          "resources": {
+            "$ref": "#/components/schemas/ResourceSelector"
+          },
+          "subjects": {
+            "$ref": "#/components/schemas/SubjectSelector"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PolicyBundle": {
+        "type": "object",
+        "required": ["tenant"],
+        "properties": {
+          "groups": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Group"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "policies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Policy"
+            }
+          },
+          "roles": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Role"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "subjects": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Subject"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "tenant": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "RemoteActionInput": {
         "type": "object",
         "required": ["node_id", "control"],
@@ -1816,6 +2387,57 @@
             "format": "uuid"
           }
         }
+      },
+      "Resource": {
+        "type": "object",
+        "required": ["tenant", "kind", "id"],
+        "properties": {
+          "attributes": {},
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "tenant": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ResourceSelector": {
+        "type": "object",
+        "required": ["kinds"],
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "kinds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "Role": {
+        "type": "object",
+        "properties": {
+          "inherits": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          }
+        },
+        "additionalProperties": false
       },
       "Run": {
         "type": "object",
@@ -1943,6 +2565,19 @@
           }
         }
       },
+      "Snapshot": {
+        "type": "object",
+        "required": ["revision", "bundle"],
+        "properties": {
+          "bundle": {
+            "$ref": "#/components/schemas/PolicyBundle"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "StateInput": {
         "type": "object",
         "required": ["revision", "state"],
@@ -2034,6 +2669,78 @@
             }
           }
         }
+      },
+      "Subject": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+          "attributes": {},
+          "delegated_by": {
+            "type": ["string", "null"]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SubjectKind"
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SubjectKind": {
+        "type": "string",
+        "enum": ["user", "agent", "node", "service"]
+      },
+      "SubjectSelector": {
+        "type": "object",
+        "properties": {
+          "any": {
+            "type": "boolean"
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "kinds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SubjectKind"
+            },
+            "uniqueItems": true
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          }
+        },
+        "additionalProperties": false
       },
       "Task": {
         "type": "object",

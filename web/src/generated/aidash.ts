@@ -7,14 +7,19 @@
  */
 import type {
   AbandonInput,
+  AuthorizationDecisionsParams,
+  AuthorizationRevisionsParams,
+  AuthorizationUpdate,
   ClaimInput,
   ControlInput,
   ConversationInput,
   ConversationResponse,
+  Decision,
   DelegateInput,
   Delegation,
   Discovery,
   Entry,
+  Evaluation,
   Event,
   EventsParams,
   HumanRequest,
@@ -32,6 +37,7 @@ import type {
   RunDetails,
   Search,
   SentResponse,
+  Snapshot,
   StateInput,
   StateResponse,
   StreamParams,
@@ -42,6 +48,203 @@ import type {
 } from "./models";
 
 import { apiFetch } from "../transport.ts";
+export const getAuthorizationSnapshotUrl = (tenant: string) => {
+  return `/api/authorization/${tenant}`;
+};
+
+export const authorizationSnapshot = async (
+  tenant: string,
+  options?: Parameters<typeof apiFetch>[1],
+): Promise<Snapshot> => {
+  return apiFetch<Snapshot>(getAuthorizationSnapshotUrl(tenant), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getAuthorizationReplaceUrl = (tenant: string) => {
+  return `/api/authorization/${tenant}`;
+};
+
+export const authorizationReplace = async (
+  tenant: string,
+  authorizationUpdate: AuthorizationUpdate,
+  options?: Parameters<typeof apiFetch>[1],
+): Promise<Snapshot> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<
+      string | readonly string[] | undefined
+    >(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  return apiFetch<Snapshot>(getAuthorizationReplaceUrl(tenant), {
+    ...options,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(authorizationUpdate),
+  });
+};
+
+export const getAuthorizationDecisionsUrl = (
+  tenant: string,
+  params?: AuthorizationDecisionsParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/authorization/${tenant}/decisions?${stringifiedParams}`
+    : `/api/authorization/${tenant}/decisions`;
+};
+
+export const authorizationDecisions = async (
+  tenant: string,
+  params?: AuthorizationDecisionsParams,
+  options?: Parameters<typeof apiFetch>[1],
+): Promise<unknown[]> => {
+  return apiFetch<unknown[]>(getAuthorizationDecisionsUrl(tenant, params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getAuthorizationEvaluateUrl = (tenant: string) => {
+  return `/api/authorization/${tenant}/evaluate`;
+};
+
+export const authorizationEvaluate = async (
+  tenant: string,
+  evaluation: Evaluation,
+  options?: Parameters<typeof apiFetch>[1],
+): Promise<Decision> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<
+      string | readonly string[] | undefined
+    >(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  return apiFetch<Decision>(getAuthorizationEvaluateUrl(tenant), {
+    ...options,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(evaluation),
+  });
+};
+
+export const getAuthorizationRevisionsUrl = (
+  tenant: string,
+  params?: AuthorizationRevisionsParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/api/authorization/${tenant}/revisions?${stringifiedParams}`
+    : `/api/authorization/${tenant}/revisions`;
+};
+
+export const authorizationRevisions = async (
+  tenant: string,
+  params?: AuthorizationRevisionsParams,
+  options?: Parameters<typeof apiFetch>[1],
+): Promise<unknown[]> => {
+  return apiFetch<unknown[]>(getAuthorizationRevisionsUrl(tenant, params), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getAuthorizationSimulateUrl = (tenant: string) => {
+  return `/api/authorization/${tenant}/simulate`;
+};
+
+export const authorizationSimulate = async (
+  tenant: string,
+  evaluation: Evaluation,
+  options?: Parameters<typeof apiFetch>[1],
+): Promise<Decision> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<
+      string | readonly string[] | undefined
+    >(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  return apiFetch<Decision>(getAuthorizationSimulateUrl(tenant), {
+    ...options,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(evaluation),
+  });
+};
+
 export const getConversationCreateUrl = () => {
   return `/api/conversations`;
 };
