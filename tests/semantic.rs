@@ -96,9 +96,13 @@ async fn dispose(f: aidash::federation::Federation, url: &str, schema: &str) {
             .await
             .unwrap();
     for (collection, config) in rows {
-        semantic::backend::delete_collection(&serde_json::from_value(config).unwrap(), &collection)
-            .await
-            .unwrap();
+        semantic::backend::delete_collection(
+            &f.store.semantic_client,
+            &serde_json::from_value(config).unwrap(),
+            &collection,
+        )
+        .await
+        .unwrap();
     }
     common::cleanup(f, url, schema).await;
 }
@@ -876,6 +880,7 @@ async fn semantic_qdrant_restart_outage_and_lost_points_recover() {
     );
     let collection = index["collection"].as_str().unwrap();
     semantic::backend::delete_point(
+        &f.store.semantic_client,
         &config.vector,
         collection,
         Uuid::parse_str(entry["point_id"].as_str().unwrap()).unwrap(),

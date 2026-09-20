@@ -3,24 +3,26 @@ use super::{EmbeddingConfig, VectorConfig};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{sync::OnceLock, time::Duration};
+use std::time::Duration;
 use uuid::Uuid;
 
-fn client() -> Result<&'static reqwest::Client> {
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    if let Some(client) = CLIENT.get() {
-        return Ok(client);
-    }
-    let client = reqwest::Client::builder()
+/// Own the connection pool with the node runtime. A process-global pool can
+/// retain dispatch tasks from a runtime that has already shut down.
+pub fn client() -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .connect_timeout(Duration::from_secs(3))
         .redirect(reqwest::redirect::Policy::none())
-        .build()?;
-    Ok(CLIENT.get_or_init(|| client))
+        .build()?)
 }
-fn request(method: reqwest::Method, endpoint: &str, path: &str) -> Result<reqwest::RequestBuilder> {
+fn request(
+    client: &reqwest::Client,
+    method: reqwest::Method,
+    endpoint: &str,
+    path: &str,
+) -> Result<reqwest::RequestBuilder> {
     crate::config::validate_endpoint(endpoint)?;
-    Ok(client()?.request(method, format!("{}{path}", endpoint.trim_end_matches('/'))))
+    Ok(client.request(method, format!("{}{path}", endpoint.trim_end_matches('/'))))
 }
 fn credential(
     request: reqwest::RequestBuilder,
@@ -49,7 +51,11 @@ async fn response(request: reqwest::RequestBuilder) -> Result<Value> {
     }
     crate::response::json(response, 1_048_576).await
 }
-pub async fn embed(config: &EmbeddingConfig, text: &str) -> Result<Vec<f32>> {
+pub async fn embed(
+    client: &reqwest::Client,
+    config: &EmbeddingConfig,
+    text: &str,
+) -> Result<Vec<f32>> {
     #[derive(Deserialize)]
     struct Embedding {
         index: usize,
@@ -65,7 +71,12 @@ pub async fn embed(config: &EmbeddingConfig, text: &str) -> Result<Vec<f32>> {
     }
     let value = response(
         credential(
-            request(reqwest::Method::POST, &config.endpoint, "/embeddings")?,
+            request(
+                client,
+                reqwest::Method::POST,
+                &config.endpoint,
+                "/embeddings",
+            )?,
             &config.credential_env,
             false,
         )?
@@ -110,6 +121,7 @@ fn collection_path(collection: &str) -> Result<String> {
     Ok(format!("/collections/{collection}"))
 }
 fn vector_request(
+    client: &reqwest::Client,
     config: &VectorConfig,
     method: reqwest::Method,
     path: &str,
@@ -118,24 +130,25 @@ fn vector_request(
         return Err(Error::Invalid("unsupported vector provider".into()));
     }
     credential(
-        request(method, &config.endpoint, path)?,
+        request(client, method, &config.endpoint, path)?,
         &config.credential_env,
         true,
     )
 }
 pub async fn ensure_collection(
+    client: &reqwest::Client,
     config: &VectorConfig,
     collection: &str,
     dimensions: usize,
 ) -> Result<()> {
     let path = collection_path(collection)?;
-    let get = vector_request(config, reqwest::Method::GET, &path)?
+    let get = vector_request(client, config, reqwest::Method::GET, &path)?
         .send()
         .await?;
     if get.status() == reqwest::StatusCode::NOT_FOUND {
         // Concurrent retry after an unknown create result is safe. Verify the
         // actual width/distance below, including when another creator won.
-        let result = vector_request(config, reqwest::Method::PUT, &path)?
+        let result = vector_request(client, config, reqwest::Method::PUT, &path)?
             .json(&json!({"vectors":{"size":dimensions,"distance":"Cosine"}}))
             .send()
             .await?;
@@ -145,7 +158,7 @@ pub async fn ensure_collection(
     } else if !get.status().is_success() {
         return Err(Error::External("cannot inspect semantic collection".into()));
     }
-    let actual = response(vector_request(config, reqwest::Method::GET, &path)?).await?;
+    let actual = response(vector_request(client, config, reqwest::Method::GET, &path)?).await?;
     let vector = &actual["result"]["config"]["params"]["vectors"];
     if vector["size"].as_u64() != Some(dimensions as u64) || vector["distance"] != "Cosine" {
         return Err(Error::External(
@@ -155,6 +168,7 @@ pub async fn ensure_collection(
     Ok(())
 }
 pub async fn upsert(
+    client: &reqwest::Client,
     config: &VectorConfig,
     collection: &str,
     point: Uuid,
@@ -166,7 +180,7 @@ pub async fn upsert(
         collection_path(collection)?
     );
     let result = response(
-        vector_request(config, reqwest::Method::PUT, &path)?
+        vector_request(client, config, reqwest::Method::PUT, &path)?
             .json(&json!({"points":[{"id":point,"vector":vector,"payload":payload}]})),
     )
     .await?;
@@ -175,12 +189,17 @@ pub async fn upsert(
     }
     Ok(())
 }
-pub async fn delete_point(config: &VectorConfig, collection: &str, point: Uuid) -> Result<()> {
+pub async fn delete_point(
+    client: &reqwest::Client,
+    config: &VectorConfig,
+    collection: &str,
+    point: Uuid,
+) -> Result<()> {
     let path = format!(
         "{}/points/delete?wait=true&ordering=strong",
         collection_path(collection)?
     );
-    let response = vector_request(config, reqwest::Method::POST, &path)?
+    let response = vector_request(client, config, reqwest::Method::POST, &path)?
         .json(&json!({"points":[point]}))
         .send()
         .await?;
@@ -196,8 +215,13 @@ pub async fn delete_point(config: &VectorConfig, collection: &str, point: Uuid) 
     }
     Ok(())
 }
-pub async fn delete_collection(config: &VectorConfig, collection: &str) -> Result<()> {
+pub async fn delete_collection(
+    client: &reqwest::Client,
+    config: &VectorConfig,
+    collection: &str,
+) -> Result<()> {
     let response = vector_request(
+        client,
         config,
         reqwest::Method::DELETE,
         &collection_path(collection)?,
@@ -218,15 +242,24 @@ pub struct Point {
     pub score: f32,
     pub payload: Value,
 }
+pub struct Filter<'a> {
+    pub allowed: &'a [Uuid],
+    pub workspace: Uuid,
+    pub tenant: &'a str,
+}
 pub async fn query(
+    client: &reqwest::Client,
     config: &VectorConfig,
     collection: &str,
     vector: &[f32],
-    allowed: &[Uuid],
-    workspace: Uuid,
-    tenant: &str,
+    filter: Filter<'_>,
     limit: usize,
 ) -> Result<Vec<Point>> {
+    let Filter {
+        allowed,
+        workspace,
+        tenant,
+    } = filter;
     if allowed.is_empty() {
         return Ok(vec![]);
     }
@@ -234,7 +267,7 @@ pub async fn query(
         "{}/points/query?consistency=all",
         collection_path(collection)?
     );
-    let value=response(vector_request(config,reqwest::Method::POST,&path)?
+    let value=response(vector_request(client, config,reqwest::Method::POST,&path)?
         .json(&json!({"query":vector,"filter":{"must":[{"has_id":allowed},{"key":"workspace_id","match":{"value":workspace.to_string()}},{"key":"tenant","match":{"value":tenant}}]},"limit":limit,"with_payload":true,"with_vector":false}))).await?;
     let result: Vec<Point> = serde_json::from_value(value["result"]["points"].clone())
         .map_err(|_| Error::External("invalid vector search response".into()))?;
@@ -244,12 +277,17 @@ pub async fn query(
     Ok(result)
 }
 
-pub async fn present(config: &VectorConfig, collection: &str, ids: &[Uuid]) -> Result<bool> {
+pub async fn present(
+    client: &reqwest::Client,
+    config: &VectorConfig,
+    collection: &str,
+    ids: &[Uuid],
+) -> Result<bool> {
     if ids.is_empty() {
         return Ok(true);
     }
     let path = format!("{}/points?consistency=all", collection_path(collection)?);
-    let response = vector_request(config, reqwest::Method::POST, &path)?
+    let response = vector_request(client, config, reqwest::Method::POST, &path)?
         .json(&json!({"ids":ids,"with_payload":false,"with_vector":false}))
         .send()
         .await?;

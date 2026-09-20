@@ -72,7 +72,7 @@ async fn process(store: &Store, id: Uuid) -> Result<bool> {
         let digest=service::content_digest(&text);
         let old:Option<(Option<String>,bool)>=sqlx::query_as("SELECT content_digest,retired FROM semantic_points WHERE id=$1").bind(entry.point_id).fetch_optional(&mut **lease.tx()).await?;
         if entry.state=="READY" && old.as_ref().is_some_and(|(d,retired)|d.as_deref()==Some(&digest)&&!*retired)
-            && backend::present(&spec.vector,&index.collection,&[entry.point_id]).await.unwrap_or(false) {
+            && backend::present(&store.semantic_client, &spec.vector,&index.collection,&[entry.point_id]).await.unwrap_or(false) {
             sqlx::query("UPDATE semantic_entries SET next_attempt=clock_timestamp()+interval '30 seconds' WHERE id=$1").bind(id).execute(&mut **lease.tx()).await?;
             return Ok(true);
         }
@@ -87,9 +87,9 @@ async fn process(store: &Store, id: Uuid) -> Result<bool> {
         }
         let result=async {
             service::validate_text(&text,spec.max_input_bytes)?;
-            let vector=backend::embed(&spec.embedding,&text).await?;
-            backend::ensure_collection(&spec.vector,&index.collection,spec.embedding.dimensions).await?;
-            backend::upsert(&spec.vector,&index.collection,entry.point_id,&vector,json!({"entry_id":id,"revision":entry.revision,"index_revision":index.revision,"workspace_id":workspace,"tenant":index.tenant})).await
+            let vector=backend::embed(&store.semantic_client, &spec.embedding,&text).await?;
+            backend::ensure_collection(&store.semantic_client, &spec.vector,&index.collection,spec.embedding.dimensions).await?;
+            backend::upsert(&store.semantic_client, &spec.vector,&index.collection,entry.point_id,&vector,json!({"entry_id":id,"revision":entry.revision,"index_revision":index.revision,"workspace_id":workspace,"tenant":index.tenant})).await
         }.await;
         match result {
             Ok(())=> {
@@ -141,7 +141,7 @@ async fn cleanup(store: &Store) -> Result<()> {
         let row:Option<(String,Value)>=sqlx::query_as("SELECT p.collection,c.vector FROM semantic_points p JOIN semantic_collections c ON c.collection=p.collection WHERE p.id=$1 AND p.retired AND p.next_attempt<=clock_timestamp() FOR UPDATE OF p SKIP LOCKED").bind(id).fetch_optional(&mut *tx).await?;
         if let Some((collection, config)) = row {
             let config: VectorConfig = serde_json::from_value(config)?;
-            let failure = backend::delete_point(&config, &collection, id)
+            let failure = backend::delete_point(&store.semantic_client, &config, &collection, id)
                 .await
                 .is_err()
                 .then_some("vector deletion failed; retry scheduled");
@@ -155,7 +155,7 @@ async fn cleanup(store: &Store) -> Result<()> {
         let config:Option<Value>=sqlx::query_scalar("SELECT vector FROM semantic_collections WHERE collection=$1 AND retired AND next_attempt<=clock_timestamp() FOR UPDATE SKIP LOCKED").bind(&collection).fetch_optional(&mut *tx).await?;
         if let Some(config) = config {
             let config: VectorConfig = serde_json::from_value(config)?;
-            let failure = backend::delete_collection(&config, &collection)
+            let failure = backend::delete_collection(&store.semantic_client, &config, &collection)
                 .await
                 .is_err()
                 .then_some("collection deletion failed; retry scheduled");

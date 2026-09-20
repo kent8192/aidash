@@ -12,6 +12,7 @@ pub struct Store {
     pub pool: PgPool,
     pub control_pool: PgPool,
     pub node_id: String,
+    pub semantic_client: reqwest::Client,
 }
 impl Store {
     // Legacy admission cannot supply durable scoped execution authority.
@@ -61,6 +62,7 @@ impl Store {
             pool,
             control_pool,
             node_id,
+            semantic_client: crate::semantic::backend::client()?,
         })
     }
 
@@ -93,6 +95,7 @@ impl Store {
             pool,
             control_pool: self.control_pool.clone(),
             node_id: self.node_id.clone(),
+            semantic_client: self.semantic_client.clone(),
         })
     }
 
@@ -120,6 +123,7 @@ impl Store {
             pool,
             control_pool,
             node_id: self.node_id.clone(),
+            semantic_client: self.semantic_client.clone(),
         })
     }
     pub async fn event(

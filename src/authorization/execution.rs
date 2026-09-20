@@ -663,6 +663,7 @@ impl Guard {
     ) -> Result<Option<crate::semantic::SearchResult>> {
         let mut access = self.access.lock().await;
         let result = crate::semantic::service::context_in(
+            &store.semantic_client,
             &mut crate::semantic::service::Lease::Inherited(&mut access),
             &self.run,
             query,

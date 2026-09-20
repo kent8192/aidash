@@ -349,6 +349,7 @@ impl Harness {
                     )
                     .await?;
                     let result = crate::semantic::service::context_in(
+                        &self.federation.store.semantic_client,
                         &mut lease,
                         run,
                         &format!("{}\n{}", task.title, task.description),

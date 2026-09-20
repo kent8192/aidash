@@ -557,10 +557,11 @@ pub async fn search(
 ) -> Result<SearchResult> {
     let mut lease = Lease::begin(store, actor).await?;
     lease.durable();
-    let result = search_in(&mut lease, workspace, input).await;
+    let result = search_in(&store.semantic_client, &mut lease, workspace, input).await;
     lease.finish(result).await
 }
 pub(crate) async fn search_in(
+    client: &reqwest::Client,
     lease: &mut Lease<'_>,
     workspace: Uuid,
     input: Search,
@@ -653,6 +654,7 @@ pub(crate) async fn search_in(
         return Ok(result);
     }
     if !backend::present(
+        client,
         &spec.vector,
         &index.collection,
         &allowed.keys().copied().collect::<Vec<_>>(),
@@ -662,16 +664,19 @@ pub(crate) async fn search_in(
     {
         return Err(Error::SemanticUnavailable);
     }
-    let vector = backend::embed(&spec.embedding, &input.query)
+    let vector = backend::embed(client, &spec.embedding, &input.query)
         .await
         .map_err(|_| Error::SemanticUnavailable)?;
     let points = backend::query(
+        client,
         &spec.vector,
         &index.collection,
         &vector,
-        &allowed.keys().copied().collect::<Vec<_>>(),
-        workspace,
-        &index.tenant,
+        backend::Filter {
+            allowed: &allowed.keys().copied().collect::<Vec<_>>(),
+            workspace,
+            tenant: &index.tenant,
+        },
         input.limit,
     )
     .await
@@ -766,6 +771,7 @@ pub async fn history_list(store: &Store, actor: &Actor, workspace: Uuid) -> Resu
 }
 
 pub(crate) async fn context_in(
+    client: &reqwest::Client,
     lease: &mut Lease<'_>,
     run: &crate::domain::Run,
     query: &str,
@@ -792,6 +798,7 @@ pub(crate) async fn context_in(
         query.truncate(end);
     }
     search_in(
+        client,
         lease,
         run.workspace_id,
         Search {
