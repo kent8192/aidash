@@ -1,6 +1,7 @@
 use crate::{
     Error, Result,
     api_schema::*,
+    authorization::{Authorization, identity::Actor, workspace::Workspaces},
     config::{PROTOCOL_VERSION, peer_secret},
     domain::*,
     federation::{Delegation, Discovery, Federation, Offer, Peer},
@@ -9,7 +10,7 @@ use crate::{
     tool::required,
 };
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::{Path, Query, Request, State},
     http::HeaderMap,
     middleware::{self, Next},
@@ -26,17 +27,11 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
 fn management_routes() -> OpenApiRouter<Federation> {
-    OpenApiRouter::new()
+    let administration = OpenApiRouter::new()
         .merge(crate::authorization::api::routes())
-        .routes(routes!(state))
         .routes(routes!(registry_list))
         .routes(routes!(registry_create))
         .routes(routes!(registry_get))
-        .routes(routes!(workspace_create))
-        .routes(routes!(workspace_get))
-        .routes(routes!(workspace_update))
-        .routes(routes!(task_create))
-        .routes(routes!(message_create))
         .routes(routes!(task_claim))
         .routes(routes!(task_delegate))
         .routes(routes!(task_abandon))
@@ -52,6 +47,15 @@ fn management_routes() -> OpenApiRouter<Federation> {
         .routes(routes!(marketplace))
         .routes(routes!(package_publish))
         .routes(routes!(package_install))
+        .route_layer(middleware::from_fn(operator_only));
+    OpenApiRouter::new()
+        .merge(administration)
+        .routes(routes!(state))
+        .routes(routes!(workspace_create))
+        .routes(routes!(workspace_get))
+        .routes(routes!(workspace_update))
+        .routes(routes!(task_create))
+        .routes(routes!(message_create))
         .routes(routes!(events))
         .routes(routes!(stream))
 }
@@ -110,11 +114,43 @@ fn same_secret(a: &str, b: &str) -> bool {
     let b = Sha256::digest(b.as_bytes());
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
-async fn api_auth(State(f): State<Federation>, request: Request, next: Next) -> Result<Response> {
-    if bearer(request.headers()).is_none_or(|s| !same_secret(s, &f.config.api_token)) {
-        return Err(Error::Unauthorized);
+async fn api_auth(
+    State(f): State<Federation>,
+    mut request: Request,
+    next: Next,
+) -> Result<Response> {
+    let token = bearer(request.headers()).ok_or(Error::Unauthorized)?;
+    let actor = if same_secret(token, &f.config.api_token) {
+        Actor::Operator
+    } else {
+        Authorization {
+            pool: f.store.pool.clone(),
+        }
+        .authenticate(token)
+        .await?
+    };
+    request.extensions_mut().insert(actor);
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    Ok(response)
+}
+async fn operator_only(request: Request, next: Next) -> Result<Response> {
+    if !matches!(request.extensions().get::<Actor>(), Some(Actor::Operator)) {
+        return Err(Error::Forbidden);
     }
     Ok(next.run(request).await)
+}
+fn scoped(f: &Federation, actor: Actor) -> Option<Workspaces> {
+    match actor {
+        Actor::Operator => None,
+        Actor::Subject(identity) => Some(Workspaces {
+            store: f.store.clone(),
+            identity,
+        }),
+    }
 }
 async fn peer_auth(State(f): State<Federation>, request: Request, next: Next) -> Result<Response> {
     let headers = request.headers();
@@ -158,7 +194,13 @@ async fn identity(State(f): State<Federation>) -> Result<Json<Value>> {
     Ok(Json(json!(f.config.identity(clusters))))
 }
 #[utoipa::path(get, path = "/state", operation_id = "state", responses((status = 200, body = StateResponse)), security(("bearer_auth" = [])))]
-async fn state(State(f): State<Federation>) -> Result<Json<StateResponse>> {
+async fn state(
+    State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
+) -> Result<Json<StateResponse>> {
+    if let Some(scope) = scoped(&f, actor) {
+        return Ok(Json(scope.state(f.config.identity(vec![])).await?));
+    }
     let records = f.registry.list(&Search::default()).await?;
     let events:Vec<crate::domain::Event>=sqlx::query_as("SELECT sequence,id,node_id,workspace_id,kind,data,created_at FROM (SELECT * FROM events ORDER BY sequence DESC LIMIT 100) e ORDER BY sequence").fetch_all(&f.store.pool).await?;
     let human: Vec<HumanRequest> =
@@ -221,6 +263,7 @@ async fn registry_create(
     Ok(Json(entry))
 }
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 struct WorkspaceInput {
     title: String,
     goal: String,
@@ -228,8 +271,12 @@ struct WorkspaceInput {
 #[utoipa::path(post, path = "/workspaces", operation_id = "workspace_create", request_body = WorkspaceInput, responses((status = 200, body = Workspace)), security(("bearer_auth" = [])))]
 async fn workspace_create(
     State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
     Json(input): Json<WorkspaceInput>,
 ) -> Result<Json<Workspace>> {
+    if let Some(scope) = scoped(&f, actor) {
+        return Ok(Json(scope.create(&input.title, &input.goal).await?));
+    }
     Ok(Json(
         f.store.create_workspace(&input.title, &input.goal).await?,
     ))
@@ -237,11 +284,16 @@ async fn workspace_create(
 #[utoipa::path(get, path = "/workspaces/{id}", operation_id = "workspace_get", params(("id" = Uuid, Path)), responses((status = 200, body = WorkspaceSnapshot)), security(("bearer_auth" = [])))]
 async fn workspace_get(
     State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<WorkspaceSnapshot>> {
+    if let Some(scope) = scoped(&f, actor) {
+        return Ok(Json(scope.snapshot(id).await?));
+    }
     Ok(Json(f.store.snapshot(id).await?))
 }
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 struct StateInput {
     revision: i64,
     state: Value,
@@ -249,9 +301,13 @@ struct StateInput {
 #[utoipa::path(patch, path = "/workspaces/{id}", operation_id = "workspace_update", request_body = StateInput, params(("id" = Uuid, Path)), responses((status = 200, body = Workspace)), security(("bearer_auth" = [])))]
 async fn workspace_update(
     State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
     Path(id): Path<Uuid>,
     Json(input): Json<StateInput>,
 ) -> Result<Json<Workspace>> {
+    if let Some(scope) = scoped(&f, actor) {
+        return Ok(Json(scope.update(id, input.revision, input.state).await?));
+    }
     Ok(Json(
         f.store
             .update_state(id, input.revision, input.state)
@@ -261,10 +317,22 @@ async fn workspace_update(
 #[utoipa::path(post, path = "/workspaces/{id}/tasks", operation_id = "task_create", request_body = NewTask, params(("id" = Uuid, Path)), responses((status = 200, body = Task)), security(("bearer_auth" = [])))]
 async fn task_create(
     State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
     Json(input): Json<NewTask>,
 ) -> Result<Json<Task>> {
+    if let Some(scope) = scoped(&f, actor) {
+        return Ok(Json(
+            scope
+                .create_task(
+                    id,
+                    &input,
+                    headers.get("idempotency-key").and_then(|h| h.to_str().ok()),
+                )
+                .await?,
+        ));
+    }
     Ok(Json(
         f.store
             .create_task(
@@ -277,15 +345,21 @@ async fn task_create(
     ))
 }
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 struct MessageInput {
     content: String,
 }
 #[utoipa::path(post, path = "/workspaces/{id}/messages", operation_id = "message_create", request_body = MessageInput, params(("id" = Uuid, Path)), responses((status = 200, body = SentResponse)), security(("bearer_auth" = [])))]
 async fn message_create(
     State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
     Path(id): Path<Uuid>,
     Json(input): Json<MessageInput>,
 ) -> Result<Json<SentResponse>> {
+    if let Some(scope) = scoped(&f, actor) {
+        scope.message(id, &input.content).await?;
+        return Ok(Json(SentResponse { sent: true }));
+    }
     f.store.message(id, "human", &input.content, None).await?;
     Ok(Json(SentResponse { sent: true }))
 }
@@ -541,31 +615,53 @@ struct EventQuery {
 #[utoipa::path(get, path = "/events", operation_id = "events", params(EventQuery), responses((status = 200, body = [crate::domain::Event])), security(("bearer_auth" = [])))]
 async fn events(
     State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
     Query(q): Query<EventQuery>,
 ) -> Result<Json<Vec<crate::domain::Event>>> {
+    if let Some(scope) = scoped(&f, actor) {
+        return Ok(Json(scope.events(q.after, q.workspace_id, 500).await?));
+    }
     Ok(Json(f.store.events(q.after, q.workspace_id, 500).await?))
 }
 #[utoipa::path(get, path = "/events/stream", operation_id = "stream", params(EventQuery), responses((status = 200, body = String, content_type = "text/event-stream")), security(("bearer_auth" = [])))]
 async fn stream(
     State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
     headers: HeaderMap,
     Query(q): Query<EventQuery>,
-) -> Sse<impl futures_util::Stream<Item = std::result::Result<SseEvent, Infallible>>> {
+) -> Result<Sse<impl futures_util::Stream<Item = std::result::Result<SseEvent, Infallible>>>> {
+    let scope = scoped(&f, actor);
     let mut cursor = headers
         .get("last-event-id")
         .and_then(|h| h.to_str().ok())
         .and_then(|s| s.parse().ok())
         .unwrap_or(q.after);
+    // Validate the requested workspace before committing the SSE response.
+    if let Some(scope) = &scope {
+        scope.events(cursor, q.workspace_id, 1).await?;
+    }
     let stream = async_stream::stream! {
         loop {
-            match f.store.events(cursor,q.workspace_id,100).await {
-                Ok(events)=>for event in events{cursor=event.sequence;yield Ok(SseEvent::default().id(cursor.to_string()).event("mesh").data(event.cloud_event().to_string()));},
-                Err(e)=>{tracing::error!(error=%e,"SSE read failed");yield Ok(SseEvent::default().event("error").data("event stream interrupted"));break;}
+            let events = if let Some(scope) = &scope { scope.poll_events(cursor, q.workspace_id, 100).await }
+                else { f.store.events(cursor, q.workspace_id, 100).await };
+            match events {
+                Ok(events) => for event in events {
+                    cursor = event.sequence;
+                    if let Some(scope) = &scope {
+                        match scope.can_emit(&event).await {
+                            Ok(true) => {},
+                            Ok(false) => continue,
+                            Err(_) => { yield Ok(SseEvent::default().event("error").data("event stream interrupted")); return; }
+                        }
+                    }
+                    yield Ok(SseEvent::default().id(cursor.to_string()).event("mesh").data(event.cloud_event().to_string()));
+                },
+                Err(e) => { tracing::error!(error=%e,"SSE read failed"); yield Ok(SseEvent::default().event("error").data("event stream interrupted")); break; }
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     };
-    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }
 
 async fn peer_discover(
@@ -890,7 +986,7 @@ mod schema_tests {
                 .values()
                 .map(|path| path.as_object().unwrap().len())
                 .sum::<usize>(),
-            32
+            35
         );
         for (path, operations) in paths {
             assert!(path.starts_with("/api/"));

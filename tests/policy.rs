@@ -11,6 +11,12 @@ fn policy_management_routes_publish_authenticated_typed_contracts() {
         ("/api/authorization/{tenant}/simulate", "post"),
         ("/api/authorization/{tenant}/revisions", "get"),
         ("/api/authorization/{tenant}/decisions", "get"),
+        ("/api/authorization/{tenant}/credentials", "get"),
+        ("/api/authorization/{tenant}/credentials", "post"),
+        (
+            "/api/authorization/{tenant}/credentials/{id}/revoke",
+            "post",
+        ),
     ] {
         let operation = &document["paths"][path][method];
         assert!(operation.is_object(), "missing {method} {path}");

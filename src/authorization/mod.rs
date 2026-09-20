@@ -1,5 +1,7 @@
 pub mod api;
+pub mod identity;
 pub mod policy;
+pub mod workspace;
 
 use crate::{Error, Result};
 use policy::{Decision, Evaluation, PolicyBundle, identifier};
@@ -84,11 +86,21 @@ impl Authorization {
         let snapshot = Self::load(tx, tenant).await?;
         let mut decision = snapshot.bundle.evaluate(input);
         decision.revision = snapshot.revision;
-        sqlx::query("INSERT INTO authorization_decisions(tenant,revision,subject,action,resource_kind,resource_id,decision) VALUES($1,$2,$3,$4,$5,$6,$7)")
-            .bind(tenant).bind(snapshot.revision).bind(&input.subject).bind(&input.action)
-            .bind(&input.resource.kind).bind(&input.resource.id).bind(serde_json::to_value(&decision)?)
-            .execute(&mut **tx).await?;
+        Self::record(tx, tenant, input, &decision).await?;
         Ok(decision)
+    }
+
+    pub(super) async fn record(
+        tx: &mut Transaction<'_, Postgres>,
+        tenant: &str,
+        input: &Evaluation,
+        decision: &Decision,
+    ) -> Result<()> {
+        sqlx::query("INSERT INTO authorization_decisions(tenant,revision,subject,action,resource_kind,resource_id,decision) VALUES($1,$2,$3,$4,$5,$6,$7)")
+            .bind(tenant).bind(decision.revision).bind(&input.subject).bind(&input.action)
+            .bind(&input.resource.kind).bind(&input.resource.id).bind(serde_json::to_value(decision)?)
+            .execute(&mut **tx).await?;
+        Ok(())
     }
 
     pub async fn evaluate(&self, tenant: &str, input: &Evaluation) -> Result<Decision> {

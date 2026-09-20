@@ -14,6 +14,8 @@ import type {
   ControlInput,
   ConversationInput,
   ConversationResponse,
+  Credential,
+  CredentialInput,
   Decision,
   DelegateInput,
   Delegation,
@@ -24,6 +26,7 @@ import type {
   EventsParams,
   HumanRequest,
   InstallInput,
+  IssuedCredential,
   MarketplaceParams,
   MeshResponse,
   MessageInput,
@@ -100,6 +103,82 @@ export const authorizationReplace = async (
       ...getHeaders(options?.headers),
     },
     body: JSON.stringify(authorizationUpdate),
+  });
+};
+
+export const getAuthorizationCredentialsUrl = (tenant: string) => {
+  return `/api/authorization/${tenant}/credentials`;
+};
+
+export const authorizationCredentials = async (
+  tenant: string,
+  options?: Parameters<typeof apiFetch>[1],
+): Promise<Credential[]> => {
+  return apiFetch<Credential[]>(getAuthorizationCredentialsUrl(tenant), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getAuthorizationIssueCredentialUrl = (tenant: string) => {
+  return `/api/authorization/${tenant}/credentials`;
+};
+
+export const authorizationIssueCredential = async (
+  tenant: string,
+  credentialInput: CredentialInput,
+  options?: Parameters<typeof apiFetch>[1],
+): Promise<IssuedCredential> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<
+      string | readonly string[] | undefined
+    >(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  return apiFetch<IssuedCredential>(
+    getAuthorizationIssueCredentialUrl(tenant),
+    {
+      ...options,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...getHeaders(options?.headers),
+      },
+      body: JSON.stringify(credentialInput),
+    },
+  );
+};
+
+export const getAuthorizationRevokeCredentialUrl = (
+  tenant: string,
+  id: string,
+) => {
+  return `/api/authorization/${tenant}/credentials/${id}/revoke`;
+};
+
+export const authorizationRevokeCredential = async (
+  tenant: string,
+  id: string,
+  options?: Parameters<typeof apiFetch>[1],
+): Promise<Credential> => {
+  return apiFetch<Credential>(getAuthorizationRevokeCredentialUrl(tenant, id), {
+    ...options,
+    method: "POST",
   });
 };
 

@@ -78,6 +78,122 @@
         ]
       }
     },
+    "/api/authorization/{tenant}/credentials": {
+      "get": {
+        "operationId": "authorization_credentials",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Credential"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "authorization_issue_credential",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuedCredential"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/api/authorization/{tenant}/credentials/{id}/revoke": {
+      "post": {
+        "operationId": "authorization_revoke_credential",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Credential"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/api/authorization/{tenant}/decisions": {
       "get": {
         "operationId": "authorization_decisions",
@@ -1644,6 +1760,58 @@
           }
         }
       },
+      "Credential": {
+        "type": "object",
+        "required": [
+          "id",
+          "tenant",
+          "subject",
+          "created_at",
+          "expires_at",
+          "issued_by"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "issued_by": {
+            "type": "string"
+          },
+          "revoked_at": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "tenant": {
+            "type": "string"
+          }
+        }
+      },
+      "CredentialInput": {
+        "type": "object",
+        "required": ["subject"],
+        "properties": {
+          "expires_in_seconds": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "subject": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "Decision": {
         "type": "object",
         "required": [
@@ -1997,6 +2165,19 @@
           }
         }
       },
+      "IssuedCredential": {
+        "type": "object",
+        "description": "The bearer value is returned exactly once; only its SHA-256 digest is stored.",
+        "required": ["credential", "token"],
+        "properties": {
+          "credential": {
+            "$ref": "#/components/schemas/Credential"
+          },
+          "token": {
+            "type": "string"
+          }
+        }
+      },
       "MeshNode": {
         "type": "object",
         "required": ["node_id", "runs", "human_requests", "invocations"],
@@ -2076,7 +2257,8 @@
           "content": {
             "type": "string"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "NewTask": {
         "type": "object",
@@ -2106,7 +2288,8 @@
           "title": {
             "type": "string"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "NodeIdentity": {
         "type": "object",
@@ -2587,7 +2770,8 @@
             "format": "int64"
           },
           "state": {}
-        }
+        },
+        "additionalProperties": false
       },
       "StateResponse": {
         "type": "object",
@@ -2849,7 +3033,8 @@
           "title": {
             "type": "string"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "WorkspaceSnapshot": {
         "type": "object",

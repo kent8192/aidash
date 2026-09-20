@@ -17,6 +17,8 @@ pub enum Error {
     NotFound(String),
     #[error("unauthorized")]
     Unauthorized,
+    #[error("forbidden")]
+    Forbidden,
     #[error("{0}")]
     External(String),
     #[error("{0}")]
@@ -36,6 +38,7 @@ impl IntoResponse for Error {
             Self::Conflict(s) => (StatusCode::CONFLICT, s.clone()),
             Self::NotFound(s) => (StatusCode::NOT_FOUND, s.clone()),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
+            Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden".into()),
             _ => {
                 tracing::error!(error = %self, "request failed");
                 (

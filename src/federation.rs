@@ -188,6 +188,9 @@ impl Federation {
         agent: &EntityRef,
     ) -> Result<Delegation> {
         let task = self.store.task(task_id).await?;
+        self.store
+            .require_legacy_execution(task.workspace_id)
+            .await?;
         if task.status != "OPEN"
             && task.owner.as_deref() != Some(&qualified_agent(node, &agent.id, &agent.version))
         {

@@ -45,18 +45,18 @@ The acceptance environment uses deterministic protocol fixtures. Passing its tes
 
 The [expanded requirements](expanded-requirements.md) define the behavior, acceptance criteria, implementation order and remaining exclusions synchronized with Notion. None of the following is deferred to a future version or covered by the existing acceptance evidence.
 
-| Requirement  | Required capability               | Implementation status                                       | Required verification                                                                     |
-| ------------ | --------------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| FR-OPS-001   | Kubernetes / k3s orchestration    | Pending                                                     | Two-node golden path on each platform; pod termination, scaling and rolling updates       |
-| FR-AGENT-001 | Automatic agent generation        | Pending                                                     | Missing-agent task completion; retry/restart deduplication, limits and denied approval    |
-| FR-AUTH-001  | Complex RBAC / ABAC               | Policy service implemented; mesh enforcement and UI pending | Policy/API/PostgreSQL tests; authorization across all data paths remains to be verified   |
-| FR-TX-001    | Complete distributed transactions | Pending                                                     | Multi-node commit/abort, phase failures, partition recovery and atomic visibility         |
-| FR-MEM-001   | Semantic memory / vector DB       | Pending                                                     | Semantic retrieval, provenance, persistence, deletion/reindexing and permission isolation |
-| FR-A2A-001   | Full A2A compatibility (v1.0.0)   | Pending                                                     | Bidirectional independent interoperability, all three bindings and conformance matrix     |
+| Requirement  | Required capability               | Implementation status                                                                                              | Required verification                                                                                                    |
+| ------------ | --------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| FR-OPS-001   | Kubernetes / k3s orchestration    | Pending                                                                                                            | Two-node golden path on each platform; pod termination, scaling and rolling updates                                      |
+| FR-AGENT-001 | Automatic agent generation        | Pending                                                                                                            | Missing-agent task completion; retry/restart deduplication, limits and denied approval                                   |
+| FR-AUTH-001  | Complex RBAC / ABAC               | Policy service, subject credentials and workspace API enforcement implemented; remaining mesh paths and UI pending | Policy/API/PostgreSQL tests, two-tenant isolation and live SSE revocation; all-path authorization remains to be verified |
+| FR-TX-001    | Complete distributed transactions | Pending                                                                                                            | Multi-node commit/abort, phase failures, partition recovery and atomic visibility                                        |
+| FR-MEM-001   | Semantic memory / vector DB       | Pending                                                                                                            | Semantic retrieval, provenance, persistence, deletion/reindexing and permission isolation                                |
+| FR-A2A-001   | Full A2A compatibility (v1.0.0)   | Pending                                                                                                            | Bidirectional independent interoperability, all three bindings and conformance matrix                                    |
 
 ## Existing baseline acceptance evidence
 
-The [authorization policy service](authorization.md) adds revisioned policy management, audited RBAC/ABAC decisions and dry-run evaluation. Its focused evidence does not complete FR-AUTH-001 or the expanded release gate.
+The [authorization policy service](authorization.md) adds revisioned policy management, audited RBAC/ABAC decisions, dry-run evaluation and scoped workspace access with revocable credentials. Its focused evidence does not complete FR-AUTH-001 or the expanded release gate.
 
 The two-node test begins with a goal submitted through the dashboard. The coordinator discovers agents, creates Axum/Actix/Rocket subtasks, and delegates across node boundaries. A remote worker is killed after an HTTP effect, then recovers its original run and replays the original invocation key. All four tasks and artifacts complete with three external effects. The same scenario verifies a declined remote approval with pause/message/resume and Native, MCP and Agent tool calls. Separate browser cases cover all eleven screens, workspace/task assignment, locale switching and marketplace publication/installation.
 

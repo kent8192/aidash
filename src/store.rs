@@ -13,6 +13,21 @@ pub struct Store {
     pub node_id: String,
 }
 impl Store {
+    // Scoped workspaces must not enter workers/federation until a durable
+    // execution identity can be carried and rechecked at every effect boundary.
+    pub(crate) async fn require_legacy_execution(&self, workspace: Uuid) -> Result<()> {
+        let scoped: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM authorization_workspaces WHERE workspace_id=$1)",
+        )
+        .bind(workspace)
+        .fetch_one(&self.pool)
+        .await?;
+        if scoped {
+            return Err(Error::Forbidden);
+        }
+        Ok(())
+    }
+
     pub async fn connect(url: &str, node_id: String) -> Result<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(16)
@@ -45,19 +60,31 @@ impl Store {
         Ok(event)
     }
     pub async fn create_workspace(&self, title: &str, goal: &str) -> Result<Workspace> {
-        nonempty(title, "title")?;
-        nonempty(goal, "goal")?;
         let mut tx = self.pool.begin().await?;
-        let w: Workspace =
-            sqlx::query_as("INSERT INTO workspaces(id,title,goal) VALUES($1,$2,$3) RETURNING *")
-                .bind(Uuid::new_v4())
-                .bind(title)
-                .bind(goal)
-                .fetch_one(&mut *tx)
-                .await?;
-        self.event(&mut tx, Some(w.id), "workspace.created", json!(w))
+        let workspace = self
+            .create_workspace_in(&mut tx, Uuid::new_v4(), title, goal)
             .await?;
         tx.commit().await?;
+        Ok(workspace)
+    }
+    pub(crate) async fn create_workspace_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        id: Uuid,
+        title: &str,
+        goal: &str,
+    ) -> Result<Workspace> {
+        nonempty(title, "title")?;
+        nonempty(goal, "goal")?;
+        let w: Workspace =
+            sqlx::query_as("INSERT INTO workspaces(id,title,goal) VALUES($1,$2,$3) RETURNING *")
+                .bind(id)
+                .bind(title)
+                .bind(goal)
+                .fetch_one(&mut **tx)
+                .await?;
+        self.event(tx, Some(w.id), "workspace.created", json!(w))
+            .await?;
         Ok(w)
     }
     pub async fn workspaces(&self) -> Result<Vec<Workspace>> {
@@ -75,15 +102,25 @@ impl Store {
             .ok_or_else(|| Error::NotFound("workspace".into()))
     }
     pub async fn update_state(&self, id: Uuid, revision: i64, state: Value) -> Result<Workspace> {
+        let mut tx = self.pool.begin().await?;
+        let workspace = self.update_state_in(&mut tx, id, revision, state).await?;
+        tx.commit().await?;
+        Ok(workspace)
+    }
+    pub(crate) async fn update_state_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        id: Uuid,
+        revision: i64,
+        state: Value,
+    ) -> Result<Workspace> {
         if !state.is_object() {
             return Err(Error::Invalid("workspace state must be an object".into()));
         }
-        let mut tx = self.pool.begin().await?;
         let w = sqlx::query_as("UPDATE workspaces SET state=$3,revision=revision+1 WHERE id=$1 AND revision=$2 RETURNING *")
-            .bind(id).bind(revision).bind(state).fetch_optional(&mut *tx).await?.ok_or_else(|| Error::Conflict("workspace revision changed".into()))?;
-        self.event(&mut tx, Some(id), "workspace.updated", json!(w))
+            .bind(id).bind(revision).bind(state).fetch_optional(&mut **tx).await?.ok_or_else(|| Error::Conflict("workspace revision changed".into()))?;
+        self.event(tx, Some(id), "workspace.updated", json!(w))
             .await?;
-        tx.commit().await?;
         Ok(w)
     }
     pub async fn task(&self, id: Uuid) -> Result<Task> {
@@ -103,6 +140,21 @@ impl Store {
         creator: &str,
         key: Option<&str>,
     ) -> Result<Task> {
+        let mut tx = self.pool.begin().await?;
+        let task = self
+            .create_task_in(&mut tx, workspace, input, creator, key)
+            .await?;
+        tx.commit().await?;
+        Ok(task)
+    }
+    pub(crate) async fn create_task_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        workspace: Uuid,
+        input: &NewTask,
+        creator: &str,
+        key: Option<&str>,
+    ) -> Result<Task> {
         nonempty(&input.title, "task title")?;
         nonempty(&input.description, "task description")?;
         if !input.requirements.is_object() {
@@ -110,14 +162,13 @@ impl Store {
         }
         let _: Search = serde_json::from_value(input.requirements.clone())
             .map_err(|e| Error::Invalid(e.to_string()))?;
-        let mut tx = self.pool.begin().await?;
         for dep in input.dependencies.iter().chain(input.parent_id.iter()) {
             let valid: bool = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM tasks WHERE id=$1 AND workspace_id=$2)",
             )
             .bind(dep)
             .bind(workspace)
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut **tx)
             .await?;
             if !valid {
                 return Err(Error::Invalid(
@@ -126,17 +177,17 @@ impl Store {
             }
         }
         let task: Option<Task> = sqlx::query_as("INSERT INTO tasks(id,workspace_id,title,description,requirements,created_by,dependencies,parent_id,creation_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(creation_key) DO NOTHING RETURNING *")
-            .bind(Uuid::new_v4()).bind(workspace).bind(&input.title).bind(&input.description).bind(&input.requirements).bind(creator).bind(&input.dependencies).bind(input.parent_id).bind(key).fetch_optional(&mut *tx).await?;
+            .bind(Uuid::new_v4()).bind(workspace).bind(&input.title).bind(&input.description).bind(&input.requirements).bind(creator).bind(&input.dependencies).bind(input.parent_id).bind(key).fetch_optional(&mut **tx).await?;
         let task = match task {
             Some(t) => {
-                self.event(&mut tx, Some(workspace), "task.created", json!(t))
+                self.event(tx, Some(workspace), "task.created", json!(t))
                     .await?;
                 t
             }
             None => {
                 let t: Task = sqlx::query_as("SELECT * FROM tasks WHERE creation_key=$1")
                     .bind(key)
-                    .fetch_one(&mut *tx)
+                    .fetch_one(&mut **tx)
                     .await?;
                 if t.workspace_id != workspace
                     || t.title != input.title
@@ -153,11 +204,11 @@ impl Store {
                 t
             }
         };
-        tx.commit().await?;
         Ok(task)
     }
     pub async fn claim(&self, id: Uuid, revision: i64, owner: &str, agent: &Entry) -> Result<Task> {
         let task = self.task(id).await?;
+        self.require_legacy_execution(task.workspace_id).await?;
         let mut requirements: Search = serde_json::from_value(task.requirements.clone())?;
         requirements.kind = Some("agent".into());
         if !requirements.matches(agent) {
@@ -388,13 +439,26 @@ impl Store {
         content: &str,
         key: Option<&str>,
     ) -> Result<()> {
-        nonempty(content, "message")?;
         let mut tx = self.pool.begin().await?;
+        self.message_in(&mut tx, workspace, sender, content, key)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+    pub(crate) async fn message_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        workspace: Uuid,
+        sender: &str,
+        content: &str,
+        key: Option<&str>,
+    ) -> Result<()> {
+        nonempty(content, "message")?;
         let inserted = sqlx::query("INSERT INTO messages(id,workspace_id,sender,content,idempotency_key) VALUES($1,$2,$3,$4,$5) ON CONFLICT(idempotency_key) DO NOTHING")
-            .bind(Uuid::new_v4()).bind(workspace).bind(sender).bind(content).bind(key).execute(&mut *tx).await?.rows_affected();
+            .bind(Uuid::new_v4()).bind(workspace).bind(sender).bind(content).bind(key).execute(&mut **tx).await?.rows_affected();
         if inserted > 0 {
             self.event(
-                &mut tx,
+                tx,
                 Some(workspace),
                 "message.created",
                 json!({"sender":sender,"content":content}),
@@ -402,12 +466,11 @@ impl Store {
             .await?;
         } else {
             let matches: bool = sqlx::query_scalar("SELECT workspace_id=$2 AND sender=$3 AND content=$4 FROM messages WHERE idempotency_key=$1")
-                .bind(key).bind(workspace).bind(sender).bind(content).fetch_one(&mut *tx).await?;
+                .bind(key).bind(workspace).bind(sender).bind(content).fetch_one(&mut **tx).await?;
             if !matches {
                 return Err(Error::Conflict("message idempotency key reused".into()));
             }
         }
-        tx.commit().await?;
         Ok(())
     }
 }
@@ -420,6 +483,7 @@ impl Store {
         agent_id: &str,
         agent_version: &str,
     ) -> Result<Run> {
+        self.require_legacy_execution(task.workspace_id).await?;
         let mut tx = self.pool.begin().await?;
         let row: Option<Run> = sqlx::query_as("INSERT INTO runs(id,task_id,workspace_id,home_node,agent_id,agent_version) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(home_node,task_id) DO NOTHING RETURNING *")
             .bind(Uuid::new_v4()).bind(task.id).bind(task.workspace_id).bind(home_node).bind(agent_id).bind(agent_version).fetch_optional(&mut *tx).await?;

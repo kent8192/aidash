@@ -6,6 +6,8 @@ This document describes the current implementation. The [additional v0.1.0 requi
 
 A node publishes `/.well-known/aidash` with its `aidash://` identity, endpoint, capabilities, clusters and protocol version. All management routes under `/api` require a bearer access token except the public, credential-free `/api/openapi.json` contract. The dashboard uses authenticated fetch for SSE so credentials do not appear in URLs.
 
+The operator token retains privileged bootstrap, legacy operation and recovery access. Revocable subject tokens are scoped to a tenant and current RBAC/ABAC policy for workspace APIs, state collections and event delivery; other management routes remain operator-only. See [authorization](authorization.md) for the exact action contract and pending execution/federation integration. Scoped tasks currently reject worker admission and delegation until those boundaries carry durable authority.
+
 Federation uses `/federation/v0.1`. Each request must include `Authorization: Bearer <peer credential>`, `X-Aidash-Node`, and `X-Aidash-Protocol: 0.1`. A peer must already be enabled in the receiving node's database. Peer credentials must have at least 32 printable ASCII characters and eight distinct characters, checked during registration and use. Generate a random token for each trust relationship. Each node has its own credential references; no central identity or message broker is required across nodes. In deployment, use HTTPS and trusted operator-managed tools. This version is not a hostile multi-tenant sandbox.
 
 | Endpoint          | Purpose                                                                         |

@@ -75,6 +75,7 @@ pub struct Task {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NewTask {
     pub title: String,
     pub description: String,
