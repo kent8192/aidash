@@ -719,3 +719,134 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records() {
     server.abort();
     cleanup(f, &url, &schema).await;
 }
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn artifact_state_page_is_filled_after_task_denials() {
+    let (f, url, schema) = setup().await;
+    let app = api::router(f.clone());
+    let (mut bundle, token, hidden) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+    let workspace = f.store.task(hidden).await.unwrap().workspace_id;
+    let (_, visible) = request(
+        &app,
+        &token,
+        "POST",
+        &format!("/api/workspaces/{workspace}/tasks"),
+        json!({"title":"Visible","description":"An older readable artifact"}),
+    )
+    .await;
+    let visible: uuid::Uuid = visible["id"].as_str().unwrap().parse().unwrap();
+    sqlx::query("INSERT INTO artifacts(id,workspace_id,task_id,kind,name,content,created_by,idempotency_key,created_at) SELECT gen_random_uuid(),$1,$2,'text','Hidden','\"hidden\"','alice','hidden-'||i,now() FROM generate_series(1,500) i")
+        .bind(workspace).bind(hidden).execute(&f.store.pool).await.unwrap();
+    sqlx::query("INSERT INTO artifacts(id,workspace_id,task_id,kind,name,content,created_by,idempotency_key,created_at) VALUES(gen_random_uuid(),$1,$2,'text','Visible','\"readable\"','alice','visible',now()-interval '1 day')")
+        .bind(workspace).bind(visible).execute(&f.store.pool).await.unwrap();
+    bundle["policies"].as_array_mut().unwrap().push(json!({"id":"hide-task","effect":"deny","subjects":{"ids":["alice"]},"actions":["task.read"],"resources":{"kinds":["task"],"ids":[hidden]}}));
+    assert_eq!(
+        request(
+            &app,
+            &f.config.api_token,
+            "POST",
+            "/api/authorization/acme",
+            json!({"expected_revision":1,"bundle":bundle})
+        )
+        .await
+        .0,
+        200
+    );
+    let (status, state) = request(&app, &token, "GET", "/api/state", Value::Null).await;
+    assert_eq!(status, 200);
+    assert_eq!(state["artifacts"].as_array().unwrap().len(), 1);
+    assert_eq!(state["artifacts"][0]["content"], "readable");
+    cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn discovered_registry_entries_remain_live_journal_dependencies() {
+    use axum::{Json, Router, routing::post};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let server=Router::new().route("/v1/chat/completions",post(move || {let calls=calls.clone(); async move {
+        let message=if calls.fetch_add(1,Ordering::SeqCst)==0 {
+            json!({"role":"assistant","content":null,"tool_calls":[{"id":"discover","type":"function","function":{"name":"agent_discover","arguments":"{}"}}]})
+        } else { json!({"role":"assistant","content":"Completed discovery"}) };
+        let reason=if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"};
+        Json(json!({"choices":[{"index":0,"finish_reason":reason,"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+    }}));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+    let (f, url, schema) = setup().await;
+    let app = api::router(f.clone());
+    let (mut bundle, token, task) = bootstrap(&f, &app, &endpoint).await;
+    let mut entry = f.registry.get("research", "1.0.0").await.unwrap();
+    entry.id = "discovered-only".into();
+    entry
+        .description
+        .insert("en".into(), "discovered-private-metadata".into());
+    f.registry.register(entry).await.unwrap();
+    assert_eq!(request(&app,&f.config.api_token,"POST","/api/authorization/acme/catalog",json!({"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":0,"enabled":true})).await.0,200);
+    assert_eq!(
+        request(
+            &app,
+            &token,
+            "POST",
+            &format!("/api/tasks/{task}/claim"),
+            json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
+        )
+        .await
+        .0,
+        200
+    );
+    let worker = Harness {
+        federation: f.clone(),
+    };
+    for _ in 0..12 {
+        worker.worker_once().await.unwrap();
+    }
+    let run = f.store.runs().await.unwrap().remove(0);
+    assert_eq!(run.phase, "COMPLETED");
+    let path = format!("/api/runs/{}", run.id);
+    let (status, journal) = request(&app, &token, "GET", &path, Value::Null).await;
+    assert_eq!(status, 200);
+    assert!(journal.to_string().contains("discovered-private-metadata"));
+    let tracked:i64=sqlx::query_scalar("SELECT count(*) FROM authorization_run_registry_reads WHERE run_id=$1 AND entry_id='discovered-only'").bind(run.id).fetch_one(&f.store.pool).await.unwrap();
+    assert_eq!(tracked, 1);
+    // Verify an existing journal is protected when upgrading from the previous schema.
+    let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());
+    use migration::MigratorTrait;
+    migration::Migrator::down(&db, Some(1)).await.unwrap();
+    migration::Migrator::up(&db, None).await.unwrap();
+    assert_eq!(request(&app,&f.config.api_token,"POST","/api/authorization/acme/catalog",json!({"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":1,"enabled":false})).await.0,200);
+    assert_eq!(
+        request(&app, &token, "GET", &path, Value::Null).await.0,
+        403
+    );
+    assert_eq!(request(&app,&f.config.api_token,"POST","/api/authorization/acme/catalog",json!({"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":2,"enabled":true})).await.0,200);
+    assert_eq!(
+        request(&app, &token, "GET", &path, Value::Null).await.0,
+        200
+    );
+    bundle["policies"].as_array_mut().unwrap().push(json!({"id":"hide-discovered-registry","effect":"deny","subjects":{"ids":["alice"]},"actions":["registry.read"],"resources":{"kinds":["agent"],"ids":["discovered-only"]}}));
+    assert_eq!(
+        request(
+            &app,
+            &f.config.api_token,
+            "POST",
+            "/api/authorization/acme",
+            json!({"expected_revision":1,"bundle":bundle})
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        request(&app, &token, "GET", &path, Value::Null).await.0,
+        403
+    );
+    server.abort();
+    cleanup(f, &url, &schema).await;
+}

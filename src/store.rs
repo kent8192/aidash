@@ -529,6 +529,55 @@ impl Store {
         Ok(sqlx::query_as("SELECT sequence,id,node_id,workspace_id,kind,data,created_at FROM events WHERE sequence>$1 AND ($2::uuid IS NULL OR workspace_id=$2) ORDER BY sequence LIMIT $3")
             .bind(after.max(0)).bind(workspace).bind(limit.clamp(1,1000)).fetch_all(&self.pool).await?)
     }
+    pub async fn snapshot_page(
+        &self,
+        workspace: Uuid,
+        collection: &str,
+        after: Option<Uuid>,
+    ) -> Result<SnapshotPage> {
+        let source = match collection {
+            "tasks" => "SELECT * FROM tasks WHERE workspace_id=$1",
+            "artifacts" => "SELECT * FROM artifacts WHERE workspace_id=$1",
+            "events" => {
+                "SELECT * FROM events WHERE workspace_id=$1 ORDER BY sequence DESC LIMIT 100"
+            }
+            "messages" => {
+                "SELECT * FROM messages WHERE workspace_id=$1 ORDER BY created_at DESC,id DESC LIMIT 100"
+            }
+            _ => return Err(Error::Invalid("unknown snapshot collection".into())),
+        };
+        // The source fragments are closed constants, never caller-provided SQL.
+        let rows: Vec<(Uuid, Value)> = sqlx::query_as(&format!(
+            "SELECT item.id,to_jsonb(item) FROM ({source}) item WHERE ($2::uuid IS NULL OR item.id>$2) ORDER BY item.id LIMIT 32"
+        )).bind(workspace).bind(after).fetch_all(&self.pool).await?;
+        let full = rows.len() == 32;
+        let mut page = SnapshotPage {
+            items: vec![],
+            next: None,
+        };
+        let mut size = 128;
+        let mut last = after;
+        for (id, item) in rows {
+            let item_size = serde_json::to_vec(&item)?.len() + 1;
+            if size + item_size > 3_145_728 {
+                if page.items.is_empty() {
+                    return Err(Error::Invalid(
+                        "individual workspace resource exceeds the 3 MiB federation page limit"
+                            .into(),
+                    ));
+                }
+                page.next = last;
+                return Ok(page);
+            }
+            size += item_size;
+            page.items.push(item);
+            last = Some(id);
+        }
+        if full {
+            page.next = last;
+        }
+        Ok(page)
+    }
     pub async fn snapshot(&self, id: Uuid) -> Result<WorkspaceSnapshot> {
         Ok(WorkspaceSnapshot {
             workspace: self.workspace(id).await?, tasks: self.tasks(Some(id)).await?,
@@ -1050,18 +1099,28 @@ impl Store {
         tx.commit().await?;
         Ok(())
     }
+    // The empty namespace preserves pre-federation local memory. Peer node IDs
+    // are validated nonempty, so no remote home can address this namespace.
+    fn memory_home<'a>(&self, run: &'a Run) -> &'a str {
+        if run.home_node == self.node_id {
+            ""
+        } else {
+            &run.home_node
+        }
+    }
     pub async fn remember(&self, run: &Run, data: &Value) -> Result<()> {
-        sqlx::query("INSERT INTO memory(agent_id,agent_version,workspace_id,data) VALUES($1,$2,$3,$4) ON CONFLICT(agent_id,agent_version,workspace_id) DO UPDATE SET data=EXCLUDED.data")
-            .bind(&run.agent_id).bind(&run.agent_version).bind(run.workspace_id).bind(data).execute(&self.pool).await?;
+        sqlx::query("INSERT INTO memory(agent_id,agent_version,workspace_id,data,home_node) VALUES($1,$2,$3,$4,$5) ON CONFLICT(agent_id,agent_version,workspace_id,home_node) DO UPDATE SET data=EXCLUDED.data")
+            .bind(&run.agent_id).bind(&run.agent_version).bind(run.workspace_id).bind(data).bind(self.memory_home(run)).execute(&self.pool).await?;
         Ok(())
     }
     pub async fn memory(&self, run: &Run) -> Result<Value> {
         Ok(sqlx::query_scalar(
-            "SELECT data FROM memory WHERE agent_id=$1 AND agent_version=$2 AND workspace_id=$3",
+            "SELECT data FROM memory WHERE agent_id=$1 AND agent_version=$2 AND workspace_id=$3 AND home_node=$4",
         )
         .bind(&run.agent_id)
         .bind(&run.agent_version)
         .bind(run.workspace_id)
+        .bind(self.memory_home(run))
         .fetch_optional(&self.pool)
         .await?
         .unwrap_or_else(empty_object))

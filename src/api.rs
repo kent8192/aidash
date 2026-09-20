@@ -794,11 +794,13 @@ async fn peer_workspace(
     let task = f.store.task(command.task_id).await?;
     let d = &command.data;
     let key = || -> Result<String> { Ok(format!("{node}:{}:{}", task.id, required(d, "key")?)) };
-    if !matches!(command.operation.as_str(), "snapshot" | "task" | "claim")
-        && !(task.owner.is_none()
-            && (command.operation == "human_message"
-                || (command.operation == "transition"
-                    && (d["status"] == "CANCELLED" || d["status"] == "FAILED"))))
+    if !matches!(
+        command.operation.as_str(),
+        "snapshot" | "snapshot_workspace" | "snapshot_page" | "task" | "claim"
+    ) && !(task.owner.is_none()
+        && (command.operation == "human_message"
+            || (command.operation == "transition"
+                && (d["status"] == "CANCELLED" || d["status"] == "FAILED"))))
         && task.owner.as_deref() != Some(&owner)
     {
         return Err(Error::Unauthorized);
@@ -807,7 +809,10 @@ async fn peer_workspace(
         task.status.as_str(),
         "COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
     ) {
-        let read = matches!(command.operation.as_str(), "snapshot" | "task");
+        let read = matches!(
+            command.operation.as_str(),
+            "snapshot" | "snapshot_workspace" | "snapshot_page" | "task"
+        );
         let replay_completion = command.operation == "complete" && task.status == "COMPLETED";
         let replay_transition = command.operation == "transition" && d["status"] == task.status;
         if !read && !replay_completion && !replay_transition {
@@ -816,6 +821,16 @@ async fn peer_workspace(
     }
     let result = match command.operation.as_str() {
         "snapshot" => json!(f.store.snapshot(task.workspace_id).await?),
+        "snapshot_workspace" => json!(f.store.workspace(task.workspace_id).await?),
+        "snapshot_page" => json!(
+            f.store
+                .snapshot_page(
+                    task.workspace_id,
+                    required(d, "collection")?,
+                    serde_json::from_value(d["after"].clone())?
+                )
+                .await?
+        ),
         "task" => json!(task),
         "claim" => {
             let entry: Entry = serde_json::from_value(d["entry"].clone())

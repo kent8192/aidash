@@ -232,6 +232,18 @@ impl Harness {
                 let task = home.task().await?;
                 if !task.dependencies.is_empty() {
                     let snapshot = home.snapshot().await?;
+                    if let Some(dependency) = snapshot.tasks.iter().find(|dependency| {
+                        task.dependencies.contains(&dependency.id)
+                            && matches!(
+                                dependency.status.as_str(),
+                                "FAILED" | "CANCELLED" | "ABANDONED"
+                            )
+                    }) {
+                        return Err(Error::Invalid(format!(
+                            "dependency {} is {}",
+                            dependency.id, dependency.status
+                        )));
+                    }
                     if task.dependencies.iter().any(|id| {
                         !snapshot.tasks.iter().any(|dependency| {
                             dependency.id == *id && dependency.status == "COMPLETED"

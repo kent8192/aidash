@@ -1434,3 +1434,172 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents() {
     }
     cleanup(store, &url, &schema).await;
 }
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn agent_memory_is_isolated_by_home_even_for_colliding_workspace_ids() {
+    let (store, url, schema) = setup().await;
+    let agent = seed(&Registry::new(store.pool.clone())).await;
+    let workspace = store
+        .create_workspace("Memory", "Separate homes")
+        .await
+        .unwrap();
+    let task = store
+        .create_task(workspace.id, &new_task(), "human", None)
+        .await
+        .unwrap();
+    let local = store
+        .accept_run(&task, &store.node_id, &agent.id, &agent.version)
+        .await
+        .unwrap();
+    store
+        .remember(&local, &json!({"secret":"local"}))
+        .await
+        .unwrap();
+    // Upgrades preserve local legacy memory without granting it to a remote home.
+    use migration::MigratorTrait;
+    let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(store.pool.clone());
+    migration::Migrator::down(&db, Some(1)).await.unwrap();
+    migration::Migrator::up(&db, None).await.unwrap();
+    assert_eq!(
+        store.memory(&local).await.unwrap(),
+        json!({"secret":"local"})
+    );
+    let mut remote = local.clone();
+    remote.home_node = "aidash://peer-a".into();
+    assert_eq!(store.memory(&remote).await.unwrap(), json!({}));
+    store
+        .remember(&remote, &json!({"secret":"peer-a"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.memory(&local).await.unwrap(),
+        json!({"secret":"local"})
+    );
+    remote.home_node = "aidash://peer-b".into();
+    assert_eq!(store.memory(&remote).await.unwrap(), json!({}));
+    remote.home_node = "aidash://peer-a".into();
+    assert_eq!(
+        store.memory(&remote).await.unwrap(),
+        json!({"secret":"peer-a"})
+    );
+    cleanup(store, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn terminal_dependencies_fail_dependents_instead_of_polling_forever() {
+    let (store, url, schema) = setup().await;
+    let f = federation_for(&store);
+    let agent = seed(&f.registry).await;
+    let worker = aidash::harness::Harness { federation: f };
+    for terminal in ["FAILED", "CANCELLED", "ABANDONED"] {
+        let workspace = store
+            .create_workspace("Dependency", terminal)
+            .await
+            .unwrap();
+        let dependency = running_task(&store, &agent, workspace.id, None).await;
+        sqlx::query("UPDATE runs SET control='PAUSED' WHERE task_id=$1")
+            .bind(dependency.id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE tasks SET status=$2 WHERE id=$1")
+            .bind(dependency.id)
+            .bind(terminal)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let mut input = new_task();
+        input.dependencies = vec![dependency.id];
+        let task = store
+            .create_task(workspace.id, &input, "human", None)
+            .await
+            .unwrap();
+        let run = store
+            .accept_run(&task, &store.node_id, &agent.id, &agent.version)
+            .await
+            .unwrap();
+        worker.worker_once().await.unwrap();
+        worker.worker_once().await.unwrap();
+        let run = store.run(run.id).await.unwrap();
+        assert_eq!(run.phase, "FAILED");
+        assert!(run.error.unwrap().contains(terminal));
+        assert_eq!(store.task(task.id).await.unwrap().status, "FAILED");
+        assert!(!worker.worker_once().await.unwrap());
+    }
+    cleanup(store, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL and AIDASH_SECRET_TEST_PEER"]
+async fn remote_workspace_snapshot_pages_large_accumulated_artifacts() {
+    let (home, url, schema) = setup().await;
+    let f = federation_for(&home);
+    let agent = seed(&f.registry).await;
+    let workspace = home
+        .create_workspace("Large snapshot", "Preserve every item")
+        .await
+        .unwrap();
+    let task = running_task(&home, &agent, workspace.id, None).await;
+    for index in 0..3 {
+        home.publish_artifact(
+            task.id,
+            task.owner.as_deref().unwrap(),
+            &format!("large-{index}"),
+            &ArtifactInput {
+                kind: "text".into(),
+                name: format!("Large {index}"),
+                content: json!("a".repeat(2_000_000)),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    for _ in 0..35 {
+        home.create_task(workspace.id, &new_task(), "human", None)
+            .await
+            .unwrap();
+    }
+    let full = home.snapshot(workspace.id).await.unwrap();
+    assert!(serde_json::to_vec(&full).unwrap().len() > 4_194_304);
+    let page = home
+        .snapshot_page(workspace.id, "artifacts", None)
+        .await
+        .unwrap();
+    assert!(serde_json::to_vec(&page).unwrap().len() < 3_145_728);
+    assert_eq!(page.items.len(), 1);
+    assert!(page.next.is_some());
+    let (mut worker_store, worker_url, worker_schema) = setup().await;
+    worker_store.node_id = "aidash://worker".into();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    add_test_peer(&home, &worker_store.node_id, "http://127.0.0.1:9").await;
+    add_test_peer(&worker_store, &home.node_id, &endpoint).await;
+    sqlx::query("INSERT INTO delegations(task_id,node_id,agent_id,agent_version,delivered) VALUES($1,$2,$3,$4,true)")
+        .bind(task.id).bind(&worker_store.node_id).bind(&agent.id).bind(&agent.version).execute(&home.pool).await.unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, aidash::api::router(f)).await.unwrap();
+    });
+    let run = worker_store
+        .accept_run(&task, &home.node_id, &agent.id, &agent.version)
+        .await
+        .unwrap();
+    let remote = aidash::federation::Home::new(federation_for(&worker_store), run)
+        .snapshot()
+        .await
+        .unwrap();
+    assert_eq!(remote.tasks.len(), full.tasks.len());
+    assert_eq!(remote.artifacts.len(), 3);
+    assert_eq!(
+        remote
+            .artifacts
+            .iter()
+            .map(|item| item.content.as_str().unwrap().len())
+            .sum::<usize>(),
+        6_000_000
+    );
+    server.abort();
+    cleanup(worker_store, &worker_url, &worker_schema).await;
+    cleanup(home, &url, &schema).await;
+}

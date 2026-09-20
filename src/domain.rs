@@ -195,6 +195,14 @@ pub struct WorkspaceSnapshot {
     pub messages: Vec<Message>,
 }
 
+/// A keyset page of one workspace collection. Pages stay below the peer
+/// response limit even when the complete workspace is much larger.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotPage {
+    pub items: Vec<Value>,
+    pub next: Option<Uuid>,
+}
+
 pub fn empty_object() -> Value {
     json!({})
 }

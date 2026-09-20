@@ -550,6 +550,7 @@ impl WorkerAuthority {
         let mut query = search.clone();
         query.kind = Some("agent".into());
         let entries = catalog::list_in(&mut access, &query).await?;
+        access.track_registry(&entries).await?;
         Ok(Discovery {
             agents: entries
                 .into_iter()

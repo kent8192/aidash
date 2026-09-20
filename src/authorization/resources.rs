@@ -326,6 +326,73 @@ impl Access {
         .await?;
         Ok(())
     }
+    pub(crate) async fn track_registry(
+        &mut self,
+        entries: &[crate::registry::Entry],
+    ) -> Result<()> {
+        let Some(run) = self.read_run else {
+            return Ok(());
+        };
+        let ids: Vec<_> = entries.iter().map(|entry| entry.id.clone()).collect();
+        let versions: Vec<_> = entries.iter().map(|entry| entry.version.clone()).collect();
+        sqlx::query(
+            &Query::insert()
+                .into_table(Alias::new("authorization_run_registry_reads"))
+                .columns([
+                    Alias::new("run_id"),
+                    Alias::new("entry_id"),
+                    Alias::new("entry_version"),
+                ])
+                .select_from(
+                    Query::select()
+                        .exprs([
+                            Expr::cust("$1"),
+                            Expr::cust("unnest($2::text[])"),
+                            Expr::cust("unnest($3::text[])"),
+                        ])
+                        .to_owned(),
+                )
+                .map_err(|error| Error::Invalid(error.to_string()))?
+                .on_conflict(OnConflict::new().do_nothing().to_owned())
+                .to_string(PostgresQueryBuilder),
+        )
+        .bind(run)
+        .bind(ids)
+        .bind(versions)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn registry_reads_visible(&mut self, run: Uuid) -> Result<bool> {
+        let entries: Vec<(String, String)> = sqlx::query_as(
+            &Query::select()
+                .columns([Alias::new("entry_id"), Alias::new("entry_version")])
+                .from(Alias::new("authorization_run_registry_reads"))
+                .and_where(Expr::col(Alias::new("run_id")).eq(Expr::cust("$1")))
+                .order_by(Alias::new("entry_id"), Order::Asc)
+                .order_by(Alias::new("entry_version"), Order::Asc)
+                .to_string(PostgresQueryBuilder),
+        )
+        .bind(run)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        for (id, version) in entries {
+            match super::catalog::entry(
+                self,
+                &crate::registry::EntityRef { id, version },
+                "registry.read",
+            )
+            .await
+            {
+                Ok(_) => {}
+                Err(Error::Forbidden) => return Ok(false),
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(true)
+    }
+
     /// Walk recorded run dependencies iteratively; cycles between observation
     /// journals must terminate without skipping any resource's current policy.
     pub(crate) async fn run_reads_visible(&mut self, run: Uuid) -> Result<bool> {
@@ -334,6 +401,9 @@ impl Access {
         while let Some(run) = pending.pop() {
             if !visited.insert(run) {
                 continue;
+            }
+            if !self.registry_reads_visible(run).await? {
+                return Ok(false);
             }
             let sources: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
                 &Query::select()

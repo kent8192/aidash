@@ -423,7 +423,51 @@ impl Home {
         } else if self.local() {
             self.federation.store.snapshot(self.run.workspace_id).await
         } else {
-            self.command("snapshot", json!({})).await
+            let mut snapshot = WorkspaceSnapshot {
+                workspace: self.command("snapshot_workspace", json!({})).await?,
+                tasks: self.snapshot_collection("tasks").await?,
+                artifacts: self.snapshot_collection("artifacts").await?,
+                events: self.snapshot_collection("events").await?,
+                messages: self.snapshot_collection("messages").await?,
+            };
+            snapshot
+                .tasks
+                .sort_by_key(|item| (item.created_at, item.id));
+            snapshot
+                .artifacts
+                .sort_by_key(|item| (item.created_at, item.id));
+            snapshot.events.sort_by_key(|item| item.sequence);
+            snapshot
+                .messages
+                .sort_by_key(|item| (item.created_at, item.id));
+            Ok(snapshot)
+        }
+    }
+    async fn snapshot_collection<T: DeserializeOwned>(&self, collection: &str) -> Result<Vec<T>> {
+        let mut items = vec![];
+        let mut after: Option<Uuid> = None;
+        loop {
+            let page: SnapshotPage = self
+                .command(
+                    "snapshot_page",
+                    json!({"collection":collection,"after":after}),
+                )
+                .await?;
+            items.extend(
+                page.items
+                    .into_iter()
+                    .map(serde_json::from_value)
+                    .collect::<std::result::Result<Vec<T>, _>>()?,
+            );
+            let Some(next) = page.next else {
+                return Ok(items);
+            };
+            if after.is_some_and(|previous| next <= previous) {
+                return Err(Error::External(
+                    "peer snapshot cursor did not advance".into(),
+                ));
+            }
+            after = Some(next);
         }
     }
     pub async fn task(&self) -> Result<Task> {

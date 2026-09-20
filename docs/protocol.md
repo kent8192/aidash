@@ -20,6 +20,10 @@ Federation uses `/federation/v0.1`. Each request must include `Authorization: Be
 
 The home node persists a delegation grant before sending an offer. Grants are scoped to the task, peer and exact agent version. Retrying an offer cannot replace its executor. Claims enforce capability requirements, dependency completion, `OPEN` status and the expected revision in one SQL update. A task's qualified owner is derived from the authenticated peer, never accepted as an arbitrary caller-supplied identity. Unknown task requirement/search fields are rejected. A terminal task grant permits snapshot/task reads, exact idempotent completion replay, or acknowledgment of the same terminal transition; it no longer authorizes workspace mutations.
 
+Remote workers retrieve workspace metadata with `snapshot_workspace`, then use `snapshot_page` for the `tasks`, `artifacts`, `events` and `messages` collections. Each page has `items` and an optional UUID `next` cursor, supplied as `after` on the next request. Pages contain at most 32 records and 3 MiB of serialized data, below the 4 MiB peer decoder limit. Tasks and artifacts are paginated to completion; events and messages retain their latest-100 observation window. An individual resource larger than 3 MiB is rejected explicitly. Collection reads observe current home state and do not provide a transaction snapshot across pages.
+
+Agent memory is separated by agent ID, version, workspace UUID and workspace home node. Existing local memory retains its local namespace; a remote offer cannot read or overwrite it by reusing a workspace UUID. A dependent run fails with the dependency ID and terminal status when a prerequisite is failed, cancelled or abandoned.
+
 ## Persistence and delivery
 
 API startup and PostgreSQL worker recovery do not wait for NATS. The event-bus supervisor reconnects independently; federation offer retries also run independently of the broker.

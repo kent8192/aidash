@@ -549,19 +549,7 @@ impl Workspaces {
                 .bind(&visible)
                 .fetch_all(&mut *access.tx)
                 .await?,
-                artifacts: sqlx::query_as(
-                    &Query::select()
-                        .column(Asterisk)
-                        .from(Alias::new("artifacts"))
-                        .cond_where(Expr::cust("workspace_id=ANY($1)"))
-                        .order_by(Alias::new("created_at"), Order::Desc)
-                        .order_by(Alias::new("id"), Order::Asc)
-                        .limit(500)
-                        .to_string(PostgresQueryBuilder),
-                )
-                .bind(&visible)
-                .fetch_all(&mut *access.tx)
-                .await?,
+                artifacts: vec![],
                 runs: vec![],
                 human_requests: vec![],
                 conversations: vec![],
@@ -592,13 +580,36 @@ impl Workspaces {
                 }
             }
             state.tasks = tasks;
-            let mut artifacts = vec![];
-            for artifact in state.artifacts {
-                if access.artifact_visible(&artifact).await? {
-                    artifacts.push(artifact);
+            let mut offset = 0_u64;
+            loop {
+                let batch: Vec<Artifact> = sqlx::query_as(
+                    &Query::select()
+                        .column(Asterisk)
+                        .from(Alias::new("artifacts"))
+                        .cond_where(Expr::cust("workspace_id=ANY($1)"))
+                        .order_by(Alias::new("created_at"), Order::Desc)
+                        .order_by(Alias::new("id"), Order::Asc)
+                        .limit(500)
+                        .offset(offset)
+                        .to_string(PostgresQueryBuilder),
+                )
+                .bind(&visible)
+                .fetch_all(&mut *access.tx)
+                .await?;
+                let exhausted = batch.len() < 500;
+                for artifact in batch {
+                    if access.artifact_visible(&artifact).await? {
+                        state.artifacts.push(artifact);
+                    }
+                    if state.artifacts.len() == 500 {
+                        break;
+                    }
                 }
+                if exhausted || state.artifacts.len() == 500 {
+                    break;
+                }
+                offset += 500;
             }
-            state.artifacts = artifacts;
             let mut offset = 0_i64;
             loop {
                 let batch: Vec<Run> = sqlx::query_as(
