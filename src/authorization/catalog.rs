@@ -68,11 +68,11 @@ impl Authorization {
                         Alias::new("revision"),
                     ])
                     .values_panic([
-                        Expr::cust("$1").into(),
-                        Expr::cust("$2").into(),
-                        Expr::cust("$3").into(),
-                        Expr::cust("$4").into(),
-                        Expr::cust("1").into(),
+                        Expr::cust("$1"),
+                        Expr::cust("$2"),
+                        Expr::cust("$3"),
+                        Expr::cust("$4"),
+                        Expr::cust("1"),
                     ])
                     .on_conflict(OnConflict::new().do_nothing().to_owned())
                     .returning_all()
@@ -121,12 +121,12 @@ impl Authorization {
                     Alias::new("actor"),
                 ])
                 .values_panic([
-                    Expr::cust("$1").into(),
-                    Expr::cust("$2").into(),
-                    Expr::cust("$3").into(),
-                    Expr::cust("$4").into(),
-                    Expr::cust("$5").into(),
-                    Expr::cust("$6").into(),
+                    Expr::cust("$1"),
+                    Expr::cust("$2"),
+                    Expr::cust("$3"),
+                    Expr::cust("$4"),
+                    Expr::cust("$5"),
+                    Expr::cust("$6"),
                 ])
                 .to_string(PostgresQueryBuilder),
         )

@@ -512,6 +512,19 @@ pub(crate) async fn register_in(
     Ok(())
 }
 
+fn overlay_config(target: &mut Value, overrides: &Value) -> Result<()> {
+    let object = overrides
+        .as_object()
+        .ok_or_else(|| Error::Invalid("installation config must be an object".into()))?;
+    let target = target
+        .as_object_mut()
+        .ok_or_else(|| Error::Invalid("entity config must be an object".into()))?;
+    for (key, value) in object {
+        target.insert(key.clone(), value.clone());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,17 +589,4 @@ mod tests {
         e.config = json!({"coordinator":{"id":"research","version":"1.0.0"}});
         validate(&e).unwrap();
     }
-}
-
-fn overlay_config(target: &mut Value, overrides: &Value) -> Result<()> {
-    let object = overrides
-        .as_object()
-        .ok_or_else(|| Error::Invalid("installation config must be an object".into()))?;
-    let target = target
-        .as_object_mut()
-        .ok_or_else(|| Error::Invalid("entity config must be an object".into()))?;
-    for (key, value) in object {
-        target.insert(key.clone(), value.clone());
-    }
-    Ok(())
 }

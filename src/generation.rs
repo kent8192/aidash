@@ -100,18 +100,9 @@ pub(crate) async fn assign_in(
         return Err(Error::Forbidden);
     }
     access.require(&workspace, "workspace.read").await?;
-    access
-        .require(
-            &access.resource("task", task_id, json!({"created_by":task.created_by})),
-            "task.read",
-        )
-        .await?;
-    access
-        .require(
-            &access.resource("task", task_id, json!({"created_by":task.created_by})),
-            "task.delegate",
-        )
-        .await?;
+    let task_resource = access.task_resource(&task).await?;
+    access.require(&task_resource, "task.read").await?;
+    access.require(&task_resource, "task.delegate").await?;
     access
         .require(&resource(access, policy_id), "generation.request")
         .await?;
@@ -198,9 +189,8 @@ pub(crate) async fn assign_in(
                     && access
                         .decide(&catalog::resource(access, &entry), "agent.execute")
                         .await?
-                    && access
-                        .decide(&access.resource("task", task_id, json!({})), "task.execute")
-                        .await?,
+                    && access.decide(&task_resource, "task.read").await?
+                    && access.decide(&task_resource, "task.execute").await?,
             )
         }
         .await;

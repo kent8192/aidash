@@ -346,8 +346,9 @@ impl WorkerProcess {
                 .env("AIDASH_ENDPOINT", &f.config.endpoint)
                 .env("AIDASH_API_TOKEN", &f.config.api_token)
                 .env("AIDASH_SECRET_TEST_PEER", "local-compaction-test-key")
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
+                .env("RUST_LOG", "aidash=info")
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
                 .spawn()
                 .unwrap(),
         )
@@ -398,10 +399,21 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
     let job = &assigned["generation"];
     assert_eq!(job["status"], "QUEUED");
     assert!(f.store.runs().await.unwrap().is_empty());
-    let worker = WorkerProcess::start(&f, &url, &schema);
-    tokio::time::timeout(std::time::Duration::from_secs(20), first_model.notified())
-        .await
-        .unwrap();
+    let mut worker = WorkerProcess::start(&f, &url, &schema);
+    let reached =
+        tokio::time::timeout(std::time::Duration::from_secs(20), first_model.notified()).await;
+    assert!(
+        reached.is_ok(),
+        "worker status {:?}, run states {:?}",
+        worker.0.try_wait(),
+        f.store
+            .runs()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| (&r.phase, &r.control, &r.error))
+            .collect::<Vec<_>>()
+    );
     drop(worker); // SIGKILL: no graceful settlement or application cleanup.
     let runs = f.store.runs().await.unwrap();
     assert_eq!(runs.len(), 1);

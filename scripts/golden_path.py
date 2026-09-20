@@ -284,10 +284,13 @@ def main():
             tool = entity("tool", "research-http", {"transport": "http", "endpoint": fixture_url + "/research", "credential_env": None, "replay": "idempotent"})
             tool["schema"] = {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}, "additionalProperties": False}
             api_request(base, "/api/registry", tool)
-            api_request(base, "/api/registry", entity("cluster", "research-cluster", {"coordinator": {"id": "coordinator" if base == base_a else "researcher", "version": "1.0.0"}}))
-            api_request(base, "/api/registry", entity("agent", "researcher", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Research one framework and publish your findings.", "tools": [{"id": "research-http", "version": "1.0.0"}], "skills": [], "cluster": {"id": "research-cluster", "version": "1.0.0"}, "max_steps": 64}))
-        api_request(base_a, "/api/registry", entity("agent", "coordinator", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Discover researchers, decompose the goal, delegate across nodes, wait and synthesize.", "tools": [], "skills": [], "cluster": {"id": "research-cluster", "version": "1.0.0"}, "max_steps": 128}, capability="task.coordinate"))
-        api_request(base_a, "/api/registry", entity("cluster", "research-cluster", {"coordinator": {"id": "coordinator", "version": "1.0.0"}}))
+            coordinator = "coordinator" if base == base_a else "researcher"
+            instructions = "Discover researchers, decompose the goal, delegate across nodes, wait and synthesize." if base == base_a else "Research one framework and publish your findings."
+            tools = [] if base == base_a else [{"id": "research-http", "version": "1.0.0"}]
+            api_request(base, "/api/registry", entity("agent", coordinator, {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": instructions, "tools": tools, "skills": [], "cluster": None, "max_steps": 128}, capability="task.coordinate" if base == base_a else "web.search"))
+            api_request(base, "/api/registry", entity("cluster", "research-cluster", {"coordinator": {"id": coordinator, "version": "1.0.0"}}))
+            if base == base_a:
+                api_request(base, "/api/registry", entity("agent", "researcher", {"model": {"id": "fixture-model", "version": "1.0.0"}, "instructions": "Research one framework and publish your findings.", "tools": [{"id": "research-http", "version": "1.0.0"}], "skills": [], "cluster": {"id": "research-cluster", "version": "1.0.0"}, "max_steps": 64}))
         discovered = api_request(base_a, "/api/discover", {"capability": "web.search", "language": "ja"})
         assert {a["node_id"] for a in discovered["agents"]} == {node_a, node_b}
         threading.Thread(target=sse, daemon=True).start()

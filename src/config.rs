@@ -134,6 +134,13 @@ pub fn validate_peer_credential(value: &str) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn same_secret(a: &str, b: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    let a = Sha256::digest(a.as_bytes());
+    let b = Sha256::digest(b.as_bytes());
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,11 +161,4 @@ mod tests {
             .is_ok()
         );
     }
-}
-
-pub(crate) fn same_secret(a: &str, b: &str) -> bool {
-    use sha2::{Digest, Sha256};
-    let a = Sha256::digest(a.as_bytes());
-    let b = Sha256::digest(b.as_bytes());
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }

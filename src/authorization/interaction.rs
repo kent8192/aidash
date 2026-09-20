@@ -130,11 +130,11 @@ pub async fn conversation(
                     Alias::new("created_by"),
                 ])
                 .values_panic([
-                    Expr::cust("$1").into(),
-                    Expr::cust("$2").into(),
-                    Expr::cust("$3").into(),
-                    Expr::cust("$4").into(),
-                    Expr::cust("$5").into(),
+                    Expr::cust("$1"),
+                    Expr::cust("$2"),
+                    Expr::cust("$3"),
+                    Expr::cust("$4"),
+                    Expr::cust("$5"),
                 ])
                 .returning_all()
                 .to_string(PostgresQueryBuilder),
@@ -182,12 +182,8 @@ pub async fn conversation(
                 None,
             )
             .await?;
-        access
-            .require(
-                &access.resource("task", task.id, json!({"created_by":task.created_by})),
-                "task.read",
-            )
-            .await?;
+        let task_resource = access.task_resource(&task).await?;
+        access.require(&task_resource, "task.read").await?;
         let delegation = execution::delegate_in(f, &mut access, task.id, &agent).await?;
         let task = sqlx::query_as(
             &Query::select()
@@ -239,6 +235,7 @@ pub async fn message(
                 None,
             )
             .await
+            .map(|_| ())
     }
     .await;
     access.finish(result).await?;
@@ -305,7 +302,7 @@ pub async fn abandon(
         let workspace = access.workspace(task.workspace_id).await?;
         access.context = workspace.attributes.clone();
         access.require(&workspace, "workspace.read").await?;
-        let resource = access.resource("task", id, json!({"created_by":task.created_by}));
+        let resource = access.task_resource(&task).await?;
         access.require(&resource, "task.read").await?;
         access.require(&resource, "task.abandon").await?;
         f.store

@@ -1096,7 +1096,29 @@ async fn stop_waits_for_inflight_inference_and_blocks_the_following_boundary() {
 async fn matching_ordinary_agent_is_reused_without_generation_or_quota() {
     let (f, url, schema) = setup().await;
     let app = api::router(f.clone());
-    let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+    let (mut bundle, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+    bundle["policies"][0]["resources"]["kinds"] = json!([
+        "workspace",
+        "generation_policy",
+        "agent",
+        "model",
+        "tool",
+        "run",
+        "memory"
+    ]);
+    bundle["policies"].as_array_mut().unwrap().push(json!({"id":"task-owner","effect":"allow","subjects":{"any":true},"actions":["task.read","task.execute","task.delegate"],"resources":{"kinds":["task"]},"condition":{"op":"eq","left":{"source":"resource","path":"/created_by"},"right":{"source":"literal","value":"alice"}}}));
+    assert_eq!(
+        request(
+            &app,
+            &f.config.api_token,
+            "POST",
+            "/api/authorization/acme",
+            json!({"expected_revision":1,"bundle":bundle})
+        )
+        .await
+        .0,
+        200
+    );
     let spec = definition(&app, &f.config.api_token).await;
     assert_eq!(
         request(

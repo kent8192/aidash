@@ -394,6 +394,16 @@ impl Store {
         key: &str,
         artifact: &ArtifactInput,
     ) -> Result<Task> {
+        self.complete_from_run(id, owner, key, artifact, None).await
+    }
+    pub(crate) async fn complete_from_run(
+        &self,
+        id: Uuid,
+        owner: &str,
+        key: &str,
+        artifact: &ArtifactInput,
+        source_run: Option<Uuid>,
+    ) -> Result<Task> {
         nonempty(key, "idempotency key")?;
         artifact.validate()?;
         let mut tx = self.pool.begin().await?;
@@ -421,6 +431,8 @@ impl Store {
                     "completion key reused with different input".into(),
                 ));
             }
+            self.record_output_in(&mut tx, source_run, t.workspace_id, "artifact", a.id)
+                .await?;
             tx.commit().await?;
             return Ok(t);
         }
@@ -434,6 +446,8 @@ impl Store {
         }
         let a: Artifact = sqlx::query_as("INSERT INTO artifacts(id,workspace_id,task_id,kind,name,content,created_by,idempotency_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *")
             .bind(Uuid::new_v4()).bind(t.workspace_id).bind(id).bind(&artifact.kind).bind(&artifact.name).bind(&artifact.content).bind(owner).bind(key).fetch_one(&mut *tx).await?;
+        self.record_output_in(&mut tx, source_run, t.workspace_id, "artifact", a.id)
+            .await?;
         let t: Task = sqlx::query_as("UPDATE tasks SET status='COMPLETED',completion_key=$2,revision=revision+1 WHERE id=$1 RETURNING *").bind(id).bind(key).fetch_one(&mut *tx).await?;
         self.event(
             &mut tx,
@@ -451,6 +465,17 @@ impl Store {
         owner: &str,
         key: &str,
         input: &ArtifactInput,
+    ) -> Result<Artifact> {
+        self.publish_artifact_from_run(task_id, owner, key, input, None)
+            .await
+    }
+    pub(crate) async fn publish_artifact_from_run(
+        &self,
+        task_id: Uuid,
+        owner: &str,
+        key: &str,
+        input: &ArtifactInput,
+        source_run: Option<Uuid>,
     ) -> Result<Artifact> {
         input.validate()?;
         let mut tx = self.pool.begin().await?;
@@ -490,6 +515,8 @@ impl Store {
                 a
             }
         };
+        self.record_output_in(&mut tx, source_run, task.workspace_id, "artifact", a.id)
+            .await?;
         tx.commit().await?;
         Ok(a)
     }
@@ -523,6 +550,46 @@ impl Store {
         tx.commit().await?;
         Ok(())
     }
+    pub(crate) async fn message_from_run(
+        &self,
+        run: &Run,
+        sender: &str,
+        content: &str,
+        key: &str,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        let message = self
+            .message_in(&mut tx, run.workspace_id, sender, content, Some(key))
+            .await?;
+        self.record_output_in(
+            &mut tx,
+            Some(run.id),
+            run.workspace_id,
+            "message",
+            message.id,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+    pub(crate) async fn record_output_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        run: Option<Uuid>,
+        workspace: Uuid,
+        kind: &str,
+        id: Uuid,
+    ) -> Result<()> {
+        let Some(run) = run else {
+            return Ok(());
+        };
+        let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM authorization_execution WHERE run_id=$1 AND workspace_id=$2)").bind(run).bind(workspace).fetch_one(&mut **tx).await?;
+        if !valid {
+            return Err(Error::Forbidden);
+        }
+        sqlx::query("INSERT INTO authorization_run_reads(run_id,workspace_id,resource_kind,resource_id) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind(run).bind(workspace).bind(kind).bind(id).execute(&mut **tx).await?;
+        Ok(())
+    }
     pub(crate) async fn message_in(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -530,21 +597,29 @@ impl Store {
         sender: &str,
         content: &str,
         key: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<Message> {
         nonempty(content, "message")?;
         let inserted: Option<Message> = sqlx::query_as("INSERT INTO messages(id,workspace_id,sender,content,idempotency_key) VALUES($1,$2,$3,$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING *")
             .bind(Uuid::new_v4()).bind(workspace).bind(sender).bind(content).bind(key).fetch_optional(&mut **tx).await?;
-        if let Some(message) = inserted {
+        let message = if let Some(message) = inserted {
             self.event(tx, Some(workspace), "message.created", json!(message))
                 .await?;
+            message
         } else {
-            let matches: bool = sqlx::query_scalar("SELECT workspace_id=$2 AND sender=$3 AND content=$4 FROM messages WHERE idempotency_key=$1")
-                .bind(key).bind(workspace).bind(sender).bind(content).fetch_one(&mut **tx).await?;
-            if !matches {
+            let message: Message =
+                sqlx::query_as("SELECT * FROM messages WHERE idempotency_key=$1")
+                    .bind(key)
+                    .fetch_one(&mut **tx)
+                    .await?;
+            if message.workspace_id != workspace
+                || message.sender != sender
+                || message.content != content
+            {
                 return Err(Error::Conflict("message idempotency key reused".into()));
             }
-        }
-        Ok(())
+            message
+        };
+        Ok(message)
     }
 }
 

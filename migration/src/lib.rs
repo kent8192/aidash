@@ -9,6 +9,7 @@ mod m20260920_200623_m0007_interaction_authority;
 mod m20260920_200623_m0008_generation;
 mod m20260920_200623_m0009_generation_compaction;
 mod m20260920_200623_m0010_delivery_retries;
+mod m20260920_204136_m0011_resource_reads;
 
 pub struct Migrator;
 #[async_trait::async_trait]
@@ -25,6 +26,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260920_200623_m0008_generation::Migration),
             Box::new(m20260920_200623_m0009_generation_compaction::Migration),
             Box::new(m20260920_200623_m0010_delivery_retries::Migration),
+            Box::new(m20260920_204136_m0011_resource_reads::Migration),
         ]
     }
 }

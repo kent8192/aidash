@@ -8,6 +8,7 @@ pub mod execution;
 pub mod identity;
 pub mod interaction;
 pub mod policy;
+mod resources;
 pub mod workspace;
 
 use crate::{Error, Result};
@@ -53,11 +54,7 @@ impl Authorization {
                         Alias::new("revision"),
                         Alias::new("document"),
                     ])
-                    .values_panic([
-                        Expr::cust("$1").into(),
-                        Expr::cust("1").into(),
-                        Expr::cust("$2").into(),
-                    ])
+                    .values_panic([Expr::cust("$1"), Expr::cust("1"), Expr::cust("$2")])
                     .on_conflict(
                         OnConflict::columns([Alias::new("tenant")])
                             .do_nothing()
@@ -103,10 +100,10 @@ impl Authorization {
                     Alias::new("actor"),
                 ])
                 .values_panic([
-                    Expr::cust("$1").into(),
-                    Expr::cust("$2").into(),
-                    Expr::cust("$3").into(),
-                    Expr::cust("$4").into(),
+                    Expr::cust("$1"),
+                    Expr::cust("$2"),
+                    Expr::cust("$3"),
+                    Expr::cust("$4"),
                 ])
                 .to_string(PostgresQueryBuilder),
         )
@@ -208,13 +205,13 @@ impl Authorization {
                     Alias::new("decision"),
                 ])
                 .values_panic([
-                    Expr::cust("$1").into(),
-                    Expr::cust("$2").into(),
-                    Expr::cust("$3").into(),
-                    Expr::cust("$4").into(),
-                    Expr::cust("$5").into(),
-                    Expr::cust("$6").into(),
-                    Expr::cust("$7").into(),
+                    Expr::cust("$1"),
+                    Expr::cust("$2"),
+                    Expr::cust("$3"),
+                    Expr::cust("$4"),
+                    Expr::cust("$5"),
+                    Expr::cust("$6"),
+                    Expr::cust("$7"),
                 ])
                 .to_string(PostgresQueryBuilder),
         )

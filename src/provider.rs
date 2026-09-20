@@ -143,7 +143,7 @@ pub fn parse_openai(value: Value) -> Result<ModelResponse> {
             });
         }
     }
-    if (choice["finish_reason"] == "tool_calls") != !result.tool_calls.is_empty() {
+    if (choice["finish_reason"] == "tool_calls") == result.tool_calls.is_empty() {
         return Err(Error::External(
             "provider finish reason does not match tool calls".into(),
         ));
@@ -224,7 +224,7 @@ pub fn parse_anthropic(value: Value) -> Result<ModelResponse> {
             _ => {}
         }
     }
-    if (value["stop_reason"] == "tool_use") != !result.tool_calls.is_empty() {
+    if (value["stop_reason"] == "tool_use") == result.tool_calls.is_empty() {
         return Err(Error::External(
             "Anthropic stop reason does not match tool calls".into(),
         ));

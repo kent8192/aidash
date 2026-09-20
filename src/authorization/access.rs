@@ -23,7 +23,8 @@ pub(crate) struct Access {
     pub cached_runs: std::collections::BTreeMap<(Uuid, Uuid), bool>,
     pub cached_humans: std::collections::BTreeMap<Uuid, bool>,
     pending_decisions: Vec<(Evaluation, Decision)>,
-    pool: PgPool,
+    pub(super) pool: PgPool,
+    pub read_run: Option<Uuid>,
     pub(super) environment: Value,
 }
 
@@ -60,6 +61,7 @@ impl Access {
             cached_humans: Default::default(),
             pending_decisions: vec![],
             pool: store.pool.clone(),
+            read_run: None,
             environment: json!({"node_id":store.node_id,"transport":"api"}),
         })
     }
@@ -85,6 +87,7 @@ impl Access {
             cached_humans: Default::default(),
             pending_decisions: vec![],
             pool: lease.pool.clone(),
+            read_run: lease.read_run,
             environment: lease.environment.clone(),
         })
     }

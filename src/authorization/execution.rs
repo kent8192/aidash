@@ -99,6 +99,7 @@ async fn access_for_run(store: &Store, run: &Run, durable_audit: bool) -> Result
     }
     access.subjects = grant.subject_chain;
     access.durable_audit = durable_audit;
+    access.read_run = Some(run.id);
     access.worker();
     let workspace = access.workspace(run.workspace_id).await?;
     access.context = workspace.attributes.clone();
@@ -168,17 +169,14 @@ async fn admit(
     inherit_task_origin(access, task_id).await?;
     let workspace = access.workspace(task.workspace_id).await?;
     access.context = workspace.attributes.clone();
+    let task_resource = access.task_resource(&task).await?;
+    access.require(&task_resource, "task.read").await?;
     access.require(&workspace, "workspace.read").await?;
     if task.status != "OPEN" {
         return Err(Error::Conflict("task is already assigned".into()));
     }
     if delegation {
-        access
-            .require(
-                &access.resource("task", task_id, json!({})),
-                "task.delegate",
-            )
-            .await?;
+        access.require(&task_resource, "task.delegate").await?;
     }
     crate::generation::provision::require_live(access, &f.config.node_id, task_id, agent).await?;
     let subject = qualified_agent(&f.config.node_id, &agent.id, &agent.version);
@@ -194,9 +192,7 @@ async fn admit(
     if entry.kind != "agent" {
         return Err(Error::Invalid("executor must be an agent".into()));
     }
-    access
-        .require(&access.resource("task", task_id, json!({})), "task.execute")
-        .await?;
+    access.require(&task_resource, "task.execute").await?;
     let claimed = f
         .store
         .claim_in(
@@ -235,13 +231,13 @@ async fn admit(
                 Alias::new("subject_chain"),
             ])
             .values_panic([
-                Expr::cust("$1").into(),
-                Expr::cust("$2").into(),
-                Expr::cust("$3").into(),
-                Expr::cust("$4").into(),
-                Expr::cust("$5").into(),
-                Expr::cust("$6").into(),
-                Expr::cust("$7").into(),
+                Expr::cust("$1"),
+                Expr::cust("$2"),
+                Expr::cust("$3"),
+                Expr::cust("$4"),
+                Expr::cust("$5"),
+                Expr::cust("$6"),
+                Expr::cust("$7"),
             ])
             .to_string(PostgresQueryBuilder),
     )
@@ -308,11 +304,11 @@ pub(crate) async fn delegate_in(
                 Alias::new("delivered"),
             ])
             .values_panic([
-                Expr::cust("$1").into(),
-                Expr::cust("$2").into(),
-                Expr::cust("$3").into(),
-                Expr::cust("$4").into(),
-                Expr::cust("true").into(),
+                Expr::cust("$1"),
+                Expr::cust("$2"),
+                Expr::cust("$3"),
+                Expr::cust("$4"),
+                Expr::cust("true"),
             ])
             .returning(Query::returning().columns([
                 Alias::new("task_id"),
@@ -373,7 +369,23 @@ impl WorkerAuthority {
             if workspace != Some(run.workspace_id) {
                 return Err(Error::Forbidden);
             }
-            crate::generation::assign_in(f, &mut access, task, policy, reason).await
+            let assignment =
+                crate::generation::assign_in(f, &mut access, task, policy, reason).await?;
+            f.store
+                .record_output_in(&mut access.tx, Some(run.id), run.workspace_id, "task", task)
+                .await?;
+            if let crate::generation::Assignment::Generated { generation } = &assignment {
+                f.store
+                    .record_output_in(
+                        &mut access.tx,
+                        Some(run.id),
+                        run.workspace_id,
+                        "generation",
+                        generation.id,
+                    )
+                    .await?;
+            }
+            Ok(assignment)
         }
         .await;
         access.finish(result).await
@@ -391,10 +403,22 @@ impl WorkerAuthority {
         let result = async {
             let workspace = access.workspace(run.workspace_id).await?;
             access.require(&workspace, "task.create").await?;
+            access.related_tasks(run.workspace_id, input).await?;
             let creator = access.subjects.last().ok_or(Error::Forbidden)?.clone();
             let task = f
                 .store
                 .create_task_in(&mut access.tx, run.workspace_id, input, &creator, Some(key))
+                .await?;
+            let resource = access.task_resource(&task).await?;
+            access.require(&resource, "task.read").await?;
+            f.store
+                .record_output_in(
+                    &mut access.tx,
+                    Some(run.id),
+                    run.workspace_id,
+                    "task",
+                    task.id,
+                )
                 .await?;
             sqlx::query(
                 &Query::insert()
@@ -407,11 +431,11 @@ impl WorkerAuthority {
                         Alias::new("subject_chain"),
                     ])
                     .values_panic([
-                        Expr::cust("$1").into(),
-                        Expr::cust("$2").into(),
-                        Expr::cust("$3").into(),
-                        Expr::cust("$4").into(),
-                        Expr::cust("$5").into(),
+                        Expr::cust("$1"),
+                        Expr::cust("$2"),
+                        Expr::cust("$3"),
+                        Expr::cust("$4"),
+                        Expr::cust("$5"),
                     ])
                     .on_conflict(OnConflict::new().do_nothing().to_owned())
                     .to_string(PostgresQueryBuilder),
@@ -485,9 +509,9 @@ impl WorkerAuthority {
             if workspace != Some(run.workspace_id) {
                 return Err(Error::Forbidden);
             }
-            access
-                .require(&access.resource("task", task, json!({})), "task.delegate")
-                .await?;
+            let record = access.task_read(task).await?;
+            let resource = access.task_resource(&record).await?;
+            access.require(&resource, "task.delegate").await?;
             let existing: Option<Grant> = sqlx::query_as(
                 &Query::select()
                     .column(Asterisk)
@@ -581,12 +605,9 @@ impl Guard {
             )
             .await?;
         }
-        access
-            .require(
-                &access.resource("task", run.task_id, json!({})),
-                "task.execute",
-            )
-            .await?;
+        let task = access.task_read(run.task_id).await?;
+        let resource = access.task_resource(&task).await?;
+        access.require(&resource, "task.execute").await?;
         let reference = EntityRef {
             id: run.agent_id.clone(),
             version: run.agent_version.clone(),
@@ -650,12 +671,22 @@ impl Guard {
     }
     pub async fn action(&self, action: &str, kind: &str, id: impl ToString) -> Result<()> {
         let mut access = self.access.lock().await;
-        let attributes = if kind == "memory" {
-            json!({"version":self.run.agent_version})
-        } else {
-            json!({})
+        let resource = match kind {
+            "task" => {
+                let task = access
+                    .task_read(id.to_string().parse().map_err(|_| Error::Forbidden)?)
+                    .await?;
+                access.task_resource(&task).await?
+            }
+            "artifact" => {
+                let creator = access.subjects.last().ok_or(Error::Forbidden)?.clone();
+                access
+                    .artifact_creation_resource(self.run.task_id, &creator)
+                    .await?
+            }
+            "memory" => access.memory_resource(&self.run).await?,
+            _ => access.resource(kind, id, json!({})),
         };
-        let resource = access.resource(kind, id, attributes);
         access.require(&resource, action).await
     }
 
@@ -700,11 +731,7 @@ impl Guard {
         for skill in &self.agent.skills {
             catalog::entry(&mut access, skill, "skill.use").await?;
         }
-        let resource = access.resource(
-            "memory",
-            &self.run.agent_id,
-            json!({"version":self.run.agent_version}),
-        );
+        let resource = access.memory_resource(&self.run).await?;
         access.require(&resource, "memory.read").await
     }
 
@@ -764,12 +791,22 @@ impl Guard {
             "agent_discover" | "workspace_observe" | "workspace_wait" => return Ok(()),
             _ => return Err(Error::Forbidden),
         };
-        let attributes = if kind == "memory" {
-            json!({"version":self.run.agent_version})
-        } else {
-            json!({})
+        let resource = match kind {
+            "task" => {
+                let task = access
+                    .task_read(id.parse().map_err(|_| Error::Forbidden)?)
+                    .await?;
+                access.task_resource(&task).await?
+            }
+            "artifact" => {
+                let creator = access.subjects.last().ok_or(Error::Forbidden)?.clone();
+                access
+                    .artifact_creation_resource(self.run.task_id, &creator)
+                    .await?
+            }
+            "memory" => access.memory_resource(&self.run).await?,
+            _ => access.resource(kind, id, json!({})),
         };
-        let resource = access.resource(kind, id, attributes);
         access.require(&resource, action).await
     }
 

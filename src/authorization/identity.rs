@@ -100,12 +100,12 @@ impl Authorization {
                     Alias::new("issued_by"),
                 ])
                 .values_panic([
-                    Expr::cust("$1").into(),
-                    Expr::cust("$2").into(),
-                    Expr::cust("$3").into(),
-                    Expr::cust("$4").into(),
-                    Expr::cust("clock_timestamp()+make_interval(secs => $5)").into(),
-                    Expr::cust("$6").into(),
+                    Expr::cust("$1"),
+                    Expr::cust("$2"),
+                    Expr::cust("$3"),
+                    Expr::cust("$4"),
+                    Expr::cust("clock_timestamp()+make_interval(secs => $5)"),
+                    Expr::cust("$6"),
                 ])
                 .returning(Query::returning().columns([
                     Alias::new("id"),

@@ -4,7 +4,7 @@ This document describes the current implementation and its boundaries. Additiona
 
 ## Current implementation
 
-The implementation is a Rust node executable, with independent control server and worker modes, and a React/TypeScript dashboard. All state lives in PostgreSQL. SeaORM owns registry CRUD; SQLx owns migrations, task transitions, execution journals, and the event outbox. Both share one pool. SQLx runtime queries are exercised against real PostgreSQL so builds do not require a live database.
+The implementation is a Rust node executable, with independent control server and worker modes, and a React/TypeScript dashboard. All state lives in PostgreSQL. SeaORM owns schema migrations and registry CRUD; SQLx executes transactional task transitions, execution journals, and the event outbox. Authorization queries use SeaQuery builders. Both share one pool. SQLx runtime queries are exercised against real PostgreSQL so builds do not require a live database.
 
 The workspace's home node owns its task revisions, messages and artifacts. Remote agents claim and mutate these resources through the versioned HTTP federation protocol. They never connect to the home database. Each executing node persists its own run journal. Peer trust is explicitly configured on both nodes with environment-based credential references. Public identity contains no secrets. Registry versions are immutable and model selection is explicit.
 
