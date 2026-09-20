@@ -110,7 +110,7 @@
   "noAssignment": "Unassigned",
   "goalPlaceholder": "Research competing Rust web frameworks and compare their tradeoffs.",
   "goalTitle": "Rust framework research",
-  "tokenHelp": "Use the access token configured for this node. It stays in this browser tab.",
+  "tokenHelp": "Use an operator token or a subject token issued for your tenant. It stays in this browser tab.",
   "error": "Operation failed",
   "success": "Saved",
   "jsonHint": "Enter a valid JSON object.",
@@ -168,5 +168,12 @@
   "ABANDONED": "Abandoned",
   "abandonTask": "Abandon task",
   "abandonReason": "Reason for abandonment",
-  "abandonHelp": "Records an explicit decision to skip this result. Answer the parent’s pending request to continue."
+  "abandonHelp": "Records an explicit decision to skip this result. Answer the parent’s pending request to continue.",
+  "administratorsOnly": "This page is available to administrators.",
+  "signedInAs": "Signed in as",
+  "tenant": "Tenant",
+  "subject": "Subject",
+  "administrator": "Administrator",
+  "accessDenied": "Your current permissions do not allow this operation.",
+  "credentialInvalid": "Your token is invalid, expired or revoked. Sign in with a current token."
 }

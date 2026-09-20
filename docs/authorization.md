@@ -1,6 +1,6 @@
 # Authorization policy service and scoped execution
 
-The policy service implements policy management, decisions, revocable subject credentials, scoped workspace APIs, tenant catalog approvals and local execution for FR-AUTH-001. The management endpoints below require the existing operator bearer token. Remote federation, finer resource scopes, remaining management workflows and dashboard controls are still tracked in [the implementation plan](implementation/expanded-platform.md); this is not completion of FR-AUTH-001.
+The policy service implements policy management, decisions, revocable subject credentials, scoped workspace and interaction APIs, tenant catalog approvals and local execution for FR-AUTH-001. The management endpoints below require the existing operator bearer token. Remote federation, finer resource scopes, remaining management workflows and dashboard policy controls are still tracked in [the implementation plan](implementation/expanded-platform.md); this is not completion of FR-AUTH-001.
 
 ## Management API
 
@@ -90,7 +90,7 @@ Scoped workspace creation saves tenant and owner independently of editable works
 
 For example, an allow policy with `subjects: {"ids":["alice"]}`, these actions, `resources: {"kinds":["workspace"]}` and a condition comparing resource `/owner` to literal `"alice"` grants Alice access to her workspaces in that tenant. Another tenant's Alice cannot access them. Workspace read currently covers its aggregate contents (tasks, artifacts, messages and related state records); finer per-resource grants remain part of the pending mesh integration.
 
-Collection responses filter by persisted tenant/ownership and the active policy. Scoped `/api/state` includes only approved, readable Registry entries and omits peer and installation data. Run details, control responses, state collections, human-request listings and run-related events also require `run.read` and `memory.read`. These filters apply to API snapshots, SSE frames and the workspace snapshots supplied to models and observation tools. Marketplace, conversations, human answers, run messages and authorization management remain operator-only. Preexisting workspaces remain operator-owned; they are never implicitly assigned to the first tenant. The operator token retains privileged bootstrap, legacy operation and recovery access.
+Collection responses filter by persisted tenant/ownership and the active policy. Scoped `/api/state` includes only approved, readable Registry entries and omits peer and installation data. Run details, control responses, state collections, human-request listings and run-related events also require `run.read`, `memory.read` and `human.read` for the run's human requests. The human-read gate also protects prompts and answers copied into a run journal. These filters apply to API snapshots, SSE frames and the workspace snapshots supplied to models and observation tools. Marketplace, Registry writes, peer administration and authorization management remain operator-only. Preexisting workspaces remain operator-owned; they are never implicitly assigned to the first tenant. The operator token retains privileged bootstrap, legacy operation and recovery access.
 
 SSE validates scope before sending HTTP 200 and reloads credential/policy authority before each event frame, including already buffered events. It holds no database lock while yielding a frame. Polling without delivery does not append repeated decision audits. Credential revocation interrupts the stream; permission revocation prevents further matching delivery and denies reconnection to the revoked workspace.
 
@@ -120,6 +120,24 @@ The `serve` process reserves a separate database pool for workers so API request
 
 Scoped remote delegation and peer admission remain closed pending trusted cross-node identity mapping. Legacy admission also rejects scoped workspaces, including operator requests through that path; use subject credentials for scoped local admission. Tasks created in legacy operator workspaces retain their existing behavior.
 
+## Scoped conversations and human interaction
+
+The dashboard accepts either an operator token or a tenant subject token. `/api/state` returns the authenticated access profile; the dashboard uses it to show tenant/subject identity and avoid administrator-only mesh, Marketplace and registration flows. Authorization remains enforced on the server. Invalid, expired or revoked credentials clear the dashboard's authenticated cache and return to the connection screen. Access-denied and reconnect messages support en-US and ja-JP.
+
+| Operation                                     | Additional required actions                                                                                                             |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Start a conversation with an agent or cluster | `conversation.create` and `conversation.read`, workspace create/read, message/task create, task read/delegate/execute and agent execute |
+| Select a cluster coordinator                  | `registry.read` and `cluster.execute` on the approved cluster version                                                                   |
+| Send a message to a run                       | `run.message` and `message.create`, plus the run's read gates                                                                           |
+| Answer a human request                        | `human.read` and `human.answer`, plus the run's read gates                                                                              |
+| Abandon a failed, blocked or cancelled task   | `workspace.read`, `task.read` and `task.abandon`                                                                                        |
+
+Conversation admission atomically creates workspace ownership, conversation, initial message, task, local delegation and execution grant. A late policy denial rolls back all these changes while retaining its authorization decisions. Conversation and message authors come from the authenticated subject. The returned task reflects its committed claim. Cluster approvals are rechecked at every worker boundary, even when the agent configuration does not repeat the conversation's cluster reference.
+
+Conversation reads and events require `conversation.read`; trusted attributes include `created_by`, `target`, `target_kind`, workspace ID and owner. Human-request reads and events require `human.read`; their attributes include request `kind`, `run_id`, workspace ID and owner. A worker cannot consume a denied human response. The human-request membership of a run is rechecked during event replay so a newly created denied request cannot bypass a cached run decision.
+
+Human answers persist `answered_by`. Repeating the same answer preserves the original actor and produces no duplicate answer event; conflicting answers return HTTP 409. Task abandonment retains the existing revision/child-state constraints and records the authenticated actor in its event. Cross-tenant interaction IDs return HTTP 403 before exposing resource state.
+
 ## Policy semantics
 
 Subjects have kind `user`, `agent`, `node` or `service`, direct roles, groups, attributes, an `enabled` flag and an optional `delegated_by` subject. Groups grant roles; roles inherit other roles. Subject selectors combine IDs, kinds, groups and effective roles with OR. Use `{"any": true}` alone to match any registered, enabled subject in the tenant. Actions and resource kinds must be nonempty sets. Resource IDs optionally narrow the scope. Names are case-sensitive; only a complete `"*"` is a wildcard in action/resource selectors.
@@ -132,6 +150,6 @@ Decisions include the revision, reason, matched policy IDs and the subject's eff
 
 ## Transaction boundary
 
-`Authorization::evaluate_in_transaction` holds a shared lock on the policy revision until the caller commits or rolls back. A mutation integration must execute its protected change in that same transaction; calling `evaluate`, then starting a separate mutation transaction would allow revocation to race the operation. Long-running work must recheck at each persisted execution or delivery boundary.
+`Authorization::evaluate_in_transaction` holds a shared lock on the policy revision until the caller commits or rolls back. A mutation integration must execute its protected change in that same transaction; calling `evaluate`, then starting a separate mutation transaction would allow revocation to race the operation. Scoped compound operations hold the policy/credential locks before a mutation savepoint and defer their decision audit until finalization; a policy denial rolls back protected writes before committing the audit. Long-running work must recheck at each persisted execution or delivery boundary.
 
 PostgreSQL integration tests verify API authentication, revision conflicts, decision/history persistence, dry-run behavior, revoked delegation, two-tenant workspace isolation, ownership forgery rejection, credential expiry/revocation, buffered SSE revocation and policy/credential locks held through a real workspace mutation. Local worker tests cover approved catalog isolation, disabled-agent and tool-policy denial, pending-operation recovery, child authority intersection, credential rotation, cancellation after revocation, run visibility in control/collection/stream/tool paths, durable audit before an HTTP effect and revocation with all API pool connections occupied. Pure policy tests cover inherited group roles, attribute conditions, deny precedence, tenant isolation, missing attributes and invalid policy graphs. These tests do not establish mesh-wide enforcement or completion of FR-AUTH-001.

@@ -5,6 +5,7 @@
  * Management API for the Aidash agent mesh.
  * OpenAPI spec version: 0.1.0
  */
+import type { AccessProfile } from "./accessProfile.ts";
 import type { Artifact } from "./artifact.ts";
 import type { Conversation } from "./conversation.ts";
 import type { Entry } from "./entry.ts";
@@ -18,6 +19,7 @@ import type { Task } from "./task.ts";
 import type { Workspace } from "./workspace.ts";
 
 export interface StateResponse {
+  access: AccessProfile;
   artifacts: Artifact[];
   conversations: Conversation[];
   events: Event[];

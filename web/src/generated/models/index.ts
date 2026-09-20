@@ -7,6 +7,7 @@
  */
 
 export * from "./abandonInput.ts";
+export * from "./accessProfile.ts";
 export * from "./artifact.ts";
 export * from "./authorizationDecisionsParams.ts";
 export * from "./authorizationRevisionsParams.ts";

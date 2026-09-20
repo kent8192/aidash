@@ -8,6 +8,7 @@
 
 export interface Conversation {
   created_at: string;
+  created_by: string;
   id: string;
   target: string;
   target_kind: string;

@@ -365,8 +365,9 @@ def main():
             plugin_runs.append(agent_id)
         report = {"node_a": base_a, "node_b": base_b, "node_ids": [node_a, node_b], "workspace_id": workspace, "tasks": len(snapshot["tasks"]), "artifacts": len(snapshot["artifacts"]), "external_effects": len(fixture.effects), "tool_requests": dict(fixture.requests), "provider_calls": dict(fixture.provider_calls), "recovered_run_id": recovered["id"], "sse_events": len(stream_events), "database_a": db_a, "database_b": db_b, "goal_entry": "dashboard" if args.dashboard else "api", "remote_human_controls": "passed", "nats_outage_startup_and_recovery": "passed", "events_queued_during_outage": pending_events, "additional_plugins": plugin_runs}
         if args.dashboard:
-            subprocess.run(["npm", "test", "--prefix", "web"], cwd=ROOT, check=True)
-            report["browser_scenarios"] = 4
+            browser_report = logs / "browser-report.json"
+            subprocess.run(["npm", "test", "--prefix", "web", "--", "--reporter=list,json"], cwd=ROOT, check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report)})
+            report["browser_scenarios"] = json.loads(browser_report.read_text())["stats"]["expected"]
         (logs / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
         print("Golden path passed:", json.dumps(report, ensure_ascii=False), flush=True)
         if args.keep:

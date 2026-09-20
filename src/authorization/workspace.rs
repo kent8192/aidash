@@ -2,7 +2,6 @@
 //! permission covers the workspace's contents; event delivery has a separate
 //! permission. Run contents additionally require run and memory read access.
 use super::{
-    Authorization,
     access::Access,
     catalog,
     identity::SubjectIdentity,
@@ -21,6 +20,27 @@ pub struct Workspaces {
 }
 
 impl Access {
+    pub(crate) async fn create_workspace(
+        &mut self,
+        store: &Store,
+        title: &str,
+        goal: &str,
+    ) -> Result<Workspace> {
+        let id = Uuid::new_v4();
+        let resource = self.resource(
+            "workspace",
+            id,
+            json!({"owner":self.identity.subject,"workspace_id":id}),
+        );
+        self.require(&resource, "workspace.create").await?;
+        let workspace = store
+            .create_workspace_in(&mut self.tx, id, title, goal)
+            .await?;
+        sqlx::query("INSERT INTO authorization_workspaces(workspace_id,tenant,owner_subject) VALUES($1,$2,$3)")
+            .bind(id).bind(&self.identity.tenant).bind(&self.identity.subject).execute(&mut *self.tx).await?;
+        Ok(workspace)
+    }
+
     async fn workspace_decide(
         &mut self,
         id: Uuid,
@@ -46,9 +66,7 @@ impl Access {
             decision.allowed = false;
             decision.reason = "resource_unavailable".into();
         }
-        if self.audit {
-            Authorization::record(&mut self.tx, &self.identity.tenant, &input, &decision).await?;
-        }
+        self.record(&[(input, decision.clone())]).await?;
         Ok(decision.allowed)
     }
 
@@ -80,7 +98,11 @@ impl Access {
 
     pub(crate) async fn run_visible(&mut self, run: &Run) -> Result<bool> {
         if let Some(allowed) = self.cached_runs.get(&(run.workspace_id, run.id)) {
-            return Ok(*allowed);
+            return if *allowed {
+                self.human_reads(run.workspace_id, run.id).await
+            } else {
+                Ok(false)
+            };
         }
         let workspace = self.workspace(run.workspace_id).await?;
         let resource = self.resource("run", run.id, workspace.attributes.clone());
@@ -90,10 +112,49 @@ impl Access {
         let allowed = self.decide(&resource, "run.read").await?
             && self.decide(&memory, "memory.read").await?;
         self.cached_runs.insert((run.workspace_id, run.id), allowed);
-        Ok(allowed)
+        Ok(allowed && self.human_reads(run.workspace_id, run.id).await?)
     }
 
     async fn event_visible(&mut self, event: &Event) -> Result<bool> {
+        if event.kind.starts_with("conversation.") {
+            let Some(id) = event.data["id"]
+                .as_str()
+                .and_then(|s| s.parse::<Uuid>().ok())
+            else {
+                return Ok(false);
+            };
+            let conversation: Option<Conversation> =
+                sqlx::query_as("SELECT * FROM conversations WHERE id=$1 AND workspace_id=$2")
+                    .bind(id)
+                    .bind(event.workspace_id)
+                    .fetch_optional(&mut *self.tx)
+                    .await?;
+            let Some(conversation) = conversation else {
+                return Ok(false);
+            };
+            let resource = self.conversation_resource(&conversation).await?;
+            return self.decide(&resource, "conversation.read").await;
+        }
+        if event.kind.starts_with("human.") {
+            let Some(id) = event.data["id"]
+                .as_str()
+                .and_then(|s| s.parse::<Uuid>().ok())
+            else {
+                return Ok(false);
+            };
+            let request: Option<HumanRequest> =
+                sqlx::query_as("SELECT * FROM human_requests WHERE id=$1 AND workspace_id=$2")
+                    .bind(id)
+                    .bind(event.workspace_id)
+                    .fetch_optional(&mut *self.tx)
+                    .await?;
+            let Some(request) = request else {
+                return Ok(false);
+            };
+            if !self.human_visible(&request).await? {
+                return Ok(false);
+            }
+        }
         let candidate = event.data.get("run_id").or_else(|| {
             (event.kind == "run.created")
                 .then(|| event.data.get("id"))
@@ -115,7 +176,11 @@ impl Access {
         if let Some(workspace) = event.workspace_id
             && let Some(allowed) = self.cached_runs.get(&(workspace, id))
         {
-            return Ok(*allowed);
+            return if *allowed {
+                self.human_reads(workspace, id).await
+            } else {
+                Ok(false)
+            };
         }
         let run: Option<Run> = sqlx::query_as("SELECT * FROM runs WHERE id=$1 AND workspace_id=$2")
             .bind(id)
@@ -161,14 +226,7 @@ impl Access {
 impl Workspaces {
     pub async fn create(&self, title: &str, goal: &str) -> Result<Workspace> {
         let mut access = Access::begin(&self.store, &self.identity).await?;
-        let result = async {
-            let id = Uuid::new_v4();
-            if !access.workspace_decide(id, "workspace.create", Some(&self.identity.subject)).await? { return Err(Error::Forbidden); }
-            let workspace = self.store.create_workspace_in(&mut access.tx, id, title, goal).await?;
-            sqlx::query("INSERT INTO authorization_workspaces(workspace_id,tenant,owner_subject) VALUES($1,$2,$3)")
-                .bind(id).bind(&self.identity.tenant).bind(&self.identity.subject).execute(&mut *access.tx).await?;
-            Ok(workspace)
-        }.await;
+        let result = access.create_workspace(&self.store, title, goal).await;
         access.finish(result).await
     }
 
@@ -243,6 +301,7 @@ impl Workspaces {
             let mut event_workspaces = vec![];
             for id in &visible { if access.allowed(*id, "workspace.events").await? { event_workspaces.push(*id); } }
             let mut state=StateResponse {
+                access: crate::api_schema::AccessProfile::Subject{tenant:self.identity.tenant.clone(),subject:self.identity.subject.clone()},
                 node, registry: catalog::list_in(&mut access,&crate::registry::Search::default()).await?, peers: vec![], installations: vec![],
                 workspaces: sqlx::query_as("SELECT * FROM workspaces WHERE id=ANY($1) ORDER BY created_at DESC,id").bind(&visible).fetch_all(&mut *access.tx).await?,
                 tasks: sqlx::query_as("SELECT * FROM tasks WHERE workspace_id=ANY($1) ORDER BY created_at,id").bind(&visible).fetch_all(&mut *access.tx).await?,
@@ -256,7 +315,20 @@ impl Workspaces {
             for run in state.runs {if access.run_visible(&run).await? {runs.push(run);}}
             let run_ids:std::collections::BTreeSet<Uuid>=runs.iter().map(|r|r.id).collect();
             state.runs=runs;
-            state.human_requests.retain(|h|run_ids.contains(&h.run_id));
+            let mut requests=vec![];
+            for request in state.human_requests {
+                if run_ids.contains(&request.run_id) {
+                    let resource=access.human_resource(&request).await?;
+                    if access.decide(&resource,"human.read").await? {requests.push(request);}
+                }
+            }
+            state.human_requests=requests;
+            let mut conversations=vec![];
+            for conversation in state.conversations {
+                let resource=access.conversation_resource(&conversation).await?;
+                if access.decide(&resource,"conversation.read").await? {conversations.push(conversation);}
+            }
+            state.conversations=conversations;
             state.events=access.filter_events(state.events).await?;
             Ok(state)
         }.await;

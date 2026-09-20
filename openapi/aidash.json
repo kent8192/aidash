@@ -1525,6 +1525,36 @@
           }
         }
       },
+      "AccessProfile": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["operator"]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["tenant", "subject", "kind"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["subject"]
+              },
+              "subject": {
+                "type": "string"
+              },
+              "tenant": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
       "Artifact": {
         "type": "object",
         "required": [
@@ -1817,6 +1847,7 @@
       "Conversation": {
         "type": "object",
         "required": [
+          "created_by",
           "id",
           "workspace_id",
           "target",
@@ -1827,6 +1858,9 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "created_by": {
+            "type": "string"
           },
           "id": {
             "type": "string",
@@ -1860,7 +1894,8 @@
           "title": {
             "type": "string"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "ConversationResponse": {
         "type": "object",
@@ -2194,6 +2229,9 @@
           "created_at"
         ],
         "properties": {
+          "answered_by": {
+            "type": ["string", "null"]
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -2896,6 +2934,7 @@
       "StateResponse": {
         "type": "object",
         "required": [
+          "access",
           "node",
           "registry",
           "workspaces",
@@ -2909,6 +2948,9 @@
           "installations"
         ],
         "properties": {
+          "access": {
+            "$ref": "#/components/schemas/AccessProfile"
+          },
           "artifacts": {
             "type": "array",
             "items": {

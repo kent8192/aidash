@@ -304,11 +304,25 @@ impl Store {
     /// Explicit operator abandonment preserves the failed outcome and reason
     /// while allowing the parent to finish using the remaining results.
     pub async fn abandon_task(&self, id: Uuid, revision: i64, reason: &str) -> Result<Task> {
-        nonempty(reason, "abandonment reason")?;
         let mut tx = self.pool.begin().await?;
+        let task = self
+            .abandon_task_in(&mut tx, id, revision, reason, "human")
+            .await?;
+        tx.commit().await?;
+        Ok(task)
+    }
+    pub(crate) async fn abandon_task_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        id: Uuid,
+        revision: i64,
+        reason: &str,
+        actor: &str,
+    ) -> Result<Task> {
+        nonempty(reason, "abandonment reason")?;
         let task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id=$1 FOR UPDATE")
             .bind(id)
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut **tx)
             .await?;
         if task.revision != revision
             || !matches!(task.status.as_str(), "FAILED" | "BLOCKED" | "CANCELLED")
@@ -319,7 +333,7 @@ impl Store {
             ));
         }
         let active_children: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tasks WHERE parent_id=$1 AND status NOT IN ('COMPLETED','ABANDONED'))")
-            .bind(id).fetch_one(&mut *tx).await?;
+            .bind(id).fetch_one(&mut **tx).await?;
         if active_children {
             return Err(Error::Conflict(
                 "resolve or abandon this task's children first".into(),
@@ -329,16 +343,15 @@ impl Store {
             "UPDATE tasks SET status='ABANDONED',revision=revision+1 WHERE id=$1 RETURNING *",
         )
         .bind(id)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
         self.event(
-            &mut tx,
+            tx,
             Some(task.workspace_id),
             "task.abandoned",
-            json!({"task":updated,"previous_status":task.status,"reason":reason,"actor":"human"}),
+            json!({"task":updated,"previous_status":task.status,"reason":reason,"actor":actor}),
         )
         .await?;
-        tx.commit().await?;
         Ok(updated)
     }
     pub async fn complete(
@@ -731,14 +744,25 @@ impl Store {
         Ok(h)
     }
     pub async fn answer(&self, id: Uuid, response: Value) -> Result<HumanRequest> {
+        let mut tx = self.pool.begin().await?;
+        let request = self.answer_in(&mut tx, id, response, "human").await?;
+        tx.commit().await?;
+        Ok(request)
+    }
+    pub(crate) async fn answer_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        id: Uuid,
+        response: Value,
+        actor: &str,
+    ) -> Result<HumanRequest> {
         if response.is_null() {
             return Err(Error::Invalid("a human response cannot be null".into()));
         }
-        let mut tx = self.pool.begin().await?;
         let old: HumanRequest =
             sqlx::query_as("SELECT * FROM human_requests WHERE id=$1 FOR UPDATE")
                 .bind(id)
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut **tx)
                 .await?
                 .ok_or_else(|| Error::NotFound("human request".into()))?;
         if let Some(existing) = &old.response {
@@ -747,7 +771,10 @@ impl Store {
             }
             return Ok(old);
         }
-        let run = self.run(old.run_id).await?;
+        let run: Run = sqlx::query_as("SELECT * FROM runs WHERE id=$1")
+            .bind(old.run_id)
+            .fetch_one(&mut **tx)
+            .await?;
         if run
             .pending
             .get("uncertain_key")
@@ -759,21 +786,21 @@ impl Store {
                 "tool reconciliation requires a JSON object containing result".into(),
             ));
         }
-        let h: HumanRequest =
-            sqlx::query_as("UPDATE human_requests SET response=$2 WHERE id=$1 RETURNING *")
-                .bind(id)
-                .bind(response)
-                .fetch_one(&mut *tx)
-                .await?;
-        let r = self.run(h.run_id).await?;
+        let h: HumanRequest = sqlx::query_as(
+            "UPDATE human_requests SET response=$2,answered_by=$3 WHERE id=$1 RETURNING *",
+        )
+        .bind(id)
+        .bind(response)
+        .bind(actor)
+        .fetch_one(&mut **tx)
+        .await?;
         self.event(
-            &mut tx,
-            (r.home_node == self.node_id).then_some(r.workspace_id),
+            tx,
+            (run.home_node == self.node_id).then_some(run.workspace_id),
             "human.answered",
             json!(h),
         )
         .await?;
-        tx.commit().await?;
         Ok(h)
     }
     pub async fn invocation_start(

@@ -424,13 +424,15 @@ impl Harness {
             }
             "WAITING" => {
                 if let Some(id) = run.pending["human_request_id"].as_str() {
+                    let id = id
+                        .parse::<Uuid>()
+                        .map_err(|_| Error::Invalid("invalid pending human id".into()))?;
+                    if let Some(guard) = guard {
+                        guard.human_read(id).await?;
+                    }
                     let h: HumanRequest =
                         sqlx::query_as("SELECT * FROM human_requests WHERE id=$1")
-                            .bind(
-                                id.parse::<Uuid>().map_err(|_| {
-                                    Error::Invalid("invalid pending human id".into())
-                                })?,
-                            )
+                            .bind(id)
                             .fetch_one(&store.pool)
                             .await?;
                     let response = h.response.ok_or_else(|| {

@@ -22,7 +22,7 @@ cargo run --locked -- serve
 
 Open <http://127.0.0.1:8080> and enter the token from `AIDASH_API_TOKEN`. The example credentials and localhost bindings are for local development. Configure unique credentials and an HTTPS endpoint for a deployed node.
 
-The [authorization API](docs/authorization.md) issues revocable subject tokens for tenant-scoped workspaces, approved Registry discovery, local agent execution and event streams. Workers recheck the root and delegated agents at every durable boundary. The dashboard still uses the operator token; scoped remote federation and dashboard authorization controls remain under implementation.
+The [authorization API](docs/authorization.md) issues revocable subject tokens for tenant-scoped workspaces, approved Registry discovery, local agent execution and event streams. Workers recheck the root and delegated agents at every durable boundary. The dashboard supports subject tokens for local goals, conversations, human answers and run controls, and shows their tenant identity. Scoped remote federation and dashboard policy-management controls remain under implementation.
 
 The **Registry** screen can register models, tools, skills, clusters and agents. Register a model before an agent. OpenAI-compatible `/chat/completions`, Anthropic `/messages` and OpenRouter `/chat/completions` endpoints are supported; use a base endpoint ending in `/v1`. Specify the provider's actual model ID, context window, modalities and cost metadata. Credentials are resolved only from `AIDASH_SECRET_*` environment variables. Registry records store the environment variable name, never its value. Model selection is explicit; Aidash does not select fallback models or automatically route between models.
 

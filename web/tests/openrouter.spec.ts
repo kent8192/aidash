@@ -16,6 +16,7 @@ test("registers an OpenRouter model with an editable endpoint and secret referen
     } else if (path === "/api/state") {
       await route.fulfill({
         json: {
+          access: { kind: "operator" },
           node: {
             id: "aidash://test",
             endpoint: "http://localhost",

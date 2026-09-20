@@ -11,7 +11,15 @@ use serde_json::Value;
 use utoipa::ToSchema;
 
 #[derive(Serialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AccessProfile {
+    Operator,
+    Subject { tenant: String, subject: String },
+}
+
+#[derive(Serialize, ToSchema)]
 pub struct StateResponse {
+    pub access: AccessProfile,
     pub node: NodeIdentity,
     pub registry: Vec<Entry>,
     pub workspaces: Vec<Workspace>,

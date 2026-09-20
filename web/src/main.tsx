@@ -42,6 +42,7 @@ import {
   Zap,
 } from "lucide-react";
 import { subscribe } from "./api";
+import { AUTHENTICATION_EXPIRED } from "./transport";
 import {
   state as getState,
   mesh as getMesh,
@@ -161,10 +162,25 @@ function Dashboard({
     enabled: connected,
     refetchInterval: 5000,
   });
+  useEffect(() => {
+    const revoked = (event: Event) => {
+      setError((event as CustomEvent<string>).detail);
+      setConnected(false);
+      setToken("");
+      setDialog(null);
+      sessionStorage.removeItem("aidash-token");
+      client.clear();
+    };
+    window.addEventListener(AUTHENTICATION_EXPIRED, revoked);
+    return () => window.removeEventListener(AUTHENTICATION_EXPIRED, revoked);
+  }, [client]);
+  const operator = state.data?.access.kind === "operator";
+  const restrictedSection =
+    !operator && ["mesh", "marketplace"].includes(section);
   const mesh = useQuery({
     queryKey: ["mesh"],
     queryFn: () => getMesh(),
-    enabled: connected,
+    enabled: connected && operator,
     refetchInterval: 2000,
   });
   const discovery = useQuery({
@@ -176,7 +192,7 @@ function Dashboard({
   const packages = useQuery({
     queryKey: ["packages"],
     queryFn: () => marketplace(),
-    enabled: connected,
+    enabled: connected && operator,
   });
   useEffect(() => {
     if (!connected) return;
@@ -237,10 +253,16 @@ function Dashboard({
           <span className="eyebrow">AGENT MESH</span>
           <h1>{t("connect")}</h1>
           <p>{t("tokenHelp")}</p>
+          {error && (
+            <p className="error" role="alert">
+              {error}
+            </p>
+          )}
           <form
             onSubmit={(e) => {
               e.preventDefault();
               sessionStorage.setItem("aidash-token", token);
+              setError("");
               setConnected(true);
               void client.invalidateQueries();
             }}
@@ -317,27 +339,31 @@ function Dashboard({
         </div>
         <div className="nav-label">{t("navGroup")}</div>
         <nav>
-          {sections.map(([key, Icon]) => (
-            <Link
-              key={key}
-              aria-label={t(key)}
-              to="/$section"
-              params={{ section: key }}
-              className={section === key ? "nav-link selected" : "nav-link"}
-            >
-              <Icon size={18} />
-              <span>{t(key)}</span>
-              {key === "tasks" && data && (
-                <small>
-                  {
-                    data.tasks.filter((x) =>
-                      ["RUNNING", "CLAIMED"].includes(x.status),
-                    ).length
-                  }
-                </small>
-              )}
-            </Link>
-          ))}
+          {sections
+            .filter(
+              ([key]) => operator || !["mesh", "marketplace"].includes(key),
+            )
+            .map(([key, Icon]) => (
+              <Link
+                key={key}
+                aria-label={t(key)}
+                to="/$section"
+                params={{ section: key }}
+                className={section === key ? "nav-link selected" : "nav-link"}
+              >
+                <Icon size={18} />
+                <span>{t(key)}</span>
+                {key === "tasks" && data && (
+                  <small>
+                    {
+                      data.tasks.filter((x) =>
+                        ["RUNNING", "CLAIMED"].includes(x.status),
+                      ).length
+                    }
+                  </small>
+                )}
+              </Link>
+            ))}
         </nav>
         <div className="sidebar-bottom">
           <div className="node-icon">
@@ -401,13 +427,17 @@ function Dashboard({
                       : data?.node.id}
               </p>
             </div>
-            <button
-              className="primary"
-              onClick={() => open({ kind: primary.kind })}
-            >
-              <Plus size={17} />
-              {t(primary.label)}
-            </button>
+            {(operator ||
+              ["workspace", "task", "goal"].includes(primary.kind)) &&
+              !restrictedSection && (
+                <button
+                  className="primary"
+                  onClick={() => open({ kind: primary.kind })}
+                >
+                  <Plus size={17} />
+                  {t(primary.label)}
+                </button>
+              )}
           </div>
           {error && !dialog && (
             <div className="error" role="alert">
@@ -433,7 +463,12 @@ function Dashboard({
           {!data && !state.isError && (
             <div className="loading">{t("loading")}</div>
           )}
-          {data && (
+          {data && restrictedSection && (
+            <div className="notice" role="status">
+              {t("administratorsOnly")}
+            </div>
+          )}
+          {data && !restrictedSection && (
             <>
               {(mesh.data?.errors.length ?? 0) > 0 && (
                 <div className="notice">
@@ -485,9 +520,11 @@ function Dashboard({
                     <Panel
                       title={t("topology")}
                       action={
-                        <Link to="/$section" params={{ section: "mesh" }}>
-                          {t("viewAll")} <ArrowUpRight size={14} />
-                        </Link>
+                        operator && (
+                          <Link to="/$section" params={{ section: "mesh" }}>
+                            {t("viewAll")} <ArrowUpRight size={14} />
+                          </Link>
+                        )
                       }
                     >
                       <MeshView
@@ -801,27 +838,41 @@ function Dashboard({
                       <dd>{data.node.protocol_version}</dd>
                     </dl>
                   </Panel>
-                  <Panel
-                    title={t("connectedNodes")}
-                    action={
-                      <button onClick={() => open({ kind: "peer" })}>
-                        <Plus size={16} />
-                        {t("addPeer")}
-                      </button>
-                    }
-                  >
-                    {data.peers.map((p) => (
-                      <div className="peer-row" key={p.node_id}>
-                        <Globe size={20} />
-                        <div>
-                          <strong>{p.node_id}</strong>
-                          <p>{p.endpoint}</p>
-                        </div>
-                        <Badge value={p.enabled ? "ACTIVE" : "PAUSED"} />
-                      </div>
-                    ))}
-                    {data.peers.length === 0 && <Empty />}
+                  <Panel title={t("signedInAs")}>
+                    {data.access.kind === "subject" ? (
+                      <dl>
+                        <dt>{t("tenant")}</dt>
+                        <dd>{data.access.tenant}</dd>
+                        <dt>{t("subject")}</dt>
+                        <dd>{data.access.subject}</dd>
+                      </dl>
+                    ) : (
+                      <p>{t("administrator")}</p>
+                    )}
                   </Panel>
+                  {operator && (
+                    <Panel
+                      title={t("connectedNodes")}
+                      action={
+                        <button onClick={() => open({ kind: "peer" })}>
+                          <Plus size={16} />
+                          {t("addPeer")}
+                        </button>
+                      }
+                    >
+                      {data.peers.map((p) => (
+                        <div className="peer-row" key={p.node_id}>
+                          <Globe size={20} />
+                          <div>
+                            <strong>{p.node_id}</strong>
+                            <p>{p.endpoint}</p>
+                          </div>
+                          <Badge value={p.enabled ? "ACTIVE" : "PAUSED"} />
+                        </div>
+                      ))}
+                      {data.peers.length === 0 && <Empty />}
+                    </Panel>
+                  )}
                   <button
                     onClick={() => {
                       setConnected(false);

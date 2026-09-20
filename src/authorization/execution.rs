@@ -197,7 +197,7 @@ pub async fn delegate(
     Ok(result)
 }
 
-async fn delegate_in(
+pub(super) async fn delegate_in(
     f: &Federation,
     access: &mut Access,
     task: Uuid,
@@ -314,6 +314,26 @@ impl Guard {
         if !access.run_visible(run).await? {
             return Err(Error::Forbidden);
         }
+        // A cluster conversation remains bound to its approved entry even if
+        // the coordinator agent does not repeat that cluster in its own config.
+        let clusters: Vec<String> = sqlx::query_scalar(
+            "SELECT target FROM conversations WHERE workspace_id=$1 AND target_kind='cluster'",
+        )
+        .bind(run.workspace_id)
+        .fetch_all(&mut *access.tx)
+        .await?;
+        for cluster in clusters {
+            let (id, version) = cluster.rsplit_once('@').ok_or(Error::Forbidden)?;
+            catalog::entry(
+                &mut access,
+                &EntityRef {
+                    id: id.into(),
+                    version: version.into(),
+                },
+                "cluster.execute",
+            )
+            .await?;
+        }
         access
             .require(
                 &access.resource("task", run.task_id, json!({})),
@@ -350,6 +370,20 @@ impl Guard {
         WorkerAuthority {
             access: self.access.clone(),
         }
+    }
+    pub async fn human_read(&self, id: Uuid) -> Result<()> {
+        let mut access = self.access.lock().await;
+        let request: HumanRequest = sqlx::query_as(
+            "SELECT * FROM human_requests WHERE id=$1 AND run_id=$2 AND workspace_id=$3",
+        )
+        .bind(id)
+        .bind(self.run.id)
+        .bind(self.run.workspace_id)
+        .fetch_optional(&mut *access.tx)
+        .await?
+        .ok_or(Error::Forbidden)?;
+        let resource = access.human_resource(&request).await?;
+        access.require(&resource, "human.read").await
     }
     pub async fn action(&self, action: &str, kind: &str, id: impl ToString) -> Result<()> {
         let mut access = self.access.lock().await;
@@ -501,19 +535,9 @@ pub async fn details(f: &Federation, identity: &SubjectIdentity, id: Uuid) -> Re
         let workspace = access.workspace(run.workspace_id).await?;
         access.context = workspace.attributes.clone();
         access.require(&workspace, "workspace.read").await?;
-        access
-            .require(&access.resource("run", id, json!({})), "run.read")
-            .await?;
-        access
-            .require(
-                &access.resource(
-                    "memory",
-                    &run.agent_id,
-                    json!({"version":run.agent_version}),
-                ),
-                "memory.read",
-            )
-            .await?;
+        if !access.run_visible(&run).await? {
+            return Err(Error::Forbidden);
+        }
         let invocations: Vec<Invocation> =
             sqlx::query_as("SELECT * FROM invocations WHERE run_id=$1 ORDER BY created_at")
                 .bind(id)

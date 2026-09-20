@@ -20,6 +20,8 @@ pub(crate) struct Access {
     pub inherited_lease: bool,
     pub approved_catalog: std::collections::BTreeSet<(String, String)>,
     pub cached_runs: std::collections::BTreeMap<(Uuid, Uuid), bool>,
+    pub cached_humans: std::collections::BTreeMap<Uuid, bool>,
+    pending_decisions: Vec<(Evaluation, Decision)>,
     pool: PgPool,
     pub(super) environment: Value,
 }
@@ -28,6 +30,9 @@ impl Access {
     pub async fn begin(store: &Store, identity: &SubjectIdentity) -> Result<Self> {
         let mut tx = store.pool.begin().await?;
         let snapshot = identity.lock(&mut tx).await?;
+        sqlx::query("SAVEPOINT authorization_operation")
+            .execute(&mut *tx)
+            .await?;
         Ok(Self {
             tx,
             identity: identity.clone(),
@@ -39,6 +44,8 @@ impl Access {
             inherited_lease: false,
             approved_catalog: Default::default(),
             cached_runs: Default::default(),
+            cached_humans: Default::default(),
+            pending_decisions: vec![],
             pool: store.pool.clone(),
             environment: json!({"node_id":store.node_id,"transport":"api"}),
         })
@@ -47,8 +54,12 @@ impl Access {
     // The caller retains the outer Access until this mutation commits. Reusing
     // its locks avoids queuing a second shared lock behind a waiting revoker.
     pub async fn under_lease(lease: &Self) -> Result<Self> {
+        let mut tx = lease.pool.begin().await?;
+        sqlx::query("SAVEPOINT authorization_operation")
+            .execute(&mut *tx)
+            .await?;
         Ok(Self {
-            tx: lease.pool.begin().await?,
+            tx,
             identity: lease.identity.clone(),
             snapshot: lease.snapshot.clone(),
             subjects: lease.subjects.clone(),
@@ -58,6 +69,8 @@ impl Access {
             inherited_lease: true,
             approved_catalog: lease.approved_catalog.clone(),
             cached_runs: Default::default(),
+            cached_humans: Default::default(),
+            pending_decisions: vec![],
             pool: lease.pool.clone(),
             environment: lease.environment.clone(),
         })
@@ -120,7 +133,7 @@ impl Access {
         Ok(allowed)
     }
 
-    async fn record(&mut self, records: &[(Evaluation, Decision)]) -> Result<()> {
+    pub(crate) async fn record(&mut self, records: &[(Evaluation, Decision)]) -> Result<()> {
         if !self.audit {
             return Ok(());
         }
@@ -134,9 +147,7 @@ impl Access {
             }
             audit.commit().await?;
         } else {
-            for (input, decision) in records {
-                Authorization::record(&mut self.tx, &self.identity.tenant, input, decision).await?;
-            }
+            self.pending_decisions.extend_from_slice(records);
         }
         Ok(())
     }
@@ -149,8 +160,19 @@ impl Access {
         }
     }
 
-    pub async fn finish<T>(self, result: Result<T>) -> Result<T> {
+    pub async fn finish<T>(mut self, result: Result<T>) -> Result<T> {
         if result.is_ok() || matches!(result, Err(Error::Forbidden)) {
+            // A compound operation can discover a denial after creating rows.
+            // Retain the decision audit while removing every protected change.
+            // Policy and credential locks predate the savepoint and remain held.
+            if result.is_err() {
+                sqlx::query("ROLLBACK TO SAVEPOINT authorization_operation")
+                    .execute(&mut *self.tx)
+                    .await?;
+            }
+            for (input, decision) in &self.pending_decisions {
+                Authorization::record(&mut self.tx, &self.identity.tenant, input, decision).await?;
+            }
             self.tx.commit().await?;
         } else {
             self.tx.rollback().await?;

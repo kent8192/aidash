@@ -145,6 +145,7 @@ impl Event {
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Conversation {
+    pub created_by: String,
     pub id: Uuid,
     pub workspace_id: Uuid,
     pub target: String,
@@ -154,6 +155,7 @@ pub struct Conversation {
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct HumanRequest {
+    pub answered_by: Option<String>,
     pub id: Uuid,
     pub workspace_id: Uuid,
     pub run_id: Uuid,

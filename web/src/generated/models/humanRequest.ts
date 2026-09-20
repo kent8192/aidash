@@ -7,6 +7,8 @@
  */
 
 export interface HumanRequest {
+  /** @nullable */
+  answered_by?: string | null;
   created_at: string;
   id: string;
   kind: string;

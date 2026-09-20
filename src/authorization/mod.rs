@@ -3,6 +3,7 @@ pub mod api;
 pub mod catalog;
 pub mod execution;
 pub mod identity;
+pub mod interaction;
 pub mod policy;
 pub mod workspace;
 

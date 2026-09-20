@@ -1,7 +1,9 @@
 use crate::{
     Error, Result,
     api_schema::*,
-    authorization::{Authorization, catalog, execution, identity::Actor, workspace::Workspaces},
+    authorization::{
+        Authorization, catalog, execution, identity::Actor, interaction, workspace::Workspaces,
+    },
     config::{PROTOCOL_VERSION, peer_secret},
     domain::*,
     federation::{Delegation, Discovery, Federation, Offer, Peer},
@@ -30,10 +32,6 @@ fn management_routes() -> OpenApiRouter<Federation> {
     let administration = OpenApiRouter::new()
         .merge(crate::authorization::api::routes())
         .routes(routes!(registry_create))
-        .routes(routes!(task_abandon))
-        .routes(routes!(conversation_create))
-        .routes(routes!(run_message))
-        .routes(routes!(human_answer))
         .routes(routes!(peer_create))
         .routes(routes!(mesh))
         .routes(routes!(remote_action))
@@ -43,6 +41,10 @@ fn management_routes() -> OpenApiRouter<Federation> {
         .route_layer(middleware::from_fn(operator_only));
     OpenApiRouter::new()
         .merge(administration)
+        .routes(routes!(human_answer))
+        .routes(routes!(run_message))
+        .routes(routes!(conversation_create))
+        .routes(routes!(task_abandon))
         .routes(routes!(discover))
         .routes(routes!(run_control))
         .routes(routes!(run_get))
@@ -220,6 +222,7 @@ async fn state(
             .fetch_all(&f.store.pool)
             .await?;
     Ok(Json(StateResponse {
+        access: AccessProfile::Operator,
         node: f.config.identity(vec![]),
         registry: records,
         workspaces: f.store.workspaces().await?,
@@ -428,9 +431,15 @@ struct AbandonInput {
 #[utoipa::path(post, path = "/tasks/{id}/abandon", operation_id = "task_abandon", request_body = AbandonInput, params(("id" = Uuid, Path)), responses((status = 200, body = Task)), security(("bearer_auth" = [])))]
 async fn task_abandon(
     State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
     Path(id): Path<Uuid>,
     Json(input): Json<AbandonInput>,
 ) -> Result<Json<Task>> {
+    if let Actor::Subject(identity) = actor {
+        return Ok(Json(
+            interaction::abandon(&f, &identity, id, input.revision, &input.reason).await?,
+        ));
+    }
     let task = f
         .store
         .abandon_task(id, input.revision, &input.reason)
@@ -439,6 +448,7 @@ async fn task_abandon(
     Ok(Json(task))
 }
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 struct ConversationInput {
     title: String,
     goal: String,
@@ -448,8 +458,22 @@ struct ConversationInput {
 #[utoipa::path(post, path = "/conversations", operation_id = "conversation_create", request_body = ConversationInput, responses((status = 200, body = ConversationResponse)), security(("bearer_auth" = [])))]
 async fn conversation_create(
     State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
     Json(input): Json<ConversationInput>,
 ) -> Result<Json<ConversationResponse>> {
+    if let Actor::Subject(identity) = actor {
+        return Ok(Json(
+            interaction::conversation(
+                &f,
+                &identity,
+                &input.title,
+                &input.goal,
+                &input.target,
+                &input.target_kind,
+            )
+            .await?,
+        ));
+    }
     let target = f
         .registry
         .get(&input.target.id, &input.target.version)
@@ -553,9 +577,14 @@ async fn run_control(
 #[utoipa::path(post, path = "/runs/{id}/message", operation_id = "run_message", request_body = MessageInput, params(("id" = Uuid, Path)), responses((status = 200, body = SentResponse)), security(("bearer_auth" = [])))]
 async fn run_message(
     State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
     Path(id): Path<Uuid>,
     Json(input): Json<MessageInput>,
 ) -> Result<Json<SentResponse>> {
+    if let Actor::Subject(identity) = actor {
+        interaction::message(&f, &identity, id, &input.content).await?;
+        return Ok(Json(SentResponse { sent: true }));
+    }
     let run = f.store.run(id).await?;
     let home = crate::federation::Home::new(f, run);
     home.human_message(&format!("human:{}", Uuid::new_v4()), &input.content)
@@ -565,9 +594,15 @@ async fn run_message(
 #[utoipa::path(post, path = "/human-requests/{id}/answer", operation_id = "human_answer", request_body = Value, params(("id" = Uuid, Path)), responses((status = 200, body = HumanRequest)), security(("bearer_auth" = [])))]
 async fn human_answer(
     State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
     Path(id): Path<Uuid>,
     Json(response): Json<Value>,
 ) -> Result<Json<HumanRequest>> {
+    if let Actor::Subject(identity) = actor {
+        return Ok(Json(
+            interaction::answer(&f, &identity, id, response).await?,
+        ));
+    }
     let h = f.store.answer(id, response).await?;
     f.notify.notify_waiters();
     Ok(Json(h))
