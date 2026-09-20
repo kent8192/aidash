@@ -98,8 +98,6 @@ Related to: #
 
 <!-- Before submitting, verify that you have: -->
 
-- [ ] I have followed the [Contributing Guidelines](../blob/main/CONTRIBUTING.md)
-- [ ] I have followed the [Commit Guidelines](../blob/main/instructions/COMMIT_GUIDELINE.md)
 - [ ] I have updated the documentation (if applicable)
 - [ ] My changes generate no new warnings
 - [ ] I have added tests that prove my fix is effective or that my feature works
@@ -107,14 +105,6 @@ Related to: #
 - [ ] I have tested with all affected database backends (if applicable)
 - [ ] I have formatted the code with `cargo make fmt-fix`
 - [ ] I have checked the code with `cargo make clippy-check`
-
-<!-- ⚠️ CI CONTROL CHECKBOX - DO NOT EDIT MANUALLY ⚠️
-The following checkbox controls CI runner selection.
-Checking this option triggers self-hosted runner usage (AWS Spot instances),
-which incurs infrastructure costs. Only the repository owner should enable this.
-If this checkbox is missing or unchecked, CI defaults to GitHub-hosted runners.
-Do NOT modify the checkbox text — CI parses it by exact pattern match. -->
-- [ ] I use self-hosted runner for CI (Repository owner only)
 
 ## Related Issues
 

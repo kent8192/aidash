@@ -9,6 +9,7 @@ body:
         Thanks for reporting a CI/CD issue! Please provide as much detail as possible.
 
   - type: dropdown
+    id: affected-workflow
     attributes:
       label: Affected Workflow
       description: Select the affected CI/CD workflow
@@ -55,6 +56,7 @@ body:
       required: true
 
   - type: textarea
+    id: issue-description
     attributes:
       label: Issue Description
       description: Clearly describe the CI/CD issue
@@ -66,6 +68,7 @@ body:
       required: true
 
   - type: textarea
+    id: reproduction-steps
     attributes:
       label: Steps to Reproduce
       description: Steps to reproduce the CI/CD issue
@@ -78,6 +81,7 @@ body:
       required: true
 
   - type: textarea
+    id: error-logs
     attributes:
       label: Error Logs
       description: Paste the relevant error logs
@@ -90,6 +94,7 @@ body:
       required: true
 
   - type: dropdown
+    id: runner-os
     attributes:
       label: Runner OS
       description: Select the GitHub Actions runner operating system
@@ -103,6 +108,7 @@ body:
       required: true
 
   - type: input
+    id: workflow-run-url
     attributes:
       label: Workflow Run URL
       description: Link to the failed workflow run
@@ -111,6 +117,7 @@ body:
       required: false
 
   - type: textarea
+    id: local-test-results
     attributes:
       label: Local Test Results
       description: Do the tests pass locally? If yes, what's different?
@@ -127,6 +134,7 @@ body:
       required: true
 
   - type: checkboxes
+    id: impact-assessment
     attributes:
       label: Impact Assessment
       description: Help us assess the impact of this CI/CD issue
@@ -139,6 +147,7 @@ body:
       required: true
 
   - type: textarea
+    id: additional-context
     attributes:
       label: Additional Context
       description: Any other context or relevant information

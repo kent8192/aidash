@@ -64,7 +64,7 @@ body:
       label: Is this a breaking change?
       description: |
         Would implementing this feature require changes to existing public APIs
-        that could break downstream code? See instructions/STABILITY_POLICY.md for details.
+        that could break downstream code? Consider compatibility and migration impact.
       options:
         - "No - backward compatible"
         - "Yes - requires major version bump (SemVer MAJOR)"

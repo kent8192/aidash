@@ -9,6 +9,7 @@ body:
         Thanks for reporting a performance issue! Please provide as much detail as possible.
 
   - type: textarea
+    id: performance-problem
     attributes:
       label: Performance Problem Description
       description: Clearly describe the performance problem you're experiencing
@@ -20,6 +21,7 @@ body:
       required: true
 
   - type: textarea
+    id: reproduction-steps
     attributes:
       label: Steps to Reproduce
       description: Steps to reproduce the performance issue
@@ -31,6 +33,7 @@ body:
       required: true
 
   - type: textarea
+    id: expected-actual-performance
     attributes:
       label: Expected vs Actual Performance
       description: What did you expect and what actually happened?
@@ -41,6 +44,7 @@ body:
       required: true
 
   - type: textarea
+    id: benchmark-results
     attributes:
       label: Benchmark Results (if available)
       description: If you have benchmark results, please share them
@@ -52,6 +56,7 @@ body:
       required: false
 
   - type: dropdown
+    id: environment
     attributes:
       label: Environment
       description: Select your operating system
@@ -64,6 +69,7 @@ body:
       required: true
 
   - type: input
+    id: rust-version
     attributes:
       label: Rust Version
       description: Output of `rustc --version`
@@ -72,6 +78,7 @@ body:
       required: true
 
   - type: textarea
+    id: environment-details
     attributes:
       label: Additional Environment Details
       description: Any other relevant environment information
@@ -84,6 +91,7 @@ body:
       required: false
 
   - type: checkboxes
+    id: priority-assessment
     attributes:
       label: Priority Assessment
       description: Help us assess the priority of this performance issue
@@ -101,7 +109,7 @@ body:
       label: Could the fix be a breaking change?
       description: |
         Would fixing this performance issue require changes to existing public APIs,
-        data structures, or observable behavior? See instructions/STABILITY_POLICY.md for details.
+        data structures, or observable behavior? Consider compatibility and migration impact.
       options:
         - "No - fix should be backward compatible"
         - "Yes - fix may require API or behavior changes"
@@ -110,6 +118,7 @@ body:
       required: true
 
   - type: textarea
+    id: additional-context
     attributes:
       label: Additional Context
       description: Any other context, screenshots, or links to relevant code
