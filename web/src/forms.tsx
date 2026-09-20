@@ -1,0 +1,537 @@
+import { useState } from "react";
+import { useForm } from "@tanstack/react-form";
+import { Field, useI18n } from "./ui";
+import type { State, EntityRef, Discovery, Task } from "./types";
+export type Submit = (path: string, body: unknown) => Promise<void>;
+const split = (s: string) =>
+  s
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+const ref = (s: string): EntityRef => {
+  const index = s.lastIndexOf("@");
+  return { id: s.slice(0, index), version: s.slice(index + 1) };
+};
+export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
+  const { t } = useI18n();
+  const targets = data.registry.filter((e) =>
+    ["agent", "cluster"].includes(e.kind),
+  );
+  const form = useForm({
+    defaultValues: { title: "", goal: "", target: "" },
+    onSubmit: async ({ value }) => {
+      const target = targets.find(
+        (e) => `${e.id}@${e.version}` === value.target,
+      );
+      if (!target) throw new Error(t("choose"));
+      await submit("/conversations", {
+        ...value,
+        target: ref(value.target),
+        target_kind: target.kind,
+      });
+    },
+  });
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        void form.handleSubmit();
+      }}
+    >
+      <form.Field name="title">
+        {(f) => (
+          <Field label={t("title")}>
+            <input
+              required
+              value={f.state.value}
+              onChange={(e) => f.handleChange(e.target.value)}
+              placeholder={t("goalTitle")}
+            />
+          </Field>
+        )}
+      </form.Field>
+      <form.Field name="goal">
+        {(f) => (
+          <Field label={t("goal")}>
+            <textarea
+              required
+              value={f.state.value}
+              onChange={(e) => f.handleChange(e.target.value)}
+              placeholder={t("goalPlaceholder")}
+              rows={5}
+            />
+          </Field>
+        )}
+      </form.Field>
+      <form.Field name="target">
+        {(f) => (
+          <Field label={t("target")}>
+            <select
+              required
+              value={f.state.value}
+              onChange={(e) => f.handleChange(e.target.value)}
+            >
+              <option value="">{t("choose")}</option>
+              {targets.map((e) => (
+                <option
+                  key={`${e.id}@${e.version}`}
+                  value={`${e.id}@${e.version}`}
+                >
+                  {e.id} · {e.version} ({t(e.kind)})
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
+      </form.Field>
+      <form.Subscribe selector={(s) => s.isSubmitting}>
+        {(pending) => (
+          <button
+            disabled={pending || targets.length === 0}
+            className="primary"
+            type="submit"
+          >
+            {t("newGoal")}
+          </button>
+        )}
+      </form.Subscribe>
+    </form>
+  );
+}
+export function WorkspaceForm({ submit }: { submit: Submit }) {
+  const { t } = useI18n();
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        const d = new FormData(e.currentTarget);
+        void submit("/workspaces", {
+          title: d.get("title"),
+          goal: d.get("goal"),
+        });
+      }}
+    >
+      <Field label={t("title")}>
+        <input name="title" required />
+      </Field>
+      <Field label={t("goal")}>
+        <textarea name="goal" rows={4} required />
+      </Field>
+      <button className="primary">{t("create")}</button>
+    </form>
+  );
+}
+export function TaskForm({
+  data,
+  submit,
+  workspace,
+}: {
+  data: State;
+  submit: Submit;
+  workspace?: string;
+}) {
+  const { t } = useI18n();
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        const d = new FormData(e.currentTarget);
+        let requirements;
+        try {
+          requirements = JSON.parse(String(d.get("requirements")));
+        } catch {
+          e.currentTarget
+            .querySelector<HTMLTextAreaElement>('textarea[name="requirements"]')
+            ?.setCustomValidity(t("jsonHint"));
+          return;
+        }
+        void submit(`/workspaces/${d.get("workspace")}/tasks`, {
+          title: d.get("title"),
+          description: d.get("description"),
+          requirements,
+          dependencies: [],
+          parent_id: null,
+        });
+      }}
+    >
+      <Field label={t("workspace")}>
+        <select name="workspace" required defaultValue={workspace ?? ""}>
+          <option value="">{t("choose")}</option>
+          {data.workspaces.map((w) => (
+            <option key={w.id} value={w.id}>
+              {w.title}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label={t("title")}>
+        <input name="title" required />
+      </Field>
+      <Field label={t("description")}>
+        <textarea name="description" required rows={3} />
+      </Field>
+      <Field label={t("requirements")}>
+        <textarea
+          name="requirements"
+          defaultValue={'{"capability":"web.search","language":"ja"}'}
+          onChange={(e) => e.currentTarget.setCustomValidity("")}
+        />
+      </Field>
+      <button className="primary">{t("create")}</button>
+    </form>
+  );
+}
+export function EntityForm({
+  data,
+  submit,
+  initial = "agent",
+}: {
+  data: State;
+  submit: Submit;
+  initial?: string;
+}) {
+  const { t } = useI18n();
+  const [kind, setKind] = useState(initial);
+  const [error, setError] = useState("");
+  const models = data.registry.filter((e) => e.kind === "model");
+  const toolEntries = data.registry.filter((e) => e.kind === "tool");
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        setError("");
+        const d = new FormData(e.currentTarget);
+        const s = (k: string) => String(d.get(k) ?? "");
+        let config: Record<string, unknown>;
+        try {
+          config =
+            kind === "agent"
+              ? {
+                  model: ref(s("model")),
+                  instructions: s("instructions"),
+                  tools: d.getAll("tools").map((v) => ref(String(v))),
+                  skills: [],
+                  cluster: s("cluster") ? ref(s("cluster")) : null,
+                  max_steps: 64,
+                }
+              : kind === "model"
+                ? {
+                    provider: s("provider"),
+                    model_id: s("model_id"),
+                    endpoint: s("endpoint"),
+                    credential_env: s("credential_env") || null,
+                    context_window: Number(s("context_window")),
+                    modalities: ["text"],
+                    cost: JSON.parse(s("cost")),
+                  }
+                : JSON.parse(s("config"));
+          const entry = {
+            id: s("id"),
+            version: s("version"),
+            kind,
+            name: { en: s("name_en"), ja: s("name_ja") || s("name_en") },
+            description: {
+              en: s("description_en"),
+              ja: s("description_ja") || s("description_en"),
+            },
+            capabilities: split(s("capabilities")),
+            languages: split(s("languages")),
+            tags: split(s("tags")),
+            skills: [],
+            schema: kind === "tool" ? JSON.parse(s("schema")) : {},
+            config,
+          };
+          void submit("/registry", entry);
+        } catch (err) {
+          setError(String(err));
+        }
+      }}
+    >
+      <Field label={t("entityKind")}>
+        <select value={kind} onChange={(e) => setKind(e.target.value)}>
+          {["agent", "model", "tool", "skill", "cluster", "node"].map((k) => (
+            <option key={k}>{k}</option>
+          ))}
+        </select>
+      </Field>
+      <div className="two-columns">
+        <Field label={t("entityId")}>
+          <input name="id" required pattern="[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}" />
+        </Field>
+        <Field label={t("version")}>
+          <input name="version" required defaultValue="1.0.0" />
+        </Field>
+      </div>
+      <div className="two-columns">
+        <Field label={`${t("name")} · English`}>
+          <input name="name_en" required />
+        </Field>
+        <Field label={`${t("name")} · 日本語`}>
+          <input name="name_ja" />
+        </Field>
+      </div>
+      <Field label={`${t("description")} · English`}>
+        <textarea name="description_en" required />
+      </Field>
+      <Field label={`${t("description")} · 日本語`}>
+        <textarea name="description_ja" />
+      </Field>
+      <div className="two-columns">
+        <Field label={t("capabilities")}>
+          <input name="capabilities" placeholder="web.search, coding" />
+        </Field>
+        <Field label={t("languages")}>
+          <input name="languages" defaultValue="ja, en" />
+        </Field>
+      </div>
+      <Field label={t("tags")}>
+        <input name="tags" placeholder={t("commaSeparated")} />
+      </Field>
+      {kind === "agent" ? (
+        <>
+          <p className="muted">{t("agentHelp")}</p>
+          <Field label={t("model")}>
+            <select name="model" required defaultValue="">
+              <option value="">{t("choose")}</option>
+              {models.map((e) => (
+                <option
+                  key={`${e.id}@${e.version}`}
+                  value={`${e.id}@${e.version}`}
+                >
+                  {e.id} · {e.version}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {models.length === 0 && <p className="notice">{t("noModel")}</p>}
+          <Field label={t("instructions")}>
+            <textarea name="instructions" required rows={5} />
+          </Field>
+          <Field label={t("cluster")}>
+            <select name="cluster" defaultValue="">
+              <option value="">{t("noAssignment")}</option>
+              {data.registry
+                .filter((e) => e.kind === "cluster")
+                .map((e) => (
+                  <option
+                    key={`${e.id}@${e.version}`}
+                    value={`${e.id}@${e.version}`}
+                  >
+                    {e.id} · {e.version}
+                  </option>
+                ))}
+            </select>
+          </Field>
+          <fieldset>
+            <legend>{t("tools")}</legend>
+            {toolEntries.map((e) => (
+              <label className="check" key={`${e.id}@${e.version}`}>
+                <input
+                  type="checkbox"
+                  name="tools"
+                  value={`${e.id}@${e.version}`}
+                />
+                {e.id} · {e.version}
+              </label>
+            ))}
+          </fieldset>
+        </>
+      ) : kind === "model" ? (
+        <>
+          <p className="muted">{t("modelHelp")}</p>
+          <Field label={t("provider")}>
+            <select name="provider">
+              <option value="openai">{t("openaiCompatible")}</option>
+              <option value="anthropic">Anthropic</option>
+            </select>
+          </Field>
+          <Field label={t("modelId")}>
+            <input name="model_id" required />
+          </Field>
+          <Field label={t("endpoint")}>
+            <input
+              name="endpoint"
+              type="url"
+              required
+              placeholder="https://api.openai.com/v1"
+            />
+          </Field>
+          <Field label={t("credentials")}>
+            <input name="credential_env" placeholder="AIDASH_SECRET_OPENAI" />
+          </Field>
+          <Field label={t("contextWindow")}>
+            <input
+              name="context_window"
+              type="number"
+              min={2048}
+              defaultValue={128000}
+            />
+          </Field>
+          <Field label={t("costMetadata")}>
+            <textarea
+              name="cost"
+              defaultValue={
+                '{"input_per_million":null,"output_per_million":null,"currency":"USD"}'
+              }
+            />
+          </Field>
+        </>
+      ) : (
+        <>
+          <Field label={t("configuration")}>
+            <textarea
+              key={kind}
+              name="config"
+              rows={6}
+              defaultValue={JSON.stringify(
+                kind === "skill"
+                  ? { instructions: "" }
+                  : kind === "cluster"
+                    ? { coordinator: { id: "", version: "1.0.0" } }
+                    : kind === "tool"
+                      ? { transport: "native", operation: "echo" }
+                      : {},
+                null,
+                2,
+              )}
+            />
+          </Field>
+          {kind === "tool" && (
+            <Field label={t("schema")}>
+              <textarea
+                name="schema"
+                rows={4}
+                defaultValue={'{"type":"object"}'}
+              />
+            </Field>
+          )}
+        </>
+      )}
+      {error && (
+        <p role="alert" className="error">
+          {error}
+        </p>
+      )}
+      <button className="primary">{t("register")}</button>
+    </form>
+  );
+}
+export function PeerForm({ submit }: { submit: Submit }) {
+  const { t } = useI18n();
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        const d = new FormData(e.currentTarget);
+        void submit("/peers", {
+          node_id: d.get("node_id"),
+          endpoint: d.get("endpoint"),
+          credential_env: d.get("credential_env"),
+          protocol_version: "0.1",
+          enabled: true,
+        });
+      }}
+    >
+      <Field label={t("node")}>
+        <input name="node_id" placeholder="aidash://node-b" required />
+      </Field>
+      <Field label={t("endpoint")}>
+        <input
+          name="endpoint"
+          type="url"
+          placeholder="http://127.0.0.1:8081"
+          required
+        />
+      </Field>
+      <Field label={t("peerCredential")}>
+        <input
+          name="credential_env"
+          defaultValue="AIDASH_SECRET_PEER"
+          required
+        />
+      </Field>
+      <button className="primary">{t("addPeer")}</button>
+    </form>
+  );
+}
+export function AssignForm({
+  task,
+  discovery,
+  submit,
+}: {
+  task: Task;
+  discovery: Discovery;
+  submit: Submit;
+}) {
+  const { t, local } = useI18n();
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        const d = new FormData(e.currentTarget);
+        const a = discovery.agents[Number(d.get("agent"))];
+        void submit(`/tasks/${task.id}/delegate`, {
+          node_id: a.node_id,
+          agent: { id: a.entity.id, version: a.entity.version },
+        });
+      }}
+    >
+      <Field label={t("agent")}>
+        <select name="agent" required defaultValue="">
+          <option value="">{t("choose")}</option>
+          {discovery.agents.map((a, i) => (
+            <option
+              value={i}
+              key={`${a.node_id}/${a.entity.id}@${a.entity.version}`}
+            >
+              {local(a.entity.name)} · {a.node_id} · {a.entity.version}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <button className="primary">{t("delegate")}</button>
+    </form>
+  );
+}
+export function PublishForm({ data, submit }: { data: State; submit: Submit }) {
+  const { t } = useI18n();
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        const d = new FormData(e.currentTarget);
+        const entity = data.registry.find(
+          (e) => `${e.id}@${e.version}` === d.get("entity"),
+        );
+        void submit("/marketplace", {
+          entity,
+          author: d.get("author"),
+          permissions: split(String(d.get("permissions"))),
+          dependencies: [],
+        });
+      }}
+    >
+      <p>{t("publishHelp")}</p>
+      <Field label={t("packageEntity")}>
+        <select name="entity" required defaultValue="">
+          <option value="">{t("choose")}</option>
+          {data.registry
+            .filter((e) => ["agent", "tool", "skill"].includes(e.kind))
+            .map((e) => (
+              <option key={`${e.id}@${e.version}`}>
+                {e.id}@{e.version}
+              </option>
+            ))}
+        </select>
+      </Field>
+      <Field label={t("author")}>
+        <input name="author" required />
+      </Field>
+      <Field label={t("permissions")}>
+        <input name="permissions" placeholder={t("commaSeparated")} />
+      </Field>
+      <button className="primary">{t("publish")}</button>
+    </form>
+  );
+}
+export { ref as entityRef };

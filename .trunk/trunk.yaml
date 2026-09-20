@@ -1,0 +1,47 @@
+# This file controls the behavior of Trunk: https://docs.trunk.io/cli
+# To learn more about the format of this file, see https://docs.trunk.io/reference/trunk-yaml
+version: 0.1
+cli:
+  version: 1.25.0
+# Trunk provides extensibility via plugins. (https://docs.trunk.io/plugins)
+plugins:
+  sources:
+    - id: trunk
+      ref: v1.11.0
+      uri: https://github.com/trunk-io/plugins
+actions:
+  disabled:
+    - trunk-announce
+    - trunk-check-pre-push
+    - trunk-fmt-pre-commit
+  enabled:
+    - trunk-upgrade-available
+lint:
+  enabled:
+    - clippy@1.96.0
+    - eslint@9.39.1
+    - prettier@3.6.2
+    - ruff@0.13.2
+    - rustfmt@1.96.0
+    - taplo@0.10.0
+  definitions:
+    - name: clippy
+      commands:
+        - name: lint
+          output: clippy
+          target: ${parent_with(Cargo.toml)}
+          run: env RUSTC_WRAPPER= cargo clippy --all-targets --message-format json --locked -- --cap-lints=warn --no-deps
+          success_codes: [0, 101, 383]
+          run_from: ${target_directory}
+          disable_upstream: true
+      environment:
+        - name: PATH
+          list: ["${linter}/bin", "${env.PATH}"]
+        - name: CARGO_HOME
+          value: ${cachedir}/cargo_home
+        - name: CARGO_TARGET_DIR
+          value: ${cachedir}/cargo_target_dir
+        # The repository is checked with the pinned toolchain, independently of
+        # machine-wide compiler caches and their server availability.
+        - name: RUSTC_WRAPPER
+          value: ""

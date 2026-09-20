@@ -1,0 +1,28 @@
+name: aidash-dev
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: aidash
+      POSTGRES_PASSWORD: aidash-local
+      POSTGRES_DB: aidash_a
+    ports:
+      - "127.0.0.1:54370:5432"
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-databases.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aidash -d aidash_a"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  nats:
+    image: nats:2.12-alpine
+    command: ["-js", "-sd", "/data"]
+    ports:
+      - "127.0.0.1:42270:4222"
+    volumes:
+      - nats:/data
+volumes:
+  postgres:
+  nats:

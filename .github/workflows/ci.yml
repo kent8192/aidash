@@ -1,0 +1,45 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main, "develop/**"]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    name: Trunk and acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      RUSTC_WRAPPER: ""
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Verify runtime, federation and dashboard
+        run: scripts/check.sh
+      - uses: trunk-io/trunk-action/setup@e1234e67a86010d61ddac8d8ebf4b783e2ffd2fa # v2.0.0
+      - name: Check formatting and lint
+        run: '"$TRUNK_PATH" check --all --no-fix --no-progress --print-failures'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: acceptance-evidence
+          include-hidden-files: true
+          path: |
+            .ignore/acceptance/
+            .ignore/dashboard-*.png
+            web/test-results/
+      - name: Stop verification services
+        if: always()
+        run: docker compose down
