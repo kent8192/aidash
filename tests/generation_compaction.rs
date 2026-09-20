@@ -546,14 +546,25 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
         let worker = Harness {
             federation: f.clone(),
         };
-        for _ in 0..8 {
-            worker.worker_once().await.unwrap();
-        }
-        let current = f.store.run(run.id).await.unwrap();
+        let current = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                worker.worker_once().await.unwrap();
+                let current = f.store.run(run.id).await.unwrap();
+                if matches!(current.phase.as_str(), "COMPLETED" | "FAILED" | "CANCELLED") {
+                    break current;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
         assert_eq!(
             current.phase,
             if approved { "COMPLETED" } else { "FAILED" },
-            "{current:?}"
+            "phase={}, error={:?}, pending={}",
+            current.phase,
+            current.error,
+            current.pending
         );
         assert_eq!(calls.load(Ordering::SeqCst), usize::from(approved));
         for job in [&parent["generation"], &child["generation"]] {

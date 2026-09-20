@@ -8,6 +8,8 @@ pub mod error;
 pub mod federation;
 pub mod generation;
 pub mod harness;
+pub mod lifecycle;
+pub mod orchestration;
 pub mod provider;
 pub mod registry;
 pub mod semantic;

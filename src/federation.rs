@@ -64,6 +64,22 @@ impl Federation {
             ..self.clone()
         })
     }
+    pub async fn for_recovery(&self) -> Result<Self> {
+        let store = self.store.recovery_pool().await?;
+        Ok(Self {
+            registry: Registry::new(store.pool.clone()),
+            store,
+            ..self.clone()
+        })
+    }
+    pub async fn for_runtime_workers(&self) -> Result<Self> {
+        let store = self.store.worker_pool().await?;
+        Ok(Self {
+            registry: Registry::new(store.pool.clone()),
+            store,
+            ..self.clone()
+        })
+    }
 
     pub async fn peers(&self) -> Result<Vec<Peer>> {
         Ok(sqlx::query_as("SELECT * FROM peers ORDER BY node_id")

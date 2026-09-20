@@ -1,6 +1,6 @@
 # Aidash 0.1 architecture
 
-This document describes the current implementation and its boundaries. Additional orchestration, cross-node atomic transaction, semantic vector memory and A2A capabilities remain under development.
+This document describes the current implementation and its boundaries. Scoped federation, complete A2A compatibility and the combined six-capability release acceptance remain under development.
 
 ## Current implementation
 
@@ -26,4 +26,4 @@ The marketplace is a self-hosted, versioned manifest repository exposed by the n
 
 Add orchestration without losing durable node/run identity, policy-controlled agent creation, shared RBAC/ABAC enforcement, a recoverable atomic transaction protocol between participating nodes, authorized semantic retrieval and an A2A v1.0.0 client/server boundary. Keep explicit model selection, independently operated node databases and the existing durable tool-effect contract. Cross-node transactions must communicate through participating node APIs instead of accessing remote databases directly.
 
-The current bearer token and scoped delegation grants do not satisfy FR-AUTH-001. The [distributed transaction protocol](transactions.md) adds durable prepare/commit/abort and cross-node visibility barriers; its full FR-TX-001 authorization and failure-acceptance gate remains open. Persisted JSON memory does not satisfy FR-MEM-001, and Aidash federation endpoints do not establish A2A compatibility.
+The current bearer token and scoped delegation grants do not satisfy FR-AUTH-001. The [distributed transaction protocol](transactions.md) adds durable prepare/commit/abort and cross-node visibility barriers; its full FR-TX-001 authorization and failure-acceptance gate remains open. [Semantic memory](semantic-memory.md) adds Qdrant indexing, authorized retrieval and provenance in local Agent context. [Kubernetes/k3s orchestration](orchestration.md) adds independently scalable roles, graceful shutdown and deployment observations. Their cross-capability acceptance remains a separate release gate. Aidash federation endpoints do not establish A2A compatibility.

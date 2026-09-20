@@ -92,9 +92,38 @@ jobs:
       - name: Stop verification services
         if: always()
         run: docker compose down
+  orchestration:
+    name: Cluster recovery (${{ matrix.distribution }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        distribution: [kubernetes, k3s]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --ignore-scripts --prefix web
+      - run: npm exec --prefix web -- playwright install --with-deps chromium
+      - name: Test Pod recovery, scaling, rolling updates and dashboard
+        run: bash scripts/test-cluster.sh '${{ matrix.distribution }}'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: cluster-evidence-${{ matrix.distribution }}
+          include-hidden-files: true
+          path: |
+            .ignore/platform/aidash-ops-*/
+            .ignore/dashboard-deployment-cluster-*.png
   success:
     name: CI Success
-    needs: [lint, rust-tests, acceptance]
+    needs: [lint, rust-tests, acceptance, orchestration]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

@@ -45,21 +45,33 @@ async fn main() -> Result<()> {
         client,
         notify: Arc::new(tokio::sync::Notify::new()),
     };
+    let (shutdown, stopping) = tokio::sync::watch::channel(false);
     let mut background = tokio::task::JoinSet::new();
+    let mut workers = tokio::task::JoinSet::new();
+    if let Ok(address) = std::env::var("AIDASH_PROBE_LISTEN") {
+        let address = address
+            .parse()
+            .map_err(|_| aidash::Error::Invalid("invalid AIDASH_PROBE_LISTEN".into()))?;
+        background.spawn(aidash::lifecycle::probes(
+            address,
+            federation.store.clone(),
+            stopping.clone(),
+        ));
+    }
     {
-        let f = federation.for_workers().await?;
+        let f = federation.for_recovery().await?;
         background.spawn(aidash::transactions::coordinator::run(f));
     }
     {
-        let f = federation.for_workers().await?;
+        let f = federation.for_recovery().await?;
         background.spawn(aidash::transactions::participant::run(f));
     }
     {
-        let f = federation.for_workers().await?;
+        let f = federation.for_runtime_workers().await?;
         background.spawn(aidash::generation::provision::run(f));
     }
     {
-        let f = federation.for_workers().await?;
+        let f = federation.for_runtime_workers().await?;
         background.spawn(aidash::semantic::worker::run(f));
     }
     if mode != "worker" {
@@ -76,33 +88,55 @@ async fn main() -> Result<()> {
         });
     }
     if mode != "server" {
-        let workers = federation.for_workers().await?;
+        let worker_federation = federation.for_runtime_workers().await?;
         // Independent workers allow one agent to wait while another makes progress.
         for _ in 0..4 {
             let h = Harness {
-                federation: workers.clone(),
+                federation: worker_federation.clone(),
             };
-            background.spawn(async move { h.run_worker().await });
+            let stopping = stopping.clone();
+            workers.spawn(async move { h.run_worker_until(stopping).await });
         }
     }
+    let mut http = tokio::task::JoinSet::new();
     if mode != "worker" {
         let listener = tokio::net::TcpListener::bind(config.listen).await?;
         tracing::info!(node=%config.node_id,listen=%config.listen,"Aidash node started");
-        let server = axum::serve(listener, api::router(federation)).with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+        let mut stopping = stopping.clone();
+        http.spawn(async move {
+            axum::serve(listener, api::router(federation))
+                .with_graceful_shutdown(
+                    async move { aidash::lifecycle::stopped(&mut stopping).await },
+                )
+                .await
         });
-        tokio::select! {
-            result=server=>result?,
-            result=background.join_next()=>{return Err(aidash::Error::External(format!("background service stopped: {result:?}")));}
-        }
     } else {
         tracing::info!(node=%config.node_id,"Aidash worker started");
-        tokio::select! {
-            _=tokio::signal::ctrl_c()=>{},
-            result=background.join_next()=>{return Err(aidash::Error::External(format!("worker stopped: {result:?}")));}
-        }
     }
+    tokio::select! {
+        result=aidash::lifecycle::signal()=>result?,
+        result=background.join_next()=>return Err(aidash::Error::External(format!("background service stopped: {result:?}"))),
+        result=workers.join_next(), if !workers.is_empty()=>return Err(aidash::Error::External(format!("worker stopped: {result:?}"))),
+        result=http.join_next(), if !http.is_empty()=>return Err(aidash::Error::External(format!("HTTP server stopped: {result:?}"))),
+    }
+    shutdown.send_replace(true);
+    tracing::info!("draining HTTP requests and current worker steps");
+    let drained = tokio::time::timeout(Duration::from_secs(20), async {
+        while workers.join_next().await.is_some() {}
+        while http.join_next().await.is_some() {}
+    })
+    .await
+    .is_ok();
+    if !drained {
+        tracing::warn!(
+            "drain deadline reached; unfinished durable work will recover after lease expiry"
+        );
+    }
+    workers.abort_all();
+    http.abort_all();
     background.abort_all();
+    while workers.join_next().await.is_some() {}
+    while http.join_next().await.is_some() {}
     while background.join_next().await.is_some() {}
     Ok(())
 }

@@ -664,10 +664,20 @@ async fn missing_usage_keeps_reservation_and_stops_before_another_model_call() {
     let worker = aidash::harness::Harness {
         federation: f.clone(),
     };
-    for _ in 0..10 {
-        worker.worker_once().await.unwrap();
-    }
-    let run = f.store.runs().await.unwrap().remove(0);
+    // Failure delivery is scheduled by wake_at and compared with PostgreSQL's
+    // clock. Wait for that durable transition rather than counting fast polls.
+    let run = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            worker.worker_once().await.unwrap();
+            let run = f.store.runs().await.unwrap().remove(0);
+            if run.phase == "FAILED" {
+                break run;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(run.phase, "FAILED");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     aidash::generation::provision::reconcile(&f).await.unwrap();

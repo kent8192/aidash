@@ -95,6 +95,7 @@ import {
 } from "./forms";
 import { GenerationPage, GenerationAssignForm } from "./generation";
 import { SemanticPage } from "./semantic";
+import { DeploymentPage } from "./deployment";
 import { TransactionsPage } from "./transactions";
 import "./style.css";
 const sections = [
@@ -103,6 +104,7 @@ const sections = [
   ["generation", Zap],
   ["transactions", GitBranch],
   ["semantic", Database],
+  ["deployment", Boxes],
   ["clusters", Boxes],
   ["mesh", Network],
   ["tasks", ListTodo],
@@ -190,9 +192,12 @@ function Dashboard({
   }, [client]);
   const operator = session.data?.access.kind === "operator";
   const restrictedSection =
-    !operator && ["mesh", "marketplace", "transactions"].includes(section);
+    !operator &&
+    ["mesh", "marketplace", "transactions", "deployment"].includes(section);
   const showOrdinary =
-    !state.isError && !restrictedSection && section !== "transactions";
+    !state.isError &&
+    !restrictedSection &&
+    !["transactions", "deployment"].includes(section);
   const atomicPending =
     state.error instanceof ApiError && state.error.status === 503;
   const mesh = useQuery({
@@ -364,7 +369,9 @@ function Dashboard({
             .filter(
               ([key]) =>
                 operator ||
-                !["mesh", "marketplace", "transactions"].includes(key),
+                !["mesh", "marketplace", "transactions", "deployment"].includes(
+                  key,
+                ),
             )
             .map(([key, Icon]) => (
               <Link
@@ -455,7 +462,12 @@ function Dashboard({
             {(operator ||
               ["workspace", "task", "goal"].includes(primary.kind)) &&
               !restrictedSection &&
-              !["generation", "transactions", "semantic"].includes(section) && (
+              ![
+                "generation",
+                "transactions",
+                "semantic",
+                "deployment",
+              ].includes(section) && (
                 <button
                   className="primary"
                   onClick={() => open({ kind: primary.kind })}
@@ -492,9 +504,11 @@ function Dashboard({
               </button>
             </div>
           )}
-          {!data && !state.isError && section !== "transactions" && (
-            <div className="loading">{t("loading")}</div>
-          )}
+          {!data &&
+            !state.isError &&
+            !["transactions", "deployment"].includes(section) && (
+              <div className="loading">{t("loading")}</div>
+            )}
           {session.data && restrictedSection && (
             <div className="notice" role="status">
               {t("administratorsOnly")}
@@ -502,6 +516,9 @@ function Dashboard({
           )}
           {section === "transactions" && operator && session.data && (
             <TransactionsPage nodeId={session.data.node_id} />
+          )}
+          {section === "deployment" && operator && session.data && (
+            <DeploymentPage />
           )}
           {data && showOrdinary && (
             <>

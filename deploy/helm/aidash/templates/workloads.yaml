@@ -1,0 +1,147 @@
+{{- $name := printf "%s-aidash" .Release.Name -}}
+{{- $id := required "node.id must be a stable aidash:// identity" .Values.node.id -}}
+{{- $secret := required "existingSecret is required" .Values.existingSecret -}}
+{{- if gt (len .Release.Name) 49 -}}
+{{- fail "release name must be at most 49 characters" -}}
+{{- end -}}
+{{- if not (regexMatch "^aidash://[A-Za-z0-9-]{1,100}$" $id) -}}
+{{- fail "node.id is not a valid Aidash node identity" -}}
+{{- end -}}
+{{- if lt (int .Values.terminationGracePeriodSeconds) 25 -}}
+{{- fail "terminationGracePeriodSeconds must allow the 20-second application drain" -}}
+{{- end -}}
+{{- range $role := list "server" "worker" }}
+{{- $settings := index $.Values $role }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}-{{ $role }}
+  labels:
+    app.kubernetes.io/name: aidash
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: {{ $role }}
+spec:
+  replicas: {{ $settings.replicas }}
+  revisionHistoryLimit: 3
+  minReadySeconds: 2
+  progressDeadlineSeconds: 300
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: {{ $role }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aidash
+        app.kubernetes.io/instance: {{ $.Release.Name }}
+        app.kubernetes.io/component: {{ $role }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: {{ and $.Values.observability.enabled (eq $role "server") }}
+      terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      {{- with $.Values.image.pullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.affinity }}
+      affinity: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: aidash
+          image: {{ printf "%s:%s" $.Values.image.repository $.Values.image.tag | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          args: [{{ $role | quote }}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          envFrom:
+            - secretRef: { name: {{ $secret }} }
+          env:
+            - { name: AIDASH_NODE_ID, value: {{ $id | quote }} }
+            - name: AIDASH_ENDPOINT
+              value: {{ $.Values.node.endpoint | default (printf "http://%s.%s.svc:%v" $name $.Release.Namespace $.Values.service.port) | quote }}
+            - { name: AIDASH_LISTEN, value: "0.0.0.0:8080" }
+            - { name: AIDASH_PROBE_LISTEN, value: "0.0.0.0:8081" }
+            {{- if and $.Values.observability.enabled (eq $role "server") }}
+            - name: AIDASH_KUBERNETES_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            - { name: AIDASH_KUBERNETES_RELEASE, value: {{ $.Release.Name | quote }} }
+            {{- end }}
+          ports:
+            - { name: probes, containerPort: 8081 }
+            {{- if eq $role "server" }}
+            - { name: http, containerPort: 8080 }
+            {{- end }}
+          startupProbe:
+            httpGet: { path: /live, port: probes }
+            periodSeconds: 2
+            failureThreshold: 150
+          readinessProbe:
+            httpGet: { path: /ready, port: probes }
+            periodSeconds: 3
+            timeoutSeconds: 3
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /live, port: probes }
+            periodSeconds: 10
+            timeoutSeconds: 2
+          resources: {{ toYaml $settings.resources | nindent 12 }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: server
+  ports:
+    - { name: http, port: {{ .Values.service.port }}, targetPort: http }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+automountServiceAccountToken: false
+{{- if .Values.observability.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-observe
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [list]
+  - apiGroups: [""]
+    resources: [pods, events]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-observe
+subjects:
+  - { kind: ServiceAccount, name: {{ $name }}, namespace: {{ .Release.Namespace }} }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-observe
+{{- end }}

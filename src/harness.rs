@@ -95,7 +95,15 @@ impl Harness {
         Ok(true)
     }
     pub async fn run_worker(&self) -> Result<()> {
-        loop {
+        let (_sender, receiver) = tokio::sync::watch::channel(false);
+        self.run_worker_until(receiver).await
+    }
+    /// Finish the current durable step, then stop claiming work on shutdown.
+    pub async fn run_worker_until(
+        &self,
+        stopping: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()> {
+        while !*stopping.borrow() {
             match self.worker_once().await {
                 Ok(true) => {}
                 Ok(false) => {
@@ -110,6 +118,7 @@ impl Harness {
                 }
             }
         }
+        Ok(())
     }
     async fn tool_error(
         &self,

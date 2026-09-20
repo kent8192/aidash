@@ -30,8 +30,15 @@ impl Store {
 
     pub async fn migrate(pool: &PgPool) -> Result<()> {
         use migration::MigratorTrait;
+        // Replicas may start together during a rollout. Serialize the complete
+        // migrator, including its initial migration ledger creation.
+        let mut lease = pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(71003203)")
+            .execute(&mut *lease)
+            .await?;
         let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(pool.clone());
         migration::Migrator::up(&db, None).await?;
+        lease.commit().await?;
         Ok(())
     }
     pub async fn connect(url: &str, node_id: String) -> Result<Self> {
@@ -47,7 +54,7 @@ impl Store {
         let control_pool = pool
             .options()
             .clone()
-            .max_connections(32)
+            .max_connections(16)
             .connect_with(pool.connect_options().as_ref().clone())
             .await?;
         Ok(Self {
@@ -59,13 +66,61 @@ impl Store {
 
     /// Share the database and connection settings without sharing pool capacity.
     pub async fn isolated_pool(&self) -> Result<Self> {
+        let mut store = self.worker_pool().await?;
+        store.control_pool = self
+            .control_pool
+            .options()
+            .clone()
+            .max_connections(4)
+            .idle_timeout(std::time::Duration::from_secs(10))
+            .connect_with(self.control_pool.connect_options().as_ref().clone())
+            .await?;
+        Ok(store)
+    }
+
+    /// Runtime workers reserve data capacity while sharing visibility leases.
+    /// Callers must not explicitly close the shared control pool.
+    pub async fn worker_pool(&self) -> Result<Self> {
         let pool = self
             .pool
             .options()
             .clone()
+            .max_connections(8)
+            .idle_timeout(std::time::Duration::from_secs(10))
             .connect_with(self.pool.connect_options().as_ref().clone())
             .await?;
-        Self::from_pool(pool, self.node_id.clone()).await
+        Ok(Self {
+            pool,
+            control_pool: self.control_pool.clone(),
+            node_id: self.node_id.clone(),
+        })
+    }
+
+    /// Transaction recovery needs independent control capacity even while
+    /// ordinary work retains visibility leases. Other isolated workers share
+    /// the node's visibility pool instead of multiplying idle connections.
+    pub async fn recovery_pool(&self) -> Result<Self> {
+        let pool = self
+            .pool
+            .options()
+            .clone()
+            .max_connections(4)
+            .idle_timeout(std::time::Duration::from_secs(10))
+            .connect_with(self.pool.connect_options().as_ref().clone())
+            .await?;
+        let control_pool = self
+            .control_pool
+            .options()
+            .clone()
+            .max_connections(4)
+            .idle_timeout(std::time::Duration::from_secs(10))
+            .connect_with(self.control_pool.connect_options().as_ref().clone())
+            .await?;
+        Ok(Self {
+            pool,
+            control_pool,
+            node_id: self.node_id.clone(),
+        })
     }
     pub async fn event(
         &self,

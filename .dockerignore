@@ -1,0 +1,13 @@
+.git
+.ignore
+.trunk
+.env
+.env.*
+target
+coverage
+openapi
+web/node_modules
+web/dist
+web/src/generated
+web/test-results
+web/playwright-report

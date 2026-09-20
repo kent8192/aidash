@@ -23,6 +23,8 @@ pub enum Error {
     TransactionPending,
     #[error("semantic backend unavailable or invalid; inspect index status and retry")]
     SemanticUnavailable,
+    #[error("Kubernetes observations unavailable; check service account and API connectivity")]
+    OrchestrationUnavailable,
     #[error("{0}")]
     External(String),
     #[error("{0}")]
@@ -45,9 +47,9 @@ impl IntoResponse for Error {
             Self::NotFound(s) => (StatusCode::NOT_FOUND, s.clone()),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden".into()),
-            Self::TransactionPending | Self::SemanticUnavailable => {
-                (StatusCode::SERVICE_UNAVAILABLE, self.to_string())
-            }
+            Self::TransactionPending
+            | Self::SemanticUnavailable
+            | Self::OrchestrationUnavailable => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
             Self::Database(error)
                 if error
                     .as_database_error()

@@ -18,6 +18,9 @@ actions:
     - trunk-upgrade-available
 lint:
   ignore:
+    - linters: [prettier]
+      paths:
+        - deploy/helm/**/templates/**
     - linters: [ALL]
       paths:
         - openapi/aidash.json

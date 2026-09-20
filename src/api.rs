@@ -71,6 +71,7 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
             "/api",
             ordinary_routes()
                 .merge(crate::transactions::api::routes())
+                .merge(crate::orchestration::routes())
                 .routes(routes!(session)),
         )
         .split_for_parts();
@@ -91,6 +92,7 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
 pub fn router(f: Federation) -> Router {
     let (api, _) = ordinary_routes().split_for_parts();
     let (transactions, _) = crate::transactions::api::routes()
+        .merge(crate::orchestration::routes())
         .routes(routes!(session))
         .split_for_parts();
     let api = api
@@ -1149,7 +1151,7 @@ mod schema_tests {
                 .values()
                 .map(|path| path.as_object().unwrap().len())
                 .sum::<usize>(),
-            62
+            63
         );
         for (path, operations) in paths {
             assert!(path.starts_with("/api/"));

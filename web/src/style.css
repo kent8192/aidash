@@ -1527,3 +1527,28 @@ details > summary {
 .semantic-page .semantic-summary {
   padding-top: 14px;
 }
+
+.deployment-page {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+.deployment-card {
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.deployment-card h3 {
+  margin: 0 0 8px;
+}
+.deployment-card p {
+  margin: 8px 0;
+}
+.deployment-card dl {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 1fr;
+  gap: 8px;
+}
+.deployment-card dd {
+  margin: 0;
+}

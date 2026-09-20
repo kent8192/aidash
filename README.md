@@ -2,7 +2,7 @@
 
 Aidash 0.1 is a self-hosted federated agent mesh. Register an explicitly selected model and an agent, start a goal in the dashboard, and let agents claim work across independently operated nodes. Workspaces retain tasks, artifacts, messages and an ordered event log. Workers persist their execution state and recover after process termination.
 
-The current implementation includes a federated mesh, scoped authorization, policy-driven local agent generation, recoverable cross-node transactions, and persistent semantic memory. See [architecture](docs/architecture.md), [authorization](docs/authorization.md), [generation](docs/generation.md), [distributed transactions](docs/transactions.md), [semantic memory](docs/semantic-memory.md), and [protocol and recovery contracts](docs/protocol.md). Kubernetes/k3s orchestration, scoped federation, full A2A compatibility, and the combined release acceptance gates remain under development.
+The current implementation includes a federated mesh, scoped authorization, policy-driven local agent generation, recoverable cross-node transactions, persistent semantic memory, and Kubernetes/k3s deployment. See [architecture](docs/architecture.md), [authorization](docs/authorization.md), [generation](docs/generation.md), [distributed transactions](docs/transactions.md), [semantic memory](docs/semantic-memory.md), [orchestration](docs/orchestration.md), and [protocol and recovery contracts](docs/protocol.md). Scoped federation, full A2A compatibility, and the combined release acceptance gates remain under development.
 
 ## Run locally
 
@@ -64,7 +64,7 @@ cargo run --locked -- serve
 
 Configure a peer on **both** nodes in Settings. Each peer record contains the other node's identity and endpoint, protocol `0.1`, and the name of a pair-specific `AIDASH_SECRET_*` credential. Each enabled peer must resolve to a different credential; configure the same pair credential at its two endpoints. Peer credentials must contain at least 32 printable ASCII characters and eight distinct characters; use a randomly generated token. Register at least one research agent on each node. Registry discovery exchanges metadata over the federation API; no remote database access is needed. Each workspace retains an authoritative home node.
 
-`aidash server` runs the API, outbox publisher and JetStream consumer. `aidash worker` runs four workers without an HTTP listener. `aidash serve` runs both roles. To exercise recovery, stop a **worker** process while leaving its server, PostgreSQL and NATS running, then restart it with the same configuration. The lease expires after 30 seconds. Task and run IDs remain stable.
+`aidash server` runs the API, outbox publisher and JetStream consumer. `aidash worker` runs four workers without the management HTTP listener. Set `AIDASH_PROBE_LISTEN` to enable the separate health probe listener. `aidash serve` runs both roles. To exercise recovery, stop a **worker** process while leaving its server, PostgreSQL and NATS running, then restart it with the same configuration. The lease expires after 30 seconds. Task and run IDs remain stable.
 
 ## Tools and coordination
 
@@ -161,7 +161,7 @@ Schema changes live in the SeaORM migration crate. Create the next migration wit
 
 ## CI and coverage
 
-CI runs Trunk, Rust unit/integration tests, and the PostgreSQL/NATS/Chromium acceptance suite in separate jobs. `CI Success` requires every job to succeed, including the Codecov upload. Use that check for branch protection. Rust coverage uses `cargo llvm-cov` with real PostgreSQL tests and uploads an explicit LCOV file through Codecov OIDC. Codecov measures `src/`; tests, migration plumbing and generated API files are excluded. Browser tests establish dashboard behavior and are not included in the Rust coverage percentage.
+CI runs Trunk, Rust unit/integration tests, the PostgreSQL/NATS/Chromium acceptance suite, and Kubernetes/k3s recovery in separate jobs. The cluster jobs build the container, verify Pod termination, scaling and rolling updates, and inspect the live deployment dashboard. Run them locally with `bash scripts/test-cluster.sh kubernetes` and `bash scripts/test-cluster.sh k3s` after installing the browser dependencies. `CI Success` requires every job to succeed, including the Codecov upload. Use that check for branch protection. Rust coverage uses `cargo llvm-cov` with real PostgreSQL tests and uploads an explicit LCOV file through Codecov OIDC. Codecov measures `src/`; tests, migration plumbing and generated API files are excluded. Browser tests establish dashboard behavior and are not included in the Rust coverage percentage.
 
 Run `scripts/test-rust.sh --coverage` to produce `coverage/rust.lcov` locally (requires `cargo-llvm-cov` 0.8.7 and `llvm-tools-preview`). `scripts/check.sh` runs the full local suite. Cargo and npm lockfiles remain tracked for reproducible dependency resolution.
 
