@@ -1,5 +1,7 @@
 # Protocol and recovery contracts
 
+This document describes the current implementation. The [additional v0.1.0 requirements](expanded-requirements.md) require RBAC/ABAC, cross-node atomic transactions and A2A v1.0.0 interoperability, alongside orchestration, automatic agent generation and semantic memory. Those contracts remain pending implementation and verification; the behavior below does not establish their completion.
+
 ## Trust and identity
 
 A node publishes `/.well-known/aidash` with its `aidash://` identity, endpoint, capabilities, clusters and protocol version. All management routes under `/api` require a bearer access token. The dashboard uses authenticated fetch for SSE so credentials do not appear in URLs.
@@ -22,7 +24,7 @@ A state mutation and its event are committed together. The event table doubles a
 
 Event sequence allocation is serialized through a transaction advisory lock so commit order agrees with the SSE cursor. `/api/events/stream` honors `Last-Event-ID`; `/api/events?after=N` provides JSON replay. A disconnected or slow client can resume from the PostgreSQL event log. SSE is an observation channel, not the worker's durable queue.
 
-The workspace's home node owns task revisions and artifacts. A remote node owns its run journal and tool invocations. Federation commands operate on the home API and use stable keys. When a reply is lost, replay either returns the original result or reports a conflict for mismatched input. This is not a cross-node distributed transaction.
+The workspace's home node owns task revisions and artifacts. A remote node owns its run journal and tool invocations. Federation commands operate on the home API and use stable keys. When a reply is lost, replay either returns the original result or reports a conflict for mismatched input. This currently provides no cross-node atomic transaction; FR-TX-001 requires that additional protocol and its failure/recovery verification before v0.1.0 is complete.
 
 ## Execution and effects
 

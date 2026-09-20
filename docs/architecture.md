@@ -1,6 +1,8 @@
 # Aidash 0.1 architecture
 
-Source: [v0.1.0 functional requirements](https://app.notion.com/p/3e172fa877aa8096bca5c8d8c2c73b24), read 2026-09-20, last edited 13:33:55 UTC. The version-specific exclusions take precedence over the broader [technology selection](https://app.notion.com/p/3e172fa877aa80e88c60d0dfeae01419). The non-functional requirements page was empty.
+Source: [v0.1.0 functional requirements](https://app.notion.com/p/3e172fa877aa8096bca5c8d8c2c73b24), last edited 2026-09-20 15:55:40 UTC. Its six [additional mandatory requirements](expanded-requirements.md) are part of this release. The paragraphs below describe the current implementation; the added capabilities remain to be implemented and verified.
+
+## Current implementation
 
 The implementation is a Rust node executable, with independent control server and worker modes, and a React/TypeScript dashboard. All state lives in PostgreSQL. SeaORM owns registry CRUD; SQLx owns migrations, task transitions, execution journals, and the event outbox. Both share one pool. SQLx runtime queries are exercised against real PostgreSQL so builds do not require a live database.
 
@@ -10,12 +12,18 @@ Every execution step is persisted before advancing. A leased worker processes on
 
 State mutations append durable events in the same transaction. An outbox publisher waits for JetStream persistence before marking an event sent. Consumer acknowledgments follow a committed inbox record; redelivery is deduplicated. PostgreSQL scanning also recovers runnable work after restart, including a publication outage. SSE resumes from a durable event sequence and uses the database log, so reconnection does not depend on an in-memory broadcast buffer.
 
-The marketplace is a self-hosted, versioned manifest repository exposed by the node API. Installation validates metadata and dependencies, verifies the digest and atomically registers the entity with local configuration. Payments, rankings, sandbox runtimes, automatic model routing, vector memory, full A2A compatibility and Kubernetes orchestration are outside this version.
+The marketplace is a self-hosted, versioned manifest repository exposed by the node API. Installation validates metadata and dependencies, verifies the digest and atomically registers the entity with local configuration. Payments, rankings, WASM sandboxing and automatic model routing remain outside this version. Kubernetes/k3s orchestration, automatic agent generation, complex RBAC/ABAC, complete distributed transactions, semantic memory/vector DB and full A2A compatibility are required for v0.1.0 and are pending implementation.
 
-## Implementation and verification sequence
+## Baseline implementation and verification sequence
 
 1. Define entities, schema validation, PostgreSQL migrations and task transitions.
 2. Implement providers, tool adapters, context compaction and the durable worker.
 3. Connect event delivery, federation, interaction and marketplace APIs.
 4. Build the localized dashboard on those APIs, including task ownership, mesh, execution and human controls.
 5. Verify with real PostgreSQL and NATS, scripted provider protocol fixtures, two independent nodes, concurrent claims, redelivery and worker process termination/restart. Live commercial model quality is separate from protocol and recovery testing.
+
+## Required architecture extensions
+
+Add orchestration without losing durable node/run identity, policy-controlled agent creation, shared RBAC/ABAC enforcement, a recoverable atomic transaction protocol between participating nodes, authorized semantic retrieval and an A2A v1.0.0 client/server boundary. Keep explicit model selection, independently operated node databases and the existing durable tool-effect contract. Cross-node transactions must communicate through participating node APIs instead of accessing remote databases directly.
+
+The current bearer token and scoped delegation grants do not satisfy FR-AUTH-001. The current per-node SQL transactions, outbox/inbox and idempotent federation requests do not satisfy FR-TX-001. Persisted JSON memory does not satisfy FR-MEM-001, and Aidash federation endpoints do not establish A2A compatibility. See the [expanded acceptance criteria and P0–P2 order](expanded-requirements.md#release-acceptance-and-implementation-order) before claiming the expanded release is complete.
