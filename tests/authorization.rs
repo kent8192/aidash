@@ -371,12 +371,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation() {
         .0,
         403
     );
-    for path in [
-        "/api/registry",
-        "/api/marketplace",
-        "/api/mesh",
-        "/api/authorization/acme",
-    ] {
+    for path in ["/api/marketplace", "/api/mesh", "/api/authorization/acme"] {
         assert_eq!(
             scoped_request(&app, token, "GET", path, Value::Null)
                 .await

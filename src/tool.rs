@@ -275,7 +275,6 @@ impl Tool for Builtin {
         match self.name {
             "agent_discover" => Ok(json!(
                 ctx.home
-                    .federation
                     .discover(&serde_json::from_value::<Search>(input)?)
                     .await?
             )),

@@ -1,5 +1,6 @@
 use crate::{
     Error, Result,
+    authorization::execution::{self, Guard},
     context::{self, Context},
     domain::*,
     federation::{Federation, Home},
@@ -50,7 +51,9 @@ impl Harness {
             };
             let mut current = store.run(id).await?;
             let attempts = current.pending["retry_count"].as_u64().unwrap_or(0) + 1;
-            if current.pending.get("terminal_transition").is_some() {
+            if matches!(e, Error::Forbidden | Error::Unauthorized) {
+                store.pause_for_authorization(&current, token).await?;
+            } else if current.pending.get("terminal_transition").is_some() {
                 // Delivery is durable and unbounded; never retry the failed tool
                 // just because its home node has not acknowledged terminal state.
                 current.pending["last_delivery_error"] = json!(e.to_string());
@@ -123,11 +126,21 @@ impl Harness {
         Ok(tools)
     }
     async fn advance(&self, run: &mut Run, token: Uuid) -> Result<()> {
+        if execution::cancel_if_scoped(&self.federation.store, run, token).await? {
+            return Ok(());
+        }
+        let guard = Guard::begin(&self.federation, run).await?;
+        let result = self.advance_step(run, token, guard.as_ref()).await;
+        if let Some(guard) = guard {
+            guard.finish(result).await
+        } else {
+            result
+        }
+    }
+    async fn advance_step(&self, run: &mut Run, token: Uuid, guard: Option<&Guard>) -> Result<()> {
         let store = &self.federation.store;
-        let home = Home {
-            federation: self.federation.clone(),
-            run: run.clone(),
-        };
+        let home = Home::new(self.federation.clone(), run.clone())
+            .with_authority(guard.map(Guard::authority));
         let task = home.task().await?;
         if matches!(
             task.status.as_str(),
@@ -202,6 +215,9 @@ impl Harness {
                 store.save_run(run, token, "run.started").await?;
             }
             "THINKING" => {
+                if let Some(guard) = guard {
+                    guard.inference().await?;
+                }
                 if run.step >= agent.max_steps {
                     return Err(Error::Invalid("agent max_steps exceeded".into()));
                 }
@@ -264,6 +280,11 @@ impl Harness {
                 let result: ModelResponse =
                     serde_json::from_value(run.pending["response"].clone())?;
                 if !result.text.is_empty() {
+                    if let Some(guard) = guard {
+                        guard
+                            .action("message.create", "workspace", run.workspace_id)
+                            .await?;
+                    }
                     home.message(&format!("{}:{}:output", run.id, run.step), &result.text)
                         .await?;
                 }
@@ -283,6 +304,9 @@ impl Harness {
                                     )
                             });
                             if failed {
+                                if let Some(guard) = guard {
+                                    guard.action("human.request", "run", run.id).await?;
+                                }
                                 let h=store.human_request(run,"INFORMATION_REQUEST","A subtask needs intervention. You can explicitly abandon failed, blocked or cancelled subtasks in their task details, providing a reason. Then answer this request to continue with the remaining results, or cancel this parent.",&format!("{}:{}:subtasks",run.id,run.step)).await?;
                                 run.pending =
                                     json!({"human_request_id":h.id,"resume_phase":"THINKING"});
@@ -306,6 +330,12 @@ impl Harness {
                             ),
                             content: json!(result.text),
                         };
+                        if let Some(guard) = guard {
+                            guard
+                                .action("artifact.create", "artifact", run.task_id)
+                                .await?;
+                            guard.action("task.complete", "task", run.task_id).await?;
+                        }
                         home.complete(&format!("{}:complete", run.id), &artifact)
                             .await?;
                         run.phase = "COMPLETED".into();
@@ -323,6 +353,9 @@ impl Harness {
                 let tool = tools.get(&call.name).ok_or_else(|| {
                     Error::Invalid(format!("model called an unavailable tool {}", call.name))
                 })?;
+                if let Some(guard) = guard {
+                    guard.tool(call).await?;
+                }
                 let key = format!("{}:{}:{}", run.id, run.step, cursor);
                 let invocation = store
                     .invocation_start(
@@ -335,6 +368,9 @@ impl Harness {
                     )
                     .await?;
                 if invocation.status == "UNCERTAIN" {
+                    if let Some(guard) = guard {
+                        guard.action("human.request", "run", run.id).await?;
+                    }
                     let h=store.human_request(run,"CONFIRMATION",&format!("Tool {} may have completed before the worker stopped. Reconcile the external effect, then answer with a JSON object containing result. It will not be executed again. Invocation: {key}",call.name),&format!("{key}:reconcile")).await?;
                     run.pending["human_request_id"] = json!(h.id);
                     run.pending["uncertain_key"] = json!(key);

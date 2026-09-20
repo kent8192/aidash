@@ -10,6 +10,8 @@ import type {
   AuthorizationDecisionsParams,
   AuthorizationRevisionsParams,
   AuthorizationUpdate,
+  Binding,
+  CatalogInput,
   ClaimInput,
   ControlInput,
   ConversationInput,
@@ -103,6 +105,61 @@ export const authorizationReplace = async (
       ...getHeaders(options?.headers),
     },
     body: JSON.stringify(authorizationUpdate),
+  });
+};
+
+export const getAuthorizationCatalogUrl = (tenant: string) => {
+  return `/api/authorization/${tenant}/catalog`;
+};
+
+export const authorizationCatalog = async (
+  tenant: string,
+  options?: Parameters<typeof apiFetch>[1],
+): Promise<Binding[]> => {
+  return apiFetch<Binding[]>(getAuthorizationCatalogUrl(tenant), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getAuthorizationSetCatalogUrl = (tenant: string) => {
+  return `/api/authorization/${tenant}/catalog`;
+};
+
+export const authorizationSetCatalog = async (
+  tenant: string,
+  catalogInput: CatalogInput,
+  options?: Parameters<typeof apiFetch>[1],
+): Promise<Binding> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<
+      string | readonly string[] | undefined
+    >(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  return apiFetch<Binding>(getAuthorizationSetCatalogUrl(tenant), {
+    ...options,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(catalogInput),
   });
 };
 

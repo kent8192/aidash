@@ -1,6 +1,6 @@
-# Authorization policy service and workspace access
+# Authorization policy service and scoped execution
 
-The policy service implements policy management, decisions, revocable subject credentials and scoped workspace API access for FR-AUTH-001. The management endpoints below require the existing operator bearer token. Execution, federation, Registry/Marketplace resource scopes and dashboard controls are still tracked in [the implementation plan](implementation/expanded-platform.md); this is not completion of FR-AUTH-001.
+The policy service implements policy management, decisions, revocable subject credentials, scoped workspace APIs, tenant catalog approvals and local execution for FR-AUTH-001. The management endpoints below require the existing operator bearer token. Remote federation, finer resource scopes, remaining management workflows and dashboard controls are still tracked in [the implementation plan](implementation/expanded-platform.md); this is not completion of FR-AUTH-001.
 
 ## Management API
 
@@ -15,6 +15,8 @@ The policy service implements policy management, decisions, revocable subject cr
 | POST   | `/api/authorization/{tenant}/credentials`             | Issue a subject bearer token, returned once                               |
 | GET    | `/api/authorization/{tenant}/credentials`             | List the latest 200 credential metadata records, without tokens or hashes |
 | POST   | `/api/authorization/{tenant}/credentials/{id}/revoke` | Idempotently revoke a credential in the named tenant                      |
+| GET    | `/api/authorization/{tenant}/catalog`                 | List tenant Registry approvals and revisions                              |
+| POST   | `/api/authorization/{tenant}/catalog`                 | Approve or disable an exact Registry version using `expected_revision`    |
 
 Creation requires `expected_revision: 0`. Subsequent changes require the current revision. Concurrent updates with the same revision cannot both succeed; the loser receives HTTP 409. Revisions and their full policy documents are committed together. History pages default to 100 records and are capped at 200.
 
@@ -88,11 +90,35 @@ Scoped workspace creation saves tenant and owner independently of editable works
 
 For example, an allow policy with `subjects: {"ids":["alice"]}`, these actions, `resources: {"kinds":["workspace"]}` and a condition comparing resource `/owner` to literal `"alice"` grants Alice access to her workspaces in that tenant. Another tenant's Alice cannot access them. Workspace read currently covers its aggregate contents (tasks, artifacts, messages and related state records); finer per-resource grants remain part of the pending mesh integration.
 
-Collection responses filter by persisted tenant/ownership and the active policy. Scoped `/api/state` omits global Registry, peer and installation data. Global search, Registry, Marketplace, mesh, execution controls and authorization management remain operator-only. Preexisting workspaces remain operator-owned; they are never implicitly assigned to the first tenant. The operator token retains privileged bootstrap, legacy operation and recovery access.
+Collection responses filter by persisted tenant/ownership and the active policy. Scoped `/api/state` includes only approved, readable Registry entries and omits peer and installation data. Run details, control responses, state collections, human-request listings and run-related events also require `run.read` and `memory.read`. These filters apply to API snapshots, SSE frames and the workspace snapshots supplied to models and observation tools. Marketplace, conversations, human answers, run messages and authorization management remain operator-only. Preexisting workspaces remain operator-owned; they are never implicitly assigned to the first tenant. The operator token retains privileged bootstrap, legacy operation and recovery access.
 
 SSE validates scope before sending HTTP 200 and reloads credential/policy authority before each event frame, including already buffered events. It holds no database lock while yielding a frame. Polling without delivery does not append repeated decision audits. Credential revocation interrupts the stream; permission revocation prevents further matching delivery and denies reconnection to the revoked workspace.
 
-Scoped tasks cannot yet be claimed, delegated or accepted into a worker. These boundaries reject scoped workspaces even when requested with the operator token, until durable execution authority is connected. This prevents the existing worker/federation paths from bypassing scoped policy checks. Tasks created in legacy operator workspaces retain their existing behavior.
+## Tenant catalog and local execution
+
+An operator must approve every exact agent, model, tool, skill and cluster version needed by a tenant. For example, POST `{"entry":{"id":"research","version":"1.0.0"},"enabled":true,"expected_revision":0}` to `/api/authorization/acme/catalog`. Approval changes use optimistic revisions and retain history in PostgreSQL. Approval alone does not grant a policy action; policy permission alone does not expose an unapproved entry. Scoped Registry reads and discovery return only approved entries satisfying `registry.read`. Scoped discovery currently searches the local node.
+
+Register the executor as an enabled policy subject with kind `agent` and its canonical ID, such as `aidash://node-a/agents/research@1.0.0`. A subject can POST `{"revision":0,"agent":{"id":"research","version":"1.0.0"}}` to `/api/tasks/{id}/claim`, or delegate to the local node through `/api/tasks/{id}/delegate`. The task must be OPEN with completed dependencies. Admission checks workspace access, `agent.execute` and `task.execute`, then commits the task claim, run and execution grant together. Local delegation additionally requires `task.delegate` for the originating chain and records its delivery atomically.
+
+The grant stores tenant, workspace, root subject, credential ID and the complete runtime agent chain; it contains no bearer secret. Every execution decision must allow both the originating subject and every agent in that chain, including each subject's policy-defined delegation ancestors. A child cannot escape a parent's denial. The chain is bounded to 32 subjects, including the root.
+
+| Boundary                   | Required action and resource                                                                                                                       |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Every worker step          | `workspace.read` on the workspace, `task.execute` on the task, `agent.execute` on the agent, `run.read` on the run and `memory.read` on its memory |
+| Load configured components | `registry.read` on the approved model/tool/skill/cluster entries                                                                                   |
+| Model inference            | `model.infer` on the model, `skill.use` on each skill and `memory.read`                                                                            |
+| Invoke a tool              | `tool.invoke` on the configured tool ID or `builtin:<tool name>`                                                                                   |
+| Builtin mutations          | `task.create`, `task.delegate`, `artifact.create`, `message.create`, `memory.write` or `human.request` for the corresponding resource              |
+| Complete a task            | `artifact.create` and `task.complete`                                                                                                              |
+| Control or resume a run    | `workspace.read`, `run.read`, `memory.read` and `run.control`                                                                                      |
+
+Runtime resource attributes include trusted `owner` and `workspace_id`; Registry resources add their stored version, capabilities, tags, languages and configuration. Memory uses the agent ID with a `version` attribute. Artifact creation is scoped to the producing task ID; task/message creation is scoped to the workspace ID. The environment identifies the node and `transport: "worker"`. These attributes come from persisted state.
+
+Each worker boundary reloads and locks the current policy, credential, grant, workspace ownership and relevant catalog approvals. Its decision audits commit before model/tool effects start. Revocations wait for an in-flight boundary to finish, then prevent the next boundary. A denied or revoked execution pauses while retaining phase, context and pending tool cursor. Restoring permissions and resuming continues the saved operation under a fresh check. A fresh credential for the original root subject can replace an expired/revoked grant credential through resume; the agent chain remains unchanged. Authorized cancellation can clean up after revocation without new model or tool calls.
+
+The `serve` process reserves a separate database pool for workers so API requests waiting to revoke authority cannot exhaust the connections needed to finish an effect. Embedded runners should construct their worker Federation with `Federation::for_workers()` before starting workers. Pool settings and connection initialization hooks are preserved. Deploy this version to all workers before admitting scoped runs; older workers do not enforce execution grants.
+
+Scoped remote delegation and peer admission remain closed pending trusted cross-node identity mapping. Legacy admission also rejects scoped workspaces, including operator requests through that path; use subject credentials for scoped local admission. Tasks created in legacy operator workspaces retain their existing behavior.
 
 ## Policy semantics
 
@@ -108,4 +134,4 @@ Decisions include the revision, reason, matched policy IDs and the subject's eff
 
 `Authorization::evaluate_in_transaction` holds a shared lock on the policy revision until the caller commits or rolls back. A mutation integration must execute its protected change in that same transaction; calling `evaluate`, then starting a separate mutation transaction would allow revocation to race the operation. Long-running work must recheck at each persisted execution or delivery boundary.
 
-PostgreSQL integration tests verify API authentication, revision conflicts, decision/history persistence, dry-run behavior, revoked delegation, two-tenant workspace isolation, ownership forgery rejection, credential expiry/revocation, buffered SSE revocation and policy/credential locks held through a real workspace mutation. Pure policy tests cover inherited group roles, attribute conditions, deny precedence, tenant isolation, missing attributes and invalid policy graphs. These tests do not establish mesh-wide enforcement or completion of FR-AUTH-001.
+PostgreSQL integration tests verify API authentication, revision conflicts, decision/history persistence, dry-run behavior, revoked delegation, two-tenant workspace isolation, ownership forgery rejection, credential expiry/revocation, buffered SSE revocation and policy/credential locks held through a real workspace mutation. Local worker tests cover approved catalog isolation, disabled-agent and tool-policy denial, pending-operation recovery, child authority intersection, credential rotation, cancellation after revocation, run visibility in control/collection/stream/tool paths, durable audit before an HTTP effect and revocation with all API pool connections occupied. Pure policy tests cover inherited group roles, attribute conditions, deny precedence, tenant isolation, missing attributes and invalid policy graphs. These tests do not establish mesh-wide enforcement or completion of FR-AUTH-001.

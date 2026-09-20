@@ -51,6 +51,18 @@ pub struct Federation {
     pub notify: std::sync::Arc<tokio::sync::Notify>,
 }
 impl Federation {
+    /// Workers need reserved database capacity to finish an effect while API
+    /// revocations wait for its authority lease. Embedded runners must use this
+    /// separate pool too; otherwise waiting API requests can exhaust the pool.
+    pub async fn for_workers(&self) -> Result<Self> {
+        let store = self.store.isolated_pool().await?;
+        Ok(Self {
+            registry: Registry::new(store.pool.clone()),
+            store,
+            ..self.clone()
+        })
+    }
+
     pub async fn peers(&self) -> Result<Vec<Peer>> {
         Ok(sqlx::query_as("SELECT * FROM peers ORDER BY node_id")
             .fetch_all(&self.store.pool)
@@ -280,8 +292,30 @@ impl Federation {
 pub struct Home {
     pub federation: Federation,
     pub run: Run,
+    pub(crate) authority: Option<crate::authorization::execution::WorkerAuthority>,
 }
 impl Home {
+    pub fn new(federation: Federation, run: Run) -> Self {
+        Self {
+            federation,
+            run,
+            authority: None,
+        }
+    }
+    pub(crate) fn with_authority(
+        mut self,
+        authority: Option<crate::authorization::execution::WorkerAuthority>,
+    ) -> Self {
+        self.authority = authority;
+        self
+    }
+    pub async fn discover(&self, search: &Search) -> Result<Discovery> {
+        if let Some(authority) = &self.authority {
+            authority.discover(&self.federation, search).await
+        } else {
+            self.federation.discover(search).await
+        }
+    }
     pub fn owner(&self) -> String {
         qualified_agent(
             &self.federation.config.node_id,
@@ -296,7 +330,9 @@ impl Home {
         self.federation.request(&self.run.home_node,Method::POST,"/workspace",Some(&json!({"task_id":self.run.task_id,"agent":{"id":self.run.agent_id,"version":self.run.agent_version},"operation":op,"data":data}))).await
     }
     pub async fn snapshot(&self) -> Result<WorkspaceSnapshot> {
-        if self.local() {
+        if let Some(authority) = &self.authority {
+            authority.snapshot(self.run.workspace_id).await
+        } else if self.local() {
             self.federation.store.snapshot(self.run.workspace_id).await
         } else {
             self.command("snapshot", json!({})).await
@@ -377,6 +413,11 @@ impl Home {
         node: &str,
         agent: &EntityRef,
     ) -> Result<Delegation> {
+        if let Some(authority) = &self.authority {
+            return authority
+                .delegate(&self.federation, &self.run, task_id, node, agent)
+                .await;
+        }
         if self.local() {
             let t = self.federation.store.task(task_id).await?;
             if t.workspace_id != self.run.workspace_id {

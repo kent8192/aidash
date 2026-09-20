@@ -78,6 +78,81 @@
         ]
       }
     },
+    "/api/authorization/{tenant}/catalog": {
+      "get": {
+        "operationId": "authorization_catalog",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Binding"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "authorization_set_catalog",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CatalogInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Binding"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/api/authorization/{tenant}/credentials": {
       "get": {
         "operationId": "authorization_credentials",
@@ -1517,6 +1592,51 @@
         "propertyNames": {
           "type": "string"
         }
+      },
+      "Binding": {
+        "type": "object",
+        "required": [
+          "tenant",
+          "entry_id",
+          "entry_version",
+          "enabled",
+          "revision"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "entry_id": {
+            "type": "string"
+          },
+          "entry_version": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "tenant": {
+            "type": "string"
+          }
+        }
+      },
+      "CatalogInput": {
+        "type": "object",
+        "required": ["entry", "expected_revision", "enabled"],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "entry": {
+            "$ref": "#/components/schemas/EntityRef"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
       },
       "ClaimInput": {
         "type": "object",

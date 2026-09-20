@@ -60,10 +60,11 @@ async fn main() -> Result<()> {
         });
     }
     if mode != "server" {
+        let workers = federation.for_workers().await?;
         // Independent workers allow one agent to wait while another makes progress.
         for _ in 0..4 {
             let h = Harness {
-                federation: federation.clone(),
+                federation: workers.clone(),
             };
             background.spawn(async move { h.run_worker().await });
         }

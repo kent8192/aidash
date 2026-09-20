@@ -13,6 +13,8 @@ fn policy_management_routes_publish_authenticated_typed_contracts() {
         ("/api/authorization/{tenant}/decisions", "get"),
         ("/api/authorization/{tenant}/credentials", "get"),
         ("/api/authorization/{tenant}/credentials", "post"),
+        ("/api/authorization/{tenant}/catalog", "get"),
+        ("/api/authorization/{tenant}/catalog", "post"),
         (
             "/api/authorization/{tenant}/credentials/{id}/revoke",
             "post",

@@ -1,9 +1,10 @@
 use super::{
     Authorization, Snapshot,
+    catalog::Binding,
     identity::{Credential, IssuedCredential},
     policy::{Decision, Evaluation, PolicyBundle},
 };
-use crate::{Result, federation::Federation};
+use crate::{Result, federation::Federation, registry::EntityRef};
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -26,6 +27,42 @@ pub fn routes() -> OpenApiRouter<Federation> {
         .routes(routes!(credentials))
         .routes(routes!(issue_credential))
         .routes(routes!(revoke_credential))
+        .routes(routes!(catalog))
+        .routes(routes!(set_catalog))
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+struct CatalogInput {
+    entry: EntityRef,
+    expected_revision: i64,
+    enabled: bool,
+}
+
+#[utoipa::path(get,path="/authorization/{tenant}/catalog",operation_id="authorization_catalog",params(("tenant"=String,Path)),responses((status=200,body=[Binding])),security(("bearer_auth"=[])))]
+async fn catalog(
+    State(f): State<Federation>,
+    Path(tenant): Path<String>,
+) -> Result<Json<Vec<Binding>>> {
+    Ok(Json(service(f).catalog(&tenant).await?))
+}
+#[utoipa::path(post,path="/authorization/{tenant}/catalog",operation_id="authorization_set_catalog",params(("tenant"=String,Path)),request_body=CatalogInput,responses((status=200,body=Binding)),security(("bearer_auth"=[])))]
+async fn set_catalog(
+    State(f): State<Federation>,
+    Path(tenant): Path<String>,
+    Json(input): Json<CatalogInput>,
+) -> Result<Json<Binding>> {
+    Ok(Json(
+        service(f)
+            .set_catalog(
+                &tenant,
+                &input.entry,
+                input.expected_revision,
+                input.enabled,
+                "operator",
+            )
+            .await?,
+    ))
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]

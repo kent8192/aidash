@@ -1,7 +1,7 @@
 use crate::{
     Error, Result,
     api_schema::*,
-    authorization::{Authorization, identity::Actor, workspace::Workspaces},
+    authorization::{Authorization, catalog, execution, identity::Actor, workspace::Workspaces},
     config::{PROTOCOL_VERSION, peer_secret},
     domain::*,
     federation::{Delegation, Discovery, Federation, Offer, Peer},
@@ -29,19 +29,12 @@ use uuid::Uuid;
 fn management_routes() -> OpenApiRouter<Federation> {
     let administration = OpenApiRouter::new()
         .merge(crate::authorization::api::routes())
-        .routes(routes!(registry_list))
         .routes(routes!(registry_create))
-        .routes(routes!(registry_get))
-        .routes(routes!(task_claim))
-        .routes(routes!(task_delegate))
         .routes(routes!(task_abandon))
         .routes(routes!(conversation_create))
-        .routes(routes!(run_get))
-        .routes(routes!(run_control))
         .routes(routes!(run_message))
         .routes(routes!(human_answer))
         .routes(routes!(peer_create))
-        .routes(routes!(discover))
         .routes(routes!(mesh))
         .routes(routes!(remote_action))
         .routes(routes!(marketplace))
@@ -50,6 +43,13 @@ fn management_routes() -> OpenApiRouter<Federation> {
         .route_layer(middleware::from_fn(operator_only));
     OpenApiRouter::new()
         .merge(administration)
+        .routes(routes!(discover))
+        .routes(routes!(run_control))
+        .routes(routes!(run_get))
+        .routes(routes!(task_delegate))
+        .routes(routes!(task_claim))
+        .routes(routes!(registry_get))
+        .routes(routes!(registry_list))
         .routes(routes!(state))
         .routes(routes!(workspace_create))
         .routes(routes!(workspace_get))
@@ -236,15 +236,25 @@ async fn state(
 #[utoipa::path(get, path = "/registry", operation_id = "registry_list", params(Search), responses((status = 200, body = [Entry])), security(("bearer_auth" = [])))]
 async fn registry_list(
     State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
     Query(search): Query<Search>,
 ) -> Result<Json<Vec<Entry>>> {
+    if let Actor::Subject(identity) = actor {
+        return Ok(Json(catalog::list(&f.store, &identity, &search).await?));
+    }
     Ok(Json(f.registry.list(&search).await?))
 }
 #[utoipa::path(get, path = "/registry/{id}/{version}", operation_id = "registry_get", params(("id" = String, Path),("version" = String, Path)), responses((status = 200, body = Entry)), security(("bearer_auth" = [])))]
 async fn registry_get(
     State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
     Path((id, version)): Path<(String, String)>,
 ) -> Result<Json<Entry>> {
+    if let Actor::Subject(identity) = actor {
+        return Ok(Json(
+            catalog::get(&f.store, &identity, &EntityRef { id, version }).await?,
+        ));
+    }
     Ok(Json(f.registry.get(&id, &version).await?))
 }
 #[utoipa::path(post, path = "/registry", operation_id = "registry_create", request_body = Entry, responses((status = 200, body = Entry)), security(("bearer_auth" = [])))]
@@ -371,9 +381,15 @@ struct ClaimInput {
 #[utoipa::path(post, path = "/tasks/{id}/claim", operation_id = "task_claim", request_body = ClaimInput, params(("id" = Uuid, Path)), responses((status = 200, body = Task)), security(("bearer_auth" = [])))]
 async fn task_claim(
     State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
     Path(id): Path<Uuid>,
     Json(input): Json<ClaimInput>,
 ) -> Result<Json<Task>> {
+    if let Actor::Subject(identity) = actor {
+        return Ok(Json(
+            execution::claim(&f, &identity, id, input.revision, &input.agent).await?,
+        ));
+    }
     let entry = f
         .registry
         .get(&input.agent.id, &input.agent.version)
@@ -393,9 +409,15 @@ struct DelegateInput {
 #[utoipa::path(post, path = "/tasks/{id}/delegate", operation_id = "task_delegate", request_body = DelegateInput, params(("id" = Uuid, Path)), responses((status = 200, body = Delegation)), security(("bearer_auth" = [])))]
 async fn task_delegate(
     State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
     Path(id): Path<Uuid>,
     Json(input): Json<DelegateInput>,
 ) -> Result<Json<Delegation>> {
+    if let Actor::Subject(identity) = actor {
+        return Ok(Json(
+            execution::delegate(&f, &identity, id, &input.node_id, &input.agent).await?,
+        ));
+    }
     Ok(Json(f.delegate(id, &input.node_id, &input.agent).await?))
 }
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
@@ -488,7 +510,14 @@ async fn conversation_create(
     }))
 }
 #[utoipa::path(get, path = "/runs/{id}", operation_id = "run_get", params(("id" = Uuid, Path)), responses((status = 200, body = RunDetails)), security(("bearer_auth" = [])))]
-async fn run_get(State(f): State<Federation>, Path(id): Path<Uuid>) -> Result<Json<RunDetails>> {
+async fn run_get(
+    State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<RunDetails>> {
+    if let Actor::Subject(identity) = actor {
+        return Ok(Json(execution::details(&f, &identity, id).await?));
+    }
     let run = f.store.run(id).await?;
     let invocations: Vec<Invocation> =
         sqlx::query_as("SELECT * FROM invocations WHERE run_id=$1 ORDER BY created_at")
@@ -508,9 +537,15 @@ struct ControlInput {
 #[utoipa::path(post, path = "/runs/{id}/control", operation_id = "run_control", request_body = ControlInput, params(("id" = Uuid, Path)), responses((status = 200, body = Run)), security(("bearer_auth" = [])))]
 async fn run_control(
     State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
     Path(id): Path<Uuid>,
     Json(input): Json<ControlInput>,
 ) -> Result<Json<Run>> {
+    if let Actor::Subject(identity) = actor {
+        return Ok(Json(
+            execution::control(&f, &identity, id, &input.action).await?,
+        ));
+    }
     let r = f.store.control(id, &input.action).await?;
     f.notify.notify_waiters();
     Ok(Json(r))
@@ -522,7 +557,7 @@ async fn run_message(
     Json(input): Json<MessageInput>,
 ) -> Result<Json<SentResponse>> {
     let run = f.store.run(id).await?;
-    let home = crate::federation::Home { federation: f, run };
+    let home = crate::federation::Home::new(f, run);
     home.human_message(&format!("human:{}", Uuid::new_v4()), &input.content)
         .await?;
     Ok(Json(SentResponse { sent: true }))
@@ -544,8 +579,12 @@ async fn peer_create(State(f): State<Federation>, Json(peer): Json<Peer>) -> Res
 #[utoipa::path(post, path = "/discover", operation_id = "discover", request_body = Search, responses((status = 200, body = Discovery)), security(("bearer_auth" = [])))]
 async fn discover(
     State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
     Json(query): Json<Search>,
 ) -> Result<Json<Discovery>> {
+    if let Actor::Subject(identity) = actor {
+        return Ok(Json(execution::discover(&f, &identity, &query).await?));
+    }
     Ok(Json(f.discover(&query).await?))
 }
 #[utoipa::path(get, path = "/marketplace", operation_id = "marketplace", params(Search), responses((status = 200, body = [PackageRecord])), security(("bearer_auth" = [])))]
@@ -925,7 +964,7 @@ async fn peer_control(
             let content = input
                 .content
                 .ok_or_else(|| Error::Invalid("content required".into()))?;
-            let home = crate::federation::Home { federation: f, run };
+            let home = crate::federation::Home::new(f, run);
             home.human_message(&format!("human:{}", Uuid::new_v4()), &content)
                 .await?;
             Ok(Json(json!({"sent":true})))
@@ -986,7 +1025,7 @@ mod schema_tests {
                 .values()
                 .map(|path| path.as_object().unwrap().len())
                 .sum::<usize>(),
-            35
+            37
         );
         for (path, operations) in paths {
             assert!(path.starts_with("/api/"));

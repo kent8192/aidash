@@ -1,8 +1,10 @@
 //! Transactional workspace access for authenticated subjects. Workspace read
 //! permission covers the workspace's contents; event delivery has a separate
-//! permission. Global registry/mesh/administration routes remain operator-only.
+//! permission. Run contents additionally require run and memory read access.
 use super::{
-    Authorization, Snapshot,
+    Authorization,
+    access::Access,
+    catalog,
     identity::SubjectIdentity,
     policy::{Evaluation, Resource},
 };
@@ -10,7 +12,6 @@ use crate::{
     Error, Result, api_schema::StateResponse, config::NodeIdentity, domain::*, store::Store,
 };
 use serde_json::{Value, json};
-use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -19,28 +20,13 @@ pub struct Workspaces {
     pub identity: SubjectIdentity,
 }
 
-struct Access {
-    tx: Transaction<'static, Postgres>,
-    identity: SubjectIdentity,
-    snapshot: Snapshot,
-    environment: Value,
-    audit: bool,
-}
-
 impl Access {
-    async fn begin(scope: &Workspaces) -> Result<Self> {
-        let mut tx = scope.store.pool.begin().await?;
-        let snapshot = scope.identity.lock(&mut tx).await?;
-        Ok(Self {
-            tx,
-            identity: scope.identity.clone(),
-            snapshot,
-            environment: json!({"node_id":scope.store.node_id,"transport":"api"}),
-            audit: true,
-        })
-    }
-
-    async fn decide(&mut self, id: Uuid, action: &str, owner: Option<&str>) -> Result<bool> {
+    async fn workspace_decide(
+        &mut self,
+        id: Uuid,
+        action: &str,
+        owner: Option<&str>,
+    ) -> Result<bool> {
         let input = Evaluation {
             subject: self.identity.subject.clone(),
             action: action.into(),
@@ -69,10 +55,10 @@ impl Access {
     async fn allowed(&mut self, id: Uuid, action: &str) -> Result<bool> {
         let owner: Option<String> = sqlx::query_scalar("SELECT owner_subject FROM authorization_workspaces WHERE workspace_id=$1 AND tenant=$2 FOR SHARE")
             .bind(id).bind(&self.identity.tenant).fetch_optional(&mut *self.tx).await?;
-        self.decide(id, action, owner.as_deref()).await
+        self.workspace_decide(id, action, owner.as_deref()).await
     }
 
-    async fn require(&mut self, id: Uuid, action: &str) -> Result<()> {
+    async fn require_workspace(&mut self, id: Uuid, action: &str) -> Result<()> {
         if self.allowed(id, action).await? {
             Ok(())
         } else {
@@ -85,31 +71,99 @@ impl Access {
             .bind(&self.identity.tenant).fetch_all(&mut *self.tx).await?;
         let mut result = vec![];
         for (id, owner) in rows {
-            if self.decide(id, action, Some(&owner)).await? {
+            if self.workspace_decide(id, action, Some(&owner)).await? {
                 result.push(id);
             }
         }
         Ok(result)
     }
 
-    /// Denials occur before writes and are committed as audit records. Other
-    /// failures roll back both the attempted mutation and its decision audit.
-    async fn finish<T>(self, result: Result<T>) -> Result<T> {
-        if result.is_ok() || matches!(result, Err(Error::Forbidden)) {
-            self.tx.commit().await?;
-        } else {
-            self.tx.rollback().await?;
+    pub(crate) async fn run_visible(&mut self, run: &Run) -> Result<bool> {
+        if let Some(allowed) = self.cached_runs.get(&(run.workspace_id, run.id)) {
+            return Ok(*allowed);
         }
-        result
+        let workspace = self.workspace(run.workspace_id).await?;
+        let resource = self.resource("run", run.id, workspace.attributes.clone());
+        let mut attributes = workspace.attributes;
+        attributes["version"] = json!(run.agent_version);
+        let memory = self.resource("memory", &run.agent_id, attributes);
+        let allowed = self.decide(&resource, "run.read").await?
+            && self.decide(&memory, "memory.read").await?;
+        self.cached_runs.insert((run.workspace_id, run.id), allowed);
+        Ok(allowed)
+    }
+
+    async fn event_visible(&mut self, event: &Event) -> Result<bool> {
+        let candidate = event.data.get("run_id").or_else(|| {
+            (event.kind == "run.created")
+                .then(|| event.data.get("id"))
+                .flatten()
+        });
+        if candidate.is_none()
+            && !["run.", "model.", "human."]
+                .iter()
+                .any(|p| event.kind.starts_with(p))
+        {
+            return Ok(true);
+        }
+        let Some(id) = candidate
+            .and_then(Value::as_str)
+            .and_then(|id| id.parse::<Uuid>().ok())
+        else {
+            return Ok(false);
+        };
+        if let Some(workspace) = event.workspace_id
+            && let Some(allowed) = self.cached_runs.get(&(workspace, id))
+        {
+            return Ok(*allowed);
+        }
+        let run: Option<Run> = sqlx::query_as("SELECT * FROM runs WHERE id=$1 AND workspace_id=$2")
+            .bind(id)
+            .bind(event.workspace_id)
+            .fetch_optional(&mut *self.tx)
+            .await?;
+        match run {
+            Some(run) => self.run_visible(&run).await,
+            None => Ok(false),
+        }
+    }
+
+    async fn filter_events(&mut self, events: Vec<Event>) -> Result<Vec<Event>> {
+        let mut result = vec![];
+        for event in events {
+            if self.event_visible(&event).await? {
+                result.push(event);
+            }
+        }
+        Ok(result)
+    }
+
+    pub(crate) async fn workspace_snapshot(&mut self, id: Uuid) -> Result<WorkspaceSnapshot> {
+        let workspace = self.workspace(id).await?;
+        self.require(&workspace, "workspace.read").await?;
+        let events = if self.decide(&workspace, "workspace.events").await? {
+            sqlx::query_as("SELECT * FROM (SELECT * FROM events WHERE workspace_id=$1 ORDER BY sequence DESC LIMIT 100) e ORDER BY sequence")
+                .bind(id).fetch_all(&mut *self.tx).await?
+        } else {
+            vec![]
+        };
+        let events = self.filter_events(events).await?;
+        Ok(WorkspaceSnapshot {
+            workspace: sqlx::query_as("SELECT * FROM workspaces WHERE id=$1").bind(id).fetch_one(&mut *self.tx).await?,
+            tasks: sqlx::query_as("SELECT * FROM tasks WHERE workspace_id=$1 ORDER BY created_at,id").bind(id).fetch_all(&mut *self.tx).await?,
+            artifacts: sqlx::query_as("SELECT * FROM artifacts WHERE workspace_id=$1 ORDER BY created_at,id").bind(id).fetch_all(&mut *self.tx).await?,
+            messages: sqlx::query_as("SELECT * FROM (SELECT * FROM messages WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 100) m ORDER BY created_at").bind(id).fetch_all(&mut *self.tx).await?,
+            events,
+        })
     }
 }
 
 impl Workspaces {
     pub async fn create(&self, title: &str, goal: &str) -> Result<Workspace> {
-        let mut access = Access::begin(self).await?;
+        let mut access = Access::begin(&self.store, &self.identity).await?;
         let result = async {
             let id = Uuid::new_v4();
-            if !access.decide(id, "workspace.create", Some(&self.identity.subject)).await? { return Err(Error::Forbidden); }
+            if !access.workspace_decide(id, "workspace.create", Some(&self.identity.subject)).await? { return Err(Error::Forbidden); }
             let workspace = self.store.create_workspace_in(&mut access.tx, id, title, goal).await?;
             sqlx::query("INSERT INTO authorization_workspaces(workspace_id,tenant,owner_subject) VALUES($1,$2,$3)")
                 .bind(id).bind(&self.identity.tenant).bind(&self.identity.subject).execute(&mut *access.tx).await?;
@@ -119,12 +173,12 @@ impl Workspaces {
     }
 
     pub async fn update(&self, id: Uuid, revision: i64, state: Value) -> Result<Workspace> {
-        let mut access = Access::begin(self).await?;
+        let mut access = Access::begin(&self.store, &self.identity).await?;
         let result = async {
             // The update response contains the complete workspace, including
             // fields that were not supplied by the caller.
-            access.require(id, "workspace.read").await?;
-            access.require(id, "workspace.update").await?;
+            access.require_workspace(id, "workspace.read").await?;
+            access.require_workspace(id, "workspace.update").await?;
             self.store
                 .update_state_in(&mut access.tx, id, revision, state)
                 .await
@@ -134,9 +188,9 @@ impl Workspaces {
     }
 
     pub async fn create_task(&self, id: Uuid, input: &NewTask, key: Option<&str>) -> Result<Task> {
-        let mut access = Access::begin(self).await?;
+        let mut access = Access::begin(&self.store, &self.identity).await?;
         let result = async {
-            access.require(id, "task.create").await?;
+            access.require_workspace(id, "task.create").await?;
             // Keep one caller's idempotency key from colliding with another
             // workspace, subject, or the legacy operator namespace.
             let key = key.map(|key| {
@@ -165,9 +219,9 @@ impl Workspaces {
     }
 
     pub async fn message(&self, id: Uuid, content: &str) -> Result<()> {
-        let mut access = Access::begin(self).await?;
+        let mut access = Access::begin(&self.store, &self.identity).await?;
         let result = async {
-            access.require(id, "message.create").await?;
+            access.require_workspace(id, "message.create").await?;
             self.store
                 .message_in(&mut access.tx, id, &self.identity.subject, content, None)
                 .await
@@ -177,32 +231,19 @@ impl Workspaces {
     }
 
     pub async fn snapshot(&self, id: Uuid) -> Result<WorkspaceSnapshot> {
-        let mut access = Access::begin(self).await?;
-        let result = async {
-            access.require(id, "workspace.read").await?;
-            let events = if access.allowed(id, "workspace.events").await? {
-                sqlx::query_as("SELECT * FROM (SELECT * FROM events WHERE workspace_id=$1 ORDER BY sequence DESC LIMIT 100) e ORDER BY sequence")
-                    .bind(id).fetch_all(&mut *access.tx).await?
-            } else { vec![] };
-            Ok(WorkspaceSnapshot {
-                workspace: sqlx::query_as("SELECT * FROM workspaces WHERE id=$1").bind(id).fetch_one(&mut *access.tx).await?,
-                tasks: sqlx::query_as("SELECT * FROM tasks WHERE workspace_id=$1 ORDER BY created_at,id").bind(id).fetch_all(&mut *access.tx).await?,
-                artifacts: sqlx::query_as("SELECT * FROM artifacts WHERE workspace_id=$1 ORDER BY created_at,id").bind(id).fetch_all(&mut *access.tx).await?,
-                messages: sqlx::query_as("SELECT * FROM (SELECT * FROM messages WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 100) m ORDER BY created_at").bind(id).fetch_all(&mut *access.tx).await?,
-                events,
-            })
-        }.await;
+        let mut access = Access::begin(&self.store, &self.identity).await?;
+        let result = access.workspace_snapshot(id).await;
         access.finish(result).await
     }
 
     pub async fn state(&self, node: NodeIdentity) -> Result<StateResponse> {
-        let mut access = Access::begin(self).await?;
+        let mut access = Access::begin(&self.store, &self.identity).await?;
         let result = async {
             let visible = access.visible("workspace.read").await?;
             let mut event_workspaces = vec![];
             for id in &visible { if access.allowed(*id, "workspace.events").await? { event_workspaces.push(*id); } }
-            Ok(StateResponse {
-                node, registry: vec![], peers: vec![], installations: vec![],
+            let mut state=StateResponse {
+                node, registry: catalog::list_in(&mut access,&crate::registry::Search::default()).await?, peers: vec![], installations: vec![],
                 workspaces: sqlx::query_as("SELECT * FROM workspaces WHERE id=ANY($1) ORDER BY created_at DESC,id").bind(&visible).fetch_all(&mut *access.tx).await?,
                 tasks: sqlx::query_as("SELECT * FROM tasks WHERE workspace_id=ANY($1) ORDER BY created_at,id").bind(&visible).fetch_all(&mut *access.tx).await?,
                 artifacts: sqlx::query_as("SELECT * FROM artifacts WHERE workspace_id=ANY($1) ORDER BY created_at DESC,id LIMIT 500").bind(&visible).fetch_all(&mut *access.tx).await?,
@@ -210,7 +251,14 @@ impl Workspaces {
                 human_requests: sqlx::query_as("SELECT * FROM human_requests WHERE workspace_id=ANY($1) ORDER BY created_at DESC,id LIMIT 500").bind(&visible).fetch_all(&mut *access.tx).await?,
                 conversations: sqlx::query_as("SELECT * FROM conversations WHERE workspace_id=ANY($1) ORDER BY created_at DESC,id LIMIT 500").bind(&visible).fetch_all(&mut *access.tx).await?,
                 events: sqlx::query_as("SELECT * FROM (SELECT * FROM events WHERE workspace_id=ANY($1) ORDER BY sequence DESC LIMIT 100) e ORDER BY sequence").bind(&event_workspaces).fetch_all(&mut *access.tx).await?,
-            })
+            };
+            let mut runs=vec![];
+            for run in state.runs {if access.run_visible(&run).await? {runs.push(run);}}
+            let run_ids:std::collections::BTreeSet<Uuid>=runs.iter().map(|r|r.id).collect();
+            state.runs=runs;
+            state.human_requests.retain(|h|run_ids.contains(&h.run_id));
+            state.events=access.filter_events(state.events).await?;
+            Ok(state)
         }.await;
         access.finish(result).await
     }
@@ -242,12 +290,12 @@ impl Workspaces {
         limit: i64,
         audit: bool,
     ) -> Result<Vec<Event>> {
-        let mut access = Access::begin(self).await?;
+        let mut access = Access::begin(&self.store, &self.identity).await?;
         access.audit = audit;
         let result = async {
             let visible = if let Some(id) = workspace {
-                access.require(id, "workspace.read").await?;
-                access.require(id, "workspace.events").await?;
+                access.require_workspace(id, "workspace.read").await?;
+                access.require_workspace(id, "workspace.events").await?;
                 vec![id]
             } else {
                 let mut visible = vec![];
@@ -256,8 +304,23 @@ impl Workspaces {
                 }
                 visible
             };
-            Ok(sqlx::query_as("SELECT * FROM events WHERE workspace_id=ANY($1) AND sequence>$2 ORDER BY sequence LIMIT $3")
-                .bind(&visible).bind(after.max(0)).bind(limit.clamp(1,1000)).fetch_all(&mut *access.tx).await?)
+            let limit=limit.clamp(1,1000) as usize;
+            let mut cursor=after.max(0);
+            let mut result=vec![];
+            // Continue past rejected events so they cannot starve later
+            // permitted events or trap Last-Event-ID replay on an empty page.
+            loop {
+                let batch:Vec<Event>=sqlx::query_as("SELECT * FROM events WHERE workspace_id=ANY($1) AND sequence>$2 ORDER BY sequence LIMIT 500")
+                    .bind(&visible).bind(cursor).fetch_all(&mut *access.tx).await?;
+                let exhausted=batch.len()<500;
+                for event in batch {
+                    cursor=event.sequence;
+                    if access.event_visible(&event).await? {result.push(event);}
+                    if result.len()==limit {return Ok(result);}
+                }
+                if exhausted {break;}
+            }
+            Ok(result)
         }.await;
         access.finish(result).await
     }
@@ -265,13 +328,14 @@ impl Workspaces {
     /// Stream batches can remain buffered while authority changes. Recheck at
     /// every emission, with no policy or credential lock held across a yield.
     pub async fn can_emit(&self, event: &Event) -> Result<bool> {
-        let mut access = Access::begin(self).await?;
+        let mut access = Access::begin(&self.store, &self.identity).await?;
         let result = async {
             let Some(id) = event.workspace_id else {
                 return Ok(false);
             };
             Ok(access.allowed(id, "workspace.read").await?
-                && access.allowed(id, "workspace.events").await?)
+                && access.allowed(id, "workspace.events").await?
+                && access.event_visible(event).await?)
         }
         .await;
         access.finish(result).await

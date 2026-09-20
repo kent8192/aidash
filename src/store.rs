@@ -13,8 +13,7 @@ pub struct Store {
     pub node_id: String,
 }
 impl Store {
-    // Scoped workspaces must not enter workers/federation until a durable
-    // execution identity can be carried and rechecked at every effect boundary.
+    // Legacy admission cannot supply durable scoped execution authority.
     pub(crate) async fn require_legacy_execution(&self, workspace: Uuid) -> Result<()> {
         let scoped: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM authorization_workspaces WHERE workspace_id=$1)",
@@ -38,6 +37,20 @@ impl Store {
             .await
             .map_err(|e| Error::External(e.to_string()))?;
         Ok(Self { pool, node_id })
+    }
+
+    /// Share the database and connection settings without sharing pool capacity.
+    pub async fn isolated_pool(&self) -> Result<Self> {
+        let pool = self
+            .pool
+            .options()
+            .clone()
+            .connect_with(self.pool.connect_options().as_ref().clone())
+            .await?;
+        Ok(Self {
+            pool,
+            node_id: self.node_id.clone(),
+        })
     }
     pub async fn event(
         &self,
@@ -209,6 +222,22 @@ impl Store {
     pub async fn claim(&self, id: Uuid, revision: i64, owner: &str, agent: &Entry) -> Result<Task> {
         let task = self.task(id).await?;
         self.require_legacy_execution(task.workspace_id).await?;
+        let mut tx = self.pool.begin().await?;
+        let claimed = self
+            .claim_in(&mut tx, &task, revision, owner, agent)
+            .await?;
+        tx.commit().await?;
+        Ok(claimed)
+    }
+    pub(crate) async fn claim_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        task: &Task,
+        revision: i64,
+        owner: &str,
+        agent: &Entry,
+    ) -> Result<Task> {
+        let id = task.id;
         let mut requirements: Search = serde_json::from_value(task.requirements.clone())?;
         requirements.kind = Some("agent".into());
         if !requirements.matches(agent) {
@@ -216,24 +245,22 @@ impl Store {
                 "agent does not satisfy task requirements".into(),
             ));
         }
-        let mut tx = self.pool.begin().await?;
         let claimed: Task = sqlx::query_as("UPDATE tasks SET status='CLAIMED',owner=$3,revision=revision+1 WHERE id=$1 AND revision=$2 AND status='OPEN' AND NOT EXISTS(SELECT 1 FROM tasks d WHERE d.id=ANY(tasks.dependencies) AND d.status <> 'COMPLETED') RETURNING *")
-            .bind(id).bind(revision).bind(owner).fetch_optional(&mut *tx).await?.ok_or_else(|| Error::Conflict("task already claimed, revision changed, or dependencies are incomplete".into()))?;
+            .bind(id).bind(revision).bind(owner).fetch_optional(&mut **tx).await?.ok_or_else(|| Error::Conflict("task already claimed, revision changed, or dependencies are incomplete".into()))?;
         if owner == qualified_agent(&self.node_id, &agent.id, &agent.version) {
             // Persist the local execution with the claim; no crash can strand a
             // claimed task between the control API and its worker queue.
             sqlx::query("INSERT INTO runs(id,task_id,workspace_id,home_node,agent_id,agent_version) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(home_node,task_id) DO NOTHING")
                 .bind(Uuid::new_v4()).bind(id).bind(claimed.workspace_id).bind(&self.node_id)
-                .bind(&agent.id).bind(&agent.version).execute(&mut *tx).await?;
+                .bind(&agent.id).bind(&agent.version).execute(&mut **tx).await?;
         }
         self.event(
-            &mut tx,
+            tx,
             Some(claimed.workspace_id),
             "task.claimed",
             json!(claimed),
         )
         .await?;
-        tx.commit().await?;
         Ok(claimed)
     }
     pub async fn transition(
@@ -565,7 +592,80 @@ impl Store {
         sqlx::query("UPDATE runs SET lease_owner=NULL,lease_until=NULL,updated_at=now() WHERE id=$1 AND lease_owner=$2").bind(id).bind(worker).execute(&self.pool).await?;
         Ok(())
     }
+    pub(crate) async fn pause_for_authorization(&self, run: &Run, worker: Uuid) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        let changed=sqlx::query("UPDATE runs SET control=CASE WHEN control='CANCELLED' THEN control ELSE 'PAUSED' END,error='execution authority denied',revision=revision+1,updated_at=now(),lease_owner=NULL,lease_until=NULL WHERE id=$1 AND lease_owner=$2 AND lease_until>now()")
+            .bind(run.id).bind(worker).execute(&mut *tx).await?.rows_affected();
+        if changed == 0 {
+            return Err(Error::Conflict("worker lease lost".into()));
+        }
+        self.event(
+            &mut tx,
+            Some(run.workspace_id),
+            "run.authorization_blocked",
+            json!({"run_id":run.id,"task_id":run.task_id}),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+    pub(crate) async fn cancel_execution(&self, run: &Run, worker: Uuid) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        let valid:Option<Uuid>=sqlx::query_scalar("SELECT id FROM runs WHERE id=$1 AND lease_owner=$2 AND lease_until>now() AND control='CANCELLED' FOR UPDATE")
+            .bind(run.id).bind(worker).fetch_optional(&mut *tx).await?;
+        if valid.is_none() {
+            return Err(Error::Conflict("worker lease lost".into()));
+        }
+        let task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id=$1 FOR UPDATE")
+            .bind(run.task_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let phase = if task.status == "COMPLETED" {
+            "COMPLETED"
+        } else {
+            "CANCELLED"
+        };
+        if !matches!(
+            task.status.as_str(),
+            "COMPLETED" | "CANCELLED" | "ABANDONED"
+        ) {
+            let task: Task = sqlx::query_as(
+                "UPDATE tasks SET status='CANCELLED',revision=revision+1 WHERE id=$1 RETURNING *",
+            )
+            .bind(run.task_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            self.event(&mut tx, Some(run.workspace_id), "task.updated", json!(task))
+                .await?;
+        }
+        sqlx::query("UPDATE runs SET phase=$3,pending='{}',error=NULL,revision=revision+1,updated_at=now(),lease_owner=NULL,lease_until=NULL WHERE id=$1 AND lease_owner=$2")
+            .bind(run.id).bind(worker).bind(phase).execute(&mut *tx).await?;
+        self.event(
+            &mut tx,
+            Some(run.workspace_id),
+            if phase == "CANCELLED" {
+                "run.cancelled"
+            } else {
+                "run.reconciled"
+            },
+            json!({"run_id":run.id,"task_id":run.task_id}),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
     pub async fn control(&self, id: Uuid, action: &str) -> Result<Run> {
+        let mut tx = self.pool.begin().await?;
+        let run = self.control_in(&mut tx, id, action).await?;
+        tx.commit().await?;
+        Ok(run)
+    }
+    pub(crate) async fn control_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        id: Uuid,
+        action: &str,
+    ) -> Result<Run> {
         let control = match action {
             "pause" => "PAUSED",
             "resume" => "ACTIVE",
@@ -576,17 +676,15 @@ impl Store {
                 ));
             }
         };
-        let mut tx = self.pool.begin().await?;
         let r: Run = sqlx::query_as("UPDATE runs SET control=$2,revision=revision+1,updated_at=now() WHERE id=$1 AND phase NOT IN ('COMPLETED','FAILED','CANCELLED') AND control <> 'CANCELLED' RETURNING *")
-            .bind(id).bind(control).fetch_optional(&mut *tx).await?.ok_or_else(|| Error::Conflict("run is terminal or cancellation is already requested".into()))?;
+            .bind(id).bind(control).fetch_optional(&mut **tx).await?.ok_or_else(|| Error::Conflict("run is terminal or cancellation is already requested".into()))?;
         self.event(
-            &mut tx,
+            tx,
             (r.home_node == self.node_id).then_some(r.workspace_id),
             "run.control",
             json!({"run_id":id,"action":action}),
         )
         .await?;
-        tx.commit().await?;
         Ok(r)
     }
     pub async fn human_request(

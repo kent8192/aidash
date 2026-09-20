@@ -1,4 +1,7 @@
+pub(crate) mod access;
 pub mod api;
+pub mod catalog;
+pub mod execution;
 pub mod identity;
 pub mod policy;
 pub mod workspace;
@@ -14,7 +17,7 @@ pub struct Authorization {
     pub pool: PgPool,
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct Snapshot {
     pub revision: i64,
     pub bundle: PolicyBundle,
