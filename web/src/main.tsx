@@ -38,6 +38,7 @@ import {
   Package as PackageIcon,
   Plus,
   Search as SearchIcon,
+  ShieldCheck,
   Settings,
   Workflow,
   Zap,
@@ -95,6 +96,7 @@ import {
 } from "./forms";
 import { GenerationPage, GenerationAssignForm } from "./generation";
 import { SemanticPage } from "./semantic";
+import { AuthorizationPage } from "./authorization";
 import { DeploymentPage } from "./deployment";
 import { TransactionsPage } from "./transactions";
 import "./style.css";
@@ -102,6 +104,7 @@ const sections = [
   ["overview", LayoutDashboard],
   ["agents", CircleDot],
   ["generation", Zap],
+  ["authorization", ShieldCheck],
   ["transactions", GitBranch],
   ["semantic", Database],
   ["deployment", Boxes],
@@ -193,7 +196,13 @@ function Dashboard({
   const operator = session.data?.access.kind === "operator";
   const restrictedSection =
     !operator &&
-    ["mesh", "marketplace", "transactions", "deployment"].includes(section);
+    [
+      "mesh",
+      "marketplace",
+      "transactions",
+      "deployment",
+      "authorization",
+    ].includes(section);
   const showOrdinary =
     !state.isError &&
     !restrictedSection &&
@@ -369,9 +378,13 @@ function Dashboard({
             .filter(
               ([key]) =>
                 operator ||
-                !["mesh", "marketplace", "transactions", "deployment"].includes(
-                  key,
-                ),
+                ![
+                  "mesh",
+                  "marketplace",
+                  "transactions",
+                  "deployment",
+                  "authorization",
+                ].includes(key),
             )
             .map(([key, Icon]) => (
               <Link
@@ -464,6 +477,7 @@ function Dashboard({
               !restrictedSection &&
               ![
                 "generation",
+                "authorization",
                 "transactions",
                 "semantic",
                 "deployment",
@@ -530,6 +544,9 @@ function Dashboard({
                     <JsonView value={mesh.data?.errors} />
                   </details>
                 </div>
+              )}
+              {section === "authorization" && operator && (
+                <AuthorizationPage entries={data.registry} />
               )}
               {section === "overview" && (
                 <>

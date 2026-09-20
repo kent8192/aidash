@@ -1,6 +1,6 @@
 # Authorization policy service and scoped execution
 
-The policy service implements policy management, decisions, revocable subject credentials, scoped workspace and interaction APIs, tenant catalog approvals and local execution for FR-AUTH-001. The management endpoints below require the existing operator bearer token. Remote federation, finer resource scopes, remaining management workflows and dashboard policy controls remain under development; this is not completion of FR-AUTH-001.
+The policy service implements policy management, decisions, revocable subject credentials, scoped workspace and interaction APIs, tenant catalog approvals and local execution for FR-AUTH-001. The management endpoints below require the existing operator bearer token. Remote federation, finer resource scopes and remaining management workflows remain under development; this is not completion of FR-AUTH-001.
 
 ## Management API
 
@@ -149,6 +149,16 @@ A worker commits the IDs of records in an authorized workspace snapshot to `auth
 Registry entries returned by agent discovery are recorded separately in `authorization_run_registry_reads` before their metadata enters an invocation or context. Journal reads and worker boundaries recheck the current tenant catalog binding and `registry.read` permission for every copied entry. The migration recovers these dependencies from existing contexts, pending responses and invocation results. Scoped artifact collections fill the visible result limit after both artifact and task authorization filtering.
 
 The migration conservatively associates older nonempty journals with their existing workspace records because they did not record exact source membership. Those older journals may therefore need broader read grants than newly recorded snapshots. This protects retained data instead of treating missing provenance as permission to disclose it. Independently authorized output records retain their own read policies; this ledger does not claim arbitrary information-flow tracking for generated prose or complete memory-source lifecycle enforcement. Semantic-memory authorization remains in the expanded implementation plan.
+
+## Dashboard administration
+
+The operator-only **Access policies / アクセス制御** page opens a named tenant. Create or edit the full policy bundle, including subjects, groups, inherited roles, delegation and attribute conditions. The editor pins the revision that was opened, presents the complete replacement before applying it, and preserves the draft after a validation or revision conflict. A conflicting update refreshes the latest saved policy without silently rebasing or overwriting the draft.
+
+The decision form evaluates the current saved revision. It shows allow/deny, the reason, matched policies and effective roles in English or Japanese. Simulation writes no audit; selecting **Save this decision to the audit history** records the same scenario. These operator-supplied scenarios do not execute the action or establish trusted resource attributes. Editing a scenario or observing a newer policy revision clears its previous result.
+
+Credential issuance selects a subject and bounded lifetime. The bearer token appears once in a dialog, is not added to the query cache or browser storage, and disappears when dismissed, changing tenants or leaving the page. Credential metadata shows expiry and revocation. Revocation requires reviewing the selected credential and takes effect at subsequent authorization boundaries. Component approval selects an exact Registry ID/version; enabling or disabling it uses the latest observed binding revision.
+
+Change history and decision audits paginate using durable revision/sequence cursors. Failed refreshes hide stale policy, credential, catalog and history results. Subject sessions cannot call these administration endpoints or open their controls. Browser acceptance exercises inherited roles, attribute mismatches, explicit deny, simulation/audit separation, optimistic conflicts, token issuance/revocation, catalog version approval, pagination, tenant switching and English/Japanese desktop/mobile rendering against real API and PostgreSQL state.
 
 ## Policy semantics
 
