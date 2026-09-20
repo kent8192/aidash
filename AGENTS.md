@@ -1,0 +1,4 @@
+- Complete authorized work through implementation and verification; decide reversible details independently and ask only when missing information or authorization blocks progress.
+- Keep verification proportional to the change; expand it only for new changes, failures, or unresolved concerns.
+- Report the outcome, verification evidence, and remaining blockers concisely.
+- `main` tracks the stable release; `develop/x.y.z` tracks version `x.y.z` under development.
