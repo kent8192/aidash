@@ -1,24 +1,4 @@
-export async function api<T>(
-  path: string,
-  body?: unknown,
-  method = body === undefined ? "GET" : "POST",
-): Promise<T> {
-  const response = await fetch(`/api${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${sessionStorage.getItem("aidash-token") ?? ""}`,
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  if (!response.ok) {
-    const data = await response
-      .json()
-      .catch(() => ({ error: response.statusText }));
-    throw new Error(data.error ?? response.statusText);
-  }
-  return response.json() as Promise<T>;
-}
+import { stream } from "./generated/aidash";
 export async function subscribe(
   signal: AbortSignal,
   onEvent: () => void,
@@ -27,10 +7,9 @@ export async function subscribe(
   let cursor = "0";
   while (!signal.aborted) {
     try {
-      const response = await fetch("/api/events/stream", {
+      const response = await stream(undefined, {
         signal,
         headers: {
-          Authorization: `Bearer ${sessionStorage.getItem("aidash-token") ?? ""}`,
           "Last-Event-ID": cursor,
         },
       });

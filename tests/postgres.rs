@@ -503,12 +503,396 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let snapshot = store.snapshot(workspace.id).await.unwrap();
-    assert_eq!(snapshot.messages[0]["sender"], "human");
+    assert_eq!(snapshot.messages[0].sender, "human");
     store.control(run.id, "cancel").await.unwrap();
     assert!(harness.worker_once().await.unwrap());
     assert_eq!(store.run(run.id).await.unwrap().phase, "CANCELLED");
     assert_eq!(store.task(task.id).await.unwrap().status, "CANCELLED");
     assert_eq!(store.task(dependency.id).await.unwrap().status, "OPEN");
     assert!(store.control(run.id, "resume").await.is_err());
+    cleanup(store, &url, &schema).await;
+}
+
+fn federation_for(store: &Store) -> Federation {
+    Federation {
+        store: store.clone(),
+        registry: Registry::new(store.pool.clone()),
+        config: Config {
+            node_id: store.node_id.clone(),
+            endpoint: "http://127.0.0.1:18080".into(),
+            listen: "127.0.0.1:18080".parse().unwrap(),
+            database_url: String::new(),
+            nats_url: "nats://127.0.0.1:1".into(),
+            api_token: "test-access-token".into(),
+            web_dir: "web/dist".into(),
+            lease_seconds: 30,
+        },
+        client: reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap(),
+        notify: Arc::new(tokio::sync::Notify::new()),
+    }
+}
+async fn running_task(store: &Store, agent: &Entry, workspace: Uuid, parent: Option<Uuid>) -> Task {
+    let mut input = new_task();
+    input.parent_id = parent;
+    let task = store
+        .create_task(workspace, &input, "human", None)
+        .await
+        .unwrap();
+    let owner = qualified_agent(&store.node_id, &agent.id, &agent.version);
+    let task = store
+        .claim(task.id, task.revision, &owner, agent)
+        .await
+        .unwrap();
+    store
+        .transition(task.id, task.revision, &owner, "RUNNING")
+        .await
+        .unwrap()
+}
+async fn final_response(store: &Store, task: Uuid) {
+    let response = aidash::provider::ModelResponse {
+        text: "Report using the available results".into(),
+        ..Default::default()
+    };
+    sqlx::query("UPDATE runs SET phase='TOOL_CALL',pending=$2 WHERE task_id=$1")
+        .bind(task)
+        .bind(json!({"response":response,"cursor":0}))
+        .execute(&store.pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL; see scripts/check.sh"]
+async fn parent_can_finish_after_explicit_child_abandonment() {
+    let (store, url, schema) = setup().await;
+    let f = federation_for(&store);
+    let agent = seed(&f.registry).await;
+    let workspace = store
+        .create_workspace("Partial results", "Resolve terminal children")
+        .await
+        .unwrap();
+    let parent = running_task(&store, &agent, workspace.id, None).await;
+    let mut children = Vec::new();
+    for status in ["FAILED", "BLOCKED", "CANCELLED"] {
+        let child = running_task(&store, &agent, workspace.id, Some(parent.id)).await;
+        let child = store
+            .transition(
+                child.id,
+                child.revision,
+                child.owner.as_deref().unwrap(),
+                status,
+            )
+            .await
+            .unwrap();
+        sqlx::query("UPDATE runs SET control='PAUSED' WHERE task_id=$1")
+            .bind(child.id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        children.push(child);
+    }
+    final_response(&store, parent.id).await;
+    let harness = aidash::harness::Harness {
+        federation: f.clone(),
+    };
+    harness.worker_once().await.unwrap();
+    let run: Run = sqlx::query_as("SELECT * FROM runs WHERE task_id=$1")
+        .bind(parent.id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(run.phase, "WAITING");
+    let request_id = run.pending["human_request_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    for child in children {
+        assert!(
+            store
+                .abandon_task(child.id, child.revision + 1, "No longer needed")
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .abandon_task(child.id, child.revision, " ")
+                .await
+                .is_err()
+        );
+        let response = aidash::api::router(f.clone()).oneshot(Request::post(format!("/api/tasks/{}/abandon", child.id))
+            .header("authorization", "Bearer test-access-token").header("content-type", "application/json")
+            .body(Body::from(json!({"revision":child.revision,"reason":"Operator accepts partial results"}).to_string())).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(store.task(child.id).await.unwrap().status, "ABANDONED");
+    }
+    store
+        .answer(request_id, json!("Continue with the remaining results"))
+        .await
+        .unwrap();
+    harness.worker_once().await.unwrap();
+    assert_eq!(store.run(run.id).await.unwrap().phase, "THINKING");
+    final_response(&store, parent.id).await;
+    harness.worker_once().await.unwrap();
+    assert_eq!(store.task(parent.id).await.unwrap().status, "COMPLETED");
+    assert_eq!(
+        store.snapshot(workspace.id).await.unwrap().artifacts.len(),
+        1
+    );
+    let events = store.events(0, Some(workspace.id), 1000).await.unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.kind == "task.abandoned"
+                && e.data["reason"] == "Operator accepts partial results")
+            .count(),
+        3
+    );
+    cleanup(store, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL; see scripts/check.sh"]
+async fn successful_tool_retry_resets_the_next_invocation_budget() {
+    let (store, url, schema) = setup().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            axum::Router::new().route(
+                "/",
+                axum::routing::post(
+                    |axum::Json(input): axum::Json<serde_json::Value>| async move {
+                        if input["call"] == 1 {
+                            (StatusCode::OK, axum::Json(json!({"saved":true})))
+                        } else {
+                            (
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                axum::Json(json!({"error":"temporary failure"})),
+                            )
+                        }
+                    },
+                ),
+            ),
+        )
+        .await
+        .unwrap();
+    });
+    let f = federation_for(&store);
+    seed(&f.registry).await;
+    f.registry.register(entry("tool", "retry-tool", json!({"transport":"http","endpoint":endpoint,"credential_env":null,"replay":"idempotent"}))).await.unwrap();
+    let agent = f.registry.register(entry("agent", "retry-agent", json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Test retries","tools":[{"id":"retry-tool","version":"1.0.0"}],"skills":[]}))).await.unwrap();
+    let workspace = store
+        .create_workspace("Retries", "Independent budgets")
+        .await
+        .unwrap();
+    let task = running_task(&store, &agent, workspace.id, None).await;
+    let response = aidash::provider::ModelResponse {
+        tool_calls: (1..=2)
+            .map(|call| aidash::provider::ToolCall {
+                id: call.to_string(),
+                name: "plugin_0".into(),
+                arguments: json!({"call":call}),
+            })
+            .collect(),
+        ..Default::default()
+    };
+    sqlx::query("UPDATE runs SET phase='TOOL_CALL',pending=$2,error='prior transient error' WHERE task_id=$1")
+        .bind(task.id).bind(json!({"response":response,"cursor":0,"retry_count":5})).execute(&store.pool).await.unwrap();
+    let harness = aidash::harness::Harness { federation: f };
+    harness.worker_once().await.unwrap();
+    let run: Run = sqlx::query_as("SELECT * FROM runs WHERE task_id=$1")
+        .bind(task.id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(run.pending["cursor"], 1);
+    assert!(run.pending.get("retry_count").is_none());
+    assert!(run.error.is_none());
+    harness.worker_once().await.unwrap();
+    let run = store.run(run.id).await.unwrap();
+    assert_eq!(run.phase, "TOOL_CALL");
+    assert_eq!(run.pending["retry_count"], 1);
+    assert_eq!(store.task(task.id).await.unwrap().status, "RUNNING");
+    server.abort();
+    cleanup(store, &url, &schema).await;
+}
+
+async fn add_test_peer(store: &Store, node: &str, endpoint: &str) {
+    sqlx::query("INSERT INTO peers(node_id,endpoint,credential_env,protocol_version,enabled) VALUES($1,$2,'AIDASH_SECRET_TEST_PEER','0.1',true)")
+        .bind(node).bind(endpoint).execute(&store.pool).await.unwrap();
+}
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL and AIDASH_SECRET_TEST_PEER; see scripts/check.sh"]
+async fn failed_home_transition_survives_outage_and_worker_restart() {
+    let (store, url, schema) = setup().await;
+    let f = federation_for(&store);
+    let agent = seed(&f.registry).await;
+    let workspace = store
+        .create_workspace("Remote failure", "Retry terminal delivery")
+        .await
+        .unwrap();
+    let mut task = store
+        .create_task(workspace.id, &new_task(), "human", None)
+        .await
+        .unwrap();
+    task.status = "RUNNING".into();
+    task.owner = Some(qualified_agent(&store.node_id, &agent.id, &agent.version));
+    let home_task = Arc::new(std::sync::Mutex::new(task.clone()));
+    let online = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let remote_task = home_task.clone();
+    let available = online.clone();
+    let server = tokio::spawn(async move {
+        let router = axum::Router::new().route(
+            "/federation/v0.1/workspace",
+            axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let task = remote_task.clone();
+                let available = available.clone();
+                async move {
+                    if !available.load(std::sync::atomic::Ordering::SeqCst) {
+                        return (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            axum::Json(json!({"error":"home unavailable"})),
+                        );
+                    }
+                    let mut task = task.lock().unwrap();
+                    if body["operation"] == "transition" {
+                        task.status = body["data"]["status"].as_str().unwrap().into();
+                    }
+                    (StatusCode::OK, axum::Json(json!(*task)))
+                }
+            }),
+        );
+        axum::serve(listener, router).await.unwrap();
+    });
+    add_test_peer(&store, "aidash://home", &endpoint).await;
+    let run = store
+        .accept_run(&task, "aidash://home", &agent.id, &agent.version)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE runs SET phase='THINKING',pending=$2 WHERE id=$1")
+        .bind(run.id)
+        .bind(json!({"retry_count":5}))
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    aidash::harness::Harness {
+        federation: f.clone(),
+    }
+    .worker_once()
+    .await
+    .unwrap();
+    let pending = store.run(run.id).await.unwrap();
+    assert_eq!(pending.phase, "WAITING");
+    assert_eq!(pending.pending["terminal_transition"], "FAILED");
+    aidash::harness::Harness {
+        federation: f.clone(),
+    }
+    .worker_once()
+    .await
+    .unwrap();
+    assert_eq!(store.run(run.id).await.unwrap().phase, "WAITING");
+    assert_eq!(home_task.lock().unwrap().status, "RUNNING");
+    online.store(true, std::sync::atomic::Ordering::SeqCst);
+    sqlx::query("UPDATE runs SET pending=jsonb_set(pending,'{wake_at}',to_jsonb(now()-interval '1 second')) WHERE id=$1").bind(run.id).execute(&store.pool).await.unwrap();
+    aidash::harness::Harness { federation: f }
+        .worker_once()
+        .await
+        .unwrap();
+    assert_eq!(store.run(run.id).await.unwrap().phase, "FAILED");
+    assert_eq!(home_task.lock().unwrap().status, "FAILED");
+    server.abort();
+    cleanup(store, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL and AIDASH_SECRET_TEST_PEER; see scripts/check.sh"]
+async fn terminal_delegations_allow_reads_and_exact_completion_replay_only() {
+    let (store, url, schema) = setup().await;
+    let f = federation_for(&store);
+    let agent = seed(&f.registry).await;
+    let workspace = store
+        .create_workspace("Revocation", "Reject stale peer writes")
+        .await
+        .unwrap();
+    let task = store
+        .create_task(workspace.id, &new_task(), "human", None)
+        .await
+        .unwrap();
+    let peer = "aidash://peer";
+    add_test_peer(&store, peer, "http://127.0.0.1:1").await;
+    sqlx::query("INSERT INTO delegations(task_id,node_id,agent_id,agent_version,delivered) VALUES($1,$2,$3,$4,true)")
+        .bind(task.id).bind(peer).bind(&agent.id).bind(&agent.version).execute(&store.pool).await.unwrap();
+    let owner = qualified_agent(peer, &agent.id, &agent.version);
+    let task = store
+        .claim(task.id, task.revision, &owner, &agent)
+        .await
+        .unwrap();
+    store
+        .transition(task.id, task.revision, &owner, "RUNNING")
+        .await
+        .unwrap();
+    let artifact = ArtifactInput {
+        kind: "text".into(),
+        name: "Final".into(),
+        content: json!("Done"),
+    };
+    let key = format!("{peer}:{}:completion", task.id);
+    store
+        .complete(task.id, &owner, &key, &artifact)
+        .await
+        .unwrap();
+    let router = aidash::api::router(f);
+    let token = std::env::var("AIDASH_SECRET_TEST_PEER")
+        .expect("set AIDASH_SECRET_TEST_PEER for peer regression tests");
+    for operation in [
+        "artifact",
+        "create_task",
+        "delegate",
+        "message",
+        "event",
+        "human_message",
+        "claim",
+        "transition",
+        "snapshot",
+        "task",
+        "complete",
+    ] {
+        let data = if operation == "complete" {
+            json!({"key":"completion","artifact":artifact})
+        } else {
+            json!({"key":"stale","content":"stale write","status":"RUNNING"})
+        };
+        let response = router.clone().oneshot(Request::post("/federation/v0.1/workspace")
+            .header("authorization", format!("Bearer {token}")).header("x-aidash-node", peer).header("x-aidash-protocol", "0.1").header("content-type", "application/json")
+            .body(Body::from(json!({"task_id":task.id,"agent":{"id":agent.id,"version":agent.version},"operation":operation,"data":data}).to_string())).unwrap()).await.unwrap();
+        assert_eq!(
+            response.status(),
+            if matches!(operation, "snapshot" | "task" | "complete") {
+                StatusCode::OK
+            } else {
+                StatusCode::UNAUTHORIZED
+            },
+            "{operation}"
+        );
+    }
+    assert_eq!(
+        store.snapshot(workspace.id).await.unwrap().artifacts.len(),
+        1
+    );
+    let mut malformed = new_task();
+    malformed.requirements = json!({"capabilty":"web.search"});
+    assert!(
+        store
+            .create_task(workspace.id, &malformed, "human", None)
+            .await
+            .is_err()
+    );
     cleanup(store, &url, &schema).await;
 }

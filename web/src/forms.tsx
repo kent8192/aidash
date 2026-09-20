@@ -2,7 +2,16 @@ import { useState } from "react";
 import { useForm } from "@tanstack/react-form";
 import { Field, useI18n } from "./ui";
 import type { State, EntityRef, Discovery, Task } from "./types";
-export type Submit = (path: string, body: unknown) => Promise<void>;
+import {
+  conversationCreate,
+  workspaceCreate,
+  taskCreate,
+  registryCreate,
+  peerCreate,
+  taskDelegate,
+  packagePublish,
+} from "./generated/aidash";
+export type Submit = (request: () => Promise<unknown>) => Promise<void>;
 const split = (s: string) =>
   s
     .split(",")
@@ -24,11 +33,13 @@ export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
         (e) => `${e.id}@${e.version}` === value.target,
       );
       if (!target) throw new Error(t("choose"));
-      await submit("/conversations", {
-        ...value,
-        target: ref(value.target),
-        target_kind: target.kind,
-      });
+      await submit(() =>
+        conversationCreate({
+          ...value,
+          target: ref(value.target),
+          target_kind: target.kind,
+        }),
+      );
     },
   });
   return (
@@ -105,10 +116,12 @@ export function WorkspaceForm({ submit }: { submit: Submit }) {
       onSubmit={(e) => {
         e.preventDefault();
         const d = new FormData(e.currentTarget);
-        void submit("/workspaces", {
-          title: d.get("title"),
-          goal: d.get("goal"),
-        });
+        void submit(() =>
+          workspaceCreate({
+            title: String(d.get("title")),
+            goal: String(d.get("goal")),
+          }),
+        );
       }}
     >
       <Field label={t("title")}>
@@ -145,13 +158,15 @@ export function TaskForm({
             ?.setCustomValidity(t("jsonHint"));
           return;
         }
-        void submit(`/workspaces/${d.get("workspace")}/tasks`, {
-          title: d.get("title"),
-          description: d.get("description"),
-          requirements,
-          dependencies: [],
-          parent_id: null,
-        });
+        void submit(() =>
+          taskCreate(String(d.get("workspace")), {
+            title: String(d.get("title")),
+            description: String(d.get("description")),
+            requirements,
+            dependencies: [],
+            parent_id: null,
+          }),
+        );
       }}
     >
       <Field label={t("workspace")}>
@@ -192,6 +207,7 @@ export function EntityForm({
 }) {
   const { t } = useI18n();
   const [kind, setKind] = useState(initial);
+  const [modelProvider, setModelProvider] = useState("openai");
   const [error, setError] = useState("");
   const models = data.registry.filter((e) => e.kind === "model");
   const toolEntries = data.registry.filter((e) => e.kind === "tool");
@@ -241,7 +257,7 @@ export function EntityForm({
             schema: kind === "tool" ? JSON.parse(s("schema")) : {},
             config,
           };
-          void submit("/registry", entry);
+          void submit(() => registryCreate(entry));
         } catch (err) {
           setError(String(err));
         }
@@ -340,9 +356,14 @@ export function EntityForm({
         <>
           <p className="muted">{t("modelHelp")}</p>
           <Field label={t("provider")}>
-            <select name="provider">
+            <select
+              name="provider"
+              value={modelProvider}
+              onChange={(e) => setModelProvider(e.target.value)}
+            >
               <option value="openai">{t("openaiCompatible")}</option>
               <option value="anthropic">Anthropic</option>
+              <option value="openrouter">OpenRouter</option>
             </select>
           </Field>
           <Field label={t("modelId")}>
@@ -350,14 +371,23 @@ export function EntityForm({
           </Field>
           <Field label={t("endpoint")}>
             <input
+              key={modelProvider}
               name="endpoint"
               type="url"
               required
+              defaultValue={
+                modelProvider === "openrouter"
+                  ? "https://openrouter.ai/api/v1"
+                  : ""
+              }
               placeholder="https://api.openai.com/v1"
             />
           </Field>
           <Field label={t("credentials")}>
-            <input name="credential_env" placeholder="AIDASH_SECRET_OPENAI" />
+            <input
+              name="credential_env"
+              placeholder={`AIDASH_SECRET_${modelProvider.toUpperCase()}`}
+            />
           </Field>
           <Field label={t("contextWindow")}>
             <input
@@ -423,13 +453,15 @@ export function PeerForm({ submit }: { submit: Submit }) {
       onSubmit={(e) => {
         e.preventDefault();
         const d = new FormData(e.currentTarget);
-        void submit("/peers", {
-          node_id: d.get("node_id"),
-          endpoint: d.get("endpoint"),
-          credential_env: d.get("credential_env"),
-          protocol_version: "0.1",
-          enabled: true,
-        });
+        void submit(() =>
+          peerCreate({
+            node_id: String(d.get("node_id")),
+            endpoint: String(d.get("endpoint")),
+            credential_env: String(d.get("credential_env")),
+            protocol_version: "0.1",
+            enabled: true,
+          }),
+        );
       }}
     >
       <Field label={t("node")}>
@@ -470,10 +502,12 @@ export function AssignForm({
         e.preventDefault();
         const d = new FormData(e.currentTarget);
         const a = discovery.agents[Number(d.get("agent"))];
-        void submit(`/tasks/${task.id}/delegate`, {
-          node_id: a.node_id,
-          agent: { id: a.entity.id, version: a.entity.version },
-        });
+        void submit(() =>
+          taskDelegate(task.id, {
+            node_id: a.node_id,
+            agent: { id: a.entity.id, version: a.entity.version },
+          }),
+        );
       }}
     >
       <Field label={t("agent")}>
@@ -503,12 +537,15 @@ export function PublishForm({ data, submit }: { data: State; submit: Submit }) {
         const entity = data.registry.find(
           (e) => `${e.id}@${e.version}` === d.get("entity"),
         );
-        void submit("/marketplace", {
-          entity,
-          author: d.get("author"),
-          permissions: split(String(d.get("permissions"))),
-          dependencies: [],
-        });
+        if (!entity) return;
+        void submit(() =>
+          packagePublish({
+            entity,
+            author: String(d.get("author")),
+            permissions: split(String(d.get("permissions"))),
+            dependencies: [],
+          }),
+        );
       }}
     >
       <p>{t("publishHelp")}</p>

@@ -4,11 +4,9 @@ Aidash 0.1 is a self-hosted federated agent mesh. Register an explicitly selecte
 
 The release scope is defined by the [v0.1.0 functional requirements](https://app.notion.com/p/3e172fa877aa8096bca5c8d8c2c73b24). The current implementation covers the original mesh baseline. Kubernetes/k3s orchestration, automatic agent generation, complex RBAC/ABAC, complete distributed transactions, semantic memory/vector DB and full A2A compatibility are now [required additions](docs/expanded-requirements.md); their implementation and acceptance remain pending. See [architecture](docs/architecture.md), [requirement mapping](docs/requirements.md), and [protocol and recovery contracts](docs/protocol.md).
 
-![Aidash dashboard](docs/images/overview.png)
-
 ## Run locally
 
-Prerequisites: Rust 1.96, Node.js 22, Docker Compose, and Trunk CLI. The application does not load `.env` automatically.
+Prerequisites: Rust 1.96, Node.js 22.18 or later, Docker Compose, and Trunk CLI. The application does not load `.env` automatically.
 
 ```sh
 docker compose up -d --wait
@@ -24,7 +22,23 @@ cargo run --locked -- serve
 
 Open <http://127.0.0.1:8080> and enter the token from `AIDASH_API_TOKEN`. The example credentials and localhost bindings are for local development. Configure unique credentials and an HTTPS endpoint for a deployed node.
 
-The **Registry** screen can register models, tools, skills, clusters and agents. Register a model before an agent. Both OpenAI-compatible `/chat/completions` and Anthropic `/messages` endpoints are supported; use a base endpoint ending in `/v1`. Specify the provider's actual model ID, context window, modalities and cost metadata. Credentials are resolved only from `AIDASH_SECRET_*` environment variables. Registry records store the environment variable name, never its value. Model selection is explicit; there is no fallback or automatic model routing.
+The **Registry** screen can register models, tools, skills, clusters and agents. Register a model before an agent. OpenAI-compatible `/chat/completions`, Anthropic `/messages` and OpenRouter `/chat/completions` endpoints are supported; use a base endpoint ending in `/v1`. Specify the provider's actual model ID, context window, modalities and cost metadata. Credentials are resolved only from `AIDASH_SECRET_*` environment variables. Registry records store the environment variable name, never its value. Model selection is explicit; Aidash does not select fallback models or automatically route between models.
+
+For **OpenRouter**, set `AIDASH_SECRET_OPENROUTER` to your OpenRouter API key in the environment of each node's server and worker processes. Select **OpenRouter** in the Registry model form; it fills in `https://openrouter.ai/api/v1` as the editable base endpoint. Enter an explicit model slug from the [OpenRouter model catalog](https://openrouter.ai/models), its context window and cost metadata, and `AIDASH_SECRET_OPENROUTER` as the credential reference. Choose a text model that supports tool calling, which agents require. A model's Registry `config` looks like this (replace the illustrative model ID and context window with the selected model's values):
+
+```json
+{
+  "provider": "openrouter",
+  "model_id": "provider/model-name",
+  "endpoint": "https://openrouter.ai/api/v1",
+  "credential_env": "AIDASH_SECRET_OPENROUTER",
+  "context_window": 128000,
+  "modalities": ["text"],
+  "cost": {}
+}
+```
+
+OpenRouter requests use Bearer authentication, `max_tokens` and the shared OpenAI-compatible tool-call and usage parser, following the [OpenRouter API contract](https://openrouter.ai/docs/api/reference/overview). OpenRouter's upstream provider routing follows your OpenRouter account settings; Aidash adds no routing overrides. Inference uses the agent's selected model. History compaction uses Jev separately, as described below. Local tests use protocol fixtures and do not make paid OpenRouter calls.
 
 For a development frontend with hot reload:
 
@@ -46,13 +60,13 @@ AIDASH_LISTEN=127.0.0.1:8081 \
 cargo run --locked -- serve
 ```
 
-Configure a peer on **both** nodes in Settings. Each peer record contains the other node's identity and endpoint, protocol `0.1`, and the name of a shared `AIDASH_SECRET_*` credential. Register at least one research agent on each node. Registry discovery exchanges metadata over the federation API; no remote database access is needed. Each workspace retains an authoritative home node.
+Configure a peer on **both** nodes in Settings. Each peer record contains the other node's identity and endpoint, protocol `0.1`, and the name of a shared `AIDASH_SECRET_*` credential. Peer credentials must contain at least 32 printable ASCII characters and eight distinct characters; use a randomly generated token. Register at least one research agent on each node. Registry discovery exchanges metadata over the federation API; no remote database access is needed. Each workspace retains an authoritative home node.
 
 `aidash server` runs the API, outbox publisher and JetStream consumer. `aidash worker` runs four workers without an HTTP listener. `aidash serve` runs both roles. To exercise recovery, stop a **worker** process while leaving its server, PostgreSQL and NATS running, then restart it with the same configuration. The lease expires after 30 seconds. Task and run IDs remain stable.
 
 ## Tools and coordination
 
-Every agent receives these workspace tools: `agent_discover`, `task_create`, `task_delegate`, `artifact_publish`, `workspace_message`, `workspace_observe`, `workspace_wait`, `memory_write`, and `human_request`. The model's final text completes its task and publishes a final artifact. A coordinator must wait for its subtasks and synthesize their artifacts.
+Every agent receives these workspace tools: `agent_discover`, `task_create`, `task_delegate`, `artifact_publish`, `workspace_message`, `workspace_observe`, `workspace_wait`, `memory_write`, and `human_request`. The model's final text completes its task and publishes a final artifact. A coordinator must wait for its subtasks and synthesize their artifacts. If a child fails, is blocked, or is cancelled, open its task details and explicitly abandon it with a reason; then answer the parent's human request to resume synthesis. Abandonment is audited and never turns a failed child into a successful result.
 
 Additional tools are versioned Registry entities. Their JSON Schema validates arguments. Agents reference exact tool versions; provider-safe aliases `plugin_0`, `plugin_1`, etc. follow the order of those references. Supported configurations:
 
@@ -100,6 +114,18 @@ The Agent tool creates and delegates a subtask, returning its task ID. Native HT
 
 HTTP tools receive an `Idempotency-Key` header. An idempotent MCP tool must specify an argument name that its server actually supports. `read_only` permits safe repetition. `unsafe` allows one attempt; an interrupted or ambiguous effect pauses for reconciliation instead of being invoked again. See the recovery contract before connecting an effectful tool.
 
+## History compaction
+
+Context compaction uses a Rust reimplementation of [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction), with a separate TypeSafe Jev connection. Set `AIDASH_SECRET_JEV` to your TypeSafe API key on each worker (or combined `serve` process). Optional `AIDASH_JEV_ENDPOINT` and `AIDASH_JEV_MODEL` default to `https://api.typesafe.ai/v1/systemone` and `jev-latest`. Jev is contacted only when the model's context budget is exceeded and old tool pairs can be pruned; those requests send a fitted history view to TypeSafe and use that account's credits.
+
+Jev decides whether to keep each old tool call and its full result. Aidash keeps both, keeps the call with a shortened result, or removes the pair. It preserves the first and latest six history events, all human/non-tool events, current task/workspace/memory, and any legacy summary. It creates no new summaries and never silently falls back to summarization. Missing credentials, invalid decisions or insufficient reduction fail the step without changing its saved context. See the [compaction contract](docs/protocol.md#context-compaction) for input fitting and request limits. Protocol tests use a local Jev fixture; live service access and decision quality are not established by those tests.
+
+## Generated API client
+
+Axum management routes and Rust request/response types define the OpenAPI contract through `utoipa` and `utoipa-axum`. The public `/api/openapi.json` endpoint and `aidash openapi` command export the same document; the command needs no database, broker, or credentials. All other `/api` routes require a bearer token.
+
+After changing an API route or type, run `scripts/generate-api.sh`. It exports `openapi/aidash.json` and runs the pinned Orval generator to update `web/src/generated/`. Commit both outputs. Dashboard requests and types use these generated files; `transport.ts` supplies authentication/error handling, while `api.ts` reads and reconnects the SSE stream. The Orval transformer exposes unbounded `text/event-stream` responses as `Response`, so the browser can read frames without buffering the entire stream. Do not edit generated files by hand. CI regenerates them and rejects drift before building and testing the UI.
+
 ## Verification
 
 ```sh
@@ -110,7 +136,7 @@ scripts/check.sh
 
 Trunk owns formatting and linting: rustfmt, Clippy, Prettier, ESLint, Ruff and Taplo. The Rust edition and linter versions are pinned. React Compiler is not enabled, so its incompatible-library diagnostic is disabled for the intentionally mutable TanStack Table/Virtual interfaces; the hook correctness and accessibility rules remain enabled.
 
-`check.sh` runs Rust unit and PostgreSQL integration tests, builds the dashboard, and executes the two-node acceptance scenario starting from a real Chromium dashboard. It also verifies remote human controls, all four tool transports, and three browser scenarios. The scenario starts real Aidash processes, PostgreSQL and NATS with deterministic OpenAI/Anthropic protocol fixtures. The same checks and Trunk lint run in GitHub Actions. It kills Node B's worker after an external effect but before its result is persisted, restarts the worker, and checks the same run completes with no duplicate effect. Reports are written to `.ignore/acceptance/report.json`.
+`check.sh` runs Rust unit and PostgreSQL integration tests, builds the dashboard, and executes the two-node acceptance scenario starting from a real Chromium dashboard. It also verifies remote human controls, all four tool transports, and four browser scenarios. The scenario starts real Aidash processes, PostgreSQL and NATS with deterministic OpenAI/Anthropic protocol fixtures. The same checks and Trunk lint run in GitHub Actions. Both nodes and workers start with NATS unavailable; the scenario verifies queued events drain after the broker connection is restored. It kills Node B's worker after an external effect but before its result is persisted, restarts the worker, and checks the same run completes with no duplicate effect. Reports are written to `.ignore/acceptance/report.json`.
 
 For browser tests, keep that completed fixture environment running in one terminal:
 

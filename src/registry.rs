@@ -30,7 +30,7 @@ mod record {
 }
 
 pub type Localized = BTreeMap<String, String>;
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct Entry {
     pub id: String,
     pub version: String,
@@ -38,25 +38,31 @@ pub struct Entry {
     pub name: Localized,
     pub description: Localized,
     #[serde(default)]
+    #[schema(required = true)]
     pub capabilities: Vec<String>,
     #[serde(default)]
+    #[schema(required = true)]
     pub tags: Vec<String>,
     #[serde(default)]
+    #[schema(required = true)]
     pub languages: Vec<String>,
     #[serde(default)]
+    #[schema(required = true)]
     pub skills: Vec<String>,
     #[serde(default = "empty_object")]
+    #[schema(value_type = BTreeMap<String, Value>, required = true)]
     pub schema: Value,
     #[serde(default = "empty_object")]
+    #[schema(value_type = BTreeMap<String, Value>, required = true)]
     pub config: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct EntityRef {
     pub id: String,
     pub version: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct AgentConfig {
     pub model: EntityRef,
     pub instructions: String,
@@ -72,7 +78,13 @@ fn max_steps() -> i32 {
     64
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ClusterConfig {
+    pub coordinator: EntityRef,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ModelConfig {
     pub provider: String,
     pub model_id: String,
@@ -83,7 +95,10 @@ pub struct ModelConfig {
     pub cost: Value,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+#[derive(utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct Search {
     pub kind: Option<String>,
     pub query: Option<String>,
@@ -246,12 +261,12 @@ pub fn validate(e: &Entry) -> Result<()> {
         "model" => {
             let m: ModelConfig = serde_json::from_value(e.config.clone())
                 .map_err(|e| Error::Invalid(e.to_string()))?;
-            if !matches!(m.provider.as_str(), "openai" | "anthropic")
+            if !matches!(m.provider.as_str(), "openai" | "anthropic" | "openrouter")
                 || m.model_id.is_empty()
                 || m.context_window < 2048
                 || !m.modalities.iter().any(|m| m == "text")
             {
-                return Err(Error::Invalid("model requires openai/anthropic, model_id, text modality and context_window >= 2048".into()));
+                return Err(Error::Invalid("model requires openai/anthropic/openrouter, model_id, text modality and context_window >= 2048".into()));
             }
             validate_endpoint(&m.endpoint)?;
             if let Some(name) = m.credential_env {
@@ -264,6 +279,19 @@ pub fn validate(e: &Entry) -> Result<()> {
             if a.instructions.trim().is_empty() || !(1..=1000).contains(&a.max_steps) {
                 return Err(Error::Invalid(
                     "agent requires instructions and max_steps in 1..1000".into(),
+                ));
+            }
+        }
+        "cluster" => {
+            let cluster: ClusterConfig =
+                serde_json::from_value(e.config.clone()).map_err(|error| {
+                    Error::Invalid(format!("cluster requires a coordinator reference: {error}"))
+                })?;
+            if cluster.coordinator.id.trim().is_empty()
+                || semver::Version::parse(&cluster.coordinator.version).is_err()
+            {
+                return Err(Error::Invalid(
+                    "cluster coordinator requires an id and semantic version".into(),
                 ));
             }
         }
@@ -281,18 +309,20 @@ pub fn validate(e: &Entry) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Package {
     pub entity: Entry,
     pub author: String,
     pub permissions: Vec<String>,
     #[serde(default)]
+    #[schema(required = true)]
     pub dependencies: Vec<EntityRef>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct PackageRecord {
     pub id: String,
     pub version: String,
+    #[schema(value_type = Package)]
     pub manifest: Value,
     pub digest: String,
 }
@@ -402,5 +432,26 @@ mod tests {
         e.version = "1.0.0".into();
         e.id = "../../escape".into();
         assert!(validate(&e).is_err());
+    }
+    #[test]
+    fn unknown_requirements_and_invalid_clusters_are_rejected() {
+        for value in [
+            json!({"capabilty":"web.search"}),
+            json!({"capabilities":["web.search"]}),
+        ] {
+            assert!(serde_json::from_value::<Search>(value).is_err());
+        }
+        let mut e = entry();
+        e.kind = "cluster".into();
+        for config in [
+            json!({}),
+            json!({"coordinator":"research"}),
+            json!({"coordinator":{"id":"research","version":"latest"}}),
+        ] {
+            e.config = config;
+            assert!(validate(&e).is_err());
+        }
+        e.config = json!({"coordinator":{"id":"research","version":"1.0.0"}});
+        validate(&e).unwrap();
     }
 }

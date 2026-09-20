@@ -193,8 +193,9 @@ impl Store {
         next: &str,
     ) -> Result<Task> {
         let task = self.task(id).await?;
-        let cancel_unclaimed = next == "CANCELLED" && task.status == "OPEN" && task.owner.is_none();
-        if task.owner.as_deref() != Some(owner) && !cancel_unclaimed {
+        let terminate_unclaimed =
+            matches!(next, "CANCELLED" | "FAILED") && task.status == "OPEN" && task.owner.is_none();
+        if task.owner.as_deref() != Some(owner) && !terminate_unclaimed {
             return Err(Error::Unauthorized);
         }
         let before: TaskStatus = serde_json::from_value(json!(task.status))?;
@@ -215,12 +216,52 @@ impl Store {
             )));
         }
         let mut tx = self.pool.begin().await?;
-        let t: Task = sqlx::query_as("UPDATE tasks SET status=$4,owner=CASE WHEN $4='OPEN' THEN NULL ELSE $3 END,revision=revision+1 WHERE id=$1 AND revision=$2 AND (owner=$3 OR (owner IS NULL AND status='OPEN' AND $4='CANCELLED')) RETURNING *")
+        let t: Task = sqlx::query_as("UPDATE tasks SET status=$4,owner=CASE WHEN $4='OPEN' THEN NULL ELSE $3 END,revision=revision+1 WHERE id=$1 AND revision=$2 AND (owner=$3 OR (owner IS NULL AND status='OPEN' AND $4 IN ('CANCELLED','FAILED'))) RETURNING *")
             .bind(id).bind(revision).bind(owner).bind(next).fetch_optional(&mut *tx).await?.ok_or_else(|| Error::Conflict("task revision changed".into()))?;
         self.event(&mut tx, Some(t.workspace_id), "task.updated", json!(t))
             .await?;
         tx.commit().await?;
         Ok(t)
+    }
+    /// Explicit operator abandonment preserves the failed outcome and reason
+    /// while allowing the parent to finish using the remaining results.
+    pub async fn abandon_task(&self, id: Uuid, revision: i64, reason: &str) -> Result<Task> {
+        nonempty(reason, "abandonment reason")?;
+        let mut tx = self.pool.begin().await?;
+        let task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id=$1 FOR UPDATE")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+        if task.revision != revision
+            || !matches!(task.status.as_str(), "FAILED" | "BLOCKED" | "CANCELLED")
+        {
+            return Err(Error::Conflict(
+                "only a failed, blocked or cancelled task at the current revision can be abandoned"
+                    .into(),
+            ));
+        }
+        let active_children: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tasks WHERE parent_id=$1 AND status NOT IN ('COMPLETED','ABANDONED'))")
+            .bind(id).fetch_one(&mut *tx).await?;
+        if active_children {
+            return Err(Error::Conflict(
+                "resolve or abandon this task's children first".into(),
+            ));
+        }
+        let updated: Task = sqlx::query_as(
+            "UPDATE tasks SET status='ABANDONED',revision=revision+1 WHERE id=$1 RETURNING *",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        self.event(
+            &mut tx,
+            Some(task.workspace_id),
+            "task.abandoned",
+            json!({"task":updated,"previous_status":task.status,"reason":reason,"actor":"human"}),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(updated)
     }
     pub async fn complete(
         &self,
@@ -337,7 +378,7 @@ impl Store {
             workspace: self.workspace(id).await?, tasks: self.tasks(Some(id)).await?,
             artifacts: sqlx::query_as("SELECT * FROM artifacts WHERE workspace_id=$1 ORDER BY created_at").bind(id).fetch_all(&self.pool).await?,
             events: sqlx::query_as("SELECT sequence,id,node_id,workspace_id,kind,data,created_at FROM (SELECT * FROM events WHERE workspace_id=$1 ORDER BY sequence DESC LIMIT 100) e ORDER BY sequence").bind(id).fetch_all(&self.pool).await?,
-            messages: sqlx::query_scalar("SELECT to_jsonb(m) FROM (SELECT * FROM messages WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 100) m ORDER BY created_at").bind(id).fetch_all(&self.pool).await?,
+            messages: sqlx::query_as("SELECT * FROM (SELECT * FROM messages WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 100) m ORDER BY created_at").bind(id).fetch_all(&self.pool).await?,
         })
     }
     pub async fn message(
@@ -437,9 +478,20 @@ impl Store {
             .bind(id).bind(worker).bind(seconds as f64).execute(&self.pool).await?.rows_affected() == 1)
     }
     pub async fn save_run(&self, run: &Run, worker: Uuid, kind: &str) -> Result<Run> {
+        let mut pending = run.pending.clone();
+        let retrying = matches!(kind, "run.retrying" | "run.failure_pending");
+        if !retrying && let Some(object) = pending.as_object_mut() {
+            object.remove("retry_count");
+            object.remove("retry_at");
+        }
+        let error = if retrying || kind == "run.failed" {
+            run.error.as_deref()
+        } else {
+            None
+        };
         let mut tx = self.pool.begin().await?;
         let saved: Run = sqlx::query_as("UPDATE runs SET phase=$3,context=$4,pending=$5,step=$6,error=$7,revision=revision+1,updated_at=now(),lease_owner=NULL,lease_until=NULL WHERE id=$1 AND lease_owner=$2 AND lease_until>now() RETURNING *")
-            .bind(run.id).bind(worker).bind(&run.phase).bind(&run.context).bind(&run.pending).bind(run.step).bind(&run.error).fetch_optional(&mut *tx).await?.ok_or_else(|| Error::Conflict("worker lease lost".into()))?;
+            .bind(run.id).bind(worker).bind(&run.phase).bind(&run.context).bind(&pending).bind(run.step).bind(error).fetch_optional(&mut *tx).await?.ok_or_else(|| Error::Conflict("worker lease lost".into()))?;
         self.event(&mut tx, (run.home_node == self.node_id).then_some(run.workspace_id), kind,
             json!({"run_id":saved.id,"task_id":saved.task_id,"workspace_id":saved.workspace_id,"agent_id":saved.agent_id,"phase":saved.phase,"step":saved.step,"error":saved.error,"context_usage":saved.context.get("usage")})).await?;
         tx.commit().await?;
@@ -667,7 +719,7 @@ impl Store {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Invocation {
     pub idempotency_key: String,
     pub run_id: Uuid,

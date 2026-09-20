@@ -164,5 +164,9 @@
   "openaiCompatible": "OpenAI compatible",
   "messageSent": "Message sent",
   "taskCommunication": "Task delegation",
-  "remoteTasks": "Remote tasks"
+  "remoteTasks": "Remote tasks",
+  "ABANDONED": "Abandoned",
+  "abandonTask": "Abandon task",
+  "abandonReason": "Reason for abandonment",
+  "abandonHelp": "Records an explicit decision to skip this result. Answer the parent’s pending request to continue."
 }

@@ -12,3 +12,4 @@ pub mod store;
 pub mod tool;
 
 pub use error::{Error, Result};
+pub mod api_schema;

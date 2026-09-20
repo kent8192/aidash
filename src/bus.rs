@@ -15,6 +15,29 @@ pub struct EventBus {
     pub subject: String,
 }
 impl EventBus {
+    /// Broker connection and consumer recovery never gate HTTP or worker startup.
+    pub async fn run(f: Federation) -> Result<()> {
+        loop {
+            let result = async {
+                let bus = tokio::time::timeout(
+                    Duration::from_secs(15),
+                    Self::connect(&f.config.nats_url, &f.config.node_id),
+                )
+                .await
+                .map_err(|_| Error::External("event bus connection timed out".into()))??;
+                tokio::select! {
+                    result = bus.publisher(f.clone()) => result,
+                    result = bus.consumer(f.clone()) => result,
+                }
+            }
+            .await;
+            if let Err(error) = result {
+                tracing::warn!(%error, "event bus unavailable; durable state retained for retry");
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+
     pub async fn connect(url: &str, node_id: &str) -> Result<Self> {
         let client = async_nats::connect(url)
             .await
@@ -67,9 +90,6 @@ impl EventBus {
         loop {
             if let Err(e) = self.publish_once(&f).await {
                 tracing::warn!(error=%e,"outbox publish failed; retained for retry");
-            }
-            if let Err(e) = f.retry_deliveries().await {
-                tracing::warn!(error=%e,"delegation retry failed");
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }

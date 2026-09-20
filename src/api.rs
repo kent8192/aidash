@@ -1,8 +1,9 @@
 use crate::{
     Error, Result,
-    config::{PROTOCOL_VERSION, secret},
+    api_schema::*,
+    config::{PROTOCOL_VERSION, peer_secret},
     domain::*,
-    federation::{Federation, Offer, Peer},
+    federation::{Delegation, Discovery, Federation, Offer, Peer},
     registry::{EntityRef, Entry, Package, PackageRecord, Search},
     store::Invocation,
     tool::required,
@@ -18,39 +19,63 @@ use axum::{
     },
     routing::{get, post},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{convert::Infallible, time::Duration};
+use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
+fn management_routes() -> OpenApiRouter<Federation> {
+    OpenApiRouter::new()
+        .routes(routes!(state))
+        .routes(routes!(registry_list))
+        .routes(routes!(registry_create))
+        .routes(routes!(registry_get))
+        .routes(routes!(workspace_create))
+        .routes(routes!(workspace_get))
+        .routes(routes!(workspace_update))
+        .routes(routes!(task_create))
+        .routes(routes!(message_create))
+        .routes(routes!(task_claim))
+        .routes(routes!(task_delegate))
+        .routes(routes!(task_abandon))
+        .routes(routes!(conversation_create))
+        .routes(routes!(run_get))
+        .routes(routes!(run_control))
+        .routes(routes!(run_message))
+        .routes(routes!(human_answer))
+        .routes(routes!(peer_create))
+        .routes(routes!(discover))
+        .routes(routes!(mesh))
+        .routes(routes!(remote_action))
+        .routes(routes!(marketplace))
+        .routes(routes!(package_publish))
+        .routes(routes!(package_install))
+        .routes(routes!(events))
+        .routes(routes!(stream))
+}
+
+pub fn openapi() -> utoipa::openapi::OpenApi {
+    let (_, mut document) = OpenApiRouter::<Federation>::new()
+        .nest("/api", management_routes())
+        .split_for_parts();
+    document.info = utoipa::openapi::Info::new("Aidash API", env!("CARGO_PKG_VERSION"));
+    document.info.description = Some("Management API for the Aidash agent mesh.".into());
+    document
+        .components
+        .get_or_insert_with(Default::default)
+        .add_security_scheme(
+            "bearer_auth",
+            utoipa::openapi::security::SecurityScheme::Http(utoipa::openapi::security::Http::new(
+                utoipa::openapi::security::HttpAuthScheme::Bearer,
+            )),
+        );
+    document
+}
+
 pub fn router(f: Federation) -> Router {
-    let api = Router::new()
-        .route("/state", get(state))
-        .route("/registry", get(registry_list).post(registry_create))
-        .route("/registry/{id}/{version}", get(registry_get))
-        .route("/workspaces", post(workspace_create))
-        .route(
-            "/workspaces/{id}",
-            get(workspace_get).patch(workspace_update),
-        )
-        .route("/workspaces/{id}/tasks", post(task_create))
-        .route("/workspaces/{id}/messages", post(message_create))
-        .route("/tasks/{id}/claim", post(task_claim))
-        .route("/tasks/{id}/delegate", post(task_delegate))
-        .route("/conversations", post(conversation_create))
-        .route("/runs/{id}", get(run_get))
-        .route("/runs/{id}/control", post(run_control))
-        .route("/runs/{id}/message", post(run_message))
-        .route("/human-requests/{id}/answer", post(human_answer))
-        .route("/peers", post(peer_create))
-        .route("/discover", post(discover))
-        .route("/mesh", get(mesh))
-        .route("/remote", post(remote_action))
-        .route("/marketplace", get(marketplace).post(package_publish))
-        .route("/marketplace/{id}/{version}/install", post(package_install))
-        .route("/events", get(events))
-        .route("/events/stream", get(stream))
-        .route_layer(middleware::from_fn_with_state(f.clone(), api_auth));
+    let (api, _) = management_routes().split_for_parts();
+    let api = api.route_layer(middleware::from_fn_with_state(f.clone(), api_auth));
     let federation = Router::new()
         .route("/discover", post(peer_discover))
         .route("/offers", post(peer_offer))
@@ -63,6 +88,7 @@ pub fn router(f: Federation) -> Router {
     );
     Router::new()
         .route("/health", get(health))
+        .route("/api/openapi.json", get(|| async { Json(openapi()) }))
         .route("/.well-known/aidash", get(identity))
         .nest("/api", api)
         .nest("/federation/v0.1", federation)
@@ -101,7 +127,7 @@ async fn peer_auth(State(f): State<Federation>, request: Request, next: Next) ->
     let node = peer_node(headers)?;
     let peer = f.peer(node).await?;
     if bearer(headers)
-        .is_none_or(|s| !secret(&peer.credential_env).is_ok_and(|key| same_secret(s, &key)))
+        .is_none_or(|s| !peer_secret(&peer.credential_env).is_ok_and(|key| same_secret(s, &key)))
     {
         return Err(Error::Unauthorized);
     }
@@ -130,7 +156,8 @@ async fn identity(State(f): State<Federation>) -> Result<Json<Value>> {
         .collect();
     Ok(Json(json!(f.config.identity(clusters))))
 }
-async fn state(State(f): State<Federation>) -> Result<Json<Value>> {
+#[utoipa::path(get, path = "/state", operation_id = "state", responses((status = 200, body = StateResponse)), security(("bearer_auth" = [])))]
+async fn state(State(f): State<Federation>) -> Result<Json<StateResponse>> {
     let records = f.registry.list(&Search::default()).await?;
     let events:Vec<crate::domain::Event>=sqlx::query_as("SELECT sequence,id,node_id,workspace_id,kind,data,created_at FROM (SELECT * FROM events ORDER BY sequence DESC LIMIT 100) e ORDER BY sequence").fetch_all(&f.store.pool).await?;
     let human: Vec<HumanRequest> =
@@ -145,26 +172,39 @@ async fn state(State(f): State<Federation>) -> Result<Json<Value>> {
         sqlx::query_as("SELECT * FROM artifacts ORDER BY created_at DESC LIMIT 500")
             .fetch_all(&f.store.pool)
             .await?;
-    let installations: Vec<Value> =
-        sqlx::query_scalar("SELECT to_jsonb(i) FROM installations i ORDER BY installed_at DESC")
+    let installations: Vec<Installation> =
+        sqlx::query_as("SELECT * FROM installations ORDER BY installed_at DESC")
             .fetch_all(&f.store.pool)
             .await?;
-    Ok(Json(
-        json!({"node":f.config.identity(vec![]),"registry":records,"workspaces":f.store.workspaces().await?,"tasks":f.store.tasks(None).await?,"runs":f.store.runs().await?,"human_requests":human,"conversations":conversations,"peers":f.peers().await?,"events":events,"artifacts":artifacts,"installations":installations}),
-    ))
+    Ok(Json(StateResponse {
+        node: f.config.identity(vec![]),
+        registry: records,
+        workspaces: f.store.workspaces().await?,
+        tasks: f.store.tasks(None).await?,
+        runs: f.store.runs().await?,
+        human_requests: human,
+        conversations,
+        peers: f.peers().await?,
+        events,
+        artifacts,
+        installations,
+    }))
 }
+#[utoipa::path(get, path = "/registry", operation_id = "registry_list", params(Search), responses((status = 200, body = [Entry])), security(("bearer_auth" = [])))]
 async fn registry_list(
     State(f): State<Federation>,
     Query(search): Query<Search>,
 ) -> Result<Json<Vec<Entry>>> {
     Ok(Json(f.registry.list(&search).await?))
 }
+#[utoipa::path(get, path = "/registry/{id}/{version}", operation_id = "registry_get", params(("id" = String, Path),("version" = String, Path)), responses((status = 200, body = Entry)), security(("bearer_auth" = [])))]
 async fn registry_get(
     State(f): State<Federation>,
     Path((id, version)): Path<(String, String)>,
 ) -> Result<Json<Entry>> {
     Ok(Json(f.registry.get(&id, &version).await?))
 }
+#[utoipa::path(post, path = "/registry", operation_id = "registry_create", request_body = Entry, responses((status = 200, body = Entry)), security(("bearer_auth" = [])))]
 async fn registry_create(
     State(f): State<Federation>,
     Json(entry): Json<Entry>,
@@ -179,11 +219,12 @@ async fn registry_create(
         .await?;
     Ok(Json(entry))
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
 struct WorkspaceInput {
     title: String,
     goal: String,
 }
+#[utoipa::path(post, path = "/workspaces", operation_id = "workspace_create", request_body = WorkspaceInput, responses((status = 200, body = Workspace)), security(("bearer_auth" = [])))]
 async fn workspace_create(
     State(f): State<Federation>,
     Json(input): Json<WorkspaceInput>,
@@ -192,17 +233,19 @@ async fn workspace_create(
         f.store.create_workspace(&input.title, &input.goal).await?,
     ))
 }
+#[utoipa::path(get, path = "/workspaces/{id}", operation_id = "workspace_get", params(("id" = Uuid, Path)), responses((status = 200, body = WorkspaceSnapshot)), security(("bearer_auth" = [])))]
 async fn workspace_get(
     State(f): State<Federation>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<WorkspaceSnapshot>> {
     Ok(Json(f.store.snapshot(id).await?))
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
 struct StateInput {
     revision: i64,
     state: Value,
 }
+#[utoipa::path(patch, path = "/workspaces/{id}", operation_id = "workspace_update", request_body = StateInput, params(("id" = Uuid, Path)), responses((status = 200, body = Workspace)), security(("bearer_auth" = [])))]
 async fn workspace_update(
     State(f): State<Federation>,
     Path(id): Path<Uuid>,
@@ -214,6 +257,7 @@ async fn workspace_update(
             .await?,
     ))
 }
+#[utoipa::path(post, path = "/workspaces/{id}/tasks", operation_id = "task_create", request_body = NewTask, params(("id" = Uuid, Path)), responses((status = 200, body = Task)), security(("bearer_auth" = [])))]
 async fn task_create(
     State(f): State<Federation>,
     Path(id): Path<Uuid>,
@@ -231,23 +275,25 @@ async fn task_create(
             .await?,
     ))
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
 struct MessageInput {
     content: String,
 }
+#[utoipa::path(post, path = "/workspaces/{id}/messages", operation_id = "message_create", request_body = MessageInput, params(("id" = Uuid, Path)), responses((status = 200, body = SentResponse)), security(("bearer_auth" = [])))]
 async fn message_create(
     State(f): State<Federation>,
     Path(id): Path<Uuid>,
     Json(input): Json<MessageInput>,
-) -> Result<Json<Value>> {
+) -> Result<Json<SentResponse>> {
     f.store.message(id, "human", &input.content, None).await?;
-    Ok(Json(json!({"sent":true})))
+    Ok(Json(SentResponse { sent: true }))
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
 struct ClaimInput {
     revision: i64,
     agent: EntityRef,
 }
+#[utoipa::path(post, path = "/tasks/{id}/claim", operation_id = "task_claim", request_body = ClaimInput, params(("id" = Uuid, Path)), responses((status = 200, body = Task)), security(("bearer_auth" = [])))]
 async fn task_claim(
     State(f): State<Federation>,
     Path(id): Path<Uuid>,
@@ -264,31 +310,49 @@ async fn task_claim(
         .await?;
     Ok(Json(task))
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
 struct DelegateInput {
     node_id: String,
     agent: EntityRef,
 }
+#[utoipa::path(post, path = "/tasks/{id}/delegate", operation_id = "task_delegate", request_body = DelegateInput, params(("id" = Uuid, Path)), responses((status = 200, body = Delegation)), security(("bearer_auth" = [])))]
 async fn task_delegate(
     State(f): State<Federation>,
     Path(id): Path<Uuid>,
     Json(input): Json<DelegateInput>,
-) -> Result<Json<Value>> {
-    Ok(Json(json!(
-        f.delegate(id, &input.node_id, &input.agent).await?
-    )))
+) -> Result<Json<Delegation>> {
+    Ok(Json(f.delegate(id, &input.node_id, &input.agent).await?))
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
+struct AbandonInput {
+    revision: i64,
+    reason: String,
+}
+#[utoipa::path(post, path = "/tasks/{id}/abandon", operation_id = "task_abandon", request_body = AbandonInput, params(("id" = Uuid, Path)), responses((status = 200, body = Task)), security(("bearer_auth" = [])))]
+async fn task_abandon(
+    State(f): State<Federation>,
+    Path(id): Path<Uuid>,
+    Json(input): Json<AbandonInput>,
+) -> Result<Json<Task>> {
+    let task = f
+        .store
+        .abandon_task(id, input.revision, &input.reason)
+        .await?;
+    f.notify.notify_waiters();
+    Ok(Json(task))
+}
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
 struct ConversationInput {
     title: String,
     goal: String,
     target: EntityRef,
     target_kind: String,
 }
+#[utoipa::path(post, path = "/conversations", operation_id = "conversation_create", request_body = ConversationInput, responses((status = 200, body = ConversationResponse)), security(("bearer_auth" = [])))]
 async fn conversation_create(
     State(f): State<Federation>,
     Json(input): Json<ConversationInput>,
-) -> Result<Json<Value>> {
+) -> Result<Json<ConversationResponse>> {
     let target = f
         .registry
         .get(&input.target.id, &input.target.version)
@@ -341,25 +405,32 @@ async fn conversation_create(
         )
         .await?;
     let delegation = f.delegate(task.id, &f.config.node_id, &agent).await?;
-    Ok(Json(
-        json!({"conversation":c,"workspace":workspace,"task":task,"delegation":delegation}),
-    ))
+    Ok(Json(ConversationResponse {
+        conversation: c,
+        workspace,
+        task,
+        delegation,
+    }))
 }
-async fn run_get(State(f): State<Federation>, Path(id): Path<Uuid>) -> Result<Json<Value>> {
+#[utoipa::path(get, path = "/runs/{id}", operation_id = "run_get", params(("id" = Uuid, Path)), responses((status = 200, body = RunDetails)), security(("bearer_auth" = [])))]
+async fn run_get(State(f): State<Federation>, Path(id): Path<Uuid>) -> Result<Json<RunDetails>> {
     let run = f.store.run(id).await?;
     let invocations: Vec<Invocation> =
         sqlx::query_as("SELECT * FROM invocations WHERE run_id=$1 ORDER BY created_at")
             .bind(id)
             .fetch_all(&f.store.pool)
             .await?;
-    Ok(Json(
-        json!({"run":run,"invocations":invocations,"memory":f.store.memory(&run).await?}),
-    ))
+    Ok(Json(RunDetails {
+        memory: f.store.memory(&run).await?,
+        run,
+        invocations,
+    }))
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
 struct ControlInput {
     action: String,
 }
+#[utoipa::path(post, path = "/runs/{id}/control", operation_id = "run_control", request_body = ControlInput, params(("id" = Uuid, Path)), responses((status = 200, body = Run)), security(("bearer_auth" = [])))]
 async fn run_control(
     State(f): State<Federation>,
     Path(id): Path<Uuid>,
@@ -369,17 +440,19 @@ async fn run_control(
     f.notify.notify_waiters();
     Ok(Json(r))
 }
+#[utoipa::path(post, path = "/runs/{id}/message", operation_id = "run_message", request_body = MessageInput, params(("id" = Uuid, Path)), responses((status = 200, body = SentResponse)), security(("bearer_auth" = [])))]
 async fn run_message(
     State(f): State<Federation>,
     Path(id): Path<Uuid>,
     Json(input): Json<MessageInput>,
-) -> Result<Json<Value>> {
+) -> Result<Json<SentResponse>> {
     let run = f.store.run(id).await?;
     let home = crate::federation::Home { federation: f, run };
     home.human_message(&format!("human:{}", Uuid::new_v4()), &input.content)
         .await?;
-    Ok(Json(json!({"sent":true})))
+    Ok(Json(SentResponse { sent: true }))
 }
+#[utoipa::path(post, path = "/human-requests/{id}/answer", operation_id = "human_answer", request_body = Value, params(("id" = Uuid, Path)), responses((status = 200, body = HumanRequest)), security(("bearer_auth" = [])))]
 async fn human_answer(
     State(f): State<Federation>,
     Path(id): Path<Uuid>,
@@ -389,12 +462,18 @@ async fn human_answer(
     f.notify.notify_waiters();
     Ok(Json(h))
 }
+#[utoipa::path(post, path = "/peers", operation_id = "peer_create", request_body = Peer, responses((status = 200, body = Peer)), security(("bearer_auth" = [])))]
 async fn peer_create(State(f): State<Federation>, Json(peer): Json<Peer>) -> Result<Json<Peer>> {
     Ok(Json(f.register_peer(peer).await?))
 }
-async fn discover(State(f): State<Federation>, Json(query): Json<Search>) -> Result<Json<Value>> {
-    Ok(Json(json!(f.discover(&query).await?)))
+#[utoipa::path(post, path = "/discover", operation_id = "discover", request_body = Search, responses((status = 200, body = Discovery)), security(("bearer_auth" = [])))]
+async fn discover(
+    State(f): State<Federation>,
+    Json(query): Json<Search>,
+) -> Result<Json<Discovery>> {
+    Ok(Json(f.discover(&query).await?))
 }
+#[utoipa::path(get, path = "/marketplace", operation_id = "marketplace", params(Search), responses((status = 200, body = [PackageRecord])), security(("bearer_auth" = [])))]
 async fn marketplace(
     State(f): State<Federation>,
     Query(query): Query<Search>,
@@ -411,6 +490,7 @@ async fn marketplace(
             .collect(),
     ))
 }
+#[utoipa::path(post, path = "/marketplace", operation_id = "package_publish", request_body = Package, responses((status = 200, body = PackageRecord)), security(("bearer_auth" = [])))]
 async fn package_publish(
     State(f): State<Federation>,
     Json(package): Json<Package>,
@@ -425,12 +505,13 @@ async fn package_publish(
         .await?;
     Ok(Json(p))
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
 struct InstallInput {
     digest: String,
     #[serde(default = "empty_object")]
     config: Value,
 }
+#[utoipa::path(post, path = "/marketplace/{id}/{version}/install", operation_id = "package_install", request_body = InstallInput, params(("id" = String, Path),("version" = String, Path)), responses((status = 200, body = Entry)), security(("bearer_auth" = [])))]
 async fn package_install(
     State(f): State<Federation>,
     Path((id, version)): Path<(String, String)>,
@@ -449,18 +530,21 @@ async fn package_install(
         .await?;
     Ok(Json(e))
 }
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct EventQuery {
     #[serde(default)]
     after: i64,
     workspace_id: Option<Uuid>,
 }
+#[utoipa::path(get, path = "/events", operation_id = "events", params(EventQuery), responses((status = 200, body = [crate::domain::Event])), security(("bearer_auth" = [])))]
 async fn events(
     State(f): State<Federation>,
     Query(q): Query<EventQuery>,
 ) -> Result<Json<Vec<crate::domain::Event>>> {
     Ok(Json(f.store.events(q.after, q.workspace_id, 500).await?))
 }
+#[utoipa::path(get, path = "/events/stream", operation_id = "stream", params(EventQuery), responses((status = 200, body = String, content_type = "text/event-stream")), security(("bearer_auth" = [])))]
 async fn stream(
     State(f): State<Federation>,
     headers: HeaderMap,
@@ -513,7 +597,7 @@ async fn peer_offer(
     f.notify.notify_waiters();
     Ok(Json(run))
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
 struct WorkspaceCommand {
     task_id: Uuid,
     agent: EntityRef,
@@ -535,10 +619,22 @@ async fn peer_workspace(
     if !matches!(command.operation.as_str(), "snapshot" | "task" | "claim")
         && !(task.owner.is_none()
             && (command.operation == "human_message"
-                || (command.operation == "transition" && d["status"] == "CANCELLED")))
+                || (command.operation == "transition"
+                    && (d["status"] == "CANCELLED" || d["status"] == "FAILED"))))
         && task.owner.as_deref() != Some(&owner)
     {
         return Err(Error::Unauthorized);
+    }
+    if matches!(
+        task.status.as_str(),
+        "COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+    ) {
+        let read = matches!(command.operation.as_str(), "snapshot" | "task");
+        let replay_completion = command.operation == "complete" && task.status == "COMPLETED";
+        let replay_transition = command.operation == "transition" && d["status"] == task.status;
+        if !read && !replay_completion && !replay_transition {
+            return Err(Error::Unauthorized);
+        }
     }
     let result = match command.operation.as_str() {
         "snapshot" => json!(f.store.snapshot(task.workspace_id).await?),
@@ -684,7 +780,7 @@ async fn peer_observe(State(f): State<Federation>, headers: HeaderMap) -> Result
         json!({"node_id":f.config.node_id,"runs":runs,"human_requests":requests,"invocations":invocations}),
     ))
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
 struct RemoteControl {
     run_id: Uuid,
     action: String,
@@ -740,31 +836,78 @@ async fn peer_control(
         action => Ok(Json(json!(f.store.control(run.id, action).await?))),
     }
 }
-async fn mesh(State(f): State<Federation>) -> Result<Json<Value>> {
+#[utoipa::path(get, path = "/mesh", operation_id = "mesh", responses((status = 200, body = MeshResponse)), security(("bearer_auth" = [])))]
+async fn mesh(State(f): State<Federation>) -> Result<Json<MeshResponse>> {
     let mut nodes = Vec::new();
     let mut errors = Vec::new();
     for peer in f.peers().await?.into_iter().filter(|p| p.enabled) {
         match f
-            .request::<Value>(&peer.node_id, reqwest::Method::GET, "/observe", None)
+            .request::<MeshNode>(&peer.node_id, reqwest::Method::GET, "/observe", None)
             .await
         {
             Ok(data) => nodes.push(data),
-            Err(e) => errors.push(json!({"node_id":peer.node_id,"error":e.to_string()})),
+            Err(e) => errors.push(PeerError {
+                node_id: peer.node_id,
+                error: e.to_string(),
+            }),
         }
     }
-    Ok(Json(json!({"nodes":nodes,"errors":errors})))
+    Ok(Json(MeshResponse { nodes, errors }))
 }
+#[utoipa::path(post, path = "/remote", operation_id = "remote_action", request_body = RemoteActionInput, responses((status = 200, body = Value)), security(("bearer_auth" = [])))]
 async fn remote_action(
     State(f): State<Federation>,
-    Json(input): Json<Value>,
+    Json(input): Json<RemoteActionInput>,
 ) -> Result<Json<Value>> {
     Ok(Json(
         f.request(
-            required(&input, "node_id")?,
+            &input.node_id,
             reqwest::Method::POST,
             "/control",
-            Some(&input["control"]),
+            Some(&serde_json::to_value(input.control)?),
         )
         .await?,
     ))
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+struct RemoteActionInput {
+    node_id: String,
+    control: RemoteControl,
+}
+
+#[cfg(test)]
+mod schema_tests {
+    #[test]
+    fn openapi_describes_authenticated_management_routes_and_streams() {
+        // The router itself registers these operations with utoipa-axum, so an
+        // export needs neither environment configuration nor a live database.
+        let document = serde_json::to_value(super::openapi()).unwrap();
+        let paths = document["paths"].as_object().unwrap();
+        assert_eq!(
+            paths
+                .values()
+                .map(|path| path.as_object().unwrap().len())
+                .sum::<usize>(),
+            26
+        );
+        for (path, operations) in paths {
+            assert!(path.starts_with("/api/"));
+            for operation in operations.as_object().unwrap().values() {
+                assert!(operation["operationId"].is_string());
+                assert_eq!(
+                    operation["security"][0]["bearer_auth"],
+                    serde_json::json!([])
+                );
+            }
+        }
+        assert!(document["paths"]["/api/events/stream"]["get"]["responses"]["200"]["content"]["text/event-stream"].is_object());
+        assert!(
+            document["components"]["schemas"]["StateResponse"]["properties"]["tasks"].is_object()
+        );
+        assert_eq!(
+            document["components"]["schemas"]["Search"]["additionalProperties"],
+            false
+        );
+    }
 }

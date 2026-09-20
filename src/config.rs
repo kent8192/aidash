@@ -14,7 +14,7 @@ pub struct Config {
     pub lease_seconds: i32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct NodeIdentity {
     pub id: String,
     pub endpoint: String,
@@ -112,4 +112,46 @@ pub fn secret(name: &str) -> Result<String> {
     }
     env::var(name)
         .map_err(|_| Error::Invalid(format!("credential reference {name} is not configured")))
+}
+
+/// Peer bearer tokens must remain strong after environment-based rotation too.
+pub fn peer_secret(name: &str) -> Result<String> {
+    let value = secret(name)?;
+    validate_peer_credential(&value)?;
+    Ok(value)
+}
+pub fn validate_peer_credential(value: &str) -> Result<()> {
+    if value.len() < 32
+        || !value.bytes().all(|b| b.is_ascii_graphic())
+        || value
+            .bytes()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            < 8
+    {
+        return Err(Error::Invalid("peer credentials require at least 32 ASCII characters and 8 distinct characters; use a randomly generated token".into()));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn peer_credentials_reject_short_or_repeated_values() {
+        for value in [
+            "",
+            "short",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "abababababababababababababababab",
+        ] {
+            assert!(validate_peer_credential(value).is_err());
+        }
+        assert!(
+            validate_peer_credential(
+                "839b16e2f81e28c65ded5407c407305769b28bb14c80a05439d701368994b66c"
+            )
+            .is_ok()
+        );
+    }
 }

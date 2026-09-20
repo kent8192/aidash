@@ -12,6 +12,7 @@ test("observes the two-node execution and all eleven screens", async ({
 }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  await expect(page.locator(".stream-status")).toHaveText("リアルタイム更新中");
   await expect(
     page.locator(".stats .stat").nth(2).locator("strong"),
   ).toHaveText(/^[4-9]$|^\d{2,}$/);

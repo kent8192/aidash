@@ -47,7 +47,7 @@ pub struct AnthropicProvider {
 
 pub fn provider(client: reqwest::Client, config: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
     match config.provider.as_str() {
-        "openai" => Ok(Arc::new(OpenAiProvider { client, config })),
+        "openai" | "openrouter" => Ok(Arc::new(OpenAiProvider { client, config })),
         "anthropic" => Ok(Arc::new(AnthropicProvider { client, config })),
         _ => Err(Error::Invalid("unsupported model provider".into())),
     }
@@ -58,7 +58,13 @@ impl ModelProvider for OpenAiProvider {
     async fn infer(&self, request: ModelRequest) -> Result<ModelResponse> {
         let mut body = json!({"model":self.config.model_id,"messages":[
             {"role":"system","content":request.instructions},
-            {"role":"user","content":request.context.to_string()}],"max_completion_tokens":request.max_output_tokens});
+            {"role":"user","content":request.context.to_string()}]});
+        let token_limit = if self.config.provider == "openrouter" {
+            "max_tokens"
+        } else {
+            "max_completion_tokens"
+        };
+        body[token_limit] = json!(request.max_output_tokens);
         if !request.tools.is_empty() {
             body["tools"] = Value::Array(request.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
         }

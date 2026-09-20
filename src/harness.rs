@@ -49,12 +49,20 @@ impl Harness {
                 Err(_) => return Ok(true),
             };
             let mut current = store.run(id).await?;
-            let home = Home {
-                federation: self.federation.clone(),
-                run: current.clone(),
-            };
             let attempts = current.pending["retry_count"].as_u64().unwrap_or(0) + 1;
-            if matches!(e, Error::External(_)) && attempts <= 5 {
+            if current.pending.get("terminal_transition").is_some() {
+                // Delivery is durable and unbounded; never retry the failed tool
+                // just because its home node has not acknowledged terminal state.
+                current.pending["last_delivery_error"] = json!(e.to_string());
+                current.pending["wake_at"] =
+                    json!(chrono::Utc::now() + chrono::Duration::seconds(5));
+                store
+                    .save_run(&current, token, "run.failure_pending")
+                    .await?;
+            } else if matches!(e, Error::External(_))
+                && attempts <= 5
+                && current.control != "CANCELLED"
+            {
                 current.pending["retry_count"] = json!(attempts);
                 current.pending["retry_at"] = json!(
                     chrono::Utc::now() + chrono::Duration::seconds(2_i64.pow(attempts as u32))
@@ -62,10 +70,18 @@ impl Harness {
                 current.error = Some(e.to_string());
                 store.save_run(&current, token, "run.retrying").await?;
             } else {
-                current.phase = "FAILED".into();
+                let target = if current.control == "CANCELLED" {
+                    "CANCELLED"
+                } else {
+                    "FAILED"
+                };
+                current.phase = "WAITING".into();
+                current.pending =
+                    json!({"terminal_transition":target,"wake_at":chrono::Utc::now()});
                 current.error = Some(e.to_string());
-                let _ = home.transition("FAILED").await;
-                store.save_run(&current, token, "run.failed").await?;
+                store
+                    .save_run(&current, token, "run.failure_pending")
+                    .await?;
             }
         }
         Ok(true)
@@ -112,6 +128,40 @@ impl Harness {
             federation: self.federation.clone(),
             run: run.clone(),
         };
+        let task = home.task().await?;
+        if matches!(
+            task.status.as_str(),
+            "COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+        ) {
+            run.phase = if task.status == "ABANDONED" {
+                "CANCELLED".into()
+            } else {
+                task.status
+            };
+            run.pending = json!({});
+            let kind = if run.phase == "FAILED" {
+                "run.failed"
+            } else {
+                "run.reconciled"
+            };
+            store.save_run(run, token, kind).await?;
+            return Ok(());
+        }
+        if let Some(target) = run.pending["terminal_transition"]
+            .as_str()
+            .map(str::to_owned)
+        {
+            home.transition(&target).await?;
+            run.phase = target;
+            run.pending = json!({});
+            let kind = if run.phase == "FAILED" {
+                "run.failed"
+            } else {
+                "run.cancelled"
+            };
+            store.save_run(run, token, kind).await?;
+            return Ok(());
+        }
         if let Some(object) = run.pending.as_object_mut() {
             object.remove("retry_at");
             if object.remove("lease_recovered").is_some() {
@@ -200,7 +250,8 @@ impl Harness {
                     + context::estimated_tokens(&json!(specifications).to_string());
                 let output = (window / 8).clamp(256, 4096) as u32;
                 let budget = window.saturating_sub(overhead + output as usize + 512);
-                context::compact(&mut context, model.as_ref(), budget, &pinned).await?;
+                let compactor = context::jev::JevClient::from_env(self.federation.client.clone())?;
+                context::compact(&mut context, &compactor, budget, &pinned, &instructions).await?;
                 let result=model.infer(ModelRequest{instructions,context:json!({"current":pinned,"summary":context.summary,"history":context.history}),tools:specifications,max_output_tokens:output}).await?;
                 context.usage = json!({"input_tokens":result.input_tokens,"output_tokens":result.output_tokens,"context_window":window,"compactions":context.compactions});
                 run.context = json!(context);
@@ -220,11 +271,10 @@ impl Harness {
                 if cursor >= result.tool_calls.len() {
                     if result.tool_calls.is_empty() {
                         let snapshot = home.snapshot().await?;
-                        if snapshot
-                            .tasks
-                            .iter()
-                            .any(|t| t.parent_id == Some(run.task_id) && t.status != "COMPLETED")
-                        {
+                        if snapshot.tasks.iter().any(|t| {
+                            t.parent_id == Some(run.task_id)
+                                && !matches!(t.status.as_str(), "COMPLETED" | "ABANDONED")
+                        }) {
                             let failed = snapshot.tasks.iter().any(|t| {
                                 t.parent_id == Some(run.task_id)
                                     && matches!(
@@ -233,7 +283,7 @@ impl Harness {
                                     )
                             });
                             if failed {
-                                let h=store.human_request(run,"INFORMATION_REQUEST","A subtask needs intervention. Review failed, blocked or cancelled tasks before continuing.",&format!("{}:{}:subtasks",run.id,run.step)).await?;
+                                let h=store.human_request(run,"INFORMATION_REQUEST","A subtask needs intervention. You can explicitly abandon failed, blocked or cancelled subtasks in their task details, providing a reason. Then answer this request to continue with the remaining results, or cancel this parent.",&format!("{}:{}:subtasks",run.id,run.step)).await?;
                                 run.pending =
                                     json!({"human_request_id":h.id,"resume_phase":"THINKING"});
                             } else {

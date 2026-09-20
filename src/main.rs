@@ -13,9 +13,18 @@ async fn main() -> Result<()> {
         )
         .init();
     let mode = std::env::args().nth(1).unwrap_or_else(|| "serve".into());
+    if mode == "openapi" {
+        println!(
+            "{}",
+            api::openapi()
+                .to_pretty_json()
+                .map_err(|e| aidash::Error::Invalid(e.to_string()))?
+        );
+        return Ok(());
+    }
     if !matches!(mode.as_str(), "serve" | "server" | "worker" | "migrate") {
         return Err(aidash::Error::Invalid(
-            "usage: aidash [serve|server|worker|migrate]".into(),
+            "usage: aidash [serve|server|worker|migrate|openapi]".into(),
         ));
     }
     let config = Config::from_env()?;
@@ -36,15 +45,19 @@ async fn main() -> Result<()> {
         client,
         notify: Arc::new(tokio::sync::Notify::new()),
     };
-    let bus = EventBus::connect(&config.nats_url, &config.node_id).await?;
     let mut background = tokio::task::JoinSet::new();
     if mode != "worker" {
-        let b = bus.clone();
         let f = federation.clone();
-        background.spawn(async move { b.publisher(f).await });
-        let b = bus.clone();
+        background.spawn(async move { EventBus::run(f).await });
         let f = federation.clone();
-        background.spawn(async move { b.consumer(f).await });
+        background.spawn(async move {
+            loop {
+                if let Err(error) = f.retry_deliveries().await {
+                    tracing::warn!(%error, "delegation retry failed");
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        });
     }
     if mode != "server" {
         // Independent workers allow one agent to wait while another makes progress.

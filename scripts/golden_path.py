@@ -12,6 +12,9 @@ import json
 import os
 import pathlib
 import signal
+import select
+import socket
+import socketserver
 import subprocess
 import threading
 import time
@@ -21,7 +24,7 @@ import uuid
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TOKEN = "acceptance-access-token"
-PEER_TOKEN = "acceptance-peer-token"
+PEER_TOKEN = "acceptance-peer-token-for-local-tests"
 
 
 def api_request(base, path, body=None, token=TOKEN, headers=None):
@@ -186,6 +189,45 @@ def psql(db, query):
     return subprocess.check_output(["docker", "compose", "exec", "-T", "postgres", "psql", "-U", "aidash", "-d", db, "-tA", "-v", "ON_ERROR_STOP=1", "-c", query], cwd=ROOT, text=True).strip()
 
 
+class NatsProxy(socketserver.ThreadingTCPServer):
+    """Bind a private endpoint now; accept connections only after the outage test."""
+
+    daemon_threads = True
+
+    def __init__(self):
+        super().__init__(("127.0.0.1", 0), NatsForwarder, bind_and_activate=False)
+        self.server_bind()
+        self.started = False
+
+    def restore(self):
+        self.server_activate()
+        self.started = True
+        threading.Thread(target=self.serve_forever, daemon=True).start()
+
+    def close(self):
+        if self.started:
+            self.shutdown()
+        self.server_close()
+
+
+class NatsForwarder(socketserver.BaseRequestHandler):
+    def handle(self):
+        with socket.create_connection(("127.0.0.1", 42270), timeout=10) as upstream:
+            upstream.settimeout(None)
+            sockets = (self.request, upstream)
+            try:
+                while True:
+                    ready, _, _ = select.select(sockets, [], [], 30)
+                    for source in ready:
+                        data = source.recv(65536)
+                        if not data:
+                            return
+                        destination = upstream if source is self.request else self.request
+                        destination.sendall(data)
+            except OSError:
+                pass
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", default=os.environ.get("AIDASH_BINARY", "target/debug/aidash"))
@@ -206,9 +248,10 @@ def main():
     threading.Thread(target=fixture_server.serve_forever, daemon=True).start()
     fixture_url = f"http://127.0.0.1:{fixture_server.server_port}"
     stream_events = []
+    nats_proxy = NatsProxy()
 
     def launch(node, database, port, mode):
-        env = {**os.environ, "DATABASE_URL": f"postgres://aidash:aidash-local@127.0.0.1:54370/{database}", "NATS_URL": "nats://127.0.0.1:42270", "AIDASH_NODE_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN, "AIDASH_WEB_DIR": str(ROOT / "web/dist")}
+        env = {**os.environ, "DATABASE_URL": f"postgres://aidash:aidash-local@127.0.0.1:54370/{database}", "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_NODE_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN, "AIDASH_WEB_DIR": str(ROOT / "web/dist")}
         log = open(logs / f"{database}-{mode}-{len(children)}.log", "w")
         files.append(log)
         child = subprocess.Popen([args.binary, mode], cwd=ROOT, env=env, stdout=log, stderr=log)
@@ -277,7 +320,12 @@ def main():
         assert max(fixture.requests.values()) >= 2, "A remote invocation should have been replayed with the same key"
         assert fixture.provider_calls["openai"] > 0 and fixture.provider_calls["anthropic"] > 0
         wait_for(lambda: any(e["type"] == "task.completed" for e in stream_events), label="SSE result delivery")
-        wait_for(lambda: int(psql(db_a, "SELECT count(*) FROM events WHERE published_at IS NULL")) == 0, label="outbox flush")
+        pending_events = int(psql(db_a, "SELECT count(*) FROM events WHERE published_at IS NULL"))
+        assert pending_events > 0, "Outage must leave durable events awaiting publication"
+        assert int(psql(db_a, "SELECT count(*) FROM inbox")) == 0
+        print(f"Servers, workers and SIGKILL recovery passed with NATS unavailable; {pending_events} events queued", flush=True)
+        nats_proxy.restore()
+        wait_for(lambda: int(psql(db_a, "SELECT count(*) FROM events WHERE published_at IS NULL")) == 0, label="outbox flush after broker recovery")
         wait_for(lambda: int(psql(db_a, "SELECT count(*) FROM inbox")) > 0, label="JetStream durable consumption")
         assert len({e["id"] for e in stream_events}) == len(stream_events)
         last_sequence = stream_events[-1]["sequence"]
@@ -315,10 +363,10 @@ def main():
             result = wait_for(lambda base=base, plugin_workspace=plugin_workspace, task_id=plugin_conversation["task"]["id"]: next((t for t in api_request(base, f"/api/workspaces/{plugin_workspace}")["tasks"] if t["id"] == task_id and t["status"] == "COMPLETED"), None), label=agent_id)
             assert result["status"] == "COMPLETED"
             plugin_runs.append(agent_id)
-        report = {"node_a": base_a, "node_b": base_b, "node_ids": [node_a, node_b], "workspace_id": workspace, "tasks": len(snapshot["tasks"]), "artifacts": len(snapshot["artifacts"]), "external_effects": len(fixture.effects), "tool_requests": dict(fixture.requests), "provider_calls": dict(fixture.provider_calls), "recovered_run_id": recovered["id"], "sse_events": len(stream_events), "database_a": db_a, "database_b": db_b, "goal_entry": "dashboard" if args.dashboard else "api", "remote_human_controls": "passed", "additional_plugins": plugin_runs}
+        report = {"node_a": base_a, "node_b": base_b, "node_ids": [node_a, node_b], "workspace_id": workspace, "tasks": len(snapshot["tasks"]), "artifacts": len(snapshot["artifacts"]), "external_effects": len(fixture.effects), "tool_requests": dict(fixture.requests), "provider_calls": dict(fixture.provider_calls), "recovered_run_id": recovered["id"], "sse_events": len(stream_events), "database_a": db_a, "database_b": db_b, "goal_entry": "dashboard" if args.dashboard else "api", "remote_human_controls": "passed", "nats_outage_startup_and_recovery": "passed", "events_queued_during_outage": pending_events, "additional_plugins": plugin_runs}
         if args.dashboard:
             subprocess.run(["npm", "test", "--prefix", "web"], cwd=ROOT, check=True)
-            report["browser_scenarios"] = 3
+            report["browser_scenarios"] = 4
         (logs / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
         print("Golden path passed:", json.dumps(report, ensure_ascii=False), flush=True)
         if args.keep:
@@ -334,6 +382,7 @@ def main():
                 child.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 child.kill()
+        nats_proxy.close()
         fixture_server.shutdown()
         for file in files:
             file.close()

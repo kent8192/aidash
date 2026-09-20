@@ -164,5 +164,9 @@
   "openaiCompatible": "OpenAI互換",
   "messageSent": "メッセージを送信しました",
   "taskCommunication": "タスクの委譲",
-  "remoteTasks": "リモートタスク"
+  "remoteTasks": "リモートタスク",
+  "ABANDONED": "破棄",
+  "abandonTask": "タスクを破棄",
+  "abandonReason": "破棄する理由",
+  "abandonHelp": "この結果を使用しない判断を記録します。親タスクの確認要求に回答すると続行できます。"
 }

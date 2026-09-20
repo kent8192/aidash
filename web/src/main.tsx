@@ -41,14 +41,28 @@ import {
   Workflow,
   Zap,
 } from "lucide-react";
-import { api, subscribe } from "./api";
+import { subscribe } from "./api";
+import {
+  state as getState,
+  mesh as getMesh,
+  discover,
+  marketplace,
+  runControl,
+  remoteAction,
+  messageCreate,
+  taskAbandon,
+  humanAnswer,
+  packageInstall,
+  workspaceGet,
+  runGet,
+  runMessage,
+} from "./generated/aidash";
 import type {
   Artifact,
   Discovery,
   Entry,
   HumanRequest,
   Invocation,
-  Mesh,
   MeshEvent,
   Package,
   Run,
@@ -143,25 +157,25 @@ function Dashboard({
   const [busy, setBusy] = useState(false);
   const state = useQuery({
     queryKey: ["state"],
-    queryFn: () => api<State>("/state"),
+    queryFn: () => getState(),
     enabled: connected,
     refetchInterval: 5000,
   });
   const mesh = useQuery({
     queryKey: ["mesh"],
-    queryFn: () => api<Mesh>("/mesh"),
+    queryFn: () => getMesh(),
     enabled: connected,
     refetchInterval: 2000,
   });
   const discovery = useQuery({
     queryKey: ["discovery"],
-    queryFn: () => api<Discovery>("/discover", {}),
+    queryFn: () => discover({}),
     enabled: connected,
     refetchInterval: 10000,
   });
   const packages = useQuery({
     queryKey: ["packages"],
-    queryFn: () => api<Package[]>("/marketplace"),
+    queryFn: () => marketplace(),
     enabled: connected,
   });
   useEffect(() => {
@@ -189,12 +203,12 @@ function Dashboard({
     setError("");
     setDialog(d);
   };
-  const submit = async (path: string, body: unknown) => {
+  const submit = async (request: () => Promise<unknown>) => {
     if (busy) return;
     setBusy(true);
     setError("");
     try {
-      await api(path, body);
+      await request();
       await client.invalidateQueries();
       setDialog(null);
     } catch (e) {
@@ -205,11 +219,10 @@ function Dashboard({
   };
   const control = async (run: Run, node: string, action: string) => {
     if (action === "cancel" && !confirm(t("confirmCancel"))) return;
-    await submit(
-      node === state.data?.node.id ? `/runs/${run.id}/control` : "/remote",
+    await submit(() =>
       node === state.data?.node.id
-        ? { action }
-        : { node_id: node, control: { run_id: run.id, action } },
+        ? runControl(run.id, { action })
+        : remoteAction({ node_id: node, control: { run_id: run.id, action } }),
     );
   };
   if (!connected)
@@ -714,7 +727,7 @@ function Dashboard({
                       <ConversationView
                         workspace={c.workspace_id}
                         send={(body) =>
-                          submit(`/workspaces/${c.workspace_id}/messages`, body)
+                          submit(() => messageCreate(c.workspace_id, body))
                         }
                       />
                     </Panel>
@@ -911,6 +924,30 @@ function Dashboard({
                         {t("delegate")}
                       </button>
                     )}
+                    {["FAILED", "BLOCKED", "CANCELLED"].includes(
+                      task.status,
+                    ) && (
+                      <form
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          const reason = String(
+                            new FormData(event.currentTarget).get("reason"),
+                          );
+                          void submit(() =>
+                            taskAbandon(task.id, {
+                              revision: task.revision,
+                              reason,
+                            }),
+                          );
+                        }}
+                      >
+                        <Field label={t("abandonReason")}>
+                          <textarea name="reason" required rows={2} />
+                        </Field>
+                        <button className="danger">{t("abandonTask")}</button>
+                        <p className="muted">{t("abandonHelp")}</p>
+                      </form>
+                    )}
                     {allRuns
                       .filter((x) => x.run.task_id === task.id)
                       .map((x) => (
@@ -990,21 +1027,18 @@ function Dashboard({
               <HumanForm
                 request={dialog.request}
                 answer={(response) =>
-                  submit(
+                  submit(() =>
                     dialog.node === data.node.id
-                      ? `/human-requests/${dialog.request!.id}/answer`
-                      : "/remote",
-                    dialog.node === data.node.id
-                      ? response
-                      : {
-                          node_id: dialog.node,
+                      ? humanAnswer(dialog.request!.id, response)
+                      : remoteAction({
+                          node_id: dialog.node ?? data.node.id,
                           control: {
                             run_id: dialog.request!.run_id,
                             action: "answer",
                             request_id: dialog.request!.id,
                             response,
                           },
-                        },
+                        }),
                   )
                 }
               />
@@ -1027,7 +1061,7 @@ function Dashboard({
                 <ConversationView
                   workspace={dialog.workspace.id}
                   send={(body) =>
-                    submit(`/workspaces/${dialog.workspace!.id}/messages`, body)
+                    submit(() => messageCreate(dialog.workspace!.id, body))
                   }
                 />
               </>
@@ -1054,7 +1088,7 @@ function Dashboard({
                     ],
                     [
                       "dependencies",
-                      dialog.package.manifest.dependencies
+                      (dialog.package.manifest.dependencies ?? [])
                         .map((d) => `${d.id}@${d.version}`)
                         .join(", "),
                     ],
@@ -1069,9 +1103,12 @@ function Dashboard({
                 <button
                   className="primary"
                   onClick={() =>
-                    void submit(
-                      `/marketplace/${dialog.package!.id}/${dialog.package!.version}/install`,
-                      { digest: dialog.package!.digest, config: {} },
+                    void submit(() =>
+                      packageInstall(
+                        dialog.package!.id,
+                        dialog.package!.version,
+                        { digest: dialog.package!.digest, config: {} },
+                      ),
                     )
                   }
                 >
@@ -1194,7 +1231,7 @@ function TaskBoard({
     "CLAIMED",
     "RUNNING",
     "COMPLETED",
-    ...["FAILED", "BLOCKED", "CANCELLED"].filter((s) =>
+    ...["FAILED", "BLOCKED", "CANCELLED", "ABANDONED"].filter((s) =>
       tasks.some((t) => t.status === s),
     ),
   ];
@@ -1559,11 +1596,7 @@ function ConversationView({
   const { t } = useI18n();
   const query = useQuery({
     queryKey: ["workspace", workspace],
-    queryFn: () =>
-      api<{
-        messages: { id: string; sender: string; content: string }[];
-        artifacts: Artifact[];
-      }>(`/workspaces/${workspace}`),
+    queryFn: () => workspaceGet(workspace),
     refetchInterval: 2000,
   });
   return (
@@ -1631,8 +1664,7 @@ function RunDetails({
     | undefined;
   const details = useQuery({
     queryKey: ["run", run.id],
-    queryFn: () =>
-      api<{ invocations: Invocation[]; memory: unknown }>(`/runs/${run.id}`),
+    queryFn: () => runGet(run.id),
     enabled: node === localNode,
     refetchInterval: 2000,
   });
@@ -1694,15 +1726,12 @@ function RunDetails({
             setMessageError("");
             setMessageSent(false);
             try {
-              await api(
-                node === localNode ? `/runs/${run.id}/message` : "/remote",
-                node === localNode
-                  ? { content }
-                  : {
-                      node_id: node,
-                      control: { run_id: run.id, action: "message", content },
-                    },
-              );
+              await (node === localNode
+                ? runMessage(run.id, { content })
+                : remoteAction({
+                    node_id: node,
+                    control: { run_id: run.id, action: "message", content },
+                  }));
               form.reset();
               setMessageSent(true);
             } catch (error) {

@@ -1,6 +1,6 @@
 use crate::{
     Error, Result,
-    config::{Config, PROTOCOL_VERSION, secret, validate_endpoint, validate_node_id},
+    config::{Config, PROTOCOL_VERSION, peer_secret, validate_endpoint, validate_node_id},
     domain::*,
     registry::{AgentConfig, EntityRef, Entry, Registry, Search},
     store::Store,
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Peer {
     pub node_id: String,
     pub endpoint: String,
@@ -18,17 +18,17 @@ pub struct Peer {
     pub protocol_version: String,
     pub enabled: bool,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct DiscoveredAgent {
     pub node_id: String,
     pub entity: Entry,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Discovery {
     pub agents: Vec<DiscoveredAgent>,
-    pub errors: Vec<Value>,
+    pub errors: Vec<crate::api_schema::PeerError>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Delegation {
     pub task_id: Uuid,
     pub node_id: String,
@@ -36,7 +36,7 @@ pub struct Delegation {
     pub agent_version: String,
     pub delivered: bool,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Offer {
     pub task: Task,
     pub agent: EntityRef,
@@ -71,7 +71,7 @@ impl Federation {
                 "peer must be another node with protocol_version 0.1".into(),
             ));
         }
-        secret(&peer.credential_env)?;
+        peer_secret(&peer.credential_env)?;
         let identity: Value = self
             .client
             .get(format!(
@@ -117,7 +117,7 @@ impl Federation {
                     path
                 ),
             )
-            .bearer_auth(secret(&peer.credential_env)?)
+            .bearer_auth(peer_secret(&peer.credential_env)?)
             .header("x-aidash-node", &self.config.node_id)
             .header("x-aidash-protocol", PROTOCOL_VERSION);
         if let Some(body) = body {
@@ -173,9 +173,10 @@ impl Federation {
                                 }),
                         )
                 }
-                Err(e) => result
-                    .errors
-                    .push(json!({"node_id":peer.node_id,"error":e.to_string()})),
+                Err(e) => result.errors.push(crate::api_schema::PeerError {
+                    node_id: peer.node_id,
+                    error: e.to_string(),
+                }),
             }
         }
         Ok(result)

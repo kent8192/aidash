@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum TaskStatus {
     Open,
@@ -14,25 +14,27 @@ pub enum TaskStatus {
     Failed,
     Blocked,
     Cancelled,
+    Abandoned,
 }
 
 impl TaskStatus {
     pub fn can_transition(&self, next: &Self) -> bool {
         matches!(
             (self, next),
-            (Self::Open, Self::Claimed)
-                | (Self::Claimed, Self::Running)
+            (Self::Open, Self::Claimed | Self::Failed)
+                | (Self::Claimed, Self::Running | Self::Failed)
                 | (
                     Self::Running,
                     Self::Completed | Self::Failed | Self::Blocked
                 )
                 | (Self::Blocked, Self::Running)
                 | (Self::Failed, Self::Open)
-        ) || (*next == Self::Cancelled && !matches!(self, Self::Completed | Self::Cancelled))
+        ) || (*next == Self::Cancelled
+            && !matches!(self, Self::Completed | Self::Cancelled | Self::Abandoned))
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RunPhase {
     Ready,
@@ -44,23 +46,25 @@ pub enum RunPhase {
     Cancelled,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Workspace {
     pub id: Uuid,
     pub title: String,
     pub goal: String,
+    #[schema(value_type = std::collections::BTreeMap<String, Value>)]
     pub state: Value,
     pub revision: i64,
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Task {
     pub id: Uuid,
     pub workspace_id: Uuid,
     pub title: String,
     pub description: String,
     pub status: String,
+    #[schema(value_type = std::collections::BTreeMap<String, Value>)]
     pub requirements: Value,
     pub owner: Option<String>,
     pub created_by: String,
@@ -70,18 +74,19 @@ pub struct Task {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct NewTask {
     pub title: String,
     pub description: String,
     #[serde(default = "empty_object")]
+    #[schema(value_type = std::collections::BTreeMap<String, Value>)]
     pub requirements: Value,
     #[serde(default)]
     pub dependencies: Vec<Uuid>,
     pub parent_id: Option<Uuid>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Artifact {
     pub id: Uuid,
     pub workspace_id: Uuid,
@@ -94,7 +99,7 @@ pub struct Artifact {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ArtifactInput {
     pub kind: String,
     pub name: String,
@@ -119,7 +124,7 @@ impl ArtifactInput {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Event {
     pub sequence: i64,
     pub id: Uuid,
@@ -137,7 +142,7 @@ impl Event {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Conversation {
     pub id: Uuid,
     pub workspace_id: Uuid,
@@ -146,7 +151,7 @@ pub struct Conversation {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct HumanRequest {
     pub id: Uuid,
     pub workspace_id: Uuid,
@@ -157,7 +162,7 @@ pub struct HumanRequest {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Run {
     pub id: Uuid,
     pub task_id: Uuid,
@@ -167,6 +172,7 @@ pub struct Run {
     pub agent_version: String,
     pub phase: String,
     pub control: String,
+    #[schema(value_type = crate::context::Context)]
     pub context: Value,
     pub pending: Value,
     pub step: i32,
@@ -177,13 +183,13 @@ pub struct Run {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct WorkspaceSnapshot {
     pub workspace: Workspace,
     pub tasks: Vec<Task>,
     pub artifacts: Vec<Artifact>,
     pub events: Vec<Event>,
-    pub messages: Vec<Value>,
+    pub messages: Vec<Message>,
 }
 
 pub fn empty_object() -> Value {
@@ -212,4 +218,14 @@ mod tests {
         assert!(!TaskStatus::Completed.can_transition(&TaskStatus::Cancelled));
         assert!(TaskStatus::Running.can_transition(&TaskStatus::Blocked));
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
+pub struct Message {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub sender: String,
+    pub content: String,
+    pub idempotency_key: Option<String>,
+    pub created_at: DateTime<Utc>,
 }
