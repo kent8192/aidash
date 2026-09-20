@@ -29,6 +29,8 @@ pub struct ModelResponse {
     pub tool_calls: Vec<ToolCall>,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    #[serde(default)]
+    pub usage_complete: bool,
 }
 
 #[async_trait]
@@ -107,6 +109,14 @@ pub fn parse_openai(value: Value) -> Result<ModelResponse> {
     }
     let mut result = ModelResponse {
         text: message["content"].as_str().unwrap_or_default().into(),
+        usage_complete: value
+            .pointer("/usage/prompt_tokens")
+            .and_then(Value::as_u64)
+            .is_some()
+            && value
+                .pointer("/usage/completion_tokens")
+                .and_then(Value::as_u64)
+                .is_some(),
         input_tokens: value
             .pointer("/usage/prompt_tokens")
             .and_then(Value::as_u64)
@@ -170,11 +180,22 @@ pub fn parse_anthropic(value: Value) -> Result<ModelResponse> {
             "Anthropic output was truncated or refused".into(),
         ));
     }
+    // Anthropic reports cached input separately from ordinary input tokens.
+    let mut input = value.pointer("/usage/input_tokens").and_then(Value::as_u64);
+    for key in ["cache_creation_input_tokens", "cache_read_input_tokens"] {
+        if let Some(value) = value["usage"].get(key) {
+            input = input
+                .zip(value.as_u64())
+                .and_then(|(a, b)| a.checked_add(b));
+        }
+    }
     let mut result = ModelResponse {
-        input_tokens: value
-            .pointer("/usage/input_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
+        input_tokens: input.unwrap_or(0),
+        usage_complete: input.is_some()
+            && value
+                .pointer("/usage/output_tokens")
+                .and_then(Value::as_u64)
+                .is_some(),
         output_tokens: value
             .pointer("/usage/output_tokens")
             .and_then(Value::as_u64)

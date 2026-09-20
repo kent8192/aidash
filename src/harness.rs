@@ -267,8 +267,31 @@ impl Harness {
                 let output = (window / 8).clamp(256, 4096) as u32;
                 let budget = window.saturating_sub(overhead + output as usize + 512);
                 let compactor = context::jev::JevClient::from_env(self.federation.client.clone())?;
+                let reservation = if let Some(guard) = guard {
+                    guard
+                        .reserve_inference(store, token, window, output)
+                        .await?
+                } else {
+                    None
+                };
+                let compactor = crate::generation::budget::ApprovedCompactor {
+                    inner: &compactor,
+                    generated: reservation.is_some(),
+                };
                 context::compact(&mut context, &compactor, budget, &pinned, &instructions).await?;
-                let result=model.infer(ModelRequest{instructions,context:json!({"current":pinned,"summary":context.summary,"history":context.history}),tools:specifications,max_output_tokens:output}).await?;
+                let request = ModelRequest {
+                    instructions,
+                    context: json!({"current":pinned,"summary":context.summary,"history":context.history}),
+                    tools: specifications,
+                    max_output_tokens: output,
+                };
+                if let Some(reservation) = &reservation {
+                    reservation.check_request(&request)?;
+                }
+                let result = model.infer(request).await?;
+                if let Some(reservation) = reservation {
+                    reservation.settle(&result).await?;
+                }
                 context.usage = json!({"input_tokens":result.input_tokens,"output_tokens":result.output_tokens,"context_window":window,"compactions":context.compactions});
                 run.context = json!(context);
                 run.pending = json!({"response":result,"cursor":0});

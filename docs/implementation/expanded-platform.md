@@ -55,10 +55,11 @@ Files: `src/transactions/{mod,participant,coordinator,api}.rs`, schema migration
 
 Files: `src/generation/{mod,api}.rs`, Registry/Harness integration, schema migration, dashboard forms and integration/browser tests.
 
-- [ ] Persist generation policies containing approved template, explicit model, tool/skill allowlists, permissions, count/concurrency/depth/budget/lifetime limits and approval requirement.
-- [ ] On an unsatisfied task, reserve quota and idempotency key atomically, construct and schema-validate the agent, intersect originating authority, register it, optionally request approval, then schedule it.
-- [ ] Persist all provisioning stages and resume after process failure. Record origin, policy/version, reason and lifecycle history; expire and stop agents without losing task journals.
-- [ ] Verify missing-agent completion, concurrent duplicate requests, each limit, denied approval, restart and tenant separation. Add bilingual controls and audit views.
+- [x] Persist generation policies containing approved template, explicit model, tool/skill allowlists, permissions, count/concurrency/depth/budget/lifetime limits and approval requirement.
+- [x] On an unsatisfied task, reserve quota and idempotency key atomically, construct and schema-validate the agent, intersect originating authority, register it, optionally request approval, then schedule it.
+- [x] Persist all provisioning stages and resume after process failure. Record origin, policy/version, reason and lifecycle history; expire and stop agents without losing task journals.
+- [ ] Complete the full generation acceptance matrix, including process-level provisioning restart, all limits and denied tools; add bilingual controls and audit views. Backend PostgreSQL tests cover missing-agent completion, deduplication, concurrent quota, denied approval, nested authority/depth, credential revocation, token exhaustion, expiry and stop during inference.
+- [ ] Add an explicit approved and budgeted compaction provider contract for generated definitions; currently a context requiring external Jev compaction fails before disclosure.
 
 ## Task 5: Semantic memory with a vector database
 
@@ -113,3 +114,7 @@ Missing attributes and malformed policies must never grant access; cycles must t
 - All 52 Rust tests passed, including twenty-three PostgreSQL tests. OpenAPI and generated clients validate 37 operations and 120 schema references. Clippy, the frontend build and Trunk on 163 files passed. The two-node dashboard acceptance passed with four tasks/artifacts, three effects, worker SIGKILL recovery, 169 queued NATS-outage events and 216 observed SSE events.
 - Five browser cases passed. The new case uses a real scoped credential and a local model fixture to start a conversation, answer a human request and complete its task/artifact, then verifies tenant identity, bilingual controls, absence of administrator API calls and clearing of the session/cache after revocation. The scoped settings screenshot was visually inspected. The acceptance report now derives its browser count from Playwright output. Evidence: `.ignore/platform/interaction-auth-*`, `.ignore/acceptance/report.json` and `.ignore/dashboard-scoped-access.png`.
 - Tasks 2–8 remain open. Scoped tasks support local admission and local child delegation with intersected authority. Scoped remote delegation and legacy admission remain closed. Finer resource-level grants, the remaining mesh paths and dashboard policy controls still require implementation; none of the six expanded requirements is complete end to end.
+
+- Task 4, generation backend: twelve PostgreSQL tests verify pinned policies, atomic quotas, approval/denial, immutable registration and scoped admission, missing-agent completion, existing-agent reuse, nested worker generation with inherited authority/depth, revoked credentials, missing usage, expiry, read/event isolation and stop racing an in-flight model call. Provider tests also reject incomplete usage refunds and include Anthropic cache counters.
+- All 65 Rust tests passed, including thirty-five PostgreSQL integration tests. OpenAPI and generated clients validate 43 operations and 138 schema references, including separate authorization and generation policy schemas. Clippy with warnings denied, the production frontend build and Trunk on 183 files passed.
+- The two-node dashboard acceptance passed all five browser cases: four tasks/artifacts, three external effects, original-run recovery after SIGKILL, 169 queued NATS-outage events and 206 observed SSE events. Evidence is in `.ignore/platform/generation-*` and `.ignore/acceptance/report.json`. Generation dashboard controls, approved compaction and the full expanded release acceptance remain pending.

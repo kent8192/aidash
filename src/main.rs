@@ -46,6 +46,10 @@ async fn main() -> Result<()> {
         notify: Arc::new(tokio::sync::Notify::new()),
     };
     let mut background = tokio::task::JoinSet::new();
+    {
+        let f = federation.for_workers().await?;
+        background.spawn(aidash::generation::provision::run(f));
+    }
     if mode != "worker" {
         let f = federation.clone();
         background.spawn(async move { EventBus::run(f).await });

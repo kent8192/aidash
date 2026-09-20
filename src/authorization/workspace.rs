@@ -116,6 +116,26 @@ impl Access {
     }
 
     async fn event_visible(&mut self, event: &Event) -> Result<bool> {
+        if event.kind.starts_with("generation.") {
+            let Some(id) = event.data["id"]
+                .as_str()
+                .and_then(|s| s.parse::<Uuid>().ok())
+            else {
+                return Ok(false);
+            };
+            let job: Option<crate::generation::Request> = sqlx::query_as(
+                "SELECT * FROM generation_requests WHERE id=$1 AND tenant=$2 AND workspace_id=$3",
+            )
+            .bind(id)
+            .bind(&self.identity.tenant)
+            .bind(event.workspace_id)
+            .fetch_optional(&mut *self.tx)
+            .await?;
+            return match job {
+                Some(job) => job.visible(self).await,
+                None => Ok(false),
+            };
+        }
         if event.kind.starts_with("conversation.") {
             let Some(id) = event.data["id"]
                 .as_str()

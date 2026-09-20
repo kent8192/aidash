@@ -28,8 +28,20 @@ pub(crate) struct Access {
 
 impl Access {
     pub async fn begin(store: &Store, identity: &SubjectIdentity) -> Result<Self> {
+        Self::begin_with_lock(store, identity, false).await
+    }
+
+    pub async fn begin_exclusive(store: &Store, identity: &SubjectIdentity) -> Result<Self> {
+        Self::begin_with_lock(store, identity, true).await
+    }
+
+    async fn begin_with_lock(
+        store: &Store,
+        identity: &SubjectIdentity,
+        exclusive: bool,
+    ) -> Result<Self> {
         let mut tx = store.pool.begin().await?;
-        let snapshot = identity.lock(&mut tx).await?;
+        let snapshot = identity.lock_with_mode(&mut tx, exclusive).await?;
         sqlx::query("SAVEPOINT authorization_operation")
             .execute(&mut *tx)
             .await?;

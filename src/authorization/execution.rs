@@ -58,6 +58,9 @@ async fn grant(store: &Store, run: &Run) -> Result<Option<Grant>> {
         }
     } else {
         store.require_legacy_execution(run.workspace_id).await?;
+        store
+            .require_legacy_agent(&run.agent_id, &run.agent_version)
+            .await?;
     }
     Ok(grant)
 }
@@ -102,6 +105,27 @@ fn require_agent(access: &Access, id: &str) -> Result<()> {
     Ok(())
 }
 
+pub(crate) async fn inherit_task_origin(access: &mut Access, task: Uuid) -> Result<bool> {
+    let origin: Option<(String, String, Vec<String>)> = sqlx::query_as(
+        "SELECT tenant,root_subject,subject_chain FROM authorization_task_origins WHERE task_id=$1",
+    )
+    .bind(task)
+    .fetch_optional(&mut *access.tx)
+    .await?;
+    if let Some((tenant, root, chain)) = origin {
+        if tenant != access.identity.tenant
+            || root != access.identity.subject
+            || (access.subjects.len() > 1 && access.subjects != chain)
+        {
+            return Err(Error::Forbidden);
+        }
+        access.subjects = chain;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
 async fn admit(
     f: &Federation,
     access: &mut Access,
@@ -115,6 +139,7 @@ async fn admit(
         .fetch_optional(&mut *access.tx)
         .await?
         .ok_or(Error::Forbidden)?;
+    inherit_task_origin(access, task_id).await?;
     let workspace = access.workspace(task.workspace_id).await?;
     access.context = workspace.attributes.clone();
     access.require(&workspace, "workspace.read").await?;
@@ -129,6 +154,7 @@ async fn admit(
             )
             .await?;
     }
+    crate::generation::provision::require_live(access, &f.config.node_id, task_id, agent).await?;
     let subject = qualified_agent(&f.config.node_id, &agent.id, &agent.version);
     require_agent(access, &subject)?;
     if access.subjects.len() >= 32 {
@@ -197,7 +223,7 @@ pub async fn delegate(
     Ok(result)
 }
 
-pub(super) async fn delegate_in(
+pub(crate) async fn delegate_in(
     f: &Federation,
     access: &mut Access,
     task: Uuid,
@@ -225,6 +251,60 @@ pub(crate) struct WorkerAuthority {
 }
 
 impl WorkerAuthority {
+    pub async fn assign(
+        &self,
+        f: &Federation,
+        run: &Run,
+        task: Uuid,
+        policy: &str,
+        reason: &str,
+    ) -> Result<crate::generation::Assignment> {
+        let mut lease = self.access.lock().await;
+        // Read all potential references under the outer authority lease; the
+        // mutation transaction must not wait behind a catalog revoker.
+        catalog::list_in(&mut lease, &Search::default()).await?;
+        let mut access = Access::under_lease(&lease).await?;
+        let result = async {
+            let workspace: Option<Uuid> =
+                sqlx::query_scalar("SELECT workspace_id FROM tasks WHERE id=$1")
+                    .bind(task)
+                    .fetch_optional(&mut *access.tx)
+                    .await?;
+            if workspace != Some(run.workspace_id) {
+                return Err(Error::Forbidden);
+            }
+            crate::generation::assign_in(f, &mut access, task, policy, reason).await
+        }
+        .await;
+        access.finish(result).await
+    }
+
+    pub async fn create_task(
+        &self,
+        f: &Federation,
+        run: &Run,
+        key: &str,
+        input: &NewTask,
+    ) -> Result<Task> {
+        let lease = self.access.lock().await;
+        let mut access = Access::under_lease(&lease).await?;
+        let result = async {
+            let workspace = access.workspace(run.workspace_id).await?;
+            access.require(&workspace, "task.create").await?;
+            let creator = access.subjects.last().ok_or(Error::Forbidden)?.clone();
+            let task = f.store.create_task_in(&mut access.tx, run.workspace_id, input, &creator, Some(key)).await?;
+            sqlx::query("INSERT INTO authorization_task_origins(task_id,source_run_id,tenant,root_subject,subject_chain) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING")
+                .bind(task.id).bind(run.id).bind(&access.identity.tenant).bind(&access.identity.subject).bind(&access.subjects).execute(&mut *access.tx).await?;
+            let origin: (Uuid,String,String,Vec<String>) = sqlx::query_as("SELECT source_run_id,tenant,root_subject,subject_chain FROM authorization_task_origins WHERE task_id=$1")
+                .bind(task.id).fetch_one(&mut *access.tx).await?;
+            if origin != (run.id,access.identity.tenant.clone(),access.identity.subject.clone(),access.subjects.clone()) {
+                return Err(Error::Conflict("task already has a different origin".into()));
+            }
+            Ok(task)
+        }.await;
+        access.finish(result).await
+    }
+
     pub async fn snapshot(&self, workspace: Uuid) -> Result<WorkspaceSnapshot> {
         self.access.lock().await.workspace_snapshot(workspace).await
     }
@@ -344,6 +424,13 @@ impl Guard {
             id: run.agent_id.clone(),
             version: run.agent_version.clone(),
         };
+        crate::generation::provision::require_live(
+            &mut access,
+            &f.config.node_id,
+            run.task_id,
+            &reference,
+        )
+        .await?;
         let entry = catalog::entry(&mut access, &reference, "agent.execute").await?;
         require_agent(
             &access,
@@ -396,6 +483,18 @@ impl Guard {
         access.require(&resource, action).await
     }
 
+    pub async fn reserve_inference(
+        &self,
+        store: &Store,
+        attempt: Uuid,
+        window: usize,
+        output: u32,
+    ) -> Result<Option<crate::generation::budget::Reservation>> {
+        let mut access = self.access.lock().await;
+        crate::generation::budget::reserve(&mut access, store, self.run.id, attempt, window, output)
+            .await
+    }
+
     pub async fn inference(&self) -> Result<()> {
         let mut access = self.access.lock().await;
         catalog::entry(&mut access, &self.agent.model, "model.infer").await?;
@@ -437,6 +536,12 @@ impl Guard {
                 "workspace",
                 self.run.workspace_id.to_string(),
             ),
+            "task_assign" => {
+                let id = call.arguments["policy_id"]
+                    .as_str()
+                    .ok_or_else(|| Error::Invalid("missing generation policy".into()))?;
+                ("generation.request", "generation_policy", id.to_owned())
+            }
             "task_delegate" => {
                 let id = call.arguments["task_id"]
                     .as_str()

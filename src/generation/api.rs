@@ -1,0 +1,256 @@
+use super::{
+    Assignment, Request,
+    policy::{self, Policy, Spec},
+};
+use crate::{
+    Error, Result,
+    authorization::{access::Access, identity::Actor},
+    federation::Federation,
+};
+use axum::{
+    Extension, Json,
+    extract::{Path, State},
+};
+use serde::Deserialize;
+
+use utoipa_axum::{router::OpenApiRouter, routes};
+use uuid::Uuid;
+
+pub fn routes() -> OpenApiRouter<Federation> {
+    OpenApiRouter::new()
+        .routes(routes!(set_policy))
+        .routes(routes!(policies))
+        .routes(routes!(assign))
+        .routes(routes!(requests))
+        .routes(routes!(control))
+        .routes(routes!(history))
+}
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+#[schema(as = GenerationPolicyUpdate)]
+pub struct PolicyUpdate {
+    expected_revision: i64,
+    spec: Spec,
+}
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+#[schema(as = GenerationAssignInput)]
+pub struct AssignInput {
+    policy_id: String,
+    reason: String,
+}
+
+#[utoipa::path(post,path="/generation/{tenant}/policies/{id}",operation_id="generation_set_policy",request_body=PolicyUpdate,params(("tenant"=String,Path),("id"=String,Path)),responses((status=200,body=Policy)),security(("bearer_auth"=[])))]
+async fn set_policy(
+    State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
+    Path((tenant, id)): Path<(String, String)>,
+    Json(input): Json<PolicyUpdate>,
+) -> Result<Json<Policy>> {
+    match actor {
+        Actor::Operator => {
+            let mut tx = f.store.pool.begin().await?;
+            let policy = policy::write(
+                &mut tx,
+                &tenant,
+                &id,
+                input.expected_revision,
+                &input.spec,
+                "operator",
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(Json(policy))
+        }
+        Actor::Subject(identity) => {
+            if tenant != identity.tenant {
+                return Err(Error::Forbidden);
+            }
+            let mut access = Access::begin_exclusive(&f.store, &identity).await?;
+            let result = async {
+                access
+                    .require(&super::resource(&access, &id), "generation.manage")
+                    .await?;
+                policy::write(
+                    &mut access.tx,
+                    &tenant,
+                    &id,
+                    input.expected_revision,
+                    &input.spec,
+                    &identity.subject,
+                )
+                .await
+            }
+            .await;
+            Ok(Json(access.finish(result).await?))
+        }
+    }
+}
+#[utoipa::path(get,path="/generation/{tenant}/policies",operation_id="generation_policies",params(("tenant"=String,Path)),responses((status=200,body=[Policy])),security(("bearer_auth"=[])))]
+async fn policies(
+    State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
+    Path(tenant): Path<String>,
+) -> Result<Json<Vec<Policy>>> {
+    let ids: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM generation_policies WHERE tenant=$1 ORDER BY id")
+            .bind(&tenant)
+            .fetch_all(&f.store.pool)
+            .await?;
+    match actor {
+        Actor::Operator => {
+            let mut tx = f.store.pool.begin().await?;
+            let mut result = vec![];
+            for id in ids {
+                result.push(policy::load(&mut tx, &tenant, &id, false).await?);
+            }
+            tx.commit().await?;
+            Ok(Json(result))
+        }
+        Actor::Subject(identity) => {
+            if tenant != identity.tenant {
+                return Err(Error::Forbidden);
+            }
+            let mut access = Access::begin(&f.store, &identity).await?;
+            let result = async {
+                let mut result = vec![];
+                for id in ids {
+                    if access
+                        .decide(&super::resource(&access, &id), "generation.read")
+                        .await?
+                    {
+                        result.push(policy::load(&mut access.tx, &tenant, &id, false).await?);
+                    }
+                }
+                Ok(result)
+            }
+            .await;
+            Ok(Json(access.finish(result).await?))
+        }
+    }
+}
+#[utoipa::path(post,path="/generation/{tenant}/tasks/{id}/assign",operation_id="generation_assign",params(("tenant"=String,Path),("id"=Uuid,Path)),request_body=AssignInput,responses((status=200,body=Assignment)),security(("bearer_auth"=[])))]
+async fn assign(
+    State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
+    Path((tenant, id)): Path<(String, Uuid)>,
+    Json(input): Json<AssignInput>,
+) -> Result<Json<Assignment>> {
+    let Actor::Subject(identity) = actor else {
+        return Err(Error::Forbidden);
+    };
+    if tenant != identity.tenant {
+        return Err(Error::Forbidden);
+    }
+    Ok(Json(
+        super::assign(&f, &identity, id, &input.policy_id, &input.reason).await?,
+    ))
+}
+#[utoipa::path(get,path="/generation/{tenant}/requests",operation_id="generation_requests",params(("tenant"=String,Path)),responses((status=200,body=[Request])),security(("bearer_auth"=[])))]
+async fn requests(
+    State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
+    Path(tenant): Path<String>,
+) -> Result<Json<Vec<Request>>> {
+    let Actor::Subject(identity) = actor else {
+        return Ok(Json(sqlx::query_as("SELECT * FROM generation_requests WHERE tenant=$1 ORDER BY created_at DESC,id LIMIT 200").bind(tenant).fetch_all(&f.store.pool).await?));
+    };
+    if tenant != identity.tenant {
+        return Err(Error::Forbidden);
+    }
+    let mut access = Access::begin(&f.store, &identity).await?;
+    let result=async {
+        let requests:Vec<Request>=sqlx::query_as("SELECT * FROM generation_requests WHERE tenant=$1 ORDER BY created_at DESC,id LIMIT 200").bind(&tenant).fetch_all(&mut *access.tx).await?;
+        let mut visible=vec![];
+        for request in requests {
+            if request.visible(&mut access).await? {visible.push(request);}
+        }
+        Ok(visible)
+    }.await;
+    Ok(Json(access.finish(result).await?))
+}
+
+#[utoipa::path(post,path="/generation/{tenant}/requests/{id}/control",operation_id="generation_control",params(("tenant"=String,Path),("id"=Uuid,Path)),request_body=super::lifecycle::Control,responses((status=200,body=Request)),security(("bearer_auth"=[])))]
+async fn control(
+    State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
+    Path((tenant, id)): Path<(String, Uuid)>,
+    Json(input): Json<super::lifecycle::Control>,
+) -> Result<Json<Request>> {
+    use super::lifecycle::{self, Action};
+    let result = match actor {
+        Actor::Operator => {
+            let mut tx = f.store.pool.begin().await?;
+            crate::authorization::Authorization::load_with_mode(&mut tx, &tenant, true).await?;
+            let job = lifecycle::load(&mut tx, &tenant, id).await?;
+            let job = lifecycle::control(&f, &mut tx, &job, &input, "operator").await?;
+            tx.commit().await?;
+            job
+        }
+        Actor::Subject(identity) => {
+            if tenant != identity.tenant {
+                return Err(Error::Forbidden);
+            }
+            let mut access = Access::begin_exclusive(&f.store, &identity).await?;
+            let result = async {
+                let job = lifecycle::load(&mut access.tx, &tenant, id).await?;
+                if !job.visible(&mut access).await? {
+                    return Err(Error::Forbidden);
+                }
+                let action = match input.action {
+                    Action::Approve | Action::Deny => "generation.approve",
+                    Action::Stop => "generation.stop",
+                    Action::Delete => "generation.delete",
+                };
+                access.require(&job.resource(&access), action).await?;
+                lifecycle::control(&f, &mut access.tx, &job, &input, &identity.subject).await
+            }
+            .await;
+            access.finish(result).await?
+        }
+    };
+    f.notify.notify_waiters();
+    Ok(Json(result))
+}
+#[utoipa::path(get,path="/generation/{tenant}/requests/{id}/history",operation_id="generation_history",params(("tenant"=String,Path),("id"=Uuid,Path)),responses((status=200,body=[super::lifecycle::History])),security(("bearer_auth"=[])))]
+async fn history(
+    State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
+    Path((tenant, id)): Path<(String, Uuid)>,
+) -> Result<Json<Vec<super::lifecycle::History>>> {
+    let query = "SELECT h.* FROM generation_history h JOIN generation_requests r ON r.id=h.request_id WHERE r.tenant=$1 AND r.id=$2 ORDER BY h.sequence";
+    match actor {
+        Actor::Operator => Ok(Json(
+            sqlx::query_as(query)
+                .bind(tenant)
+                .bind(id)
+                .fetch_all(&f.store.pool)
+                .await?,
+        )),
+        Actor::Subject(identity) => {
+            if tenant != identity.tenant {
+                return Err(Error::Forbidden);
+            }
+            let mut access = Access::begin(&f.store, &identity).await?;
+            let result = async {
+                let job: Request =
+                    sqlx::query_as("SELECT * FROM generation_requests WHERE tenant=$1 AND id=$2")
+                        .bind(&tenant)
+                        .bind(id)
+                        .fetch_optional(&mut *access.tx)
+                        .await?
+                        .ok_or(Error::Forbidden)?;
+                if !job.visible(&mut access).await? {
+                    return Err(Error::Forbidden);
+                }
+                Ok(sqlx::query_as(query)
+                    .bind(tenant)
+                    .bind(id)
+                    .fetch_all(&mut *access.tx)
+                    .await?)
+            }
+            .await;
+            Ok(Json(access.finish(result).await?))
+        }
+    }
+}

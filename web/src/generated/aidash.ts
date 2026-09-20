@@ -26,6 +26,13 @@ import type {
   Evaluation,
   Event,
   EventsParams,
+  GenerationAssignInput,
+  GenerationAssignment,
+  GenerationControl,
+  GenerationHistory,
+  GenerationPolicy,
+  GenerationPolicyUpdate,
+  GenerationRequest,
   HumanRequest,
   InstallInput,
   IssuedCredential,
@@ -510,6 +517,175 @@ export const stream = async (
   return apiFetch<Response>(getStreamUrl(params), {
     ...options,
     method: "GET",
+  });
+};
+
+export const getGenerationPoliciesUrl = (tenant: string) => {
+  return `/api/generation/${tenant}/policies`;
+};
+
+export const generationPolicies = async (
+  tenant: string,
+  options?: Parameters<typeof apiFetch>[1],
+): Promise<GenerationPolicy[]> => {
+  return apiFetch<GenerationPolicy[]>(getGenerationPoliciesUrl(tenant), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGenerationSetPolicyUrl = (tenant: string, id: string) => {
+  return `/api/generation/${tenant}/policies/${id}`;
+};
+
+export const generationSetPolicy = async (
+  tenant: string,
+  id: string,
+  generationPolicyUpdate: GenerationPolicyUpdate,
+  options?: Parameters<typeof apiFetch>[1],
+): Promise<GenerationPolicy> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<
+      string | readonly string[] | undefined
+    >(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  return apiFetch<GenerationPolicy>(getGenerationSetPolicyUrl(tenant, id), {
+    ...options,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(generationPolicyUpdate),
+  });
+};
+
+export const getGenerationRequestsUrl = (tenant: string) => {
+  return `/api/generation/${tenant}/requests`;
+};
+
+export const generationRequests = async (
+  tenant: string,
+  options?: Parameters<typeof apiFetch>[1],
+): Promise<GenerationRequest[]> => {
+  return apiFetch<GenerationRequest[]>(getGenerationRequestsUrl(tenant), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGenerationControlUrl = (tenant: string, id: string) => {
+  return `/api/generation/${tenant}/requests/${id}/control`;
+};
+
+export const generationControl = async (
+  tenant: string,
+  id: string,
+  generationControlBody: GenerationControl,
+  options?: Parameters<typeof apiFetch>[1],
+): Promise<GenerationRequest> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<
+      string | readonly string[] | undefined
+    >(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  return apiFetch<GenerationRequest>(getGenerationControlUrl(tenant, id), {
+    ...options,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(generationControlBody),
+  });
+};
+
+export const getGenerationHistoryUrl = (tenant: string, id: string) => {
+  return `/api/generation/${tenant}/requests/${id}/history`;
+};
+
+export const generationHistory = async (
+  tenant: string,
+  id: string,
+  options?: Parameters<typeof apiFetch>[1],
+): Promise<GenerationHistory[]> => {
+  return apiFetch<GenerationHistory[]>(getGenerationHistoryUrl(tenant, id), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGenerationAssignUrl = (tenant: string, id: string) => {
+  return `/api/generation/${tenant}/tasks/${id}/assign`;
+};
+
+export const generationAssign = async (
+  tenant: string,
+  id: string,
+  generationAssignInput: GenerationAssignInput,
+  options?: Parameters<typeof apiFetch>[1],
+): Promise<GenerationAssignment> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<
+      string | readonly string[] | undefined
+    >(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  return apiFetch<GenerationAssignment>(getGenerationAssignUrl(tenant, id), {
+    ...options,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(generationAssignInput),
   });
 };
 

@@ -94,16 +94,30 @@ pub(crate) fn resource(access: &Access, entry: &Entry) -> super::policy::Resourc
 }
 
 pub(crate) async fn list_in(access: &mut Access, search: &Search) -> Result<Vec<Entry>> {
-    let documents:Vec<Value>=sqlx::query_scalar("SELECT r.metadata FROM authorization_catalog c JOIN registry r ON r.id=c.entry_id AND r.version=c.entry_version WHERE c.tenant=$1 AND c.enabled ORDER BY c.entry_id,c.entry_version FOR SHARE OF c")
-        .bind(&access.identity.tenant).fetch_all(&mut *access.tx).await?;
+    let query = if access.inherited_lease {
+        "SELECT r.metadata FROM authorization_catalog c JOIN registry r ON r.id=c.entry_id AND r.version=c.entry_version WHERE c.tenant=$1 AND c.enabled ORDER BY c.entry_id,c.entry_version"
+    } else {
+        "SELECT r.metadata FROM authorization_catalog c JOIN registry r ON r.id=c.entry_id AND r.version=c.entry_version WHERE c.tenant=$1 AND c.enabled ORDER BY c.entry_id,c.entry_version FOR SHARE OF c"
+    };
+    let documents: Vec<Value> = sqlx::query_scalar(query)
+        .bind(&access.identity.tenant)
+        .fetch_all(&mut *access.tx)
+        .await?;
     let mut entries = vec![];
     for document in documents {
         let entry: Entry = serde_json::from_value(document)?;
-        if search.matches(&entry)
+        if (!access.inherited_lease
+            || access
+                .approved_catalog
+                .contains(&(entry.id.clone(), entry.version.clone())))
+            && search.matches(&entry)
             && access
                 .decide(&resource(access, &entry), "registry.read")
                 .await?
         {
+            access
+                .approved_catalog
+                .insert((entry.id.clone(), entry.version.clone()));
             entries.push(entry);
         }
     }

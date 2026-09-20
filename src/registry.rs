@@ -390,6 +390,58 @@ impl Registry {
     }
 }
 
+/// Transactional registration for compound admission. References and metadata
+/// use the same immutable version contract as the public Registry operation.
+pub(crate) async fn register_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    entry: &Entry,
+) -> Result<()> {
+    validate(entry)?;
+    if entry.kind == "agent" {
+        let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
+        for (reference, kind) in std::iter::once((&config.model, "model"))
+            .chain(config.tools.iter().map(|r| (r, "tool")))
+            .chain(config.skills.iter().map(|r| (r, "skill")))
+            .chain(config.cluster.iter().map(|r| (r, "cluster")))
+        {
+            let actual: Option<String> =
+                sqlx::query_scalar("SELECT kind FROM registry WHERE id=$1 AND version=$2")
+                    .bind(&reference.id)
+                    .bind(&reference.version)
+                    .fetch_optional(&mut **tx)
+                    .await?;
+            if actual.as_deref() != Some(kind) {
+                return Err(Error::Invalid(format!(
+                    "{} must reference a {kind}",
+                    reference.id
+                )));
+            }
+        }
+    }
+    let value = serde_json::to_value(entry)?;
+    sqlx::query(
+        "INSERT INTO registry(id,version,kind,metadata) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING",
+    )
+    .bind(&entry.id)
+    .bind(&entry.version)
+    .bind(&entry.kind)
+    .bind(&value)
+    .execute(&mut **tx)
+    .await?;
+    let stored: Value =
+        sqlx::query_scalar("SELECT metadata FROM registry WHERE id=$1 AND version=$2")
+            .bind(&entry.id)
+            .bind(&entry.version)
+            .fetch_one(&mut **tx)
+            .await?;
+    if stored != value {
+        return Err(Error::Conflict(
+            "published versions are immutable; choose a new version".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

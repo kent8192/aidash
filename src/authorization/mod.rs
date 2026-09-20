@@ -57,13 +57,24 @@ impl Authorization {
     }
 
     async fn load(tx: &mut Transaction<'_, Postgres>, tenant: &str) -> Result<Snapshot> {
+        Self::load_with_mode(tx, tenant, false).await
+    }
+
+    pub(crate) async fn load_with_mode(
+        tx: &mut Transaction<'_, Postgres>,
+        tenant: &str,
+        exclusive: bool,
+    ) -> Result<Snapshot> {
         identifier(tenant)?;
-        let row: Option<(i64, Value)> = sqlx::query_as(
-            "SELECT revision,document FROM authorization_bundles WHERE tenant=$1 FOR SHARE",
-        )
-        .bind(tenant)
-        .fetch_optional(&mut **tx)
-        .await?;
+        let query = if exclusive {
+            "SELECT revision,document FROM authorization_bundles WHERE tenant=$1 FOR UPDATE"
+        } else {
+            "SELECT revision,document FROM authorization_bundles WHERE tenant=$1 FOR SHARE"
+        };
+        let row: Option<(i64, Value)> = sqlx::query_as(query)
+            .bind(tenant)
+            .fetch_optional(&mut **tx)
+            .await?;
         let (revision, document) =
             row.ok_or_else(|| Error::NotFound("authorization policy".into()))?;
         Ok(Snapshot {

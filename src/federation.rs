@@ -209,6 +209,9 @@ impl Federation {
             return Err(Error::Conflict("task is already assigned".into()));
         }
         if node == self.config.node_id {
+            self.store
+                .require_legacy_agent(&agent.id, &agent.version)
+                .await?;
             let entry = self.registry.get(&agent.id, &agent.version).await?;
             let _: AgentConfig = serde_json::from_value(entry.config.clone())
                 .map_err(|_| Error::Invalid("executor must be an agent".into()))?;
@@ -396,7 +399,23 @@ impl Home {
                 .await
         }
     }
+    pub async fn assign(
+        &self,
+        task: Uuid,
+        policy: &str,
+        reason: &str,
+    ) -> Result<crate::generation::Assignment> {
+        let authority = self.authority.as_ref().ok_or(Error::Forbidden)?;
+        authority
+            .assign(&self.federation, &self.run, task, policy, reason)
+            .await
+    }
     pub async fn create_task(&self, key: &str, input: &NewTask) -> Result<Task> {
+        if let Some(authority) = &self.authority {
+            return authority
+                .create_task(&self.federation, &self.run, key, input)
+                .await;
+        }
         if self.local() {
             self.federation
                 .store

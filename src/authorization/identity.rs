@@ -16,9 +16,9 @@ pub enum Actor {
 
 #[derive(Clone)]
 pub struct SubjectIdentity {
-    pub(super) credential_id: Uuid,
-    pub(super) tenant: String,
-    pub(super) subject: String,
+    pub(crate) credential_id: Uuid,
+    pub(crate) tenant: String,
+    pub(crate) subject: String,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow, utoipa::ToSchema)]
@@ -122,8 +122,12 @@ impl Authorization {
 impl SubjectIdentity {
     /// Kept through the protected transaction: a concurrent credential or policy
     /// revocation must wait for this boundary, and the next boundary reloads both.
-    pub(super) async fn lock(&self, tx: &mut Transaction<'_, Postgres>) -> Result<Snapshot> {
-        let snapshot = Authorization::load(tx, &self.tenant).await?;
+    pub(super) async fn lock_with_mode(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        exclusive: bool,
+    ) -> Result<Snapshot> {
+        let snapshot = Authorization::load_with_mode(tx, &self.tenant, exclusive).await?;
         let valid: Option<Uuid> = sqlx::query_scalar("SELECT id FROM authorization_credentials WHERE id=$1 AND tenant=$2 AND subject=$3 AND revoked_at IS NULL AND expires_at>clock_timestamp() FOR SHARE")
             .bind(self.credential_id).bind(&self.tenant).bind(&self.subject).fetch_optional(&mut **tx).await?;
         if valid.is_none() {

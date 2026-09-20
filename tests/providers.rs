@@ -95,3 +95,24 @@ async fn openrouter_and_openai_preserve_tools_text_usage_and_token_limits() {
     }
     server.abort();
 }
+
+#[test]
+fn refunds_require_complete_usage_and_anthropic_counts_cached_input() {
+    let openai = serde_json::json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],"usage":{"completion_tokens":1}});
+    assert!(
+        !aidash::provider::parse_openai(openai)
+            .unwrap()
+            .usage_complete
+    );
+    let anthropic = serde_json::json!({"stop_reason":"end_turn","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":10,"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"output_tokens":5}});
+    let response = aidash::provider::parse_anthropic(anthropic.clone()).unwrap();
+    assert_eq!(response.input_tokens, 60);
+    assert!(response.usage_complete);
+    let mut malformed = anthropic;
+    malformed["usage"]["cache_read_input_tokens"] = serde_json::json!("unknown");
+    assert!(
+        !aidash::provider::parse_anthropic(malformed)
+            .unwrap()
+            .usage_complete
+    );
+}

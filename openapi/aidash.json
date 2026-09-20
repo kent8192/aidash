@@ -606,6 +606,272 @@
         ]
       }
     },
+    "/api/generation/{tenant}/policies": {
+      "get": {
+        "operationId": "generation_policies",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/GenerationPolicy"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/api/generation/{tenant}/policies/{id}": {
+      "post": {
+        "operationId": "generation_set_policy",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerationPolicyUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerationPolicy"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/api/generation/{tenant}/requests": {
+      "get": {
+        "operationId": "generation_requests",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/GenerationRequest"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/api/generation/{tenant}/requests/{id}/control": {
+      "post": {
+        "operationId": "generation_control",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerationControl"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerationRequest"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/api/generation/{tenant}/requests/{id}/history": {
+      "get": {
+        "operationId": "generation_history",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/GenerationHistory"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/api/generation/{tenant}/tasks/{id}/assign": {
+      "post": {
+        "operationId": "generation_assign",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerationAssignInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerationAssignment"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/api/human-requests/{id}/answer": {
       "post": {
         "operationId": "human_answer",
@@ -2204,6 +2470,331 @@
             "format": "uuid"
           }
         }
+      },
+      "GenerationAction": {
+        "type": "string",
+        "enum": ["approve", "deny", "stop", "delete"]
+      },
+      "GenerationAssignInput": {
+        "type": "object",
+        "required": ["policy_id", "reason"],
+        "properties": {
+          "policy_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "GenerationAssignment": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["delegation", "kind"],
+            "properties": {
+              "delegation": {
+                "$ref": "#/components/schemas/Delegation"
+              },
+              "kind": {
+                "type": "string",
+                "enum": ["existing"]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["generation", "kind"],
+            "properties": {
+              "generation": {
+                "$ref": "#/components/schemas/GenerationRequest"
+              },
+              "kind": {
+                "type": "string",
+                "enum": ["generated"]
+              }
+            }
+          }
+        ]
+      },
+      "GenerationControl": {
+        "type": "object",
+        "required": ["action", "reason"],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/GenerationAction"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "GenerationHistory": {
+        "type": "object",
+        "required": [
+          "sequence",
+          "request_id",
+          "status",
+          "actor",
+          "reason",
+          "created_at"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "sequence": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "GenerationLimits": {
+        "type": "object",
+        "required": [
+          "max_agents",
+          "max_concurrent",
+          "max_depth",
+          "token_budget",
+          "tokens_per_agent",
+          "lifetime_seconds"
+        ],
+        "properties": {
+          "lifetime_seconds": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_agents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_concurrent": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_depth": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "token_budget": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "tokens_per_agent": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
+      "GenerationPermissions": {
+        "type": "object",
+        "properties": {
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "GenerationPolicy": {
+        "type": "object",
+        "required": [
+          "tenant",
+          "id",
+          "revision",
+          "spec",
+          "generated_count",
+          "allocated_tokens"
+        ],
+        "properties": {
+          "allocated_tokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "generated_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/GenerationSpec"
+          },
+          "tenant": {
+            "type": "string"
+          }
+        }
+      },
+      "GenerationPolicyUpdate": {
+        "type": "object",
+        "required": ["expected_revision", "spec"],
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/GenerationSpec"
+          }
+        },
+        "additionalProperties": false
+      },
+      "GenerationRequest": {
+        "type": "object",
+        "required": [
+          "id",
+          "tenant",
+          "policy_id",
+          "policy_revision",
+          "task_id",
+          "workspace_id",
+          "root_subject",
+          "subject_chain",
+          "agent_id",
+          "agent_version",
+          "definition",
+          "status",
+          "reason",
+          "depth",
+          "token_limit",
+          "quota_released",
+          "expires_at",
+          "created_at"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "agent_version": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "definition": {
+            "$ref": "#/components/schemas/Entry"
+          },
+          "depth": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "policy_id": {
+            "type": "string"
+          },
+          "policy_revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "quota_released": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "root_subject": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "subject_chain": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "task_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "tenant": {
+            "type": "string"
+          },
+          "token_limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "workspace_id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "GenerationSpec": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "template",
+          "permissions",
+          "limits",
+          "approval_required"
+        ],
+        "properties": {
+          "approval_required": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/GenerationLimits"
+          },
+          "permissions": {
+            "$ref": "#/components/schemas/GenerationPermissions"
+          },
+          "template": {
+            "$ref": "#/components/schemas/Entry"
+          }
+        },
+        "additionalProperties": false
       },
       "Group": {
         "type": "object",

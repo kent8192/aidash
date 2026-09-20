@@ -286,6 +286,20 @@ impl Tool for Builtin {
                 }
                 Ok(json!(ctx.home.create_task(key, &task).await?))
             }
+            "task_assign" => {
+                let id = required(&input, "task_id")?
+                    .parse()
+                    .map_err(|_| Error::Invalid("invalid task id".into()))?;
+                Ok(json!(
+                    ctx.home
+                        .assign(
+                            id,
+                            required(&input, "policy_id")?,
+                            required(&input, "reason")?
+                        )
+                        .await?
+                ))
+            }
             "task_delegate" => {
                 let id = required(&input, "task_id")?
                     .parse()
@@ -350,6 +364,11 @@ pub fn builtins() -> BTreeMap<String, Arc<dyn Tool>> {
             name: "task_create",
             description: "Decompose a goal or task. Create a subtask in this workspace; returns its ID. Delegate it next.",
             schema: json!({"type":"object","required":["title","description"],"properties":{"title":string,"description":string,"requirements":{"type":"object"},"dependencies":{"type":"array","items":string},"parent_id":string},"additionalProperties":false}),
+        },
+        Builtin {
+            name: "task_assign",
+            description: "Assign a workspace task to an approved existing agent, or request a generated specialist using an explicitly named generation policy. Generation may wait for human approval. Requires a tenant-scoped execution identity.",
+            schema: json!({"type":"object","required":["task_id","policy_id","reason"],"properties":{"task_id":string,"policy_id":string,"reason":string},"additionalProperties":false}),
         },
         Builtin {
             name: "task_delegate",

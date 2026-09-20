@@ -41,6 +41,7 @@ fn management_routes() -> OpenApiRouter<Federation> {
         .route_layer(middleware::from_fn(operator_only));
     OpenApiRouter::new()
         .merge(administration)
+        .merge(crate::generation::api::routes())
         .routes(routes!(human_answer))
         .routes(routes!(run_message))
         .routes(routes!(conversation_create))
@@ -1054,13 +1055,17 @@ mod schema_tests {
         // The router itself registers these operations with utoipa-axum, so an
         // export needs neither environment configuration nor a live database.
         let document = serde_json::to_value(super::openapi()).unwrap();
+        assert!(document["components"]["schemas"]["Policy"]["properties"]["actions"].is_object());
+        assert!(
+            document["components"]["schemas"]["GenerationPolicy"]["properties"]["spec"].is_object()
+        );
         let paths = document["paths"].as_object().unwrap();
         assert_eq!(
             paths
                 .values()
                 .map(|path| path.as_object().unwrap().len())
                 .sum::<usize>(),
-            37
+            43
         );
         for (path, operations) in paths {
             assert!(path.starts_with("/api/"));
