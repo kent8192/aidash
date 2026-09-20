@@ -7,6 +7,8 @@
  */
 
 export interface GenerationUsage {
+  compaction_call_limit: number;
+  compaction_calls: number;
   inference_attempts: number;
   token_limit: number;
   used_tokens: number;

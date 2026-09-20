@@ -82,6 +82,28 @@ test("generation dashboard manages policy, approval, completion and retained his
       expected_revision: 0,
       enabled: true,
     });
+    const compactor = `${id}-jev`;
+    await api("/api/registry", {
+      id: compactor,
+      version: "1.0.0",
+      kind: "compactor",
+      name: { en: "Approved compaction", ja: "承認済み圧縮" },
+      description: { en: "Local System One fixture" },
+      config: {
+        provider: "typesafe-system-one",
+        endpoint: `http://127.0.0.1:${(provider.address() as AddressInfo).port}/systemone`,
+        model: "fixture-jev",
+        credential_env: "AIDASH_SECRET_COMPACTION_FIXTURE",
+        max_request_bytes: 200000,
+        max_questions: 200,
+        max_response_bytes: 16000,
+      },
+    });
+    await api(`/api/authorization/${tenant}/catalog`, {
+      entry: { id: compactor, version: "1.0.0" },
+      expected_revision: 0,
+      enabled: true,
+    });
     const credential = await api(`/api/authorization/${tenant}/credentials`, {
       subject: "alice",
     });
@@ -122,6 +144,13 @@ test("generation dashboard manages policy, approval, completion and retained his
     await dialog
       .getByLabel("権限属性（JSON）", { exact: true })
       .fill('{"team":"research"}');
+    await dialog
+      .getByLabel("圧縮プロバイダー", { exact: true })
+      .selectOption(`${compactor}@1.0.0`);
+    await dialog
+      .getByLabel("Agentごとの圧縮呼び出し上限", { exact: true })
+      .fill("2");
+    await dialog.getByLabel("圧縮呼び出しの総予算", { exact: true }).fill("8");
     await expect(dialog.getByLabel("実行前に承認を必要とする")).toBeChecked();
     await dialog.getByRole("button", { name: "保存", exact: true }).click();
     await expect(dialog).toHaveCount(0);
@@ -131,6 +160,12 @@ test("generation dashboard manages policy, approval, completion and retained his
     await page
       .getByRole("button", { name: "ポリシーを編集", exact: true })
       .click();
+    await expect(
+      dialog.getByLabel("圧縮プロバイダー", { exact: true }),
+    ).toHaveValue(`${compactor}@1.0.0`);
+    await expect(
+      dialog.getByLabel("Agentごとの圧縮呼び出し上限", { exact: true }),
+    ).toHaveValue("2");
     await dialog.getByLabel("最大同時Agent数", { exact: true }).fill("2");
     await dialog.getByRole("button", { name: "保存", exact: true }).click();
     await expect(dialog).toHaveCount(0);
@@ -203,6 +238,8 @@ test("generation dashboard manages policy, approval, completion and retained his
     await dialog
       .getByLabel("判断の理由", { exact: true })
       .fill("定義と上限を確認済み");
+    await expect(dialog).toContainText(`${compactor}@1.0.0`);
+    await expect(dialog).toContainText("圧縮呼び出し消費数 / 上限");
     await page.screenshot({
       path: "../.ignore/dashboard-generation-approval-ja.png",
       fullPage: true,

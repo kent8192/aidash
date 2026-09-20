@@ -95,6 +95,41 @@ pub struct ModelConfig {
     pub cost: Value,
 }
 
+/// Explicit transport and bounds for System One probability classification.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CompactorConfig {
+    pub provider: String,
+    pub endpoint: String,
+    pub model: String,
+    pub credential_env: String,
+    pub max_request_bytes: usize,
+    pub max_questions: usize,
+    pub max_response_bytes: usize,
+}
+impl CompactorConfig {
+    pub fn validate(&self) -> Result<()> {
+        validate_endpoint(&self.endpoint)?;
+        if self.provider != "typesafe-system-one"
+            || self.model.trim().is_empty()
+            || self.model.len() > 128
+            || !(1024..=1_048_576).contains(&self.max_request_bytes)
+            || !(1..=1024).contains(&self.max_questions)
+            || !(128..=1_048_576).contains(&self.max_response_bytes)
+        {
+            return Err(Error::Invalid(
+                "invalid compactor transport or request/response bounds".into(),
+            ));
+        }
+        if secret(&self.credential_env)?.trim().is_empty() {
+            return Err(Error::Invalid(
+                "compactor credential must not be empty".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 #[derive(utoipa::IntoParams)]
@@ -229,7 +264,7 @@ pub fn validate(e: &Entry) -> Result<()> {
     let schema = json!({"type":"object","required":["id","version","kind","name","description","capabilities","tags","languages","schema","config"],
         "properties":{
             "id":{"type":"string","pattern":"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$"},
-            "version":{"type":"string"}, "kind":{"enum":["agent","model","tool","skill","cluster","node"]},
+            "version":{"type":"string"}, "kind":{"enum":["agent","model","tool","skill","cluster","node","compactor"]},
             "name":{"type":"object","minProperties":1,"additionalProperties":{"type":"string","minLength":1}},
             "description":{"type":"object","minProperties":1,"additionalProperties":{"type":"string"}},
             "capabilities":{"type":"array","items":{"type":"string"},"uniqueItems":true},
@@ -258,6 +293,9 @@ pub fn validate(e: &Entry) -> Result<()> {
     jsonschema::validator_for(&e.schema)
         .map_err(|e| Error::Invalid(format!("invalid entity schema: {e}")))?;
     match e.kind.as_str() {
+        "compactor" => serde_json::from_value::<CompactorConfig>(e.config.clone())
+            .map_err(|e| Error::Invalid(e.to_string()))?
+            .validate()?,
         "model" => {
             let m: ModelConfig = serde_json::from_value(e.config.clone())
                 .map_err(|e| Error::Invalid(e.to_string()))?;

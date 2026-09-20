@@ -41,6 +41,7 @@ export * from "./eventsParams.ts";
 export * from "./generationAction.ts";
 export * from "./generationAssignInput.ts";
 export * from "./generationAssignment.ts";
+export * from "./generationCompaction.ts";
 export * from "./generationControl.ts";
 export * from "./generationHistory.ts";
 export * from "./generationLimits.ts";

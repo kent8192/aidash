@@ -240,7 +240,17 @@ export function EntityForm({
                     modalities: ["text"],
                     cost: JSON.parse(s("cost")),
                   }
-                : JSON.parse(s("config"));
+                : kind === "compactor"
+                  ? {
+                      provider: "typesafe-system-one",
+                      endpoint: s("endpoint"),
+                      model: s("model_id"),
+                      credential_env: s("credential_env"),
+                      max_request_bytes: Number(s("max_request_bytes")),
+                      max_questions: Number(s("max_questions")),
+                      max_response_bytes: Number(s("max_response_bytes")),
+                    }
+                  : JSON.parse(s("config"));
           const entry = {
             id: s("id"),
             version: s("version"),
@@ -265,7 +275,15 @@ export function EntityForm({
     >
       <Field label={t("entityKind")}>
         <select value={kind} onChange={(e) => setKind(e.target.value)}>
-          {["agent", "model", "tool", "skill", "cluster", "node"].map((k) => (
+          {[
+            "agent",
+            "model",
+            "tool",
+            "skill",
+            "cluster",
+            "node",
+            "compactor",
+          ].map((k) => (
             <option key={k}>{k}</option>
           ))}
         </select>
@@ -403,6 +421,63 @@ export function EntityForm({
               defaultValue={
                 '{"input_per_million":null,"output_per_million":null,"currency":"USD"}'
               }
+            />
+          </Field>
+        </>
+      ) : kind === "compactor" ? (
+        <>
+          <p className="muted">{t("compactorHelp")}</p>
+          <Field label={t("model")}>
+            <input
+              name="model_id"
+              required
+              maxLength={128}
+              defaultValue="jev-latest"
+            />
+          </Field>
+          <Field label={t("endpoint")}>
+            <input
+              name="endpoint"
+              type="url"
+              required
+              defaultValue="https://api.typesafe.ai/v1/systemone"
+            />
+          </Field>
+          <Field label={t("credentials")}>
+            <input
+              name="credential_env"
+              required
+              defaultValue="AIDASH_SECRET_JEV"
+            />
+          </Field>
+          <Field label={t("compactorRequestBytes")}>
+            <input
+              name="max_request_bytes"
+              type="number"
+              required
+              min={1024}
+              max={1048576}
+              defaultValue={200000}
+            />
+          </Field>
+          <Field label={t("compactorQuestions")}>
+            <input
+              name="max_questions"
+              type="number"
+              required
+              min={1}
+              max={1024}
+              defaultValue={200}
+            />
+          </Field>
+          <Field label={t("compactorResponseBytes")}>
+            <input
+              name="max_response_bytes"
+              type="number"
+              required
+              min={128}
+              max={1048576}
+              defaultValue={16000}
             />
           </Field>
         </>

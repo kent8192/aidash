@@ -368,7 +368,7 @@ async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_all
     assert_eq!(status, 200);
     assert_eq!(
         usage,
-        json!({"token_limit":200000,"used_tokens":140,"inference_attempts":1})
+        json!({"token_limit":200000,"used_tokens":140,"inference_attempts":1,"compaction_call_limit":0,"compaction_calls":0})
     );
     assert_eq!(jobs[0]["id"], job["id"]);
     assert_eq!(
@@ -1194,5 +1194,210 @@ async fn disabling_an_existing_policy_remains_possible_after_component_revocatio
         .0,
         400
     );
+    cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn count_concurrency_and_total_token_limits_are_independent() {
+    for limit in ["max_agents", "max_concurrent", "token_budget"] {
+        let (f, url, schema) = setup().await;
+        let app = api::router(f.clone());
+        let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+        let mut spec = definition(&app, &f.config.api_token).await;
+        spec["limits"][limit] = json!(if limit == "token_budget" { 200000 } else { 1 });
+        if limit == "max_agents" {
+            spec["limits"]["max_concurrent"] = json!(1);
+        }
+        assert_eq!(
+            request(
+                &app,
+                &f.config.api_token,
+                "POST",
+                "/api/generation/acme/policies/research",
+                json!({"expected_revision":0,"spec":spec})
+            )
+            .await
+            .0,
+            200
+        );
+        let first = missing_task(&app, &token).await;
+        let (status, first) = request(
+            &app,
+            &token,
+            "POST",
+            &format!("/api/generation/acme/tasks/{first}/assign"),
+            json!({"policy_id":"research","reason":"first reservation"}),
+        )
+        .await;
+        assert_eq!(status, 200, "{first}");
+        if limit == "max_agents" {
+            assert_eq!(
+                request(
+                    &app,
+                    &token,
+                    "POST",
+                    &format!(
+                        "/api/generation/acme/requests/{}/control",
+                        first["generation"]["id"].as_str().unwrap()
+                    ),
+                    json!({"action":"deny","reason":"lifetime count must remain"})
+                )
+                .await
+                .0,
+                200
+            );
+        }
+        let second = missing_task(&app, &token).await;
+        let path = format!("/api/generation/acme/tasks/{second}/assign");
+        let body = json!({"policy_id":"research","reason":"second reservation"});
+        assert_eq!(
+            request(&app, &token, "POST", &path, body.clone()).await.0,
+            409,
+            "{limit} must independently reject admission"
+        );
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM generation_requests")
+            .fetch_one(&f.store.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "rejected request must leave no partial definition"
+        );
+        spec["limits"][limit] = json!(if limit == "token_budget" { 400000 } else { 2 });
+        assert_eq!(
+            request(
+                &app,
+                &f.config.api_token,
+                "POST",
+                "/api/generation/acme/policies/research",
+                json!({"expected_revision":1,"spec":spec})
+            )
+            .await
+            .0,
+            200
+        );
+        assert_eq!(
+            request(&app, &token, "POST", &path, body).await.0,
+            200,
+            "raising only {limit} must admit the same task"
+        );
+        cleanup(f, &url, &schema).await;
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn generated_permission_attributes_deny_tools_without_losing_the_pending_call() {
+    use axum::{Json, Router, routing::post};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let effects = Arc::new(AtomicUsize::new(0));
+    let count = effects.clone();
+    let server=Router::new().route("/effect",post(move || {let count=count.clone();async move {count.fetch_add(1,Ordering::SeqCst);Json(json!({"saved":true}))}}))
+        .route("/v1/chat/completions",post(|Json(body):Json<Value>|async move {
+            let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+            let message=if context["history"].as_array().unwrap().iter().any(|e|e["kind"]=="tool") {json!({"role":"assistant","content":"Approved tool completed"})}
+            else {json!({"role":"assistant","content":null,"tool_calls":[{"id":"generated-effect","type":"function","function":{"name":"plugin_0","arguments":"{}"}}]})};
+            Json(json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+    let (f, url, schema) = setup().await;
+    let app = api::router(f.clone());
+    let (mut bundle, token, _) = bootstrap(&f, &app, &endpoint).await;
+    bundle["policies"].as_array_mut().unwrap().push(json!({"id":"deny-research-tools","effect":"deny","subjects":{"kinds":["agent"]},"actions":["tool.invoke"],"resources":{"kinds":["tool"]},"condition":{"op":"eq","left":{"source":"subject","path":"/team"},"right":{"source":"literal","value":"research"}}}));
+    assert_eq!(
+        request(
+            &app,
+            &f.config.api_token,
+            "POST",
+            "/api/authorization/acme",
+            json!({"expected_revision":1,"bundle":bundle})
+        )
+        .await
+        .0,
+        200
+    );
+    let mut spec = definition(&app, &f.config.api_token).await;
+    spec["approval_required"] = json!(false);
+    assert_eq!(
+        request(
+            &app,
+            &f.config.api_token,
+            "POST",
+            "/api/generation/acme/policies/research",
+            json!({"expected_revision":0,"spec":spec})
+        )
+        .await
+        .0,
+        200
+    );
+    let task = missing_task(&app, &token).await;
+    assert_eq!(
+        request(
+            &app,
+            &token,
+            "POST",
+            &format!("/api/generation/acme/tasks/{task}/assign"),
+            json!({"policy_id":"research","reason":"restricted specialist"})
+        )
+        .await
+        .0,
+        200
+    );
+    aidash::generation::provision::reconcile(&f).await.unwrap();
+    let worker = aidash::harness::Harness {
+        federation: f.clone(),
+    };
+    for _ in 0..3 {
+        worker.worker_once().await.unwrap();
+    }
+    let run = f.store.runs().await.unwrap().remove(0);
+    assert_eq!(run.phase, "TOOL_CALL");
+    assert_eq!(run.control, "PAUSED");
+    assert_eq!(run.pending["cursor"], 0);
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    let snapshot = aidash::authorization::Authorization {
+        pool: f.store.pool.clone(),
+    }
+    .snapshot("acme")
+    .await
+    .unwrap();
+    let mut bundle = json!(snapshot.bundle);
+    bundle["policies"].as_array_mut().unwrap().pop();
+    assert_eq!(
+        request(
+            &app,
+            &f.config.api_token,
+            "POST",
+            "/api/authorization/acme",
+            json!({"expected_revision":snapshot.revision,"bundle":bundle})
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        request(
+            &app,
+            &token,
+            "POST",
+            &format!("/api/runs/{}/control", run.id),
+            json!({"action":"resume"})
+        )
+        .await
+        .0,
+        200
+    );
+    for _ in 0..8 {
+        worker.worker_once().await.unwrap();
+    }
+    assert_eq!(f.store.run(run.id).await.unwrap().phase, "COMPLETED");
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    server.abort();
     cleanup(f, &url, &schema).await;
 }

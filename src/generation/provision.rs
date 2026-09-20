@@ -39,7 +39,8 @@ async fn activate(f: &Federation, job: &Request) -> Result<()> {
         for (reference,action) in std::iter::once((&config.model,"model.infer"))
             .chain(config.tools.iter().map(|r|(r,"tool.invoke")))
             .chain(config.skills.iter().map(|r|(r,"skill.use")))
-            .chain(config.cluster.iter().map(|r|(r,"cluster.execute"))) {
+            .chain(config.cluster.iter().map(|r|(r,"cluster.execute")))
+            .chain(spec.compaction.iter().map(|c| (&c.provider,"compaction.invoke"))) {
             catalog::entry(&mut access,reference,"registry.read").await?;
             catalog::entry(&mut access,reference,action).await?;
         }

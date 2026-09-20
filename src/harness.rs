@@ -266,7 +266,24 @@ impl Harness {
                     + context::estimated_tokens(&json!(specifications).to_string());
                 let output = (window / 8).clamp(256, 4096) as u32;
                 let budget = window.saturating_sub(overhead + output as usize + 512);
-                let compactor = context::jev::JevClient::from_env(self.federation.client.clone())?;
+                let compactor: Box<dyn context::jev::JevAsker> = if let Some(guard) = guard {
+                    Box::new(guard.compactor(&self.federation))
+                } else {
+                    Box::new(context::jev::JevClient::from_env(
+                        self.federation.client.clone(),
+                    )?)
+                };
+                context::compact(
+                    &mut context,
+                    compactor.as_ref(),
+                    budget,
+                    &pinned,
+                    &instructions,
+                )
+                .await?;
+                if let Some(guard) = guard {
+                    guard.inference().await?;
+                }
                 let reservation = if let Some(guard) = guard {
                     guard
                         .reserve_inference(store, token, window, output)
@@ -274,11 +291,6 @@ impl Harness {
                 } else {
                     None
                 };
-                let compactor = crate::generation::budget::ApprovedCompactor {
-                    inner: &compactor,
-                    generated: reservation.is_some(),
-                };
-                context::compact(&mut context, &compactor, budget, &pinned, &instructions).await?;
                 let request = ModelRequest {
                     instructions,
                     context: json!({"current":pinned,"summary":context.summary,"history":context.history}),

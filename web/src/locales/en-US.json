@@ -236,5 +236,16 @@
   "DELETED": "Archived",
   "ENABLED": "Enabled",
   "DISABLED": "Disabled",
-  "generationPinnedPermissions": "Permissions and limits pinned to this request"
+  "generationPinnedPermissions": "Permissions and limits pinned to this request",
+  "generationCompaction": "Context compaction",
+  "generationCompactionHelp": "Choose an approved System One provider and call allowance for long histories. Failed and uncertain attempts consume calls. Every generated ancestor must approve the same provider.",
+  "generationCompactor": "Compaction provider",
+  "generationCompactionDisabled": "External compaction disabled",
+  "generationCompactionPerAgent": "Compaction calls per agent",
+  "generationCompactionBudget": "Total compaction call allowance",
+  "generationCompactionCalls": "Compaction calls charged / limit",
+  "compactorHelp": "Register an explicit System One endpoint and request bounds, then approve it in the tenant catalog. Credentials are resolved on the server.",
+  "compactorRequestBytes": "Maximum request bytes",
+  "compactorQuestions": "Maximum questions per call",
+  "compactorResponseBytes": "Maximum response bytes"
 }

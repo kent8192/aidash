@@ -203,6 +203,11 @@ export function GenerationPage({ data }: { data: State }) {
                           {policy.allocated_tokens.toLocaleString()} /{" "}
                           {policy.spec.limits.token_budget.toLocaleString()}
                         </dd>
+                        <dt>{t("generationCompactionBudget")}</dt>
+                        <dd>
+                          {policy.allocated_compaction_calls} /{" "}
+                          {policy.spec.compaction?.call_budget ?? "—"}
+                        </dd>
                       </dl>
                       <div className="generation-actions">
                         <button
@@ -419,7 +424,11 @@ function PolicyEditor({
   const initial = policy?.spec;
   const config = initial?.template.config as AgentFields | undefined;
   const [model, setModel] = useState(config?.model ? key(config.model) : "");
+  const [compactor, setCompactor] = useState(
+    initial?.compaction ? key(initial.compaction.provider) : "",
+  );
   const [error, setError] = useState("");
+  const compactors = entries.filter((entry) => entry.kind === "compactor");
   const models = entries.filter((entry) => entry.kind === "model");
   const modelEntry = models.find((entry) => key(entry) === model);
   const window = Number(modelEntry?.config.context_window ?? 0);
@@ -480,6 +489,13 @@ function PolicyEditor({
       void save(id, {
         enabled: form.has("enabled"),
         approval_required: form.has("approval"),
+        compaction: compactor
+          ? {
+              provider: entityRef(compactor),
+              calls_per_agent: Number(text("calls_per_agent")),
+              call_budget: Number(text("call_budget")),
+            }
+          : undefined,
         template,
         permissions: {
           roles: split(text("roles")),
@@ -692,6 +708,52 @@ function PolicyEditor({
           )}
         />
       </Field>
+      <h3>{t("generationCompaction")}</h3>
+      <p className="muted">{t("generationCompactionHelp")}</p>
+      <Field label={t("generationCompactor")}>
+        <select
+          name="compactor"
+          value={compactor}
+          onChange={(e) => setCompactor(e.target.value)}
+        >
+          <option value="">{t("generationCompactionDisabled")}</option>
+          {compactors.map((entry) => (
+            <option key={key(entry)} value={key(entry)}>
+              {local(entry.name)} · {key(entry)}
+            </option>
+          ))}
+          {compactor &&
+            !compactors.some((entry) => key(entry) === compactor) && (
+              <option value={compactor}>
+                {compactor} · {t("generationReferenceUnavailable")}
+              </option>
+            )}
+        </select>
+      </Field>
+      {compactor && (
+        <div className="two-columns">
+          <Field label={t("generationCompactionPerAgent")}>
+            <input
+              type="number"
+              name="calls_per_agent"
+              required
+              min={1}
+              max={1000000}
+              defaultValue={initial?.compaction?.calls_per_agent ?? 10}
+            />
+          </Field>
+          <Field label={t("generationCompactionBudget")}>
+            <input
+              type="number"
+              name="call_budget"
+              required
+              min={1}
+              max={1000000}
+              defaultValue={initial?.compaction?.call_budget ?? 100}
+            />
+          </Field>
+        </div>
+      )}
       <h3>{t("generationLimits")}</h3>
       <p className="muted">{t("generationBudgetHelp")}</p>
       <div className="two-columns">
@@ -820,6 +882,10 @@ function RequestDetail({
             </dd>
             <dt>{t("generationInferenceAttempts")}</dt>
             <dd>{usage.data.inference_attempts}</dd>
+            <dt>{t("generationCompactionCalls")}</dt>
+            <dd>
+              {usage.data.compaction_calls} / {usage.data.compaction_call_limit}
+            </dd>
           </dl>
         )
       )}
@@ -840,6 +906,18 @@ function RequestDetail({
               <dd>{pinned.data.limits.max_concurrent}</dd>
               <dt>{t("generationMaxDepth")}</dt>
               <dd>{pinned.data.limits.max_depth}</dd>
+              <dt>{t("generationCompactor")}</dt>
+              <dd>
+                {pinned.data.compaction
+                  ? key(pinned.data.compaction.provider)
+                  : t("generationCompactionDisabled")}
+              </dd>
+              {pinned.data.compaction && (
+                <>
+                  <dt>{t("generationCompactionPerAgent")}</dt>
+                  <dd>{pinned.data.compaction.calls_per_agent}</dd>
+                </>
+              )}
             </dl>
             <JsonView value={pinned.data.permissions.attributes ?? {}} />
           </details>

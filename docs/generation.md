@@ -1,6 +1,6 @@
 # Policy-driven agent generation
 
-The generation service can complete a tenant-owned task for which no approved agent matches its requirements. A versioned policy embeds an Agent definition with an explicit model and approved tool/skill/cluster references. Requests cannot override the definition or permissions. The backend and bilingual dashboard implement this workflow. Approved compaction and the full failure/limit acceptance matrix remain outstanding before FR-AGENT-001 is complete.
+The generation service can complete a tenant-owned task for which no approved agent matches its requirements. A versioned policy embeds an Agent definition with an explicit model and approved tool/skill/cluster references. Requests cannot override the definition or permissions. The backend and bilingual dashboard implement this workflow. Its standalone generation acceptance gate is verified below. The expanded cluster, authorization, transaction, memory and A2A integration gates remain tracked in the implementation plan.
 
 ## Policy and admission
 
@@ -9,6 +9,7 @@ Use `POST /api/generation/{tenant}/policies/{id}` with `expected_revision` (zero
 - `enabled`, `approval_required` and `template`, an ordinary Agent Registry entry.
 - `permissions`: existing role/group IDs and generated subject attributes.
 - `limits`: `max_agents`, `max_concurrent`, `max_depth`, `token_budget`, `tokens_per_agent` and `lifetime_seconds`.
+- Optional `compaction`: an approved `provider` reference, `calls_per_agent` and total `call_budget`. Omitting it forbids external compaction for that generated definition.
 
 All referenced components must already be approved in that tenant's catalog. The model must be selected explicitly; generation does not route between models. Policies and immutable revisions are stored alongside their actor and quota counters. A request pins its definition and permission specification to the policy revision; later changes affect new requests. Disabling the policy prevents further activation and generated execution at the next authority boundary. An unchanged policy can still be disabled after one of its components is revoked; re-enabling or changing its definition requires all current approvals again.
 
@@ -28,9 +29,9 @@ A running request is `ACTIVE`. Completed, failed, denied, stopped and expired re
 
 ## Dashboard
 
-Open **Agent generation** with a tenant subject credential to manage that tenant. An operator selects the tenant explicitly. Create or edit a policy using the model, tool and skill selectors, role/group IDs, permission attributes and numeric limits. The list shows each policy revision, lifetime definition count and allocated token allowance, with enable/disable controls.
+Open **Agent generation** with a tenant subject credential to manage that tenant. An operator selects the tenant explicitly. Create or edit a policy using the model, tool and skill selectors, role/group IDs, permission attributes and numeric limits. The list shows each policy revision, lifetime definition count and allocated token/call allowances, with enable/disable controls. The compaction selector uses tenant-approved providers and exposes per-agent and total call limits.
 
-On an open task, choose **Assign with policy** and record the reason. The generation page shows pending, running and terminal requests. Before approval, its detail view loads the immutable request-time policy snapshot, including permissions and limits; a later policy edit cannot change the displayed approval target. Approve, deny, stop and archive actions require a recorded reason. The same view shows charged tokens, inference attempts, origin chain, definition and lifecycle history. Archiving retains the record and task journals. Controls and responsive layouts support Japanese and English.
+On an open task, choose **Assign with policy** and record the reason. The generation page shows pending, running and terminal requests. Before approval, its detail view loads the immutable request-time policy snapshot, including permissions and limits; a later policy edit cannot change the displayed approval target. Approve, deny, stop and archive actions require a recorded reason. The same view shows charged tokens, inference attempts, compaction calls/limit, origin chain, definition and lifecycle history. Archiving retains the record and task journals. Controls and responsive layouts support Japanese and English.
 
 ## Read APIs
 
@@ -53,4 +54,45 @@ The budget is an input/output model-token allowance, not a monetary or arbitrary
 
 Successful, complete, positive and bounded provider usage refunds unused reservation. Anthropic input usage includes its separate cache creation and cache read counters, following the [provider accounting contract](https://platform.claude.com/docs/en/build-with-claude/prompt-caching). Missing, invalid or uncertain usage remains charged in full. Crashes and failed attempts retain their reservation; a retry requires a new reservation. Request bytes must fit the reserved context window before provider I/O. These checks assume the approved provider honors its declared model limits; out-of-contract usage is an execution error and does not refund allowance.
 
-Generated definitions currently approve only their explicit inference model. A context that requires the separately configured Jev provider fails before sending that history, because compaction has no generation-policy approval/budget contract yet. Short contexts require no compaction. Ordinary agents retain their existing Jev behavior. A policy-managed compaction allowance and the remaining process-failure/limit acceptance checks are required before this requirement can be declared complete.
+## Approved compaction
+
+Register a `compactor` Registry entry and approve its exact version in the tenant catalog. Its configuration selects `provider: "typesafe-system-one"`, `endpoint`, `model`, `credential_env`, `max_request_bytes` (1024–1048576), `max_questions` (1–1024) and `max_response_bytes` (128–1048576). Credentials use configured `AIDASH_SECRET_*` references. The bilingual Registry form exposes these fields. HTTPS/HTTP endpoints must not contain credentials, query strings or fragments; approved calls never follow redirects, have a 5-second connection timeout and a 30-second request timeout, and enforce response size while reading.
+
+A policy explicitly references that entry:
+
+```json
+{
+  "compaction": {
+    "provider": { "id": "approved-jev", "version": "1.0.0" },
+    "calls_per_agent": 10,
+    "call_budget": 100
+  }
+}
+```
+
+The request pins this contract to its immutable policy revision. Each generation reserves its per-agent call allowance against the policy total. Termination returns unused allowance exactly once; consumed calls remain allocated. Before each System One HTTP attempt, the worker checks live authority, `registry.read`, `compaction.invoke`, catalog approval, expiry and the provider agreement of every generated ancestor. An ordinary child executing within a generated chain inherits this contract too. All generated ancestors must approve the same exact provider version; an omitted or different reference rejects external compaction before disclosure.
+
+Input bytes and question counts are checked before reservation. The worker then atomically commits one call and an attempt record for every generated ancestor before network I/O. The ledger retains provider/version, run, byte count and question count, without storing the request history or credential. Concurrent batches cannot overspend a call limit. Failed, uncertain and crashed attempts stay charged, and retries reserve new attempts. System One probability responses do not report trustworthy model-token usage, so this is a separate call budget, not a fabricated token refund or monetary limit. Main inference reserves its tokens after successful compaction and rechecks lifetime before its own HTTP request.
+
+No configured compaction permission is needed when the context already fits. Generated chains never fall back to the node's environment-selected Jev provider. Ordinary agents outside a generated chain retain that provider selection, with bounded 1 MiB request/response payloads and at most 1024 questions per request.
+
+## Acceptance evidence
+
+The fixtures use local HTTP providers and real PostgreSQL; no paid provider quality is inferred.
+
+| Contract                            | Verification                                                                                                                                                             |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Missing matching agent              | Generated definition completes its task; matching ordinary agents are reused without reserving generation quota                                                          |
+| Retry, approval and provenance      | Identical assignments/controls retain IDs, pinned revisions, origin and history; denial prevents activation                                                              |
+| Count, concurrency and total tokens | Each limit independently rejects a new request without partial state; raising only that limit admits the same task                                                       |
+| Generated depth and authority       | Worker-created task origins retain parent restrictions even when the root submits assignment                                                                             |
+| Per-agent inference tokens          | Unknown/incomplete usage keeps the full reservation and blocks another over-budget model call                                                                            |
+| Tool permission denial              | A generated `/team` attribute triggers ABAC denial before HTTP; the pending tool cursor survives and runs once after policy correction and explicit resume               |
+| Lifetime, stop and revocation       | Expiry and revoked credentials prevent provider calls; stop waits for an in-flight lease and blocks the next boundary                                                    |
+| Compaction                          | Long history is pruned with the pinned provider; call reservations commit before HTTP and intersect all generated ancestors                                              |
+| Compaction limits and failures      | Concurrent allocation is bounded; failed calls stay charged, exhausted budgets prevent HTTP and unused allowance releases once                                           |
+| Process failure                     | Real worker processes are killed during inference and compaction; new processes finish the original run with one generated definition and retained uncertain usage       |
+| Tenant and read scope               | Requests, specifications, usage, histories and events honor tenant/read permission boundaries                                                                            |
+| Management dashboard                | Japanese/English policy creation/editing, compaction selection, immutable approval review, completion, denial, stop, archive and enable/disable pass in the real browser |
+
+The cases are in `tests/generation.rs`, `tests/generation_compaction.rs`, `src/context/jev.rs` and `web/tests/generation.spec.ts`. The broader two-node dashboard golden path also passes. These results establish the standalone generation contract; the six-capability integrated release gate remains separate.

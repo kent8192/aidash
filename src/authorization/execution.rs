@@ -483,6 +483,15 @@ impl Guard {
         access.require(&resource, action).await
     }
 
+    pub fn compactor(&self, f: &Federation) -> crate::generation::compaction::ApprovedCompactor {
+        crate::generation::compaction::ApprovedCompactor {
+            access: self.access.clone(),
+            store: f.store.clone(),
+            run: self.run.clone(),
+            client: f.client.clone(),
+        }
+    }
+
     pub async fn reserve_inference(
         &self,
         store: &Store,
@@ -497,6 +506,20 @@ impl Guard {
 
     pub async fn inference(&self) -> Result<()> {
         let mut access = self.access.lock().await;
+        let node: String = access.environment["node_id"]
+            .as_str()
+            .ok_or(Error::Forbidden)?
+            .into();
+        crate::generation::provision::require_live(
+            &mut access,
+            &node,
+            self.run.task_id,
+            &EntityRef {
+                id: self.run.agent_id.clone(),
+                version: self.run.agent_version.clone(),
+            },
+        )
+        .await?;
         catalog::entry(&mut access, &self.agent.model, "model.infer").await?;
         for skill in &self.agent.skills {
             catalog::entry(&mut access, skill, "skill.use").await?;

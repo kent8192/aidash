@@ -95,25 +95,3 @@ pub(crate) async fn reserve(
         window,
     }))
 }
-
-/// A generated definition only approves its explicit model. Do not silently
-/// send its history to a separately configured, unbudgeted compaction provider.
-pub(crate) struct ApprovedCompactor<'a> {
-    pub inner: &'a dyn crate::context::jev::JevAsker,
-    pub generated: bool,
-}
-#[async_trait::async_trait]
-impl crate::context::jev::JevAsker for ApprovedCompactor<'_> {
-    async fn ask(
-        &self,
-        state: &serde_json::Value,
-        questions: &crate::context::jev::Questions,
-    ) -> Result<serde_json::Value> {
-        if self.generated {
-            return Err(Error::Invalid(
-                "generated context requires a separately approved compaction provider".into(),
-            ));
-        }
-        self.inner.ask(state, questions).await
-    }
-}

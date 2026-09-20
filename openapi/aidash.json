@@ -2600,6 +2600,24 @@
           }
         ]
       },
+      "GenerationCompaction": {
+        "type": "object",
+        "required": ["provider", "calls_per_agent", "call_budget"],
+        "properties": {
+          "call_budget": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "calls_per_agent": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/EntityRef"
+          }
+        },
+        "additionalProperties": false
+      },
       "GenerationControl": {
         "type": "object",
         "required": ["action", "reason"],
@@ -2720,9 +2738,14 @@
           "revision",
           "spec",
           "generated_count",
-          "allocated_tokens"
+          "allocated_tokens",
+          "allocated_compaction_calls"
         ],
         "properties": {
+          "allocated_compaction_calls": {
+            "type": "integer",
+            "format": "int64"
+          },
           "allocated_tokens": {
             "type": "integer",
             "format": "int64"
@@ -2863,6 +2886,16 @@
           "approval_required": {
             "type": "boolean"
           },
+          "compaction": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GenerationCompaction"
+              }
+            ]
+          },
           "enabled": {
             "type": "boolean"
           },
@@ -2880,8 +2913,22 @@
       },
       "GenerationUsage": {
         "type": "object",
-        "required": ["token_limit", "used_tokens", "inference_attempts"],
+        "required": [
+          "token_limit",
+          "used_tokens",
+          "inference_attempts",
+          "compaction_call_limit",
+          "compaction_calls"
+        ],
         "properties": {
+          "compaction_call_limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "compaction_calls": {
+            "type": "integer",
+            "format": "int64"
+          },
           "inference_attempts": {
             "type": "integer",
             "format": "int64"

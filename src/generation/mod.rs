@@ -1,5 +1,6 @@
 pub mod api;
 pub(crate) mod budget;
+pub(crate) mod compaction;
 pub mod lifecycle;
 pub mod policy;
 pub mod provision;
@@ -226,6 +227,13 @@ pub(crate) async fn assign_in(
         .chain(config.tools.iter().map(|r| (r, "tool.invoke")))
         .chain(config.skills.iter().map(|r| (r, "skill.use")))
         .chain(config.cluster.iter().map(|r| (r, "cluster.execute")))
+        .chain(
+            policy
+                .spec
+                .compaction
+                .iter()
+                .map(|c| (&c.provider, "compaction.invoke")),
+        )
     {
         catalog::entry(access, reference, "registry.read").await?;
         catalog::entry(access, reference, action).await?;
@@ -236,7 +244,17 @@ pub(crate) async fn assign_in(
     let limits = &policy.spec.limits;
     let active:i64=sqlx::query_scalar("SELECT count(*) FROM generation_requests WHERE tenant=$1 AND policy_id=$2 AND status IN ('PENDING_APPROVAL','QUEUED','ACTIVE')")
         .bind(&access.identity.tenant).bind(policy_id).fetch_one(&mut *access.tx).await?;
-    if policy.generated_count >= limits.max_agents
+    let compaction_calls = policy
+        .spec
+        .compaction
+        .as_ref()
+        .map_or(0, |c| c.calls_per_agent);
+    if policy.spec.compaction.as_ref().is_some_and(|c| {
+        policy
+            .allocated_compaction_calls
+            .checked_add(c.calls_per_agent)
+            .is_none_or(|n| n > c.call_budget)
+    }) || policy.generated_count >= limits.max_agents
         || active >= limits.max_concurrent
         || depth > limits.max_depth
         || access.subjects.len() >= 32
@@ -246,7 +264,7 @@ pub(crate) async fn assign_in(
             .is_none_or(|n| n > limits.token_budget)
     {
         return Err(Error::Conflict(
-            "generation count, concurrency, depth or token budget exceeded".into(),
+            "generation count, concurrency, depth, token or compaction budget exceeded".into(),
         ));
     }
     let id = Uuid::new_v4();
@@ -269,11 +287,12 @@ pub(crate) async fn assign_in(
     let generated:Request=sqlx::query_as("INSERT INTO generation_requests(id,tenant,policy_id,policy_revision,task_id,workspace_id,credential_id,root_subject,subject_chain,agent_id,agent_version,definition,status,reason,depth,token_limit,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,clock_timestamp()+make_interval(secs=>$17)) RETURNING *")
         .bind(id).bind(&access.identity.tenant).bind(policy_id).bind(policy.revision).bind(task_id).bind(task.workspace_id).bind(access.identity.credential_id).bind(&access.identity.subject).bind(&access.subjects)
         .bind(&definition.id).bind(&definition.version).bind(json!(definition)).bind(status).bind(reason).bind(depth).bind(limits.tokens_per_agent).bind(limits.lifetime_seconds as f64).fetch_one(&mut *access.tx).await?;
-    sqlx::query("UPDATE generation_policies SET generated_count=generated_count+1,allocated_tokens=allocated_tokens+$3 WHERE tenant=$1 AND id=$2")
-        .bind(&access.identity.tenant).bind(policy_id).bind(limits.tokens_per_agent).execute(&mut *access.tx).await?;
-    sqlx::query("INSERT INTO generation_budgets(request_id,token_limit) VALUES($1,$2)")
+    sqlx::query("UPDATE generation_policies SET generated_count=generated_count+1,allocated_tokens=allocated_tokens+$3,allocated_compaction_calls=allocated_compaction_calls+$4 WHERE tenant=$1 AND id=$2")
+        .bind(&access.identity.tenant).bind(policy_id).bind(limits.tokens_per_agent).bind(compaction_calls).execute(&mut *access.tx).await?;
+    sqlx::query("INSERT INTO generation_budgets(request_id,token_limit,compaction_call_limit) VALUES($1,$2,$3)")
         .bind(id)
         .bind(limits.tokens_per_agent)
+        .bind(compaction_calls)
         .execute(&mut *access.tx)
         .await?;
     sqlx::query(

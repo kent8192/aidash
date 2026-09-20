@@ -236,5 +236,16 @@
   "DELETED": "アーカイブ済み",
   "ENABLED": "有効",
   "DISABLED": "無効",
-  "generationPinnedPermissions": "要求時に確定した権限と上限"
+  "generationPinnedPermissions": "要求時に確定した権限と上限",
+  "generationCompaction": "コンテキスト圧縮",
+  "generationCompactionHelp": "長い履歴を圧縮する承認済みSystem Oneプロバイダーと呼び出し上限を選択します。失敗・結果不明の試行も消費に含みます。生成元の全Agentで同じプロバイダーの承認が必要です。",
+  "generationCompactor": "圧縮プロバイダー",
+  "generationCompactionDisabled": "外部圧縮を許可しない",
+  "generationCompactionPerAgent": "Agentごとの圧縮呼び出し上限",
+  "generationCompactionBudget": "圧縮呼び出しの総予算",
+  "generationCompactionCalls": "圧縮呼び出し消費数 / 上限",
+  "compactorHelp": "System Oneの接続先とリクエスト上限を登録し、テナントのカタログで承認します。認証情報はサーバーで参照します。",
+  "compactorRequestBytes": "最大リクエストバイト数",
+  "compactorQuestions": "呼び出しごとの最大質問数",
+  "compactorResponseBytes": "最大応答バイト数"
 }

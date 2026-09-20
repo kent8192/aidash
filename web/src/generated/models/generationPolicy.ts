@@ -8,6 +8,7 @@
 import type { GenerationSpec } from "./generationSpec.ts";
 
 export interface GenerationPolicy {
+  allocated_compaction_calls: number;
   allocated_tokens: number;
   generated_count: number;
   id: string;
