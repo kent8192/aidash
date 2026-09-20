@@ -223,15 +223,17 @@ function Dashboard({
     setDialog(d);
   };
   const submit = async (request: () => Promise<unknown>) => {
-    if (busy) return;
+    if (busy) return false;
     setBusy(true);
     setError("");
     try {
       await request();
       await client.invalidateQueries();
       setDialog(null);
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -1667,7 +1669,7 @@ function ConversationView({
   send,
 }: {
   workspace: string;
-  send: (body: { content: string }) => Promise<void>;
+  send: (body: { content: string }) => Promise<boolean>;
 }) {
   const { t } = useI18n();
   const query = useQuery({
@@ -1698,9 +1700,9 @@ function ConversationView({
           e.preventDefault();
           const form = e.currentTarget;
           const d = new FormData(form);
-          void send({ content: String(d.get("content")) }).then(() =>
-            form.reset(),
-          );
+          void send({ content: String(d.get("content")) }).then((sent) => {
+            if (sent) form.reset();
+          });
         }}
       >
         <input
@@ -1865,7 +1867,7 @@ function HumanForm({
   answer,
 }: {
   request: HumanRequest;
-  answer: (response: unknown) => Promise<void>;
+  answer: (response: unknown) => Promise<unknown>;
 }) {
   const { t } = useI18n();
   return (

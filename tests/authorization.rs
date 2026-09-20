@@ -47,7 +47,7 @@ async fn setup() -> (Router, Store, String, String) {
         .connect(&url)
         .await
         .unwrap();
-    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    aidash::store::Store::migrate(&pool).await.unwrap();
     let store = Store {
         pool: pool.clone(),
         node_id: "aidash://authorization-test".into(),

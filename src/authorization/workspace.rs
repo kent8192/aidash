@@ -10,6 +10,9 @@ use super::{
 use crate::{
     Error, Result, api_schema::StateResponse, config::NodeIdentity, domain::*, store::Store,
 };
+use sea_orm::sea_query::{
+    Alias, Asterisk, Condition, Expr, LockType, Order, PostgresQueryBuilder, Query,
+};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -36,8 +39,26 @@ impl Access {
         let workspace = store
             .create_workspace_in(&mut self.tx, id, title, goal)
             .await?;
-        sqlx::query("INSERT INTO authorization_workspaces(workspace_id,tenant,owner_subject) VALUES($1,$2,$3)")
-            .bind(id).bind(&self.identity.tenant).bind(&self.identity.subject).execute(&mut *self.tx).await?;
+        sqlx::query(
+            &Query::insert()
+                .into_table(Alias::new("authorization_workspaces"))
+                .columns([
+                    Alias::new("workspace_id"),
+                    Alias::new("tenant"),
+                    Alias::new("owner_subject"),
+                ])
+                .values_panic([
+                    Expr::cust("$1").into(),
+                    Expr::cust("$2").into(),
+                    Expr::cust("$3").into(),
+                ])
+                .to_string(PostgresQueryBuilder),
+        )
+        .bind(id)
+        .bind(&self.identity.tenant)
+        .bind(&self.identity.subject)
+        .execute(&mut *self.tx)
+        .await?;
         Ok(workspace)
     }
 
@@ -71,8 +92,22 @@ impl Access {
     }
 
     async fn allowed(&mut self, id: Uuid, action: &str) -> Result<bool> {
-        let owner: Option<String> = sqlx::query_scalar("SELECT owner_subject FROM authorization_workspaces WHERE workspace_id=$1 AND tenant=$2 FOR SHARE")
-            .bind(id).bind(&self.identity.tenant).fetch_optional(&mut *self.tx).await?;
+        let owner: Option<String> = sqlx::query_scalar(
+            &Query::select()
+                .column(Alias::new("owner_subject"))
+                .from(Alias::new("authorization_workspaces"))
+                .cond_where(
+                    Condition::all()
+                        .add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+                        .add(Expr::col(Alias::new("tenant")).eq(Expr::cust("$2"))),
+                )
+                .lock(LockType::Share)
+                .to_string(PostgresQueryBuilder),
+        )
+        .bind(id)
+        .bind(&self.identity.tenant)
+        .fetch_optional(&mut *self.tx)
+        .await?;
         self.workspace_decide(id, action, owner.as_deref()).await
     }
 
@@ -85,8 +120,19 @@ impl Access {
     }
 
     async fn visible(&mut self, action: &str) -> Result<Vec<Uuid>> {
-        let rows: Vec<(Uuid, String)> = sqlx::query_as("SELECT workspace_id,owner_subject FROM authorization_workspaces WHERE tenant=$1 ORDER BY workspace_id FOR SHARE")
-            .bind(&self.identity.tenant).fetch_all(&mut *self.tx).await?;
+        let rows: Vec<(Uuid, String)> = sqlx::query_as(
+            &Query::select()
+                .column(Alias::new("workspace_id"))
+                .column(Alias::new("owner_subject"))
+                .from(Alias::new("authorization_workspaces"))
+                .cond_where(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
+                .order_by(Alias::new("workspace_id"), Order::Asc)
+                .lock(LockType::Share)
+                .to_string(PostgresQueryBuilder),
+        )
+        .bind(&self.identity.tenant)
+        .fetch_all(&mut *self.tx)
+        .await?;
         let mut result = vec![];
         for (id, owner) in rows {
             if self.workspace_decide(id, action, Some(&owner)).await? {
@@ -124,7 +170,16 @@ impl Access {
                 return Ok(false);
             };
             let job: Option<crate::generation::Request> = sqlx::query_as(
-                "SELECT * FROM generation_requests WHERE id=$1 AND tenant=$2 AND workspace_id=$3",
+                &Query::select()
+                    .column(Asterisk)
+                    .from(Alias::new("generation_requests"))
+                    .cond_where(
+                        Condition::all()
+                            .add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                            .add(Expr::col(Alias::new("tenant")).eq(Expr::cust("$2")))
+                            .add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$3"))),
+                    )
+                    .to_string(PostgresQueryBuilder),
             )
             .bind(id)
             .bind(&self.identity.tenant)
@@ -143,12 +198,21 @@ impl Access {
             else {
                 return Ok(false);
             };
-            let conversation: Option<Conversation> =
-                sqlx::query_as("SELECT * FROM conversations WHERE id=$1 AND workspace_id=$2")
-                    .bind(id)
-                    .bind(event.workspace_id)
-                    .fetch_optional(&mut *self.tx)
-                    .await?;
+            let conversation: Option<Conversation> = sqlx::query_as(
+                &Query::select()
+                    .column(Asterisk)
+                    .from(Alias::new("conversations"))
+                    .cond_where(
+                        Condition::all()
+                            .add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                            .add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$2"))),
+                    )
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(id)
+            .bind(event.workspace_id)
+            .fetch_optional(&mut *self.tx)
+            .await?;
             let Some(conversation) = conversation else {
                 return Ok(false);
             };
@@ -162,12 +226,21 @@ impl Access {
             else {
                 return Ok(false);
             };
-            let request: Option<HumanRequest> =
-                sqlx::query_as("SELECT * FROM human_requests WHERE id=$1 AND workspace_id=$2")
-                    .bind(id)
-                    .bind(event.workspace_id)
-                    .fetch_optional(&mut *self.tx)
-                    .await?;
+            let request: Option<HumanRequest> = sqlx::query_as(
+                &Query::select()
+                    .column(Asterisk)
+                    .from(Alias::new("human_requests"))
+                    .cond_where(
+                        Condition::all()
+                            .add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                            .add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$2"))),
+                    )
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(id)
+            .bind(event.workspace_id)
+            .fetch_optional(&mut *self.tx)
+            .await?;
             let Some(request) = request else {
                 return Ok(false);
             };
@@ -202,11 +275,21 @@ impl Access {
                 Ok(false)
             };
         }
-        let run: Option<Run> = sqlx::query_as("SELECT * FROM runs WHERE id=$1 AND workspace_id=$2")
-            .bind(id)
-            .bind(event.workspace_id)
-            .fetch_optional(&mut *self.tx)
-            .await?;
+        let run: Option<Run> = sqlx::query_as(
+            &Query::select()
+                .column(Asterisk)
+                .from(Alias::new("runs"))
+                .cond_where(
+                    Condition::all()
+                        .add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                        .add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$2"))),
+                )
+                .to_string(PostgresQueryBuilder),
+        )
+        .bind(id)
+        .bind(event.workspace_id)
+        .fetch_optional(&mut *self.tx)
+        .await?;
         match run {
             Some(run) => self.run_visible(&run).await,
             None => Ok(false),
@@ -227,17 +310,83 @@ impl Access {
         let workspace = self.workspace(id).await?;
         self.require(&workspace, "workspace.read").await?;
         let events = if self.decide(&workspace, "workspace.events").await? {
-            sqlx::query_as("SELECT * FROM (SELECT * FROM events WHERE workspace_id=$1 ORDER BY sequence DESC LIMIT 100) e ORDER BY sequence")
-                .bind(id).fetch_all(&mut *self.tx).await?
+            sqlx::query_as(
+                &Query::select()
+                    .column(Asterisk)
+                    .from_subquery(
+                        Query::select()
+                            .column(Asterisk)
+                            .from(Alias::new("events"))
+                            .cond_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+                            .order_by(Alias::new("sequence"), Order::Desc)
+                            .limit(100)
+                            .to_owned(),
+                        Alias::new("e"),
+                    )
+                    .order_by(Alias::new("sequence"), Order::Asc)
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(id)
+            .fetch_all(&mut *self.tx)
+            .await?
         } else {
             vec![]
         };
         let events = self.filter_events(events).await?;
         Ok(WorkspaceSnapshot {
-            workspace: sqlx::query_as("SELECT * FROM workspaces WHERE id=$1").bind(id).fetch_one(&mut *self.tx).await?,
-            tasks: sqlx::query_as("SELECT * FROM tasks WHERE workspace_id=$1 ORDER BY created_at,id").bind(id).fetch_all(&mut *self.tx).await?,
-            artifacts: sqlx::query_as("SELECT * FROM artifacts WHERE workspace_id=$1 ORDER BY created_at,id").bind(id).fetch_all(&mut *self.tx).await?,
-            messages: sqlx::query_as("SELECT * FROM (SELECT * FROM messages WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 100) m ORDER BY created_at").bind(id).fetch_all(&mut *self.tx).await?,
+            workspace: sqlx::query_as(
+                &Query::select()
+                    .column(Asterisk)
+                    .from(Alias::new("workspaces"))
+                    .cond_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(id)
+            .fetch_one(&mut *self.tx)
+            .await?,
+            tasks: sqlx::query_as(
+                &Query::select()
+                    .column(Asterisk)
+                    .from(Alias::new("tasks"))
+                    .cond_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+                    .order_by(Alias::new("created_at"), Order::Asc)
+                    .order_by(Alias::new("id"), Order::Asc)
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(id)
+            .fetch_all(&mut *self.tx)
+            .await?,
+            artifacts: sqlx::query_as(
+                &Query::select()
+                    .column(Asterisk)
+                    .from(Alias::new("artifacts"))
+                    .cond_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+                    .order_by(Alias::new("created_at"), Order::Asc)
+                    .order_by(Alias::new("id"), Order::Asc)
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(id)
+            .fetch_all(&mut *self.tx)
+            .await?,
+            messages: sqlx::query_as(
+                &Query::select()
+                    .column(Asterisk)
+                    .from_subquery(
+                        Query::select()
+                            .column(Asterisk)
+                            .from(Alias::new("messages"))
+                            .cond_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+                            .order_by(Alias::new("created_at"), Order::Desc)
+                            .limit(100)
+                            .to_owned(),
+                        Alias::new("m"),
+                    )
+                    .order_by(Alias::new("created_at"), Order::Asc)
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(id)
+            .fetch_all(&mut *self.tx)
+            .await?,
             events,
         })
     }
@@ -319,39 +468,178 @@ impl Workspaces {
         let result = async {
             let visible = access.visible("workspace.read").await?;
             let mut event_workspaces = vec![];
-            for id in &visible { if access.allowed(*id, "workspace.events").await? { event_workspaces.push(*id); } }
-            let mut state=StateResponse {
-                access: crate::api_schema::AccessProfile::Subject{tenant:self.identity.tenant.clone(),subject:self.identity.subject.clone()},
-                node, registry: catalog::list_in(&mut access,&crate::registry::Search::default()).await?, peers: vec![], installations: vec![],
-                workspaces: sqlx::query_as("SELECT * FROM workspaces WHERE id=ANY($1) ORDER BY created_at DESC,id").bind(&visible).fetch_all(&mut *access.tx).await?,
-                tasks: sqlx::query_as("SELECT * FROM tasks WHERE workspace_id=ANY($1) ORDER BY created_at,id").bind(&visible).fetch_all(&mut *access.tx).await?,
-                artifacts: sqlx::query_as("SELECT * FROM artifacts WHERE workspace_id=ANY($1) ORDER BY created_at DESC,id LIMIT 500").bind(&visible).fetch_all(&mut *access.tx).await?,
-                runs: sqlx::query_as("SELECT * FROM runs WHERE workspace_id=ANY($1) ORDER BY updated_at DESC,id LIMIT 500").bind(&visible).fetch_all(&mut *access.tx).await?,
-                human_requests: sqlx::query_as("SELECT * FROM human_requests WHERE workspace_id=ANY($1) ORDER BY created_at DESC,id LIMIT 500").bind(&visible).fetch_all(&mut *access.tx).await?,
-                conversations: sqlx::query_as("SELECT * FROM conversations WHERE workspace_id=ANY($1) ORDER BY created_at DESC,id LIMIT 500").bind(&visible).fetch_all(&mut *access.tx).await?,
-                events: sqlx::query_as("SELECT * FROM (SELECT * FROM events WHERE workspace_id=ANY($1) ORDER BY sequence DESC LIMIT 100) e ORDER BY sequence").bind(&event_workspaces).fetch_all(&mut *access.tx).await?,
-            };
-            let mut runs=vec![];
-            for run in state.runs {if access.run_visible(&run).await? {runs.push(run);}}
-            let run_ids:std::collections::BTreeSet<Uuid>=runs.iter().map(|r|r.id).collect();
-            state.runs=runs;
-            let mut requests=vec![];
-            for request in state.human_requests {
-                if run_ids.contains(&request.run_id) {
-                    let resource=access.human_resource(&request).await?;
-                    if access.decide(&resource,"human.read").await? {requests.push(request);}
+            for id in &visible {
+                if access.allowed(*id, "workspace.events").await? {
+                    event_workspaces.push(*id);
                 }
             }
-            state.human_requests=requests;
-            let mut conversations=vec![];
-            for conversation in state.conversations {
-                let resource=access.conversation_resource(&conversation).await?;
-                if access.decide(&resource,"conversation.read").await? {conversations.push(conversation);}
+            let mut state = StateResponse {
+                access: crate::api_schema::AccessProfile::Subject {
+                    tenant: self.identity.tenant.clone(),
+                    subject: self.identity.subject.clone(),
+                },
+                node,
+                registry: catalog::list_in(&mut access, &crate::registry::Search::default())
+                    .await?,
+                peers: vec![],
+                installations: vec![],
+                workspaces: sqlx::query_as(
+                    &Query::select()
+                        .column(Asterisk)
+                        .from(Alias::new("workspaces"))
+                        .cond_where(Expr::cust("id=ANY($1)"))
+                        .order_by(Alias::new("created_at"), Order::Desc)
+                        .order_by(Alias::new("id"), Order::Asc)
+                        .to_string(PostgresQueryBuilder),
+                )
+                .bind(&visible)
+                .fetch_all(&mut *access.tx)
+                .await?,
+                tasks: sqlx::query_as(
+                    &Query::select()
+                        .column(Asterisk)
+                        .from(Alias::new("tasks"))
+                        .cond_where(Expr::cust("workspace_id=ANY($1)"))
+                        .order_by(Alias::new("created_at"), Order::Asc)
+                        .order_by(Alias::new("id"), Order::Asc)
+                        .to_string(PostgresQueryBuilder),
+                )
+                .bind(&visible)
+                .fetch_all(&mut *access.tx)
+                .await?,
+                artifacts: sqlx::query_as(
+                    &Query::select()
+                        .column(Asterisk)
+                        .from(Alias::new("artifacts"))
+                        .cond_where(Expr::cust("workspace_id=ANY($1)"))
+                        .order_by(Alias::new("created_at"), Order::Desc)
+                        .order_by(Alias::new("id"), Order::Asc)
+                        .limit(500)
+                        .to_string(PostgresQueryBuilder),
+                )
+                .bind(&visible)
+                .fetch_all(&mut *access.tx)
+                .await?,
+                runs: vec![],
+                human_requests: vec![],
+                conversations: vec![],
+                events: sqlx::query_as(
+                    &Query::select()
+                        .column(Asterisk)
+                        .from_subquery(
+                            Query::select()
+                                .column(Asterisk)
+                                .from(Alias::new("events"))
+                                .cond_where(Expr::cust("workspace_id=ANY($1)"))
+                                .order_by(Alias::new("sequence"), Order::Desc)
+                                .limit(100)
+                                .to_owned(),
+                            Alias::new("e"),
+                        )
+                        .order_by(Alias::new("sequence"), Order::Asc)
+                        .to_string(PostgresQueryBuilder),
+                )
+                .bind(&event_workspaces)
+                .fetch_all(&mut *access.tx)
+                .await?,
+            };
+            let mut offset = 0_i64;
+            loop {
+                let batch: Vec<Run> = sqlx::query_as(
+                    &Query::select()
+                        .column(Asterisk)
+                        .from(Alias::new("runs"))
+                        .cond_where(Expr::cust("workspace_id=ANY($1)"))
+                        .order_by(Alias::new("updated_at"), Order::Desc)
+                        .order_by(Alias::new("id"), Order::Asc)
+                        .limit(500)
+                        .offset(offset as u64)
+                        .to_string(PostgresQueryBuilder),
+                )
+                .bind(&visible)
+                .fetch_all(&mut *access.tx)
+                .await?;
+                let exhausted = batch.len() < 500;
+                for run in batch {
+                    if access.run_visible(&run).await? {
+                        state.runs.push(run);
+                    }
+                    if state.runs.len() == 500 {
+                        break;
+                    }
+                }
+                if exhausted || state.runs.len() == 500 {
+                    break;
+                }
+                offset += 500;
             }
-            state.conversations=conversations;
-            state.events=access.filter_events(state.events).await?;
+            let run_ids: Vec<Uuid> = state.runs.iter().map(|run| run.id).collect();
+            let mut offset = 0_i64;
+            loop {
+                let batch: Vec<HumanRequest> = sqlx::query_as(
+                    &Query::select()
+                        .column(Asterisk)
+                        .from(Alias::new("human_requests"))
+                        .cond_where(Expr::cust("run_id=ANY($1)"))
+                        .order_by(Alias::new("created_at"), Order::Desc)
+                        .order_by(Alias::new("id"), Order::Asc)
+                        .limit(500)
+                        .offset(offset as u64)
+                        .to_string(PostgresQueryBuilder),
+                )
+                .bind(&run_ids)
+                .fetch_all(&mut *access.tx)
+                .await?;
+                let exhausted = batch.len() < 500;
+                for request in batch {
+                    let resource = access.human_resource(&request).await?;
+                    if access.decide(&resource, "human.read").await? {
+                        state.human_requests.push(request);
+                    }
+                    if state.human_requests.len() == 500 {
+                        break;
+                    }
+                }
+                if exhausted || state.human_requests.len() == 500 {
+                    break;
+                }
+                offset += 500;
+            }
+            let mut offset = 0_i64;
+            loop {
+                let batch: Vec<Conversation> = sqlx::query_as(
+                    &Query::select()
+                        .column(Asterisk)
+                        .from(Alias::new("conversations"))
+                        .cond_where(Expr::cust("workspace_id=ANY($1)"))
+                        .order_by(Alias::new("created_at"), Order::Desc)
+                        .order_by(Alias::new("id"), Order::Asc)
+                        .limit(500)
+                        .offset(offset as u64)
+                        .to_string(PostgresQueryBuilder),
+                )
+                .bind(&visible)
+                .fetch_all(&mut *access.tx)
+                .await?;
+                let exhausted = batch.len() < 500;
+                for conversation in batch {
+                    let resource = access.conversation_resource(&conversation).await?;
+                    if access.decide(&resource, "conversation.read").await? {
+                        state.conversations.push(conversation);
+                    }
+                    if state.conversations.len() == 500 {
+                        break;
+                    }
+                }
+                if exhausted || state.conversations.len() == 500 {
+                    break;
+                }
+                offset += 500;
+            }
+            state.events = access.filter_events(state.events).await?;
             Ok(state)
-        }.await;
+        }
+        .await;
         access.finish(result).await
     }
 
@@ -361,7 +649,9 @@ impl Workspaces {
         workspace: Option<Uuid>,
         limit: i64,
     ) -> Result<Vec<Event>> {
-        self.read_events(after, workspace, limit, true).await
+        self.read_events(after, workspace, limit, true)
+            .await
+            .map(|(events, _)| events)
     }
 
     /// Polling itself does not append decision audits. Every delivered frame is
@@ -371,7 +661,7 @@ impl Workspaces {
         after: i64,
         workspace: Option<Uuid>,
         limit: i64,
-    ) -> Result<Vec<Event>> {
+    ) -> Result<(Vec<Event>, i64)> {
         self.read_events(after, workspace, limit, false).await
     }
 
@@ -381,7 +671,7 @@ impl Workspaces {
         workspace: Option<Uuid>,
         limit: i64,
         audit: bool,
-    ) -> Result<Vec<Event>> {
+    ) -> Result<(Vec<Event>, i64)> {
         let mut access = Access::begin(&self.store, &self.identity).await?;
         access.audit = audit;
         let result = async {
@@ -392,28 +682,52 @@ impl Workspaces {
             } else {
                 let mut visible = vec![];
                 for id in access.visible("workspace.read").await? {
-                    if access.allowed(id, "workspace.events").await? { visible.push(id); }
+                    if access.allowed(id, "workspace.events").await? {
+                        visible.push(id);
+                    }
                 }
                 visible
             };
-            let limit=limit.clamp(1,1000) as usize;
-            let mut cursor=after.max(0);
-            let mut result=vec![];
+            let limit = limit.clamp(1, 1000) as usize;
+            let mut cursor = after.max(0);
+            let mut result = vec![];
             // Continue past rejected events so they cannot starve later
             // permitted events or trap Last-Event-ID replay on an empty page.
             loop {
-                let batch:Vec<Event>=sqlx::query_as("SELECT * FROM events WHERE workspace_id=ANY($1) AND sequence>$2 ORDER BY sequence LIMIT 500")
-                    .bind(&visible).bind(cursor).fetch_all(&mut *access.tx).await?;
-                let exhausted=batch.len()<500;
+                let batch: Vec<Event> = sqlx::query_as(
+                    &Query::select()
+                        .column(Asterisk)
+                        .from(Alias::new("events"))
+                        .cond_where(
+                            Condition::all()
+                                .add(Expr::cust("workspace_id=ANY($1)"))
+                                .add(Expr::col(Alias::new("sequence")).gt(Expr::cust("$2"))),
+                        )
+                        .order_by(Alias::new("sequence"), Order::Asc)
+                        .limit(500)
+                        .to_string(PostgresQueryBuilder),
+                )
+                .bind(&visible)
+                .bind(cursor)
+                .fetch_all(&mut *access.tx)
+                .await?;
+                let exhausted = batch.len() < 500;
                 for event in batch {
-                    cursor=event.sequence;
-                    if access.event_visible(&event).await? {result.push(event);}
-                    if result.len()==limit {return Ok(result);}
+                    cursor = event.sequence;
+                    if access.event_visible(&event).await? {
+                        result.push(event);
+                    }
+                    if result.len() == limit {
+                        return Ok((result, cursor));
+                    }
                 }
-                if exhausted {break;}
+                if exhausted {
+                    break;
+                }
             }
-            Ok(result)
-        }.await;
+            Ok((result, cursor))
+        }
+        .await;
         access.finish(result).await
     }
 

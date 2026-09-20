@@ -17,6 +17,16 @@ actions:
   enabled:
     - trunk-upgrade-available
 lint:
+  ignore:
+    - linters: [ALL]
+      paths:
+        - openapi/aidash.json
+        - web/src/generated/**
+        - web/dist/**
+        - web/test-results/**
+        - web/playwright-report/**
+        - coverage/**
+        - target/**
   enabled:
     - clippy@1.96.0
     - eslint@9.39.1
@@ -26,11 +36,13 @@ lint:
     - taplo@0.10.0
   definitions:
     - name: clippy
+      direct_configs: [clippy.toml, .clippy.toml]
+      affects_cache: [Cargo.toml, Cargo.lock, rust-toolchain.toml]
       commands:
         - name: lint
           output: clippy
           target: ${parent_with(Cargo.toml)}
-          run: env RUSTC_WRAPPER= cargo clippy --all-targets --message-format json --locked -- --cap-lints=warn --no-deps
+          run: env RUSTC_WRAPPER= cargo clippy --workspace --all-targets --message-format json --locked -- --cap-lints=warn --no-deps
           success_codes: [0, 101, 383]
           run_from: ${target_directory}
           disable_upstream: true

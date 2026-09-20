@@ -5,9 +5,11 @@ use crate::{
     registry::{AgentConfig, EntityRef, Entry, Registry, Search},
     store::Store,
 };
+use futures_util::{StreamExt, stream};
 use reqwest::Method;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
+use std::time::Duration;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
@@ -83,33 +85,81 @@ impl Federation {
                 "peer must be another node with protocol_version 0.1".into(),
             ));
         }
-        peer_secret(&peer.credential_env)?;
-        let identity: Value = self
+        if !peer.enabled {
+            let mut tx = self.store.pool.begin().await?;
+            let existing: Peer =
+                sqlx::query_as("UPDATE peers SET enabled=false WHERE node_id=$1 RETURNING *")
+                    .bind(&peer.node_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("peer".into()))?;
+            self.store.event(&mut tx, None, "peer.registered", json!({"node_id":existing.node_id,"endpoint":existing.endpoint,"enabled":false})).await?;
+            tx.commit().await?;
+            return Ok(existing);
+        }
+        let credential = peer_secret(&peer.credential_env)?;
+        let response = self
             .client
             .get(format!(
                 "{}/.well-known/aidash",
                 peer.endpoint.trim_end_matches('/')
             ))
+            .timeout(Duration::from_secs(5))
             .send()
             .await?
-            .error_for_status()?
-            .json()
-            .await?;
+            .error_for_status()?;
+        let identity: Value = crate::response::json(response, 1_048_576).await?;
         if identity["id"] != peer.node_id || identity["protocol_version"] != PROTOCOL_VERSION {
             return Err(Error::Invalid(
                 "peer identity or protocol does not match".into(),
             ));
         }
+        let mut tx = self.store.pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(71003203)")
+            .execute(&mut *tx)
+            .await?;
+        let peers: Vec<Peer> = sqlx::query_as("SELECT * FROM peers WHERE enabled AND node_id<>$1")
+            .bind(&peer.node_id)
+            .fetch_all(&mut *tx)
+            .await?;
+        for other in peers {
+            if peer_secret(&other.credential_env)? == credential {
+                return Err(Error::Invalid(
+                    "enabled peers must use distinct credentials for each node identity".into(),
+                ));
+            }
+        }
         sqlx::query("INSERT INTO peers(node_id,endpoint,credential_env,protocol_version,enabled) VALUES($1,$2,$3,$4,$5) ON CONFLICT(node_id) DO UPDATE SET endpoint=EXCLUDED.endpoint,credential_env=EXCLUDED.credential_env,protocol_version=EXCLUDED.protocol_version,enabled=EXCLUDED.enabled")
-            .bind(&peer.node_id).bind(&peer.endpoint).bind(&peer.credential_env).bind(&peer.protocol_version).bind(peer.enabled).execute(&self.store.pool).await?;
+            .bind(&peer.node_id).bind(&peer.endpoint).bind(&peer.credential_env).bind(&peer.protocol_version).bind(peer.enabled).execute(&mut *tx).await?;
         self.store
-            .emit(
+            .event(
+                &mut tx,
                 None,
                 "peer.registered",
                 json!({"node_id":peer.node_id,"endpoint":peer.endpoint,"enabled":peer.enabled}),
             )
             .await?;
+        tx.commit().await?;
         Ok(peer)
+    }
+    pub async fn authenticate_peer(&self, node: &str, supplied: &str) -> Result<()> {
+        let peer = self.peer(node).await?;
+        let credential = peer_secret(&peer.credential_env)?;
+        if !crate::config::same_secret(supplied, &credential) {
+            return Err(Error::Unauthorized);
+        }
+        // Also reject ambiguous existing configurations and environment rotation.
+        for other in self
+            .peers()
+            .await?
+            .into_iter()
+            .filter(|p| p.enabled && p.node_id != node)
+        {
+            if peer_secret(&other.credential_env).is_ok_and(|key| key == credential) {
+                return Err(Error::Unauthorized);
+            }
+        }
+        Ok(())
     }
     pub async fn request<T: DeserializeOwned>(
         &self,
@@ -129,6 +179,7 @@ impl Federation {
                     path
                 ),
             )
+            .timeout(Duration::from_secs(10))
             .bearer_auth(peer_secret(&peer.credential_env)?)
             .header("x-aidash-node", &self.config.node_id)
             .header("x-aidash-protocol", PROTOCOL_VERSION);
@@ -144,7 +195,7 @@ impl Federation {
                 Error::External(format!("peer {node} returned {status}"))
             });
         }
-        Ok(response.json().await?)
+        crate::response::json(response, 4_194_304).await
     }
     pub async fn discover(&self, search: &Search) -> Result<Discovery> {
         let mut query = search.clone();
@@ -162,16 +213,24 @@ impl Federation {
                 .collect(),
             errors: vec![],
         };
-        for peer in self.peers().await?.into_iter().filter(|p| p.enabled) {
-            match self
-                .request::<Vec<Entry>>(
-                    &peer.node_id,
-                    Method::POST,
-                    "/discover",
-                    Some(&json!(query)),
-                )
-                .await
-            {
+        let peers = self.peers().await?.into_iter().filter(|p| p.enabled);
+        let mut responses = stream::iter(peers.map(|peer| {
+            let query = &query;
+            async move {
+                let response = self
+                    .request::<Vec<Entry>>(
+                        &peer.node_id,
+                        Method::POST,
+                        "/discover",
+                        Some(&json!(query)),
+                    )
+                    .await;
+                (peer, response)
+            }
+        }))
+        .buffer_unordered(8);
+        while let Some((peer, response)) = responses.next().await {
+            match response {
                 Ok(entries) => {
                     result
                         .agents
@@ -222,25 +281,46 @@ impl Federation {
                 ));
             }
         } else {
-            self.peer(node).await?;
+            let mut search: Search = serde_json::from_value(task.requirements.clone())?;
+            search.kind = Some("agent".into());
+            let entries: Vec<Entry> = self
+                .request(node, Method::POST, "/discover", Some(&json!(search)))
+                .await?;
+            if !entries.iter().any(|entry| {
+                entry.id == agent.id && entry.version == agent.version && search.matches(entry)
+            }) {
+                return Err(Error::Invalid(
+                    "remote agent is missing or does not satisfy task requirements".into(),
+                ));
+            }
         }
         let mut tx = self.store.pool.begin().await?;
+        let d = self.delegate_in(&mut tx, &task, node, agent).await?;
+        tx.commit().await?;
+        if let Err(e) = self.deliver(&d).await {
+            tracing::warn!(error=%e,task_id=%task_id,"delegation queued for retry");
+        }
+        Ok(d)
+    }
+    pub(crate) async fn delegate_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        task: &Task,
+        node: &str,
+        agent: &EntityRef,
+    ) -> Result<Delegation> {
+        let task_id = task.id;
         sqlx::query("INSERT INTO delegations(task_id,node_id,agent_id,agent_version) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING")
-            .bind(task_id).bind(node).bind(&agent.id).bind(&agent.version).execute(&mut *tx).await?;
-        let d:Delegation=sqlx::query_as("SELECT task_id,node_id,agent_id,agent_version,delivered FROM delegations WHERE task_id=$1").bind(task_id).fetch_one(&mut *tx).await?;
+            .bind(task_id).bind(node).bind(&agent.id).bind(&agent.version).execute(&mut **tx).await?;
+        let d:Delegation=sqlx::query_as("SELECT task_id,node_id,agent_id,agent_version,delivered FROM delegations WHERE task_id=$1").bind(task_id).fetch_one(&mut **tx).await?;
         if d.node_id != node || d.agent_id != agent.id || d.agent_version != agent.version {
             return Err(Error::Conflict(
                 "task already delegated to a different agent".into(),
             ));
         }
         self.store
-            .event(&mut tx, Some(task.workspace_id), "task.delegated", json!(d))
+            .event(tx, Some(task.workspace_id), "task.delegated", json!(d))
             .await?;
-        tx.commit().await?;
-        // Durable delivery is retried by the server if this immediate attempt fails.
-        if let Err(e) = self.deliver(&d).await {
-            tracing::warn!(error=%e,task_id=%task_id,"delegation queued for retry");
-        }
         Ok(d)
     }
     pub async fn deliver(&self, d: &Delegation) -> Result<()> {
@@ -272,9 +352,14 @@ impl Federation {
         Ok(())
     }
     pub async fn retry_deliveries(&self) -> Result<()> {
-        let pending:Vec<Delegation>=sqlx::query_as("SELECT task_id,node_id,agent_id,agent_version,delivered FROM delegations WHERE NOT delivered ORDER BY created_at LIMIT 100").fetch_all(&self.store.pool).await?;
-        for d in pending {
-            if let Err(e) = self.deliver(&d).await {
+        let pending:Vec<Delegation>=sqlx::query_as("UPDATE delegations SET next_attempt_at=now()+interval '5 seconds' WHERE task_id IN (SELECT task_id FROM delegations WHERE NOT delivered AND next_attempt_at<=now() ORDER BY next_attempt_at,created_at LIMIT 100 FOR UPDATE SKIP LOCKED) RETURNING task_id,node_id,agent_id,agent_version,delivered").fetch_all(&self.store.pool).await?;
+        let mut deliveries = stream::iter(pending.into_iter().map(|d| async move {
+            let result = self.deliver(&d).await;
+            (d, result)
+        }))
+        .buffer_unordered(8);
+        while let Some((d, result)) = deliveries.next().await {
+            if let Err(e) = result {
                 tracing::warn!(task_id=%d.task_id,error=%e,"peer delivery pending");
             }
         }

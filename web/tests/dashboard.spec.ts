@@ -115,6 +115,18 @@ test("creates a workspace and task and receives live assignment changes", async 
     .first()
     .getAttribute("value");
   await select.selectOption(value!);
+  const selectedLabel = await select.locator("option:checked").textContent();
+  let reordered = false;
+  await page.route("**/api/discover", async (route) => {
+    const response = await route.fetch();
+    const discovery = await response.json();
+    discovery.agents.reverse();
+    reordered = true;
+    await route.fulfill({ response, json: discovery });
+  });
+  await expect.poll(() => reordered, { timeout: 15000 }).toBe(true);
+  await expect(select.locator("option:checked")).toHaveText(selectedLabel!);
+
   await page
     .getByRole("dialog")
     .getByRole("button", { name: "担当を割り当て" })
@@ -180,4 +192,34 @@ test("publishes and installs a localized skill through the marketplace", async (
   await expect(
     page.getByText("インストール済み", { exact: true }),
   ).toBeVisible();
+});
+
+test("preserves a draft after a failed message request and clears it after success", async ({
+  page,
+}) => {
+  await page
+    .locator(".sidebar")
+    .getByRole("link", { name: "会話", exact: true })
+    .click();
+  const input = page
+    .getByRole("textbox", { name: "メッセージ", exact: true })
+    .first();
+  await input.fill("Keep this unsent draft");
+  await page.route("**/api/workspaces/*/messages", async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Temporary message failure" }),
+    });
+  });
+  const failed = page.waitForResponse(
+    (response) =>
+      response.url().includes("/messages") && response.status() === 503,
+  );
+  await page.getByRole("button", { name: "送信", exact: true }).first().click();
+  await failed;
+  await expect(input).toHaveValue("Keep this unsent draft");
+  await page.unroute("**/api/workspaces/*/messages");
+  await page.getByRole("button", { name: "送信", exact: true }).first().click();
+  await expect(input).toHaveValue("");
 });

@@ -7,7 +7,9 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
     "test": "playwright test",
-    "generate:api": "orval --config orval.config.ts"
+    "generate:api": "orval --config orval.config.ts",
+    "predev": "../scripts/generate-api.sh",
+    "prebuild": "../scripts/generate-api.sh"
   },
   "dependencies": {
     "@tanstack/react-form": "^1.23.0",

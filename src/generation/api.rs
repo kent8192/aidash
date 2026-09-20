@@ -162,10 +162,18 @@ async fn requests(
     }
     let mut access = Access::begin(&f.store, &identity).await?;
     let result=async {
-        let requests:Vec<Request>=sqlx::query_as("SELECT * FROM generation_requests WHERE tenant=$1 ORDER BY created_at DESC,id LIMIT 200").bind(&tenant).fetch_all(&mut *access.tx).await?;
-        let mut visible=vec![];
-        for request in requests {
-            if request.visible(&mut access).await? {visible.push(request);}
+        let mut visible = vec![];
+        let mut offset = 0_i64;
+        loop {
+            let requests: Vec<Request> = sqlx::query_as("SELECT * FROM generation_requests WHERE tenant=$1 ORDER BY created_at DESC,id LIMIT 200 OFFSET $2")
+                .bind(&tenant).bind(offset).fetch_all(&mut *access.tx).await?;
+            let exhausted = requests.len() < 200;
+            for request in requests {
+                if request.visible(&mut access).await? { visible.push(request); }
+                if visible.len() == 200 { break; }
+            }
+            if exhausted || visible.len() == 200 { break; }
+            offset += 200;
         }
         Ok(visible)
     }.await;

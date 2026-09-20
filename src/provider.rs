@@ -87,7 +87,7 @@ impl ModelProvider for OpenAiProvider {
                 response.status()
             )));
         }
-        parse_openai(response.json().await?)
+        parse_openai(crate::response::json(response, 1_048_576).await?)
     }
 }
 
@@ -136,9 +136,17 @@ pub fn parse_openai(value: Value) -> Result<ModelResponse> {
                     call.pointer("/function/arguments")
                         .and_then(Value::as_str)
                         .ok_or_else(|| Error::External("missing tool arguments".into()))?,
-                )?,
+                )
+                .map_err(|error| {
+                    Error::External(format!("invalid provider tool arguments: {error}"))
+                })?,
             });
         }
+    }
+    if (choice["finish_reason"] == "tool_calls") != !result.tool_calls.is_empty() {
+        return Err(Error::External(
+            "provider finish reason does not match tool calls".into(),
+        ));
     }
     validate_response(&result)?;
     Ok(result)
@@ -170,7 +178,7 @@ impl ModelProvider for AnthropicProvider {
                 response.status()
             )));
         }
-        parse_anthropic(response.json().await?)
+        parse_anthropic(crate::response::json(response, 1_048_576).await?)
     }
 }
 
@@ -215,6 +223,11 @@ pub fn parse_anthropic(value: Value) -> Result<ModelResponse> {
             }),
             _ => {}
         }
+    }
+    if (value["stop_reason"] == "tool_use") != !result.tool_calls.is_empty() {
+        return Err(Error::External(
+            "Anthropic stop reason does not match tool calls".into(),
+        ));
     }
     validate_response(&result)?;
     Ok(result)

@@ -1,6 +1,7 @@
 use super::{Authorization, Snapshot};
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
+use sea_orm::sea_query::{Alias, Condition, Expr, LockType, Order, PostgresQueryBuilder, Query};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Transaction};
@@ -87,29 +88,122 @@ impl Authorization {
             Uuid::new_v4().simple(),
             Uuid::new_v4().simple()
         );
-        let credential = sqlx::query_as("INSERT INTO authorization_credentials(id,tenant,subject,token_hash,expires_at,issued_by) VALUES($1,$2,$3,$4,clock_timestamp()+make_interval(secs => $5),$6) RETURNING id,tenant,subject,created_at,expires_at,revoked_at,issued_by")
-            .bind(Uuid::new_v4()).bind(tenant).bind(subject).bind(digest(&token)).bind(lifetime as f64).bind(actor).fetch_one(&mut *tx).await?;
+        let credential = sqlx::query_as(
+            &Query::insert()
+                .into_table(Alias::new("authorization_credentials"))
+                .columns([
+                    Alias::new("id"),
+                    Alias::new("tenant"),
+                    Alias::new("subject"),
+                    Alias::new("token_hash"),
+                    Alias::new("expires_at"),
+                    Alias::new("issued_by"),
+                ])
+                .values_panic([
+                    Expr::cust("$1").into(),
+                    Expr::cust("$2").into(),
+                    Expr::cust("$3").into(),
+                    Expr::cust("$4").into(),
+                    Expr::cust("clock_timestamp()+make_interval(secs => $5)").into(),
+                    Expr::cust("$6").into(),
+                ])
+                .returning(Query::returning().columns([
+                    Alias::new("id"),
+                    Alias::new("tenant"),
+                    Alias::new("subject"),
+                    Alias::new("created_at"),
+                    Alias::new("expires_at"),
+                    Alias::new("revoked_at"),
+                    Alias::new("issued_by"),
+                ]))
+                .to_string(PostgresQueryBuilder),
+        )
+        .bind(Uuid::new_v4())
+        .bind(tenant)
+        .bind(subject)
+        .bind(digest(&token))
+        .bind(lifetime as f64)
+        .bind(actor)
+        .fetch_one(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(IssuedCredential { credential, token })
     }
 
     pub async fn credentials(&self, tenant: &str) -> Result<Vec<Credential>> {
-        Ok(sqlx::query_as("SELECT id,tenant,subject,created_at,expires_at,revoked_at,issued_by FROM authorization_credentials WHERE tenant=$1 ORDER BY created_at DESC,id LIMIT 200")
-            .bind(tenant).fetch_all(&self.pool).await?)
+        Ok(sqlx::query_as(
+            &Query::select()
+                .column(Alias::new("id"))
+                .column(Alias::new("tenant"))
+                .column(Alias::new("subject"))
+                .column(Alias::new("created_at"))
+                .column(Alias::new("expires_at"))
+                .column(Alias::new("revoked_at"))
+                .column(Alias::new("issued_by"))
+                .from(Alias::new("authorization_credentials"))
+                .cond_where(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
+                .order_by(Alias::new("created_at"), Order::Desc)
+                .order_by(Alias::new("id"), Order::Asc)
+                .limit(200)
+                .to_string(PostgresQueryBuilder),
+        )
+        .bind(tenant)
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     pub async fn revoke_credential(&self, tenant: &str, id: Uuid) -> Result<Credential> {
-        sqlx::query_as("UPDATE authorization_credentials SET revoked_at=coalesce(revoked_at,clock_timestamp()) WHERE tenant=$1 AND id=$2 RETURNING id,tenant,subject,created_at,expires_at,revoked_at,issued_by")
-            .bind(tenant).bind(id).fetch_optional(&self.pool).await?
-            .ok_or_else(|| Error::NotFound("credential".into()))
+        sqlx::query_as(
+            &Query::update()
+                .table(Alias::new("authorization_credentials"))
+                .value(
+                    Alias::new("revoked_at"),
+                    Expr::cust("coalesce(revoked_at,clock_timestamp())"),
+                )
+                .cond_where(
+                    Condition::all()
+                        .add(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
+                        .add(Expr::col(Alias::new("id")).eq(Expr::cust("$2"))),
+                )
+                .returning(Query::returning().columns([
+                    Alias::new("id"),
+                    Alias::new("tenant"),
+                    Alias::new("subject"),
+                    Alias::new("created_at"),
+                    Alias::new("expires_at"),
+                    Alias::new("revoked_at"),
+                    Alias::new("issued_by"),
+                ]))
+                .to_string(PostgresQueryBuilder),
+        )
+        .bind(tenant)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| Error::NotFound("credential".into()))
     }
 
     pub async fn authenticate(&self, token: &str) -> Result<Actor> {
         if token.len() > 256 || !token.starts_with("aidash_subject_") {
             return Err(Error::Unauthorized);
         }
-        let row: Option<(Uuid, String, String)> = sqlx::query_as("SELECT id,tenant,subject FROM authorization_credentials WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>clock_timestamp()")
-            .bind(digest(token)).fetch_optional(&self.pool).await?;
+        let row: Option<(Uuid, String, String)> = sqlx::query_as(
+            &Query::select()
+                .column(Alias::new("id"))
+                .column(Alias::new("tenant"))
+                .column(Alias::new("subject"))
+                .from(Alias::new("authorization_credentials"))
+                .cond_where(
+                    Condition::all()
+                        .add(Expr::col(Alias::new("token_hash")).eq(Expr::cust("$1")))
+                        .add(Expr::col(Alias::new("revoked_at")).is_null())
+                        .add(Expr::cust("expires_at>clock_timestamp()")),
+                )
+                .to_string(PostgresQueryBuilder),
+        )
+        .bind(digest(token))
+        .fetch_optional(&self.pool)
+        .await?;
         let (credential_id, tenant, subject) = row.ok_or(Error::Unauthorized)?;
         Ok(Actor::Subject(SubjectIdentity {
             credential_id,
@@ -128,8 +222,26 @@ impl SubjectIdentity {
         exclusive: bool,
     ) -> Result<Snapshot> {
         let snapshot = Authorization::load_with_mode(tx, &self.tenant, exclusive).await?;
-        let valid: Option<Uuid> = sqlx::query_scalar("SELECT id FROM authorization_credentials WHERE id=$1 AND tenant=$2 AND subject=$3 AND revoked_at IS NULL AND expires_at>clock_timestamp() FOR SHARE")
-            .bind(self.credential_id).bind(&self.tenant).bind(&self.subject).fetch_optional(&mut **tx).await?;
+        let valid: Option<Uuid> = sqlx::query_scalar(
+            &Query::select()
+                .column(Alias::new("id"))
+                .from(Alias::new("authorization_credentials"))
+                .cond_where(
+                    Condition::all()
+                        .add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                        .add(Expr::col(Alias::new("tenant")).eq(Expr::cust("$2")))
+                        .add(Expr::col(Alias::new("subject")).eq(Expr::cust("$3")))
+                        .add(Expr::col(Alias::new("revoked_at")).is_null())
+                        .add(Expr::cust("expires_at>clock_timestamp()")),
+                )
+                .lock(LockType::Share)
+                .to_string(PostgresQueryBuilder),
+        )
+        .bind(self.credential_id)
+        .bind(&self.tenant)
+        .bind(&self.subject)
+        .fetch_optional(&mut **tx)
+        .await?;
         if valid.is_none() {
             return Err(Error::Unauthorized);
         }

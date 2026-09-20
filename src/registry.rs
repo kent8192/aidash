@@ -31,6 +31,7 @@ mod record {
 
 pub type Localized = BTreeMap<String, String>;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Entry {
     pub id: String,
     pub version: String,
@@ -63,6 +64,7 @@ pub struct EntityRef {
     pub version: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AgentConfig {
     pub model: EntityRef,
     pub instructions: String,
@@ -85,6 +87,7 @@ pub struct ClusterConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ModelConfig {
     pub provider: String,
     pub model_id: String,
@@ -226,6 +229,19 @@ impl Registry {
                 if self.get(&r.id, &r.version).await?.kind != kind {
                     return Err(Error::Invalid(format!("{} must reference a {kind}", r.id)));
                 }
+            }
+        }
+        if e.kind == "cluster" {
+            let config: ClusterConfig = serde_json::from_value(e.config.clone())?;
+            if self
+                .get(&config.coordinator.id, &config.coordinator.version)
+                .await?
+                .kind
+                != "agent"
+            {
+                return Err(Error::Invalid(
+                    "cluster coordinator must reference an agent".into(),
+                ));
             }
         }
         Ok(())
@@ -413,18 +429,20 @@ impl Registry {
             return Err(Error::Conflict("package digest changed".into()));
         }
         let package: Package = serde_json::from_value(record.manifest)?;
-        self.validate_references(&package.entity).await?;
+        let mut effective = package.entity.clone();
+        overlay_config(&mut effective.config, &config)?;
+        self.validate_references(&effective).await?;
         for dep in &package.dependencies {
             self.get(&dep.id, &dep.version).await?;
         }
         // Registry registration and local installation configuration are atomic.
         let tx = self.db.begin().await?;
-        insert_entry(&tx, &package.entity).await?;
+        insert_entry(&tx, &effective).await?;
         tx.execute(Statement::from_sql_and_values(DbBackend::Postgres,
             "INSERT INTO installations(id,version,digest,config) VALUES($1,$2,$3,$4) ON CONFLICT(id,version) DO UPDATE SET config=EXCLUDED.config",
             [id.into(), version.into(), expected_digest.into(), config.into()])).await?;
         tx.commit().await?;
-        Ok(package.entity)
+        Ok(effective)
     }
 }
 
@@ -454,6 +472,20 @@ pub(crate) async fn register_in(
                     reference.id
                 )));
             }
+        }
+    }
+    if entry.kind == "cluster" {
+        let config: ClusterConfig = serde_json::from_value(entry.config.clone())?;
+        let kind: Option<String> =
+            sqlx::query_scalar("SELECT kind FROM registry WHERE id=$1 AND version=$2")
+                .bind(config.coordinator.id)
+                .bind(config.coordinator.version)
+                .fetch_optional(&mut **tx)
+                .await?;
+        if kind.as_deref() != Some("agent") {
+            return Err(Error::Invalid(
+                "cluster coordinator must reference an agent".into(),
+            ));
         }
     }
     let value = serde_json::to_value(entry)?;
@@ -544,4 +576,17 @@ mod tests {
         e.config = json!({"coordinator":{"id":"research","version":"1.0.0"}});
         validate(&e).unwrap();
     }
+}
+
+fn overlay_config(target: &mut Value, overrides: &Value) -> Result<()> {
+    let object = overrides
+        .as_object()
+        .ok_or_else(|| Error::Invalid("installation config must be an object".into()))?;
+    let target = target
+        .as_object_mut()
+        .ok_or_else(|| Error::Invalid("entity config must be an object".into()))?;
+    for (key, value) in object {
+        target.insert(key.clone(), value.clone());
+    }
+    Ok(())
 }

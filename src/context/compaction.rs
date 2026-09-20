@@ -1,6 +1,6 @@
 //! Rust adaptation of fast-jev-compaction for Aidash's paired history events.
 //! Upstream: e3f262a7f4d42bd8dd32ced30d26176f7cb545b0 (MIT).
-//! See docs/licenses/fast-jev-compaction.txt.
+//! See LICENSE.
 use super::jev::{JevAsker, Questions, probability};
 use crate::{Error, Result};
 use futures_util::{FutureExt, StreamExt, TryStreamExt, stream};
@@ -138,7 +138,8 @@ fn collect_calls(history: &[Value], recent: usize) -> Vec<Call<'_>> {
             tool,
             input: &call["arguments"],
             result: text(&event["result"]),
-            is_error: !event["result"]["error"].is_null() || event["result"]["isError"] == true,
+            is_error: !event["result"]["error"].is_null()
+                || (event["result"]["is_error"] == true || event["result"]["isError"] == true),
             pinned: pinned(index, history.len(), recent),
         });
     }
@@ -438,4 +439,21 @@ pub(super) async fn prune(
         }
     }
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn persisted_mcp_errors_are_classified_as_failures() {
+        for result in [
+            serde_json::json!({"is_error":true,"content":[]}),
+            serde_json::json!({"isError":true,"content":[]}),
+        ] {
+            let history = vec![
+                serde_json::json!({"kind":"tool","call":{"id":"mcp","name":"plugin_0","arguments":{}},"result":result}),
+            ];
+            assert!(collect_calls(&history, 0)[0].is_error);
+        }
+    }
 }

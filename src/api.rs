@@ -4,7 +4,7 @@ use crate::{
     authorization::{
         Authorization, catalog, execution, identity::Actor, interaction, workspace::Workspaces,
     },
-    config::{PROTOCOL_VERSION, peer_secret},
+    config::{PROTOCOL_VERSION, same_secret},
     domain::*,
     federation::{Delegation, Discovery, Federation, Offer, Peer},
     registry::{EntityRef, Entry, Package, PackageRecord, Search},
@@ -22,6 +22,7 @@ use axum::{
     },
     routing::{get, post},
 };
+use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{convert::Infallible, time::Duration};
@@ -111,12 +112,6 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .ok()?
         .strip_prefix("Bearer ")
 }
-fn same_secret(a: &str, b: &str) -> bool {
-    use sha2::{Digest, Sha256};
-    let a = Sha256::digest(a.as_bytes());
-    let b = Sha256::digest(b.as_bytes());
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
 async fn api_auth(
     State(f): State<Federation>,
     mut request: Request,
@@ -165,12 +160,8 @@ async fn peer_auth(State(f): State<Federation>, request: Request, next: Next) ->
         return Err(Error::Invalid("unsupported federation protocol".into()));
     }
     let node = peer_node(headers)?;
-    let peer = f.peer(node).await?;
-    if bearer(headers)
-        .is_none_or(|s| !peer_secret(&peer.credential_env).is_ok_and(|key| same_secret(s, &key)))
-    {
-        return Err(Error::Unauthorized);
-    }
+    f.authenticate_peer(node, bearer(headers).ok_or(Error::Unauthorized)?)
+        .await?;
     Ok(next.run(request).await)
 }
 fn peer_node(headers: &HeaderMap) -> Result<&str> {
@@ -266,14 +257,17 @@ async fn registry_create(
     State(f): State<Federation>,
     Json(entry): Json<Entry>,
 ) -> Result<Json<Entry>> {
-    let entry = f.registry.register(entry).await?;
+    let mut tx = f.store.pool.begin().await?;
+    crate::registry::register_in(&mut tx, &entry).await?;
     f.store
-        .emit(
+        .event(
+            &mut tx,
             None,
             "registry.registered",
             json!({"id":entry.id,"version":entry.version,"kind":entry.kind}),
         )
         .await?;
+    tx.commit().await?;
     Ok(Json(entry))
 }
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
@@ -495,8 +489,14 @@ async fn conversation_create(
     if entry.kind != "agent" {
         return Err(Error::Invalid("coordinator must be an agent".into()));
     }
-    let workspace = f.store.create_workspace(&input.title, &input.goal).await?;
+    f.store
+        .require_legacy_agent(&agent.id, &agent.version)
+        .await?;
     let mut tx = f.store.pool.begin().await?;
+    let workspace = f
+        .store
+        .create_workspace_in(&mut tx, Uuid::new_v4(), &input.title, &input.goal)
+        .await?;
     let c:Conversation=sqlx::query_as("INSERT INTO conversations(id,workspace_id,target,target_kind) VALUES($1,$2,$3,$4) RETURNING *")
         .bind(Uuid::new_v4()).bind(workspace.id).bind(format!("{}@{}",input.target.id,input.target.version)).bind(input.target_kind).fetch_one(&mut *tx).await?;
     f.store
@@ -507,13 +507,13 @@ async fn conversation_create(
             json!(c),
         )
         .await?;
-    tx.commit().await?;
     f.store
-        .message(workspace.id, "human", &input.goal, None)
+        .message_in(&mut tx, workspace.id, "human", &input.goal, None)
         .await?;
     let task = f
         .store
-        .create_task(
+        .create_task_in(
+            &mut tx,
             workspace.id,
             &NewTask {
                 title: input.title,
@@ -526,7 +526,13 @@ async fn conversation_create(
             None,
         )
         .await?;
-    let delegation = f.delegate(task.id, &f.config.node_id, &agent).await?;
+    let delegation = f
+        .delegate_in(&mut tx, &task, &f.config.node_id, &agent)
+        .await?;
+    tx.commit().await?;
+    if let Err(error) = f.deliver(&delegation).await {
+        tracing::warn!(%error, "conversation execution queued for retry");
+    }
     Ok(Json(ConversationResponse {
         conversation: c,
         workspace,
@@ -718,9 +724,9 @@ async fn stream(
     let stream = async_stream::stream! {
         loop {
             let events = if let Some(scope) = &scope { scope.poll_events(cursor, q.workspace_id, 100).await }
-                else { f.store.events(cursor, q.workspace_id, 100).await };
+                else { f.store.events(cursor, q.workspace_id, 100).await.map(|events| { let scanned = events.last().map_or(cursor, |event| event.sequence); (events, scanned) }) };
             match events {
-                Ok(events) => for event in events {
+                Ok((events, scanned)) => { for event in events {
                     cursor = event.sequence;
                     if let Some(scope) = &scope {
                         match scope.can_emit(&event).await {
@@ -730,7 +736,7 @@ async fn stream(
                         }
                     }
                     yield Ok(SseEvent::default().id(cursor.to_string()).event("mesh").data(event.cloud_event().to_string()));
-                },
+                } cursor = scanned; },
                 Err(e) => { tracing::error!(error=%e,"SSE read failed"); yield Ok(SseEvent::default().event("error").data("event stream interrupted")); break; }
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -1012,11 +1018,17 @@ async fn peer_control(
 async fn mesh(State(f): State<Federation>) -> Result<Json<MeshResponse>> {
     let mut nodes = Vec::new();
     let mut errors = Vec::new();
-    for peer in f.peers().await?.into_iter().filter(|p| p.enabled) {
-        match f
+    let peers = f.peers().await?.into_iter().filter(|p| p.enabled);
+    let f = &f;
+    let mut responses = stream::iter(peers.map(|peer| async move {
+        let response = f
             .request::<MeshNode>(&peer.node_id, reqwest::Method::GET, "/observe", None)
-            .await
-        {
+            .await;
+        (peer, response)
+    }))
+    .buffer_unordered(8);
+    while let Some((peer, response)) = responses.next().await {
+        match response {
             Ok(data) => nodes.push(data),
             Err(e) => errors.push(PeerError {
                 node_id: peer.node_id,

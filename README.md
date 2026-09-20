@@ -2,7 +2,7 @@
 
 Aidash 0.1 is a self-hosted federated agent mesh. Register an explicitly selected model and an agent, start a goal in the dashboard, and let agents claim work across independently operated nodes. Workspaces retain tasks, artifacts, messages and an ordered event log. Workers persist their execution state and recover after process termination.
 
-The release scope is defined by the [v0.1.0 functional requirements](https://app.notion.com/p/3e172fa877aa8096bca5c8d8c2c73b24). The current implementation covers the original mesh baseline. Kubernetes/k3s orchestration, automatic agent generation, complex RBAC/ABAC, complete distributed transactions, semantic memory/vector DB and full A2A compatibility are now [required additions](docs/expanded-requirements.md); their implementation and acceptance remain pending. See [architecture](docs/architecture.md), [requirement mapping](docs/requirements.md), and [protocol and recovery contracts](docs/protocol.md).
+The current implementation provides the federated mesh, scoped authorization and policy-driven local agent generation described in [architecture](docs/architecture.md), [authorization](docs/authorization.md), [generation](docs/generation.md), and [protocol and recovery contracts](docs/protocol.md). Kubernetes orchestration, cross-node atomic transactions, semantic vector memory and full A2A compatibility remain under development.
 
 ## Run locally
 
@@ -62,7 +62,7 @@ AIDASH_LISTEN=127.0.0.1:8081 \
 cargo run --locked -- serve
 ```
 
-Configure a peer on **both** nodes in Settings. Each peer record contains the other node's identity and endpoint, protocol `0.1`, and the name of a shared `AIDASH_SECRET_*` credential. Peer credentials must contain at least 32 printable ASCII characters and eight distinct characters; use a randomly generated token. Register at least one research agent on each node. Registry discovery exchanges metadata over the federation API; no remote database access is needed. Each workspace retains an authoritative home node.
+Configure a peer on **both** nodes in Settings. Each peer record contains the other node's identity and endpoint, protocol `0.1`, and the name of a pair-specific `AIDASH_SECRET_*` credential. Each enabled peer must resolve to a different credential; configure the same pair credential at its two endpoints. Peer credentials must contain at least 32 printable ASCII characters and eight distinct characters; use a randomly generated token. Register at least one research agent on each node. Registry discovery exchanges metadata over the federation API; no remote database access is needed. Each workspace retains an authoritative home node.
 
 `aidash server` runs the API, outbox publisher and JetStream consumer. `aidash worker` runs four workers without an HTTP listener. `aidash serve` runs both roles. To exercise recovery, stop a **worker** process while leaving its server, PostgreSQL and NATS running, then restart it with the same configuration. The lease expires after 30 seconds. Task and run IDs remain stable.
 
@@ -112,7 +112,7 @@ Additional tools are versioned Registry entities. Their JSON Schema validates ar
 }
 ```
 
-The Agent tool creates and delegates a subtask, returning its task ID. Native HTTP retrieval is restricted to configured hosts and does not follow redirects. MCP uses the Rust SDK's streamable HTTP transport, including initialization and session lifecycle. No shell or arbitrary code execution tool is enabled by default.
+The Agent tool creates and delegates a child of the invoking task by default, returning its task ID. Native HTTP retrieval is restricted to configured hosts and does not follow redirects. MCP uses the Rust SDK's streamable HTTP transport, including initialization and session lifecycle. No shell or arbitrary code execution tool is enabled by default.
 
 HTTP tools receive an `Idempotency-Key` header. An idempotent MCP tool must specify an argument name that its server actually supports. `read_only` permits safe repetition. `unsafe` allows one attempt; an interrupted or ambiguous effect pauses for reconciliation instead of being invoked again. See the recovery contract before connecting an effectful tool.
 
@@ -126,7 +126,7 @@ Jev decides whether to keep each old tool call and its full result. Aidash keeps
 
 Axum management routes and Rust request/response types define the OpenAPI contract through `utoipa` and `utoipa-axum`. The public `/api/openapi.json` endpoint and `aidash openapi` command export the same document; the command needs no database, broker, or credentials. All other `/api` routes require a bearer token.
 
-After changing an API route or type, run `scripts/generate-api.sh`. It exports `openapi/aidash.json` and runs the pinned Orval generator to update `web/src/generated/`. Commit both outputs. Dashboard requests and types use these generated files; `transport.ts` supplies authentication/error handling, while `api.ts` reads and reconnects the SSE stream. The Orval transformer exposes unbounded `text/event-stream` responses as `Response`, so the browser can read frames without buffering the entire stream. Do not edit generated files by hand. CI regenerates them and rejects drift before building and testing the UI.
+After changing an API route or type, run `scripts/generate-api.sh`. It exports `openapi/aidash.json` and runs the pinned Orval generator to update `web/src/generated/`. These outputs are ignored by Git, lint and coverage. The dashboard predev and prebuild scripts regenerate them automatically. Dashboard requests and types use these generated files; `transport.ts` supplies authentication/error handling, while `api.ts` reads and reconnects the SSE stream. The Orval transformer exposes unbounded `text/event-stream` responses as `Response`, so the browser can read frames without buffering the entire stream. Do not edit generated files by hand. CI generates them from a clean checkout before building and testing the UI.
 
 ## Verification
 
@@ -138,7 +138,7 @@ scripts/check.sh
 
 Trunk owns formatting and linting: rustfmt, Clippy, Prettier, ESLint, Ruff and Taplo. The Rust edition and linter versions are pinned. React Compiler is not enabled, so its incompatible-library diagnostic is disabled for the intentionally mutable TanStack Table/Virtual interfaces; the hook correctness and accessibility rules remain enabled.
 
-`check.sh` runs Rust unit and PostgreSQL integration tests, builds the dashboard, and executes the two-node acceptance scenario starting from a real Chromium dashboard. It also verifies remote human controls, all four tool transports, and four browser scenarios. The scenario starts real Aidash processes, PostgreSQL and NATS with deterministic OpenAI/Anthropic protocol fixtures. The same checks and Trunk lint run in GitHub Actions. Both nodes and workers start with NATS unavailable; the scenario verifies queued events drain after the broker connection is restored. It kills Node B's worker after an external effect but before its result is persisted, restarts the worker, and checks the same run completes with no duplicate effect. Reports are written to `.ignore/acceptance/report.json`.
+`check.sh` runs Rust unit and PostgreSQL integration tests, builds the dashboard, and executes the two-node acceptance scenario starting from a real Chromium dashboard. It also verifies remote human controls, all four tool transports, and five browser scenarios. The scenario starts real Aidash processes, PostgreSQL and NATS with deterministic OpenAI/Anthropic protocol fixtures. The same checks and Trunk lint run in GitHub Actions. Both nodes and workers start with NATS unavailable; the scenario verifies queued events drain after the broker connection is restored. It kills Node B's worker after an external effect but before its result is persisted, restarts the worker, and checks the same run completes with no duplicate effect. Reports are written to `.ignore/acceptance/report.json`.
 
 For browser tests, keep that completed fixture environment running in one terminal:
 
@@ -154,3 +154,17 @@ npm test --prefix web
 ```
 
 Protocol fixtures verify transport, coordination and recovery. They do not establish live model answer quality or provider-account availability. No commercial model calls are made by these tests.
+
+## Database migrations
+
+Schema changes live in the SeaORM migration crate. Create the next migration with `sea-orm-cli migrate generate <name>`, then implement its `up` and `down` methods. Run it with `sea-orm-cli migrate up`; application startup uses the same migrator. Existing SQLx-era databases are adopted only after their recorded checksums are verified. Adopted migrations cannot be rolled back through SeaORM.
+
+## CI and coverage
+
+CI runs Trunk, Rust unit/integration tests, and the PostgreSQL/NATS/Chromium acceptance suite in separate jobs. `CI Success` requires every job to succeed, including the Codecov upload. Use that check for branch protection. Rust coverage uses `cargo llvm-cov` with real PostgreSQL tests and uploads an explicit LCOV file through Codecov OIDC. Codecov measures `src/`; tests, migration plumbing and generated API files are excluded. Browser tests establish dashboard behavior and are not included in the Rust coverage percentage.
+
+Run `scripts/test-rust.sh --coverage` to produce `coverage/rust.lcov` locally (requires `cargo-llvm-cov` 0.8.7 and `llvm-tools-preview`). `scripts/check.sh` runs the full local suite. Cargo and npm lockfiles remain tracked for reproducible dependency resolution.
+
+Package installation overlays the supplied node-local configuration onto the entity configuration, validates it, and publishes the effective immutable Registry version atomically with the installation record. Changing an installed configuration requires a new version.
+
+Third-party attribution for the adapted context compaction code is in [LICENSE](LICENSE).

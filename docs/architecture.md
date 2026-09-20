@@ -1,6 +1,6 @@
 # Aidash 0.1 architecture
 
-Source: [v0.1.0 functional requirements](https://app.notion.com/p/3e172fa877aa8096bca5c8d8c2c73b24), last edited 2026-09-20 15:55:40 UTC. Its six [additional mandatory requirements](expanded-requirements.md) are part of this release. The paragraphs below describe the current implementation; the added capabilities remain to be implemented and verified.
+This document describes the current implementation and its boundaries. Additional orchestration, cross-node atomic transaction, semantic vector memory and A2A capabilities remain under development.
 
 ## Current implementation
 
@@ -26,4 +26,4 @@ The marketplace is a self-hosted, versioned manifest repository exposed by the n
 
 Add orchestration without losing durable node/run identity, policy-controlled agent creation, shared RBAC/ABAC enforcement, a recoverable atomic transaction protocol between participating nodes, authorized semantic retrieval and an A2A v1.0.0 client/server boundary. Keep explicit model selection, independently operated node databases and the existing durable tool-effect contract. Cross-node transactions must communicate through participating node APIs instead of accessing remote databases directly.
 
-The current bearer token and scoped delegation grants do not satisfy FR-AUTH-001. The current per-node SQL transactions, outbox/inbox and idempotent federation requests do not satisfy FR-TX-001. Persisted JSON memory does not satisfy FR-MEM-001, and Aidash federation endpoints do not establish A2A compatibility. See the [expanded acceptance criteria and P0–P2 order](expanded-requirements.md#release-acceptance-and-implementation-order) before claiming the expanded release is complete.
+The current bearer token and scoped delegation grants do not satisfy FR-AUTH-001. The current per-node SQL transactions, outbox/inbox and idempotent federation requests do not satisfy FR-TX-001. Persisted JSON memory does not satisfy FR-MEM-001, and Aidash federation endpoints do not establish A2A compatibility.

@@ -1401,3 +1401,124 @@ async fn generated_permission_attributes_deny_tools_without_losing_the_pending_c
     server.abort();
     cleanup(f, &url, &schema).await;
 }
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn generation_visibility_paginates_and_cannot_override_later_event_ownership() {
+    let (f, url, schema) = setup().await;
+    let app = api::router(f.clone());
+    let (mut policy, token, other_task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+    let spec = definition(&app, &f.config.api_token).await;
+    assert_eq!(
+        request(
+            &app,
+            &f.config.api_token,
+            "POST",
+            "/api/generation/acme/policies/research",
+            json!({"expected_revision":0,"spec":spec})
+        )
+        .await
+        .0,
+        200
+    );
+    let task = missing_task(&app, &token).await;
+    let (status, assignment) = request(
+        &app,
+        &token,
+        "POST",
+        &format!("/api/generation/acme/tasks/{task}/assign"),
+        json!({"policy_id":"research","reason":"missing specialist"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{assignment}");
+    let job = &assignment["generation"];
+    let job_id: uuid::Uuid = job["id"].as_str().unwrap().parse().unwrap();
+    // More than a page of newer denied requests must not hide the older visible one.
+    sqlx::query("WITH extra AS (INSERT INTO tasks(id,workspace_id,title,description,requirements,created_by,creation_key) SELECT gen_random_uuid(),workspace_id,'Hidden','Fixture','{}','fixture','hidden-'||n FROM tasks CROSS JOIN generate_series(1,201) n WHERE id=$1 RETURNING id) INSERT INTO generation_requests(id,tenant,policy_id,policy_revision,task_id,workspace_id,credential_id,root_subject,subject_chain,agent_id,agent_version,definition,status,reason,depth,token_limit,expires_at) SELECT gen_random_uuid(),r.tenant,r.policy_id,r.policy_revision,e.id,r.workspace_id,r.credential_id,'hidden',r.subject_chain,'hidden-'||e.id,r.agent_version,r.definition,r.status,r.reason,r.depth,r.token_limit,r.expires_at FROM generation_requests r CROSS JOIN extra e WHERE r.id=$2")
+        .bind(task.parse::<uuid::Uuid>().unwrap()).bind(job_id).execute(&f.store.pool).await.unwrap();
+    assert_eq!(
+        request(
+            &app,
+            &token,
+            "POST",
+            &format!("/api/tasks/{other_task}/claim"),
+            json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
+        )
+        .await
+        .0,
+        200
+    );
+    let run = f.store.runs().await.unwrap().remove(0);
+    sqlx::query("UPDATE authorization_workspaces SET owner_subject='bob' WHERE workspace_id=$1")
+        .bind(run.workspace_id)
+        .execute(&f.store.pool)
+        .await
+        .unwrap();
+    policy["policies"].as_array_mut().unwrap().extend([
+        json!({"id":"hidden-generations","effect":"deny","subjects":{"any":true},"actions":["generation.read"],"resources":{"kinds":["generation"]},"condition":{"op":"eq","left":{"source":"resource","path":"/root_subject"},"right":{"source":"literal","value":"hidden"}}}),
+        json!({"id":"other-owner","effect":"deny","subjects":{"any":true},"actions":["run.read"],"resources":{"kinds":["run"]},"condition":{"op":"eq","left":{"source":"resource","path":"/owner"},"right":{"source":"literal","value":"bob"}}}),
+    ]);
+    assert_eq!(
+        request(
+            &app,
+            &f.config.api_token,
+            "POST",
+            "/api/authorization/acme",
+            json!({"expected_revision":1,"bundle":policy})
+        )
+        .await
+        .0,
+        200
+    );
+    let (status, visible) = request(
+        &app,
+        &token,
+        "GET",
+        "/api/generation/acme/requests",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{visible}");
+    assert_eq!(visible.as_array().unwrap().len(), 1);
+    assert_eq!(visible[0]["id"], job["id"]);
+    let after: i64 = sqlx::query_scalar("SELECT max(sequence) FROM events")
+        .fetch_one(&f.store.pool)
+        .await
+        .unwrap();
+    let mut tx = f.store.pool.begin().await.unwrap();
+    f.store
+        .event(
+            &mut tx,
+            Some(job["workspace_id"].as_str().unwrap().parse().unwrap()),
+            "generation.changed",
+            json!({"id":job_id}),
+        )
+        .await
+        .unwrap();
+    f.store
+        .event(
+            &mut tx,
+            Some(run.workspace_id),
+            "run.updated",
+            json!({"run_id":run.id}),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let (status, events) = request(
+        &app,
+        &token,
+        "GET",
+        &format!("/api/events?after={after}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{events}");
+    assert_eq!(
+        events.as_array().unwrap().len(),
+        1,
+        "the preceding generation context must not overwrite the next run's owner"
+    );
+    assert_eq!(events[0]["kind"], "generation.changed");
+    cleanup(f, &url, &schema).await;
+}

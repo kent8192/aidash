@@ -1,3 +1,7 @@
+[workspace]
+members = ["migration"]
+resolver = "3"
+
 [package]
 name = "aidash"
 version = "0.1.0"
@@ -6,6 +10,7 @@ rust-version = "1.96"
 publish = false
 
 [dependencies]
+migration = { path = "migration" }
 async-trait = "0.1.89"
 async-nats = "0.46"
 async-stream = "0.3"

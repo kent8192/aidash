@@ -1,6 +1,6 @@
 # Authorization policy service and scoped execution
 
-The policy service implements policy management, decisions, revocable subject credentials, scoped workspace and interaction APIs, tenant catalog approvals and local execution for FR-AUTH-001. The management endpoints below require the existing operator bearer token. Remote federation, finer resource scopes, remaining management workflows and dashboard policy controls are still tracked in [the implementation plan](implementation/expanded-platform.md); this is not completion of FR-AUTH-001.
+The policy service implements policy management, decisions, revocable subject credentials, scoped workspace and interaction APIs, tenant catalog approvals and local execution for FR-AUTH-001. The management endpoints below require the existing operator bearer token. Remote federation, finer resource scopes, remaining management workflows and dashboard policy controls remain under development; this is not completion of FR-AUTH-001.
 
 ## Management API
 

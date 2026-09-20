@@ -103,6 +103,27 @@ impl Harness {
             }
         }
     }
+    async fn tool_error(
+        &self,
+        run: &mut Run,
+        token: Uuid,
+        call: &crate::provider::ToolCall,
+        cursor: usize,
+        message: String,
+    ) -> Result<()> {
+        let mut context: Context = serde_json::from_value(run.context.clone())?;
+        context
+            .history
+            .push(json!({"kind":"tool","call":call,"result":{"error":message}}));
+        run.context = json!(context);
+        run.pending["cursor"] = json!(cursor + 1);
+        self.federation
+            .store
+            .save_run(run, token, "run.tool_recorded")
+            .await?;
+        Ok(())
+    }
+
     async fn tools(&self, config: &AgentConfig) -> Result<BTreeMap<String, Arc<dyn Tool>>> {
         let mut tools = builtins();
         for (index, reference) in config.tools.iter().enumerate() {
@@ -209,6 +230,19 @@ impl Harness {
         match run.phase.as_str() {
             "READY" => {
                 let task = home.task().await?;
+                if !task.dependencies.is_empty() {
+                    let snapshot = home.snapshot().await?;
+                    if task.dependencies.iter().any(|id| {
+                        !snapshot.tasks.iter().any(|dependency| {
+                            dependency.id == *id && dependency.status == "COMPLETED"
+                        })
+                    }) {
+                        run.phase = "WAITING".into();
+                        run.pending = json!({"wake_at":chrono::Utc::now()+chrono::Duration::seconds(2),"resume_phase":"READY"});
+                        store.save_run(run, token, "run.waiting").await?;
+                        return Ok(());
+                    }
+                }
                 home.claim(&task, &entry).await?;
                 home.transition("RUNNING").await?;
                 run.phase = "THINKING".into();
@@ -348,6 +382,7 @@ impl Harness {
                             } else {
                                 run.pending = json!({"wake_at":chrono::Utc::now()+chrono::Duration::seconds(2),"resume_phase":"THINKING"});
                             }
+                            run.step += 1;
                             run.phase = "WAITING".into();
                             store.save_run(run, token, "run.waiting").await?;
                             return Ok(());
@@ -371,8 +406,27 @@ impl Harness {
                                 .await?;
                             guard.action("task.complete", "task", run.task_id).await?;
                         }
-                        home.complete(&format!("{}:complete", run.id), &artifact)
-                            .await?;
+                        if let Err(error) = home
+                            .complete(&format!("{}:complete", run.id), &artifact)
+                            .await
+                        {
+                            if matches!(error, Error::Conflict(_))
+                                && home.snapshot().await?.tasks.iter().any(|task| {
+                                    task.parent_id == Some(run.task_id)
+                                        && !matches!(
+                                            task.status.as_str(),
+                                            "COMPLETED" | "ABANDONED"
+                                        )
+                                })
+                            {
+                                run.step += 1;
+                                run.phase = "WAITING".into();
+                                run.pending = json!({"wake_at":chrono::Utc::now()+chrono::Duration::seconds(2),"resume_phase":"THINKING"});
+                                store.save_run(run, token, "run.waiting").await?;
+                                return Ok(());
+                            }
+                            return Err(error);
+                        }
                         run.phase = "COMPLETED".into();
                         store.save_run(run, token, "run.completed").await?;
                     } else {
@@ -385,11 +439,25 @@ impl Harness {
                 }
                 let call = &result.tool_calls[cursor];
                 let tools = self.tools(&agent).await?;
-                let tool = tools.get(&call.name).ok_or_else(|| {
-                    Error::Invalid(format!("model called an unavailable tool {}", call.name))
-                })?;
+                let Some(tool) = tools.get(&call.name) else {
+                    return self
+                        .tool_error(
+                            run,
+                            token,
+                            call,
+                            cursor,
+                            format!("unavailable tool {}", call.name),
+                        )
+                        .await;
+                };
                 if let Some(guard) = guard {
-                    guard.tool(call).await?;
+                    match guard.tool(call).await {
+                        Ok(()) => {}
+                        Err(Error::Invalid(message)) => {
+                            return self.tool_error(run, token, call, cursor, message).await;
+                        }
+                        Err(error) => return Err(error),
+                    }
                 }
                 let key = format!("{}:{}:{}", run.id, run.step, cursor);
                 let invocation = store
@@ -406,11 +474,7 @@ impl Harness {
                     if let Some(guard) = guard {
                         guard.action("human.request", "run", run.id).await?;
                     }
-                    let h=store.human_request(run,"CONFIRMATION",&format!("Tool {} may have completed before the worker stopped. Reconcile the external effect, then answer with a JSON object containing result. It will not be executed again. Invocation: {key}",call.name),&format!("{key}:reconcile")).await?;
-                    run.pending["human_request_id"] = json!(h.id);
-                    run.pending["uncertain_key"] = json!(key);
-                    run.pending["resume_phase"] = json!("TOOL_CALL");
-                    run.phase = "WAITING".into();
+                    store.reconciliation_request(run, token, &key, &format!("Tool {} may have completed before the worker stopped. Reconcile the external effect, then answer with a JSON object containing result. It will not be executed again. Invocation: {key}",call.name)).await?;
                     store.save_run(run, token, "run.waiting").await?;
                     return Ok(());
                 }

@@ -33,7 +33,7 @@ pub trait Tool: Send + Sync {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "transport", rename_all = "snake_case")]
+#[serde(tag = "transport", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ToolConfig {
     Native {
         operation: String,
@@ -198,7 +198,7 @@ impl Tool for PluginTool {
                         response.status()
                     )));
                 }
-                Ok(response.json().await?)
+                crate::response::json(response, 256_000).await
             }
             ToolConfig::Mcp {
                 endpoint,
@@ -239,8 +239,9 @@ impl Tool for PluginTool {
                 Ok(serde_json::to_value(result)?)
             }
             ToolConfig::Agent { node_id, agent } => {
-                let input: NewTask =
+                let mut input: NewTask =
                     serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
+                input.parent_id.get_or_insert(ctx.run.task_id);
                 let task = ctx.home.create_task(&format!("{key}:task"), &input).await?;
                 Ok(
                     json!({"task":task,"delegation":ctx.home.delegate(task.id,node_id,agent).await?}),

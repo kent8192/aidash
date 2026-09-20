@@ -11,7 +11,7 @@ import {
   taskDelegate,
   packagePublish,
 } from "./generated/aidash";
-export type Submit = (request: () => Promise<unknown>) => Promise<void>;
+export type Submit = (request: () => Promise<unknown>) => Promise<boolean>;
 const split = (s: string) =>
   s
     .split(",")
@@ -553,7 +553,7 @@ export function PeerForm({ submit }: { submit: Submit }) {
       <Field label={t("peerCredential")}>
         <input
           name="credential_env"
-          defaultValue="AIDASH_SECRET_PEER"
+          placeholder="AIDASH_SECRET_NODE_B"
           required
         />
       </Field>
@@ -576,7 +576,15 @@ export function AssignForm({
       onSubmit={(e) => {
         e.preventDefault();
         const d = new FormData(e.currentTarget);
-        const a = discovery.agents[Number(d.get("agent"))];
+        const a = discovery.agents.find(
+          (agent) =>
+            JSON.stringify([
+              agent.node_id,
+              agent.entity.id,
+              agent.entity.version,
+            ]) === d.get("agent"),
+        );
+        if (!a) return;
         void submit(() =>
           taskDelegate(task.id, {
             node_id: a.node_id,
@@ -588,9 +596,9 @@ export function AssignForm({
       <Field label={t("agent")}>
         <select name="agent" required defaultValue="">
           <option value="">{t("choose")}</option>
-          {discovery.agents.map((a, i) => (
+          {discovery.agents.map((a) => (
             <option
-              value={i}
+              value={JSON.stringify([a.node_id, a.entity.id, a.entity.version])}
               key={`${a.node_id}/${a.entity.id}@${a.entity.version}`}
             >
               {local(a.entity.name)} · {a.node_id} · {a.entity.version}

@@ -1,6 +1,6 @@
 # Protocol and recovery contracts
 
-This document describes the current implementation. The [additional v0.1.0 requirements](expanded-requirements.md) require RBAC/ABAC, cross-node atomic transactions and A2A v1.0.0 interoperability, alongside orchestration, automatic agent generation and semantic memory. Those contracts remain pending implementation and verification; the behavior below does not establish their completion.
+This document describes the implemented runtime and recovery contracts. Cross-node atomic transactions, semantic vector memory, orchestration and full A2A interoperability remain under development.
 
 ## Trust and identity
 
@@ -52,7 +52,7 @@ The default retention threshold is 0.5: keep the complete pair when the result p
 
 The classifier state is limited to 25,000 estimated tokens. Tool input caps shrink through 1,000/200/60 characters, followed by text abridgment, old-text size notes, compact call lines, omission of old call-less entries and merging of adjacent old call-only entries. These reductions never alter stored human or assistant text. Questions are divided into requests of at most 30,000 estimated tokens. The Jev estimator counts letter runs, digits and symbols following upstream; inference uses a separate conservative character-based budget.
 
-The default endpoint is `https://api.typesafe.ai/v1/systemone` and the default model is `jev-latest`. Bearer-authenticated requests send `{model,state,questions}`. The upstream MIT notice is included in [licenses/fast-jev-compaction.txt](licenses/fast-jev-compaction.txt).
+The default endpoint is `https://api.typesafe.ai/v1/systemone` and the default model is `jev-latest`. Bearer-authenticated requests send `{model,state,questions}`. The upstream MIT notice is included in [LICENSE](../LICENSE).
 
 ## Marketplace and localization
 

@@ -1,0 +1,110 @@
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(Alias::new("delegations"))
+                    .add_column(
+                        ColumnDef::new(Alias::new("next_attempt_at"))
+                            .timestamp_with_time_zone()
+                            .not_null()
+                            .default(Expr::cust("now()")),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(Alias::new("events"))
+                    .add_column(
+                        ColumnDef::new(Alias::new("next_attempt_at"))
+                            .timestamp_with_time_zone()
+                            .not_null()
+                            .default(Expr::cust("now()")),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(Alias::new("events"))
+                    .add_column(ColumnDef::new(Alias::new("publish_error")).text())
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_index(
+                Index::create()
+                    .name("delegations_retry")
+                    .table(Alias::new("delegations"))
+                    .col(Alias::new("next_attempt_at"))
+                    .col(Alias::new("created_at"))
+                    .and_where(Expr::cust("NOT delivered"))
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_index(
+                Index::create()
+                    .name("events_retry")
+                    .table(Alias::new("events"))
+                    .col(Alias::new("next_attempt_at"))
+                    .col(Alias::new("sequence"))
+                    .and_where(Expr::cust("published_at IS NULL"))
+                    .to_owned(),
+            )
+            .await?;
+        Ok(())
+    }
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_index(
+                Index::drop()
+                    .name("events_retry")
+                    .table(Alias::new("events"))
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .drop_index(
+                Index::drop()
+                    .name("delegations_retry")
+                    .table(Alias::new("delegations"))
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(Alias::new("events"))
+                    .drop_column(Alias::new("publish_error"))
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(Alias::new("events"))
+                    .drop_column(Alias::new("next_attempt_at"))
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(Alias::new("delegations"))
+                    .drop_column(Alias::new("next_attempt_at"))
+                    .to_owned(),
+            )
+            .await?;
+        Ok(())
+    }
+}

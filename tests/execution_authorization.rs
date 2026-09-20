@@ -789,7 +789,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
     });
     tokio::time::timeout(Duration::from_secs(5),async {
         loop {
-            let waiting:i64=sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock' AND (query LIKE 'UPDATE authorization_bundles%' OR query LIKE 'UPDATE authorization_credentials%')")
+            let waiting:i64=sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock' AND (replace(query,chr(34),'') LIKE 'UPDATE authorization_bundles%' OR replace(query,chr(34),'') LIKE 'UPDATE authorization_credentials%')")
                 .bind(&schema).fetch_one(&worker_federation.store.pool).await.unwrap();
             if waiting==12 {break;}
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -884,5 +884,155 @@ async fn scoped_delegation_requires_permission_before_atomic_admission() {
         .0,
         200
     );
+    cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn scoped_collections_fill_after_denied_runs_and_stream_cursor_skips_denied_tail() {
+    use aidash::authorization::{Authorization, identity::Actor, workspace::Workspaces};
+    let (f, url, schema) = setup().await;
+    let app = api::router(f.clone());
+    let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+    assert_eq!(
+        request(
+            &app,
+            &token,
+            "POST",
+            &format!("/api/tasks/{task}/claim"),
+            json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
+        )
+        .await
+        .0,
+        200
+    );
+    let visible = f.store.runs().await.unwrap().remove(0);
+    let denied: Vec<Uuid> = (0..501).map(|_| Uuid::new_v4()).collect();
+    sqlx::query("INSERT INTO runs(id,task_id,workspace_id,home_node,agent_id,agent_version,updated_at) SELECT id,gen_random_uuid(),$2,$3,'research','1.0.0',clock_timestamp()+interval '1 second' FROM unnest($1::uuid[]) id")
+        .bind(&denied).bind(visible.workspace_id).bind(&f.config.node_id).execute(&f.store.pool).await.unwrap();
+    policy["policies"].as_array_mut().unwrap().push(json!({"id":"hidden-runs","effect":"deny","subjects":{"any":true},"actions":["run.read"],"resources":{"kinds":["run"],"ids":denied}}));
+    assert_eq!(
+        request(
+            &app,
+            &f.config.api_token,
+            "POST",
+            "/api/authorization/acme",
+            json!({"expected_revision":1,"bundle":policy})
+        )
+        .await
+        .0,
+        200
+    );
+    let (status, state) = request(&app, &token, "GET", "/api/state", Value::Null).await;
+    assert_eq!(status, 200, "{state}");
+    assert_eq!(state["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(state["runs"][0]["id"], visible.id.to_string());
+    let before: i64 = sqlx::query_scalar("SELECT coalesce(max(sequence),0) FROM events")
+        .fetch_one(&f.store.pool)
+        .await
+        .unwrap();
+    let last = f
+        .store
+        .emit(
+            Some(visible.workspace_id),
+            "run.tool_recorded",
+            json!({"run_id":denied[0]}),
+        )
+        .await
+        .unwrap();
+    let Actor::Subject(identity) = (Authorization {
+        pool: f.store.pool.clone(),
+    })
+    .authenticate(&token)
+    .await
+    .unwrap() else {
+        panic!("subject expected")
+    };
+    let scope = Workspaces {
+        store: f.store.clone(),
+        identity,
+    };
+    let (events, cursor) = scope.poll_events(before, None, 100).await.unwrap();
+    assert!(events.is_empty());
+    assert_eq!(cursor, last.sequence);
+    assert_eq!(
+        scope.poll_events(cursor, None, 100).await.unwrap().1,
+        cursor
+    );
+    cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn malformed_scoped_delegation_arguments_remain_model_correctable() {
+    let (f, url, schema) = setup().await;
+    let app = api::router(f.clone());
+    let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+    assert_eq!(
+        request(
+            &app,
+            &token,
+            "POST",
+            &format!("/api/tasks/{task}/claim"),
+            json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
+        )
+        .await
+        .0,
+        200
+    );
+    let harness = Harness {
+        federation: f.clone(),
+    };
+    harness.worker_once().await.unwrap();
+    let run = f.store.runs().await.unwrap().remove(0);
+    let response = aidash::provider::ModelResponse {
+        tool_calls: vec![aidash::provider::ToolCall {
+            id: "bad-id".into(),
+            name: "task_delegate".into(),
+            arguments: json!({"task_id":"not-a-uuid","node_id":f.config.node_id,"agent":{"id":"research","version":"1.0.0"}}),
+        }],
+        ..Default::default()
+    };
+    sqlx::query("UPDATE runs SET phase='TOOL_CALL',pending=$2 WHERE id=$1")
+        .bind(run.id)
+        .bind(json!({"response":response,"cursor":0}))
+        .execute(&f.store.pool)
+        .await
+        .unwrap();
+    harness.worker_once().await.unwrap();
+    let run = f.store.run(run.id).await.unwrap();
+    assert_eq!(run.phase, "TOOL_CALL");
+    assert_eq!(run.pending["cursor"], 1);
+    assert!(run.context["history"][0]["result"]["error"].is_string());
+    assert_eq!(f.store.task(task).await.unwrap().status, "RUNNING");
+    cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn decision_cursor_follows_transaction_commit_order() {
+    use aidash::authorization::{Authorization, policy::Evaluation};
+    let (f, url, schema) = setup().await;
+    let app = api::router(f.clone());
+    bootstrap(&f, &app, "http://127.0.0.1:9").await;
+    let authorization = Authorization {
+        pool: f.store.pool.clone(),
+    };
+    let evaluation:Evaluation=serde_json::from_value(json!({"subject":"alice","action":"workspace.read","resource":{"tenant":"acme","kind":"workspace","id":"cursor-test","attributes":{}},"environment":{}})).unwrap();
+    let mut tx = f.store.pool.begin().await.unwrap();
+    Authorization::evaluate_in_transaction(&mut tx, "acme", &evaluation)
+        .await
+        .unwrap();
+    let second = tokio::spawn(async move { authorization.evaluate("acme", &evaluation).await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        !second.is_finished(),
+        "later decisions must wait until the first allocation commits"
+    );
+    tx.commit().await.unwrap();
+    second.await.unwrap().unwrap();
+    let rows:Vec<(i64,String)>=sqlx::query_as("SELECT sequence,resource_id FROM authorization_decisions WHERE resource_id='cursor-test' ORDER BY sequence").fetch_all(&f.store.pool).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows[0].0 < rows[1].0);
     cleanup(f, &url, &schema).await;
 }

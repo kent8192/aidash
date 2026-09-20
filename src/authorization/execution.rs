@@ -9,6 +9,9 @@ use crate::{
     store::{Invocation, Store},
     tool::ToolConfig,
 };
+use sea_orm::sea_query::{
+    Alias, Asterisk, Condition, Expr, LockType, OnConflict, Order, PostgresQueryBuilder, Query,
+};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -36,11 +39,16 @@ impl Grant {
 }
 
 async fn grant(store: &Store, run: &Run) -> Result<Option<Grant>> {
-    let grant: Option<Grant> =
-        sqlx::query_as("SELECT * FROM authorization_execution WHERE run_id=$1")
-            .bind(run.id)
-            .fetch_optional(&store.pool)
-            .await?;
+    let grant: Option<Grant> = sqlx::query_as(
+        &Query::select()
+            .column(Asterisk)
+            .from(Alias::new("authorization_execution"))
+            .cond_where(Expr::col(Alias::new("run_id")).eq(Expr::cust("$1")))
+            .to_string(PostgresQueryBuilder),
+    )
+    .bind(run.id)
+    .fetch_optional(&store.pool)
+    .await?;
     if let Some(grant) = &grant {
         if run.home_node != store.node_id
             || grant.run_id != run.id
@@ -72,11 +80,17 @@ async fn access_for_run(store: &Store, run: &Run, durable_audit: bool) -> Result
     let mut access = Access::begin(store, &grant.identity()).await?;
     // All paths lock policy, credential, then grant in the same order. A resume
     // can rotate the source credential; a step must not use an older binding.
-    let current: Grant =
-        sqlx::query_as("SELECT * FROM authorization_execution WHERE run_id=$1 FOR SHARE")
-            .bind(run.id)
-            .fetch_one(&mut *access.tx)
-            .await?;
+    let current: Grant = sqlx::query_as(
+        &Query::select()
+            .column(Asterisk)
+            .from(Alias::new("authorization_execution"))
+            .cond_where(Expr::col(Alias::new("run_id")).eq(Expr::cust("$1")))
+            .lock(LockType::Share)
+            .to_string(PostgresQueryBuilder),
+    )
+    .bind(run.id)
+    .fetch_one(&mut *access.tx)
+    .await?;
     if current.credential_id != grant.credential_id || current.subject_chain != grant.subject_chain
     {
         return Err(Error::External(
@@ -107,7 +121,13 @@ fn require_agent(access: &Access, id: &str) -> Result<()> {
 
 pub(crate) async fn inherit_task_origin(access: &mut Access, task: Uuid) -> Result<bool> {
     let origin: Option<(String, String, Vec<String>)> = sqlx::query_as(
-        "SELECT tenant,root_subject,subject_chain FROM authorization_task_origins WHERE task_id=$1",
+        &Query::select()
+            .column(Alias::new("tenant"))
+            .column(Alias::new("root_subject"))
+            .column(Alias::new("subject_chain"))
+            .from(Alias::new("authorization_task_origins"))
+            .cond_where(Expr::col(Alias::new("task_id")).eq(Expr::cust("$1")))
+            .to_string(PostgresQueryBuilder),
     )
     .bind(task)
     .fetch_optional(&mut *access.tx)
@@ -134,11 +154,17 @@ async fn admit(
     agent: &EntityRef,
     delegation: bool,
 ) -> Result<Task> {
-    let task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id=$1")
-        .bind(task_id)
-        .fetch_optional(&mut *access.tx)
-        .await?
-        .ok_or(Error::Forbidden)?;
+    let task: Task = sqlx::query_as(
+        &Query::select()
+            .column(Asterisk)
+            .from(Alias::new("tasks"))
+            .cond_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+            .to_string(PostgresQueryBuilder),
+    )
+    .bind(task_id)
+    .fetch_optional(&mut *access.tx)
+    .await?
+    .ok_or(Error::Forbidden)?;
     inherit_task_origin(access, task_id).await?;
     let workspace = access.workspace(task.workspace_id).await?;
     access.context = workspace.attributes.clone();
@@ -181,14 +207,53 @@ async fn admit(
             &entry,
         )
         .await?;
-    let run_id: Uuid = sqlx::query_scalar("SELECT id FROM runs WHERE home_node=$1 AND task_id=$2")
-        .bind(&f.config.node_id)
-        .bind(task.id)
-        .fetch_one(&mut *access.tx)
-        .await?;
-    sqlx::query("INSERT INTO authorization_execution(run_id,task_id,workspace_id,tenant,credential_id,root_subject,subject_chain) VALUES($1,$2,$3,$4,$5,$6,$7)")
-        .bind(run_id).bind(task.id).bind(task.workspace_id).bind(&access.identity.tenant).bind(access.identity.credential_id)
-        .bind(&access.identity.subject).bind(&access.subjects).execute(&mut *access.tx).await?;
+    let run_id: Uuid = sqlx::query_scalar(
+        &Query::select()
+            .column(Alias::new("id"))
+            .from(Alias::new("runs"))
+            .cond_where(
+                Condition::all()
+                    .add(Expr::col(Alias::new("home_node")).eq(Expr::cust("$1")))
+                    .add(Expr::col(Alias::new("task_id")).eq(Expr::cust("$2"))),
+            )
+            .to_string(PostgresQueryBuilder),
+    )
+    .bind(&f.config.node_id)
+    .bind(task.id)
+    .fetch_one(&mut *access.tx)
+    .await?;
+    sqlx::query(
+        &Query::insert()
+            .into_table(Alias::new("authorization_execution"))
+            .columns([
+                Alias::new("run_id"),
+                Alias::new("task_id"),
+                Alias::new("workspace_id"),
+                Alias::new("tenant"),
+                Alias::new("credential_id"),
+                Alias::new("root_subject"),
+                Alias::new("subject_chain"),
+            ])
+            .values_panic([
+                Expr::cust("$1").into(),
+                Expr::cust("$2").into(),
+                Expr::cust("$3").into(),
+                Expr::cust("$4").into(),
+                Expr::cust("$5").into(),
+                Expr::cust("$6").into(),
+                Expr::cust("$7").into(),
+            ])
+            .to_string(PostgresQueryBuilder),
+    )
+    .bind(run_id)
+    .bind(task.id)
+    .bind(task.workspace_id)
+    .bind(&access.identity.tenant)
+    .bind(access.identity.credential_id)
+    .bind(&access.identity.subject)
+    .bind(&access.subjects)
+    .execute(&mut *access.tx)
+    .await?;
     Ok(claimed)
 }
 
@@ -232,8 +297,38 @@ pub(crate) async fn delegate_in(
     // Local admission commits task ownership, the run, grant and delegation
     // together. No intermediate unscoped READY run is ever visible to workers.
     let admitted = admit(f, access, task, None, agent, true).await?;
-    let delegation:Delegation=sqlx::query_as("INSERT INTO delegations(task_id,node_id,agent_id,agent_version,delivered) VALUES($1,$2,$3,$4,true) RETURNING task_id,node_id,agent_id,agent_version,delivered")
-        .bind(task).bind(&f.config.node_id).bind(&agent.id).bind(&agent.version).fetch_one(&mut *access.tx).await?;
+    let delegation: Delegation = sqlx::query_as(
+        &Query::insert()
+            .into_table(Alias::new("delegations"))
+            .columns([
+                Alias::new("task_id"),
+                Alias::new("node_id"),
+                Alias::new("agent_id"),
+                Alias::new("agent_version"),
+                Alias::new("delivered"),
+            ])
+            .values_panic([
+                Expr::cust("$1").into(),
+                Expr::cust("$2").into(),
+                Expr::cust("$3").into(),
+                Expr::cust("$4").into(),
+                Expr::cust("true").into(),
+            ])
+            .returning(Query::returning().columns([
+                Alias::new("task_id"),
+                Alias::new("node_id"),
+                Alias::new("agent_id"),
+                Alias::new("agent_version"),
+                Alias::new("delivered"),
+            ]))
+            .to_string(PostgresQueryBuilder),
+    )
+    .bind(task)
+    .bind(&f.config.node_id)
+    .bind(&agent.id)
+    .bind(&agent.version)
+    .fetch_one(&mut *access.tx)
+    .await?;
     f.store
         .event(
             &mut access.tx,
@@ -265,11 +360,16 @@ impl WorkerAuthority {
         catalog::list_in(&mut lease, &Search::default()).await?;
         let mut access = Access::under_lease(&lease).await?;
         let result = async {
-            let workspace: Option<Uuid> =
-                sqlx::query_scalar("SELECT workspace_id FROM tasks WHERE id=$1")
-                    .bind(task)
-                    .fetch_optional(&mut *access.tx)
-                    .await?;
+            let workspace: Option<Uuid> = sqlx::query_scalar(
+                &Query::select()
+                    .column(Alias::new("workspace_id"))
+                    .from(Alias::new("tasks"))
+                    .cond_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(task)
+            .fetch_optional(&mut *access.tx)
+            .await?;
             if workspace != Some(run.workspace_id) {
                 return Err(Error::Forbidden);
             }
@@ -292,16 +392,65 @@ impl WorkerAuthority {
             let workspace = access.workspace(run.workspace_id).await?;
             access.require(&workspace, "task.create").await?;
             let creator = access.subjects.last().ok_or(Error::Forbidden)?.clone();
-            let task = f.store.create_task_in(&mut access.tx, run.workspace_id, input, &creator, Some(key)).await?;
-            sqlx::query("INSERT INTO authorization_task_origins(task_id,source_run_id,tenant,root_subject,subject_chain) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING")
-                .bind(task.id).bind(run.id).bind(&access.identity.tenant).bind(&access.identity.subject).bind(&access.subjects).execute(&mut *access.tx).await?;
-            let origin: (Uuid,String,String,Vec<String>) = sqlx::query_as("SELECT source_run_id,tenant,root_subject,subject_chain FROM authorization_task_origins WHERE task_id=$1")
-                .bind(task.id).fetch_one(&mut *access.tx).await?;
-            if origin != (run.id,access.identity.tenant.clone(),access.identity.subject.clone(),access.subjects.clone()) {
-                return Err(Error::Conflict("task already has a different origin".into()));
+            let task = f
+                .store
+                .create_task_in(&mut access.tx, run.workspace_id, input, &creator, Some(key))
+                .await?;
+            sqlx::query(
+                &Query::insert()
+                    .into_table(Alias::new("authorization_task_origins"))
+                    .columns([
+                        Alias::new("task_id"),
+                        Alias::new("source_run_id"),
+                        Alias::new("tenant"),
+                        Alias::new("root_subject"),
+                        Alias::new("subject_chain"),
+                    ])
+                    .values_panic([
+                        Expr::cust("$1").into(),
+                        Expr::cust("$2").into(),
+                        Expr::cust("$3").into(),
+                        Expr::cust("$4").into(),
+                        Expr::cust("$5").into(),
+                    ])
+                    .on_conflict(OnConflict::new().do_nothing().to_owned())
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(task.id)
+            .bind(run.id)
+            .bind(&access.identity.tenant)
+            .bind(&access.identity.subject)
+            .bind(&access.subjects)
+            .execute(&mut *access.tx)
+            .await?;
+            let origin: (Uuid, String, String, Vec<String>) = sqlx::query_as(
+                &Query::select()
+                    .column(Alias::new("source_run_id"))
+                    .column(Alias::new("tenant"))
+                    .column(Alias::new("root_subject"))
+                    .column(Alias::new("subject_chain"))
+                    .from(Alias::new("authorization_task_origins"))
+                    .cond_where(Expr::col(Alias::new("task_id")).eq(Expr::cust("$1")))
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(task.id)
+            .fetch_one(&mut *access.tx)
+            .await?;
+            if origin
+                != (
+                    run.id,
+                    access.identity.tenant.clone(),
+                    access.identity.subject.clone(),
+                    access.subjects.clone(),
+                )
+            {
+                return Err(Error::Conflict(
+                    "task already has a different origin".into(),
+                ));
             }
             Ok(task)
-        }.await;
+        }
+        .await;
         access.finish(result).await
     }
 
@@ -323,22 +472,32 @@ impl WorkerAuthority {
             if node != f.config.node_id {
                 return Err(Error::Forbidden);
             }
-            let workspace: Option<Uuid> =
-                sqlx::query_scalar("SELECT workspace_id FROM tasks WHERE id=$1")
-                    .bind(task)
-                    .fetch_optional(&mut *access.tx)
-                    .await?;
+            let workspace: Option<Uuid> = sqlx::query_scalar(
+                &Query::select()
+                    .column(Alias::new("workspace_id"))
+                    .from(Alias::new("tasks"))
+                    .cond_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(task)
+            .fetch_optional(&mut *access.tx)
+            .await?;
             if workspace != Some(run.workspace_id) {
                 return Err(Error::Forbidden);
             }
             access
                 .require(&access.resource("task", task, json!({})), "task.delegate")
                 .await?;
-            let existing: Option<Grant> =
-                sqlx::query_as("SELECT * FROM authorization_execution WHERE task_id=$1")
-                    .bind(task)
-                    .fetch_optional(&mut *access.tx)
-                    .await?;
+            let existing: Option<Grant> = sqlx::query_as(
+                &Query::select()
+                    .column(Asterisk)
+                    .from(Alias::new("authorization_execution"))
+                    .cond_where(Expr::col(Alias::new("task_id")).eq(Expr::cust("$1")))
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(task)
+            .fetch_optional(&mut *access.tx)
+            .await?;
             if let Some(existing) = existing {
                 let mut expected = access.subjects.clone();
                 expected.push(qualified_agent(node, &agent.id, &agent.version));
@@ -397,7 +556,15 @@ impl Guard {
         // A cluster conversation remains bound to its approved entry even if
         // the coordinator agent does not repeat that cluster in its own config.
         let clusters: Vec<String> = sqlx::query_scalar(
-            "SELECT target FROM conversations WHERE workspace_id=$1 AND target_kind='cluster'",
+            &Query::select()
+                .column(Alias::new("target"))
+                .from(Alias::new("conversations"))
+                .cond_where(
+                    Condition::all()
+                        .add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+                        .add(Expr::cust("target_kind='cluster'")),
+                )
+                .to_string(PostgresQueryBuilder),
         )
         .bind(run.workspace_id)
         .fetch_all(&mut *access.tx)
@@ -461,7 +628,16 @@ impl Guard {
     pub async fn human_read(&self, id: Uuid) -> Result<()> {
         let mut access = self.access.lock().await;
         let request: HumanRequest = sqlx::query_as(
-            "SELECT * FROM human_requests WHERE id=$1 AND run_id=$2 AND workspace_id=$3",
+            &Query::select()
+                .column(Asterisk)
+                .from(Alias::new("human_requests"))
+                .cond_where(
+                    Condition::all()
+                        .add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                        .add(Expr::col(Alias::new("run_id")).eq(Expr::cust("$2")))
+                        .add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$3"))),
+                )
+                .to_string(PostgresQueryBuilder),
         )
         .bind(id)
         .bind(self.run.id)
@@ -613,11 +789,17 @@ pub async fn control(
 ) -> Result<Run> {
     let mut access = Access::begin(&f.store, identity).await?;
     let result = async {
-        let run: Run = sqlx::query_as("SELECT * FROM runs WHERE id=$1")
-            .bind(id)
-            .fetch_optional(&mut *access.tx)
-            .await?
-            .ok_or(Error::Forbidden)?;
+        let run: Run = sqlx::query_as(
+            &Query::select()
+                .column(Asterisk)
+                .from(Alias::new("runs"))
+                .cond_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                .to_string(PostgresQueryBuilder),
+        )
+        .bind(id)
+        .fetch_optional(&mut *access.tx)
+        .await?
+        .ok_or(Error::Forbidden)?;
         let workspace = access.workspace(run.workspace_id).await?;
         access.context = workspace.attributes.clone();
         access.require(&workspace, "workspace.read").await?;
@@ -629,20 +811,32 @@ pub async fn control(
             .require(&access.resource("run", id, json!({})), "run.control")
             .await?;
         if action == "resume" {
-            let grant: Grant =
-                sqlx::query_as("SELECT * FROM authorization_execution WHERE run_id=$1 FOR UPDATE")
-                    .bind(id)
-                    .fetch_optional(&mut *access.tx)
-                    .await?
-                    .ok_or(Error::Forbidden)?;
+            let grant: Grant = sqlx::query_as(
+                &Query::select()
+                    .column(Asterisk)
+                    .from(Alias::new("authorization_execution"))
+                    .cond_where(Expr::col(Alias::new("run_id")).eq(Expr::cust("$1")))
+                    .lock(LockType::Update)
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(id)
+            .fetch_optional(&mut *access.tx)
+            .await?
+            .ok_or(Error::Forbidden)?;
             if grant.tenant != identity.tenant || grant.root_subject != identity.subject {
                 return Err(Error::Forbidden);
             }
-            sqlx::query("UPDATE authorization_execution SET credential_id=$2 WHERE run_id=$1")
-                .bind(id)
-                .bind(identity.credential_id)
-                .execute(&mut *access.tx)
-                .await?;
+            sqlx::query(
+                &Query::update()
+                    .table(Alias::new("authorization_execution"))
+                    .value(Alias::new("credential_id"), Expr::cust("$2"))
+                    .cond_where(Expr::col(Alias::new("run_id")).eq(Expr::cust("$1")))
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(id)
+            .bind(identity.credential_id)
+            .execute(&mut *access.tx)
+            .await?;
         }
         f.store.control_in(&mut access.tx, id, action).await
     }
@@ -655,24 +849,45 @@ pub async fn control(
 pub async fn details(f: &Federation, identity: &SubjectIdentity, id: Uuid) -> Result<RunDetails> {
     let mut access = Access::begin(&f.store, identity).await?;
     let result = async {
-        let run: Run = sqlx::query_as("SELECT * FROM runs WHERE id=$1")
-            .bind(id)
-            .fetch_optional(&mut *access.tx)
-            .await?
-            .ok_or(Error::Forbidden)?;
+        let run: Run = sqlx::query_as(
+            &Query::select()
+                .column(Asterisk)
+                .from(Alias::new("runs"))
+                .cond_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                .to_string(PostgresQueryBuilder),
+        )
+        .bind(id)
+        .fetch_optional(&mut *access.tx)
+        .await?
+        .ok_or(Error::Forbidden)?;
         let workspace = access.workspace(run.workspace_id).await?;
         access.context = workspace.attributes.clone();
         access.require(&workspace, "workspace.read").await?;
         if !access.run_visible(&run).await? {
             return Err(Error::Forbidden);
         }
-        let invocations: Vec<Invocation> =
-            sqlx::query_as("SELECT * FROM invocations WHERE run_id=$1 ORDER BY created_at")
-                .bind(id)
-                .fetch_all(&mut *access.tx)
-                .await?;
+        let invocations: Vec<Invocation> = sqlx::query_as(
+            &Query::select()
+                .column(Asterisk)
+                .from(Alias::new("invocations"))
+                .cond_where(Expr::col(Alias::new("run_id")).eq(Expr::cust("$1")))
+                .order_by(Alias::new("created_at"), Order::Asc)
+                .to_string(PostgresQueryBuilder),
+        )
+        .bind(id)
+        .fetch_all(&mut *access.tx)
+        .await?;
         let memory: Option<Value> = sqlx::query_scalar(
-            "SELECT data FROM memory WHERE agent_id=$1 AND agent_version=$2 AND workspace_id=$3",
+            &Query::select()
+                .column(Alias::new("data"))
+                .from(Alias::new("memory"))
+                .cond_where(
+                    Condition::all()
+                        .add(Expr::col(Alias::new("agent_id")).eq(Expr::cust("$1")))
+                        .add(Expr::col(Alias::new("agent_version")).eq(Expr::cust("$2")))
+                        .add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$3"))),
+                )
+                .to_string(PostgresQueryBuilder),
         )
         .bind(&run.agent_id)
         .bind(&run.agent_version)

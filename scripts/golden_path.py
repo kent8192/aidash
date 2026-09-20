@@ -212,7 +212,7 @@ class NatsProxy(socketserver.ThreadingTCPServer):
 
 class NatsForwarder(socketserver.BaseRequestHandler):
     def handle(self):
-        with socket.create_connection(("127.0.0.1", 42270), timeout=10) as upstream:
+        with socket.create_connection(("127.0.0.1", int(os.environ.get("AIDASH_NATS_PORT", "42270"))), timeout=10) as upstream:
             upstream.settimeout(None)
             sockets = (self.request, upstream)
             try:
@@ -237,7 +237,9 @@ def main():
     run_id = uuid.uuid4().hex[:12]
     db_a, db_b = f"aidash_e2e_{run_id}_a", f"aidash_e2e_{run_id}_b"
     node_a, node_b = f"aidash://acceptance-{run_id}-a", f"aidash://acceptance-{run_id}-b"
-    base_a, base_b = "http://127.0.0.1:18080", "http://127.0.0.1:18081"
+    port_a = int(os.environ.get("AIDASH_E2E_PORT_A", "18080"))
+    port_b = int(os.environ.get("AIDASH_E2E_PORT_B", "18081"))
+    base_a, base_b = f"http://127.0.0.1:{port_a}", f"http://127.0.0.1:{port_b}"
     logs = ROOT / ".ignore" / "acceptance"
     logs.mkdir(parents=True, exist_ok=True)
     (logs / "report.json").unlink(missing_ok=True)
@@ -251,7 +253,7 @@ def main():
     nats_proxy = NatsProxy()
 
     def launch(node, database, port, mode):
-        env = {**os.environ, "DATABASE_URL": f"postgres://aidash:aidash-local@127.0.0.1:54370/{database}", "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_NODE_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN, "AIDASH_SECRET_COMPACTION_FIXTURE": "local-compaction-fixture-key", "AIDASH_WEB_DIR": str(ROOT / "web/dist")}
+        env = {**os.environ, "DATABASE_URL": f"postgres://aidash:aidash-local@127.0.0.1:{os.environ.get('AIDASH_POSTGRES_PORT', '54370')}/{database}", "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_NODE_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN, "AIDASH_SECRET_COMPACTION_FIXTURE": "local-compaction-fixture-key", "AIDASH_WEB_DIR": str(ROOT / "web/dist")}
         log = open(logs / f"{database}-{mode}-{len(children)}.log", "w")
         files.append(log)
         child = subprocess.Popen([args.binary, mode], cwd=ROOT, env=env, stdout=log, stderr=log)
@@ -271,8 +273,8 @@ def main():
     try:
         psql("aidash_a", f"CREATE DATABASE {db_a}")
         psql("aidash_a", f"CREATE DATABASE {db_b}")
-        launch(node_a, db_a, 18080, "server")
-        launch(node_b, db_b, 18081, "server")
+        launch(node_a, db_a, port_a, "server")
+        launch(node_b, db_b, port_b, "server")
         wait_for(lambda: api_request(base_a, "/health"), label="Node A")
         wait_for(lambda: api_request(base_b, "/health"), label="Node B")
         for base, other, endpoint in [(base_a, node_b, base_b), (base_b, node_a, base_a)]:
@@ -289,10 +291,10 @@ def main():
         discovered = api_request(base_a, "/api/discover", {"capability": "web.search", "language": "ja"})
         assert {a["node_id"] for a in discovered["agents"]} == {node_a, node_b}
         threading.Thread(target=sse, daemon=True).start()
-        launch(node_a, db_a, 18080, "worker")
-        remote_worker = launch(node_b, db_b, 18081, "worker")
+        launch(node_a, db_a, port_a, "worker")
+        remote_worker = launch(node_b, db_b, port_b, "worker")
         if args.dashboard:
-            created = json.loads(subprocess.check_output(["node", "web/scripts/start-goal.mjs"], cwd=ROOT, text=True))
+            created = json.loads(subprocess.check_output(["node", "web/scripts/start-goal.mjs"], cwd=ROOT, text=True, env={**os.environ, "AIDASH_E2E_URL": base_a}))
         else:
             created = api_request(base_a, "/api/conversations", {"title": "Rustフレームワークの競合調査", "goal": "Rust製Webフレームワークについて競合調査して", "target": {"id": "research-cluster", "version": "1.0.0"}, "target_kind": "cluster"})
         workspace = created["workspace"]["id"]
@@ -301,7 +303,7 @@ def main():
         remote_worker.kill()
         remote_worker.wait(timeout=10)
         print("Killed Node B worker after the remote tool effect, before result persistence", flush=True)
-        launch(node_b, db_b, 18081, "worker")
+        launch(node_b, db_b, port_b, "worker")
 
         def complete():
             snapshot = api_request(base_a, f"/api/workspaces/{workspace}")
@@ -366,7 +368,7 @@ def main():
         report = {"node_a": base_a, "node_b": base_b, "node_ids": [node_a, node_b], "workspace_id": workspace, "tasks": len(snapshot["tasks"]), "artifacts": len(snapshot["artifacts"]), "external_effects": len(fixture.effects), "tool_requests": dict(fixture.requests), "provider_calls": dict(fixture.provider_calls), "recovered_run_id": recovered["id"], "sse_events": len(stream_events), "database_a": db_a, "database_b": db_b, "goal_entry": "dashboard" if args.dashboard else "api", "remote_human_controls": "passed", "nats_outage_startup_and_recovery": "passed", "events_queued_during_outage": pending_events, "additional_plugins": plugin_runs}
         if args.dashboard:
             browser_report = logs / "browser-report.json"
-            subprocess.run(["npm", "test", "--prefix", "web", "--", "--reporter=list,json"], cwd=ROOT, check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report)})
+            subprocess.run(["npm", "test", "--prefix", "web", "--", "--reporter=list,json"], cwd=ROOT, check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b})
             report["browser_scenarios"] = json.loads(browser_report.read_text())["stats"]["expected"]
         (logs / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
         print("Golden path passed:", json.dumps(report, ensure_ascii=False), flush=True)

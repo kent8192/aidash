@@ -4,6 +4,10 @@ use crate::{
     registry::{EntityRef, Entry, Search},
     store::Store,
 };
+use sea_orm::sea_query::{
+    Alias, Asterisk, Condition, Expr, JoinType, LockType, OnConflict, Order, PostgresQueryBuilder,
+    Query,
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -30,32 +34,123 @@ impl Authorization {
         }
         let mut tx = self.pool.begin().await?;
         Self::load(&mut tx, tenant).await?;
-        let exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM registry WHERE id=$1 AND version=$2)")
-                .bind(&entry.id)
-                .bind(&entry.version)
-                .fetch_one(&mut *tx)
-                .await?;
+        let exists: bool = sqlx::query_scalar(
+            &Query::select()
+                .expr(Expr::exists(
+                    Query::select()
+                        .expr(Expr::cust("1"))
+                        .from(Alias::new("registry"))
+                        .cond_where(
+                            Condition::all()
+                                .add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                                .add(Expr::col(Alias::new("version")).eq(Expr::cust("$2"))),
+                        )
+                        .to_owned(),
+                ))
+                .to_string(PostgresQueryBuilder),
+        )
+        .bind(&entry.id)
+        .bind(&entry.version)
+        .fetch_one(&mut *tx)
+        .await?;
         if !exists {
             return Err(Error::NotFound("registry entry".into()));
         }
         let binding: Option<Binding> = if expected_revision == 0 {
-            sqlx::query_as("INSERT INTO authorization_catalog(tenant,entry_id,entry_version,enabled,revision) VALUES($1,$2,$3,$4,1) ON CONFLICT DO NOTHING RETURNING *")
-                .bind(tenant).bind(&entry.id).bind(&entry.version).bind(enabled).fetch_optional(&mut *tx).await?
+            sqlx::query_as(
+                &Query::insert()
+                    .into_table(Alias::new("authorization_catalog"))
+                    .columns([
+                        Alias::new("tenant"),
+                        Alias::new("entry_id"),
+                        Alias::new("entry_version"),
+                        Alias::new("enabled"),
+                        Alias::new("revision"),
+                    ])
+                    .values_panic([
+                        Expr::cust("$1").into(),
+                        Expr::cust("$2").into(),
+                        Expr::cust("$3").into(),
+                        Expr::cust("$4").into(),
+                        Expr::cust("1").into(),
+                    ])
+                    .on_conflict(OnConflict::new().do_nothing().to_owned())
+                    .returning_all()
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(tenant)
+            .bind(&entry.id)
+            .bind(&entry.version)
+            .bind(enabled)
+            .fetch_optional(&mut *tx)
+            .await?
         } else {
-            sqlx::query_as("UPDATE authorization_catalog SET enabled=$4,revision=revision+1 WHERE tenant=$1 AND entry_id=$2 AND entry_version=$3 AND revision=$5 RETURNING *")
-                .bind(tenant).bind(&entry.id).bind(&entry.version).bind(enabled).bind(expected_revision).fetch_optional(&mut *tx).await?
+            sqlx::query_as(
+                &Query::update()
+                    .table(Alias::new("authorization_catalog"))
+                    .value(Alias::new("enabled"), Expr::cust("$4"))
+                    .value(Alias::new("revision"), Expr::cust("revision+1"))
+                    .cond_where(
+                        Condition::all()
+                            .add(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
+                            .add(Expr::col(Alias::new("entry_id")).eq(Expr::cust("$2")))
+                            .add(Expr::col(Alias::new("entry_version")).eq(Expr::cust("$3")))
+                            .add(Expr::col(Alias::new("revision")).eq(Expr::cust("$5"))),
+                    )
+                    .returning_all()
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(tenant)
+            .bind(&entry.id)
+            .bind(&entry.version)
+            .bind(enabled)
+            .bind(expected_revision)
+            .fetch_optional(&mut *tx)
+            .await?
         };
         let binding = binding.ok_or_else(|| Error::Conflict("catalog revision changed".into()))?;
-        sqlx::query("INSERT INTO authorization_catalog_history(tenant,entry_id,entry_version,revision,enabled,actor) VALUES($1,$2,$3,$4,$5,$6)")
-            .bind(tenant).bind(&entry.id).bind(&entry.version).bind(binding.revision).bind(enabled).bind(actor).execute(&mut *tx).await?;
+        sqlx::query(
+            &Query::insert()
+                .into_table(Alias::new("authorization_catalog_history"))
+                .columns([
+                    Alias::new("tenant"),
+                    Alias::new("entry_id"),
+                    Alias::new("entry_version"),
+                    Alias::new("revision"),
+                    Alias::new("enabled"),
+                    Alias::new("actor"),
+                ])
+                .values_panic([
+                    Expr::cust("$1").into(),
+                    Expr::cust("$2").into(),
+                    Expr::cust("$3").into(),
+                    Expr::cust("$4").into(),
+                    Expr::cust("$5").into(),
+                    Expr::cust("$6").into(),
+                ])
+                .to_string(PostgresQueryBuilder),
+        )
+        .bind(tenant)
+        .bind(&entry.id)
+        .bind(&entry.version)
+        .bind(binding.revision)
+        .bind(enabled)
+        .bind(actor)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(binding)
     }
 
     pub async fn catalog(&self, tenant: &str) -> Result<Vec<Binding>> {
         Ok(sqlx::query_as(
-            "SELECT * FROM authorization_catalog WHERE tenant=$1 ORDER BY entry_id,entry_version",
+            &Query::select()
+                .column(Asterisk)
+                .from(Alias::new("authorization_catalog"))
+                .cond_where(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
+                .order_by(Alias::new("entry_id"), Order::Asc)
+                .order_by(Alias::new("entry_version"), Order::Asc)
+                .to_string(PostgresQueryBuilder),
         )
         .bind(tenant)
         .fetch_all(&self.pool)
@@ -73,11 +168,66 @@ pub(crate) async fn entry(
         return Err(Error::Forbidden);
     }
     let query = if access.inherited_lease {
-        "SELECT r.metadata FROM authorization_catalog c JOIN registry r ON r.id=c.entry_id AND r.version=c.entry_version WHERE c.tenant=$1 AND c.entry_id=$2 AND c.entry_version=$3 AND c.enabled"
+        Query::select()
+            .column((Alias::new("r"), Alias::new("metadata")))
+            .from_as(Alias::new("authorization_catalog"), Alias::new("c"))
+            .join_as(
+                JoinType::InnerJoin,
+                Alias::new("registry"),
+                Alias::new("r"),
+                Condition::all()
+                    .add(
+                        Expr::col((Alias::new("r"), Alias::new("id")))
+                            .eq(Expr::col((Alias::new("c"), Alias::new("entry_id")))),
+                    )
+                    .add(
+                        Expr::col((Alias::new("r"), Alias::new("version")))
+                            .eq(Expr::col((Alias::new("c"), Alias::new("entry_version")))),
+                    ),
+            )
+            .cond_where(
+                Condition::all()
+                    .add(Expr::col((Alias::new("c"), Alias::new("tenant"))).eq(Expr::cust("$1")))
+                    .add(Expr::col((Alias::new("c"), Alias::new("entry_id"))).eq(Expr::cust("$2")))
+                    .add(
+                        Expr::col((Alias::new("c"), Alias::new("entry_version")))
+                            .eq(Expr::cust("$3")),
+                    )
+                    .add(Expr::col((Alias::new("c"), Alias::new("enabled"))).eq(true)),
+            )
+            .to_string(PostgresQueryBuilder)
     } else {
-        "SELECT r.metadata FROM authorization_catalog c JOIN registry r ON r.id=c.entry_id AND r.version=c.entry_version WHERE c.tenant=$1 AND c.entry_id=$2 AND c.entry_version=$3 AND c.enabled FOR SHARE OF c"
+        Query::select()
+            .column((Alias::new("r"), Alias::new("metadata")))
+            .from_as(Alias::new("authorization_catalog"), Alias::new("c"))
+            .join_as(
+                JoinType::InnerJoin,
+                Alias::new("registry"),
+                Alias::new("r"),
+                Condition::all()
+                    .add(
+                        Expr::col((Alias::new("r"), Alias::new("id")))
+                            .eq(Expr::col((Alias::new("c"), Alias::new("entry_id")))),
+                    )
+                    .add(
+                        Expr::col((Alias::new("r"), Alias::new("version")))
+                            .eq(Expr::col((Alias::new("c"), Alias::new("entry_version")))),
+                    ),
+            )
+            .cond_where(
+                Condition::all()
+                    .add(Expr::col((Alias::new("c"), Alias::new("tenant"))).eq(Expr::cust("$1")))
+                    .add(Expr::col((Alias::new("c"), Alias::new("entry_id"))).eq(Expr::cust("$2")))
+                    .add(
+                        Expr::col((Alias::new("c"), Alias::new("entry_version")))
+                            .eq(Expr::cust("$3")),
+                    )
+                    .add(Expr::col((Alias::new("c"), Alias::new("enabled"))).eq(true)),
+            )
+            .lock_with_tables(LockType::Share, [Alias::new("c")])
+            .to_string(PostgresQueryBuilder)
     };
-    let document: Option<Value> = sqlx::query_scalar(query)
+    let document: Option<Value> = sqlx::query_scalar(&query)
         .bind(&access.identity.tenant)
         .bind(&reference.id)
         .bind(&reference.version)
@@ -95,11 +245,60 @@ pub(crate) fn resource(access: &Access, entry: &Entry) -> super::policy::Resourc
 
 pub(crate) async fn list_in(access: &mut Access, search: &Search) -> Result<Vec<Entry>> {
     let query = if access.inherited_lease {
-        "SELECT r.metadata FROM authorization_catalog c JOIN registry r ON r.id=c.entry_id AND r.version=c.entry_version WHERE c.tenant=$1 AND c.enabled ORDER BY c.entry_id,c.entry_version"
+        Query::select()
+            .column((Alias::new("r"), Alias::new("metadata")))
+            .from_as(Alias::new("authorization_catalog"), Alias::new("c"))
+            .join_as(
+                JoinType::InnerJoin,
+                Alias::new("registry"),
+                Alias::new("r"),
+                Condition::all()
+                    .add(
+                        Expr::col((Alias::new("r"), Alias::new("id")))
+                            .eq(Expr::col((Alias::new("c"), Alias::new("entry_id")))),
+                    )
+                    .add(
+                        Expr::col((Alias::new("r"), Alias::new("version")))
+                            .eq(Expr::col((Alias::new("c"), Alias::new("entry_version")))),
+                    ),
+            )
+            .cond_where(
+                Condition::all()
+                    .add(Expr::col((Alias::new("c"), Alias::new("tenant"))).eq(Expr::cust("$1")))
+                    .add(Expr::col((Alias::new("c"), Alias::new("enabled"))).eq(true)),
+            )
+            .order_by((Alias::new("c"), Alias::new("entry_id")), Order::Asc)
+            .order_by((Alias::new("c"), Alias::new("entry_version")), Order::Asc)
+            .to_string(PostgresQueryBuilder)
     } else {
-        "SELECT r.metadata FROM authorization_catalog c JOIN registry r ON r.id=c.entry_id AND r.version=c.entry_version WHERE c.tenant=$1 AND c.enabled ORDER BY c.entry_id,c.entry_version FOR SHARE OF c"
+        Query::select()
+            .column((Alias::new("r"), Alias::new("metadata")))
+            .from_as(Alias::new("authorization_catalog"), Alias::new("c"))
+            .join_as(
+                JoinType::InnerJoin,
+                Alias::new("registry"),
+                Alias::new("r"),
+                Condition::all()
+                    .add(
+                        Expr::col((Alias::new("r"), Alias::new("id")))
+                            .eq(Expr::col((Alias::new("c"), Alias::new("entry_id")))),
+                    )
+                    .add(
+                        Expr::col((Alias::new("r"), Alias::new("version")))
+                            .eq(Expr::col((Alias::new("c"), Alias::new("entry_version")))),
+                    ),
+            )
+            .cond_where(
+                Condition::all()
+                    .add(Expr::col((Alias::new("c"), Alias::new("tenant"))).eq(Expr::cust("$1")))
+                    .add(Expr::col((Alias::new("c"), Alias::new("enabled"))).eq(true)),
+            )
+            .order_by((Alias::new("c"), Alias::new("entry_id")), Order::Asc)
+            .order_by((Alias::new("c"), Alias::new("entry_version")), Order::Asc)
+            .lock_with_tables(LockType::Share, [Alias::new("c")])
+            .to_string(PostgresQueryBuilder)
     };
-    let documents: Vec<Value> = sqlx::query_scalar(query)
+    let documents: Vec<Value> = sqlx::query_scalar(&query)
         .bind(&access.identity.tenant)
         .fetch_all(&mut *access.tx)
         .await?;

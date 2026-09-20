@@ -65,26 +65,47 @@ impl EventBus {
         })
     }
     pub async fn publish_once(&self, f: &Federation) -> Result<usize> {
-        let events:Vec<Event>=sqlx::query_as("SELECT sequence,id,node_id,workspace_id,kind,data,created_at FROM events WHERE published_at IS NULL ORDER BY sequence LIMIT 100").fetch_all(&f.store.pool).await?;
-        for event in &events {
+        let events: Vec<Event> = sqlx::query_as("UPDATE events SET next_attempt_at=now()+interval '30 seconds' WHERE id IN (SELECT id FROM events WHERE published_at IS NULL AND next_attempt_at<=now() ORDER BY next_attempt_at,sequence LIMIT 100 FOR UPDATE SKIP LOCKED) RETURNING sequence,id,node_id,workspace_id,kind,data,created_at")
+            .fetch_all(&f.store.pool).await?;
+        let mut attempts = futures_util::stream::iter(events.into_iter().map(|event| async move {
             let mut headers = async_nats::HeaderMap::new();
-            headers.insert("Nats-Msg-Id", event.id.to_string());
-            self.context
-                .publish_with_headers(
-                    self.subject.clone(),
-                    headers,
-                    event.cloud_event().to_string().into(),
-                )
-                .await
-                .map_err(|e| Error::External(e.to_string()))?
-                .await
-                .map_err(|e| Error::External(e.to_string()))?;
-            sqlx::query("UPDATE events SET published_at=now() WHERE id=$1")
-                .bind(event.id)
-                .execute(&f.store.pool)
-                .await?;
+            let message_id = event.id.to_string();
+            let header_len = b"NATS/1.0\r\nNats-Msg-Id: \r\n\r\n".len() + message_id.len();
+            headers.insert("Nats-Msg-Id", message_id);
+            let result = async {
+                let payload = event.cloud_event().to_string();
+                let limit = self.context.client().server_info().max_payload;
+                // Reject locally: an oversized HPUB disconnects the shared NATS
+                // connection and can discard acknowledgements for healthy events.
+                if payload.len().saturating_add(header_len) > limit {
+                    return Err(Error::External(format!("event exceeds NATS max_payload {limit}")));
+                }
+                self.context.publish_with_headers(self.subject.clone(), headers,
+                    payload.into()).await
+                    .map_err(|error| Error::External(error.to_string()))?.await
+                    .map_err(|error| Error::External(error.to_string()))?;
+                Result::Ok(())
+            }.await;
+            match result {
+                Ok(()) => {
+                    sqlx::query("UPDATE events SET published_at=now(),publish_error=NULL WHERE id=$1")
+                        .bind(event.id).execute(&f.store.pool).await?;
+                    Ok(1)
+                }
+                Err(error) => {
+                    // Retain the event and a visible error; later rows keep flowing.
+                    sqlx::query("UPDATE events SET publish_error=$2,next_attempt_at=now()+interval '30 seconds' WHERE id=$1")
+                        .bind(event.id).bind(error.to_string()).execute(&f.store.pool).await?;
+                    tracing::warn!(event_id=%event.id, %error, "outbox event retained for retry");
+                    Ok::<usize, Error>(0)
+                }
+            }
+        })).buffer_unordered(8);
+        let mut published = 0;
+        while let Some(result) = attempts.next().await {
+            published += result?;
         }
-        Ok(events.len())
+        Ok(published)
     }
     pub async fn publisher(&self, f: Federation) -> Result<()> {
         loop {

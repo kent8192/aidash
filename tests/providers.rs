@@ -116,3 +116,42 @@ fn refunds_require_complete_usage_and_anthropic_counts_cached_input() {
             .usage_complete
     );
 }
+
+#[test]
+fn malformed_arguments_and_inconsistent_stop_reasons_are_retryable() {
+    use aidash::{
+        Error,
+        provider::{parse_anthropic, parse_openai},
+    };
+    for message in [
+        json!({"content":"text"}),
+        json!({"tool_calls":[{"id":"one","function":{"name":"tool","arguments":"{"}}]}),
+    ] {
+        assert!(matches!(
+            parse_openai(json!({"choices":[{"finish_reason":"tool_calls","message":message}]})),
+            Err(Error::External(_))
+        ));
+    }
+    assert!(matches!(
+        parse_anthropic(
+            json!({"stop_reason":"tool_use","content":[{"type":"text","text":"text"}]})
+        ),
+        Err(Error::External(_))
+    ));
+}
+
+#[test]
+fn registry_and_transport_configs_reject_misspelled_optional_fields() {
+    use aidash::{registry::AgentConfig, tool::ToolConfig};
+    let mut model = serde_json::to_value(config("openai", "http://localhost/v1".into())).unwrap();
+    model["credential_en"] = json!("AIDASH_SECRET_MISSING");
+    assert!(serde_json::from_value::<ModelConfig>(model).is_err());
+    assert!(
+        serde_json::from_value::<AgentConfig>(
+            json!({"model":{"id":"m","version":"1.0.0"},"instructions":"test","tool":[]})
+        )
+        .is_err()
+    );
+    assert!(serde_json::from_value::<ToolConfig>(json!({"transport":"http","endpoint":"http://localhost","replay":"unsafe","credential_en":"typo"})).is_err());
+    assert!(serde_json::from_value::<Entry>(json!({"id":"a","version":"1.0.0","kind":"skill","name":{"en":"a"},"description":{},"capabilty":[]})).is_err());
+}

@@ -5,6 +5,7 @@ use super::{
     policy::{Decision, Evaluation, Resource},
 };
 use crate::{Error, Result, store::Store};
+use sea_orm::sea_query::{Alias, Condition, Expr, LockType, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
@@ -92,7 +93,11 @@ impl Access {
         if let (Some(attributes), Some(context)) =
             (attributes.as_object_mut(), self.context.as_object())
         {
-            attributes.extend(context.clone());
+            for (key, value) in context {
+                attributes
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
+            }
         }
         Resource {
             tenant: self.identity.tenant.clone(),
@@ -111,11 +116,28 @@ impl Access {
             return Err(Error::Forbidden);
         }
         let query = if self.inherited_lease {
-            "SELECT owner_subject FROM authorization_workspaces WHERE workspace_id=$1 AND tenant=$2"
+            Query::select()
+                .column(Alias::new("owner_subject"))
+                .from(Alias::new("authorization_workspaces"))
+                .cond_where(
+                    Condition::all()
+                        .add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+                        .add(Expr::col(Alias::new("tenant")).eq(Expr::cust("$2"))),
+                )
+                .to_string(PostgresQueryBuilder)
         } else {
-            "SELECT owner_subject FROM authorization_workspaces WHERE workspace_id=$1 AND tenant=$2 FOR SHARE"
+            Query::select()
+                .column(Alias::new("owner_subject"))
+                .from(Alias::new("authorization_workspaces"))
+                .cond_where(
+                    Condition::all()
+                        .add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+                        .add(Expr::col(Alias::new("tenant")).eq(Expr::cust("$2"))),
+                )
+                .lock(LockType::Share)
+                .to_string(PostgresQueryBuilder)
         };
-        let owner: Option<String> = sqlx::query_scalar(query)
+        let owner: Option<String> = sqlx::query_scalar(&query)
             .bind(id)
             .bind(&self.identity.tenant)
             .fetch_optional(&mut *self.tx)

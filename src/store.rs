@@ -27,15 +27,18 @@ impl Store {
         Ok(())
     }
 
+    pub async fn migrate(pool: &PgPool) -> Result<()> {
+        use migration::MigratorTrait;
+        let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(pool.clone());
+        migration::Migrator::up(&db, None).await?;
+        Ok(())
+    }
     pub async fn connect(url: &str, node_id: String) -> Result<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(16)
             .connect(url)
             .await?;
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .map_err(|e| Error::External(e.to_string()))?;
+        Self::migrate(&pool).await?;
         Ok(Self { pool, node_id })
     }
 
@@ -189,6 +192,28 @@ impl Store {
                 ));
             }
         }
+        if let Some(parent) = input.parent_id {
+            // Completion takes the same row lock before testing its children.
+            let status: String =
+                sqlx::query_scalar("SELECT status FROM tasks WHERE id=$1 FOR UPDATE")
+                    .bind(parent)
+                    .fetch_one(&mut **tx)
+                    .await?;
+            let replay: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tasks WHERE creation_key=$1)")
+                    .bind(key)
+                    .fetch_one(&mut **tx)
+                    .await?;
+            if matches!(
+                status.as_str(),
+                "COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+            ) && !replay
+            {
+                return Err(Error::Conflict(
+                    "cannot add a child to a terminal parent".into(),
+                ));
+            }
+        }
         let task: Option<Task> = sqlx::query_as("INSERT INTO tasks(id,workspace_id,title,description,requirements,created_by,dependencies,parent_id,creation_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(creation_key) DO NOTHING RETURNING *")
             .bind(Uuid::new_v4()).bind(workspace).bind(&input.title).bind(&input.description).bind(&input.requirements).bind(creator).bind(&input.dependencies).bind(input.parent_id).bind(key).fetch_optional(&mut **tx).await?;
         let task = match task {
@@ -254,6 +279,13 @@ impl Store {
             sqlx::query("INSERT INTO runs(id,task_id,workspace_id,home_node,agent_id,agent_version) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(home_node,task_id) DO NOTHING")
                 .bind(Uuid::new_v4()).bind(id).bind(claimed.workspace_id).bind(&self.node_id)
                 .bind(&agent.id).bind(&agent.version).execute(&mut **tx).await?;
+            let executor: (String, String) = sqlx::query_as("SELECT agent_id,agent_version FROM runs WHERE home_node=$1 AND task_id=$2 FOR UPDATE")
+                .bind(&self.node_id).bind(id).fetch_one(&mut **tx).await?;
+            if executor != (agent.id.clone(), agent.version.clone()) {
+                return Err(Error::Conflict(
+                    "task has a queued run for a different agent".into(),
+                ));
+            }
         }
         self.event(
             tx,
@@ -395,6 +427,11 @@ impl Store {
         if t.status != "RUNNING" {
             return Err(Error::Conflict("only a running task can complete".into()));
         }
+        let unresolved: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tasks WHERE parent_id=$1 AND status NOT IN ('COMPLETED','ABANDONED'))")
+            .bind(id).fetch_one(&mut *tx).await?;
+        if unresolved {
+            return Err(Error::Conflict("task has unresolved children".into()));
+        }
         let a: Artifact = sqlx::query_as("INSERT INTO artifacts(id,workspace_id,task_id,kind,name,content,created_by,idempotency_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *")
             .bind(Uuid::new_v4()).bind(t.workspace_id).bind(id).bind(&artifact.kind).bind(&artifact.name).bind(&artifact.content).bind(owner).bind(key).fetch_one(&mut *tx).await?;
         let t: Task = sqlx::query_as("UPDATE tasks SET status='COMPLETED',completion_key=$2,revision=revision+1 WHERE id=$1 RETURNING *").bind(id).bind(key).fetch_one(&mut *tx).await?;
@@ -495,16 +532,11 @@ impl Store {
         key: Option<&str>,
     ) -> Result<()> {
         nonempty(content, "message")?;
-        let inserted = sqlx::query("INSERT INTO messages(id,workspace_id,sender,content,idempotency_key) VALUES($1,$2,$3,$4,$5) ON CONFLICT(idempotency_key) DO NOTHING")
-            .bind(Uuid::new_v4()).bind(workspace).bind(sender).bind(content).bind(key).execute(&mut **tx).await?.rows_affected();
-        if inserted > 0 {
-            self.event(
-                tx,
-                Some(workspace),
-                "message.created",
-                json!({"sender":sender,"content":content}),
-            )
-            .await?;
+        let inserted: Option<Message> = sqlx::query_as("INSERT INTO messages(id,workspace_id,sender,content,idempotency_key) VALUES($1,$2,$3,$4,$5) ON CONFLICT(idempotency_key) DO NOTHING RETURNING *")
+            .bind(Uuid::new_v4()).bind(workspace).bind(sender).bind(content).bind(key).fetch_optional(&mut **tx).await?;
+        if let Some(message) = inserted {
+            self.event(tx, Some(workspace), "message.created", json!(message))
+                .await?;
         } else {
             let matches: bool = sqlx::query_scalar("SELECT workspace_id=$2 AND sender=$3 AND content=$4 FROM messages WHERE idempotency_key=$1")
                 .bind(key).bind(workspace).bind(sender).bind(content).fetch_one(&mut **tx).await?;
@@ -624,7 +656,7 @@ impl Store {
         }
         self.event(
             &mut tx,
-            Some(run.workspace_id),
+            (run.home_node == self.node_id).then_some(run.workspace_id),
             "run.authorization_blocked",
             json!({"run_id":run.id,"task_id":run.task_id}),
         )
@@ -717,6 +749,22 @@ impl Store {
         prompt: &str,
         key: &str,
     ) -> Result<HumanRequest> {
+        let mut tx = self.pool.begin().await?;
+        let request = self
+            .human_request_in(&mut tx, run, kind, prompt, key)
+            .await?;
+        tx.commit().await?;
+        Ok(request)
+    }
+
+    async fn human_request_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        run: &Run,
+        kind: &str,
+        prompt: &str,
+        key: &str,
+    ) -> Result<HumanRequest> {
         if !matches!(
             kind,
             "QUESTION" | "APPROVAL_REQUIRED" | "CONFIRMATION" | "INFORMATION_REQUEST"
@@ -724,13 +772,12 @@ impl Store {
             return Err(Error::Invalid("unknown human request kind".into()));
         }
         nonempty(prompt, "human request prompt")?;
-        let mut tx = self.pool.begin().await?;
         let h: Option<HumanRequest> = sqlx::query_as("INSERT INTO human_requests(id,workspace_id,run_id,kind,prompt,request_key) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(request_key) DO NOTHING RETURNING *")
-            .bind(Uuid::new_v4()).bind(run.workspace_id).bind(run.id).bind(kind).bind(prompt).bind(key).fetch_optional(&mut *tx).await?;
+            .bind(Uuid::new_v4()).bind(run.workspace_id).bind(run.id).bind(kind).bind(prompt).bind(key).fetch_optional(&mut **tx).await?;
         let h = match h {
             Some(h) => {
                 self.event(
-                    &mut tx,
+                    tx,
                     (run.home_node == self.node_id).then_some(run.workspace_id),
                     "human.requested",
                     json!(h),
@@ -741,7 +788,7 @@ impl Store {
             None => {
                 sqlx::query_as("SELECT * FROM human_requests WHERE request_key=$1")
                     .bind(key)
-                    .fetch_one(&mut *tx)
+                    .fetch_one(&mut **tx)
                     .await?
             }
         };
@@ -750,8 +797,36 @@ impl Store {
                 "human request key reused with different input".into(),
             ));
         }
-        tx.commit().await?;
         Ok(h)
+    }
+    pub(crate) async fn reconciliation_request(
+        &self,
+        run: &mut Run,
+        worker: Uuid,
+        key: &str,
+        prompt: &str,
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        let h = self
+            .human_request_in(
+                &mut tx,
+                run,
+                "CONFIRMATION",
+                prompt,
+                &format!("{key}:reconcile"),
+            )
+            .await?;
+        run.pending["human_request_id"] = json!(h.id);
+        run.pending["uncertain_key"] = json!(key);
+        run.pending["resume_phase"] = json!("TOOL_CALL");
+        run.phase = "WAITING".into();
+        let changed = sqlx::query("UPDATE runs SET pending=$3,phase='WAITING' WHERE id=$1 AND lease_owner=$2 AND lease_until>now()")
+            .bind(run.id).bind(worker).bind(&run.pending).execute(&mut *tx).await?.rows_affected();
+        if changed != 1 {
+            return Err(Error::Conflict("worker lease lost".into()));
+        }
+        tx.commit().await?;
+        Ok(())
     }
     pub async fn answer(&self, id: Uuid, response: Value) -> Result<HumanRequest> {
         let mut tx = self.pool.begin().await?;
