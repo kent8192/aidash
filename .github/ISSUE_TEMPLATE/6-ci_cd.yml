@@ -8,50 +8,12 @@ body:
       value: |
         Thanks for reporting a CI/CD issue! Please provide as much detail as possible.
 
-  - type: dropdown
+  - type: input
     id: affected-workflow
     attributes:
       label: Affected Workflow
-      description: Select the affected CI/CD workflow
-      options:
-        - auto-close-parent-issue.yml
-        - auto-label-pr.yml
-        - build-runner-ami.yml
-        - cancel-on-pr-close.yml
-        - check.yml
-        - ci.yml
-        - clippy.yml
-        - coverage.yml
-        - coverage-main.yml
-        - cross-crate-integration-test.yml
-        - cross-platform-check.yml
-        - deploy-website.yml
-        - detect-affected-packages.yml
-        - develop-leak-guard.yml
-        - develop-merge-guard.yml
-        - doc-test.yml
-        - docs-rs-check.yml
-        - examples-test.yml
-        - examples-test-standalone.yml
-        - fmt.yml
-        - intra-crate-integration-test.yml
-        - monitor-rc-stability.yml
-        - msrv-test.yml
-        - mutation-test.yml
-        - publish-check.yml
-        - release-plz.yml
-        - release-plz-dry-run.yml
-        - security-audit.yml
-        - semver-check.yml
-        - stale.yml
-        - terraform-check.yml
-        - terraform-plan.yml
-        - todo-check.yml
-        - ui-test.yml
-        - unit-test.yml
-        - update-version-refs.yml
-        - wasm-check.yml
-        - Other (specify below)
+      description: Enter the affected workflow name or path
+      placeholder: ".github/workflows/ci.yml"
     validations:
       required: true
 

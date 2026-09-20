@@ -103,9 +103,6 @@ Related to: #
 - [ ] I have added tests that prove my fix is effective or that my feature works
 - [ ] New and existing unit tests pass locally with my changes
 - [ ] I have tested with all affected database backends (if applicable)
-- [ ] I have formatted the code with `cargo make fmt-fix`
-- [ ] I have checked the code with `cargo make clippy-check`
-
 ## Related Issues
 
 <!-- List any related issues, PRs, or external references. -->
