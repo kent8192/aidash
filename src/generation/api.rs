@@ -24,6 +24,8 @@ pub fn routes() -> OpenApiRouter<Federation> {
         .routes(routes!(requests))
         .routes(routes!(control))
         .routes(routes!(history))
+        .routes(routes!(usage))
+        .routes(routes!(spec))
 }
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -248,6 +250,105 @@ async fn history(
                     .bind(id)
                     .fetch_all(&mut *access.tx)
                     .await?)
+            }
+            .await;
+            Ok(Json(access.finish(result).await?))
+        }
+    }
+}
+
+#[derive(serde::Serialize, sqlx::FromRow, utoipa::ToSchema)]
+#[schema(as=GenerationUsage)]
+pub struct Usage {
+    pub token_limit: i64,
+    pub used_tokens: i64,
+    pub inference_attempts: i64,
+}
+#[utoipa::path(get,path="/generation/{tenant}/requests/{id}/usage",operation_id="generation_usage",params(("tenant"=String,Path),("id"=Uuid,Path)),responses((status=200,body=Usage)),security(("bearer_auth"=[])))]
+async fn usage(
+    State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
+    Path((tenant, id)): Path<(String, Uuid)>,
+) -> Result<Json<Usage>> {
+    // One statement observes the counters and committed attempt ledger at the
+    // same PostgreSQL snapshot while a worker reserves or settles its call.
+    let query = "SELECT b.token_limit,b.used_tokens,(SELECT count(*) FROM generation_usage u WHERE u.request_id=r.id) AS inference_attempts FROM generation_requests r JOIN generation_budgets b ON b.request_id=r.id WHERE r.tenant=$1 AND r.id=$2";
+    match actor {
+        Actor::Operator => Ok(Json(
+            sqlx::query_as(query)
+                .bind(tenant)
+                .bind(id)
+                .fetch_optional(&f.store.pool)
+                .await?
+                .ok_or(Error::Forbidden)?,
+        )),
+        Actor::Subject(identity) => {
+            if tenant != identity.tenant {
+                return Err(Error::Forbidden);
+            }
+            let mut access = Access::begin(&f.store, &identity).await?;
+            let result = async {
+                let job: Request =
+                    sqlx::query_as("SELECT * FROM generation_requests WHERE tenant=$1 AND id=$2")
+                        .bind(&tenant)
+                        .bind(id)
+                        .fetch_optional(&mut *access.tx)
+                        .await?
+                        .ok_or(Error::Forbidden)?;
+                if !job.visible(&mut access).await? {
+                    return Err(Error::Forbidden);
+                }
+                Ok(sqlx::query_as(query)
+                    .bind(tenant)
+                    .bind(id)
+                    .fetch_one(&mut *access.tx)
+                    .await?)
+            }
+            .await;
+            Ok(Json(access.finish(result).await?))
+        }
+    }
+}
+
+#[utoipa::path(get,path="/generation/{tenant}/requests/{id}/spec",operation_id="generation_spec",params(("tenant"=String,Path),("id"=Uuid,Path)),responses((status=200,body=Spec)),security(("bearer_auth"=[])))]
+async fn spec(
+    State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
+    Path((tenant, id)): Path<(String, Uuid)>,
+) -> Result<Json<Spec>> {
+    let query = "SELECT h.spec FROM generation_requests r JOIN generation_policy_history h ON h.tenant=r.tenant AND h.policy_id=r.policy_id AND h.revision=r.policy_revision WHERE r.tenant=$1 AND r.id=$2";
+    match actor {
+        Actor::Operator => {
+            let document: serde_json::Value = sqlx::query_scalar(query)
+                .bind(tenant)
+                .bind(id)
+                .fetch_optional(&f.store.pool)
+                .await?
+                .ok_or(Error::Forbidden)?;
+            Ok(Json(serde_json::from_value(document)?))
+        }
+        Actor::Subject(identity) => {
+            if tenant != identity.tenant {
+                return Err(Error::Forbidden);
+            }
+            let mut access = Access::begin(&f.store, &identity).await?;
+            let result = async {
+                let job: Request =
+                    sqlx::query_as("SELECT * FROM generation_requests WHERE tenant=$1 AND id=$2")
+                        .bind(&tenant)
+                        .bind(id)
+                        .fetch_optional(&mut *access.tx)
+                        .await?
+                        .ok_or(Error::Forbidden)?;
+                if !job.visible(&mut access).await? {
+                    return Err(Error::Forbidden);
+                }
+                let document: serde_json::Value = sqlx::query_scalar(query)
+                    .bind(tenant)
+                    .bind(id)
+                    .fetch_one(&mut *access.tx)
+                    .await?;
+                Ok(serde_json::from_value(document)?)
             }
             .await;
             Ok(Json(access.finish(result).await?))

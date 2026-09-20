@@ -139,30 +139,52 @@ pub(crate) async fn write(
             .fetch_optional(&mut **tx)
             .await?
             .ok_or_else(|| Error::NotFound("authorization policy".into()))?;
-    let cfg = spec.validate(&serde_json::from_value(document)?)?;
-    for (reference, kind) in std::iter::once((&cfg.model, "model"))
-        .chain(cfg.tools.iter().map(|r| (r, "tool")))
-        .chain(cfg.skills.iter().map(|r| (r, "skill")))
-        .chain(cfg.cluster.iter().map(|r| (r, "cluster")))
-    {
-        let metadata:Option<Value>=sqlx::query_scalar("SELECT r.metadata FROM authorization_catalog c JOIN registry r ON r.id=c.entry_id AND r.version=c.entry_version WHERE c.tenant=$1 AND c.entry_id=$2 AND c.entry_version=$3 AND c.enabled FOR SHARE OF c")
+    // Revocation must never prevent an otherwise unchanged policy from being
+    // disabled. Re-enabling or editing still validates every live dependency.
+    let disabling = if expected > 0 && !spec.enabled {
+        let previous: Option<Value> = sqlx::query_scalar(
+            "SELECT spec FROM generation_policies WHERE tenant=$1 AND id=$2 AND revision=$3",
+        )
+        .bind(tenant)
+        .bind(id)
+        .bind(expected)
+        .fetch_optional(&mut **tx)
+        .await?;
+        previous
+            .map(|mut previous| {
+                previous["enabled"] = json!(false);
+                previous == json!(spec)
+            })
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    if !disabling {
+        let cfg = spec.validate(&serde_json::from_value(document)?)?;
+        for (reference, kind) in std::iter::once((&cfg.model, "model"))
+            .chain(cfg.tools.iter().map(|r| (r, "tool")))
+            .chain(cfg.skills.iter().map(|r| (r, "skill")))
+            .chain(cfg.cluster.iter().map(|r| (r, "cluster")))
+        {
+            let metadata:Option<Value>=sqlx::query_scalar("SELECT r.metadata FROM authorization_catalog c JOIN registry r ON r.id=c.entry_id AND r.version=c.entry_version WHERE c.tenant=$1 AND c.entry_id=$2 AND c.entry_version=$3 AND c.enabled FOR SHARE OF c")
             .bind(tenant).bind(&reference.id).bind(&reference.version).fetch_optional(&mut **tx).await?;
-        let entry: Entry = serde_json::from_value(metadata.ok_or_else(|| {
-            Error::Invalid("generation components require tenant catalog approval".into())
-        })?)?;
-        if entry.kind != kind {
-            return Err(Error::Invalid(format!(
-                "generation component must be a {kind}"
-            )));
-        }
-        if kind == "model" {
-            let model: ModelConfig = serde_json::from_value(entry.config)?;
-            let required =
-                model.context_window as i64 + (model.context_window / 8).clamp(256, 4096) as i64;
-            if spec.limits.tokens_per_agent < required {
-                return Err(Error::Invalid(
-                    "agent token allowance is smaller than one model reservation".into(),
-                ));
+            let entry: Entry = serde_json::from_value(metadata.ok_or_else(|| {
+                Error::Invalid("generation components require tenant catalog approval".into())
+            })?)?;
+            if entry.kind != kind {
+                return Err(Error::Invalid(format!(
+                    "generation component must be a {kind}"
+                )));
+            }
+            if kind == "model" {
+                let model: ModelConfig = serde_json::from_value(entry.config)?;
+                let required = model.context_window as i64
+                    + (model.context_window / 8).clamp(256, 4096) as i64;
+                if spec.limits.tokens_per_agent < required {
+                    return Err(Error::Invalid(
+                        "agent token allowance is smaller than one model reservation".into(),
+                    ));
+                }
             }
         }
     }

@@ -337,6 +337,39 @@ async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_all
     .await;
     assert_eq!(jobs[0]["status"], "COMPLETED");
     assert_eq!(jobs[0]["policy_revision"], 1);
+    let (status, pinned) = request(
+        &app,
+        &token,
+        "GET",
+        &format!(
+            "/api/generation/acme/requests/{}/spec",
+            job["id"].as_str().unwrap()
+        ),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        pinned["template"]["config"]["instructions"],
+        "Test approved work"
+    );
+    assert_eq!(pinned["permissions"]["attributes"]["team"], "research");
+    let (status, usage) = request(
+        &app,
+        &token,
+        "GET",
+        &format!(
+            "/api/generation/acme/requests/{}/usage",
+            job["id"].as_str().unwrap()
+        ),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        usage,
+        json!({"token_limit":200000,"used_tokens":140,"inference_attempts":1})
+    );
     assert_eq!(jobs[0]["id"], job["id"]);
     assert_eq!(
         request(
@@ -776,6 +809,36 @@ async fn generation_reads_and_events_respect_denial_and_tenant_boundaries() {
     )
     .await;
     assert_eq!(jobs, json!([]));
+    assert_eq!(
+        request(
+            &app,
+            &token,
+            "GET",
+            &format!(
+                "/api/generation/acme/requests/{}/spec",
+                job["id"].as_str().unwrap()
+            ),
+            Value::Null
+        )
+        .await
+        .0,
+        403
+    );
+    assert_eq!(
+        request(
+            &app,
+            &token,
+            "GET",
+            &format!(
+                "/api/generation/acme/requests/{}/usage",
+                job["id"].as_str().unwrap()
+            ),
+            Value::Null
+        )
+        .await
+        .0,
+        403
+    );
     let (_, events) = request(&app, &token, "GET", "/api/events", Value::Null).await;
     assert!(
         events
@@ -1073,5 +1136,63 @@ async fn matching_ordinary_agent_is_reused_without_generation_or_quota() {
     .await;
     assert_eq!(policies[0]["generated_count"], 0);
     assert_eq!(policies[0]["allocated_tokens"], 0);
+    cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn disabling_an_existing_policy_remains_possible_after_component_revocation() {
+    let (f, url, schema) = setup().await;
+    let app = api::router(f.clone());
+    let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+    let mut spec = definition(&app, &f.config.api_token).await;
+    assert_eq!(
+        request(
+            &app,
+            &token,
+            "POST",
+            "/api/generation/acme/policies/research",
+            json!({"expected_revision":0,"spec":spec})
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        request(
+            &app,
+            &f.config.api_token,
+            "POST",
+            "/api/authorization/acme/catalog",
+            json!({"entry":{"id":"model","version":"1.0.0"},"expected_revision":1,"enabled":false})
+        )
+        .await
+        .0,
+        200
+    );
+    spec["enabled"] = json!(false);
+    let (status, disabled) = request(
+        &app,
+        &token,
+        "POST",
+        "/api/generation/acme/policies/research",
+        json!({"expected_revision":1,"spec":spec}),
+    )
+    .await;
+    assert_eq!(status, 200, "{disabled}");
+    assert_eq!(disabled["spec"]["enabled"], false);
+    spec["enabled"] = json!(true);
+    assert_eq!(
+        request(
+            &app,
+            &token,
+            "POST",
+            "/api/generation/acme/policies/research",
+            json!({"expected_revision":2,"spec":spec})
+        )
+        .await
+        .0,
+        400
+    );
     cleanup(f, &url, &schema).await;
 }

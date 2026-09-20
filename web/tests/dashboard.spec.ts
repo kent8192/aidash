@@ -7,7 +7,7 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByRole("heading", { name: "概要." })).toBeVisible();
 });
 
-test("observes the two-node execution and all eleven screens", async ({
+test("observes the two-node execution and all management screens", async ({
   page,
 }) => {
   const errors: string[] = [];
@@ -21,6 +21,7 @@ test("observes the two-node execution and all eleven screens", async ({
   ).toHaveText("2");
   for (const label of [
     "エージェント",
+    "Agent生成",
     "クラスター",
     "メッシュ",
     "タスク",

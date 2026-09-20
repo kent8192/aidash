@@ -821,6 +821,88 @@
         ]
       }
     },
+    "/api/generation/{tenant}/requests/{id}/spec": {
+      "get": {
+        "operationId": "generation_spec",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerationSpec"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/api/generation/{tenant}/requests/{id}/usage": {
+      "get": {
+        "operationId": "generation_usage",
+        "parameters": [
+          {
+            "name": "tenant",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerationUsage"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/api/generation/{tenant}/tasks/{id}/assign": {
       "post": {
         "operationId": "generation_assign",
@@ -2795,6 +2877,24 @@
           }
         },
         "additionalProperties": false
+      },
+      "GenerationUsage": {
+        "type": "object",
+        "required": ["token_limit", "used_tokens", "inference_attempts"],
+        "properties": {
+          "inference_attempts": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "token_limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "used_tokens": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
       },
       "Group": {
         "type": "object",

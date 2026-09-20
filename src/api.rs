@@ -1065,7 +1065,7 @@ mod schema_tests {
                 .values()
                 .map(|path| path.as_object().unwrap().len())
                 .sum::<usize>(),
-            43
+            45
         );
         for (path, operations) in paths {
             assert!(path.starts_with("/api/"));

@@ -50,6 +50,7 @@ export * from "./generationPolicy.ts";
 export * from "./generationPolicyUpdate.ts";
 export * from "./generationRequest.ts";
 export * from "./generationSpec.ts";
+export * from "./generationUsage.ts";
 export * from "./group.ts";
 export * from "./humanRequest.ts";
 export * from "./installation.ts";

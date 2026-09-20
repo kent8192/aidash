@@ -33,6 +33,8 @@ import type {
   GenerationPolicy,
   GenerationPolicyUpdate,
   GenerationRequest,
+  GenerationSpec,
+  GenerationUsage,
   HumanRequest,
   InstallInput,
   IssuedCredential,
@@ -642,6 +644,36 @@ export const generationHistory = async (
   options?: Parameters<typeof apiFetch>[1],
 ): Promise<GenerationHistory[]> => {
   return apiFetch<GenerationHistory[]>(getGenerationHistoryUrl(tenant, id), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGenerationSpecUrl = (tenant: string, id: string) => {
+  return `/api/generation/${tenant}/requests/${id}/spec`;
+};
+
+export const generationSpec = async (
+  tenant: string,
+  id: string,
+  options?: Parameters<typeof apiFetch>[1],
+): Promise<GenerationSpec> => {
+  return apiFetch<GenerationSpec>(getGenerationSpecUrl(tenant, id), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGenerationUsageUrl = (tenant: string, id: string) => {
+  return `/api/generation/${tenant}/requests/${id}/usage`;
+};
+
+export const generationUsage = async (
+  tenant: string,
+  id: string,
+  options?: Parameters<typeof apiFetch>[1],
+): Promise<GenerationUsage> => {
+  return apiFetch<GenerationUsage>(getGenerationUsageUrl(tenant, id), {
     ...options,
     method: "GET",
   });

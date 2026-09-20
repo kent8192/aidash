@@ -91,10 +91,12 @@ import {
   TaskForm,
   WorkspaceForm,
 } from "./forms";
+import { GenerationPage, GenerationAssignForm } from "./generation";
 import "./style.css";
 const sections = [
   ["overview", LayoutDashboard],
   ["agents", CircleDot],
+  ["generation", Zap],
   ["clusters", Boxes],
   ["mesh", Network],
   ["tasks", ListTodo],
@@ -205,6 +207,7 @@ function Dashboard({
         timer = setTimeout(() => {
           void client.invalidateQueries({ queryKey: ["state"] });
           void client.invalidateQueries({ queryKey: ["packages"] });
+          void client.invalidateQueries({ queryKey: ["generation"] });
           timer = undefined;
         }, 250);
       },
@@ -424,12 +427,15 @@ function Dashboard({
                     ? t("topologyHelp")
                     : section === "settings"
                       ? t("settingsHelp")
-                      : data?.node.id}
+                      : section === "generation"
+                        ? t("generationHelp")
+                        : data?.node.id}
               </p>
             </div>
             {(operator ||
               ["workspace", "task", "goal"].includes(primary.kind)) &&
-              !restrictedSection && (
+              !restrictedSection &&
+              section !== "generation" && (
                 <button
                   className="primary"
                   onClick={() => open({ kind: primary.kind })}
@@ -826,6 +832,7 @@ function Dashboard({
                   <EventList events={[...data.events].reverse()} tall />
                 </Panel>
               )}
+              {section === "generation" && <GenerationPage data={data} />}
               {section === "settings" && (
                 <>
                   <Panel title={t("node")}>
@@ -911,6 +918,7 @@ function Dashboard({
                 workspaceDetail: "workspace",
                 package: "package",
                 assign: "delegate",
+                generate: "generationAssign",
               } as Record<string, string>
             )[dialog.kind] ?? dialog.kind,
           )}
@@ -942,6 +950,15 @@ function Dashboard({
             {dialog.kind === "publish" && (
               <PublishForm data={data} submit={submit} />
             )}
+            {dialog.kind === "generate" &&
+              dialog.task &&
+              data.access.kind === "subject" && (
+                <GenerationAssignForm
+                  tenant={data.access.tenant}
+                  task={dialog.task}
+                  submit={submit}
+                />
+              )}
             {dialog.kind === "assign" && dialog.task && (
               <AssignForm
                 task={dialog.task}
@@ -967,6 +984,14 @@ function Dashboard({
                       <dd>{task.revision}</dd>
                     </dl>
                     <JsonView value={task.requirements} />
+                    {task.status === "OPEN" &&
+                      data.access.kind === "subject" && (
+                        <button
+                          onClick={() => open({ kind: "generate", task })}
+                        >
+                          {t("generationAssign")}
+                        </button>
+                      )}
                     {task.status === "OPEN" && (
                       <button
                         className="primary"
