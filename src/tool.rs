@@ -327,7 +327,22 @@ impl Tool for Builtin {
                 Ok(json!({"wait_seconds":input["seconds"].as_u64().unwrap_or(2).clamp(1,60)}))
             }
             "memory_write" => {
-                ctx.store.remember(&ctx.run, &input).await?;
+                if let Some(authority) = &ctx.home.authority {
+                    authority.remember(&ctx.store, &ctx.run, &input).await?;
+                } else if ctx.home.local() {
+                    let mut lease = crate::semantic::service::Lease::begin(
+                        &ctx.store,
+                        &crate::authorization::identity::Actor::Operator,
+                    )
+                    .await?;
+                    let result = crate::semantic::service::remember_in(
+                        &ctx.store, &mut lease, &ctx.run, &input,
+                    )
+                    .await;
+                    lease.finish(result).await?;
+                } else {
+                    ctx.store.remember(&ctx.run, &input).await?;
+                }
                 Ok(json!({"saved":true}))
             }
             "human_request" => {

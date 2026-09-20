@@ -1469,3 +1469,61 @@ details > summary {
 .transaction-details dd {
   overflow-wrap: anywhere;
 }
+
+.semantic-page {
+  display: grid;
+  gap: 20px;
+}
+.semantic-summary,
+.semantic-history {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.semantic-search {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 2fr 1fr 1fr auto;
+  align-items: end;
+}
+.semantic-result,
+.semantic-entry {
+  padding: 18px 0;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.semantic-result p {
+  white-space: pre-wrap;
+}
+.semantic-entry > div:first-child {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.semantic-history {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.semantic-history small {
+  margin-left: auto;
+}
+@media (max-width: 800px) {
+  .semantic-search {
+    grid-template-columns: 1fr;
+  }
+  .semantic-history small {
+    margin-left: 0;
+  }
+}
+.semantic-page .panel {
+  padding-bottom: 20px;
+}
+.semantic-page .panel > :not(.panel-heading) {
+  margin-left: 22px;
+  margin-right: 22px;
+}
+.semantic-page .semantic-summary {
+  padding-top: 14px;
+}

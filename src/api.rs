@@ -43,6 +43,7 @@ fn ordinary_routes() -> OpenApiRouter<Federation> {
     OpenApiRouter::new()
         .merge(administration)
         .merge(crate::generation::api::routes())
+        .merge(crate::semantic::api::routes())
         .routes(routes!(human_answer))
         .routes(routes!(run_message))
         .routes(routes!(conversation_create))
@@ -1148,7 +1149,7 @@ mod schema_tests {
                 .values()
                 .map(|path| path.as_object().unwrap().len())
                 .sum::<usize>(),
-            53
+            62
         );
         for (path, operations) in paths {
             assert!(path.starts_with("/api/"));

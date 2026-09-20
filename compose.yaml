@@ -16,6 +16,14 @@ services:
       interval: 2s
       timeout: 5s
       retries: 30
+  qdrant:
+    image: qdrant/qdrant:v1.19.1
+    environment:
+      QDRANT__SERVICE__API_KEY: ${AIDASH_SECRET_TEST_QDRANT:-local-semantic-vector-fixture-key-0123456789}
+    ports:
+      - "127.0.0.1:${AIDASH_QDRANT_PORT:-63370}:6333"
+    volumes:
+      - qdrant:/qdrant/storage
   nats:
     image: nats:2.12-alpine
     command: ["-js", "-sd", "/data"]
@@ -26,3 +34,4 @@ services:
 volumes:
   postgres:
   nats:
+  qdrant:

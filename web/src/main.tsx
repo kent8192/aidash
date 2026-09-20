@@ -28,6 +28,7 @@ import {
   Check,
   ChevronRight,
   CircleDot,
+  Database,
   GitBranch,
   Globe,
   LayoutDashboard,
@@ -93,6 +94,7 @@ import {
   WorkspaceForm,
 } from "./forms";
 import { GenerationPage, GenerationAssignForm } from "./generation";
+import { SemanticPage } from "./semantic";
 import { TransactionsPage } from "./transactions";
 import "./style.css";
 const sections = [
@@ -100,6 +102,7 @@ const sections = [
   ["agents", CircleDot],
   ["generation", Zap],
   ["transactions", GitBranch],
+  ["semantic", Database],
   ["clusters", Boxes],
   ["mesh", Network],
   ["tasks", ListTodo],
@@ -452,7 +455,7 @@ function Dashboard({
             {(operator ||
               ["workspace", "task", "goal"].includes(primary.kind)) &&
               !restrictedSection &&
-              !["generation", "transactions"].includes(section) && (
+              !["generation", "transactions", "semantic"].includes(section) && (
                 <button
                   className="primary"
                   onClick={() => open({ kind: primary.kind })}
@@ -519,6 +522,7 @@ function Dashboard({
                         t("activeAgents"),
                         data.registry.filter((e) => e.kind === "agent").length,
                         CircleDot,
+                        Database,
                       ],
                       [
                         t("activeTasks"),
@@ -859,6 +863,7 @@ function Dashboard({
                 </Panel>
               )}
               {section === "generation" && <GenerationPage data={data} />}
+              {section === "semantic" && <SemanticPage data={data} />}
               {section === "settings" && (
                 <>
                   <Panel title={t("node")}>

@@ -402,7 +402,8 @@ impl Access {
             if !visited.insert(run) {
                 continue;
             }
-            if !self.registry_reads_visible(run).await? {
+            if !self.registry_reads_visible(run).await? || !self.semantic_reads_visible(run).await?
+            {
                 return Ok(false);
             }
             let sources: Vec<(Uuid, String, Uuid)> = sqlx::query_as(

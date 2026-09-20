@@ -10,6 +10,7 @@ pub mod generation;
 pub mod harness;
 pub mod provider;
 pub mod registry;
+pub mod semantic;
 pub mod store;
 pub mod tool;
 pub mod transactions;

@@ -1121,8 +1121,19 @@ impl Store {
         }
     }
     pub async fn remember(&self, run: &Run, data: &Value) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        self.remember_in(&mut tx, run, data).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+    pub(crate) async fn remember_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        run: &Run,
+        data: &Value,
+    ) -> Result<()> {
         sqlx::query("INSERT INTO memory(agent_id,agent_version,workspace_id,data,home_node) VALUES($1,$2,$3,$4,$5) ON CONFLICT(agent_id,agent_version,workspace_id,home_node) DO UPDATE SET data=EXCLUDED.data")
-            .bind(&run.agent_id).bind(&run.agent_version).bind(run.workspace_id).bind(data).bind(self.memory_home(run)).execute(&self.pool).await?;
+            .bind(&run.agent_id).bind(&run.agent_version).bind(run.workspace_id).bind(data).bind(self.memory_home(run)).execute(&mut **tx).await?;
         Ok(())
     }
     pub async fn memory(&self, run: &Run) -> Result<Value> {

@@ -342,6 +342,14 @@ pub(crate) struct WorkerAuthority {
 }
 
 impl WorkerAuthority {
+    pub async fn remember(&self, store: &Store, run: &Run, data: &Value) -> Result<()> {
+        let outer = self.access.lock().await;
+        let access = Access::under_lease(&outer).await?;
+        let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
+        let result = crate::semantic::service::remember_in(store, &mut lease, run, data).await;
+        lease.finish(result).await
+    }
+
     pub async fn assign(
         &self,
         f: &Federation,
@@ -647,6 +655,33 @@ impl Guard {
             access: self.access.clone(),
         }
     }
+    pub async fn semantic_context(
+        &self,
+        store: &Store,
+        query: &str,
+        budget: usize,
+    ) -> Result<Option<crate::semantic::SearchResult>> {
+        let mut access = self.access.lock().await;
+        let result = crate::semantic::service::context_in(
+            &mut crate::semantic::service::Lease::Inherited(&mut access),
+            &self.run,
+            query,
+            budget,
+        )
+        .await?;
+        if let Some(result) = &result {
+            // Persist dependencies before sending retrieved text to inference.
+            // The outer authority/source leases remain held through this step.
+            let mut tx = store.pool.begin().await?;
+            for matched in &result.matches {
+                sqlx::query("INSERT INTO semantic_run_reads(run_id,entry_id,revision) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
+                    .bind(self.run.id).bind(matched.entry_id).bind(matched.revision).execute(&mut *tx).await?;
+            }
+            tx.commit().await?;
+        }
+        Ok(result)
+    }
+
     pub async fn human_read(&self, id: Uuid) -> Result<()> {
         let mut access = self.access.lock().await;
         let request: HumanRequest = sqlx::query_as(

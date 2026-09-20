@@ -311,7 +311,7 @@ impl Harness {
                     }
                 }
                 let mut context: Context = serde_json::from_value(run.context.clone())?;
-                let pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":snapshot,"memory":store.memory(run).await?,"agent_state":{"phase":run.phase,"step":run.step}});
+                let mut pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":snapshot,"memory":store.memory(run).await?,"agent_state":{"phase":run.phase,"step":run.step}});
                 let specifications = tools
                     .values()
                     .map(|t| t.specification())
@@ -320,6 +320,37 @@ impl Harness {
                     + context::estimated_tokens(&json!(specifications).to_string());
                 let output = (window / 8).clamp(256, 4096) as u32;
                 let budget = window.saturating_sub(overhead + output as usize + 512);
+                let semantic_budget =
+                    budget.saturating_sub(context::estimated_tokens(&pinned.to_string()) + 512);
+                if let Some(guard) = guard {
+                    if let Some(semantic) = guard
+                        .semantic_context(
+                            store,
+                            &format!("{}\n{}", task.title, task.description),
+                            semantic_budget,
+                        )
+                        .await?
+                    {
+                        pinned["semantic_memory"] = json!(semantic);
+                    }
+                } else if home.local() {
+                    let mut lease = crate::semantic::service::Lease::begin(
+                        store,
+                        &crate::authorization::identity::Actor::Operator,
+                    )
+                    .await?;
+                    let result = crate::semantic::service::context_in(
+                        &mut lease,
+                        run,
+                        &format!("{}\n{}", task.title, task.description),
+                        semantic_budget,
+                    )
+                    .await;
+                    if let Some(semantic) = lease.finish(result).await? {
+                        pinned["semantic_memory"] = json!(semantic);
+                    }
+                }
+
                 let compactor: Box<dyn context::jev::JevAsker> = if let Some(guard) = guard {
                     Box::new(guard.compactor(&self.federation))
                 } else {

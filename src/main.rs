@@ -58,6 +58,10 @@ async fn main() -> Result<()> {
         let f = federation.for_workers().await?;
         background.spawn(aidash::generation::provision::run(f));
     }
+    {
+        let f = federation.for_workers().await?;
+        background.spawn(aidash::semantic::worker::run(f));
+    }
     if mode != "worker" {
         let f = federation.clone();
         background.spawn(async move { EventBus::run(f).await });
