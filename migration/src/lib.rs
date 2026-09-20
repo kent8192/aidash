@@ -11,6 +11,7 @@ mod m20260920_200623_m0009_generation_compaction;
 mod m20260920_200623_m0010_delivery_retries;
 mod m20260920_204136_m0011_resource_reads;
 mod m20260920_210304_review_isolation;
+mod m20260920_211600_atomic_transactions;
 
 pub struct Migrator;
 #[async_trait::async_trait]
@@ -29,6 +30,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260920_200623_m0010_delivery_retries::Migration),
             Box::new(m20260920_204136_m0011_resource_reads::Migration),
             Box::new(m20260920_210304_review_isolation::Migration),
+            Box::new(m20260920_211600_atomic_transactions::Migration),
         ]
     }
 }

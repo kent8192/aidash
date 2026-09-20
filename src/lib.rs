@@ -12,6 +12,7 @@ pub mod provider;
 pub mod registry;
 pub mod store;
 pub mod tool;
+pub mod transactions;
 
 pub use error::{Error, Result};
 pub mod api_schema;

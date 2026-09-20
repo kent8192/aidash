@@ -48,6 +48,14 @@ async fn main() -> Result<()> {
     let mut background = tokio::task::JoinSet::new();
     {
         let f = federation.for_workers().await?;
+        background.spawn(aidash::transactions::coordinator::run(f));
+    }
+    {
+        let f = federation.for_workers().await?;
+        background.spawn(aidash::transactions::participant::run(f));
+    }
+    {
+        let f = federation.for_workers().await?;
         background.spawn(aidash::generation::provision::run(f));
     }
     if mode != "worker" {

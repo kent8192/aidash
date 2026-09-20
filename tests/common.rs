@@ -70,10 +70,9 @@ pub async fn setup() -> (Federation, String, String) {
         .await
         .unwrap();
     aidash::store::Store::migrate(&pool).await.unwrap();
-    let store = Store {
-        pool: pool.clone(),
-        node_id: "aidash://execution-test".into(),
-    };
+    let store = Store::from_pool(pool.clone(), "aidash://execution-test".into())
+        .await
+        .unwrap();
     let federation = Federation {
         store,
         registry: Registry::new(pool),
@@ -94,6 +93,7 @@ pub async fn setup() -> (Federation, String, String) {
 }
 
 pub async fn cleanup(f: Federation, url: &str, schema: &str) {
+    f.store.control_pool.close().await;
     f.store.pool.close().await;
     PgConnection::connect(url)
         .await

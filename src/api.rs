@@ -29,7 +29,7 @@ use std::{convert::Infallible, time::Duration};
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
-fn management_routes() -> OpenApiRouter<Federation> {
+fn ordinary_routes() -> OpenApiRouter<Federation> {
     let administration = OpenApiRouter::new()
         .merge(crate::authorization::api::routes())
         .routes(routes!(registry_create))
@@ -66,7 +66,12 @@ fn management_routes() -> OpenApiRouter<Federation> {
 
 pub fn openapi() -> utoipa::openapi::OpenApi {
     let (_, mut document) = OpenApiRouter::<Federation>::new()
-        .nest("/api", management_routes())
+        .nest(
+            "/api",
+            ordinary_routes()
+                .merge(crate::transactions::api::routes())
+                .routes(routes!(session)),
+        )
         .split_for_parts();
     document.info = utoipa::openapi::Info::new("Aidash API", env!("CARGO_PKG_VERSION"));
     document.info.description = Some("Management API for the Aidash agent mesh.".into());
@@ -83,7 +88,13 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
 }
 
 pub fn router(f: Federation) -> Router {
-    let (api, _) = management_routes().split_for_parts();
+    let (api, _) = ordinary_routes().split_for_parts();
+    let (transactions, _) = crate::transactions::api::routes()
+        .routes(routes!(session))
+        .split_for_parts();
+    let api = api
+        .route_layer(middleware::from_fn_with_state(f.clone(), node_visibility))
+        .merge(transactions);
     let api = api.route_layer(middleware::from_fn_with_state(f.clone(), api_auth));
     let federation = Router::new()
         .route("/discover", post(peer_discover))
@@ -91,6 +102,8 @@ pub fn router(f: Federation) -> Router {
         .route("/workspace", post(peer_workspace))
         .route("/observe", get(peer_observe))
         .route("/control", post(peer_control))
+        .route_layer(middleware::from_fn_with_state(f.clone(), node_visibility))
+        .merge(crate::transactions::api::peer_routes())
         .route_layer(middleware::from_fn_with_state(f.clone(), peer_auth));
     let web = tower_http::services::ServeDir::new(&f.config.web_dir).not_found_service(
         tower_http::services::ServeFile::new(format!("{}/index.html", f.config.web_dir)),
@@ -98,7 +111,10 @@ pub fn router(f: Federation) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/openapi.json", get(|| async { Json(openapi()) }))
-        .route("/.well-known/aidash", get(identity))
+        .route(
+            "/.well-known/aidash",
+            get(identity).layer(middleware::from_fn_with_state(f.clone(), node_visibility)),
+        )
         .nest("/api", api)
         .nest("/federation/v0.1", federation)
         .fallback_service(web)
@@ -111,6 +127,32 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .to_str()
         .ok()?
         .strip_prefix("Bearer ")
+}
+
+#[utoipa::path(get,path="/session",operation_id="session",responses((status=200,body=SessionResponse)),security(("bearer_auth"=[])))]
+async fn session(
+    State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
+) -> Json<SessionResponse> {
+    let access = match actor {
+        Actor::Operator => AccessProfile::Operator,
+        Actor::Subject(identity) => AccessProfile::Subject {
+            tenant: identity.tenant,
+            subject: identity.subject,
+        },
+    };
+    Json(SessionResponse {
+        access,
+        node_id: f.config.node_id,
+    })
+}
+async fn node_visibility(
+    State(f): State<Federation>,
+    request: Request,
+    next: Next,
+) -> Result<Response> {
+    let _visibility = crate::transactions::gate::ReadLease::begin(&f.store).await?;
+    Ok(next.run(request).await)
 }
 async fn api_auth(
     State(f): State<Federation>,
@@ -135,7 +177,7 @@ async fn api_auth(
     );
     Ok(response)
 }
-async fn operator_only(request: Request, next: Next) -> Result<Response> {
+pub(crate) async fn operator_only(request: Request, next: Next) -> Result<Response> {
     if !matches!(request.extensions().get::<Actor>(), Some(Actor::Operator)) {
         return Err(Error::Forbidden);
     }
@@ -164,7 +206,7 @@ async fn peer_auth(State(f): State<Federation>, request: Request, next: Next) ->
         .await?;
     Ok(next.run(request).await)
 }
-fn peer_node(headers: &HeaderMap) -> Result<&str> {
+pub(crate) fn peer_node(headers: &HeaderMap) -> Result<&str> {
     headers
         .get("x-aidash-node")
         .and_then(|h| h.to_str().ok())
@@ -723,10 +765,23 @@ async fn stream(
     }
     let stream = async_stream::stream! {
         loop {
+            let visibility=match crate::transactions::gate::ReadLease::begin(&f.store).await {
+                Ok(lease)=>lease,
+                Err(Error::TransactionPending)=>{tokio::time::sleep(Duration::from_millis(250)).await;continue;},
+                Err(_)=>{yield Ok(SseEvent::default().event("error").data("event stream interrupted"));return;}
+            };
             let events = if let Some(scope) = &scope { scope.poll_events(cursor, q.workspace_id, 100).await }
                 else { f.store.events(cursor, q.workspace_id, 100).await.map(|events| { let scanned = events.last().map_or(cursor, |event| event.sequence); (events, scanned) }) };
+            drop(visibility);
             match events {
                 Ok((events, scanned)) => { for event in events {
+                    let visibility=loop {
+                        match crate::transactions::gate::ReadLease::begin(&f.store).await {
+                            Ok(lease)=>break lease,
+                            Err(Error::TransactionPending)=>tokio::time::sleep(Duration::from_millis(250)).await,
+                            Err(_)=>{yield Ok(SseEvent::default().event("error").data("event stream interrupted"));return;}
+                        }
+                    };
                     cursor = event.sequence;
                     if let Some(scope) = &scope {
                         match scope.can_emit(&event).await {
@@ -735,6 +790,7 @@ async fn stream(
                             Err(_) => { yield Ok(SseEvent::default().event("error").data("event stream interrupted")); return; }
                         }
                     }
+                    drop(visibility);
                     yield Ok(SseEvent::default().id(cursor.to_string()).event("mesh").data(event.cloud_event().to_string()));
                 } cursor = scanned; },
                 Err(e) => { tracing::error!(error=%e,"SSE read failed"); yield Ok(SseEvent::default().event("error").data("event stream interrupted")); break; }
@@ -1092,7 +1148,7 @@ mod schema_tests {
                 .values()
                 .map(|path| path.as_object().unwrap().len())
                 .sum::<usize>(),
-            45
+            53
         );
         for (path, operations) in paths {
             assert!(path.starts_with("/api/"));

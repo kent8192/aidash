@@ -19,6 +19,7 @@ pub struct Harness {
 impl Harness {
     pub async fn worker_once(&self) -> Result<bool> {
         let store = &self.federation.store;
+        let _visibility = crate::transactions::gate::ReadLease::begin(store).await?;
         let token = Uuid::new_v4();
         let Some(mut run) = store
             .lease_run(token, self.federation.config.lease_seconds)
@@ -53,6 +54,10 @@ impl Harness {
             let attempts = current.pending["retry_count"].as_u64().unwrap_or(0) + 1;
             if matches!(e, Error::Forbidden | Error::Unauthorized) {
                 store.pause_for_authorization(&current, token).await?;
+            } else if matches!(e, Error::TransactionPending) {
+                current.pending["retry_at"] =
+                    json!(chrono::Utc::now() + chrono::Duration::seconds(1));
+                store.save_run(&current, token, "run.retrying").await?;
             } else if current.pending.get("terminal_transition").is_some() {
                 // Delivery is durable and unbounded; never retry the failed tool
                 // just because its home node has not acknowledged terminal state.
@@ -95,6 +100,9 @@ impl Harness {
                 Ok(true) => {}
                 Ok(false) => {
                     tokio::select! {_=tokio::time::sleep(Duration::from_millis(500))=>{},_=self.federation.notify.notified()=>{}}
+                }
+                Err(Error::TransactionPending) => {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
                 }
                 Err(e) => {
                     tracing::error!(error=%e,"worker step failed");

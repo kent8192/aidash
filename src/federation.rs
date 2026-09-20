@@ -168,6 +168,33 @@ impl Federation {
         path: &str,
         body: Option<&Value>,
     ) -> Result<T> {
+        let response = self.peer_response(node, method, path, body).await?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(
+                if status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                    && response
+                        .headers()
+                        .get("x-aidash-transaction-pending")
+                        .is_some_and(|value| value == "1")
+                {
+                    Error::TransactionPending
+                } else if status == reqwest::StatusCode::CONFLICT {
+                    Error::Conflict("remote task state changed".into())
+                } else {
+                    Error::External(format!("peer {node} returned {status}"))
+                },
+            );
+        }
+        crate::response::json(response, 4_194_304).await
+    }
+    pub(crate) async fn peer_response(
+        &self,
+        node: &str,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<reqwest::Response> {
         let peer = self.peer(node).await?;
         let mut request = self
             .client
@@ -186,16 +213,7 @@ impl Federation {
         if let Some(body) = body {
             request = request.json(body);
         }
-        let response = request.send().await?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(if status == reqwest::StatusCode::CONFLICT {
-                Error::Conflict("remote task state changed".into())
-            } else {
-                Error::External(format!("peer {node} returned {status}"))
-            });
-        }
-        crate::response::json(response, 4_194_304).await
+        Ok(request.send().await?)
     }
     pub async fn discover(&self, search: &Search) -> Result<Discovery> {
         let mut query = search.clone();
@@ -352,6 +370,7 @@ impl Federation {
         Ok(())
     }
     pub async fn retry_deliveries(&self) -> Result<()> {
+        let _visibility = crate::transactions::gate::ReadLease::begin(&self.store).await?;
         let pending:Vec<Delegation>=sqlx::query_as("UPDATE delegations SET next_attempt_at=now()+interval '5 seconds' WHERE task_id IN (SELECT task_id FROM delegations WHERE NOT delivered AND next_attempt_at<=now() ORDER BY next_attempt_at,created_at LIMIT 100 FOR UPDATE SKIP LOCKED) RETURNING task_id,node_id,agent_id,agent_version,delivered").fetch_all(&self.store.pool).await?;
         let mut deliveries = stream::iter(pending.into_iter().map(|d| async move {
             let result = self.deliver(&d).await;

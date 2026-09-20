@@ -1,0 +1,214 @@
+import { test, expect } from "@playwright/test";
+import { createServer } from "node:http";
+import { randomUUID } from "node:crypto";
+import type { AddressInfo } from "node:net";
+
+test("transaction dashboard survives reload during a partition, aborts safely and displays committed changes", async ({
+  page,
+  request,
+  baseURL,
+}) => {
+  test.setTimeout(90000);
+  const token = "acceptance-access-token";
+  const headers = { authorization: `Bearer ${token}` };
+  const peerId = `aidash://transaction-ui-${randomUUID()}`;
+  const api = async (path: string, body?: unknown) => {
+    const response =
+      body === undefined
+        ? await request.get(path, { headers })
+        : await request.post(path, { headers, data: body });
+    expect(response.status(), await response.text()).toBe(200);
+    return response.json();
+  };
+  const peer = createServer(async (req, res) => {
+    if (req.url === "/.well-known/aidash") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: peerId, protocol_version: "0.1" }));
+      return;
+    }
+    if (req.url === "/federation/v0.1/transactions/finish") {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const manifest = JSON.parse(Buffer.concat(chunks).toString());
+      const details = await fetch(
+        `${baseURL}/api/transactions/${manifest.id}`,
+        { headers },
+      ).then((response) => response.json());
+      if (details.transaction.decision !== "ABORT") {
+        res.writeHead(409);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          id: manifest.id,
+          coordinator: manifest.coordinator,
+          digest: details.transaction.digest,
+          manifest,
+          phase: "ABORTED",
+          updated_at: new Date().toISOString(),
+        }),
+      );
+      return;
+    }
+    res.writeHead(503, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "fixture partition" }));
+  });
+  await new Promise<void>((resolve) => peer.listen(0, "127.0.0.1", resolve));
+  let pending: string | undefined;
+  try {
+    const session = await api("/api/session");
+    const workspace = await api("/api/workspaces", {
+      title: "Atomic dashboard",
+      goal: "Commit or abort together",
+    });
+    await api("/api/peers", {
+      node_id: peerId,
+      endpoint: `http://127.0.0.1:${(peer.address() as AddressInfo).port}`,
+      credential_env: "AIDASH_SECRET_TRANSACTION_FIXTURE",
+      protocol_version: "0.1",
+      enabled: true,
+    });
+    await page.addInitScript(() => {
+      sessionStorage.setItem("aidash-token", "acceptance-access-token");
+      localStorage.setItem("aidash-locale", "en-US");
+    });
+    await page.goto("/transactions");
+    await page.getByLabel("Peer node ID", { exact: true }).fill(peerId);
+    await page
+      .getByRole("button", { name: "Grant trust", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Revoke trust", exact: true }),
+    ).toBeVisible();
+    const manifest = (remote: boolean, expected_revision = 0) => ({
+      id: randomUUID(),
+      coordinator: session.node_id,
+      isolation: "serializable",
+      deadline: new Date(Date.now() + 300000).toISOString(),
+      participants: [
+        {
+          node_id: session.node_id,
+          mutations: [
+            {
+              kind: "workspace_state",
+              workspace_id: workspace.id,
+              expected_revision,
+              state: { result: "committed" },
+            },
+          ],
+        },
+        ...(remote ? [{ node_id: peerId, mutations: [] }] : []),
+      ].sort((a, b) => a.node_id.localeCompare(b.node_id)),
+    });
+    const submit = async (value: ReturnType<typeof manifest>) => {
+      await page
+        .getByRole("button", { name: "Create transaction", exact: true })
+        .click();
+      await page
+        .getByLabel("Transaction manifest", { exact: true })
+        .fill(JSON.stringify(value, null, 2));
+      await page
+        .getByRole("button", { name: "Review changes", exact: true })
+        .click();
+      await expect(page.getByRole("dialog")).toContainText(value.id);
+      await page
+        .getByRole("button", { name: "Submit transaction", exact: true })
+        .click();
+      await expect(page.locator(".transaction-details")).toContainText(
+        value.id,
+      );
+    };
+    const blocked = manifest(true);
+    pending = blocked.id;
+    await submit(blocked);
+    await expect
+      .poll(async () =>
+        (
+          await request.get(`/api/workspaces/${workspace.id}`, { headers })
+        ).status(),
+      )
+      .toBe(503);
+    await page.reload();
+    await expect(
+      page.getByRole("heading", { name: "Waiting for transaction recovery" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: blocked.id, exact: true }).click();
+    await expect(page.locator(".transaction-details")).toContainText(
+      "Preparing",
+    );
+    await page
+      .getByRole("button", { name: "Abort undecided transaction", exact: true })
+      .click();
+    await expect(page.locator(".transaction-details > .badge")).toHaveText(
+      "Aborted",
+    );
+    expect(
+      (await api(`/api/workspaces/${workspace.id}`)).workspace.state,
+    ).toEqual({});
+    pending = undefined;
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Revoke trust", exact: true })
+      .click();
+    await expect(page.getByText("Disabled", { exact: true })).toBeVisible();
+
+    const committed = manifest(false);
+    await submit(committed);
+    await expect(page.locator(".transaction-details > .badge")).toHaveText(
+      "Committed",
+    );
+    await expect(
+      page.getByRole("button", {
+        name: "Abort undecided transaction",
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    expect(
+      (await api(`/api/workspaces/${workspace.id}`)).workspace.state,
+    ).toEqual({
+      result: "committed",
+    });
+    await page.screenshot({
+      path: "../.ignore/dashboard-transactions-desktop.png",
+      fullPage: true,
+    });
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await submit(manifest(false));
+    await expect(page.locator(".transaction-details > .badge")).toHaveText(
+      "Aborted",
+    );
+    expect(
+      (await api(`/api/workspaces/${workspace.id}`)).workspace.revision,
+    ).toBe(1);
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await page.getByLabel("Language", { exact: true }).selectOption("ja-JP");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(
+      page.getByRole("heading", { name: "分散トランザクション", exact: true }),
+    ).toBeVisible();
+    await page.screenshot({
+      path: "../.ignore/dashboard-transactions-mobile.png",
+      fullPage: true,
+    });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+  } finally {
+    if (pending) {
+      await request.post(`/api/transactions/${pending}/abort`, { headers });
+      await expect
+        .poll(
+          async () =>
+            (await api(`/api/transactions/${pending}`)).transaction.complete,
+        )
+        .toBe(true);
+    }
+    await new Promise<void>((resolve, reject) =>
+      peer.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});

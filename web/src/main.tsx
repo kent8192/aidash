@@ -42,9 +42,10 @@ import {
   Zap,
 } from "lucide-react";
 import { subscribe } from "./api";
-import { AUTHENTICATION_EXPIRED } from "./transport";
+import { ApiError, AUTHENTICATION_EXPIRED } from "./transport";
 import {
   state as getState,
+  session as getSession,
   mesh as getMesh,
   discover,
   marketplace,
@@ -92,11 +93,13 @@ import {
   WorkspaceForm,
 } from "./forms";
 import { GenerationPage, GenerationAssignForm } from "./generation";
+import { TransactionsPage } from "./transactions";
 import "./style.css";
 const sections = [
   ["overview", LayoutDashboard],
   ["agents", CircleDot],
   ["generation", Zap],
+  ["transactions", GitBranch],
   ["clusters", Boxes],
   ["mesh", Network],
   ["tasks", ListTodo],
@@ -158,6 +161,12 @@ function Dashboard({
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const session = useQuery({
+    queryKey: ["session"],
+    queryFn: () => getSession(),
+    enabled: connected,
+    refetchInterval: 5000,
+  });
   const state = useQuery({
     queryKey: ["state"],
     queryFn: () => getState(),
@@ -176,9 +185,13 @@ function Dashboard({
     window.addEventListener(AUTHENTICATION_EXPIRED, revoked);
     return () => window.removeEventListener(AUTHENTICATION_EXPIRED, revoked);
   }, [client]);
-  const operator = state.data?.access.kind === "operator";
+  const operator = session.data?.access.kind === "operator";
   const restrictedSection =
-    !operator && ["mesh", "marketplace"].includes(section);
+    !operator && ["mesh", "marketplace", "transactions"].includes(section);
+  const showOrdinary =
+    !state.isError && !restrictedSection && section !== "transactions";
+  const atomicPending =
+    state.error instanceof ApiError && state.error.status === 503;
   const mesh = useQuery({
     queryKey: ["mesh"],
     queryFn: () => getMesh(),
@@ -346,7 +359,9 @@ function Dashboard({
         <nav>
           {sections
             .filter(
-              ([key]) => operator || !["mesh", "marketplace"].includes(key),
+              ([key]) =>
+                operator ||
+                !["mesh", "marketplace", "transactions"].includes(key),
             )
             .map(([key, Icon]) => (
               <Link
@@ -437,7 +452,7 @@ function Dashboard({
             {(operator ||
               ["workspace", "task", "goal"].includes(primary.kind)) &&
               !restrictedSection &&
-              section !== "generation" && (
+              !["generation", "transactions"].includes(section) && (
                 <button
                   className="primary"
                   onClick={() => open({ kind: primary.kind })}
@@ -454,8 +469,14 @@ function Dashboard({
           )}
           {state.isError && (
             <div className="error">
-              <h3>{t("nodeUnavailable")}</h3>
-              <p>{state.error.message}</p>
+              <h3>
+                {t(atomicPending ? "transactionWaiting" : "nodeUnavailable")}
+              </h3>
+              <p>
+                {atomicPending
+                  ? t("transactionWaitingHelp")
+                  : state.error.message}
+              </p>
               <button onClick={() => void state.refetch()}>{t("retry")}</button>
               <button
                 onClick={() => {
@@ -468,15 +489,18 @@ function Dashboard({
               </button>
             </div>
           )}
-          {!data && !state.isError && (
+          {!data && !state.isError && section !== "transactions" && (
             <div className="loading">{t("loading")}</div>
           )}
-          {data && restrictedSection && (
+          {session.data && restrictedSection && (
             <div className="notice" role="status">
               {t("administratorsOnly")}
             </div>
           )}
-          {data && !restrictedSection && (
+          {section === "transactions" && operator && session.data && (
+            <TransactionsPage nodeId={session.data.node_id} />
+          )}
+          {data && showOrdinary && (
             <>
               {(mesh.data?.errors.length ?? 0) > 0 && (
                 <div className="notice">

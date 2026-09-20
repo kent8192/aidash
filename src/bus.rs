@@ -65,6 +65,7 @@ impl EventBus {
         })
     }
     pub async fn publish_once(&self, f: &Federation) -> Result<usize> {
+        let _visibility = crate::transactions::gate::ReadLease::begin(&f.store).await?;
         let events: Vec<Event> = sqlx::query_as("UPDATE events SET next_attempt_at=now()+interval '30 seconds' WHERE id IN (SELECT id FROM events WHERE published_at IS NULL AND next_attempt_at<=now() ORDER BY next_attempt_at,sequence LIMIT 100 FOR UPDATE SKIP LOCKED) RETURNING sequence,id,node_id,workspace_id,kind,data,created_at")
             .fetch_all(&f.store.pool).await?;
         let mut attempts = futures_util::stream::iter(events.into_iter().map(|event| async move {

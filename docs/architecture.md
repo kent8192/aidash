@@ -4,7 +4,7 @@ This document describes the current implementation and its boundaries. Additiona
 
 ## Current implementation
 
-The implementation is a Rust node executable, with independent control server and worker modes, and a React/TypeScript dashboard. All state lives in PostgreSQL. SeaORM owns schema migrations and registry CRUD; SQLx executes transactional task transitions, execution journals, and the event outbox. Authorization queries use SeaQuery builders. Both share one pool. SQLx runtime queries are exercised against real PostgreSQL so builds do not require a live database.
+The implementation is a Rust node executable, with independent control server and worker modes, and a React/TypeScript dashboard. All state lives in PostgreSQL. SeaORM owns schema migrations and registry CRUD; SQLx executes transactional task transitions, execution journals, and the event outbox. Authorization queries use SeaQuery builders. They share the application data pool; transaction control and visibility leases use separate connection capacity. SQLx runtime queries are exercised against real PostgreSQL so builds do not require a live database.
 
 The workspace's home node owns its task revisions, messages and artifacts. Remote agents claim and mutate these resources through the versioned HTTP federation protocol. They never connect to the home database. Each executing node persists its own run journal. Peer trust is explicitly configured on both nodes with environment-based credential references. Public identity contains no secrets. Registry versions are immutable and model selection is explicit.
 
@@ -26,4 +26,4 @@ The marketplace is a self-hosted, versioned manifest repository exposed by the n
 
 Add orchestration without losing durable node/run identity, policy-controlled agent creation, shared RBAC/ABAC enforcement, a recoverable atomic transaction protocol between participating nodes, authorized semantic retrieval and an A2A v1.0.0 client/server boundary. Keep explicit model selection, independently operated node databases and the existing durable tool-effect contract. Cross-node transactions must communicate through participating node APIs instead of accessing remote databases directly.
 
-The current bearer token and scoped delegation grants do not satisfy FR-AUTH-001. The current per-node SQL transactions, outbox/inbox and idempotent federation requests do not satisfy FR-TX-001. Persisted JSON memory does not satisfy FR-MEM-001, and Aidash federation endpoints do not establish A2A compatibility.
+The current bearer token and scoped delegation grants do not satisfy FR-AUTH-001. The [distributed transaction protocol](transactions.md) adds durable prepare/commit/abort and cross-node visibility barriers; its full FR-TX-001 authorization and failure-acceptance gate remains open. Persisted JSON memory does not satisfy FR-MEM-001, and Aidash federation endpoints do not establish A2A compatibility.

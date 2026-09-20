@@ -44,15 +44,15 @@ async fn setup() -> (Store, String, String) {
         .unwrap();
     aidash::store::Store::migrate(&pool).await.unwrap();
     (
-        Store {
-            pool,
-            node_id: "aidash://test".into(),
-        },
+        Store::from_pool(pool, "aidash://test".into())
+            .await
+            .unwrap(),
         url,
         schema,
     )
 }
 async fn cleanup(store: Store, url: &str, schema: &str) {
+    store.control_pool.close().await;
     store.pool.close().await;
     let mut admin = PgConnection::connect(url).await.unwrap();
     admin

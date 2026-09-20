@@ -112,6 +112,7 @@ async fn terminal(f: &Federation, job: &Request, status: &str, reason: &str) -> 
 /// Resume durable generation work after restart; bounded scans are safe with
 /// concurrent provisioners because each transition rechecks state under locks.
 pub async fn reconcile(f: &Federation) -> Result<usize> {
+    let _visibility = crate::transactions::gate::ReadLease::begin(&f.store).await?;
     let jobs:Vec<Request>=sqlx::query_as("SELECT g.* FROM generation_requests g LEFT JOIN runs r ON r.task_id=g.task_id WHERE g.status IN ('PENDING_APPROVAL','QUEUED','ACTIVE') AND (g.status='QUEUED' OR g.expires_at<=clock_timestamp() OR r.phase IN ('COMPLETED','FAILED','CANCELLED')) ORDER BY g.created_at,g.id LIMIT 32")
         .fetch_all(&f.store.pool).await?;
     let count = jobs.len();

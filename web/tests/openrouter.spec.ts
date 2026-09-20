@@ -13,6 +13,10 @@ test("registers an OpenRouter model with an editable endpoint and secret referen
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/events/stream") {
       await route.abort();
+    } else if (path === "/api/session") {
+      await route.fulfill({
+        json: { access: { kind: "operator" }, node_id: "aidash://test" },
+      });
     } else if (path === "/api/state") {
       await route.fulfill({
         json: {

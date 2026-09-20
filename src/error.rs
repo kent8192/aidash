@@ -19,6 +19,8 @@ pub enum Error {
     Unauthorized,
     #[error("forbidden")]
     Forbidden,
+    #[error("atomic transaction visibility pending; retry after recovery")]
+    TransactionPending,
     #[error("{0}")]
     External(String),
     #[error("{0}")]
@@ -39,6 +41,17 @@ impl IntoResponse for Error {
             Self::NotFound(s) => (StatusCode::NOT_FOUND, s.clone()),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden".into()),
+            Self::TransactionPending => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
+            Self::Database(error)
+                if error
+                    .as_database_error()
+                    .is_some_and(|e| e.code().as_deref() == Some("55P03")) =>
+            {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "atomic transaction visibility pending; retry after recovery".into(),
+                )
+            }
             _ => {
                 tracing::error!(error = %self, "request failed");
                 (
@@ -47,7 +60,18 @@ impl IntoResponse for Error {
                 )
             }
         };
-        (status, Json(json!({"error": message}))).into_response()
+        let mut response = (status, Json(json!({"error": message}))).into_response();
+        if status == StatusCode::SERVICE_UNAVAILABLE {
+            response.headers_mut().insert(
+                "x-aidash-transaction-pending",
+                axum::http::HeaderValue::from_static("1"),
+            );
+            response.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("1"),
+            );
+        }
+        response
     }
 }
 

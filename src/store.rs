@@ -10,6 +10,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct Store {
     pub pool: PgPool,
+    pub control_pool: PgPool,
     pub node_id: String,
 }
 impl Store {
@@ -39,7 +40,21 @@ impl Store {
             .connect(url)
             .await?;
         Self::migrate(&pool).await?;
-        Ok(Self { pool, node_id })
+        Self::from_pool(pool, node_id).await
+    }
+
+    pub async fn from_pool(pool: PgPool, node_id: String) -> Result<Self> {
+        let control_pool = pool
+            .options()
+            .clone()
+            .max_connections(32)
+            .connect_with(pool.connect_options().as_ref().clone())
+            .await?;
+        Ok(Self {
+            pool,
+            control_pool,
+            node_id,
+        })
     }
 
     /// Share the database and connection settings without sharing pool capacity.
@@ -50,10 +65,7 @@ impl Store {
             .clone()
             .connect_with(self.pool.connect_options().as_ref().clone())
             .await?;
-        Ok(Self {
-            pool,
-            node_id: self.node_id.clone(),
-        })
+        Self::from_pool(pool, self.node_id.clone()).await
     }
     pub async fn event(
         &self,

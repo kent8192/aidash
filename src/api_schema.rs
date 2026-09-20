@@ -18,6 +18,12 @@ pub enum AccessProfile {
 }
 
 #[derive(Serialize, ToSchema)]
+pub struct SessionResponse {
+    pub access: AccessProfile,
+    pub node_id: String,
+}
+
+#[derive(Serialize, ToSchema)]
 pub struct StateResponse {
     pub access: AccessProfile,
     pub node: NodeIdentity,

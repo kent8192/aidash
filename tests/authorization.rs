@@ -48,10 +48,9 @@ async fn setup() -> (Router, Store, String, String) {
         .await
         .unwrap();
     aidash::store::Store::migrate(&pool).await.unwrap();
-    let store = Store {
-        pool: pool.clone(),
-        node_id: "aidash://authorization-test".into(),
-    };
+    let store = Store::from_pool(pool.clone(), "aidash://authorization-test".into())
+        .await
+        .unwrap();
     let federation = Federation {
         store: store.clone(),
         registry: Registry::new(pool),
@@ -134,6 +133,7 @@ async fn get(app: &Router, path: &str) -> (u16, Value) {
 }
 
 async fn cleanup(store: Store, url: &str, schema: &str) {
+    store.control_pool.close().await;
     store.pool.close().await;
     let mut admin = PgConnection::connect(url).await.unwrap();
     admin
