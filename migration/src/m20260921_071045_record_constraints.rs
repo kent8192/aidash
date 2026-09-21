@@ -39,6 +39,7 @@ const CHECKS: &[(&str, &str, &str)] = &[
 		"registry_agent_config",
 		"kind <> 'agent' OR (jsonb_typeof(metadata#>'{config,instructions}') = 'string' AND length(btrim(metadata#>>'{config,instructions}', {whitespace})) > 0 AND CASE WHEN NOT (metadata->'config' ? 'max_steps') THEN true WHEN jsonb_typeof(metadata#>'{config,max_steps}') = 'number' THEN (metadata#>>'{config,max_steps}')::numeric BETWEEN 1 AND 1000 AND trunc((metadata#>>'{config,max_steps}')::numeric) = (metadata#>>'{config,max_steps}')::numeric ELSE false END)",
 	),
+	("registry", "registry_tool_config", "true"),
 	("registry", "registry_cluster_config", "true"),
 	(
 		"registry",
@@ -85,6 +86,11 @@ const CHECKS: &[(&str, &str, &str)] = &[
 		"semantic_entries",
 		"semantic_entries_counters",
 		"revision > 0 AND index_revision > 0 AND attempts >= 0",
+	),
+	(
+		"semantic_entries",
+		"semantic_entries_authority",
+		"jsonb_typeof(authority) = 'object' AND authority ? 'credential' AND jsonb_typeof(authority->'credential') IN ('string', 'null') AND authority ? 'tenant' AND jsonb_typeof(authority->'tenant') = 'string' AND authority ? 'subject' AND jsonb_typeof(authority->'subject') = 'string' AND authority ? 'subjects' AND jsonb_typeof(authority->'subjects') = 'array' AND NOT jsonb_path_exists(authority, 'strict $.subjects[*] ? (@.type() != \"string\")', '{}'::jsonb, true) AND (authority->'credential' = 'null'::jsonb OR authority->>'credential' ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')",
 	),
 	(
 		"semantic_run_reads",
@@ -232,6 +238,74 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 				parts.push(format!(
 					"kind <> 'agent' OR ({})",
 					entity_ref("(metadata#>'{config,model}')")
+				));
+			}
+			"registry_tool_config" => {
+				let config = "(metadata->'config')";
+				let native_hosts = format!(
+					"(NOT ({config} ? 'allowed_hosts') OR {})",
+					string_array(&format!("{config}->'allowed_hosts'"))
+				);
+				let native = [
+					object_fields(config, &["transport", "operation", "allowed_hosts"]),
+					format!(
+						"jsonb_typeof({config}->'operation') = 'string' AND {config}->>'operation' IN ('echo', 'http_get')"
+					),
+					native_hosts,
+					format!(
+						"({config}->>'operation' <> 'http_get' OR (jsonb_typeof(COALESCE({config}->'allowed_hosts', '[]'::jsonb)) = 'array' AND jsonb_array_length(COALESCE({config}->'allowed_hosts', '[]'::jsonb)) > 0))"
+					),
+				]
+				.join(" AND ");
+				let http = [
+					object_fields(config, &["transport", "endpoint", "credential_env", "replay"]),
+					format!(
+						"jsonb_typeof({config}->'endpoint') = 'string' AND length(btrim({config}->>'endpoint', {WHITESPACE_SQL})) > 0"
+					),
+					optional_string(&format!("{config}->'credential_env'")),
+					format!(
+						"jsonb_typeof({config}->'replay') = 'string' AND {config}->>'replay' IN ('read_only', 'idempotent', 'unsafe')"
+					),
+				]
+				.join(" AND ");
+				let mcp = [
+					object_fields(
+						config,
+						&[
+							"transport",
+							"endpoint",
+							"credential_env",
+							"tool_name",
+							"replay",
+							"idempotency_argument",
+						],
+					),
+					format!(
+						"jsonb_typeof({config}->'endpoint') = 'string' AND length(btrim({config}->>'endpoint', {WHITESPACE_SQL})) > 0"
+					),
+					optional_string(&format!("{config}->'credential_env'")),
+					format!(
+						"jsonb_typeof({config}->'tool_name') = 'string'"
+					),
+					format!(
+						"jsonb_typeof({config}->'replay') = 'string' AND {config}->>'replay' IN ('read_only', 'idempotent', 'unsafe')"
+					),
+					optional_string(&format!("{config}->'idempotency_argument'")),
+					format!(
+						"({config}->>'replay' <> 'idempotent' OR (jsonb_typeof({config}->'idempotency_argument') = 'string' AND length(btrim({config}->>'idempotency_argument', {WHITESPACE_SQL})) > 0))"
+					),
+				]
+				.join(" AND ");
+				let agent = [
+					object_fields(config, &["transport", "node_id", "agent"]),
+					format!(
+						"jsonb_typeof({config}->'node_id') = 'string' AND {config}->>'node_id' ~ '^aidash://[A-Za-z0-9-]{{1,100}}$'"
+					),
+					bounded_entity_ref(&format!("{config}->'agent'")),
+				]
+				.join(" AND ");
+				parts.push(format!(
+					"kind <> 'tool' OR CASE {config}->>'transport' WHEN 'native' THEN ({native}) WHEN 'http' THEN ({http}) WHEN 'mcp' THEN ({mcp}) WHEN 'agent' THEN ({agent}) ELSE false END"
 				));
 			}
 			"registry_identity" => {
@@ -398,8 +472,15 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 						"jsonb_typeof({entity_config}->'model') = 'object' AND jsonb_typeof({entity_config}->'model'->'id') = 'string' AND jsonb_typeof({entity_config}->'model'->'version') = 'string'"
 					),
 					format!("jsonb_typeof({entity_config}->'instructions') = 'string'"),
+					format!(
+						"CASE WHEN NOT ({entity_config} ? 'max_steps') THEN true WHEN jsonb_typeof({entity_config}->'max_steps') = 'number' AND ({entity_config}->>'max_steps') ~ '^(0|[1-9][0-9]*)$' THEN ({entity_config}->>'max_steps')::numeric BETWEEN 1 AND 1000 ELSE false END"
+					),
 					entity_tools,
 					entity_skills,
+					format!(
+						"jsonb_typeof(COALESCE({entity_config}->'cluster', 'null'::jsonb)) IN ('object', 'null') AND (jsonb_typeof(COALESCE({entity_config}->'cluster', 'null'::jsonb)) <> 'object' OR {})",
+						entity_ref(&format!("{entity_config}->'cluster'"))
+					),
 				];
 				parts.push(format!(
 					"({entity}->>'kind' <> 'agent' OR ({}))",
@@ -572,6 +653,9 @@ BEGIN
 END $$;
 CREATE FUNCTION guard_task_parent_cycle() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+    -- Serialize deferred hierarchy checks so concurrent opposite edges cannot
+    -- each validate against a snapshot that predates the other transaction.
+    PERFORM pg_advisory_xact_lock(70721021::bigint);
     IF EXISTS (
         WITH RECURSIVE walk(current_id, parent_id, path, cycle) AS (
             SELECT id, parent_id, ARRAY[id], false
@@ -656,9 +740,18 @@ END $$;
 CREATE TRIGGER installations_config_guard
     BEFORE INSERT OR UPDATE OF id, version, config ON installations
     FOR EACH ROW EXECUTE FUNCTION guard_installation_config();
-UPDATE installations SET config = config;
 "#,
 		)
+		.await?;
+	// Fire the trigger for historical rows through SeaQuery so existing
+	// installation overrides are validated during the upgrade.
+	let backfill = Query::update()
+		.table(Alias::new("installations"))
+		.value(Alias::new("config"), Expr::col(Alias::new("config")))
+		.to_owned();
+	manager
+		.get_connection()
+		.execute(manager.get_database_backend().build(&backfill))
 		.await?;
 	Ok(())
 }

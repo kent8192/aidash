@@ -539,6 +539,75 @@ async fn package_identity_requires_matching_json_strings() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn package_agent_config_requires_all_typed_fields() {
+	let (f, url, schema) = setup().await;
+	let agent: Entry = serde_json::from_value(json!({
+		"id":"packaged-agent",
+		"version":"1.0.0",
+		"kind":"agent",
+		"name":{"en":"Packaged agent"},
+		"description":{"en":"Fixture"},
+		"capabilities":[],
+		"tags":[],
+		"languages":[],
+		"skills":[],
+		"schema":{},
+		"config":{
+			"model":{"id":"test-model","version":"1.0.0"},
+			"instructions":"Work",
+			"tools":[],
+			"skills":[],
+			"cluster":null,
+			"max_steps":64
+		}
+	}))
+	.unwrap();
+	let record = f
+		.registry
+		.publish(
+			&f.store.pool,
+			aidash::registry::Package {
+				entity: agent,
+				author: "Fixture".into(),
+				permissions: vec![],
+				dependencies: vec![],
+			},
+		)
+		.await
+		.unwrap();
+	for invalid in [json!("64"), json!(0), json!(1001), json!([])] {
+		let mut manifest = record.manifest.clone();
+		manifest["entity"]["config"]["max_steps"] = invalid;
+		check_rejected(
+			update(&f.store.pool, "packages", "manifest", Expr::val(manifest)).await,
+			"packages_identity",
+		);
+	}
+	for invalid in [
+		json!(7),
+		json!({"id":"cluster"}),
+		json!({"id":7,"version":"1.0.0"}),
+	] {
+		let mut manifest = record.manifest.clone();
+		manifest["entity"]["config"]["cluster"] = invalid;
+		check_rejected(
+			update(&f.store.pool, "packages", "manifest", Expr::val(manifest)).await,
+			"packages_identity",
+		);
+	}
+	update(
+		&f.store.pool,
+		"packages",
+		"manifest",
+		Expr::val(record.manifest),
+	)
+	.await
+	.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
 async fn insert_values(
 	pool: &sqlx::PgPool,
 	table: &str,
@@ -664,6 +733,38 @@ async fn model_and_agent_configs_reject_unusable_shapes() {
 	let _: aidash::registry::AgentConfig = serde_json::from_value(agent["config"].clone()).unwrap();
 	insert_entry(&f.store.pool, &agent).await.unwrap();
 	insert_entry(&f.store.pool, &good).await.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn tool_configs_reject_undecodable_shapes() {
+	let (f, url, schema) = setup().await;
+	let mut tool = serde_json::to_value(model()).unwrap();
+	tool["id"] = json!("tool");
+	tool["kind"] = json!("tool");
+	for config in [
+		json!({"transport":"http"}),
+		json!({"transport":"native","operation":"http_get","allowed_hosts":[]}),
+		json!({"transport":"native","operation":"echo","allowed_hosts":[7]}),
+		json!({"transport":"http","endpoint":"http://localhost","replay":"invalid"}),
+		json!({"transport":"mcp","endpoint":"http://localhost","tool_name":"call","replay":"idempotent"}),
+		json!({"transport":"agent","node_id":"bad node","agent":{"id":"agent","version":"1.0.0"}}),
+		json!({"transport":"http","endpoint":"http://localhost","replay":"read_only","unexpected":true}),
+	] {
+		tool["config"] = config;
+		check_rejected(
+			insert_entry(&f.store.pool, &tool).await,
+			"registry_tool_config",
+		);
+	}
+	tool["config"] = json!({
+		"transport":"http",
+		"endpoint":"http://localhost",
+		"credential_env":null,
+		"replay":"read_only"
+	});
+	insert_entry(&f.store.pool, &tool).await.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -814,11 +915,38 @@ async fn semantic_specs_and_sources_reject_undecodable_records() {
 			("index_revision", Expr::val(1).into()),
 			("state", Expr::val("PENDING").into()),
 			("created_by", Expr::val("human").into()),
-			("authority", Expr::val(json!({})).into()),
+			(
+				"authority",
+				Expr::val(json!({
+					"credential": null,
+					"tenant": "",
+					"subject": "operator",
+					"subjects": [],
+				}))
+				.into(),
+			),
 		],
 	)
 	.await
 	.unwrap();
+	for invalid in [
+		json!({}),
+		json!([]),
+		json!({"credential":null,"tenant":"","subject":"operator","subjects":[7]}),
+		json!({"credential":"not-a-uuid","tenant":"","subject":"operator","subjects":[]}),
+		json!({"credential":null,"tenant":7,"subject":"operator","subjects":[]}),
+	] {
+		check_rejected(
+			update(
+				&f.store.pool,
+				"semantic_entries",
+				"authority",
+				Expr::val(invalid),
+			)
+			.await,
+			"semantic_entries_authority",
+		);
+	}
 	for invalid in [
 		json!({}),
 		json!([]),
@@ -1138,6 +1266,56 @@ async fn task_parent_cycle_guard_rejects_direct_cycles() {
 		.execute(&f.store.pool)
 		.await
 		.unwrap_err();
+	let database = error.as_database_error().unwrap();
+	assert_eq!(database.code().as_deref(), Some("23514"), "{error}");
+	assert_eq!(database.constraint(), Some("tasks_parent_cycle"), "{error}");
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn concurrent_parent_cycle_checks_are_serialized() {
+	let (f, url, schema) = setup().await;
+	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
+	let input = NewTask {
+		title: "Task".into(),
+		description: "Work".into(),
+		requirements: json!({}),
+		dependencies: vec![],
+		parent_id: None,
+	};
+	let first_task = f
+		.store
+		.create_task(workspace.id, &input, "human", None)
+		.await
+		.unwrap();
+	let second_task = f
+		.store
+		.create_task(workspace.id, &input, "human", None)
+		.await
+		.unwrap();
+	let parent_update = Query::update()
+		.table(Alias::new("tasks"))
+		.value(Alias::new("parent_id"), Expr::cust("$1"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+		.to_string(PostgresQueryBuilder);
+	let mut left = f.store.pool.begin().await.unwrap();
+	let mut right = f.store.pool.begin().await.unwrap();
+	sqlx::query(&parent_update)
+		.bind(second_task.id)
+		.bind(first_task.id)
+		.execute(&mut *left)
+		.await
+		.unwrap();
+	sqlx::query(&parent_update)
+		.bind(first_task.id)
+		.bind(second_task.id)
+		.execute(&mut *right)
+		.await
+		.unwrap();
+	let (left_result, right_result) = tokio::join!(left.commit(), right.commit());
+	assert!(left_result.is_ok() ^ right_result.is_ok());
+	let error = left_result.err().or_else(|| right_result.err()).unwrap();
 	let database = error.as_database_error().unwrap();
 	assert_eq!(database.code().as_deref(), Some("23514"), "{error}");
 	assert_eq!(database.constraint(), Some("tasks_parent_cycle"), "{error}");
