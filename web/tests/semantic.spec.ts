@@ -39,6 +39,7 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   let releaseRefresh = () => {};
+  let releaseConfigure = () => {};
   try {
     await page.addInitScript(() => {
       sessionStorage.setItem("aidash-token", "acceptance-access-token");
@@ -115,7 +116,45 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
     await expect(page.getByLabel("Model version", { exact: true })).toHaveValue(
       "v2",
     );
+    let configureStarted = false;
+    let holdConfigure = true;
+    const configureGate = new Promise<void>((resolve) => {
+      releaseConfigure = resolve;
+    });
+    await page.route(`**${root}/index`, async (route) => {
+      if (route.request().method() !== "POST" || !holdConfigure) {
+        await route.continue();
+        return;
+      }
+      configureStarted = true;
+      const response = await route.fetch();
+      await configureGate;
+      holdConfigure = false;
+      await route.fulfill({ response });
+    });
     await saveIndex.click();
+    await expect.poll(() => configureStarted).toBe(true);
+    await expect(saveIndex).toBeDisabled();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Close" })
+      .click();
+    await page
+      .getByRole("button", { name: "Configure index", exact: true })
+      .click();
+    await page.getByLabel("Model version", { exact: true }).fill("v3");
+    releaseConfigure();
+    await expect(page.locator(".semantic-summary").first()).toContainText(
+      "Revision 2",
+    );
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await expect(page.getByLabel("Model version", { exact: true })).toHaveValue(
+      "v3",
+    );
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Close" })
+      .click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect
       .poll(async () => (await api(`${root}/entries`))[0].state)
@@ -170,6 +209,7 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
     expect(errors).toEqual([]);
   } finally {
     releaseRefresh();
+    releaseConfigure();
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
     );
