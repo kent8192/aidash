@@ -1520,8 +1520,19 @@ async fn terminal_dependencies_fail_dependents_instead_of_polling_forever() {
             .accept_run(&task, &store.node_id, &agent.id, &agent.version)
             .await
             .unwrap();
-        worker.worker_once().await.unwrap();
-        worker.worker_once().await.unwrap();
+        // Terminal failure delivery is scheduled with a database wake time;
+        // consecutive polls need not straddle that clock boundary.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                worker.worker_once().await.unwrap();
+                if store.run(run.id).await.unwrap().phase == "FAILED" {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("terminal dependency must settle rather than wait indefinitely");
         let run = store.run(run.id).await.unwrap();
         assert_eq!(run.phase, "FAILED");
         assert!(run.error.unwrap().contains(terminal));

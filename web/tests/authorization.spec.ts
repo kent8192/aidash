@@ -269,6 +269,7 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
         attributes: { team: "research" },
       },
     });
+  const auditRecords = await api(`${base}/decisions?limit=200`);
   const history = page.locator(".panel").filter({
     has: page.getByRole("heading", {
       name: "権限判定の監査履歴",
@@ -281,7 +282,9 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
   await history
     .getByRole("button", { name: "次のページ", exact: true })
     .click();
-  await expect(history.locator(".auth-history")).toHaveCount(2);
+  await expect(history.locator(".auth-history")).toHaveCount(
+    auditRecords.length - 25,
+  );
   await history
     .getByRole("button", { name: "前のページ", exact: true })
     .click();

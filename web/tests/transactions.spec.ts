@@ -207,8 +207,11 @@ test("transaction dashboard survives reload during a partition, aborts safely an
         )
         .toBe(true);
     }
-    await new Promise<void>((resolve, reject) =>
-      peer.close((error) => (error ? reject(error) : resolve())),
-    );
+    await new Promise<void>((resolve, reject) => {
+      peer.close((error) => (error ? reject(error) : resolve()));
+      // The assertions have finished. Close task-owned keep-alive sockets too;
+      // background peer requests must not keep fixture teardown alive.
+      peer.closeAllConnections();
+    });
   }
 });
