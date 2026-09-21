@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   semanticConfigure,
@@ -94,6 +94,25 @@ function SemanticWorkspace({
   const [editing, setEditing] = useState<SemanticEntry | "new" | null>(null);
   const [deleting, setDeleting] = useState<SemanticEntry | null>(null);
   const [result, setResult] = useState<SemanticSearchResult | null>(null);
+  const dialogGeneration = useRef(0);
+  const closeDialogs = () => {
+    dialogGeneration.current += 1;
+    setConfiguring(false);
+    setEditing(null);
+    setDeleting(null);
+  };
+  const openConfiguring = () => {
+    dialogGeneration.current += 1;
+    setConfiguring(true);
+  };
+  const openEditing = (entry: SemanticEntry | "new") => {
+    dialogGeneration.current += 1;
+    setEditing(entry);
+  };
+  const openDeleting = (entry: SemanticEntry) => {
+    dialogGeneration.current += 1;
+    setDeleting(entry);
+  };
   const index = useQuery({
     queryKey: ["semantic", workspace, "index"],
     queryFn: async () => {
@@ -128,15 +147,16 @@ function SemanticWorkspace({
   const spec = current?.spec as SemanticIndexSpec | undefined;
   const mutate = async (action: () => Promise<unknown>) => {
     if (busy) return;
+    const submittedDialogGeneration = dialogGeneration.current;
     setBusy(true);
     setError("");
     setResult(null);
     try {
       await action();
       await client.invalidateQueries({ queryKey: ["semantic", workspace] });
-      setConfiguring(false);
-      setEditing(null);
-      setDeleting(null);
+      if (dialogGeneration.current === submittedDialogGeneration) {
+        closeDialogs();
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -168,9 +188,7 @@ function SemanticWorkspace({
         title={t("semanticIndex")}
         action={
           operator && (
-            <button onClick={() => setConfiguring(true)}>
-              {t("semanticConfigure")}
-            </button>
+            <button onClick={openConfiguring}>{t("semanticConfigure")}</button>
           )
         }
       >
@@ -256,7 +274,7 @@ function SemanticWorkspace({
           <Panel
             title={t("semanticSources")}
             action={
-              <button onClick={() => setEditing("new")}>
+              <button onClick={() => openEditing("new")}>
                 {t("semanticAdd")}
               </button>
             }
@@ -279,7 +297,7 @@ function SemanticWorkspace({
                     {entry.agent || t("semanticWorkspaceScope")}
                   </p>
                   <div className="actions">
-                    <button disabled={busy} onClick={() => setEditing(entry)}>
+                    <button disabled={busy} onClick={() => openEditing(entry)}>
                       {t("edit")}
                     </button>
                     <button
@@ -294,7 +312,7 @@ function SemanticWorkspace({
                     >
                       {t("semanticReindex")}
                     </button>
-                    <button disabled={busy} onClick={() => setDeleting(entry)}>
+                    <button disabled={busy} onClick={() => openDeleting(entry)}>
                       {t("delete")}
                     </button>
                   </div>
@@ -337,10 +355,7 @@ function SemanticWorkspace({
         </>
       )}
       {configuring && (
-        <Modal
-          title={t("semanticConfigure")}
-          close={() => setConfiguring(false)}
-        >
+        <Modal title={t("semanticConfigure")} close={closeDialogs}>
           <IndexForm
             previous={spec}
             busy={busy}
@@ -361,7 +376,7 @@ function SemanticWorkspace({
         </Modal>
       )}
       {editing && (
-        <Modal title={t("semanticAdd")} close={() => setEditing(null)}>
+        <Modal title={t("semanticAdd")} close={closeDialogs}>
           <EntryForm
             entry={editing === "new" ? null : editing}
             busy={busy}
@@ -375,7 +390,7 @@ function SemanticWorkspace({
         </Modal>
       )}
       {deleting && (
-        <Modal title={t("semanticDelete")} close={() => setDeleting(null)}>
+        <Modal title={t("semanticDelete")} close={closeDialogs}>
           <p>{t("semanticDeleteHelp")}</p>
           <p>
             <strong>{deleting.key}</strong>

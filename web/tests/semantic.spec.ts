@@ -38,6 +38,8 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
   const root = `/api/workspaces/${workspace.id}/semantic`;
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  let releaseRefresh = () => {};
+  let releaseConfigure = () => {};
   try {
     await page.addInitScript(() => {
       sessionStorage.setItem("aidash-token", "acceptance-access-token");
@@ -75,6 +77,23 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
     await expect(page.locator(".semantic-entry .badge")).toHaveText("Ready", {
       timeout: 15000,
     });
+    // Hold the search's query refresh so the next dialog opens while it is busy.
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    await page.route(
+      `**${root}/search`,
+      async (searchRoute) => {
+        const response = await searchRoute.fetch();
+        await page.route(`**${root}/history`, async (route) => {
+          const history = await route.fetch();
+          await refreshGate;
+          await route.fulfill({ response: history });
+        });
+        await searchRoute.fulfill({ response });
+      },
+      { times: 1 },
+    );
     await page.getByLabel("Search by meaning", { exact: true }).fill("vehicle");
     await page
       .getByRole("button", { name: "Semantic search", exact: true })
@@ -87,7 +106,55 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
       .getByRole("button", { name: "Configure index", exact: true })
       .click();
     await page.getByLabel("Model version", { exact: true }).fill("v2");
-    await page.getByRole("button", { name: "Save", exact: true }).click();
+    const saveIndex = page.getByRole("dialog").getByRole("button", {
+      name: "Save",
+      exact: true,
+    });
+    await expect(saveIndex).toBeDisabled();
+    releaseRefresh();
+    await expect(saveIndex).toBeEnabled();
+    await expect(page.getByLabel("Model version", { exact: true })).toHaveValue(
+      "v2",
+    );
+    let configureStarted = false;
+    let holdConfigure = true;
+    const configureGate = new Promise<void>((resolve) => {
+      releaseConfigure = resolve;
+    });
+    await page.route(`**${root}/index`, async (route) => {
+      if (route.request().method() !== "POST" || !holdConfigure) {
+        await route.continue();
+        return;
+      }
+      configureStarted = true;
+      const response = await route.fetch();
+      await configureGate;
+      holdConfigure = false;
+      await route.fulfill({ response });
+    });
+    await saveIndex.click();
+    await expect.poll(() => configureStarted).toBe(true);
+    await expect(saveIndex).toBeDisabled();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Close" })
+      .click();
+    await page
+      .getByRole("button", { name: "Configure index", exact: true })
+      .click();
+    await page.getByLabel("Model version", { exact: true }).fill("v3");
+    releaseConfigure();
+    await expect(page.locator(".semantic-summary").first()).toContainText(
+      "Revision 2",
+    );
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await expect(page.getByLabel("Model version", { exact: true })).toHaveValue(
+      "v3",
+    );
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Close" })
+      .click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect
       .poll(async () => (await api(`${root}/entries`))[0].state)
@@ -141,6 +208,8 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
     ).toBe(true);
     expect(errors).toEqual([]);
   } finally {
+    releaseRefresh();
+    releaseConfigure();
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
     );
