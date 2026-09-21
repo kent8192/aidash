@@ -134,9 +134,10 @@ function SemanticWorkspace({
     try {
       await action();
       await client.invalidateQueries({ queryKey: ["semantic", workspace] });
-      setConfiguring(false);
-      setEditing(null);
-      setDeleting(null);
+      // A background refresh must not dismiss a dialog opened after this action.
+      if (configuring) setConfiguring(false);
+      if (editing) setEditing(null);
+      if (deleting) setDeleting(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
