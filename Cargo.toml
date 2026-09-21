@@ -2,6 +2,17 @@
 members = ["migration"]
 resolver = "3"
 
+[workspace.lints.clippy]
+# RFC 430 naming convention audit (issue #1271):
+# `module_name_repetitions` fires for types whose names include their containing module name
+# (e.g., `endpoint::EndpointConfig`). These patterns are intentional in this codebase:
+# they provide clarity when types are imported into other modules without module prefix,
+# and follow common Rust library conventions. Reviewed and allowed workspace-wide.
+module_name_repetitions = "allow"
+
+[lints]
+workspace = true
+
 [package]
 name = "aidash"
 version = "0.1.0"

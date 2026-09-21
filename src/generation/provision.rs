@@ -1,357 +1,356 @@
 use super::{Request, lifecycle, policy};
 use crate::{
-    Error, Result,
-    authorization::{
-        Authorization,
-        access::Access,
-        catalog, execution,
-        identity::SubjectIdentity,
-        policy::{Subject, SubjectKind},
-    },
-    domain::qualified_agent,
-    federation::Federation,
-    registry::{EntityRef, Entry},
+	Error, Result,
+	authorization::{
+		Authorization,
+		access::Access,
+		catalog, execution,
+		identity::SubjectIdentity,
+		policy::{Subject, SubjectKind},
+	},
+	domain::qualified_agent,
+	federation::Federation,
+	registry::{EntityRef, Entry},
 };
 use chrono::Utc;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 async fn activate(f: &Federation, job: &Request) -> Result<()> {
-    let identity = SubjectIdentity {
-        credential_id: job.credential_id,
-        tenant: job.tenant.clone(),
-        subject: job.root_subject.clone(),
-    };
-    let mut access = Access::begin_exclusive(&f.store, &identity).await?;
-    let result = async {
-        let job = lifecycle::load(&mut access.tx, &job.tenant, job.id).await?;
-        if job.status != "QUEUED" {
-            return Ok(());
-        }
-        if job.expires_at <= Utc::now() {
-            return Err(Error::Conflict("generation request expired".into()));
-        }
-        access.subjects = job.subject_chain.clone();
-        if !job.visible(&mut access).await? {
-            return Err(Error::Forbidden);
-        }
-        access
-            .require(
-                &super::resource(&access, &job.policy_id),
-                "generation.request",
-            )
-            .await?;
-        let current = policy::load(&mut access.tx, &job.tenant, &job.policy_id, true).await?;
-        if !current.spec.enabled {
-            return Err(Error::Forbidden);
-        }
-        let document: Value = sqlx::query_scalar(
-            &sea_orm::sea_query::Query::select()
-                .expr(sea_orm::sea_query::SimpleExpr::from(
-                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("spec")),
-                ))
-                .from(sea_orm::sea_query::Alias::new("generation_policy_history"))
-                .and_where(sea_orm::sea_query::Expr::cust(
-                    "tenant = $1 AND policy_id = $2 AND revision = $3",
-                ))
-                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
-        )
-        .bind(&job.tenant)
-        .bind(&job.policy_id)
-        .bind(job.policy_revision)
-        .fetch_one(&mut *access.tx)
-        .await?;
-        let spec: policy::Spec = serde_json::from_value(document)?;
-        let config = spec.validate(&access.snapshot.bundle)?;
-        for (reference, action) in std::iter::once((&config.model, "model.infer"))
-            .chain(config.tools.iter().map(|r| (r, "tool.invoke")))
-            .chain(config.skills.iter().map(|r| (r, "skill.use")))
-            .chain(config.cluster.iter().map(|r| (r, "cluster.execute")))
-            .chain(
-                spec.compaction
-                    .iter()
-                    .map(|c| (&c.provider, "compaction.invoke")),
-            )
-            .chain(
-                spec.embedding
-                    .iter()
-                    .map(|c| (&c.provider, "embedding.invoke")),
-            )
-        {
-            catalog::entry(&mut access, reference, "registry.read").await?;
-            catalog::entry(&mut access, reference, action).await?;
-        }
-        let entry: Entry = serde_json::from_value(job.definition.clone())?;
-        let subject = qualified_agent(&f.config.node_id, &entry.id, &entry.version);
-        if access.snapshot.bundle.subjects.contains_key(&subject) {
-            return Err(Error::Conflict("generated subject already exists".into()));
-        }
-        access.snapshot.bundle.subjects.insert(
-            subject,
-            Subject {
-                kind: SubjectKind::Agent,
-                roles: spec.permissions.roles,
-                groups: spec.permissions.groups,
-                attributes: spec.permissions.attributes,
-                enabled: true,
-                delegated_by: job.subject_chain.last().cloned(),
-            },
-        );
-        access.snapshot.bundle.validate()?;
-        access.snapshot.revision = access
-            .snapshot
-            .revision
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("authorization revision exhausted".into()))?;
-        sqlx::query(
-            &sea_orm::sea_query::Query::update()
-                .table(sea_orm::sea_query::Alias::new("authorization_bundles"))
-                .value(
-                    sea_orm::sea_query::Alias::new("revision"),
-                    sea_orm::sea_query::Expr::cust("$2"),
-                )
-                .value(
-                    sea_orm::sea_query::Alias::new("document"),
-                    sea_orm::sea_query::Expr::cust("$3"),
-                )
-                .value(
-                    sea_orm::sea_query::Alias::new("updated_at"),
-                    sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP"),
-                )
-                .and_where(sea_orm::sea_query::Expr::cust("tenant = $1"))
-                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
-        )
-        .bind(&job.tenant)
-        .bind(access.snapshot.revision)
-        .bind(json!(access.snapshot.bundle))
-        .execute(&mut *access.tx)
-        .await?;
-        sqlx::query(
-            &sea_orm::sea_query::Query::insert()
-                .into_table(sea_orm::sea_query::Alias::new("authorization_revisions"))
-                .columns([
-                    sea_orm::sea_query::Alias::new("tenant"),
-                    sea_orm::sea_query::Alias::new("revision"),
-                    sea_orm::sea_query::Alias::new("document"),
-                    sea_orm::sea_query::Alias::new("actor"),
-                ])
-                .values_panic([
-                    sea_orm::sea_query::Expr::cust("$1"),
-                    sea_orm::sea_query::Expr::cust("$2"),
-                    sea_orm::sea_query::Expr::cust("$3"),
-                    sea_orm::sea_query::Expr::cust("$4"),
-                ])
-                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
-        )
-        .bind(&job.tenant)
-        .bind(access.snapshot.revision)
-        .bind(json!(access.snapshot.bundle))
-        .bind(&job.root_subject)
-        .execute(&mut *access.tx)
-        .await?;
-        crate::registry::register_in(&mut access.tx, &entry, &f.config.node_id).await?;
-        sqlx::query(
-            &sea_orm::sea_query::Query::insert()
-                .into_table(sea_orm::sea_query::Alias::new("authorization_catalog"))
-                .columns([
-                    sea_orm::sea_query::Alias::new("tenant"),
-                    sea_orm::sea_query::Alias::new("entry_id"),
-                    sea_orm::sea_query::Alias::new("entry_version"),
-                    sea_orm::sea_query::Alias::new("enabled"),
-                    sea_orm::sea_query::Alias::new("revision"),
-                ])
-                .values_panic([
-                    sea_orm::sea_query::Expr::cust("$1"),
-                    sea_orm::sea_query::Expr::cust("$2"),
-                    sea_orm::sea_query::Expr::cust("$3"),
-                    sea_orm::sea_query::Expr::cust("TRUE"),
-                    sea_orm::sea_query::Expr::cust("1"),
-                ])
-                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
-        )
-        .bind(&job.tenant)
-        .bind(&entry.id)
-        .bind(&entry.version)
-        .execute(&mut *access.tx)
-        .await?;
-        sqlx::query(
-            &sea_orm::sea_query::Query::insert()
-                .into_table(sea_orm::sea_query::Alias::new(
-                    "authorization_catalog_history",
-                ))
-                .columns([
-                    sea_orm::sea_query::Alias::new("tenant"),
-                    sea_orm::sea_query::Alias::new("entry_id"),
-                    sea_orm::sea_query::Alias::new("entry_version"),
-                    sea_orm::sea_query::Alias::new("revision"),
-                    sea_orm::sea_query::Alias::new("enabled"),
-                    sea_orm::sea_query::Alias::new("actor"),
-                ])
-                .values_panic([
-                    sea_orm::sea_query::Expr::cust("$1"),
-                    sea_orm::sea_query::Expr::cust("$2"),
-                    sea_orm::sea_query::Expr::cust("$3"),
-                    sea_orm::sea_query::Expr::cust("1"),
-                    sea_orm::sea_query::Expr::cust("TRUE"),
-                    sea_orm::sea_query::Expr::cust("$4"),
-                ])
-                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
-        )
-        .bind(&job.tenant)
-        .bind(&entry.id)
-        .bind(&entry.version)
-        .bind(&job.root_subject)
-        .execute(&mut *access.tx)
-        .await?;
-        lifecycle::transition(
-            f,
-            &mut access.tx,
-            &job,
-            "ACTIVE",
-            "generation-service",
-            "registered approved definition",
-        )
-        .await?;
-        execution::delegate_in(
-            f,
-            &mut access,
-            job.task_id,
-            &EntityRef {
-                id: entry.id,
-                version: entry.version,
-            },
-        )
-        .await?;
-        Ok(())
-    }
-    .await;
-    // A failed admission rolls back the proposed policy revision too; decisions
-    // referring to that uncommitted revision cannot be retained independently.
-    // The reconciler records the failure in the durable generation history.
-    let result = result.map_err(|e| {
-        if matches!(e, Error::Forbidden) {
-            Error::Conflict("generated agent admission denied".into())
-        } else {
-            e
-        }
-    });
-    access.finish(result).await
+	let identity = SubjectIdentity {
+		credential_id: job.credential_id,
+		tenant: job.tenant.clone(),
+		subject: job.root_subject.clone(),
+	};
+	let mut access = Access::begin_exclusive(&f.store, &identity).await?;
+	let result = async {
+		let job = lifecycle::load(&mut access.tx, &job.tenant, job.id).await?;
+		if job.status != "QUEUED" {
+			return Ok(());
+		}
+		if job.expires_at <= Utc::now() {
+			return Err(Error::Conflict("generation request expired".into()));
+		}
+		access.subjects = job.subject_chain.clone();
+		if !job.visible(&mut access).await? {
+			return Err(Error::Forbidden);
+		}
+		access
+			.require(
+				&super::resource(&access, &job.policy_id),
+				"generation.request",
+			)
+			.await?;
+		let current = policy::load(&mut access.tx, &job.tenant, &job.policy_id, true).await?;
+		if !current.spec.enabled {
+			return Err(Error::Forbidden);
+		}
+		let document: Value = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::SimpleExpr::from(
+					sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("spec")),
+				))
+				.from(sea_orm::sea_query::Alias::new("generation_policy_history"))
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"tenant = $1 AND policy_id = $2 AND revision = $3",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(&job.tenant)
+		.bind(&job.policy_id)
+		.bind(job.policy_revision)
+		.fetch_one(&mut *access.tx)
+		.await?;
+		let spec: policy::Spec = serde_json::from_value(document)?;
+		let config = spec.validate(&access.snapshot.bundle)?;
+		for (reference, action) in std::iter::once((&config.model, "model.infer"))
+			.chain(config.tools.iter().map(|r| (r, "tool.invoke")))
+			.chain(config.skills.iter().map(|r| (r, "skill.use")))
+			.chain(config.cluster.iter().map(|r| (r, "cluster.execute")))
+			.chain(
+				spec.compaction
+					.iter()
+					.map(|c| (&c.provider, "compaction.invoke")),
+			)
+			.chain(
+				spec.embedding
+					.iter()
+					.map(|c| (&c.provider, "embedding.invoke")),
+			) {
+			catalog::entry(&mut access, reference, "registry.read").await?;
+			catalog::entry(&mut access, reference, action).await?;
+		}
+		let entry: Entry = serde_json::from_value(job.definition.clone())?;
+		let subject = qualified_agent(&f.config.node_id, &entry.id, &entry.version);
+		if access.snapshot.bundle.subjects.contains_key(&subject) {
+			return Err(Error::Conflict("generated subject already exists".into()));
+		}
+		access.snapshot.bundle.subjects.insert(
+			subject,
+			Subject {
+				kind: SubjectKind::Agent,
+				roles: spec.permissions.roles,
+				groups: spec.permissions.groups,
+				attributes: spec.permissions.attributes,
+				enabled: true,
+				delegated_by: job.subject_chain.last().cloned(),
+			},
+		);
+		access.snapshot.bundle.validate()?;
+		access.snapshot.revision = access
+			.snapshot
+			.revision
+			.checked_add(1)
+			.ok_or_else(|| Error::Invalid("authorization revision exhausted".into()))?;
+		sqlx::query(
+			&sea_orm::sea_query::Query::update()
+				.table(sea_orm::sea_query::Alias::new("authorization_bundles"))
+				.value(
+					sea_orm::sea_query::Alias::new("revision"),
+					sea_orm::sea_query::Expr::cust("$2"),
+				)
+				.value(
+					sea_orm::sea_query::Alias::new("document"),
+					sea_orm::sea_query::Expr::cust("$3"),
+				)
+				.value(
+					sea_orm::sea_query::Alias::new("updated_at"),
+					sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP"),
+				)
+				.and_where(sea_orm::sea_query::Expr::cust("tenant = $1"))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(&job.tenant)
+		.bind(access.snapshot.revision)
+		.bind(json!(access.snapshot.bundle))
+		.execute(&mut *access.tx)
+		.await?;
+		sqlx::query(
+			&sea_orm::sea_query::Query::insert()
+				.into_table(sea_orm::sea_query::Alias::new("authorization_revisions"))
+				.columns([
+					sea_orm::sea_query::Alias::new("tenant"),
+					sea_orm::sea_query::Alias::new("revision"),
+					sea_orm::sea_query::Alias::new("document"),
+					sea_orm::sea_query::Alias::new("actor"),
+				])
+				.values_panic([
+					sea_orm::sea_query::Expr::cust("$1"),
+					sea_orm::sea_query::Expr::cust("$2"),
+					sea_orm::sea_query::Expr::cust("$3"),
+					sea_orm::sea_query::Expr::cust("$4"),
+				])
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(&job.tenant)
+		.bind(access.snapshot.revision)
+		.bind(json!(access.snapshot.bundle))
+		.bind(&job.root_subject)
+		.execute(&mut *access.tx)
+		.await?;
+		crate::registry::register_in(&mut access.tx, &entry, &f.config.node_id).await?;
+		sqlx::query(
+			&sea_orm::sea_query::Query::insert()
+				.into_table(sea_orm::sea_query::Alias::new("authorization_catalog"))
+				.columns([
+					sea_orm::sea_query::Alias::new("tenant"),
+					sea_orm::sea_query::Alias::new("entry_id"),
+					sea_orm::sea_query::Alias::new("entry_version"),
+					sea_orm::sea_query::Alias::new("enabled"),
+					sea_orm::sea_query::Alias::new("revision"),
+				])
+				.values_panic([
+					sea_orm::sea_query::Expr::cust("$1"),
+					sea_orm::sea_query::Expr::cust("$2"),
+					sea_orm::sea_query::Expr::cust("$3"),
+					sea_orm::sea_query::Expr::cust("TRUE"),
+					sea_orm::sea_query::Expr::cust("1"),
+				])
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(&job.tenant)
+		.bind(&entry.id)
+		.bind(&entry.version)
+		.execute(&mut *access.tx)
+		.await?;
+		sqlx::query(
+			&sea_orm::sea_query::Query::insert()
+				.into_table(sea_orm::sea_query::Alias::new(
+					"authorization_catalog_history",
+				))
+				.columns([
+					sea_orm::sea_query::Alias::new("tenant"),
+					sea_orm::sea_query::Alias::new("entry_id"),
+					sea_orm::sea_query::Alias::new("entry_version"),
+					sea_orm::sea_query::Alias::new("revision"),
+					sea_orm::sea_query::Alias::new("enabled"),
+					sea_orm::sea_query::Alias::new("actor"),
+				])
+				.values_panic([
+					sea_orm::sea_query::Expr::cust("$1"),
+					sea_orm::sea_query::Expr::cust("$2"),
+					sea_orm::sea_query::Expr::cust("$3"),
+					sea_orm::sea_query::Expr::cust("1"),
+					sea_orm::sea_query::Expr::cust("TRUE"),
+					sea_orm::sea_query::Expr::cust("$4"),
+				])
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(&job.tenant)
+		.bind(&entry.id)
+		.bind(&entry.version)
+		.bind(&job.root_subject)
+		.execute(&mut *access.tx)
+		.await?;
+		lifecycle::transition(
+			f,
+			&mut access.tx,
+			&job,
+			"ACTIVE",
+			"generation-service",
+			"registered approved definition",
+		)
+		.await?;
+		execution::delegate_in(
+			f,
+			&mut access,
+			job.task_id,
+			&EntityRef {
+				id: entry.id,
+				version: entry.version,
+			},
+		)
+		.await?;
+		Ok(())
+	}
+	.await;
+	// A failed admission rolls back the proposed policy revision too; decisions
+	// referring to that uncommitted revision cannot be retained independently.
+	// The reconciler records the failure in the durable generation history.
+	let result = result.map_err(|e| {
+		if matches!(e, Error::Forbidden) {
+			Error::Conflict("generated agent admission denied".into())
+		} else {
+			e
+		}
+	});
+	access.finish(result).await
 }
 
 async fn terminal(f: &Federation, job: &Request, status: &str, reason: &str) -> Result<()> {
-    let mut tx = f.store.pool.begin().await?;
-    Authorization::load_with_mode(&mut tx, &job.tenant, true).await?;
-    let job = lifecycle::load(&mut tx, &job.tenant, job.id).await?;
-    if matches!(
-        job.status.as_str(),
-        "PENDING_APPROVAL" | "QUEUED" | "ACTIVE"
-    ) {
-        // Re-read after acquiring the exclusive lease: another reconciler can
-        // finish activation or completion while this one is waiting.
-        let phase: Option<String> = sqlx::query_scalar(
-            &sea_orm::sea_query::Query::select()
-                .expr(sea_orm::sea_query::SimpleExpr::from(
-                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("phase")),
-                ))
-                .from(sea_orm::sea_query::Alias::new("runs"))
-                .and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
-                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
-        )
-        .bind(job.task_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let terminal_phase = match phase.as_deref() {
-            Some("COMPLETED") => Some("COMPLETED"),
-            Some("FAILED") => Some("FAILED"),
-            Some("CANCELLED") => Some("STOPPED"),
-            _ => None,
-        };
-        let (status, reason) = if let Some(status) = terminal_phase {
-            (status, "run reached terminal state")
-        } else {
-            (status, reason)
-        };
-        lifecycle::transition(f, &mut tx, &job, status, "generation-service", reason).await?;
-    }
-    tx.commit().await?;
-    Ok(())
+	let mut tx = f.store.pool.begin().await?;
+	Authorization::load_with_mode(&mut tx, &job.tenant, true).await?;
+	let job = lifecycle::load(&mut tx, &job.tenant, job.id).await?;
+	if matches!(
+		job.status.as_str(),
+		"PENDING_APPROVAL" | "QUEUED" | "ACTIVE"
+	) {
+		// Re-read after acquiring the exclusive lease: another reconciler can
+		// finish activation or completion while this one is waiting.
+		let phase: Option<String> = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::SimpleExpr::from(
+					sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("phase")),
+				))
+				.from(sea_orm::sea_query::Alias::new("runs"))
+				.and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(job.task_id)
+		.fetch_optional(&mut *tx)
+		.await?;
+		let terminal_phase = match phase.as_deref() {
+			Some("COMPLETED") => Some("COMPLETED"),
+			Some("FAILED") => Some("FAILED"),
+			Some("CANCELLED") => Some("STOPPED"),
+			_ => None,
+		};
+		let (status, reason) = if let Some(status) = terminal_phase {
+			(status, "run reached terminal state")
+		} else {
+			(status, reason)
+		};
+		lifecycle::transition(f, &mut tx, &job, status, "generation-service", reason).await?;
+	}
+	tx.commit().await?;
+	Ok(())
 }
 
 /// Resume durable generation work after restart; bounded scans are safe with
 /// concurrent provisioners because each transition rechecks state under locks.
 pub async fn reconcile(f: &Federation) -> Result<usize> {
-    let _visibility = crate::transactions::gate::ReadLease::begin(&f.store).await?;
-    let jobs:Vec<Request>=sqlx::query_as(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((sea_orm::sea_query::Alias::new("g"), sea_orm::sea_query::Asterisk)))).from_as(sea_orm::sea_query::Alias::new("generation_requests"), sea_orm::sea_query::Alias::new("g")).join_as(sea_orm::sea_query::JoinType::LeftJoin, sea_orm::sea_query::Alias::new("runs"), sea_orm::sea_query::Alias::new("r"), sea_orm::sea_query::Expr::cust("r.task_id = g.task_id")).and_where(sea_orm::sea_query::Expr::cust("g.status IN ('PENDING_APPROVAL', 'QUEUED', 'ACTIVE') AND (g.status = 'QUEUED' OR g.expires_at <= CLOCK_TIMESTAMP() OR r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED'))")).order_by_expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((sea_orm::sea_query::Alias::new("g"), sea_orm::sea_query::Alias::new("created_at")))), sea_orm::sea_query::Order::Asc).order_by_expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((sea_orm::sea_query::Alias::new("g"), sea_orm::sea_query::Alias::new("id")))), sea_orm::sea_query::Order::Asc).limit(32).to_string(sea_orm::sea_query::PostgresQueryBuilder))
+	let _visibility = crate::transactions::gate::ReadLease::begin(&f.store).await?;
+	let jobs:Vec<Request>=sqlx::query_as(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((sea_orm::sea_query::Alias::new("g"), sea_orm::sea_query::Asterisk)))).from_as(sea_orm::sea_query::Alias::new("generation_requests"), sea_orm::sea_query::Alias::new("g")).join_as(sea_orm::sea_query::JoinType::LeftJoin, sea_orm::sea_query::Alias::new("runs"), sea_orm::sea_query::Alias::new("r"), sea_orm::sea_query::Expr::cust("r.task_id = g.task_id")).and_where(sea_orm::sea_query::Expr::cust("g.status IN ('PENDING_APPROVAL', 'QUEUED', 'ACTIVE') AND (g.status = 'QUEUED' OR g.expires_at <= CLOCK_TIMESTAMP() OR r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED'))")).order_by_expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((sea_orm::sea_query::Alias::new("g"), sea_orm::sea_query::Alias::new("created_at")))), sea_orm::sea_query::Order::Asc).order_by_expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((sea_orm::sea_query::Alias::new("g"), sea_orm::sea_query::Alias::new("id")))), sea_orm::sea_query::Order::Asc).limit(32).to_string(sea_orm::sea_query::PostgresQueryBuilder))
         .fetch_all(&f.store.pool).await?;
-    let count = jobs.len();
-    for job in jobs {
-        if job.expires_at <= Utc::now() {
-            terminal(f, &job, "EXPIRED", "generation lifetime elapsed").await?;
-        } else if job.status == "QUEUED" {
-            if let Err(error) = activate(f, &job).await {
-                if matches!(
-                    error,
-                    Error::Unauthorized | Error::Forbidden | Error::Invalid(_) | Error::Conflict(_)
-                ) {
-                    terminal(f, &job, "FAILED", &error.to_string()).await?;
-                } else {
-                    return Err(error);
-                }
-            }
-        } else {
-            terminal(f, &job, "FAILED", "run reached terminal state").await?;
-        }
-    }
-    if count > 0 {
-        f.notify.notify_waiters();
-    }
-    Ok(count)
+	let count = jobs.len();
+	for job in jobs {
+		if job.expires_at <= Utc::now() {
+			terminal(f, &job, "EXPIRED", "generation lifetime elapsed").await?;
+		} else if job.status == "QUEUED" {
+			if let Err(error) = activate(f, &job).await {
+				if matches!(
+					error,
+					Error::Unauthorized | Error::Forbidden | Error::Invalid(_) | Error::Conflict(_)
+				) {
+					terminal(f, &job, "FAILED", &error.to_string()).await?;
+				} else {
+					return Err(error);
+				}
+			}
+		} else {
+			terminal(f, &job, "FAILED", "run reached terminal state").await?;
+		}
+	}
+	if count > 0 {
+		f.notify.notify_waiters();
+	}
+	Ok(count)
 }
 
 /// Uses the tenant policy lease already held by Access. All lifecycle and
 /// policy mutations require its exclusive counterpart, avoiding lock upgrades
 /// and allowing nested generation to reserve quota under a worker lease.
 pub(crate) async fn require_live(
-    access: &mut Access,
-    node: &str,
-    task: Uuid,
-    agent: &EntityRef,
+	access: &mut Access,
+	node: &str,
+	task: Uuid,
+	agent: &EntityRef,
 ) -> Result<()> {
-    let jobs:Vec<Request>=sqlx::query_as(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))).from(sea_orm::sea_query::Alias::new("generation_requests")).and_where(sea_orm::sea_query::Expr::cust("(tenant = $1 AND ($2 || '/agents/' || agent_id || '@' || agent_version) = ANY($3)) OR (agent_id = $4 AND agent_version = $5)")).order_by_expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id"))), sea_orm::sea_query::Order::Asc).to_string(sea_orm::sea_query::PostgresQueryBuilder))
+	let jobs:Vec<Request>=sqlx::query_as(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))).from(sea_orm::sea_query::Alias::new("generation_requests")).and_where(sea_orm::sea_query::Expr::cust("(tenant = $1 AND ($2 || '/agents/' || agent_id || '@' || agent_version) = ANY($3)) OR (agent_id = $4 AND agent_version = $5)")).order_by_expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id"))), sea_orm::sea_query::Order::Asc).to_string(sea_orm::sea_query::PostgresQueryBuilder))
         .bind(&access.identity.tenant).bind(node).bind(&access.subjects).bind(&agent.id).bind(&agent.version).fetch_all(&mut *access.tx).await?;
-    for job in jobs {
-        let enabled: bool = sqlx::query_scalar(
-            &sea_orm::sea_query::Query::select()
-                .expr(sea_orm::sea_query::Expr::cust(
-                    "CAST((spec ->> 'enabled') AS BOOLEAN)",
-                ))
-                .from(sea_orm::sea_query::Alias::new("generation_policies"))
-                .and_where(sea_orm::sea_query::Expr::cust("tenant = $1 AND id = $2"))
-                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
-        )
-        .bind(&job.tenant)
-        .bind(&job.policy_id)
-        .fetch_one(&mut *access.tx)
-        .await?;
-        if job.tenant != access.identity.tenant
-            || job.status != "ACTIVE"
-            || job.expires_at <= Utc::now()
-            || !enabled
-            || (job.agent_id == agent.id
-                && job.agent_version == agent.version
-                && job.task_id != task)
-        {
-            return Err(Error::Forbidden);
-        }
-    }
-    Ok(())
+	for job in jobs {
+		let enabled: bool = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::cust(
+					"CAST((spec ->> 'enabled') AS BOOLEAN)",
+				))
+				.from(sea_orm::sea_query::Alias::new("generation_policies"))
+				.and_where(sea_orm::sea_query::Expr::cust("tenant = $1 AND id = $2"))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(&job.tenant)
+		.bind(&job.policy_id)
+		.fetch_one(&mut *access.tx)
+		.await?;
+		if job.tenant != access.identity.tenant
+			|| job.status != "ACTIVE"
+			|| job.expires_at <= Utc::now()
+			|| !enabled
+			|| (job.agent_id == agent.id
+				&& job.agent_version == agent.version
+				&& job.task_id != task)
+		{
+			return Err(Error::Forbidden);
+		}
+	}
+	Ok(())
 }
 
 pub async fn run(f: Federation) -> Result<()> {
-    loop {
-        if let Err(error) = reconcile(&f).await {
-            tracing::warn!(%error,"generation reconciliation failed");
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
+	loop {
+		if let Err(error) = reconcile(&f).await {
+			tracing::warn!(%error,"generation reconciliation failed");
+		}
+		tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+	}
 }

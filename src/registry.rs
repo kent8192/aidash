@@ -1,11 +1,11 @@
 use crate::{
-    Error, Result,
-    config::{secret, validate_endpoint},
-    domain::empty_object,
+	Error, Result,
+	config::{secret, validate_endpoint},
+	domain::empty_object,
 };
 use sea_orm::{
-    ActiveValue::Set, DbBackend, QueryOrder, QuerySelect, TransactionTrait, entity::prelude::*,
-    sea_query::OnConflict,
+	ActiveValue::Set, DbBackend, QueryOrder, QuerySelect, TransactionTrait, entity::prelude::*,
+	sea_query::OnConflict,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -13,128 +13,128 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 mod record {
-    use sea_orm::entity::prelude::*;
-    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
-    #[sea_orm(table_name = "registry")]
-    pub struct Model {
-        #[sea_orm(primary_key, auto_increment = false)]
-        pub id: String,
-        #[sea_orm(primary_key, auto_increment = false)]
-        pub version: String,
-        pub kind: String,
-        pub metadata: Json,
-    }
-    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-    pub enum Relation {}
-    impl ActiveModelBehavior for ActiveModel {}
+	use sea_orm::entity::prelude::*;
+	#[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+	#[sea_orm(table_name = "registry")]
+	pub struct Model {
+		#[sea_orm(primary_key, auto_increment = false)]
+		pub id: String,
+		#[sea_orm(primary_key, auto_increment = false)]
+		pub version: String,
+		pub kind: String,
+		pub metadata: Json,
+	}
+	#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+	pub enum Relation {}
+	impl ActiveModelBehavior for ActiveModel {}
 }
 
 pub type Localized = BTreeMap<String, String>;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Entry {
-    pub id: String,
-    pub version: String,
-    pub kind: String,
-    pub name: Localized,
-    pub description: Localized,
-    #[serde(default)]
-    #[schema(required = true)]
-    pub capabilities: Vec<String>,
-    #[serde(default)]
-    #[schema(required = true)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    #[schema(required = true)]
-    pub languages: Vec<String>,
-    #[serde(default)]
-    #[schema(required = true)]
-    pub skills: Vec<String>,
-    #[serde(default = "empty_object")]
-    #[schema(value_type = BTreeMap<String, Value>, required = true)]
-    pub schema: Value,
-    #[serde(default = "empty_object")]
-    #[schema(value_type = BTreeMap<String, Value>, required = true)]
-    pub config: Value,
+	pub id: String,
+	pub version: String,
+	pub kind: String,
+	pub name: Localized,
+	pub description: Localized,
+	#[serde(default)]
+	#[schema(required = true)]
+	pub capabilities: Vec<String>,
+	#[serde(default)]
+	#[schema(required = true)]
+	pub tags: Vec<String>,
+	#[serde(default)]
+	#[schema(required = true)]
+	pub languages: Vec<String>,
+	#[serde(default)]
+	#[schema(required = true)]
+	pub skills: Vec<String>,
+	#[serde(default = "empty_object")]
+	#[schema(value_type = BTreeMap<String, Value>, required = true)]
+	pub schema: Value,
+	#[serde(default = "empty_object")]
+	#[schema(value_type = BTreeMap<String, Value>, required = true)]
+	pub config: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct EntityRef {
-    pub id: String,
-    pub version: String,
+	pub id: String,
+	pub version: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
-    pub model: EntityRef,
-    pub instructions: String,
-    #[serde(default)]
-    pub tools: Vec<EntityRef>,
-    #[serde(default)]
-    pub skills: Vec<EntityRef>,
-    pub cluster: Option<EntityRef>,
-    #[serde(default = "max_steps")]
-    pub max_steps: i32,
+	pub model: EntityRef,
+	pub instructions: String,
+	#[serde(default)]
+	pub tools: Vec<EntityRef>,
+	#[serde(default)]
+	pub skills: Vec<EntityRef>,
+	pub cluster: Option<EntityRef>,
+	#[serde(default = "max_steps")]
+	pub max_steps: i32,
 }
 fn max_steps() -> i32 {
-    64
+	64
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClusterConfig {
-    pub coordinator: EntityRef,
+	pub coordinator: EntityRef,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ModelConfig {
-    pub provider: String,
-    pub model_id: String,
-    pub endpoint: String,
-    pub credential_env: Option<String>,
-    pub context_window: usize,
-    pub modalities: Vec<String>,
-    pub cost: Value,
+	pub provider: String,
+	pub model_id: String,
+	pub endpoint: String,
+	pub credential_env: Option<String>,
+	pub context_window: usize,
+	pub modalities: Vec<String>,
+	pub cost: Value,
 }
 
 /// Explicit transport and bounds for System One probability classification.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CompactorConfig {
-    pub provider: String,
-    pub endpoint: String,
-    pub model: String,
-    pub credential_env: String,
-    pub max_request_bytes: usize,
-    pub max_questions: usize,
-    pub max_response_bytes: usize,
+	pub provider: String,
+	pub endpoint: String,
+	pub model: String,
+	pub credential_env: String,
+	pub max_request_bytes: usize,
+	pub max_questions: usize,
+	pub max_response_bytes: usize,
 }
 impl CompactorConfig {
-    pub fn validate(&self) -> Result<()> {
-        self.validate_in(true)
-    }
-    pub(crate) fn validate_in(&self, local: bool) -> Result<()> {
-        validate_endpoint(&self.endpoint)?;
-        if self.provider != "typesafe-system-one"
-            || self.model.trim().is_empty()
-            || self.model.len() > 128
-            || !(1024..=1_048_576).contains(&self.max_request_bytes)
-            || !(1..=1024).contains(&self.max_questions)
-            || !(128..=1_048_576).contains(&self.max_response_bytes)
-        {
-            return Err(Error::Invalid(
-                "invalid compactor transport or request/response bounds".into(),
-            ));
-        }
-        crate::config::validate_secret_reference(&self.credential_env)?;
-        if local && secret(&self.credential_env)?.trim().is_empty() {
-            return Err(Error::Invalid(
-                "compactor credential must not be empty".into(),
-            ));
-        }
-        Ok(())
-    }
+	pub fn validate(&self) -> Result<()> {
+		self.validate_in(true)
+	}
+	pub(crate) fn validate_in(&self, local: bool) -> Result<()> {
+		validate_endpoint(&self.endpoint)?;
+		if self.provider != "typesafe-system-one"
+			|| self.model.trim().is_empty()
+			|| self.model.len() > 128
+			|| !(1024..=1_048_576).contains(&self.max_request_bytes)
+			|| !(1..=1024).contains(&self.max_questions)
+			|| !(128..=1_048_576).contains(&self.max_response_bytes)
+		{
+			return Err(Error::Invalid(
+				"invalid compactor transport or request/response bounds".into(),
+			));
+		}
+		crate::config::validate_secret_reference(&self.credential_env)?;
+		if local && secret(&self.credential_env)?.trim().is_empty() {
+			return Err(Error::Invalid(
+				"compactor credential must not be empty".into(),
+			));
+		}
+		Ok(())
+	}
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
@@ -142,252 +142,251 @@ impl CompactorConfig {
 #[derive(utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct Search {
-    pub kind: Option<String>,
-    pub query: Option<String>,
-    pub capability: Option<String>,
-    pub language: Option<String>,
-    pub skill: Option<String>,
-    pub tag: Option<String>,
-    pub model: Option<String>,
+	pub kind: Option<String>,
+	pub query: Option<String>,
+	pub capability: Option<String>,
+	pub language: Option<String>,
+	pub skill: Option<String>,
+	pub tag: Option<String>,
+	pub model: Option<String>,
 }
 impl Search {
-    pub fn matches(&self, e: &Entry) -> bool {
-        self.kind.as_ref().is_none_or(|s| &e.kind == s)
-            && self
-                .capability
-                .as_ref()
-                .is_none_or(|s| e.capabilities.contains(s))
-            && self
-                .language
-                .as_ref()
-                .is_none_or(|s| e.languages.iter().any(|l| l.eq_ignore_ascii_case(s)))
-            && self.skill.as_ref().is_none_or(|s| e.skills.contains(s))
-            && self.tag.as_ref().is_none_or(|s| e.tags.contains(s))
-            && self
-                .model
-                .as_ref()
-                .is_none_or(|s| e.config.pointer("/model/id").and_then(Value::as_str) == Some(s))
-            && self.query.as_ref().is_none_or(|s| {
-                let s = s.to_lowercase();
-                e.id.to_lowercase().contains(&s)
-                    || e.name
-                        .values()
-                        .chain(e.description.values())
-                        .any(|v| v.to_lowercase().contains(&s))
-            })
-    }
+	pub fn matches(&self, e: &Entry) -> bool {
+		self.kind.as_ref().is_none_or(|s| &e.kind == s)
+			&& self
+				.capability
+				.as_ref()
+				.is_none_or(|s| e.capabilities.contains(s))
+			&& self
+				.language
+				.as_ref()
+				.is_none_or(|s| e.languages.iter().any(|l| l.eq_ignore_ascii_case(s)))
+			&& self.skill.as_ref().is_none_or(|s| e.skills.contains(s))
+			&& self.tag.as_ref().is_none_or(|s| e.tags.contains(s))
+			&& self
+				.model
+				.as_ref()
+				.is_none_or(|s| e.config.pointer("/model/id").and_then(Value::as_str) == Some(s))
+			&& self.query.as_ref().is_none_or(|s| {
+				let s = s.to_lowercase();
+				e.id.to_lowercase().contains(&s)
+					|| e.name
+						.values()
+						.chain(e.description.values())
+						.any(|v| v.to_lowercase().contains(&s))
+			})
+	}
 }
 
 #[derive(Clone)]
 pub struct Registry {
-    pub db: DatabaseConnection,
-    node_id: String,
+	pub db: DatabaseConnection,
+	node_id: String,
 }
 impl Registry {
-    pub fn new(pool: sqlx::PgPool, node_id: &str) -> Self {
-        Self {
-            db: sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(pool),
-            node_id: node_id.into(),
-        }
-    }
-    pub async fn get(&self, id: &str, version: &str) -> Result<Entry> {
-        let row = record::Entity::find_by_id((id.to_owned(), version.to_owned()))
-            .one(&self.db)
-            .await?
-            .ok_or_else(|| Error::NotFound(format!("entity {id}@{version}")))?;
-        self.effective(serde_json::from_value(row.metadata)?).await
-    }
-    async fn effective(&self, mut entry: Entry) -> Result<Entry> {
-        use sea_orm::sea_query::{Alias, Expr, Query};
-        let query = Query::select()
-            .column(Alias::new("config"))
-            .from(Alias::new("installations"))
-            .and_where(Expr::col(Alias::new("id")).eq(&entry.id))
-            .and_where(Expr::col(Alias::new("version")).eq(&entry.version))
-            .to_owned();
-        if let Some(row) = self.db.query_one(DbBackend::Postgres.build(&query)).await? {
-            overlay_config(&mut entry.config, &row.try_get::<Value>("", "config")?)?;
-        }
-        Ok(entry)
-    }
-    pub async fn list(&self, search: &Search) -> Result<Vec<Entry>> {
-        let mut query = record::Entity::find();
-        if let Some(kind) = &search.kind {
-            query = query.filter(record::Column::Kind.eq(kind));
-        }
-        let rows = query
-            .order_by_asc(record::Column::Id)
-            .order_by_asc(record::Column::Version)
-            .all(&self.db)
-            .await?;
-        let mut result = Vec::new();
-        for row in rows {
-            let e = self
-                .effective(serde_json::from_value(row.metadata)?)
-                .await?;
-            if search.matches(&e) {
-                result.push(e);
-            }
-        }
-        Ok(result)
-    }
-    pub async fn legacy_agents(&self, search: &Search, offset: u64) -> Result<AgentPage> {
-        use sea_orm::sea_query::{Alias, Expr, Query};
-        let mut cursor = offset;
-        let mut entries = vec![];
-        let mut bytes = 0;
-        loop {
-            let rows = record::Entity::find()
-                .filter(record::Column::Kind.eq("agent"))
-                .order_by_asc(record::Column::Id)
-                .order_by_asc(record::Column::Version)
-                .limit(64)
-                .offset(cursor)
-                .all(&self.db)
-                .await?;
-            let exhausted = rows.len() < 64;
-            for row in rows {
-                let generated = Query::select()
-                    .column(Alias::new("id"))
-                    .from(Alias::new("generation_requests"))
-                    .and_where(Expr::col(Alias::new("agent_id")).eq(&row.id))
-                    .and_where(Expr::col(Alias::new("agent_version")).eq(&row.version))
-                    .limit(1)
-                    .to_owned();
-                if self
-                    .db
-                    .query_one(DbBackend::Postgres.build(&generated))
-                    .await?
-                    .is_some()
-                {
-                    cursor += 1;
-                    continue;
-                }
-                let entry = self
-                    .effective(serde_json::from_value(row.metadata)?)
-                    .await?;
-                if !search.matches(&entry) {
-                    cursor += 1;
-                    continue;
-                }
-                let size = serde_json::to_vec(&entry)?.len() + 1;
-                if bytes + size > 3_000_000 {
-                    if entries.is_empty() {
-                        return Err(Error::Invalid(
-                            "agent metadata exceeds discovery page limit".into(),
-                        ));
-                    }
-                    return Ok(AgentPage {
-                        entries,
-                        next_offset: Some(cursor),
-                    });
-                }
-                bytes += size;
-                cursor += 1;
-                entries.push(entry);
-                if entries.len() == 64 {
-                    return Ok(AgentPage {
-                        entries,
-                        next_offset: Some(cursor),
-                    });
-                }
-            }
-            if exhausted {
-                return Ok(AgentPage {
-                    entries,
-                    next_offset: None,
-                });
-            }
-        }
-    }
-    pub async fn register(&self, e: Entry) -> Result<Entry> {
-        self.validate_references(&e).await?;
-        let tx = self.db.begin().await?;
-        insert_entry(&tx, &e).await?;
-        tx.commit().await?;
-        Ok(e)
-    }
-    pub async fn validate_references(&self, e: &Entry) -> Result<()> {
-        validate(e)?;
-        if e.kind == "agent" {
-            let cfg: AgentConfig = serde_json::from_value(e.config.clone())?;
-            let mut references = Vec::new();
-            for (r, kind) in std::iter::once((&cfg.model, "model"))
-                .chain(cfg.tools.iter().map(|r| (r, "tool")))
-                .chain(cfg.skills.iter().map(|r| (r, "skill")))
-                .chain(cfg.cluster.iter().map(|r| (r, "cluster")))
-            {
-                let referenced = self.get(&r.id, &r.version).await?;
-                if referenced.kind != kind {
-                    return Err(Error::Invalid(format!("{} must reference a {kind}", r.id)));
-                }
-                references.push(referenced);
-            }
-            validate_agent_prompt(&cfg, &references)?;
-        }
-        if e.kind == "tool"
-            && let crate::tool::ToolConfig::Agent { node_id, agent } =
-                serde_json::from_value(e.config.clone())?
-            && node_id == self.node_id
-            && self.get(&agent.id, &agent.version).await?.kind != "agent"
-        {
-            return Err(Error::Invalid(
-                "agent tool executor must reference an agent".into(),
-            ));
-        }
-        if e.kind == "cluster" {
-            let config: ClusterConfig = serde_json::from_value(e.config.clone())?;
-            if self
-                .get(&config.coordinator.id, &config.coordinator.version)
-                .await?
-                .kind
-                != "agent"
-            {
-                return Err(Error::Invalid(
-                    "cluster coordinator must reference an agent".into(),
-                ));
-            }
-        }
-        Ok(())
-    }
+	pub fn new(pool: sqlx::PgPool, node_id: &str) -> Self {
+		Self {
+			db: sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(pool),
+			node_id: node_id.into(),
+		}
+	}
+	pub async fn get(&self, id: &str, version: &str) -> Result<Entry> {
+		let row = record::Entity::find_by_id((id.to_owned(), version.to_owned()))
+			.one(&self.db)
+			.await?
+			.ok_or_else(|| Error::NotFound(format!("entity {id}@{version}")))?;
+		self.effective(serde_json::from_value(row.metadata)?).await
+	}
+	async fn effective(&self, mut entry: Entry) -> Result<Entry> {
+		use sea_orm::sea_query::{Alias, Expr, Query};
+		let query = Query::select()
+			.column(Alias::new("config"))
+			.from(Alias::new("installations"))
+			.and_where(Expr::col(Alias::new("id")).eq(&entry.id))
+			.and_where(Expr::col(Alias::new("version")).eq(&entry.version))
+			.to_owned();
+		if let Some(row) = self.db.query_one(DbBackend::Postgres.build(&query)).await? {
+			overlay_config(&mut entry.config, &row.try_get::<Value>("", "config")?)?;
+		}
+		Ok(entry)
+	}
+	pub async fn list(&self, search: &Search) -> Result<Vec<Entry>> {
+		let mut query = record::Entity::find();
+		if let Some(kind) = &search.kind {
+			query = query.filter(record::Column::Kind.eq(kind));
+		}
+		let rows = query
+			.order_by_asc(record::Column::Id)
+			.order_by_asc(record::Column::Version)
+			.all(&self.db)
+			.await?;
+		let mut result = Vec::new();
+		for row in rows {
+			let e = self
+				.effective(serde_json::from_value(row.metadata)?)
+				.await?;
+			if search.matches(&e) {
+				result.push(e);
+			}
+		}
+		Ok(result)
+	}
+	pub async fn legacy_agents(&self, search: &Search, offset: u64) -> Result<AgentPage> {
+		use sea_orm::sea_query::{Alias, Expr, Query};
+		let mut cursor = offset;
+		let mut entries = vec![];
+		let mut bytes = 0;
+		loop {
+			let rows = record::Entity::find()
+				.filter(record::Column::Kind.eq("agent"))
+				.order_by_asc(record::Column::Id)
+				.order_by_asc(record::Column::Version)
+				.limit(64)
+				.offset(cursor)
+				.all(&self.db)
+				.await?;
+			let exhausted = rows.len() < 64;
+			for row in rows {
+				let generated = Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("generation_requests"))
+					.and_where(Expr::col(Alias::new("agent_id")).eq(&row.id))
+					.and_where(Expr::col(Alias::new("agent_version")).eq(&row.version))
+					.limit(1)
+					.to_owned();
+				if self
+					.db
+					.query_one(DbBackend::Postgres.build(&generated))
+					.await?
+					.is_some()
+				{
+					cursor += 1;
+					continue;
+				}
+				let entry = self
+					.effective(serde_json::from_value(row.metadata)?)
+					.await?;
+				if !search.matches(&entry) {
+					cursor += 1;
+					continue;
+				}
+				let size = serde_json::to_vec(&entry)?.len() + 1;
+				if bytes + size > 3_000_000 {
+					if entries.is_empty() {
+						return Err(Error::Invalid(
+							"agent metadata exceeds discovery page limit".into(),
+						));
+					}
+					return Ok(AgentPage {
+						entries,
+						next_offset: Some(cursor),
+					});
+				}
+				bytes += size;
+				cursor += 1;
+				entries.push(entry);
+				if entries.len() == 64 {
+					return Ok(AgentPage {
+						entries,
+						next_offset: Some(cursor),
+					});
+				}
+			}
+			if exhausted {
+				return Ok(AgentPage {
+					entries,
+					next_offset: None,
+				});
+			}
+		}
+	}
+	pub async fn register(&self, e: Entry) -> Result<Entry> {
+		self.validate_references(&e).await?;
+		let tx = self.db.begin().await?;
+		insert_entry(&tx, &e).await?;
+		tx.commit().await?;
+		Ok(e)
+	}
+	pub async fn validate_references(&self, e: &Entry) -> Result<()> {
+		validate(e)?;
+		if e.kind == "agent" {
+			let cfg: AgentConfig = serde_json::from_value(e.config.clone())?;
+			let mut references = Vec::new();
+			for (r, kind) in std::iter::once((&cfg.model, "model"))
+				.chain(cfg.tools.iter().map(|r| (r, "tool")))
+				.chain(cfg.skills.iter().map(|r| (r, "skill")))
+				.chain(cfg.cluster.iter().map(|r| (r, "cluster")))
+			{
+				let referenced = self.get(&r.id, &r.version).await?;
+				if referenced.kind != kind {
+					return Err(Error::Invalid(format!("{} must reference a {kind}", r.id)));
+				}
+				references.push(referenced);
+			}
+			validate_agent_prompt(&cfg, &references)?;
+		}
+		if e.kind == "tool"
+			&& let crate::tool::ToolConfig::Agent { node_id, agent } =
+				serde_json::from_value(e.config.clone())?
+			&& node_id == self.node_id
+			&& self.get(&agent.id, &agent.version).await?.kind != "agent"
+		{
+			return Err(Error::Invalid(
+				"agent tool executor must reference an agent".into(),
+			));
+		}
+		if e.kind == "cluster" {
+			let config: ClusterConfig = serde_json::from_value(e.config.clone())?;
+			if self
+				.get(&config.coordinator.id, &config.coordinator.version)
+				.await?
+				.kind != "agent"
+			{
+				return Err(Error::Invalid(
+					"cluster coordinator must reference an agent".into(),
+				));
+			}
+		}
+		Ok(())
+	}
 }
 
 async fn insert_entry<C: ConnectionTrait>(db: &C, e: &Entry) -> Result<()> {
-    let value = serde_json::to_value(e)?;
-    record::Entity::insert(record::ActiveModel {
-        id: Set(e.id.clone()),
-        version: Set(e.version.clone()),
-        kind: Set(e.kind.clone()),
-        metadata: Set(value.clone()),
-    })
-    .on_conflict(
-        OnConflict::columns([record::Column::Id, record::Column::Version])
-            .do_nothing()
-            .to_owned(),
-    )
-    .do_nothing()
-    .exec(db)
-    .await?;
-    let stored = record::Entity::find_by_id((e.id.clone(), e.version.clone()))
-        .one(db)
-        .await?
-        .ok_or_else(|| Error::Conflict("entity was concurrently removed".into()))?;
-    if stored.metadata != value {
-        return Err(Error::Conflict(
-            "published versions are immutable; choose a new version".into(),
-        ));
-    }
-    Ok(())
+	let value = serde_json::to_value(e)?;
+	record::Entity::insert(record::ActiveModel {
+		id: Set(e.id.clone()),
+		version: Set(e.version.clone()),
+		kind: Set(e.kind.clone()),
+		metadata: Set(value.clone()),
+	})
+	.on_conflict(
+		OnConflict::columns([record::Column::Id, record::Column::Version])
+			.do_nothing()
+			.to_owned(),
+	)
+	.do_nothing()
+	.exec(db)
+	.await?;
+	let stored = record::Entity::find_by_id((e.id.clone(), e.version.clone()))
+		.one(db)
+		.await?
+		.ok_or_else(|| Error::Conflict("entity was concurrently removed".into()))?;
+	if stored.metadata != value {
+		return Err(Error::Conflict(
+			"published versions are immutable; choose a new version".into(),
+		));
+	}
+	Ok(())
 }
 
 pub fn validate(e: &Entry) -> Result<()> {
-    validate_in(e, true)
+	validate_in(e, true)
 }
 pub(crate) fn validate_structure(e: &Entry) -> Result<()> {
-    validate_in(e, false)
+	validate_in(e, false)
 }
 fn validate_in(e: &Entry, local: bool) -> Result<()> {
-    let schema = json!({"type":"object","required":["id","version","kind","name","description","capabilities","tags","languages","schema","config"],
+	let schema = json!({"type":"object","required":["id","version","kind","name","description","capabilities","tags","languages","schema","config"],
         "properties":{
             "id":{"type":"string","pattern":"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$"},
             "version":{"type":"string"}, "kind":{"enum":["agent","model","tool","skill","cluster","node","compactor","embedding"]},
@@ -397,628 +396,627 @@ fn validate_in(e: &Entry, local: bool) -> Result<()> {
             "tags":{"type":"array","items":{"type":"string"},"uniqueItems":true},
             "languages":{"type":"array","items":{"type":"string","pattern":"^[a-zA-Z]{2,8}(-[a-zA-Z0-9]{1,8})*$"},"uniqueItems":true},
             "schema":{"type":"object"},"config":{"type":"object"}}});
-    let validator =
-        jsonschema::validator_for(&schema).map_err(|e| Error::Invalid(e.to_string()))?;
-    validator
-        .validate(&serde_json::to_value(e)?)
-        .map_err(|e| Error::Invalid(e.to_string()))?;
-    semver::Version::parse(&e.version)
-        .map_err(|_| Error::Invalid("version must be semantic versioning".into()))?;
-    // Reserve the largest valid node ID (108 bytes), `/agents/`, and `@`.
-    // Every accepted agent must fit the 256-byte authorization subject limit.
-    if e.kind == "agent" && e.id.len() + e.version.len() > 139 {
-        return Err(Error::Invalid(
-            "qualified agent identity exceeds 256 bytes".into(),
-        ));
-    }
-    for locale in e.name.keys().chain(e.description.keys()) {
-        if locale.is_empty()
-            || !locale.split('-').all(|p| {
-                !p.is_empty() && p.len() <= 8 && p.chars().all(|c| c.is_ascii_alphanumeric())
-            })
-        {
-            return Err(Error::Invalid(
-                "metadata locales must be BCP 47 language tags".into(),
-            ));
-        }
-    }
-    // Remote schema resolution is disabled: metadata must be self contained.
-    jsonschema::validator_for(&e.schema)
-        .map_err(|e| Error::Invalid(format!("invalid entity schema: {e}")))?;
-    match e.kind.as_str() {
-        "embedding" => serde_json::from_value::<crate::semantic::EmbeddingConfig>(e.config.clone())
-            .map_err(|e| Error::Invalid(e.to_string()))?
-            .validate_in(local)?,
-        "compactor" => serde_json::from_value::<CompactorConfig>(e.config.clone())
-            .map_err(|e| Error::Invalid(e.to_string()))?
-            .validate_in(local)?,
-        "model" => {
-            let m: ModelConfig = serde_json::from_value(e.config.clone())
-                .map_err(|e| Error::Invalid(e.to_string()))?;
-            if !matches!(m.provider.as_str(), "openai" | "anthropic" | "openrouter")
-                || m.model_id.is_empty()
-                || m.context_window < 2048
-                || !m.modalities.iter().any(|m| m == "text")
-            {
-                return Err(Error::Invalid("model requires openai/anthropic/openrouter, model_id, text modality and context_window >= 2048".into()));
-            }
-            validate_endpoint(&m.endpoint)?;
-            if let Some(name) = m.credential_env {
-                crate::config::validate_secret_reference(&name)?;
-                if local {
-                    secret(&name)?;
-                }
-            }
-        }
-        "agent" => {
-            let a: AgentConfig = serde_json::from_value(e.config.clone())
-                .map_err(|e| Error::Invalid(e.to_string()))?;
-            if a.instructions.trim().is_empty() || !(1..=1000).contains(&a.max_steps) {
-                return Err(Error::Invalid(
-                    "agent requires instructions and max_steps in 1..1000".into(),
-                ));
-            }
-        }
-        "cluster" => {
-            let cluster: ClusterConfig =
-                serde_json::from_value(e.config.clone()).map_err(|error| {
-                    Error::Invalid(format!("cluster requires a coordinator reference: {error}"))
-                })?;
-            if cluster.coordinator.id.trim().is_empty()
-                || semver::Version::parse(&cluster.coordinator.version).is_err()
-            {
-                return Err(Error::Invalid(
-                    "cluster coordinator requires an id and semantic version".into(),
-                ));
-            }
-        }
-        "tool" => crate::tool::validate_config_in(&e.config, local)?,
-        "skill"
-            if e.config
-                .get("instructions")
-                .and_then(Value::as_str)
-                .is_none_or(|s| s.is_empty()) =>
-        {
-            return Err(Error::Invalid("skill requires instructions".into()));
-        }
-        _ => {}
-    }
-    Ok(())
+	let validator =
+		jsonschema::validator_for(&schema).map_err(|e| Error::Invalid(e.to_string()))?;
+	validator
+		.validate(&serde_json::to_value(e)?)
+		.map_err(|e| Error::Invalid(e.to_string()))?;
+	semver::Version::parse(&e.version)
+		.map_err(|_| Error::Invalid("version must be semantic versioning".into()))?;
+	// Reserve the largest valid node ID (108 bytes), `/agents/`, and `@`.
+	// Every accepted agent must fit the 256-byte authorization subject limit.
+	if e.kind == "agent" && e.id.len() + e.version.len() > 139 {
+		return Err(Error::Invalid(
+			"qualified agent identity exceeds 256 bytes".into(),
+		));
+	}
+	for locale in e.name.keys().chain(e.description.keys()) {
+		if locale.is_empty()
+			|| !locale.split('-').all(|p| {
+				!p.is_empty() && p.len() <= 8 && p.chars().all(|c| c.is_ascii_alphanumeric())
+			}) {
+			return Err(Error::Invalid(
+				"metadata locales must be BCP 47 language tags".into(),
+			));
+		}
+	}
+	// Remote schema resolution is disabled: metadata must be self contained.
+	jsonschema::validator_for(&e.schema)
+		.map_err(|e| Error::Invalid(format!("invalid entity schema: {e}")))?;
+	match e.kind.as_str() {
+		"embedding" => serde_json::from_value::<crate::semantic::EmbeddingConfig>(e.config.clone())
+			.map_err(|e| Error::Invalid(e.to_string()))?
+			.validate_in(local)?,
+		"compactor" => serde_json::from_value::<CompactorConfig>(e.config.clone())
+			.map_err(|e| Error::Invalid(e.to_string()))?
+			.validate_in(local)?,
+		"model" => {
+			let m: ModelConfig = serde_json::from_value(e.config.clone())
+				.map_err(|e| Error::Invalid(e.to_string()))?;
+			if !matches!(m.provider.as_str(), "openai" | "anthropic" | "openrouter")
+				|| m.model_id.is_empty()
+				|| m.context_window < 2048
+				|| !m.modalities.iter().any(|m| m == "text")
+			{
+				return Err(Error::Invalid("model requires openai/anthropic/openrouter, model_id, text modality and context_window >= 2048".into()));
+			}
+			validate_endpoint(&m.endpoint)?;
+			if let Some(name) = m.credential_env {
+				crate::config::validate_secret_reference(&name)?;
+				if local {
+					secret(&name)?;
+				}
+			}
+		}
+		"agent" => {
+			let a: AgentConfig = serde_json::from_value(e.config.clone())
+				.map_err(|e| Error::Invalid(e.to_string()))?;
+			if a.instructions.trim().is_empty() || !(1..=1000).contains(&a.max_steps) {
+				return Err(Error::Invalid(
+					"agent requires instructions and max_steps in 1..1000".into(),
+				));
+			}
+		}
+		"cluster" => {
+			let cluster: ClusterConfig =
+				serde_json::from_value(e.config.clone()).map_err(|error| {
+					Error::Invalid(format!("cluster requires a coordinator reference: {error}"))
+				})?;
+			if cluster.coordinator.id.trim().is_empty()
+				|| semver::Version::parse(&cluster.coordinator.version).is_err()
+			{
+				return Err(Error::Invalid(
+					"cluster coordinator requires an id and semantic version".into(),
+				));
+			}
+		}
+		"tool" => crate::tool::validate_config_in(&e.config, local)?,
+		"skill"
+			if e.config
+				.get("instructions")
+				.and_then(Value::as_str)
+				.is_none_or(|s| s.is_empty()) =>
+		{
+			return Err(Error::Invalid("skill requires instructions".into()));
+		}
+		_ => {}
+	}
+	Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Package {
-    pub entity: Entry,
-    pub author: String,
-    pub permissions: Vec<String>,
-    #[serde(default)]
-    #[schema(required = true)]
-    pub dependencies: Vec<EntityRef>,
+	pub entity: Entry,
+	pub author: String,
+	pub permissions: Vec<String>,
+	#[serde(default)]
+	#[schema(required = true)]
+	pub dependencies: Vec<EntityRef>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct PackageRecord {
-    pub id: String,
-    pub version: String,
-    #[schema(value_type = Package)]
-    pub manifest: Value,
-    pub digest: String,
+	pub id: String,
+	pub version: String,
+	#[schema(value_type = Package)]
+	pub manifest: Value,
+	pub digest: String,
 }
 
 pub fn digest(value: &Value) -> String {
-    format!("sha256:{:x}", Sha256::digest(value.to_string().as_bytes()))
+	format!("sha256:{:x}", Sha256::digest(value.to_string().as_bytes()))
 }
 
 impl Registry {
-    pub async fn publish(&self, pool: &sqlx::PgPool, package: Package) -> Result<PackageRecord> {
-        validate(&package.entity)?;
-        if !matches!(package.entity.kind.as_str(), "agent" | "tool" | "skill")
-            || package.author.trim().is_empty()
-        {
-            return Err(Error::Invalid(
-                "packages require an author and an agent, tool or skill".into(),
-            ));
-        }
-        let value = serde_json::to_value(&package)?;
-        let hash = digest(&value);
-        let mut tx = pool.begin().await?;
-        let inserted = sqlx::query(
-            &sea_orm::sea_query::Query::insert()
-                .into_table(sea_orm::sea_query::Alias::new("packages"))
-                .columns([
-                    sea_orm::sea_query::Alias::new("id"),
-                    sea_orm::sea_query::Alias::new("version"),
-                    sea_orm::sea_query::Alias::new("manifest"),
-                    sea_orm::sea_query::Alias::new("digest"),
-                ])
-                .values_panic([
-                    sea_orm::sea_query::Expr::cust("$1"),
-                    sea_orm::sea_query::Expr::cust("$2"),
-                    sea_orm::sea_query::Expr::cust("$3"),
-                    sea_orm::sea_query::Expr::cust("$4"),
-                ])
-                .on_conflict(
-                    sea_orm::sea_query::OnConflict::new()
-                        .do_nothing()
-                        .to_owned(),
-                )
-                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
-        )
-        .bind(&package.entity.id)
-        .bind(&package.entity.version)
-        .bind(&value)
-        .bind(&hash)
-        .execute(&mut *tx)
-        .await?;
-        let record = sqlx::query_as::<_, PackageRecord>(
-            &sea_orm::sea_query::Query::select()
-                .expr(sea_orm::sea_query::SimpleExpr::from(
-                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
-                ))
-                .from(sea_orm::sea_query::Alias::new("packages"))
-                .and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
-                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
-        )
-        .bind(&package.entity.id)
-        .bind(&package.entity.version)
-        .fetch_one(&mut *tx)
-        .await?;
-        if record.digest != hash {
-            return Err(Error::Conflict("package version is immutable".into()));
-        }
-        if inserted.rows_affected() > 0 {
-            package_event(
-                &mut tx,
-                &self.node_id,
-                "package.published",
-                json!({"id":record.id,"version":record.version}),
-            )
-            .await?;
-        }
-        tx.commit().await?;
-        Ok(record)
-    }
-    pub async fn install(
-        &self,
-        pool: &sqlx::PgPool,
-        id: &str,
-        version: &str,
-        expected_digest: &str,
-        config: Value,
-    ) -> Result<Entry> {
-        let record = sqlx::query_as::<_, PackageRecord>(
-            &sea_orm::sea_query::Query::select()
-                .expr(sea_orm::sea_query::SimpleExpr::from(
-                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
-                ))
-                .from(sea_orm::sea_query::Alias::new("packages"))
-                .and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
-                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
-        )
-        .bind(id)
-        .bind(version)
-        .fetch_optional(pool)
-        .await?
-        .ok_or_else(|| Error::NotFound("package".into()))?;
-        if record.digest != expected_digest || digest(&record.manifest) != expected_digest {
-            return Err(Error::Conflict("package digest changed".into()));
-        }
-        let package: Package = serde_json::from_value(record.manifest)?;
-        let mut effective = package.entity.clone();
-        overlay_config(&mut effective.config, &config)?;
-        self.validate_references(&effective).await?;
-        for dep in &package.dependencies {
-            self.get(&dep.id, &dep.version).await?;
-        }
-        let mut tx = pool.begin().await?;
-        let original = serde_json::to_value(&package.entity)?;
-        sqlx::query(
-            &sea_orm::sea_query::Query::insert()
-                .into_table(sea_orm::sea_query::Alias::new("registry"))
-                .columns([
-                    sea_orm::sea_query::Alias::new("id"),
-                    sea_orm::sea_query::Alias::new("version"),
-                    sea_orm::sea_query::Alias::new("kind"),
-                    sea_orm::sea_query::Alias::new("metadata"),
-                ])
-                .values_panic([
-                    sea_orm::sea_query::Expr::cust("$1"),
-                    sea_orm::sea_query::Expr::cust("$2"),
-                    sea_orm::sea_query::Expr::cust("$3"),
-                    sea_orm::sea_query::Expr::cust("$4"),
-                ])
-                .on_conflict(
-                    sea_orm::sea_query::OnConflict::new()
-                        .do_nothing()
-                        .to_owned(),
-                )
-                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
-        )
-        .bind(id)
-        .bind(version)
-        .bind(&package.entity.kind)
-        .bind(&original)
-        .execute(&mut *tx)
-        .await?;
-        let stored: Value = sqlx::query_scalar(
-            &sea_orm::sea_query::Query::select()
-                .expr(sea_orm::sea_query::SimpleExpr::from(
-                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("metadata")),
-                ))
-                .from(sea_orm::sea_query::Alias::new("registry"))
-                .and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
-                .lock(sea_orm::sea_query::LockType::Update)
-                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
-        )
-        .bind(id)
-        .bind(version)
-        .fetch_one(&mut *tx)
-        .await?;
-        if stored != original {
-            return Err(Error::Conflict(
-                "package entity conflicts with immutable registry version".into(),
-            ));
-        }
-        let changed = sqlx::query(
-            &sea_orm::sea_query::Query::insert()
-                .into_table(sea_orm::sea_query::Alias::new("installations"))
-                .columns([
-                    sea_orm::sea_query::Alias::new("id"),
-                    sea_orm::sea_query::Alias::new("version"),
-                    sea_orm::sea_query::Alias::new("digest"),
-                    sea_orm::sea_query::Alias::new("config"),
-                ])
-                .values_panic([
-                    sea_orm::sea_query::Expr::cust("$1"),
-                    sea_orm::sea_query::Expr::cust("$2"),
-                    sea_orm::sea_query::Expr::cust("$3"),
-                    sea_orm::sea_query::Expr::cust("$4"),
-                ])
-                .on_conflict(
-                    sea_orm::sea_query::OnConflict::columns([
-                        sea_orm::sea_query::Alias::new("id"),
-                        sea_orm::sea_query::Alias::new("version"),
-                    ])
-                    .value(
-                        sea_orm::sea_query::Alias::new("config"),
-                        sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
-                            sea_orm::sea_query::Alias::new("excluded"),
-                            sea_orm::sea_query::Alias::new("config"),
-                        ))),
-                    )
-                    .action_and_where(sea_orm::sea_query::Expr::cust(
-                        "installations.config IS DISTINCT FROM EXCLUDED.config",
-                    ))
-                    .to_owned(),
-                )
-                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
-        )
-        .bind(id)
-        .bind(version)
-        .bind(expected_digest)
-        .bind(config)
-        .execute(&mut *tx)
-        .await?;
-        if changed.rows_affected() > 0 {
-            package_event(
-                &mut tx,
-                &self.node_id,
-                "package.installed",
-                json!({"id":id,"version":version}),
-            )
-            .await?;
-        }
-        tx.commit().await?;
-        Ok(effective)
-    }
+	pub async fn publish(&self, pool: &sqlx::PgPool, package: Package) -> Result<PackageRecord> {
+		validate(&package.entity)?;
+		if !matches!(package.entity.kind.as_str(), "agent" | "tool" | "skill")
+			|| package.author.trim().is_empty()
+		{
+			return Err(Error::Invalid(
+				"packages require an author and an agent, tool or skill".into(),
+			));
+		}
+		let value = serde_json::to_value(&package)?;
+		let hash = digest(&value);
+		let mut tx = pool.begin().await?;
+		let inserted = sqlx::query(
+			&sea_orm::sea_query::Query::insert()
+				.into_table(sea_orm::sea_query::Alias::new("packages"))
+				.columns([
+					sea_orm::sea_query::Alias::new("id"),
+					sea_orm::sea_query::Alias::new("version"),
+					sea_orm::sea_query::Alias::new("manifest"),
+					sea_orm::sea_query::Alias::new("digest"),
+				])
+				.values_panic([
+					sea_orm::sea_query::Expr::cust("$1"),
+					sea_orm::sea_query::Expr::cust("$2"),
+					sea_orm::sea_query::Expr::cust("$3"),
+					sea_orm::sea_query::Expr::cust("$4"),
+				])
+				.on_conflict(
+					sea_orm::sea_query::OnConflict::new()
+						.do_nothing()
+						.to_owned(),
+				)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(&package.entity.id)
+		.bind(&package.entity.version)
+		.bind(&value)
+		.bind(&hash)
+		.execute(&mut *tx)
+		.await?;
+		let record = sqlx::query_as::<_, PackageRecord>(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::SimpleExpr::from(
+					sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+				))
+				.from(sea_orm::sea_query::Alias::new("packages"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(&package.entity.id)
+		.bind(&package.entity.version)
+		.fetch_one(&mut *tx)
+		.await?;
+		if record.digest != hash {
+			return Err(Error::Conflict("package version is immutable".into()));
+		}
+		if inserted.rows_affected() > 0 {
+			package_event(
+				&mut tx,
+				&self.node_id,
+				"package.published",
+				json!({"id":record.id,"version":record.version}),
+			)
+			.await?;
+		}
+		tx.commit().await?;
+		Ok(record)
+	}
+	pub async fn install(
+		&self,
+		pool: &sqlx::PgPool,
+		id: &str,
+		version: &str,
+		expected_digest: &str,
+		config: Value,
+	) -> Result<Entry> {
+		let record = sqlx::query_as::<_, PackageRecord>(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::SimpleExpr::from(
+					sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+				))
+				.from(sea_orm::sea_query::Alias::new("packages"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(id)
+		.bind(version)
+		.fetch_optional(pool)
+		.await?
+		.ok_or_else(|| Error::NotFound("package".into()))?;
+		if record.digest != expected_digest || digest(&record.manifest) != expected_digest {
+			return Err(Error::Conflict("package digest changed".into()));
+		}
+		let package: Package = serde_json::from_value(record.manifest)?;
+		let mut effective = package.entity.clone();
+		overlay_config(&mut effective.config, &config)?;
+		self.validate_references(&effective).await?;
+		for dep in &package.dependencies {
+			self.get(&dep.id, &dep.version).await?;
+		}
+		let mut tx = pool.begin().await?;
+		let original = serde_json::to_value(&package.entity)?;
+		sqlx::query(
+			&sea_orm::sea_query::Query::insert()
+				.into_table(sea_orm::sea_query::Alias::new("registry"))
+				.columns([
+					sea_orm::sea_query::Alias::new("id"),
+					sea_orm::sea_query::Alias::new("version"),
+					sea_orm::sea_query::Alias::new("kind"),
+					sea_orm::sea_query::Alias::new("metadata"),
+				])
+				.values_panic([
+					sea_orm::sea_query::Expr::cust("$1"),
+					sea_orm::sea_query::Expr::cust("$2"),
+					sea_orm::sea_query::Expr::cust("$3"),
+					sea_orm::sea_query::Expr::cust("$4"),
+				])
+				.on_conflict(
+					sea_orm::sea_query::OnConflict::new()
+						.do_nothing()
+						.to_owned(),
+				)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(id)
+		.bind(version)
+		.bind(&package.entity.kind)
+		.bind(&original)
+		.execute(&mut *tx)
+		.await?;
+		let stored: Value = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::SimpleExpr::from(
+					sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("metadata")),
+				))
+				.from(sea_orm::sea_query::Alias::new("registry"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(id)
+		.bind(version)
+		.fetch_one(&mut *tx)
+		.await?;
+		if stored != original {
+			return Err(Error::Conflict(
+				"package entity conflicts with immutable registry version".into(),
+			));
+		}
+		let changed = sqlx::query(
+			&sea_orm::sea_query::Query::insert()
+				.into_table(sea_orm::sea_query::Alias::new("installations"))
+				.columns([
+					sea_orm::sea_query::Alias::new("id"),
+					sea_orm::sea_query::Alias::new("version"),
+					sea_orm::sea_query::Alias::new("digest"),
+					sea_orm::sea_query::Alias::new("config"),
+				])
+				.values_panic([
+					sea_orm::sea_query::Expr::cust("$1"),
+					sea_orm::sea_query::Expr::cust("$2"),
+					sea_orm::sea_query::Expr::cust("$3"),
+					sea_orm::sea_query::Expr::cust("$4"),
+				])
+				.on_conflict(
+					sea_orm::sea_query::OnConflict::columns([
+						sea_orm::sea_query::Alias::new("id"),
+						sea_orm::sea_query::Alias::new("version"),
+					])
+					.value(
+						sea_orm::sea_query::Alias::new("config"),
+						sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+							sea_orm::sea_query::Alias::new("excluded"),
+							sea_orm::sea_query::Alias::new("config"),
+						))),
+					)
+					.action_and_where(sea_orm::sea_query::Expr::cust(
+						"installations.config IS DISTINCT FROM EXCLUDED.config",
+					))
+					.to_owned(),
+				)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(id)
+		.bind(version)
+		.bind(expected_digest)
+		.bind(config)
+		.execute(&mut *tx)
+		.await?;
+		if changed.rows_affected() > 0 {
+			package_event(
+				&mut tx,
+				&self.node_id,
+				"package.installed",
+				json!({"id":id,"version":version}),
+			)
+			.await?;
+		}
+		tx.commit().await?;
+		Ok(effective)
+	}
 }
 
 async fn package_event(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    node: &str,
-    kind: &str,
-    data: Value,
+	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	node: &str,
+	kind: &str,
+	data: Value,
 ) -> Result<()> {
-    sqlx::query(
-        &sea_orm::sea_query::Query::insert()
-            .into_table(sea_orm::sea_query::Alias::new("events"))
-            .columns([
-                sea_orm::sea_query::Alias::new("id"),
-                sea_orm::sea_query::Alias::new("node_id"),
-                sea_orm::sea_query::Alias::new("kind"),
-                sea_orm::sea_query::Alias::new("data"),
-            ])
-            .values_panic([
-                sea_orm::sea_query::Expr::cust("$1"),
-                sea_orm::sea_query::Expr::cust("$2"),
-                sea_orm::sea_query::Expr::cust("$3"),
-                sea_orm::sea_query::Expr::cust("$4"),
-            ])
-            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
-    )
-    .bind(uuid::Uuid::new_v4())
-    .bind(node)
-    .bind(kind)
-    .bind(data)
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
+	sqlx::query(
+		&sea_orm::sea_query::Query::insert()
+			.into_table(sea_orm::sea_query::Alias::new("events"))
+			.columns([
+				sea_orm::sea_query::Alias::new("id"),
+				sea_orm::sea_query::Alias::new("node_id"),
+				sea_orm::sea_query::Alias::new("kind"),
+				sea_orm::sea_query::Alias::new("data"),
+			])
+			.values_panic([
+				sea_orm::sea_query::Expr::cust("$1"),
+				sea_orm::sea_query::Expr::cust("$2"),
+				sea_orm::sea_query::Expr::cust("$3"),
+				sea_orm::sea_query::Expr::cust("$4"),
+			])
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(uuid::Uuid::new_v4())
+	.bind(node)
+	.bind(kind)
+	.bind(data)
+	.execute(&mut **tx)
+	.await?;
+	Ok(())
 }
 
 /// Transactional registration for compound admission. References and metadata
 /// use the same immutable version contract as the public Registry operation.
 pub(crate) async fn register_in(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    entry: &Entry,
-    node_id: &str,
+	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	entry: &Entry,
+	node_id: &str,
 ) -> Result<bool> {
-    validate(entry)?;
-    if entry.kind == "tool"
-        && let crate::tool::ToolConfig::Agent {
-            node_id: target,
-            agent,
-        } = serde_json::from_value(entry.config.clone())?
-        && target == node_id
-    {
-        use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
-        let kind: Option<String> = sqlx::query_scalar(
-            &Query::select()
-                .column(Alias::new("kind"))
-                .from(Alias::new("registry"))
-                .and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
-                .and_where(Expr::col(Alias::new("version")).eq(Expr::cust("$2")))
-                .to_string(PostgresQueryBuilder),
-        )
-        .bind(&agent.id)
-        .bind(&agent.version)
-        .fetch_optional(&mut **tx)
-        .await?;
-        if kind.as_deref() != Some("agent") {
-            return Err(Error::Invalid(
-                "agent tool executor must reference a local agent".into(),
-            ));
-        }
-    }
-    if entry.kind == "agent" {
-        let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
-        let mut references = Vec::new();
-        for (reference, kind) in std::iter::once((&config.model, "model"))
-            .chain(config.tools.iter().map(|r| (r, "tool")))
-            .chain(config.skills.iter().map(|r| (r, "skill")))
-            .chain(config.cluster.iter().map(|r| (r, "cluster")))
-        {
-            let actual: Option<Value> = sqlx::query_scalar(
-                &sea_orm::sea_query::Query::select()
-                    .expr(sea_orm::sea_query::SimpleExpr::from(
-                        sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("metadata")),
-                    ))
-                    .from(sea_orm::sea_query::Alias::new("registry"))
-                    .and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
-                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
-            )
-            .bind(&reference.id)
-            .bind(&reference.version)
-            .fetch_optional(&mut **tx)
-            .await?;
-            let mut referenced: Entry = serde_json::from_value(
-                actual.ok_or_else(|| Error::NotFound(reference.id.clone()))?,
-            )?;
-            if referenced.kind != kind {
-                return Err(Error::Invalid(format!(
-                    "{} must reference a {kind}",
-                    reference.id
-                )));
-            }
-            use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
-            let overrides: Option<Value> = sqlx::query_scalar(
-                &Query::select()
-                    .column(Alias::new("config"))
-                    .from(Alias::new("installations"))
-                    .and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
-                    .and_where(Expr::col(Alias::new("version")).eq(Expr::cust("$2")))
-                    .to_string(PostgresQueryBuilder),
-            )
-            .bind(&reference.id)
-            .bind(&reference.version)
-            .fetch_optional(&mut **tx)
-            .await?;
-            if let Some(overrides) = overrides {
-                overlay_config(&mut referenced.config, &overrides)?;
-            }
-            references.push(referenced);
-        }
-        validate_agent_prompt(&config, &references)?;
-    }
-    if entry.kind == "cluster" {
-        let config: ClusterConfig = serde_json::from_value(entry.config.clone())?;
-        let kind: Option<String> = sqlx::query_scalar(
-            &sea_orm::sea_query::Query::select()
-                .expr(sea_orm::sea_query::SimpleExpr::from(
-                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("kind")),
-                ))
-                .from(sea_orm::sea_query::Alias::new("registry"))
-                .and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
-                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
-        )
-        .bind(config.coordinator.id)
-        .bind(config.coordinator.version)
-        .fetch_optional(&mut **tx)
-        .await?;
-        if kind.as_deref() != Some("agent") {
-            return Err(Error::Invalid(
-                "cluster coordinator must reference an agent".into(),
-            ));
-        }
-    }
-    let value = serde_json::to_value(entry)?;
-    let inserted = sqlx::query(
-        &sea_orm::sea_query::Query::insert()
-            .into_table(sea_orm::sea_query::Alias::new("registry"))
-            .columns([
-                sea_orm::sea_query::Alias::new("id"),
-                sea_orm::sea_query::Alias::new("version"),
-                sea_orm::sea_query::Alias::new("kind"),
-                sea_orm::sea_query::Alias::new("metadata"),
-            ])
-            .values_panic([
-                sea_orm::sea_query::Expr::cust("$1"),
-                sea_orm::sea_query::Expr::cust("$2"),
-                sea_orm::sea_query::Expr::cust("$3"),
-                sea_orm::sea_query::Expr::cust("$4"),
-            ])
-            .on_conflict(
-                sea_orm::sea_query::OnConflict::new()
-                    .do_nothing()
-                    .to_owned(),
-            )
-            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
-    )
-    .bind(&entry.id)
-    .bind(&entry.version)
-    .bind(&entry.kind)
-    .bind(&value)
-    .execute(&mut **tx)
-    .await?
-    .rows_affected()
-        != 0;
-    let stored: Value = sqlx::query_scalar(
-        &sea_orm::sea_query::Query::select()
-            .expr(sea_orm::sea_query::SimpleExpr::from(
-                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("metadata")),
-            ))
-            .from(sea_orm::sea_query::Alias::new("registry"))
-            .and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
-            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
-    )
-    .bind(&entry.id)
-    .bind(&entry.version)
-    .fetch_one(&mut **tx)
-    .await?;
-    if stored != value {
-        return Err(Error::Conflict(
-            "published versions are immutable; choose a new version".into(),
-        ));
-    }
-    Ok(inserted)
+	validate(entry)?;
+	if entry.kind == "tool"
+		&& let crate::tool::ToolConfig::Agent {
+			node_id: target,
+			agent,
+		} = serde_json::from_value(entry.config.clone())?
+		&& target == node_id
+	{
+		use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+		let kind: Option<String> = sqlx::query_scalar(
+			&Query::select()
+				.column(Alias::new("kind"))
+				.from(Alias::new("registry"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+				.and_where(Expr::col(Alias::new("version")).eq(Expr::cust("$2")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(&agent.id)
+		.bind(&agent.version)
+		.fetch_optional(&mut **tx)
+		.await?;
+		if kind.as_deref() != Some("agent") {
+			return Err(Error::Invalid(
+				"agent tool executor must reference a local agent".into(),
+			));
+		}
+	}
+	if entry.kind == "agent" {
+		let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
+		let mut references = Vec::new();
+		for (reference, kind) in std::iter::once((&config.model, "model"))
+			.chain(config.tools.iter().map(|r| (r, "tool")))
+			.chain(config.skills.iter().map(|r| (r, "skill")))
+			.chain(config.cluster.iter().map(|r| (r, "cluster")))
+		{
+			let actual: Option<Value> = sqlx::query_scalar(
+				&sea_orm::sea_query::Query::select()
+					.expr(sea_orm::sea_query::SimpleExpr::from(
+						sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("metadata")),
+					))
+					.from(sea_orm::sea_query::Alias::new("registry"))
+					.and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(&reference.id)
+			.bind(&reference.version)
+			.fetch_optional(&mut **tx)
+			.await?;
+			let mut referenced: Entry = serde_json::from_value(
+				actual.ok_or_else(|| Error::NotFound(reference.id.clone()))?,
+			)?;
+			if referenced.kind != kind {
+				return Err(Error::Invalid(format!(
+					"{} must reference a {kind}",
+					reference.id
+				)));
+			}
+			use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+			let overrides: Option<Value> = sqlx::query_scalar(
+				&Query::select()
+					.column(Alias::new("config"))
+					.from(Alias::new("installations"))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+					.and_where(Expr::col(Alias::new("version")).eq(Expr::cust("$2")))
+					.to_string(PostgresQueryBuilder),
+			)
+			.bind(&reference.id)
+			.bind(&reference.version)
+			.fetch_optional(&mut **tx)
+			.await?;
+			if let Some(overrides) = overrides {
+				overlay_config(&mut referenced.config, &overrides)?;
+			}
+			references.push(referenced);
+		}
+		validate_agent_prompt(&config, &references)?;
+	}
+	if entry.kind == "cluster" {
+		let config: ClusterConfig = serde_json::from_value(entry.config.clone())?;
+		let kind: Option<String> = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::SimpleExpr::from(
+					sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("kind")),
+				))
+				.from(sea_orm::sea_query::Alias::new("registry"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(config.coordinator.id)
+		.bind(config.coordinator.version)
+		.fetch_optional(&mut **tx)
+		.await?;
+		if kind.as_deref() != Some("agent") {
+			return Err(Error::Invalid(
+				"cluster coordinator must reference an agent".into(),
+			));
+		}
+	}
+	let value = serde_json::to_value(entry)?;
+	let inserted = sqlx::query(
+		&sea_orm::sea_query::Query::insert()
+			.into_table(sea_orm::sea_query::Alias::new("registry"))
+			.columns([
+				sea_orm::sea_query::Alias::new("id"),
+				sea_orm::sea_query::Alias::new("version"),
+				sea_orm::sea_query::Alias::new("kind"),
+				sea_orm::sea_query::Alias::new("metadata"),
+			])
+			.values_panic([
+				sea_orm::sea_query::Expr::cust("$1"),
+				sea_orm::sea_query::Expr::cust("$2"),
+				sea_orm::sea_query::Expr::cust("$3"),
+				sea_orm::sea_query::Expr::cust("$4"),
+			])
+			.on_conflict(
+				sea_orm::sea_query::OnConflict::new()
+					.do_nothing()
+					.to_owned(),
+			)
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(&entry.id)
+	.bind(&entry.version)
+	.bind(&entry.kind)
+	.bind(&value)
+	.execute(&mut **tx)
+	.await?
+	.rows_affected()
+		!= 0;
+	let stored: Value = sqlx::query_scalar(
+		&sea_orm::sea_query::Query::select()
+			.expr(sea_orm::sea_query::SimpleExpr::from(
+				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("metadata")),
+			))
+			.from(sea_orm::sea_query::Alias::new("registry"))
+			.and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(&entry.id)
+	.bind(&entry.version)
+	.fetch_one(&mut **tx)
+	.await?;
+	if stored != value {
+		return Err(Error::Conflict(
+			"published versions are immutable; choose a new version".into(),
+		));
+	}
+	Ok(inserted)
 }
 
 fn overlay_config(target: &mut Value, overrides: &Value) -> Result<()> {
-    let object = overrides
-        .as_object()
-        .ok_or_else(|| Error::Invalid("installation config must be an object".into()))?;
-    let target = target
-        .as_object_mut()
-        .ok_or_else(|| Error::Invalid("entity config must be an object".into()))?;
-    for (key, value) in object {
-        target.insert(key.clone(), value.clone());
-    }
-    Ok(())
+	let object = overrides
+		.as_object()
+		.ok_or_else(|| Error::Invalid("installation config must be an object".into()))?;
+	let target = target
+		.as_object_mut()
+		.ok_or_else(|| Error::Invalid("entity config must be an object".into()))?;
+	for (key, value) in object {
+		target.insert(key.clone(), value.clone());
+	}
+	Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    fn entry() -> Entry {
-        serde_json::from_value(json!({"id":"research","version":"1.0.0","kind":"skill","name":{"en":"Research","ja":"調査"},"description":{"en":"Research"},"capabilities":["web.search"],"languages":["ja","en"],"config":{"instructions":"Research carefully"}})).unwrap()
-    }
-    #[test]
-    fn conjunctive_search_and_localization() {
-        let e = entry();
-        validate(&e).unwrap();
-        assert!(
-            Search {
-                capability: Some("web.search".into()),
-                language: Some("JA".into()),
-                ..Default::default()
-            }
-            .matches(&e)
-        );
-        assert!(
-            !Search {
-                capability: Some("web.search".into()),
-                language: Some("fr".into()),
-                ..Default::default()
-            }
-            .matches(&e)
-        );
-        assert!(
-            Search {
-                query: Some("調査".into()),
-                ..Default::default()
-            }
-            .matches(&e)
-        );
-    }
-    #[test]
-    fn rejects_invalid_metadata() {
-        let mut e = entry();
-        e.version = "latest".into();
-        assert!(validate(&e).is_err());
-        e.version = "1.0.0".into();
-        e.id = "../../escape".into();
-        assert!(validate(&e).is_err());
-    }
-    #[test]
-    fn unknown_requirements_and_invalid_clusters_are_rejected() {
-        for value in [
-            json!({"capabilty":"web.search"}),
-            json!({"capabilities":["web.search"]}),
-        ] {
-            assert!(serde_json::from_value::<Search>(value).is_err());
-        }
-        let mut e = entry();
-        e.kind = "cluster".into();
-        for config in [
-            json!({}),
-            json!({"coordinator":"research"}),
-            json!({"coordinator":{"id":"research","version":"latest"}}),
-        ] {
-            e.config = config;
-            assert!(validate(&e).is_err());
-        }
-        e.config = json!({"coordinator":{"id":"research","version":"1.0.0"}});
-        validate(&e).unwrap();
-    }
+	use super::*;
+	fn entry() -> Entry {
+		serde_json::from_value(json!({"id":"research","version":"1.0.0","kind":"skill","name":{"en":"Research","ja":"調査"},"description":{"en":"Research"},"capabilities":["web.search"],"languages":["ja","en"],"config":{"instructions":"Research carefully"}})).unwrap()
+	}
+	#[test]
+	fn conjunctive_search_and_localization() {
+		let e = entry();
+		validate(&e).unwrap();
+		assert!(
+			Search {
+				capability: Some("web.search".into()),
+				language: Some("JA".into()),
+				..Default::default()
+			}
+			.matches(&e)
+		);
+		assert!(
+			!Search {
+				capability: Some("web.search".into()),
+				language: Some("fr".into()),
+				..Default::default()
+			}
+			.matches(&e)
+		);
+		assert!(
+			Search {
+				query: Some("調査".into()),
+				..Default::default()
+			}
+			.matches(&e)
+		);
+	}
+	#[test]
+	fn rejects_invalid_metadata() {
+		let mut e = entry();
+		e.version = "latest".into();
+		assert!(validate(&e).is_err());
+		e.version = "1.0.0".into();
+		e.id = "../../escape".into();
+		assert!(validate(&e).is_err());
+	}
+	#[test]
+	fn unknown_requirements_and_invalid_clusters_are_rejected() {
+		for value in [
+			json!({"capabilty":"web.search"}),
+			json!({"capabilities":["web.search"]}),
+		] {
+			assert!(serde_json::from_value::<Search>(value).is_err());
+		}
+		let mut e = entry();
+		e.kind = "cluster".into();
+		for config in [
+			json!({}),
+			json!({"coordinator":"research"}),
+			json!({"coordinator":{"id":"research","version":"latest"}}),
+		] {
+			e.config = config;
+			assert!(validate(&e).is_err());
+		}
+		e.config = json!({"coordinator":{"id":"research","version":"1.0.0"}});
+		validate(&e).unwrap();
+	}
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct AgentPage {
-    pub entries: Vec<Entry>,
-    pub next_offset: Option<u64>,
+	pub entries: Vec<Entry>,
+	pub next_offset: Option<u64>,
 }
 
 fn validate_agent_prompt(config: &AgentConfig, references: &[Entry]) -> Result<()> {
-    let get = |reference: &EntityRef| {
-        references
-            .iter()
-            .find(|e| e.id == reference.id && e.version == reference.version)
-            .ok_or_else(|| Error::NotFound(reference.id.clone()))
-    };
-    let model: ModelConfig = serde_json::from_value(get(&config.model)?.config.clone())?;
-    let mut instructions = crate::context::agent_instructions(&config.instructions);
-    for skill in &config.skills {
-        if let Some(text) = get(skill)?.config["instructions"].as_str() {
-            instructions.push('\n');
-            instructions.push_str(text);
-        }
-    }
-    let mut specifications = crate::tool::builtins()
-        .values()
-        .map(|t| t.specification())
-        .collect::<Vec<_>>();
-    for (index, tool) in config.tools.iter().enumerate() {
-        specifications.push(crate::tool::plugin_specification(
-            get(tool)?,
-            &format!("plugin_{index}"),
-        ));
-    }
-    // Match both the inference token estimate and its conservative wire-byte check.
-    let cost = |text: &str| crate::context::estimated_tokens(text).max(text.len());
-    let overhead = cost(&serde_json::to_string(&instructions)?)
-        .saturating_add(cost(&serde_json::to_string(&specifications)?));
-    let output = (model.context_window / 8).clamp(256, 4096);
-    if overhead.saturating_add(output).saturating_add(2048) > model.context_window {
-        return Err(Error::Invalid("agent instructions, skills and tools cannot fit the model window with output and context reserves".into()));
-    }
-    Ok(())
+	let get = |reference: &EntityRef| {
+		references
+			.iter()
+			.find(|e| e.id == reference.id && e.version == reference.version)
+			.ok_or_else(|| Error::NotFound(reference.id.clone()))
+	};
+	let model: ModelConfig = serde_json::from_value(get(&config.model)?.config.clone())?;
+	let mut instructions = crate::context::agent_instructions(&config.instructions);
+	for skill in &config.skills {
+		if let Some(text) = get(skill)?.config["instructions"].as_str() {
+			instructions.push('\n');
+			instructions.push_str(text);
+		}
+	}
+	let mut specifications = crate::tool::builtins()
+		.values()
+		.map(|t| t.specification())
+		.collect::<Vec<_>>();
+	for (index, tool) in config.tools.iter().enumerate() {
+		specifications.push(crate::tool::plugin_specification(
+			get(tool)?,
+			&format!("plugin_{index}"),
+		));
+	}
+	// Match both the inference token estimate and its conservative wire-byte check.
+	let cost = |text: &str| crate::context::estimated_tokens(text).max(text.len());
+	let overhead = cost(&serde_json::to_string(&instructions)?)
+		.saturating_add(cost(&serde_json::to_string(&specifications)?));
+	let output = (model.context_window / 8).clamp(256, 4096);
+	if overhead.saturating_add(output).saturating_add(2048) > model.context_window {
+		return Err(Error::Invalid("agent instructions, skills and tools cannot fit the model window with output and context reserves".into()));
+	}
+	Ok(())
 }
