@@ -104,10 +104,16 @@ async fn search(
 ) -> Result<Json<SearchResult>> {
     // Reserve effect/audit capacity independently from API revokers waiting on
     // this search's credential and policy lease.
+    static SEARCH_CAPACITY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    let _permit = SEARCH_CAPACITY
+        .acquire()
+        .await
+        .expect("search capacity stays open");
     let worker = f.for_workers().await?;
-    Ok(Json(
-        service::search(&worker.store, &actor, workspace, input).await?,
-    ))
+    let result = service::search(&worker.store, &actor, workspace, input).await;
+    worker.store.pool.close().await;
+    worker.store.control_pool.close().await;
+    Ok(Json(result?))
 }
 #[utoipa::path(get,path="/workspaces/{workspace}/semantic/history",operation_id="semantic_history",params(("workspace"=Uuid,Path)),responses((status=200,body=[History])),security(("bearer_auth"=[])))]
 async fn history(
@@ -125,8 +131,61 @@ async fn cleanup(
     State(f): State<Federation>,
     Path(workspace): Path<Uuid>,
 ) -> Result<Json<CleanupStatus>> {
-    let points:CleanupCounts=sqlx::query_as("SELECT count(*) AS retired,count(*) FILTER (WHERE p.cleaned_at IS NULL) AS pending,count(*) FILTER (WHERE p.last_error IS NOT NULL) AS failed FROM semantic_points p JOIN semantic_collections c ON c.collection=p.collection WHERE c.workspace_id=$1 AND p.retired AND NOT c.retired").bind(workspace).fetch_one(&f.store.pool).await?;
-    let collections:CleanupCounts=sqlx::query_as("SELECT count(*) AS retired,count(*) FILTER (WHERE cleaned_at IS NULL) AS pending,count(*) FILTER (WHERE last_error IS NOT NULL) AS failed FROM semantic_collections WHERE workspace_id=$1 AND retired").bind(workspace).fetch_one(&f.store.pool).await?;
+    let points: CleanupCounts = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr_as(
+                sea_orm::sea_query::Expr::cust("COUNT(*)"),
+                sea_orm::sea_query::Alias::new("retired"),
+            )
+            .expr_as(
+                sea_orm::sea_query::Expr::cust("COUNT(*) FILTER(WHERE p.cleaned_at IS NULL)"),
+                sea_orm::sea_query::Alias::new("pending"),
+            )
+            .expr_as(
+                sea_orm::sea_query::Expr::cust("COUNT(*) FILTER(WHERE p.last_error IS NOT NULL)"),
+                sea_orm::sea_query::Alias::new("failed"),
+            )
+            .from_as(
+                sea_orm::sea_query::Alias::new("semantic_points"),
+                sea_orm::sea_query::Alias::new("p"),
+            )
+            .join_as(
+                sea_orm::sea_query::JoinType::InnerJoin,
+                sea_orm::sea_query::Alias::new("semantic_collections"),
+                sea_orm::sea_query::Alias::new("c"),
+                sea_orm::sea_query::Expr::cust("c.collection = p.collection"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "c.workspace_id = $1 AND p.retired AND NOT c.retired",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(workspace)
+    .fetch_one(&f.store.pool)
+    .await?;
+    let collections: CleanupCounts = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr_as(
+                sea_orm::sea_query::Expr::cust("COUNT(*)"),
+                sea_orm::sea_query::Alias::new("retired"),
+            )
+            .expr_as(
+                sea_orm::sea_query::Expr::cust("COUNT(*) FILTER(WHERE cleaned_at IS NULL)"),
+                sea_orm::sea_query::Alias::new("pending"),
+            )
+            .expr_as(
+                sea_orm::sea_query::Expr::cust("COUNT(*) FILTER(WHERE last_error IS NOT NULL)"),
+                sea_orm::sea_query::Alias::new("failed"),
+            )
+            .from(sea_orm::sea_query::Alias::new("semantic_collections"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "workspace_id = $1 AND retired",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(workspace)
+    .fetch_one(&f.store.pool)
+    .await?;
     Ok(Json(CleanupStatus {
         points,
         collections,

@@ -32,7 +32,7 @@ async fn main() -> Result<()> {
     if mode == "migrate" {
         return Ok(());
     }
-    let registry = Registry::new(store.pool.clone());
+    let registry = Registry::new(store.pool.clone(), &store.node_id);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .connect_timeout(Duration::from_secs(10))

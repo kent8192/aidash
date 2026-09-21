@@ -1,3 +1,5 @@
+// SeaQuery 0.32 cannot express PostgreSQL trigger functions, triggers, or ALTER CHECK constraints.
+// Those DDL operations intentionally use SeaORM execution; ordinary queries use builders.
 use sea_orm_migration::prelude::*;
 #[derive(DeriveMigrationName)]
 pub struct Migration;

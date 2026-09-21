@@ -59,7 +59,7 @@ impl Federation {
     pub async fn for_workers(&self) -> Result<Self> {
         let store = self.store.isolated_pool().await?;
         Ok(Self {
-            registry: Registry::new(store.pool.clone()),
+            registry: Registry::new(store.pool.clone(), &store.node_id),
             store,
             ..self.clone()
         })
@@ -67,7 +67,7 @@ impl Federation {
     pub async fn for_recovery(&self) -> Result<Self> {
         let store = self.store.recovery_pool().await?;
         Ok(Self {
-            registry: Registry::new(store.pool.clone()),
+            registry: Registry::new(store.pool.clone(), &store.node_id),
             store,
             ..self.clone()
         })
@@ -75,23 +75,44 @@ impl Federation {
     pub async fn for_runtime_workers(&self) -> Result<Self> {
         let store = self.store.worker_pool().await?;
         Ok(Self {
-            registry: Registry::new(store.pool.clone()),
+            registry: Registry::new(store.pool.clone(), &store.node_id),
             store,
             ..self.clone()
         })
     }
 
     pub async fn peers(&self) -> Result<Vec<Peer>> {
-        Ok(sqlx::query_as("SELECT * FROM peers ORDER BY node_id")
-            .fetch_all(&self.store.pool)
-            .await?)
+        Ok(sqlx::query_as(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                ))
+                .from(sea_orm::sea_query::Alias::new("peers"))
+                .order_by_expr(
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("node_id"),
+                    )),
+                    sea_orm::sea_query::Order::Asc,
+                )
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .fetch_all(&self.store.pool)
+        .await?)
     }
     pub async fn peer(&self, node: &str) -> Result<Peer> {
-        sqlx::query_as("SELECT * FROM peers WHERE node_id=$1 AND enabled")
-            .bind(node)
-            .fetch_optional(&self.store.pool)
-            .await?
-            .ok_or_else(|| Error::Unauthorized)
+        sqlx::query_as(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                ))
+                .from(sea_orm::sea_query::Alias::new("peers"))
+                .and_where(sea_orm::sea_query::Expr::cust("node_id = $1 AND enabled"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(node)
+        .fetch_optional(&self.store.pool)
+        .await?
+        .ok_or_else(|| Error::Unauthorized)
     }
     pub async fn register_peer(&self, peer: Peer) -> Result<Peer> {
         validate_node_id(&peer.node_id)?;
@@ -103,12 +124,21 @@ impl Federation {
         }
         if !peer.enabled {
             let mut tx = self.store.pool.begin().await?;
-            let existing: Peer =
-                sqlx::query_as("UPDATE peers SET enabled=false WHERE node_id=$1 RETURNING *")
-                    .bind(&peer.node_id)
-                    .fetch_optional(&mut *tx)
-                    .await?
-                    .ok_or_else(|| Error::NotFound("peer".into()))?;
+            let existing: Peer = sqlx::query_as(
+                &sea_orm::sea_query::Query::update()
+                    .table(sea_orm::sea_query::Alias::new("peers"))
+                    .value(
+                        sea_orm::sea_query::Alias::new("enabled"),
+                        sea_orm::sea_query::Expr::cust("FALSE"),
+                    )
+                    .and_where(sea_orm::sea_query::Expr::cust("node_id = $1"))
+                    .returning_all()
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+            )
+            .bind(&peer.node_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| Error::NotFound("peer".into()))?;
             self.store.event(&mut tx, None, "peer.registered", json!({"node_id":existing.node_id,"endpoint":existing.endpoint,"enabled":false})).await?;
             tx.commit().await?;
             return Ok(existing);
@@ -131,13 +161,27 @@ impl Federation {
             ));
         }
         let mut tx = self.store.pool.begin().await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(71003203)")
-            .execute(&mut *tx)
-            .await?;
-        let peers: Vec<Peer> = sqlx::query_as("SELECT * FROM peers WHERE enabled AND node_id<>$1")
-            .bind(&peer.node_id)
-            .fetch_all(&mut *tx)
-            .await?;
+        sqlx::query(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::Expr::cust(
+                    "PG_ADVISORY_XACT_LOCK(71003203)",
+                ))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .execute(&mut *tx)
+        .await?;
+        let peers: Vec<Peer> = sqlx::query_as(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                ))
+                .from(sea_orm::sea_query::Alias::new("peers"))
+                .and_where(sea_orm::sea_query::Expr::cust("enabled AND node_id <> $1"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(&peer.node_id)
+        .fetch_all(&mut *tx)
+        .await?;
         for other in peers {
             if peer_secret(&other.credential_env)? == credential {
                 return Err(Error::Invalid(
@@ -145,8 +189,66 @@ impl Federation {
                 ));
             }
         }
-        sqlx::query("INSERT INTO peers(node_id,endpoint,credential_env,protocol_version,enabled) VALUES($1,$2,$3,$4,$5) ON CONFLICT(node_id) DO UPDATE SET endpoint=EXCLUDED.endpoint,credential_env=EXCLUDED.credential_env,protocol_version=EXCLUDED.protocol_version,enabled=EXCLUDED.enabled")
-            .bind(&peer.node_id).bind(&peer.endpoint).bind(&peer.credential_env).bind(&peer.protocol_version).bind(peer.enabled).execute(&mut *tx).await?;
+        sqlx::query(
+            &sea_orm::sea_query::Query::insert()
+                .into_table(sea_orm::sea_query::Alias::new("peers"))
+                .columns([
+                    sea_orm::sea_query::Alias::new("node_id"),
+                    sea_orm::sea_query::Alias::new("endpoint"),
+                    sea_orm::sea_query::Alias::new("credential_env"),
+                    sea_orm::sea_query::Alias::new("protocol_version"),
+                    sea_orm::sea_query::Alias::new("enabled"),
+                ])
+                .values_panic([
+                    sea_orm::sea_query::Expr::cust("$1"),
+                    sea_orm::sea_query::Expr::cust("$2"),
+                    sea_orm::sea_query::Expr::cust("$3"),
+                    sea_orm::sea_query::Expr::cust("$4"),
+                    sea_orm::sea_query::Expr::cust("$5"),
+                ])
+                .on_conflict(
+                    sea_orm::sea_query::OnConflict::columns([sea_orm::sea_query::Alias::new(
+                        "node_id",
+                    )])
+                    .value(
+                        sea_orm::sea_query::Alias::new("endpoint"),
+                        sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+                            sea_orm::sea_query::Alias::new("excluded"),
+                            sea_orm::sea_query::Alias::new("endpoint"),
+                        ))),
+                    )
+                    .value(
+                        sea_orm::sea_query::Alias::new("credential_env"),
+                        sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+                            sea_orm::sea_query::Alias::new("excluded"),
+                            sea_orm::sea_query::Alias::new("credential_env"),
+                        ))),
+                    )
+                    .value(
+                        sea_orm::sea_query::Alias::new("protocol_version"),
+                        sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+                            sea_orm::sea_query::Alias::new("excluded"),
+                            sea_orm::sea_query::Alias::new("protocol_version"),
+                        ))),
+                    )
+                    .value(
+                        sea_orm::sea_query::Alias::new("enabled"),
+                        sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+                            sea_orm::sea_query::Alias::new("excluded"),
+                            sea_orm::sea_query::Alias::new("enabled"),
+                        ))),
+                    )
+                    .to_owned(),
+                )
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(&peer.node_id)
+        .bind(&peer.endpoint)
+        .bind(&peer.credential_env)
+        .bind(&peer.protocol_version)
+        .bind(peer.enabled)
+        .execute(&mut *tx)
+        .await?;
         self.store
             .event(
                 &mut tx,
@@ -231,13 +333,35 @@ impl Federation {
         }
         Ok(request.send().await?)
     }
+    async fn discovery_entries(&self, node: &str, search: &Search) -> Result<Vec<Entry>> {
+        let mut offset = 0;
+        let mut entries = vec![];
+        loop {
+            let page = if node == self.config.node_id {
+                self.registry.legacy_agents(search, offset).await?
+            } else {
+                self.request::<crate::registry::AgentPage>(
+                    node,
+                    Method::POST,
+                    &format!("/discover?offset={offset}"),
+                    Some(&json!(search)),
+                )
+                .await?
+            };
+            entries.extend(page.entries);
+            match page.next_offset {
+                Some(next) if next > offset => offset = next,
+                Some(_) => return Err(Error::External("discovery cursor did not advance".into())),
+                None => return Ok(entries),
+            }
+        }
+    }
     pub async fn discover(&self, search: &Search) -> Result<Discovery> {
         let mut query = search.clone();
         query.kind = Some("agent".into());
         let mut result = Discovery {
             agents: self
-                .registry
-                .list(&query)
+                .discovery_entries(&self.config.node_id, &query)
                 .await?
                 .into_iter()
                 .map(|entity| DiscoveredAgent {
@@ -251,14 +375,7 @@ impl Federation {
         let mut responses = stream::iter(peers.map(|peer| {
             let query = &query;
             async move {
-                let response = self
-                    .request::<Vec<Entry>>(
-                        &peer.node_id,
-                        Method::POST,
-                        "/discover",
-                        Some(&json!(query)),
-                    )
-                    .await;
+                let response = self.discovery_entries(&peer.node_id, query).await;
                 (peer, response)
             }
         }))
@@ -317,22 +434,26 @@ impl Federation {
         } else {
             let mut search: Search = serde_json::from_value(task.requirements.clone())?;
             search.kind = Some("agent".into());
-            let entries: Vec<Entry> = self
-                .request(node, Method::POST, "/discover", Some(&json!(search)))
+            let entry: Entry = self
+                .request(
+                    node,
+                    Method::GET,
+                    &format!("/discover/{}/{}", agent.id, agent.version),
+                    None,
+                )
                 .await?;
-            if !entries.iter().any(|entry| {
-                entry.id == agent.id && entry.version == agent.version && search.matches(entry)
-            }) {
+            if entry.id != agent.id || entry.version != agent.version || !search.matches(&entry) {
                 return Err(Error::Invalid(
                     "remote agent is missing or does not satisfy task requirements".into(),
                 ));
             }
         }
         let mut tx = self.store.pool.begin().await?;
-        let d = self.delegate_in(&mut tx, &task, node, agent).await?;
+        let mut d = self.delegate_in(&mut tx, &task, node, agent).await?;
         tx.commit().await?;
-        if let Err(e) = self.deliver(&d).await {
-            tracing::warn!(error=%e,task_id=%task_id,"delegation queued for retry");
+        match self.deliver(&d).await {
+            Ok(()) => d.delivered = true,
+            Err(e) => tracing::warn!(error=%e,task_id=%task_id,"delegation queued for retry"),
         }
         Ok(d)
     }
@@ -343,18 +464,108 @@ impl Federation {
         node: &str,
         agent: &EntityRef,
     ) -> Result<Delegation> {
+        use sea_orm::sea_query::{Alias, Asterisk, Expr, LockType, PostgresQueryBuilder, Query};
         let task_id = task.id;
-        sqlx::query("INSERT INTO delegations(task_id,node_id,agent_id,agent_version) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING")
-            .bind(task_id).bind(node).bind(&agent.id).bind(&agent.version).execute(&mut **tx).await?;
-        let d:Delegation=sqlx::query_as("SELECT task_id,node_id,agent_id,agent_version,delivered FROM delegations WHERE task_id=$1").bind(task_id).fetch_one(&mut **tx).await?;
+        let current: Task = sqlx::query_as(
+            &Query::select()
+                .column(Asterisk)
+                .from(Alias::new("tasks"))
+                .and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                .lock(LockType::Update)
+                .to_string(PostgresQueryBuilder),
+        )
+        .bind(task_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        let owner = qualified_agent(node, &agent.id, &agent.version);
+        if current.revision != task.revision
+            || (current.owner.is_some() && current.owner.as_deref() != Some(&owner))
+            || (current.status != "OPEN" && current.owner.as_deref() != Some(&owner))
+        {
+            return Err(Error::Conflict(
+                "task changed or is already assigned".into(),
+            ));
+        }
+        let inserted = sqlx::query(
+            &sea_orm::sea_query::Query::insert()
+                .into_table(sea_orm::sea_query::Alias::new("delegations"))
+                .columns([
+                    sea_orm::sea_query::Alias::new("task_id"),
+                    sea_orm::sea_query::Alias::new("node_id"),
+                    sea_orm::sea_query::Alias::new("agent_id"),
+                    sea_orm::sea_query::Alias::new("agent_version"),
+                ])
+                .values_panic([
+                    sea_orm::sea_query::Expr::cust("$1"),
+                    sea_orm::sea_query::Expr::cust("$2"),
+                    sea_orm::sea_query::Expr::cust("$3"),
+                    sea_orm::sea_query::Expr::cust("$4"),
+                ])
+                .on_conflict(
+                    sea_orm::sea_query::OnConflict::new()
+                        .do_nothing()
+                        .to_owned(),
+                )
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(task_id)
+        .bind(node)
+        .bind(&agent.id)
+        .bind(&agent.version)
+        .execute(&mut **tx)
+        .await?;
+        if inserted.rows_affected() > 0 && current.status == "OPEN" {
+            // The delegation record reserves the claimant while the task stays
+            // OPEN for dependency waiting. Bump its revision under this lock so
+            // a concurrent claim cannot commit against a pre-delegation snapshot.
+            sqlx::query(
+                &Query::update()
+                    .table(Alias::new("tasks"))
+                    .value(
+                        Alias::new("revision"),
+                        Expr::col(Alias::new("revision")).add(1),
+                    )
+                    .and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(task_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        let d: Delegation = sqlx::query_as(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("task_id")),
+                ))
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("node_id")),
+                ))
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("agent_id")),
+                ))
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("agent_version")),
+                ))
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("delivered")),
+                ))
+                .from(sea_orm::sea_query::Alias::new("delegations"))
+                .and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(task_id)
+        .fetch_one(&mut **tx)
+        .await?;
         if d.node_id != node || d.agent_id != agent.id || d.agent_version != agent.version {
             return Err(Error::Conflict(
                 "task already delegated to a different agent".into(),
             ));
         }
-        self.store
-            .event(tx, Some(task.workspace_id), "task.delegated", json!(d))
-            .await?;
+        if inserted.rows_affected() > 0 {
+            self.store
+                .event(tx, Some(task.workspace_id), "task.delegated", json!(d))
+                .await?;
+        }
         Ok(d)
     }
     pub async fn deliver(&self, d: &Delegation) -> Result<()> {
@@ -379,15 +590,24 @@ impl Federation {
             )
             .await?;
         }
-        sqlx::query("UPDATE delegations SET delivered=true WHERE task_id=$1")
-            .bind(d.task_id)
-            .execute(&self.store.pool)
-            .await?;
+        sqlx::query(
+            &sea_orm::sea_query::Query::update()
+                .table(sea_orm::sea_query::Alias::new("delegations"))
+                .value(
+                    sea_orm::sea_query::Alias::new("delivered"),
+                    sea_orm::sea_query::Expr::cust("TRUE"),
+                )
+                .and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(d.task_id)
+        .execute(&self.store.pool)
+        .await?;
         Ok(())
     }
     pub async fn retry_deliveries(&self) -> Result<()> {
         let _visibility = crate::transactions::gate::ReadLease::begin(&self.store).await?;
-        let pending:Vec<Delegation>=sqlx::query_as("UPDATE delegations SET next_attempt_at=now()+interval '5 seconds' WHERE task_id IN (SELECT task_id FROM delegations WHERE NOT delivered AND next_attempt_at<=now() ORDER BY next_attempt_at,created_at LIMIT 100 FOR UPDATE SKIP LOCKED) RETURNING task_id,node_id,agent_id,agent_version,delivered").fetch_all(&self.store.pool).await?;
+        let pending:Vec<Delegation>=sqlx::query_as(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("delegations")).value(sea_orm::sea_query::Alias::new("next_attempt_at"), sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP + INTERVAL '5 SECONDS'")).and_where(sea_orm::sea_query::Expr::cust("task_id IN (SELECT task_id FROM delegations WHERE NOT delivered AND next_attempt_at <= CURRENT_TIMESTAMP ORDER BY next_attempt_at, created_at LIMIT 100 FOR UPDATE SKIP LOCKED)")).returning(sea_orm::sea_query::Query::returning().exprs([sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("task_id"))), sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("node_id"))), sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("agent_id"))), sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("agent_version"))), sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("delivered")))])).to_string(sea_orm::sea_query::PostgresQueryBuilder)).fetch_all(&self.store.pool).await?;
         let mut deliveries = stream::iter(pending.into_iter().map(|d| async move {
             let result = self.deliver(&d).await;
             (d, result)
@@ -401,7 +621,7 @@ impl Federation {
         Ok(())
     }
     pub async fn authorize_task(&self, node: &str, task_id: Uuid, agent: &EntityRef) -> Result<()> {
-        let allowed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM delegations WHERE task_id=$1 AND node_id=$2 AND agent_id=$3 AND agent_version=$4)")
+        let allowed:bool=sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("EXISTS(SELECT 1 FROM delegations WHERE task_id = $1 AND node_id = $2 AND agent_id = $3 AND agent_version = $4)")).to_string(sea_orm::sea_query::PostgresQueryBuilder))
             .bind(task_id).bind(node).bind(&agent.id).bind(&agent.version).fetch_one(&self.store.pool).await?;
         if !allowed {
             return Err(Error::Unauthorized);

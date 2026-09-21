@@ -94,11 +94,24 @@ async fn policies(
     Extension(actor): Extension<Actor>,
     Path(tenant): Path<String>,
 ) -> Result<Json<Vec<Policy>>> {
-    let ids: Vec<String> =
-        sqlx::query_scalar("SELECT id FROM generation_policies WHERE tenant=$1 ORDER BY id")
-            .bind(&tenant)
-            .fetch_all(&f.store.pool)
-            .await?;
+    let ids: Vec<String> = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("generation_policies"))
+            .and_where(sea_orm::sea_query::Expr::cust("tenant = $1"))
+            .order_by_expr(
+                sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                    sea_orm::sea_query::Alias::new("id"),
+                )),
+                sea_orm::sea_query::Order::Asc,
+            )
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(&tenant)
+    .fetch_all(&f.store.pool)
+    .await?;
     match actor {
         Actor::Operator => {
             let mut tx = f.store.pool.begin().await?;
@@ -155,28 +168,85 @@ async fn requests(
     Path(tenant): Path<String>,
 ) -> Result<Json<Vec<Request>>> {
     let Actor::Subject(identity) = actor else {
-        return Ok(Json(sqlx::query_as("SELECT * FROM generation_requests WHERE tenant=$1 ORDER BY created_at DESC,id LIMIT 200").bind(tenant).fetch_all(&f.store.pool).await?));
+        return Ok(Json(
+            sqlx::query_as(
+                &sea_orm::sea_query::Query::select()
+                    .expr(sea_orm::sea_query::SimpleExpr::from(
+                        sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                    ))
+                    .from(sea_orm::sea_query::Alias::new("generation_requests"))
+                    .and_where(sea_orm::sea_query::Expr::cust("tenant = $1"))
+                    .order_by_expr(
+                        sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                            sea_orm::sea_query::Alias::new("created_at"),
+                        )),
+                        sea_orm::sea_query::Order::Desc,
+                    )
+                    .order_by_expr(
+                        sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                            sea_orm::sea_query::Alias::new("id"),
+                        )),
+                        sea_orm::sea_query::Order::Asc,
+                    )
+                    .limit(200)
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+            )
+            .bind(tenant)
+            .fetch_all(&f.store.pool)
+            .await?,
+        ));
     };
     if tenant != identity.tenant {
         return Err(Error::Forbidden);
     }
     let mut access = Access::begin(&f.store, &identity).await?;
-    let result=async {
+    let result = async {
         let mut visible = vec![];
         let mut offset = 0_i64;
         loop {
-            let requests: Vec<Request> = sqlx::query_as("SELECT * FROM generation_requests WHERE tenant=$1 ORDER BY created_at DESC,id LIMIT 200 OFFSET $2")
-                .bind(&tenant).bind(offset).fetch_all(&mut *access.tx).await?;
+            let requests: Vec<Request> = sqlx::query_as(
+                &sea_orm::sea_query::Query::select()
+                    .expr(sea_orm::sea_query::SimpleExpr::from(
+                        sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                    ))
+                    .from(sea_orm::sea_query::Alias::new("generation_requests"))
+                    .and_where(sea_orm::sea_query::Expr::cust("tenant = $1"))
+                    .order_by_expr(
+                        sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                            sea_orm::sea_query::Alias::new("created_at"),
+                        )),
+                        sea_orm::sea_query::Order::Desc,
+                    )
+                    .order_by_expr(
+                        sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                            sea_orm::sea_query::Alias::new("id"),
+                        )),
+                        sea_orm::sea_query::Order::Asc,
+                    )
+                    .limit(200)
+                    .offset(offset as u64)
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+            )
+            .bind(&tenant)
+            .fetch_all(&mut *access.tx)
+            .await?;
             let exhausted = requests.len() < 200;
             for request in requests {
-                if request.visible(&mut access).await? { visible.push(request); }
-                if visible.len() == 200 { break; }
+                if request.visible(&mut access).await? {
+                    visible.push(request);
+                }
+                if visible.len() == 200 {
+                    break;
+                }
             }
-            if exhausted || visible.len() == 200 { break; }
+            if exhausted || visible.len() == 200 {
+                break;
+            }
             offset += 200;
         }
         Ok(visible)
-    }.await;
+    }
+    .await;
     Ok(Json(access.finish(result).await?))
 }
 
@@ -228,10 +298,37 @@ async fn history(
     Extension(actor): Extension<Actor>,
     Path((tenant, id)): Path<(String, Uuid)>,
 ) -> Result<Json<Vec<super::lifecycle::History>>> {
-    let query = "SELECT h.* FROM generation_history h JOIN generation_requests r ON r.id=h.request_id WHERE r.tenant=$1 AND r.id=$2 ORDER BY h.sequence";
+    let query = sea_orm::sea_query::Query::select()
+        .expr(sea_orm::sea_query::SimpleExpr::from(
+            sea_orm::sea_query::Expr::col((
+                sea_orm::sea_query::Alias::new("h"),
+                sea_orm::sea_query::Asterisk,
+            )),
+        ))
+        .from_as(
+            sea_orm::sea_query::Alias::new("generation_history"),
+            sea_orm::sea_query::Alias::new("h"),
+        )
+        .join_as(
+            sea_orm::sea_query::JoinType::InnerJoin,
+            sea_orm::sea_query::Alias::new("generation_requests"),
+            sea_orm::sea_query::Alias::new("r"),
+            sea_orm::sea_query::Expr::cust("r.id = h.request_id"),
+        )
+        .and_where(sea_orm::sea_query::Expr::cust(
+            "r.tenant = $1 AND r.id = $2",
+        ))
+        .order_by_expr(
+            sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+                sea_orm::sea_query::Alias::new("h"),
+                sea_orm::sea_query::Alias::new("sequence"),
+            ))),
+            sea_orm::sea_query::Order::Asc,
+        )
+        .to_string(sea_orm::sea_query::PostgresQueryBuilder);
     match actor {
         Actor::Operator => Ok(Json(
-            sqlx::query_as(query)
+            sqlx::query_as(&query)
                 .bind(tenant)
                 .bind(id)
                 .fetch_all(&f.store.pool)
@@ -243,17 +340,24 @@ async fn history(
             }
             let mut access = Access::begin(&f.store, &identity).await?;
             let result = async {
-                let job: Request =
-                    sqlx::query_as("SELECT * FROM generation_requests WHERE tenant=$1 AND id=$2")
-                        .bind(&tenant)
-                        .bind(id)
-                        .fetch_optional(&mut *access.tx)
-                        .await?
-                        .ok_or(Error::Forbidden)?;
+                let job: Request = sqlx::query_as(
+                    &sea_orm::sea_query::Query::select()
+                        .expr(sea_orm::sea_query::SimpleExpr::from(
+                            sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                        ))
+                        .from(sea_orm::sea_query::Alias::new("generation_requests"))
+                        .and_where(sea_orm::sea_query::Expr::cust("tenant = $1 AND id = $2"))
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                )
+                .bind(&tenant)
+                .bind(id)
+                .fetch_optional(&mut *access.tx)
+                .await?
+                .ok_or(Error::Forbidden)?;
                 if !job.visible(&mut access).await? {
                     return Err(Error::Forbidden);
                 }
-                Ok(sqlx::query_as(query)
+                Ok(sqlx::query_as(&query)
                     .bind(tenant)
                     .bind(id)
                     .fetch_all(&mut *access.tx)
@@ -284,10 +388,66 @@ async fn usage(
 ) -> Result<Json<Usage>> {
     // One statement observes the counters and committed attempt ledger at the
     // same PostgreSQL snapshot while a worker reserves or settles its call.
-    let query = "SELECT b.token_limit,b.used_tokens,b.compaction_call_limit,b.compaction_calls,b.embedding_calls,b.embedding_call_limit,(SELECT count(*) FROM generation_usage u WHERE u.request_id=r.id) AS inference_attempts FROM generation_requests r JOIN generation_budgets b ON b.request_id=r.id WHERE r.tenant=$1 AND r.id=$2";
+    let query = sea_orm::sea_query::Query::select()
+        .expr(sea_orm::sea_query::SimpleExpr::from(
+            sea_orm::sea_query::Expr::col((
+                sea_orm::sea_query::Alias::new("b"),
+                sea_orm::sea_query::Alias::new("token_limit"),
+            )),
+        ))
+        .expr(sea_orm::sea_query::SimpleExpr::from(
+            sea_orm::sea_query::Expr::col((
+                sea_orm::sea_query::Alias::new("b"),
+                sea_orm::sea_query::Alias::new("used_tokens"),
+            )),
+        ))
+        .expr(sea_orm::sea_query::SimpleExpr::from(
+            sea_orm::sea_query::Expr::col((
+                sea_orm::sea_query::Alias::new("b"),
+                sea_orm::sea_query::Alias::new("compaction_call_limit"),
+            )),
+        ))
+        .expr(sea_orm::sea_query::SimpleExpr::from(
+            sea_orm::sea_query::Expr::col((
+                sea_orm::sea_query::Alias::new("b"),
+                sea_orm::sea_query::Alias::new("compaction_calls"),
+            )),
+        ))
+        .expr(sea_orm::sea_query::SimpleExpr::from(
+            sea_orm::sea_query::Expr::col((
+                sea_orm::sea_query::Alias::new("b"),
+                sea_orm::sea_query::Alias::new("embedding_calls"),
+            )),
+        ))
+        .expr(sea_orm::sea_query::SimpleExpr::from(
+            sea_orm::sea_query::Expr::col((
+                sea_orm::sea_query::Alias::new("b"),
+                sea_orm::sea_query::Alias::new("embedding_call_limit"),
+            )),
+        ))
+        .expr_as(
+            sea_orm::sea_query::Expr::cust(
+                "(SELECT COUNT(*) FROM generation_usage AS u WHERE u.request_id = r.id)",
+            ),
+            sea_orm::sea_query::Alias::new("inference_attempts"),
+        )
+        .from_as(
+            sea_orm::sea_query::Alias::new("generation_requests"),
+            sea_orm::sea_query::Alias::new("r"),
+        )
+        .join_as(
+            sea_orm::sea_query::JoinType::InnerJoin,
+            sea_orm::sea_query::Alias::new("generation_budgets"),
+            sea_orm::sea_query::Alias::new("b"),
+            sea_orm::sea_query::Expr::cust("b.request_id = r.id"),
+        )
+        .and_where(sea_orm::sea_query::Expr::cust(
+            "r.tenant = $1 AND r.id = $2",
+        ))
+        .to_string(sea_orm::sea_query::PostgresQueryBuilder);
     match actor {
         Actor::Operator => Ok(Json(
-            sqlx::query_as(query)
+            sqlx::query_as(&query)
                 .bind(tenant)
                 .bind(id)
                 .fetch_optional(&f.store.pool)
@@ -300,17 +460,24 @@ async fn usage(
             }
             let mut access = Access::begin(&f.store, &identity).await?;
             let result = async {
-                let job: Request =
-                    sqlx::query_as("SELECT * FROM generation_requests WHERE tenant=$1 AND id=$2")
-                        .bind(&tenant)
-                        .bind(id)
-                        .fetch_optional(&mut *access.tx)
-                        .await?
-                        .ok_or(Error::Forbidden)?;
+                let job: Request = sqlx::query_as(
+                    &sea_orm::sea_query::Query::select()
+                        .expr(sea_orm::sea_query::SimpleExpr::from(
+                            sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                        ))
+                        .from(sea_orm::sea_query::Alias::new("generation_requests"))
+                        .and_where(sea_orm::sea_query::Expr::cust("tenant = $1 AND id = $2"))
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                )
+                .bind(&tenant)
+                .bind(id)
+                .fetch_optional(&mut *access.tx)
+                .await?
+                .ok_or(Error::Forbidden)?;
                 if !job.visible(&mut access).await? {
                     return Err(Error::Forbidden);
                 }
-                Ok(sqlx::query_as(query)
+                Ok(sqlx::query_as(&query)
                     .bind(tenant)
                     .bind(id)
                     .fetch_one(&mut *access.tx)
@@ -328,10 +495,10 @@ async fn spec(
     Extension(actor): Extension<Actor>,
     Path((tenant, id)): Path<(String, Uuid)>,
 ) -> Result<Json<Spec>> {
-    let query = "SELECT h.spec FROM generation_requests r JOIN generation_policy_history h ON h.tenant=r.tenant AND h.policy_id=r.policy_id AND h.revision=r.policy_revision WHERE r.tenant=$1 AND r.id=$2";
+    let query = sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((sea_orm::sea_query::Alias::new("h"), sea_orm::sea_query::Alias::new("spec"))))).from_as(sea_orm::sea_query::Alias::new("generation_requests"), sea_orm::sea_query::Alias::new("r")).join_as(sea_orm::sea_query::JoinType::InnerJoin, sea_orm::sea_query::Alias::new("generation_policy_history"), sea_orm::sea_query::Alias::new("h"), sea_orm::sea_query::Expr::cust("h.tenant = r.tenant AND h.policy_id = r.policy_id AND h.revision = r.policy_revision")).and_where(sea_orm::sea_query::Expr::cust("r.tenant = $1 AND r.id = $2")).to_string(sea_orm::sea_query::PostgresQueryBuilder);
     match actor {
         Actor::Operator => {
-            let document: serde_json::Value = sqlx::query_scalar(query)
+            let document: serde_json::Value = sqlx::query_scalar(&query)
                 .bind(tenant)
                 .bind(id)
                 .fetch_optional(&f.store.pool)
@@ -345,17 +512,24 @@ async fn spec(
             }
             let mut access = Access::begin(&f.store, &identity).await?;
             let result = async {
-                let job: Request =
-                    sqlx::query_as("SELECT * FROM generation_requests WHERE tenant=$1 AND id=$2")
-                        .bind(&tenant)
-                        .bind(id)
-                        .fetch_optional(&mut *access.tx)
-                        .await?
-                        .ok_or(Error::Forbidden)?;
+                let job: Request = sqlx::query_as(
+                    &sea_orm::sea_query::Query::select()
+                        .expr(sea_orm::sea_query::SimpleExpr::from(
+                            sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                        ))
+                        .from(sea_orm::sea_query::Alias::new("generation_requests"))
+                        .and_where(sea_orm::sea_query::Expr::cust("tenant = $1 AND id = $2"))
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                )
+                .bind(&tenant)
+                .bind(id)
+                .fetch_optional(&mut *access.tx)
+                .await?
+                .ok_or(Error::Forbidden)?;
                 if !job.visible(&mut access).await? {
                     return Err(Error::Forbidden);
                 }
-                let document: serde_json::Value = sqlx::query_scalar(query)
+                let document: serde_json::Value = sqlx::query_scalar(&query)
                     .bind(tenant)
                     .bind(id)
                     .fetch_one(&mut *access.tx)

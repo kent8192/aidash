@@ -95,8 +95,28 @@ impl Access {
             .await
     }
     async fn output_visible(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<bool> {
-        let producers: Vec<Uuid> = sqlx::query_scalar("SELECT run_id FROM authorization_run_outputs WHERE workspace_id=$1 AND resource_kind=$2 AND resource_id=$3 ORDER BY run_id")
-            .bind(workspace).bind(kind).bind(id).fetch_all(&mut *self.tx).await?;
+        let producers: Vec<Uuid> = sqlx::query_scalar(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("run_id")),
+                ))
+                .from(sea_orm::sea_query::Alias::new("authorization_run_outputs"))
+                .and_where(sea_orm::sea_query::Expr::cust(
+                    "workspace_id = $1 AND resource_kind = $2 AND resource_id = $3",
+                ))
+                .order_by_expr(
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("run_id"),
+                    )),
+                    sea_orm::sea_query::Order::Asc,
+                )
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(workspace)
+        .bind(kind)
+        .bind(id)
+        .fetch_all(&mut *self.tx)
+        .await?;
         for producer in producers {
             if !Box::pin(self.run_reads_visible(producer)).await? {
                 return Ok(false);
@@ -281,6 +301,9 @@ impl Access {
             .chain(snapshot.messages.iter().map(|r| ("message".into(), r.id)))
             .collect();
         let id = |value: &serde_json::Value| value.as_str().and_then(|s| s.parse::<Uuid>().ok());
+        if !snapshot.events.is_empty() {
+            sources.insert(("workspace_events".into(), snapshot.workspace.id));
+        }
         for event in &snapshot.events {
             let source = if event.kind.starts_with("conversation.") {
                 id(&event.data["id"]).map(|id| ("conversation", id))
@@ -471,8 +494,37 @@ impl Access {
     }
     pub(crate) async fn grant_reads_visible(&mut self, grant: Uuid) -> Result<bool> {
         let sources: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
-            "SELECT workspace_id,resource_kind,resource_id FROM authorization_remote_grant_reads WHERE grant_id=$1 ORDER BY resource_kind,resource_id"
-        ).bind(grant).fetch_all(&mut *self.tx).await?;
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("workspace_id")),
+                ))
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("resource_kind")),
+                ))
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("resource_id")),
+                ))
+                .from(sea_orm::sea_query::Alias::new(
+                    "authorization_remote_grant_reads",
+                ))
+                .and_where(sea_orm::sea_query::Expr::cust("grant_id = $1"))
+                .order_by_expr(
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("resource_kind"),
+                    )),
+                    sea_orm::sea_query::Order::Asc,
+                )
+                .order_by_expr(
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("resource_id"),
+                    )),
+                    sea_orm::sea_query::Order::Asc,
+                )
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(grant)
+        .fetch_all(&mut *self.tx)
+        .await?;
         let mut pending = vec![];
         for (workspace, kind, id) in sources {
             if !self
@@ -497,6 +549,10 @@ impl Access {
         pending: &mut Vec<Uuid>,
     ) -> Result<bool> {
         Ok(match kind {
+            "workspace_events" => {
+                let resource = self.workspace(workspace).await?;
+                self.decide(&resource, "workspace.events").await?
+            }
             "task" => {
                 let source: Option<Task> = sqlx::query_as(
                     &Query::select()

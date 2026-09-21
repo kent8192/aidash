@@ -136,7 +136,18 @@ impl Lease<'_> {
                 return Ok(false);
             }
             let managed: Option<(String, String)> = sqlx::query_as(
-                "SELECT agent_id,agent_version FROM semantic_agent_memory WHERE entry_id=$1",
+                &sea_orm::sea_query::Query::select()
+                    .expr(sea_orm::sea_query::SimpleExpr::from(
+                        sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("agent_id")),
+                    ))
+                    .expr(sea_orm::sea_query::SimpleExpr::from(
+                        sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new(
+                            "agent_version",
+                        )),
+                    ))
+                    .from(sea_orm::sea_query::Alias::new("semantic_agent_memory"))
+                    .and_where(sea_orm::sea_query::Expr::cust("entry_id = $1"))
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
             )
             .bind(entry.id)
             .fetch_optional(&mut *a.tx)
@@ -181,7 +192,16 @@ impl Lease<'_> {
             Source::Memory { text } => Ok(Some(text.clone())),
             Source::Artifact { id } => {
                 let row: Option<Artifact> = sqlx::query_as(
-                    "SELECT * FROM artifacts WHERE id=$1 AND workspace_id=$2 FOR SHARE",
+                    &sea_orm::sea_query::Query::select()
+                        .expr(sea_orm::sea_query::SimpleExpr::from(
+                            sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                        ))
+                        .from(sea_orm::sea_query::Alias::new("artifacts"))
+                        .and_where(sea_orm::sea_query::Expr::cust(
+                            "id = $1 AND workspace_id = $2",
+                        ))
+                        .lock(sea_orm::sea_query::LockType::Share)
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
                 )
                 .bind(id)
                 .bind(workspace)
@@ -197,7 +217,16 @@ impl Lease<'_> {
             }
             Source::Message { id } => {
                 let row: Option<Message> = sqlx::query_as(
-                    "SELECT * FROM messages WHERE id=$1 AND workspace_id=$2 FOR SHARE",
+                    &sea_orm::sea_query::Query::select()
+                        .expr(sea_orm::sea_query::SimpleExpr::from(
+                            sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                        ))
+                        .from(sea_orm::sea_query::Alias::new("messages"))
+                        .and_where(sea_orm::sea_query::Expr::cust(
+                            "id = $1 AND workspace_id = $2",
+                        ))
+                        .lock(sea_orm::sea_query::LockType::Share)
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
                 )
                 .bind(id)
                 .bind(workspace)
@@ -219,10 +248,24 @@ pub(crate) async fn index(
     workspace: Uuid,
     exclusive: bool,
 ) -> Result<Index> {
-    sqlx::query_as(if exclusive {
-        "SELECT * FROM semantic_indexes WHERE workspace_id=$1 FOR UPDATE"
+    sqlx::query_as(&if exclusive {
+        sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("semantic_indexes"))
+            .and_where(sea_orm::sea_query::Expr::cust("workspace_id = $1"))
+            .lock(sea_orm::sea_query::LockType::Update)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder)
     } else {
-        "SELECT * FROM semantic_indexes WHERE workspace_id=$1 FOR SHARE"
+        sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("semantic_indexes"))
+            .and_where(sea_orm::sea_query::Expr::cust("workspace_id = $1"))
+            .lock(sea_orm::sea_query::LockType::Share)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder)
     })
     .bind(workspace)
     .fetch_optional(&mut **tx)
@@ -237,8 +280,32 @@ pub(crate) async fn history(
     state: &str,
     detail: &str,
 ) -> Result<()> {
-    sqlx::query("INSERT INTO semantic_history(workspace_id,entry_id,revision,state,detail) VALUES($1,$2,$3,$4,$5)")
-        .bind(workspace).bind(entry).bind(revision).bind(state).bind(detail).execute(&mut **tx).await?;
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("semantic_history"))
+            .columns([
+                sea_orm::sea_query::Alias::new("workspace_id"),
+                sea_orm::sea_query::Alias::new("entry_id"),
+                sea_orm::sea_query::Alias::new("revision"),
+                sea_orm::sea_query::Alias::new("state"),
+                sea_orm::sea_query::Alias::new("detail"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("$3"),
+                sea_orm::sea_query::Expr::cust("$4"),
+                sea_orm::sea_query::Expr::cust("$5"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(workspace)
+    .bind(entry)
+    .bind(revision)
+    .bind(state)
+    .bind(detail)
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }
 pub(crate) async fn schedule_point(
@@ -246,15 +313,46 @@ pub(crate) async fn schedule_point(
     entry: &Entry,
     collection: &str,
 ) -> Result<()> {
-    sqlx::query("UPDATE semantic_points SET retired=true,next_attempt=clock_timestamp() WHERE entry_id=$1 AND NOT retired")
-        .bind(entry.id).execute(&mut **tx).await?;
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("semantic_points"))
+            .value(
+                sea_orm::sea_query::Alias::new("retired"),
+                sea_orm::sea_query::Expr::cust("TRUE"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("next_attempt"),
+                sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP()"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "entry_id = $1 AND NOT retired",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(entry.id)
+    .execute(&mut **tx)
+    .await?;
     if !entry.deleted {
-        sqlx::query("INSERT INTO semantic_points(id,entry_id,collection) VALUES($1,$2,$3)")
-            .bind(entry.point_id)
-            .bind(entry.id)
-            .bind(collection)
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query(
+            &sea_orm::sea_query::Query::insert()
+                .into_table(sea_orm::sea_query::Alias::new("semantic_points"))
+                .columns([
+                    sea_orm::sea_query::Alias::new("id"),
+                    sea_orm::sea_query::Alias::new("entry_id"),
+                    sea_orm::sea_query::Alias::new("collection"),
+                ])
+                .values_panic([
+                    sea_orm::sea_query::Expr::cust("$1"),
+                    sea_orm::sea_query::Expr::cust("$2"),
+                    sea_orm::sea_query::Expr::cust("$3"),
+                ])
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(entry.point_id)
+        .bind(entry.id)
+        .bind(collection)
+        .execute(&mut **tx)
+        .await?;
     }
     Ok(())
 }
@@ -264,26 +362,49 @@ pub async fn configure(store: &Store, workspace: Uuid, input: ConfigureIndex) ->
         return Err(Error::Invalid("invalid index revision".into()));
     }
     let mut tx = store.pool.begin().await?;
-    let exists: Option<Uuid> =
-        sqlx::query_scalar("SELECT id FROM workspaces WHERE id=$1 FOR UPDATE")
-            .bind(workspace)
-            .fetch_optional(&mut *tx)
-            .await?;
+    let exists: Option<Uuid> = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("workspaces"))
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .lock(sea_orm::sea_query::LockType::Update)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(workspace)
+    .fetch_optional(&mut *tx)
+    .await?;
     if exists.is_none() {
         return Err(Error::NotFound("workspace".into()));
     }
     let tenant: String = sqlx::query_scalar(
-        "SELECT tenant FROM authorization_workspaces WHERE workspace_id=$1 FOR SHARE",
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("tenant")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("authorization_workspaces"))
+            .and_where(sea_orm::sea_query::Expr::cust("workspace_id = $1"))
+            .lock(sea_orm::sea_query::LockType::Share)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(workspace)
     .fetch_optional(&mut *tx)
     .await?
     .unwrap_or_default();
-    let old: Option<Index> =
-        sqlx::query_as("SELECT * FROM semantic_indexes WHERE workspace_id=$1 FOR UPDATE")
-            .bind(workspace)
-            .fetch_optional(&mut *tx)
-            .await?;
+    let old: Option<Index> = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("semantic_indexes"))
+            .and_where(sea_orm::sea_query::Expr::cust("workspace_id = $1"))
+            .lock(sea_orm::sea_query::LockType::Update)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(workspace)
+    .fetch_optional(&mut *tx)
+    .await?;
     let spec = serde_json::to_value(&input.spec)?;
     if old.as_ref().map_or(0, |i| i.revision) != input.expected_revision {
         if let Some(old) = old
@@ -296,7 +417,13 @@ pub async fn configure(store: &Store, workspace: Uuid, input: ConfigureIndex) ->
         return Err(Error::Conflict("semantic index revision changed".into()));
     }
     let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM semantic_entries WHERE workspace_id=$1 AND NOT deleted",
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new("semantic_entries"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "workspace_id = $1 AND NOT deleted",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(workspace)
     .fetch_one(&mut *tx)
@@ -307,21 +434,163 @@ pub async fn configure(store: &Store, workspace: Uuid, input: ConfigureIndex) ->
         ));
     }
     let collection = format!("aidash_{}", Uuid::new_v4().simple());
-    let current:Index=sqlx::query_as("INSERT INTO semantic_indexes(workspace_id,tenant,revision,spec,collection) VALUES($1,$2,$3,$4,$5) ON CONFLICT(workspace_id) DO UPDATE SET revision=EXCLUDED.revision,spec=EXCLUDED.spec,collection=EXCLUDED.collection,updated_at=clock_timestamp() RETURNING *")
-        .bind(workspace).bind(tenant).bind(input.expected_revision+1).bind(spec).bind(&collection).fetch_one(&mut *tx).await?;
-    sqlx::query("UPDATE semantic_collections SET retired=true,next_attempt=clock_timestamp() WHERE workspace_id=$1").bind(workspace).execute(&mut *tx).await?;
+    let current: Index = sqlx::query_as(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("semantic_indexes"))
+            .columns([
+                sea_orm::sea_query::Alias::new("workspace_id"),
+                sea_orm::sea_query::Alias::new("tenant"),
+                sea_orm::sea_query::Alias::new("revision"),
+                sea_orm::sea_query::Alias::new("spec"),
+                sea_orm::sea_query::Alias::new("collection"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("$3"),
+                sea_orm::sea_query::Expr::cust("$4"),
+                sea_orm::sea_query::Expr::cust("$5"),
+            ])
+            .on_conflict(
+                sea_orm::sea_query::OnConflict::columns([sea_orm::sea_query::Alias::new(
+                    "workspace_id",
+                )])
+                .value(
+                    sea_orm::sea_query::Alias::new("revision"),
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+                        sea_orm::sea_query::Alias::new("excluded"),
+                        sea_orm::sea_query::Alias::new("revision"),
+                    ))),
+                )
+                .value(
+                    sea_orm::sea_query::Alias::new("spec"),
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+                        sea_orm::sea_query::Alias::new("excluded"),
+                        sea_orm::sea_query::Alias::new("spec"),
+                    ))),
+                )
+                .value(
+                    sea_orm::sea_query::Alias::new("collection"),
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+                        sea_orm::sea_query::Alias::new("excluded"),
+                        sea_orm::sea_query::Alias::new("collection"),
+                    ))),
+                )
+                .value(
+                    sea_orm::sea_query::Alias::new("updated_at"),
+                    sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP()"),
+                )
+                .to_owned(),
+            )
+            .returning_all()
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(workspace)
+    .bind(tenant)
+    .bind(input.expected_revision + 1)
+    .bind(spec)
+    .bind(&collection)
+    .fetch_one(&mut *tx)
+    .await?;
     sqlx::query(
-        "INSERT INTO semantic_collections(collection,workspace_id,vector) VALUES($1,$2,$3)",
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("semantic_collections"))
+            .value(
+                sea_orm::sea_query::Alias::new("retired"),
+                sea_orm::sea_query::Expr::cust("TRUE"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("next_attempt"),
+                sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP()"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("workspace_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(workspace)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("semantic_collections"))
+            .columns([
+                sea_orm::sea_query::Alias::new("collection"),
+                sea_orm::sea_query::Alias::new("workspace_id"),
+                sea_orm::sea_query::Alias::new("vector"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("$3"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(&collection)
     .bind(workspace)
     .bind(serde_json::to_value(&input.spec.vector)?)
     .execute(&mut *tx)
     .await?;
-    let entries:Vec<Entry>=sqlx::query_as("SELECT * FROM semantic_entries WHERE workspace_id=$1 AND NOT deleted ORDER BY id FOR UPDATE").bind(workspace).fetch_all(&mut *tx).await?;
+    let entries: Vec<Entry> = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("semantic_entries"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "workspace_id = $1 AND NOT deleted",
+            ))
+            .order_by_expr(
+                sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                    sea_orm::sea_query::Alias::new("id"),
+                )),
+                sea_orm::sea_query::Order::Asc,
+            )
+            .lock(sea_orm::sea_query::LockType::Update)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(workspace)
+    .fetch_all(&mut *tx)
+    .await?;
     for entry in entries {
-        let entry:Entry=sqlx::query_as("UPDATE semantic_entries SET point_id=$2,index_revision=$3,state='PENDING',last_error=NULL,attempts=0,next_attempt=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1 RETURNING *")
-            .bind(entry.id).bind(Uuid::new_v4()).bind(current.revision).fetch_one(&mut *tx).await?;
+        let entry: Entry = sqlx::query_as(
+            &sea_orm::sea_query::Query::update()
+                .table(sea_orm::sea_query::Alias::new("semantic_entries"))
+                .value(
+                    sea_orm::sea_query::Alias::new("point_id"),
+                    sea_orm::sea_query::Expr::cust("$2"),
+                )
+                .value(
+                    sea_orm::sea_query::Alias::new("index_revision"),
+                    sea_orm::sea_query::Expr::cust("$3"),
+                )
+                .value(
+                    sea_orm::sea_query::Alias::new("state"),
+                    sea_orm::sea_query::Expr::cust("'PENDING'"),
+                )
+                .value(
+                    sea_orm::sea_query::Alias::new("last_error"),
+                    sea_orm::sea_query::Expr::cust("NULL"),
+                )
+                .value(
+                    sea_orm::sea_query::Alias::new("attempts"),
+                    sea_orm::sea_query::Expr::cust("0"),
+                )
+                .value(
+                    sea_orm::sea_query::Alias::new("next_attempt"),
+                    sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP()"),
+                )
+                .value(
+                    sea_orm::sea_query::Alias::new("updated_at"),
+                    sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP()"),
+                )
+                .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                .returning_all()
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(entry.id)
+        .bind(Uuid::new_v4())
+        .bind(current.revision)
+        .fetch_one(&mut *tx)
+        .await?;
         schedule_point(&mut tx, &entry, &collection).await?;
     }
     history(
@@ -367,7 +636,16 @@ pub(crate) async fn put_in(
     let index = index(lease.tx(), workspace, true).await?;
     let spec = index.configuration()?;
     let old: Option<Entry> = sqlx::query_as(
-        "SELECT * FROM semantic_entries WHERE workspace_id=$1 AND key=$2 FOR UPDATE",
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("semantic_entries"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "workspace_id = $1 AND key = $2",
+            ))
+            .lock(sea_orm::sea_query::LockType::Update)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(workspace)
     .bind(&input.key)
@@ -428,7 +706,13 @@ pub(crate) async fn put_in(
             return Err(Error::Conflict("semantic source does not exist".into()));
         }
         let count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM semantic_entries WHERE workspace_id=$1 AND NOT deleted",
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+                .from(sea_orm::sea_query::Alias::new("semantic_entries"))
+                .and_where(sea_orm::sea_query::Expr::cust(
+                    "workspace_id = $1 AND NOT deleted",
+                ))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
         )
         .bind(workspace)
         .fetch_one(&mut **lease.tx())
@@ -447,8 +731,128 @@ pub(crate) async fn put_in(
         .await?
         .ok_or(Error::Forbidden)?;
     validate_text(&text, spec.max_input_bytes)?;
-    let entry:Entry=sqlx::query_as("INSERT INTO semantic_entries(id,workspace_id,key,source,agent,metadata,revision,point_id,index_revision,deleted,state,created_by,authority) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,false,'PENDING',$10,$11) ON CONFLICT(id) DO UPDATE SET source=EXCLUDED.source,agent=EXCLUDED.agent,metadata=EXCLUDED.metadata,revision=EXCLUDED.revision,point_id=EXCLUDED.point_id,index_revision=EXCLUDED.index_revision,state='PENDING',attempts=0,last_error=NULL,authority=EXCLUDED.authority,next_attempt=clock_timestamp(),updated_at=clock_timestamp() RETURNING *")
-        .bind(entry.id).bind(workspace).bind(entry.key).bind(entry.source).bind(entry.agent).bind(entry.metadata).bind(entry.revision).bind(entry.point_id).bind(index.revision).bind(entry.created_by).bind(saved).fetch_one(&mut **lease.tx()).await?;
+    let entry: Entry = sqlx::query_as(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("semantic_entries"))
+            .columns([
+                sea_orm::sea_query::Alias::new("id"),
+                sea_orm::sea_query::Alias::new("workspace_id"),
+                sea_orm::sea_query::Alias::new("key"),
+                sea_orm::sea_query::Alias::new("source"),
+                sea_orm::sea_query::Alias::new("agent"),
+                sea_orm::sea_query::Alias::new("metadata"),
+                sea_orm::sea_query::Alias::new("revision"),
+                sea_orm::sea_query::Alias::new("point_id"),
+                sea_orm::sea_query::Alias::new("index_revision"),
+                sea_orm::sea_query::Alias::new("deleted"),
+                sea_orm::sea_query::Alias::new("state"),
+                sea_orm::sea_query::Alias::new("created_by"),
+                sea_orm::sea_query::Alias::new("authority"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("$3"),
+                sea_orm::sea_query::Expr::cust("$4"),
+                sea_orm::sea_query::Expr::cust("$5"),
+                sea_orm::sea_query::Expr::cust("$6"),
+                sea_orm::sea_query::Expr::cust("$7"),
+                sea_orm::sea_query::Expr::cust("$8"),
+                sea_orm::sea_query::Expr::cust("$9"),
+                sea_orm::sea_query::Expr::cust("FALSE"),
+                sea_orm::sea_query::Expr::cust("'PENDING'"),
+                sea_orm::sea_query::Expr::cust("$10"),
+                sea_orm::sea_query::Expr::cust("$11"),
+            ])
+            .on_conflict(
+                sea_orm::sea_query::OnConflict::columns([sea_orm::sea_query::Alias::new("id")])
+                    .value(
+                        sea_orm::sea_query::Alias::new("source"),
+                        sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+                            sea_orm::sea_query::Alias::new("excluded"),
+                            sea_orm::sea_query::Alias::new("source"),
+                        ))),
+                    )
+                    .value(
+                        sea_orm::sea_query::Alias::new("agent"),
+                        sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+                            sea_orm::sea_query::Alias::new("excluded"),
+                            sea_orm::sea_query::Alias::new("agent"),
+                        ))),
+                    )
+                    .value(
+                        sea_orm::sea_query::Alias::new("metadata"),
+                        sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+                            sea_orm::sea_query::Alias::new("excluded"),
+                            sea_orm::sea_query::Alias::new("metadata"),
+                        ))),
+                    )
+                    .value(
+                        sea_orm::sea_query::Alias::new("revision"),
+                        sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+                            sea_orm::sea_query::Alias::new("excluded"),
+                            sea_orm::sea_query::Alias::new("revision"),
+                        ))),
+                    )
+                    .value(
+                        sea_orm::sea_query::Alias::new("point_id"),
+                        sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+                            sea_orm::sea_query::Alias::new("excluded"),
+                            sea_orm::sea_query::Alias::new("point_id"),
+                        ))),
+                    )
+                    .value(
+                        sea_orm::sea_query::Alias::new("index_revision"),
+                        sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+                            sea_orm::sea_query::Alias::new("excluded"),
+                            sea_orm::sea_query::Alias::new("index_revision"),
+                        ))),
+                    )
+                    .value(
+                        sea_orm::sea_query::Alias::new("state"),
+                        sea_orm::sea_query::Expr::cust("'PENDING'"),
+                    )
+                    .value(
+                        sea_orm::sea_query::Alias::new("attempts"),
+                        sea_orm::sea_query::Expr::cust("0"),
+                    )
+                    .value(
+                        sea_orm::sea_query::Alias::new("last_error"),
+                        sea_orm::sea_query::Expr::cust("NULL"),
+                    )
+                    .value(
+                        sea_orm::sea_query::Alias::new("authority"),
+                        sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+                            sea_orm::sea_query::Alias::new("excluded"),
+                            sea_orm::sea_query::Alias::new("authority"),
+                        ))),
+                    )
+                    .value(
+                        sea_orm::sea_query::Alias::new("next_attempt"),
+                        sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP()"),
+                    )
+                    .value(
+                        sea_orm::sea_query::Alias::new("updated_at"),
+                        sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP()"),
+                    )
+                    .to_owned(),
+            )
+            .returning_all()
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(entry.id)
+    .bind(workspace)
+    .bind(entry.key)
+    .bind(entry.source)
+    .bind(entry.agent)
+    .bind(entry.metadata)
+    .bind(entry.revision)
+    .bind(entry.point_id)
+    .bind(index.revision)
+    .bind(entry.created_by)
+    .bind(saved)
+    .fetch_one(&mut **lease.tx())
+    .await?;
     schedule_point(lease.tx(), &entry, &index.collection).await?;
     history(
         lease.tx(),
@@ -476,7 +880,21 @@ pub async fn entries(store: &Store, actor: &Actor, workspace: Uuid) -> Result<Ve
         lease.workspace(workspace, "semantic.read").await?;
         index(lease.tx(), workspace, false).await?;
         let rows: Vec<Entry> = sqlx::query_as(
-            "SELECT * FROM semantic_entries WHERE workspace_id=$1 AND NOT deleted ORDER BY id",
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                ))
+                .from(sea_orm::sea_query::Alias::new("semantic_entries"))
+                .and_where(sea_orm::sea_query::Expr::cust(
+                    "workspace_id = $1 AND NOT deleted",
+                ))
+                .order_by_expr(
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("id"),
+                    )),
+                    sea_orm::sea_query::Order::Asc,
+                )
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
         )
         .bind(workspace)
         .fetch_all(&mut **lease.tx())
@@ -513,11 +931,11 @@ pub async fn change(
     let result=async {
         lease.workspace(workspace,if delete {"semantic.delete"} else {"semantic.write"}).await?;
         let index=index(lease.tx(),workspace,true).await?;
-        let entry:Entry=sqlx::query_as("SELECT * FROM semantic_entries WHERE workspace_id=$1 AND id=$2 FOR UPDATE").bind(workspace).bind(id).fetch_optional(&mut **lease.tx()).await?.ok_or(Error::Forbidden)?;
+        let entry:Entry=sqlx::query_as(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))).from(sea_orm::sea_query::Alias::new("semantic_entries")).and_where(sea_orm::sea_query::Expr::cust("workspace_id = $1 AND id = $2")).lock(sea_orm::sea_query::LockType::Update).to_string(sea_orm::sea_query::PostgresQueryBuilder)).bind(workspace).bind(id).fetch_optional(&mut **lease.tx()).await?.ok_or(Error::Forbidden)?;
         if !lease.permits(&entry,if delete {"semantic.delete"} else {"semantic.write"}).await? {return Err(Error::Forbidden);}
         if !lease.permits(&entry,"semantic.read").await? {return Err(Error::Forbidden);}
         if !delete && !entry.deleted && (0..i64::MAX).contains(&revision) && entry.revision==revision+1 {
-            let replay:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM semantic_history WHERE entry_id=$1 AND revision=$2 AND state='PENDING' AND detail='reindex requested')").bind(id).bind(entry.revision).fetch_one(&mut **lease.tx()).await?;
+            let replay:bool=sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("EXISTS(SELECT 1 FROM semantic_history WHERE entry_id = $1 AND revision = $2 AND state = 'PENDING' AND detail = 'reindex requested')")).to_string(sea_orm::sea_query::PostgresQueryBuilder)).bind(id).bind(entry.revision).fetch_one(&mut **lease.tx()).await?;
             if replay {return Ok(entry);}
         }
         if entry.deleted && delete && (entry.revision==revision || entry.revision==revision+1) {return Ok(entry);}
@@ -527,7 +945,7 @@ pub async fn change(
             validate_text(&text,index.configuration()?.max_input_bytes)?;
         }
         if delete {
-            let managed:Option<(String,String,String)>=sqlx::query_as("SELECT agent_id,agent_version,home_node FROM semantic_agent_memory WHERE entry_id=$1").bind(id).fetch_optional(&mut **lease.tx()).await?;
+            let managed:Option<(String,String,String)>=sqlx::query_as(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("agent_id")))).expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("agent_version")))).expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("home_node")))).from(sea_orm::sea_query::Alias::new("semantic_agent_memory")).and_where(sea_orm::sea_query::Expr::cust("entry_id = $1")).to_string(sea_orm::sea_query::PostgresQueryBuilder)).bind(id).fetch_optional(&mut **lease.tx()).await?;
             if let Some((agent_id,agent_version,home))=managed {
                 if let Some(a)=lease.access() {
                     let workspace=a.workspace(workspace).await?;
@@ -537,11 +955,11 @@ pub async fn change(
                     let resource=a.resource("memory",&agent_id,attributes);
                     a.require(&resource,"memory.write").await?;
                 }
-                sqlx::query("DELETE FROM memory WHERE workspace_id=$1 AND agent_id=$2 AND agent_version=$3 AND home_node=$4").bind(workspace).bind(agent_id).bind(agent_version).bind(home).execute(&mut **lease.tx()).await?;
+                sqlx::query(&sea_orm::sea_query::Query::delete().from_table(sea_orm::sea_query::Alias::new("memory")).and_where(sea_orm::sea_query::Expr::cust("workspace_id = $1 AND agent_id = $2 AND agent_version = $3 AND home_node = $4")).to_string(sea_orm::sea_query::PostgresQueryBuilder)).bind(workspace).bind(agent_id).bind(agent_version).bind(home).execute(&mut **lease.tx()).await?;
             }
         }
         let saved=lease.saved()?;
-        let entry:Entry=sqlx::query_as("UPDATE semantic_entries SET revision=revision+1,point_id=$3,index_revision=$4,deleted=$5,state=$6,source=CASE WHEN $5 THEN jsonb_build_object('kind','memory','text','') ELSE source END,authority=$7,attempts=0,last_error=NULL,next_attempt=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1 AND workspace_id=$2 RETURNING *")
+        let entry:Entry=sqlx::query_as(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("semantic_entries")).value(sea_orm::sea_query::Alias::new("revision"), sea_orm::sea_query::Expr::cust("revision + 1")).value(sea_orm::sea_query::Alias::new("point_id"), sea_orm::sea_query::Expr::cust("$3")).value(sea_orm::sea_query::Alias::new("index_revision"), sea_orm::sea_query::Expr::cust("$4")).value(sea_orm::sea_query::Alias::new("deleted"), sea_orm::sea_query::Expr::cust("$5")).value(sea_orm::sea_query::Alias::new("state"), sea_orm::sea_query::Expr::cust("$6")).value(sea_orm::sea_query::Alias::new("source"), sea_orm::sea_query::Expr::cust("CASE WHEN $5 THEN JSONB_BUILD_OBJECT('kind', 'memory', 'text', '') ELSE source END")).value(sea_orm::sea_query::Alias::new("authority"), sea_orm::sea_query::Expr::cust("$7")).value(sea_orm::sea_query::Alias::new("attempts"), sea_orm::sea_query::Expr::cust("0")).value(sea_orm::sea_query::Alias::new("last_error"), sea_orm::sea_query::Expr::cust("NULL")).value(sea_orm::sea_query::Alias::new("next_attempt"), sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP()")).value(sea_orm::sea_query::Alias::new("updated_at"), sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP()")).and_where(sea_orm::sea_query::Expr::cust("id = $1 AND workspace_id = $2")).returning_all().to_string(sea_orm::sea_query::PostgresQueryBuilder))
             .bind(id).bind(workspace).bind(Uuid::new_v4()).bind(index.revision).bind(delete).bind(if delete {"DELETED"} else {"PENDING"}).bind(saved).fetch_one(&mut **lease.tx()).await?;
         schedule_point(lease.tx(),&entry,&index.collection).await?;
         history(lease.tx(),workspace,Some(id),entry.revision,&entry.state,if delete {"source tombstoned"} else {"reindex requested"}).await?;
@@ -585,7 +1003,27 @@ pub(crate) async fn search_in(
             "invalid semantic search limits or filters".into(),
         ));
     }
-    let rows:Vec<Entry>=sqlx::query_as("SELECT * FROM semantic_entries WHERE workspace_id=$1 AND NOT deleted ORDER BY id FOR SHARE").bind(workspace).fetch_all(&mut **lease.tx()).await?;
+    let rows: Vec<Entry> = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("semantic_entries"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "workspace_id = $1 AND NOT deleted",
+            ))
+            .order_by_expr(
+                sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                    sea_orm::sea_query::Alias::new("id"),
+                )),
+                sea_orm::sea_query::Order::Asc,
+            )
+            .lock(sea_orm::sea_query::LockType::Share)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(workspace)
+    .fetch_all(&mut **lease.tx())
+    .await?;
     if rows.len() > spec.max_sources {
         return Err(Error::Conflict("semantic source quota exceeded".into()));
     }
@@ -616,7 +1054,13 @@ pub(crate) async fn search_in(
         // Source content must still match the bytes used for this point; linked
         // artifacts/messages can change outside this module's revision counter.
         let digest: String = sqlx::query_scalar(
-            "SELECT coalesce(content_digest,'') FROM semantic_points WHERE id=$1 AND NOT retired",
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::Expr::cust(
+                    "COALESCE(content_digest, '')",
+                ))
+                .from(sea_orm::sea_query::Alias::new("semantic_points"))
+                .and_where(sea_orm::sea_query::Expr::cust("id = $1 AND NOT retired"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
         )
         .bind(entry.point_id)
         .fetch_optional(&mut **lease.tx())
@@ -752,24 +1196,62 @@ pub async fn history_list(store: &Store, actor: &Actor, workspace: Uuid) -> Resu
     let mut lease = Lease::begin(store, actor).await?;
     let result = async {
         lease.workspace(workspace, "semantic.read").await?;
-        let rows: Vec<History> = sqlx::query_as(
-            "SELECT * FROM semantic_history WHERE workspace_id=$1 ORDER BY sequence DESC LIMIT 200",
-        )
-        .bind(workspace)
-        .fetch_all(&mut **lease.tx())
-        .await?;
         let mut visible = vec![];
-        for row in rows {
-            if let Some(id) = row.entry_id {
-                let entry: Entry = sqlx::query_as("SELECT * FROM semantic_entries WHERE id=$1")
+        let mut cursor = i64::MAX;
+        loop {
+            let rows: Vec<History> = sqlx::query_as(
+                &sea_orm::sea_query::Query::select()
+                    .column(sea_orm::sea_query::Asterisk)
+                    .from(sea_orm::sea_query::Alias::new("semantic_history"))
+                    .and_where(
+                        sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new(
+                            "workspace_id",
+                        ))
+                        .eq(sea_orm::sea_query::Expr::cust("$1")),
+                    )
+                    .and_where(
+                        sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("sequence"))
+                            .lt(sea_orm::sea_query::Expr::cust("$2")),
+                    )
+                    .order_by(
+                        sea_orm::sea_query::Alias::new("sequence"),
+                        sea_orm::sea_query::Order::Desc,
+                    )
+                    .limit(200)
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+            )
+            .bind(workspace)
+            .bind(cursor)
+            .fetch_all(&mut **lease.tx())
+            .await?;
+            let exhausted = rows.len() < 200;
+            for row in rows {
+                cursor = row.sequence;
+                if let Some(id) = row.entry_id {
+                    let entry: Entry = sqlx::query_as(
+                        &sea_orm::sea_query::Query::select()
+                            .expr(sea_orm::sea_query::SimpleExpr::from(
+                                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                            ))
+                            .from(sea_orm::sea_query::Alias::new("semantic_entries"))
+                            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                    )
                     .bind(id)
                     .fetch_one(&mut **lease.tx())
                     .await?;
-                if !lease.permits(&entry, "semantic.read").await? {
-                    continue;
+                    if !lease.permits(&entry, "semantic.read").await? {
+                        continue;
+                    }
+                }
+                visible.push(row);
+                if visible.len() == 200 {
+                    break;
                 }
             }
-            visible.push(row);
+            if exhausted || visible.len() == 200 {
+                break;
+            }
         }
         Ok(visible)
     }
@@ -784,16 +1266,36 @@ pub(crate) async fn context_in(
     query: &str,
     budget: usize,
 ) -> Result<Option<SearchResult>> {
-    let configured: Option<Index> =
-        sqlx::query_as("SELECT * FROM semantic_indexes WHERE workspace_id=$1 FOR SHARE")
-            .bind(run.workspace_id)
-            .fetch_optional(&mut **lease.tx())
-            .await?;
+    let configured: Option<Index> = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("semantic_indexes"))
+            .and_where(sea_orm::sea_query::Expr::cust("workspace_id = $1"))
+            .lock(sea_orm::sea_query::LockType::Share)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(run.workspace_id)
+    .fetch_optional(&mut **lease.tx())
+    .await?;
     let Some(configured) = configured else {
         return Ok(None);
     };
     let spec = configured.configuration()?;
-    if !spec.auto_context {
+    if !spec.enabled || !spec.auto_context {
+        return Ok(None);
+    }
+    let minimum = SearchResult {
+        workspace_id: run.workspace_id,
+        index_revision: configured.revision,
+        model: spec.embedding.model.clone(),
+        model_version: spec.embedding.model_version.clone(),
+        matches: vec![],
+        estimated_tokens: 0,
+        truncated: false,
+    };
+    if budget.min(spec.max_result_tokens) < result_tokens(&minimum)? {
         return Ok(None);
     }
     let mut query = query.to_owned();
@@ -827,13 +1329,47 @@ pub(crate) async fn context_in(
 
 impl Access {
     pub(crate) async fn semantic_reads_visible(&mut self, run: Uuid) -> Result<bool> {
-        let dependencies:Vec<(Uuid,i64)>=sqlx::query_as("SELECT entry_id,revision FROM semantic_run_reads WHERE run_id=$1 ORDER BY entry_id,revision").bind(run).fetch_all(&mut *self.tx).await?;
+        let dependencies: Vec<(Uuid, i64)> = sqlx::query_as(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("entry_id")),
+                ))
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("revision")),
+                ))
+                .from(sea_orm::sea_query::Alias::new("semantic_run_reads"))
+                .and_where(sea_orm::sea_query::Expr::cust("run_id = $1"))
+                .order_by_expr(
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("entry_id"),
+                    )),
+                    sea_orm::sea_query::Order::Asc,
+                )
+                .order_by_expr(
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("revision"),
+                    )),
+                    sea_orm::sea_query::Order::Asc,
+                )
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(run)
+        .fetch_all(&mut *self.tx)
+        .await?;
         let mut lease = Lease::Inherited(self);
         for (id, revision) in dependencies {
-            let entry: Entry = sqlx::query_as("SELECT * FROM semantic_entries WHERE id=$1")
-                .bind(id)
-                .fetch_one(&mut **lease.tx())
-                .await?;
+            let entry: Entry = sqlx::query_as(
+                &sea_orm::sea_query::Query::select()
+                    .expr(sea_orm::sea_query::SimpleExpr::from(
+                        sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                    ))
+                    .from(sea_orm::sea_query::Alias::new("semantic_entries"))
+                    .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+            )
+            .bind(id)
+            .fetch_one(&mut **lease.tx())
+            .await?;
             if entry.deleted
                 || entry.revision != revision
                 || !lease.permits(&entry, "semantic.read").await?
@@ -846,11 +1382,20 @@ impl Access {
             else {
                 return Ok(false);
             };
-            let digest: Option<String> =
-                sqlx::query_scalar("SELECT content_digest FROM semantic_points WHERE id=$1")
-                    .bind(entry.point_id)
-                    .fetch_one(&mut **lease.tx())
-                    .await?;
+            let digest: Option<String> = sqlx::query_scalar(
+                &sea_orm::sea_query::Query::select()
+                    .expr(sea_orm::sea_query::SimpleExpr::from(
+                        sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new(
+                            "content_digest",
+                        )),
+                    ))
+                    .from(sea_orm::sea_query::Alias::new("semantic_points"))
+                    .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+            )
+            .bind(entry.point_id)
+            .fetch_one(&mut **lease.tx())
+            .await?;
             if digest.as_deref() != Some(&content_digest(&text)) {
                 return Ok(false);
             }
@@ -865,11 +1410,16 @@ pub(crate) async fn remember_in(
     run: &crate::domain::Run,
     data: &Value,
 ) -> Result<()> {
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM semantic_indexes WHERE workspace_id=$1)")
-            .bind(run.workspace_id)
-            .fetch_one(&mut **lease.tx())
-            .await?;
+    let exists: bool = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust(
+                "EXISTS(SELECT 1 FROM semantic_indexes WHERE workspace_id = $1)",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(run.workspace_id)
+    .fetch_one(&mut **lease.tx())
+    .await?;
     if exists {
         let agent =
             crate::domain::qualified_agent(&run.home_node, &run.agent_id, &run.agent_version);
@@ -877,7 +1427,15 @@ pub(crate) async fn remember_in(
         // Serialize revisions with the same index lock used by API mutations.
         index(lease.tx(), run.workspace_id, true).await?;
         let revision: Option<i64> = sqlx::query_scalar(
-            "SELECT revision FROM semantic_entries WHERE workspace_id=$1 AND key=$2",
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("revision")),
+                ))
+                .from(sea_orm::sea_query::Alias::new("semantic_entries"))
+                .and_where(sea_orm::sea_query::Expr::cust(
+                    "workspace_id = $1 AND key = $2",
+                ))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
         )
         .bind(run.workspace_id)
         .bind(&key)
@@ -897,7 +1455,38 @@ pub(crate) async fn remember_in(
             },
         )
         .await?;
-        sqlx::query("INSERT INTO semantic_agent_memory(entry_id,workspace_id,agent_id,agent_version,home_node) VALUES($1,$2,$3,$4,'') ON CONFLICT(entry_id) DO NOTHING").bind(entry.id).bind(run.workspace_id).bind(&run.agent_id).bind(&run.agent_version).execute(&mut **lease.tx()).await?;
+        sqlx::query(
+            &sea_orm::sea_query::Query::insert()
+                .into_table(sea_orm::sea_query::Alias::new("semantic_agent_memory"))
+                .columns([
+                    sea_orm::sea_query::Alias::new("entry_id"),
+                    sea_orm::sea_query::Alias::new("workspace_id"),
+                    sea_orm::sea_query::Alias::new("agent_id"),
+                    sea_orm::sea_query::Alias::new("agent_version"),
+                    sea_orm::sea_query::Alias::new("home_node"),
+                ])
+                .values_panic([
+                    sea_orm::sea_query::Expr::cust("$1"),
+                    sea_orm::sea_query::Expr::cust("$2"),
+                    sea_orm::sea_query::Expr::cust("$3"),
+                    sea_orm::sea_query::Expr::cust("$4"),
+                    sea_orm::sea_query::Expr::cust("''"),
+                ])
+                .on_conflict(
+                    sea_orm::sea_query::OnConflict::columns([sea_orm::sea_query::Alias::new(
+                        "entry_id",
+                    )])
+                    .do_nothing()
+                    .to_owned(),
+                )
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(entry.id)
+        .bind(run.workspace_id)
+        .bind(&run.agent_id)
+        .bind(&run.agent_version)
+        .execute(&mut **lease.tx())
+        .await?;
     }
     store.remember_in(lease.tx(), run, data).await
 }

@@ -22,6 +22,7 @@ async fn setup() -> (Store, String, String) {
     let url = std::env::var("AIDASH_TEST_DATABASE_URL")
         .expect("set AIDASH_TEST_DATABASE_URL to a disposable PostgreSQL database");
     let schema = format!("aidash_{}", Uuid::new_v4().simple());
+    // SeaQuery has no CREATE/DROP SCHEMA builder; these DDL statements isolate fixtures.
     let mut admin = PgConnection::connect(&url).await.unwrap();
     admin
         .execute(format!("CREATE SCHEMA {schema}").as_str())
@@ -33,9 +34,16 @@ async fn setup() -> (Store, String, String) {
         .after_connect(move |conn, _| {
             let s = search.clone();
             Box::pin(async move {
-                sqlx::query(&format!("SET search_path TO {s}"))
-                    .execute(conn)
-                    .await?;
+                sqlx::query(
+                    &sea_orm::sea_query::Query::select()
+                        .expr(sea_orm::sea_query::Expr::cust(
+                            "set_config('search_path', $1, false)",
+                        ))
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                )
+                .bind(&s)
+                .execute(conn)
+                .await?;
                 Ok(())
             })
         })
@@ -54,6 +62,7 @@ async fn setup() -> (Store, String, String) {
 async fn cleanup(store: Store, url: &str, schema: &str) {
     store.control_pool.close().await;
     store.pool.close().await;
+    // SeaQuery has no CREATE/DROP SCHEMA builder; these DDL statements isolate fixtures.
     let mut admin = PgConnection::connect(url).await.unwrap();
     admin
         .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
@@ -81,7 +90,7 @@ fn new_task() -> NewTask {
 #[ignore = "requires disposable PostgreSQL; see scripts/check.sh"]
 async fn concurrent_claims_dependencies_and_idempotent_completion() {
     let (store, url, schema) = setup().await;
-    let registry = Registry::new(store.pool.clone());
+    let registry = Registry::new(store.pool.clone(), &store.node_id);
     let agent = seed(&registry).await;
     let w = store
         .create_workspace("Research", "Compare frameworks")
@@ -187,7 +196,7 @@ async fn concurrent_claims_dependencies_and_idempotent_completion() {
 #[ignore = "requires disposable PostgreSQL; see scripts/check.sh"]
 async fn lease_fencing_and_uncertain_effect_reconciliation() {
     let (store, url, schema) = setup().await;
-    let registry = Registry::new(store.pool.clone());
+    let registry = Registry::new(store.pool.clone(), &store.node_id);
     let agent = seed(&registry).await;
     let w = store
         .create_workspace("Journal", "Recover safely")
@@ -217,11 +226,20 @@ async fn lease_fencing_and_uncertain_effect_reconciliation() {
         .await
         .unwrap();
     assert_eq!(first.status, "STARTED");
-    sqlx::query("UPDATE runs SET lease_until=now()-interval '1 second' WHERE id=$1")
-        .bind(run.id)
-        .execute(&store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("lease_until"),
+                sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP - INTERVAL '1 SECOND'"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(run.id)
+    .execute(&store.pool)
+    .await
+    .unwrap();
     let new_token = Uuid::new_v4();
     let recovered = store.lease_run(new_token, 30).await.unwrap().unwrap();
     assert_eq!(recovered.pending["lease_recovered"], true);
@@ -293,7 +311,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation() {
 #[ignore = "requires disposable PostgreSQL; see scripts/check.sh"]
 async fn registry_installation_versions_and_authenticated_api() {
     let (store, url, schema) = setup().await;
-    let registry = Registry::new(store.pool.clone());
+    let registry = Registry::new(store.pool.clone(), &store.node_id);
     seed(&registry).await;
     let skill = entry(
         "skill",
@@ -409,7 +427,7 @@ async fn registry_installation_versions_and_authenticated_api() {
 #[ignore = "requires disposable PostgreSQL; see scripts/check.sh"]
 async fn human_requests_controls_and_cancellation_before_dependencies_finish() {
     let (store, url, schema) = setup().await;
-    let registry = Registry::new(store.pool.clone());
+    let registry = Registry::new(store.pool.clone(), &store.node_id);
     let agent = seed(&registry).await;
     let workspace = store
         .create_workspace("Controls", "Keep human decisions durable")
@@ -520,7 +538,7 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish() {
 fn federation_for(store: &Store) -> Federation {
     Federation {
         store: store.clone(),
-        registry: Registry::new(store.pool.clone()),
+        registry: Registry::new(store.pool.clone(), &store.node_id),
         config: Config {
             node_id: store.node_id.clone(),
             endpoint: "http://127.0.0.1:18080".into(),
@@ -560,12 +578,25 @@ async fn final_response(store: &Store, task: Uuid) {
         text: "Report using the available results".into(),
         ..Default::default()
     };
-    sqlx::query("UPDATE runs SET phase='TOOL_CALL',pending=$2 WHERE task_id=$1")
-        .bind(task)
-        .bind(json!({"response":response,"cursor":0}))
-        .execute(&store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("phase"),
+                sea_orm::sea_query::Expr::cust("'TOOL_CALL'"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("pending"),
+                sea_orm::sea_query::Expr::cust("$2"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(task)
+    .bind(json!({"response":response,"cursor":0}))
+    .execute(&store.pool)
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -591,11 +622,20 @@ async fn parent_can_finish_after_explicit_child_abandonment() {
             )
             .await
             .unwrap();
-        sqlx::query("UPDATE runs SET control='PAUSED' WHERE task_id=$1")
-            .bind(child.id)
-            .execute(&store.pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            &sea_orm::sea_query::Query::update()
+                .table(sea_orm::sea_query::Alias::new("runs"))
+                .value(
+                    sea_orm::sea_query::Alias::new("control"),
+                    sea_orm::sea_query::Expr::cust("'PAUSED'"),
+                )
+                .and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(child.id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
         children.push(child);
     }
     final_response(&store, parent.id).await;
@@ -603,11 +643,19 @@ async fn parent_can_finish_after_explicit_child_abandonment() {
         federation: f.clone(),
     };
     harness.worker_once().await.unwrap();
-    let run: Run = sqlx::query_as("SELECT * FROM runs WHERE task_id=$1")
-        .bind(parent.id)
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
+    let run: Run = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("runs"))
+            .and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(parent.id)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
     assert_eq!(run.phase, "WAITING");
     let request_id = run.pending["human_request_id"]
         .as_str()
@@ -705,15 +753,44 @@ async fn successful_tool_retry_resets_the_next_invocation_budget() {
             .collect(),
         ..Default::default()
     };
-    sqlx::query("UPDATE runs SET phase='TOOL_CALL',pending=$2,error='prior transient error' WHERE task_id=$1")
-        .bind(task.id).bind(json!({"response":response,"cursor":0,"retry_count":5})).execute(&store.pool).await.unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("phase"),
+                sea_orm::sea_query::Expr::cust("'TOOL_CALL'"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("pending"),
+                sea_orm::sea_query::Expr::cust("$2"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("error"),
+                sea_orm::sea_query::Expr::cust("'prior transient error'"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(task.id)
+    .bind(json!({"response":response,"cursor":0,"retry_count":5}))
+    .execute(&store.pool)
+    .await
+    .unwrap();
     let harness = aidash::harness::Harness { federation: f };
     harness.worker_once().await.unwrap();
-    let run: Run = sqlx::query_as("SELECT * FROM runs WHERE task_id=$1")
-        .bind(task.id)
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
+    let run: Run = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("runs"))
+            .and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(task.id)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
     assert_eq!(run.pending["cursor"], 1);
     assert!(run.pending.get("retry_count").is_none());
     assert!(run.error.is_none());
@@ -727,8 +804,30 @@ async fn successful_tool_retry_resets_the_next_invocation_budget() {
 }
 
 async fn add_test_peer(store: &Store, node: &str, endpoint: &str) {
-    sqlx::query("INSERT INTO peers(node_id,endpoint,credential_env,protocol_version,enabled) VALUES($1,$2,'AIDASH_SECRET_TEST_PEER','0.1',true)")
-        .bind(node).bind(endpoint).execute(&store.pool).await.unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("peers"))
+            .columns([
+                sea_orm::sea_query::Alias::new("node_id"),
+                sea_orm::sea_query::Alias::new("endpoint"),
+                sea_orm::sea_query::Alias::new("credential_env"),
+                sea_orm::sea_query::Alias::new("protocol_version"),
+                sea_orm::sea_query::Alias::new("enabled"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"),
+                sea_orm::sea_query::Expr::cust("'0.1'"),
+                sea_orm::sea_query::Expr::cust("TRUE"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(node)
+    .bind(endpoint)
+    .execute(&store.pool)
+    .await
+    .unwrap();
 }
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL and AIDASH_SECRET_TEST_PEER; see scripts/check.sh"]
@@ -780,12 +879,25 @@ async fn failed_home_transition_survives_outage_and_worker_restart() {
         .accept_run(&task, "aidash://home", &agent.id, &agent.version)
         .await
         .unwrap();
-    sqlx::query("UPDATE runs SET phase='THINKING',pending=$2 WHERE id=$1")
-        .bind(run.id)
-        .bind(json!({"retry_count":5}))
-        .execute(&store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("phase"),
+                sea_orm::sea_query::Expr::cust("'THINKING'"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("pending"),
+                sea_orm::sea_query::Expr::cust("$2"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(run.id)
+    .bind(json!({"retry_count":5}))
+    .execute(&store.pool)
+    .await
+    .unwrap();
     aidash::harness::Harness {
         federation: f.clone(),
     }
@@ -804,7 +916,7 @@ async fn failed_home_transition_survives_outage_and_worker_restart() {
     assert_eq!(store.run(run.id).await.unwrap().phase, "WAITING");
     assert_eq!(home_task.lock().unwrap().status, "RUNNING");
     online.store(true, std::sync::atomic::Ordering::SeqCst);
-    sqlx::query("UPDATE runs SET pending=jsonb_set(pending,'{wake_at}',to_jsonb(now()-interval '1 second')) WHERE id=$1").bind(run.id).execute(&store.pool).await.unwrap();
+    sqlx::query(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("runs")).value(sea_orm::sea_query::Alias::new("pending"), sea_orm::sea_query::Expr::cust("JSONB_SET(pending, '{wake_at}', TO_JSONB(CURRENT_TIMESTAMP - INTERVAL '1 SECOND'))")).and_where(sea_orm::sea_query::Expr::cust("id = $1")).to_string(sea_orm::sea_query::PostgresQueryBuilder)).bind(run.id).execute(&store.pool).await.unwrap();
     aidash::harness::Harness { federation: f }
         .worker_once()
         .await
@@ -831,8 +943,32 @@ async fn terminal_delegations_allow_reads_and_exact_completion_replay_only() {
         .unwrap();
     let peer = "aidash://peer";
     add_test_peer(&store, peer, "http://127.0.0.1:1").await;
-    sqlx::query("INSERT INTO delegations(task_id,node_id,agent_id,agent_version,delivered) VALUES($1,$2,$3,$4,true)")
-        .bind(task.id).bind(peer).bind(&agent.id).bind(&agent.version).execute(&store.pool).await.unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("delegations"))
+            .columns([
+                sea_orm::sea_query::Alias::new("task_id"),
+                sea_orm::sea_query::Alias::new("node_id"),
+                sea_orm::sea_query::Alias::new("agent_id"),
+                sea_orm::sea_query::Alias::new("agent_version"),
+                sea_orm::sea_query::Alias::new("delivered"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("$3"),
+                sea_orm::sea_query::Expr::cust("$4"),
+                sea_orm::sea_query::Expr::cust("TRUE"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(task.id)
+    .bind(peer)
+    .bind(&agent.id)
+    .bind(&agent.version)
+    .execute(&store.pool)
+    .await
+    .unwrap();
     let owner = qualified_agent(peer, &agent.id, &agent.version);
     let task = store
         .claim(task.id, task.revision, &owner, &agent)
@@ -915,11 +1051,20 @@ async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait() {
         .await
         .unwrap();
     let prerequisite = running_task(&store, &agent, workspace.id, None).await;
-    sqlx::query("UPDATE runs SET control='PAUSED' WHERE task_id=$1")
-        .bind(prerequisite.id)
-        .execute(&store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("control"),
+                sea_orm::sea_query::Expr::cust("'PAUSED'"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(prerequisite.id)
+    .execute(&store.pool)
+    .await
+    .unwrap();
     let mut input = new_task();
     input.dependencies = vec![prerequisite.id];
     let task = store
@@ -957,7 +1102,7 @@ async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait() {
     let unchanged = store.task(task.id).await.unwrap();
     assert_eq!(unchanged.revision, task.revision);
     assert!(unchanged.owner.is_none());
-    sqlx::query("UPDATE runs SET pending=jsonb_set(pending,'{wake_at}',to_jsonb(now()-interval '1 second')) WHERE id=$1").bind(run.id).execute(&store.pool).await.unwrap();
+    sqlx::query(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("runs")).value(sea_orm::sea_query::Alias::new("pending"), sea_orm::sea_query::Expr::cust("JSONB_SET(pending, '{wake_at}', TO_JSONB(CURRENT_TIMESTAMP - INTERVAL '1 SECOND'))")).and_where(sea_orm::sea_query::Expr::cust("id = $1")).to_string(sea_orm::sea_query::PostgresQueryBuilder)).bind(run.id).execute(&store.pool).await.unwrap();
     harness.worker_once().await.unwrap();
     harness.worker_once().await.unwrap();
     assert_eq!(store.task(task.id).await.unwrap().status, "RUNNING");
@@ -1048,21 +1193,42 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step() {
         }],
         ..Default::default()
     };
-    sqlx::query("UPDATE runs SET phase='TOOL_CALL',pending=$2 WHERE task_id=$1")
-        .bind(parent.id)
-        .bind(json!({"response":response,"cursor":0}))
-        .execute(&store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("phase"),
+                sea_orm::sea_query::Expr::cust("'TOOL_CALL'"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("pending"),
+                sea_orm::sea_query::Expr::cust("$2"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(parent.id)
+    .bind(json!({"response":response,"cursor":0}))
+    .execute(&store.pool)
+    .await
+    .unwrap();
     let harness = aidash::harness::Harness {
         federation: f.clone(),
     };
     harness.worker_once().await.unwrap();
-    let run: Run = sqlx::query_as("SELECT * FROM runs WHERE task_id=$1")
-        .bind(parent.id)
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
+    let run: Run = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("runs"))
+            .and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(parent.id)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
     assert_eq!(run.pending["cursor"], 1);
     assert!(
         run.context["history"][0]["result"]["error"]
@@ -1093,12 +1259,25 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step() {
         text: "A different final result after the child settled".into(),
         ..Default::default()
     };
-    sqlx::query("UPDATE runs SET phase='TOOL_CALL',pending=$2 WHERE id=$1")
-        .bind(run.id)
-        .bind(json!({"response":response,"cursor":0}))
-        .execute(&store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("phase"),
+                sea_orm::sea_query::Expr::cust("'TOOL_CALL'"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("pending"),
+                sea_orm::sea_query::Expr::cust("$2"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(run.id)
+    .bind(json!({"response":response,"cursor":0}))
+    .execute(&store.pool)
+    .await
+    .unwrap();
     harness.worker_once().await.unwrap();
     assert_eq!(store.task(parent.id).await.unwrap().status, "COMPLETED");
     cleanup(store, &url, &schema).await;
@@ -1112,7 +1291,16 @@ async fn peer_disable_and_retry_rotation_do_not_require_a_live_peer() {
     let agent = seed(&f.registry).await;
     add_test_peer(&store, "aidash://offline", "http://127.0.0.1:1").await;
     sqlx::query(
-        "UPDATE peers SET credential_env='AIDASH_SECRET_REMOVED' WHERE node_id='aidash://offline'",
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("peers"))
+            .value(
+                sea_orm::sea_query::Alias::new("credential_env"),
+                sea_orm::sea_query::Expr::cust("'AIDASH_SECRET_REMOVED'"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "node_id = 'aidash://offline'",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .execute(&store.pool)
     .await
@@ -1143,19 +1331,54 @@ async fn peer_disable_and_retry_rotation_do_not_require_a_live_peer() {
         } else {
             "aidash://offline"
         };
-        sqlx::query("INSERT INTO delegations(task_id,node_id,agent_id,agent_version,created_at,next_attempt_at) VALUES($1,$2,$3,$4,now()+make_interval(secs=>$5),now()-interval '1 second')")
-            .bind(task.id).bind(node).bind(&agent.id).bind(&agent.version).bind(index as f64).execute(&store.pool).await.unwrap();
+        sqlx::query(
+            &sea_orm::sea_query::Query::insert()
+                .into_table(sea_orm::sea_query::Alias::new("delegations"))
+                .columns([
+                    sea_orm::sea_query::Alias::new("task_id"),
+                    sea_orm::sea_query::Alias::new("node_id"),
+                    sea_orm::sea_query::Alias::new("agent_id"),
+                    sea_orm::sea_query::Alias::new("agent_version"),
+                    sea_orm::sea_query::Alias::new("created_at"),
+                    sea_orm::sea_query::Alias::new("next_attempt_at"),
+                ])
+                .values_panic([
+                    sea_orm::sea_query::Expr::cust("$1"),
+                    sea_orm::sea_query::Expr::cust("$2"),
+                    sea_orm::sea_query::Expr::cust("$3"),
+                    sea_orm::sea_query::Expr::cust("$4"),
+                    sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP + MAKE_INTERVAL(secs => $5)"),
+                    sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP - INTERVAL '1 SECOND'"),
+                ])
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(task.id)
+        .bind(node)
+        .bind(&agent.id)
+        .bind(&agent.version)
+        .bind(index as f64)
+        .execute(&store.pool)
+        .await
+        .unwrap();
         if index == 100 {
             healthy = Some(task.id);
         }
     }
     f.retry_deliveries().await.unwrap();
     f.retry_deliveries().await.unwrap();
-    let delivered: bool = sqlx::query_scalar("SELECT delivered FROM delegations WHERE task_id=$1")
-        .bind(healthy)
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
+    let delivered: bool = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("delivered")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("delegations"))
+            .and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(healthy)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
     assert!(delivered);
     cleanup(store, &url, &schema).await;
 }
@@ -1168,6 +1391,7 @@ async fn registry_event_and_conversation_creation_roll_back_as_units() {
     seed(&f.registry).await;
     let app = aidash::api::router(f);
     // Simulate an event insertion failure after the primary mutation.
+    // SeaQuery cannot add a CHECK constraint to an existing table.
     sqlx::query("ALTER TABLE events ADD CONSTRAINT reject_registration CHECK(kind <> 'registry.registered')").execute(&store.pool).await.unwrap();
     let response = app
         .clone()
@@ -1189,11 +1413,12 @@ async fn registry_event_and_conversation_creation_roll_back_as_units() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert!(
-        Registry::new(store.pool.clone())
+        Registry::new(store.pool.clone(), &store.node_id)
             .get("rollback", "1.0.0")
             .await
             .is_err()
     );
+    // SeaQuery cannot add a CHECK constraint to an existing table.
     sqlx::query("ALTER TABLE events ADD CONSTRAINT reject_conversation CHECK(kind <> 'conversation.created')").execute(&store.pool).await.unwrap();
     let response=app.oneshot(Request::post("/api/conversations").header("authorization","Bearer test-access-token").header("content-type","application/json").body(Body::from(json!({"title":"Atomic","goal":"Must roll back","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}).to_string())).unwrap()).await.unwrap();
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -1222,20 +1447,34 @@ async fn rejected_outbox_payload_does_not_block_later_events() {
         .unwrap();
     let healthy = store.emit(None, "small", json!({"ok":true})).await.unwrap();
     assert_eq!(bus.publish_once(&f).await.unwrap(), 1);
-    let row: (bool, Option<String>) =
-        sqlx::query_as("SELECT published_at IS NOT NULL,publish_error FROM events WHERE id=$1")
-            .bind(poison.id)
-            .fetch_one(&store.pool)
-            .await
-            .unwrap();
+    let row: (bool, Option<String>) = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("published_at IS NOT NULL"))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("publish_error")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("events"))
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(poison.id)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
     assert!(!row.0);
     assert!(row.1.is_some());
     assert!(
-        sqlx::query_scalar::<_, bool>("SELECT published_at IS NOT NULL FROM events WHERE id=$1")
-            .bind(healthy.id)
-            .fetch_one(&store.pool)
-            .await
-            .unwrap()
+        sqlx::query_scalar::<_, bool>(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::Expr::cust("published_at IS NOT NULL"))
+                .from(sea_orm::sea_query::Alias::new("events"))
+                .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder)
+        )
+        .bind(healthy.id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
     );
     bus.context.delete_stream(&bus.stream_name).await.unwrap();
     cleanup(store, &url, &schema).await;
@@ -1319,12 +1558,25 @@ async fn recovery_publishes_reconciliation_marker_with_the_request() {
         }],
         ..Default::default()
     };
-    sqlx::query("UPDATE runs SET phase='TOOL_CALL',pending=$2 WHERE task_id=$1")
-        .bind(task.id)
-        .bind(json!({"response":response,"cursor":0}))
-        .execute(&store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("phase"),
+                sea_orm::sea_query::Expr::cust("'TOOL_CALL'"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("pending"),
+                sea_orm::sea_query::Expr::cust("$2"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(task.id)
+    .bind(json!({"response":response,"cursor":0}))
+    .execute(&store.pool)
+    .await
+    .unwrap();
     let worker = Uuid::new_v4();
     let run = store.lease_run(worker, 30).await.unwrap().unwrap();
     let key = format!("{}:0:0", run.id);
@@ -1332,11 +1584,20 @@ async fn recovery_publishes_reconciliation_marker_with_the_request() {
         .invocation_start(&run, worker, &key, "plugin_0", &json!({}), false)
         .await
         .unwrap();
-    sqlx::query("UPDATE runs SET lease_until=now()-interval '1 second' WHERE id=$1")
-        .bind(run.id)
-        .execute(&store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("lease_until"),
+                sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP - INTERVAL '1 SECOND'"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(run.id)
+    .execute(&store.pool)
+    .await
+    .unwrap();
     aidash::harness::Harness { federation: f }
         .worker_once()
         .await
@@ -1391,11 +1652,19 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents() {
         .await
         .unwrap();
     let task = running_task(&store, &agent, workspace.id, None).await;
-    let run: Run = sqlx::query_as("SELECT * FROM runs WHERE task_id=$1")
-        .bind(task.id)
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
+    let run: Run = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("runs"))
+            .and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(task.id)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
     let config = ToolConfig::Agent {
         node_id: store.node_id.clone(),
         agent: aidash::registry::EntityRef {
@@ -1439,7 +1708,7 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents() {
 #[ignore = "requires disposable PostgreSQL"]
 async fn agent_memory_is_isolated_by_home_even_for_colliding_workspace_ids() {
     let (store, url, schema) = setup().await;
-    let agent = seed(&Registry::new(store.pool.clone())).await;
+    let agent = seed(&Registry::new(store.pool.clone(), &store.node_id)).await;
     let workspace = store
         .create_workspace("Memory", "Separate homes")
         .await
@@ -1499,17 +1768,35 @@ async fn terminal_dependencies_fail_dependents_instead_of_polling_forever() {
             .await
             .unwrap();
         let dependency = running_task(&store, &agent, workspace.id, None).await;
-        sqlx::query("UPDATE runs SET control='PAUSED' WHERE task_id=$1")
-            .bind(dependency.id)
-            .execute(&store.pool)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE tasks SET status=$2 WHERE id=$1")
-            .bind(dependency.id)
-            .bind(terminal)
-            .execute(&store.pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            &sea_orm::sea_query::Query::update()
+                .table(sea_orm::sea_query::Alias::new("runs"))
+                .value(
+                    sea_orm::sea_query::Alias::new("control"),
+                    sea_orm::sea_query::Expr::cust("'PAUSED'"),
+                )
+                .and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(dependency.id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            &sea_orm::sea_query::Query::update()
+                .table(sea_orm::sea_query::Alias::new("tasks"))
+                .value(
+                    sea_orm::sea_query::Alias::new("status"),
+                    sea_orm::sea_query::Expr::cust("$2"),
+                )
+                .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(dependency.id)
+        .bind(terminal)
+        .execute(&store.pool)
+        .await
+        .unwrap();
         let mut input = new_task();
         input.dependencies = vec![dependency.id];
         let task = store
@@ -1587,8 +1874,32 @@ async fn remote_workspace_snapshot_pages_large_accumulated_artifacts() {
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     add_test_peer(&home, &worker_store.node_id, "http://127.0.0.1:9").await;
     add_test_peer(&worker_store, &home.node_id, &endpoint).await;
-    sqlx::query("INSERT INTO delegations(task_id,node_id,agent_id,agent_version,delivered) VALUES($1,$2,$3,$4,true)")
-        .bind(task.id).bind(&worker_store.node_id).bind(&agent.id).bind(&agent.version).execute(&home.pool).await.unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("delegations"))
+            .columns([
+                sea_orm::sea_query::Alias::new("task_id"),
+                sea_orm::sea_query::Alias::new("node_id"),
+                sea_orm::sea_query::Alias::new("agent_id"),
+                sea_orm::sea_query::Alias::new("agent_version"),
+                sea_orm::sea_query::Alias::new("delivered"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("$3"),
+                sea_orm::sea_query::Expr::cust("$4"),
+                sea_orm::sea_query::Expr::cust("TRUE"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(task.id)
+    .bind(&worker_store.node_id)
+    .bind(&agent.id)
+    .bind(&agent.version)
+    .execute(&home.pool)
+    .await
+    .unwrap();
     let server = tokio::spawn(async move {
         axum::serve(listener, aidash::api::router(f)).await.unwrap();
     });

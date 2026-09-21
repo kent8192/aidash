@@ -69,7 +69,11 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
     );
     assert!(harness.worker_once().await.unwrap());
     let paused = f.store.run(run.id).await.unwrap();
-    assert_eq!(paused.control, "PAUSED");
+    assert_eq!(
+        paused.control, "PAUSED",
+        "phase={} error={:?} pending={}",
+        paused.phase, paused.error, paused.pending
+    );
     assert_eq!(
         paused.pending, run.pending,
         "revocation must not discard the durable tool cursor"
@@ -292,12 +296,21 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
         200
     );
     let run = f.store.runs().await.unwrap().remove(0);
-    sqlx::query("UPDATE runs SET context=$2 WHERE id=$1")
-        .bind(run.id)
-        .bind(json!({"private":"unreadable-run-journal"}))
-        .execute(&f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("context"),
+                sea_orm::sea_query::Expr::cust("$2"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(run.id)
+    .bind(json!({"private":"unreadable-run-journal"}))
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     for path in [
         format!("/api/tasks/{task_id}/claim"),
         format!("/api/tasks/{task_id}/delegate"),
@@ -314,12 +327,53 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
         )
         .await
         .unwrap();
-    let after: i64 = sqlx::query_scalar("SELECT max(sequence) FROM events")
-        .fetch_one(&f.store.pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO events(id,node_id,workspace_id,kind,data) SELECT gen_random_uuid(),$1,$2,'model.completed',$3 FROM generate_series(1,501)")
-        .bind(&f.config.node_id).bind(run.workspace_id).bind(json!({"run_id":run.id,"private":"unreadable-run-journal"})).execute(&f.store.pool).await.unwrap();
+    let after: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("MAX(sequence)"))
+            .from(sea_orm::sea_query::Alias::new("events"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("events"))
+            .columns([
+                sea_orm::sea_query::Alias::new("id"),
+                sea_orm::sea_query::Alias::new("node_id"),
+                sea_orm::sea_query::Alias::new("workspace_id"),
+                sea_orm::sea_query::Alias::new("kind"),
+                sea_orm::sea_query::Alias::new("data"),
+            ])
+            .select_from(
+                sea_orm::sea_query::Query::select()
+                    .expr(sea_orm::sea_query::Expr::cust("GEN_RANDOM_UUID()"))
+                    .expr(sea_orm::sea_query::Expr::cust("$1"))
+                    .expr(sea_orm::sea_query::Expr::cust("$2"))
+                    .expr(sea_orm::sea_query::Expr::cust("'model.completed'"))
+                    .expr(sea_orm::sea_query::Expr::cust("$3"))
+                    .from_function(
+                        sea_orm::sea_query::Func::cust(sea_orm::sea_query::Alias::new(
+                            "generate_series",
+                        ))
+                        .args([
+                            sea_orm::sea_query::Expr::val(1).into(),
+                            sea_orm::sea_query::Expr::val(501).into(),
+                        ]),
+                        sea_orm::sea_query::Alias::new("i"),
+                    )
+                    .to_owned(),
+            )
+            .expect("valid insert projection")
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(&f.config.node_id)
+    .bind(run.workspace_id)
+    .bind(json!({"run_id":run.id,"private":"unreadable-run-journal"}))
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     f.store
         .message(
             run.workspace_id,
@@ -445,7 +499,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
         .into_iter()
         .find(|r| r.task_id == second_id)
         .unwrap();
-    sqlx::query("UPDATE runs SET phase='TOOL_CALL',pending=$2 WHERE id=$1")
+    sqlx::query(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("runs")).value(sea_orm::sea_query::Alias::new("phase"), sea_orm::sea_query::Expr::cust("'TOOL_CALL'")).value(sea_orm::sea_query::Alias::new("pending"), sea_orm::sea_query::Expr::cust("$2")).and_where(sea_orm::sea_query::Expr::cust("id = $1")).to_string(sea_orm::sea_query::PostgresQueryBuilder))
         .bind(observer.id).bind(json!({"response":{"text":"","tool_calls":[{"id":"observe","name":"workspace_observe","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0}))
         .execute(&f.store.pool).await.unwrap();
     Harness {
@@ -454,11 +508,19 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
     .worker_once()
     .await
     .unwrap();
-    let result: Value = sqlx::query_scalar("SELECT result FROM invocations WHERE run_id=$1")
-        .bind(observer.id)
-        .fetch_one(&f.store.pool)
-        .await
-        .unwrap();
+    let result: Value = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("result")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("invocations"))
+            .and_where(sea_orm::sea_query::Expr::cust("run_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(observer.id)
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert!(
         !result.to_string().contains("unreadable-run-journal"),
         "worker observation must apply the same run visibility as API snapshots"
@@ -542,12 +604,25 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
     .await;
     let child_task = Uuid::parse_str(task["id"].as_str().unwrap()).unwrap();
     let response = json!({"text":"","tool_calls":[{"id":"delegate","name":"task_delegate","arguments":{"task_id":child_task,"node_id":f.config.node_id,"agent":{"id":"child","version":"1.0.0"}}}],"input_tokens":0,"output_tokens":0});
-    sqlx::query("UPDATE runs SET phase='TOOL_CALL',pending=$2 WHERE id=$1")
-        .bind(parent_run.id)
-        .bind(json!({"response":response,"cursor":0}))
-        .execute(&f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("phase"),
+                sea_orm::sea_query::Expr::cust("'TOOL_CALL'"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("pending"),
+                sea_orm::sea_query::Expr::cust("$2"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(parent_run.id)
+    .bind(json!({"response":response,"cursor":0}))
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     harness.worker_once().await.unwrap();
     let child_run = f
         .store
@@ -557,12 +632,19 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
         .into_iter()
         .find(|r| r.task_id == child_task)
         .expect("parent tool must admit a child run");
-    let chain: Vec<String> =
-        sqlx::query_scalar("SELECT subject_chain FROM authorization_execution WHERE run_id=$1")
-            .bind(child_run.id)
-            .fetch_one(&f.store.pool)
-            .await
-            .unwrap();
+    let chain: Vec<String> = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("subject_chain")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("authorization_execution"))
+            .and_where(sea_orm::sea_query::Expr::cust("run_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(child_run.id)
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(chain, vec!["alice".to_owned(), parent, child]);
     assert_eq!(
         request(
@@ -578,12 +660,25 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
     );
     harness.worker_once().await.unwrap();
     let response = json!({"text":"","tool_calls":[{"id":"effect","name":"plugin_0","arguments":{}}],"input_tokens":0,"output_tokens":0});
-    sqlx::query("UPDATE runs SET phase='TOOL_CALL',pending=$2 WHERE id=$1")
-        .bind(child_run.id)
-        .bind(json!({"response":response,"cursor":0}))
-        .execute(&f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("phase"),
+                sea_orm::sea_query::Expr::cust("'TOOL_CALL'"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("pending"),
+                sea_orm::sea_query::Expr::cust("$2"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(child_run.id)
+    .bind(json!({"response":response,"cursor":0}))
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     Harness {
         federation: f.clone(),
     }
@@ -595,11 +690,17 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
         "PAUSED",
         "parent deny must intersect the child grant after restart"
     );
-    let invocations: i64 = sqlx::query_scalar("SELECT count(*) FROM invocations WHERE run_id=$1")
-        .bind(child_run.id)
-        .fetch_one(&f.store.pool)
-        .await
-        .unwrap();
+    let invocations: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new("invocations"))
+            .and_where(sea_orm::sea_query::Expr::cust("run_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(child_run.id)
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(
         invocations, 0,
         "authorization must precede durable invocation admission"
@@ -645,12 +746,19 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
         .0,
         200
     );
-    let credential: Uuid =
-        sqlx::query_scalar("SELECT credential_id FROM authorization_execution WHERE run_id=$1")
-            .bind(child_run.id)
-            .fetch_one(&f.store.pool)
-            .await
-            .unwrap();
+    let credential: Uuid = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("credential_id")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("authorization_execution"))
+            .and_where(sea_orm::sea_query::Expr::cust("run_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(child_run.id)
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(
         credential.to_string(),
         fresh["credential"]["id"].as_str().unwrap()
@@ -734,17 +842,30 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
     harness.worker_once().await.unwrap();
     let run = f.store.runs().await.unwrap().remove(0);
     let response = json!({"text":"","tool_calls":[{"id":"effect","name":"plugin_0","arguments":{}}],"input_tokens":0,"output_tokens":0});
-    sqlx::query("UPDATE runs SET phase='TOOL_CALL',pending=$2 WHERE id=$1")
-        .bind(run.id)
-        .bind(json!({"response":response,"cursor":0}))
-        .execute(&f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("phase"),
+                sea_orm::sea_query::Expr::cust("'TOOL_CALL'"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("pending"),
+                sea_orm::sea_query::Expr::cust("$2"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(run.id)
+    .bind(json!({"response":response,"cursor":0}))
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     let worker = tokio::spawn(async move { harness.worker_once().await });
     tokio::time::timeout(Duration::from_secs(5), entered.notified())
         .await
         .unwrap();
-    let audited:i64=sqlx::query_scalar("SELECT count(*) FROM authorization_decisions WHERE action='tool.invoke' AND resource_id='http' AND decision->>'allowed'='true'")
+    let audited:i64=sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("COUNT(*)")).from(sea_orm::sea_query::Alias::new("authorization_decisions")).and_where(sea_orm::sea_query::Expr::cust("action = 'tool.invoke' AND resource_id = 'http' AND decision ->> 'allowed' = 'true'")).to_string(sea_orm::sea_query::PostgresQueryBuilder))
         .fetch_one(&f.store.pool).await.unwrap();
     assert_eq!(
         audited, 2,
@@ -789,7 +910,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
     });
     tokio::time::timeout(Duration::from_secs(5),async {
         loop {
-            let waiting:i64=sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE application_name=$1 AND wait_event_type='Lock' AND (replace(query,chr(34),'') LIKE 'UPDATE authorization_bundles%' OR replace(query,chr(34),'') LIKE 'UPDATE authorization_credentials%')")
+            let waiting:i64=sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("COUNT(*)")).from(sea_orm::sea_query::Alias::new("pg_stat_activity")).and_where(sea_orm::sea_query::Expr::cust("application_name = $1 AND wait_event_type = 'Lock' AND (REPLACE(query, CHR(34), '') LIKE 'UPDATE authorization_bundles%' OR REPLACE(query, CHR(34), '') LIKE 'UPDATE authorization_credentials%')")).to_string(sea_orm::sea_query::PostgresQueryBuilder))
                 .bind(&schema).fetch_one(&worker_federation.store.pool).await.unwrap();
             if waiting==12 {break;}
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -813,11 +934,19 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
     }
     assert_eq!(replaced, 1);
     assert_eq!(revoke.await.unwrap().0, 200);
-    let invocation: String = sqlx::query_scalar("SELECT status FROM invocations WHERE run_id=$1")
-        .bind(run.id)
-        .fetch_one(&f.store.pool)
-        .await
-        .unwrap();
+    let invocation: String = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("status")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("invocations"))
+            .and_where(sea_orm::sea_query::Expr::cust("run_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(run.id)
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(invocation, "COMPLETED");
     Harness {
         federation: worker_federation.clone(),
@@ -826,7 +955,11 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
     .await
     .unwrap();
     let paused = f.store.run(run.id).await.unwrap();
-    assert_eq!(paused.control, "PAUSED");
+    assert_eq!(
+        paused.control, "PAUSED",
+        "phase={} error={:?} pending={}",
+        paused.phase, paused.error, paused.pending
+    );
     assert_eq!(paused.pending["cursor"], 1);
     server.abort();
     let _ = server.await;
@@ -867,10 +1000,15 @@ async fn scoped_delegation_requires_permission_before_atomic_admission() {
     );
     assert_eq!(f.store.task(task).await.unwrap().status, "OPEN");
     assert!(f.store.runs().await.unwrap().is_empty());
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM delegations")
-        .fetch_one(&f.store.pool)
-        .await
-        .unwrap();
+    let count: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new("delegations"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(count, 0);
     assert_eq!(
         request(
@@ -908,8 +1046,39 @@ async fn scoped_collections_fill_after_denied_runs_and_stream_cursor_skips_denie
     );
     let visible = f.store.runs().await.unwrap().remove(0);
     let denied: Vec<Uuid> = (0..501).map(|_| Uuid::new_v4()).collect();
-    sqlx::query("INSERT INTO runs(id,task_id,workspace_id,home_node,agent_id,agent_version,updated_at) SELECT id,gen_random_uuid(),$2,$3,'research','1.0.0',clock_timestamp()+interval '1 second' FROM unnest($1::uuid[]) id")
-        .bind(&denied).bind(visible.workspace_id).bind(&f.config.node_id).execute(&f.store.pool).await.unwrap();
+    {
+        use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+        let mut insert = Query::insert();
+        insert.into_table(Alias::new("runs")).columns(
+            [
+                "id",
+                "task_id",
+                "workspace_id",
+                "home_node",
+                "agent_id",
+                "agent_version",
+                "updated_at",
+            ]
+            .map(Alias::new),
+        );
+        for id in &denied {
+            insert.values_panic([
+                Expr::cust(format!("'{id}'::uuid")),
+                Expr::cust("gen_random_uuid()"),
+                Expr::cust("$1"),
+                Expr::cust("$2"),
+                Expr::val("research").into(),
+                Expr::val("1.0.0").into(),
+                Expr::cust("clock_timestamp()+interval '1 second'"),
+            ]);
+        }
+        sqlx::query(&insert.to_string(PostgresQueryBuilder))
+            .bind(visible.workspace_id)
+            .bind(&f.config.node_id)
+            .execute(&f.store.pool)
+            .await
+            .unwrap();
+    }
     policy["policies"].as_array_mut().unwrap().push(json!({"id":"hidden-runs","effect":"deny","subjects":{"any":true},"actions":["run.read"],"resources":{"kinds":["run"],"ids":denied}}));
     assert_eq!(
         request(
@@ -927,10 +1096,15 @@ async fn scoped_collections_fill_after_denied_runs_and_stream_cursor_skips_denie
     assert_eq!(status, 200, "{state}");
     assert_eq!(state["runs"].as_array().unwrap().len(), 1);
     assert_eq!(state["runs"][0]["id"], visible.id.to_string());
-    let before: i64 = sqlx::query_scalar("SELECT coalesce(max(sequence),0) FROM events")
-        .fetch_one(&f.store.pool)
-        .await
-        .unwrap();
+    let before: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COALESCE(MAX(sequence), 0)"))
+            .from(sea_orm::sea_query::Alias::new("events"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     let last = f
         .store
         .emit(
@@ -993,12 +1167,25 @@ async fn malformed_scoped_delegation_arguments_remain_model_correctable() {
         }],
         ..Default::default()
     };
-    sqlx::query("UPDATE runs SET phase='TOOL_CALL',pending=$2 WHERE id=$1")
-        .bind(run.id)
-        .bind(json!({"response":response,"cursor":0}))
-        .execute(&f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("phase"),
+                sea_orm::sea_query::Expr::cust("'TOOL_CALL'"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("pending"),
+                sea_orm::sea_query::Expr::cust("$2"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(run.id)
+    .bind(json!({"response":response,"cursor":0}))
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     harness.worker_once().await.unwrap();
     let run = f.store.run(run.id).await.unwrap();
     assert_eq!(run.phase, "TOOL_CALL");
@@ -1031,7 +1218,29 @@ async fn decision_cursor_follows_transaction_commit_order() {
     );
     tx.commit().await.unwrap();
     second.await.unwrap().unwrap();
-    let rows:Vec<(i64,String)>=sqlx::query_as("SELECT sequence,resource_id FROM authorization_decisions WHERE resource_id='cursor-test' ORDER BY sequence").fetch_all(&f.store.pool).await.unwrap();
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("sequence")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("resource_id")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("authorization_decisions"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "resource_id = 'cursor-test'",
+            ))
+            .order_by_expr(
+                sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                    sea_orm::sea_query::Alias::new("sequence"),
+                )),
+                sea_orm::sea_query::Order::Asc,
+            )
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_all(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(rows.len(), 2);
     assert!(rows[0].0 < rows[1].0);
     cleanup(f, &url, &schema).await;

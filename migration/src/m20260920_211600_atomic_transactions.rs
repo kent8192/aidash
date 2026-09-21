@@ -1,3 +1,5 @@
+// SeaQuery 0.32 cannot express PostgreSQL trigger functions, triggers, or ALTER CHECK constraints.
+// Those DDL operations intentionally use SeaORM execution; ordinary queries use builders.
 use sea_orm_migration::prelude::*;
 #[derive(DeriveMigrationName)]
 pub struct Migration;
@@ -111,8 +113,13 @@ impl MigrationTrait for Migration {
             )
             .await?;
         manager
-            .get_connection()
-            .execute_unprepared("INSERT INTO atomic_gate(singleton) VALUES(true)")
+            .exec_stmt(
+                Query::insert()
+                    .into_table(Alias::new("atomic_gate"))
+                    .columns([Alias::new("singleton")])
+                    .values_panic([Expr::val(true).into()])
+                    .to_owned(),
+            )
             .await?;
         manager
             .create_table(
@@ -184,7 +191,7 @@ DO $$
 DECLARE relation text;
 BEGIN
     FOR relation IN SELECT tablename FROM pg_tables WHERE schemaname=current_schema()
-        AND tablename NOT LIKE 'atomic_%' AND tablename NOT IN ('_sqlx_migrations','seaql_migrations')
+        AND tablename NOT LIKE 'atomic_%' AND tablename <> 'seaql_migrations'
     LOOP
         EXECUTE format('CREATE TRIGGER atomic_write_guard BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON %I FOR EACH STATEMENT EXECUTE FUNCTION atomic_write_guard()',relation);
     END LOOP;

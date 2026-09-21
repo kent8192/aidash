@@ -18,15 +18,16 @@ pub(super) async fn apply(
     for mutation in &manifest.local(&store.node_id)?.mutations {
         match mutation {
             Mutation::RegistryRegister { entry } => {
-                crate::registry::register_in(tx, entry).await?;
-                store
-                    .event(
-                        tx,
-                        None,
-                        "registry.registered",
-                        json!({"id":entry.id,"version":entry.version}),
-                    )
-                    .await?;
+                if crate::registry::register_in(tx, entry, &store.node_id).await? {
+                    store
+                        .event(
+                            tx,
+                            None,
+                            "registry.registered",
+                            json!({"id":entry.id,"version":entry.version}),
+                        )
+                        .await?;
+                }
             }
             Mutation::WorkspaceState {
                 workspace_id,
@@ -42,11 +43,20 @@ pub(super) async fn apply(
                 expected_revision,
                 artifact,
             } => {
-                let task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id=$1 FOR UPDATE")
-                    .bind(task_id)
-                    .fetch_optional(&mut **tx)
-                    .await?
-                    .ok_or_else(|| Error::Conflict("task unavailable".into()))?;
+                let task: Task = sqlx::query_as(
+                    &sea_orm::sea_query::Query::select()
+                        .expr(sea_orm::sea_query::SimpleExpr::from(
+                            sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                        ))
+                        .from(sea_orm::sea_query::Alias::new("tasks"))
+                        .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                        .lock(sea_orm::sea_query::LockType::Update)
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                )
+                .bind(task_id)
+                .fetch_optional(&mut **tx)
+                .await?
+                .ok_or_else(|| Error::Conflict("task unavailable".into()))?;
                 if task.revision != *expected_revision
                     || task.status != "RUNNING"
                     || task.owner.is_none()
@@ -55,15 +65,24 @@ pub(super) async fn apply(
                         "task must be running at its expected revision".into(),
                     ));
                 }
-                let children:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tasks WHERE parent_id=$1 AND status NOT IN ('COMPLETED','ABANDONED'))").bind(task_id).fetch_one(&mut **tx).await?;
+                let children:bool=sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("EXISTS(SELECT 1 FROM tasks WHERE parent_id = $1 AND NOT status IN ('COMPLETED', 'ABANDONED'))")).to_string(sea_orm::sea_query::PostgresQueryBuilder)).bind(task_id).fetch_one(&mut **tx).await?;
                 if children {
                     return Err(Error::Conflict("task still has unfinished children".into()));
                 }
-                let delegated: Option<String> =
-                    sqlx::query_scalar("SELECT node_id FROM delegations WHERE task_id=$1")
-                        .bind(task_id)
-                        .fetch_optional(&mut **tx)
-                        .await?;
+                let delegated: Option<String> = sqlx::query_scalar(
+                    &sea_orm::sea_query::Query::select()
+                        .expr(sea_orm::sea_query::SimpleExpr::from(
+                            sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new(
+                                "node_id",
+                            )),
+                        ))
+                        .from(sea_orm::sea_query::Alias::new("delegations"))
+                        .and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                )
+                .bind(task_id)
+                .fetch_optional(&mut **tx)
+                .await?;
                 if let Some(node) = delegated {
                     let paired = manifest
                         .local(&node)?
@@ -75,11 +94,73 @@ pub(super) async fn apply(
                     }
                 }
                 let key = format!("atomic:{}:task:{}", manifest.id, task.id);
-                let created:Artifact=sqlx::query_as("INSERT INTO artifacts(id,workspace_id,task_id,kind,name,content,created_by,idempotency_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *")
-                    .bind(Uuid::new_v4()).bind(task.workspace_id).bind(task.id).bind(&artifact.kind).bind(&artifact.name).bind(&artifact.content).bind(&task.owner).bind(&key).fetch_one(&mut **tx).await?;
-                let saved:Task=sqlx::query_as("UPDATE tasks SET status='COMPLETED',completion_key=$2,revision=revision+1 WHERE id=$1 RETURNING *").bind(task.id).bind(key).fetch_one(&mut **tx).await?;
+                let created: Artifact = sqlx::query_as(
+                    &sea_orm::sea_query::Query::insert()
+                        .into_table(sea_orm::sea_query::Alias::new("artifacts"))
+                        .columns([
+                            sea_orm::sea_query::Alias::new("id"),
+                            sea_orm::sea_query::Alias::new("workspace_id"),
+                            sea_orm::sea_query::Alias::new("task_id"),
+                            sea_orm::sea_query::Alias::new("kind"),
+                            sea_orm::sea_query::Alias::new("name"),
+                            sea_orm::sea_query::Alias::new("content"),
+                            sea_orm::sea_query::Alias::new("created_by"),
+                            sea_orm::sea_query::Alias::new("idempotency_key"),
+                        ])
+                        .values_panic([
+                            sea_orm::sea_query::Expr::cust("$1"),
+                            sea_orm::sea_query::Expr::cust("$2"),
+                            sea_orm::sea_query::Expr::cust("$3"),
+                            sea_orm::sea_query::Expr::cust("$4"),
+                            sea_orm::sea_query::Expr::cust("$5"),
+                            sea_orm::sea_query::Expr::cust("$6"),
+                            sea_orm::sea_query::Expr::cust("$7"),
+                            sea_orm::sea_query::Expr::cust("$8"),
+                        ])
+                        .returning_all()
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                )
+                .bind(Uuid::new_v4())
+                .bind(task.workspace_id)
+                .bind(task.id)
+                .bind(&artifact.kind)
+                .bind(&artifact.name)
+                .bind(&artifact.content)
+                .bind(&task.owner)
+                .bind(&key)
+                .fetch_one(&mut **tx)
+                .await?;
+                let saved: Task = sqlx::query_as(
+                    &sea_orm::sea_query::Query::update()
+                        .table(sea_orm::sea_query::Alias::new("tasks"))
+                        .value(
+                            sea_orm::sea_query::Alias::new("status"),
+                            sea_orm::sea_query::Expr::cust("'COMPLETED'"),
+                        )
+                        .value(
+                            sea_orm::sea_query::Alias::new("completion_key"),
+                            sea_orm::sea_query::Expr::cust("$2"),
+                        )
+                        .value(
+                            sea_orm::sea_query::Alias::new("revision"),
+                            sea_orm::sea_query::Expr::cust("revision + 1"),
+                        )
+                        .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                        .returning_all()
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                )
+                .bind(task.id)
+                .bind(key)
+                .fetch_one(&mut **tx)
+                .await?;
                 let source: Option<Uuid> = sqlx::query_scalar(
-                    "SELECT run_id FROM authorization_execution WHERE task_id=$1",
+                    &sea_orm::sea_query::Query::select()
+                        .expr(sea_orm::sea_query::SimpleExpr::from(
+                            sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("run_id")),
+                        ))
+                        .from(sea_orm::sea_query::Alias::new("authorization_execution"))
+                        .and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
                 )
                 .bind(task.id)
                 .fetch_optional(&mut **tx)
@@ -101,12 +182,35 @@ pub(super) async fn apply(
                 task_id,
                 expected_revision,
             } => {
-                let run: Run = sqlx::query_as("SELECT * FROM runs WHERE id=$1 FOR UPDATE")
-                    .bind(run_id)
-                    .fetch_optional(&mut **tx)
-                    .await?
-                    .ok_or_else(|| Error::Conflict("run unavailable".into()))?;
-                let leased:bool=sqlx::query_scalar("SELECT lease_until>clock_timestamp() FROM runs WHERE id=$1 AND lease_until IS NOT NULL").bind(run_id).fetch_optional(&mut **tx).await?.unwrap_or(false);
+                let run: Run = sqlx::query_as(
+                    &sea_orm::sea_query::Query::select()
+                        .expr(sea_orm::sea_query::SimpleExpr::from(
+                            sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                        ))
+                        .from(sea_orm::sea_query::Alias::new("runs"))
+                        .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                        .lock(sea_orm::sea_query::LockType::Update)
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                )
+                .bind(run_id)
+                .fetch_optional(&mut **tx)
+                .await?
+                .ok_or_else(|| Error::Conflict("run unavailable".into()))?;
+                let leased: bool = sqlx::query_scalar(
+                    &sea_orm::sea_query::Query::select()
+                        .expr(sea_orm::sea_query::Expr::cust(
+                            "lease_until > CLOCK_TIMESTAMP()",
+                        ))
+                        .from(sea_orm::sea_query::Alias::new("runs"))
+                        .and_where(sea_orm::sea_query::Expr::cust(
+                            "id = $1 AND lease_until IS NOT NULL",
+                        ))
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                )
+                .bind(run_id)
+                .fetch_optional(&mut **tx)
+                .await?
+                .unwrap_or(false);
                 if run.task_id != *task_id
                     || run.revision != *expected_revision
                     || run.phase != "TOOL_CALL"
@@ -133,7 +237,43 @@ pub(super) async fn apply(
                         "execution finalization requires the home task's atomic completion".into(),
                     ));
                 }
-                sqlx::query("UPDATE runs SET phase='COMPLETED',pending='{}'::jsonb,error=NULL,revision=revision+1,lease_owner=NULL,lease_until=NULL,updated_at=now() WHERE id=$1").bind(run_id).execute(&mut **tx).await?;
+                sqlx::query(
+                    &sea_orm::sea_query::Query::update()
+                        .table(sea_orm::sea_query::Alias::new("runs"))
+                        .value(
+                            sea_orm::sea_query::Alias::new("phase"),
+                            sea_orm::sea_query::Expr::cust("'COMPLETED'"),
+                        )
+                        .value(
+                            sea_orm::sea_query::Alias::new("pending"),
+                            sea_orm::sea_query::Expr::cust("CAST('{}' AS JSONB)"),
+                        )
+                        .value(
+                            sea_orm::sea_query::Alias::new("error"),
+                            sea_orm::sea_query::Expr::cust("NULL"),
+                        )
+                        .value(
+                            sea_orm::sea_query::Alias::new("revision"),
+                            sea_orm::sea_query::Expr::cust("revision + 1"),
+                        )
+                        .value(
+                            sea_orm::sea_query::Alias::new("lease_owner"),
+                            sea_orm::sea_query::Expr::cust("NULL"),
+                        )
+                        .value(
+                            sea_orm::sea_query::Alias::new("lease_until"),
+                            sea_orm::sea_query::Expr::cust("NULL"),
+                        )
+                        .value(
+                            sea_orm::sea_query::Alias::new("updated_at"),
+                            sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP"),
+                        )
+                        .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                )
+                .bind(run_id)
+                .execute(&mut **tx)
+                .await?;
                 store.event(tx,(run.home_node==store.node_id).then_some(run.workspace_id),"run.completed",json!({"run_id":run.id,"task_id":run.task_id,"workspace_id":run.workspace_id,"agent_id":run.agent_id,"phase":"COMPLETED","step":run.step,"error":null,"context_usage":run.context.get("usage")})).await?;
             }
         }

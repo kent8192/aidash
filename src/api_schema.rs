@@ -80,3 +80,16 @@ pub struct MeshResponse {
 pub struct SentResponse {
     pub sent: bool,
 }
+
+#[derive(Default, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct PageQuery {
+    #[serde(default)]
+    pub offset: u64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct TaskPage {
+    pub tasks: Vec<Task>,
+    pub next_offset: Option<u64>,
+}

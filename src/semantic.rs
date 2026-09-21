@@ -44,9 +44,15 @@ pub struct IndexSpec {
 }
 impl EmbeddingConfig {
     pub fn validate(&self) -> Result<()> {
+        self.validate_in(true)
+    }
+    pub(crate) fn validate_in(&self, local: bool) -> Result<()> {
         crate::config::validate_endpoint(&self.endpoint)?;
         if let Some(name) = &self.credential_env {
-            crate::config::secret(name)?;
+            crate::config::validate_secret_reference(name)?;
+            if local {
+                crate::config::secret(name)?;
+            }
         }
         if self.provider != "openai"
             || self.model.trim().is_empty()

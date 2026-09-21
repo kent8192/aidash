@@ -38,7 +38,12 @@ async fn ready(State(state): State<Probe>) -> StatusCode {
     }
     match tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        sqlx::query("SELECT 1").execute(&state.store.control_pool),
+        sqlx::query(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::Expr::cust("1"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .execute(&state.store.control_pool),
     )
     .await
     {

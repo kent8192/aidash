@@ -157,12 +157,19 @@ async fn approval_activation_and_stop_are_atomic_and_audited() {
     .await;
     assert_eq!(status, 200);
     assert_eq!(replayed["status"], "ACTIVE");
-    let grant: Vec<String> =
-        sqlx::query_scalar("SELECT subject_chain FROM authorization_execution WHERE run_id=$1")
-            .bind(runs[0].id)
-            .fetch_one(&f.store.pool)
-            .await
-            .unwrap();
+    let grant: Vec<String> = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("subject_chain")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("authorization_execution"))
+            .and_where(sea_orm::sea_query::Expr::cust("run_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(runs[0].id)
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(grant.len(), 2);
     assert_eq!(grant[0], "alice");
     let (status, stopped) = request(
@@ -511,19 +518,33 @@ async fn agent_created_tasks_keep_generation_depth_when_requested_by_root() {
     for _ in 0..3 {
         worker.worker_once().await.unwrap();
     }
-    let children: Vec<aidash::domain::Task> =
-        sqlx::query_as("SELECT * FROM tasks WHERE parent_id=$1")
-            .bind(task.parse::<uuid::Uuid>().unwrap())
-            .fetch_all(&f.store.pool)
-            .await
-            .unwrap();
+    let children: Vec<aidash::domain::Task> = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("tasks"))
+            .and_where(sea_orm::sea_query::Expr::cust("parent_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(task.parse::<uuid::Uuid>().unwrap())
+    .fetch_all(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(children.len(), 1);
-    let origin: Vec<String> =
-        sqlx::query_scalar("SELECT subject_chain FROM authorization_task_origins WHERE task_id=$1")
-            .bind(children[0].id)
-            .fetch_one(&f.store.pool)
-            .await
-            .unwrap();
+    let origin: Vec<String> = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("subject_chain")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("authorization_task_origins"))
+            .and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(children[0].id)
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(origin.len(), 2);
     let (status, body) = request(
         &app,
@@ -577,10 +598,19 @@ async fn revoked_requester_cannot_activate_and_failed_admission_leaves_no_agent(
         json!({"policy_id":"research","reason":"request before revocation"}),
     )
     .await;
-    sqlx::query("UPDATE authorization_credentials SET revoked_at=now() WHERE subject='alice'")
-        .execute(&f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("authorization_credentials"))
+            .value(
+                sea_orm::sea_query::Alias::new("revoked_at"),
+                sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("subject = 'alice'"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     aidash::generation::provision::reconcile(&f).await.unwrap();
     let (_, jobs) = request(
         &app,
@@ -958,10 +988,18 @@ async fn expiration_cancels_generated_run_before_any_provider_call() {
         200
     );
     aidash::generation::provision::reconcile(&f).await.unwrap();
-    sqlx::query("UPDATE generation_requests SET expires_at=clock_timestamp()-interval '1 second'")
-        .execute(&f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("generation_requests"))
+            .value(
+                sea_orm::sea_query::Alias::new("expires_at"),
+                sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP() - INTERVAL '1 SECOND'"),
+            )
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     let worker = aidash::harness::Harness {
         federation: f.clone(),
     };
@@ -1045,10 +1083,17 @@ async fn stop_waits_for_inflight_inference_and_blocks_the_following_boundary() {
     tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
         .await
         .unwrap();
-    let used: i64 = sqlx::query_scalar("SELECT used_tokens FROM generation_budgets")
-        .fetch_one(&f.store.pool)
-        .await
-        .unwrap();
+    let used: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("used_tokens")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("generation_budgets"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(used, 132096, "reserve must commit before provider I/O");
     let stop_app = app.clone();
     let stop_token = token.clone();
@@ -1288,10 +1333,15 @@ async fn count_concurrency_and_total_token_limits_are_independent() {
             409,
             "{limit} must independently reject admission"
         );
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM generation_requests")
-            .fetch_one(&f.store.pool)
-            .await
-            .unwrap();
+        let count: i64 = sqlx::query_scalar(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+                .from(sea_orm::sea_query::Alias::new("generation_requests"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .fetch_one(&f.store.pool)
+        .await
+        .unwrap();
         assert_eq!(
             count, 1,
             "rejected request must leave no partial definition"
@@ -1466,8 +1516,102 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
     let job = &assignment["generation"];
     let job_id: uuid::Uuid = job["id"].as_str().unwrap().parse().unwrap();
     // More than a page of newer denied requests must not hide the older visible one.
-    sqlx::query("WITH extra AS (INSERT INTO tasks(id,workspace_id,title,description,requirements,created_by,creation_key) SELECT gen_random_uuid(),workspace_id,'Hidden','Fixture','{}','fixture','hidden-'||n FROM tasks CROSS JOIN generate_series(1,201) n WHERE id=$1 RETURNING id) INSERT INTO generation_requests(id,tenant,policy_id,policy_revision,task_id,workspace_id,credential_id,root_subject,subject_chain,agent_id,agent_version,definition,status,reason,depth,token_limit,expires_at) SELECT gen_random_uuid(),r.tenant,r.policy_id,r.policy_revision,e.id,r.workspace_id,r.credential_id,'hidden',r.subject_chain,'hidden-'||e.id,r.agent_version,r.definition,r.status,r.reason,r.depth,r.token_limit,r.expires_at FROM generation_requests r CROSS JOIN extra e WHERE r.id=$2")
-        .bind(task.parse::<uuid::Uuid>().unwrap()).bind(job_id).execute(&f.store.pool).await.unwrap();
+    {
+        use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+        for n in 1..=201 {
+            let child = uuid::Uuid::new_v4();
+            let source = Query::select()
+                .expr(Expr::cust("$2"))
+                .column(Alias::new("workspace_id"))
+                .expr(Expr::val("Hidden"))
+                .expr(Expr::val("Fixture"))
+                .expr(Expr::cust("'{}'::jsonb"))
+                .expr(Expr::val("fixture"))
+                .expr(Expr::val(format!("hidden-{n}")))
+                .from(Alias::new("tasks"))
+                .and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                .to_owned();
+            sqlx::query(
+                &Query::insert()
+                    .into_table(Alias::new("tasks"))
+                    .columns(
+                        [
+                            "id",
+                            "workspace_id",
+                            "title",
+                            "description",
+                            "requirements",
+                            "created_by",
+                            "creation_key",
+                        ]
+                        .map(Alias::new),
+                    )
+                    .select_from(source)
+                    .unwrap()
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(task.parse::<uuid::Uuid>().unwrap())
+            .bind(child)
+            .execute(&f.store.pool)
+            .await
+            .unwrap();
+            let fields = [
+                "id",
+                "tenant",
+                "policy_id",
+                "policy_revision",
+                "task_id",
+                "workspace_id",
+                "credential_id",
+                "root_subject",
+                "subject_chain",
+                "agent_id",
+                "agent_version",
+                "definition",
+                "status",
+                "reason",
+                "depth",
+                "token_limit",
+                "expires_at",
+            ];
+            let mut source = Query::select();
+            for field in fields {
+                match field {
+                    "id" => {
+                        source.expr(Expr::cust("gen_random_uuid()"));
+                    }
+                    "task_id" => {
+                        source.expr(Expr::cust("$2"));
+                    }
+                    "root_subject" => {
+                        source.expr(Expr::val("hidden"));
+                    }
+                    "agent_id" => {
+                        source.expr(Expr::val(format!("hidden-{child}")));
+                    }
+                    _ => {
+                        source.column(Alias::new(field));
+                    }
+                }
+            }
+            source
+                .from(Alias::new("generation_requests"))
+                .and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")));
+            sqlx::query(
+                &Query::insert()
+                    .into_table(Alias::new("generation_requests"))
+                    .columns(fields.map(Alias::new))
+                    .select_from(source)
+                    .unwrap()
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(job_id)
+            .bind(child)
+            .execute(&f.store.pool)
+            .await
+            .unwrap();
+        }
+    }
     assert_eq!(
         request(
             &app,
@@ -1481,11 +1625,20 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
         200
     );
     let run = f.store.runs().await.unwrap().remove(0);
-    sqlx::query("UPDATE authorization_workspaces SET owner_subject='bob' WHERE workspace_id=$1")
-        .bind(run.workspace_id)
-        .execute(&f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("authorization_workspaces"))
+            .value(
+                sea_orm::sea_query::Alias::new("owner_subject"),
+                sea_orm::sea_query::Expr::cust("'bob'"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("workspace_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(run.workspace_id)
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     policy["policies"].as_array_mut().unwrap().extend([
         json!({"id":"hidden-generations","effect":"deny","subjects":{"any":true},"actions":["generation.read"],"resources":{"kinds":["generation"]},"condition":{"op":"eq","left":{"source":"resource","path":"/root_subject"},"right":{"source":"literal","value":"hidden"}}}),
         json!({"id":"other-owner","effect":"deny","subjects":{"any":true},"actions":["run.read"],"resources":{"kinds":["run"]},"condition":{"op":"eq","left":{"source":"resource","path":"/owner"},"right":{"source":"literal","value":"bob"}}}),
@@ -1513,10 +1666,15 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
     assert_eq!(status, 200, "{visible}");
     assert_eq!(visible.as_array().unwrap().len(), 1);
     assert_eq!(visible[0]["id"], job["id"]);
-    let after: i64 = sqlx::query_scalar("SELECT max(sequence) FROM events")
-        .fetch_one(&f.store.pool)
-        .await
-        .unwrap();
+    let after: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("MAX(sequence)"))
+            .from(sea_orm::sea_query::Alias::new("events"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     let mut tx = f.store.pool.begin().await.unwrap();
     f.store
         .event(

@@ -80,7 +80,7 @@ impl Manifest {
             for mutation in &participant.mutations {
                 let key = match mutation {
                     Mutation::RegistryRegister { entry } => {
-                        crate::registry::validate(entry)?;
+                        crate::registry::validate_structure(entry)?;
                         format!("registry:{}@{}", entry.id, entry.version)
                     }
                     Mutation::WorkspaceState {
@@ -184,12 +184,28 @@ pub(crate) async fn history(
     phase: &str,
     detail: &str,
 ) -> Result<()> {
-    sqlx::query("INSERT INTO atomic_history(transaction_id,role,phase,detail) VALUES($1,$2,$3,$4)")
-        .bind(id)
-        .bind(role)
-        .bind(phase)
-        .bind(detail)
-        .execute(&mut **tx)
-        .await?;
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("atomic_history"))
+            .columns([
+                sea_orm::sea_query::Alias::new("transaction_id"),
+                sea_orm::sea_query::Alias::new("role"),
+                sea_orm::sea_query::Alias::new("phase"),
+                sea_orm::sea_query::Alias::new("detail"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("$3"),
+                sea_orm::sea_query::Expr::cust("$4"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(id)
+    .bind(role)
+    .bind(phase)
+    .bind(detail)
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }

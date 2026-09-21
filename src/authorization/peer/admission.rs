@@ -104,7 +104,7 @@ async fn lease(f: &Federation, source: &str, grant: Uuid) -> Result<(Access, Des
         let task=access.resource("task",format!("{source}/tasks/{}",description.task.id),json!({"created_by":description.task.created_by,"requirements":description.task.requirements}));
         access.require(&task,"task.read").await?;
         access.require(&task,"task.execute").await?;
-        let live:bool=sqlx::query_scalar("SELECT $1::timestamptz > clock_timestamp()").bind(description.expires_at).fetch_one(&mut *access.tx).await?;
+        let live:bool=sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("CAST($1 AS TIMESTAMPTZ) > CLOCK_TIMESTAMP()")).to_string(sea_orm::sea_query::PostgresQueryBuilder)).bind(description.expires_at).fetch_one(&mut *access.tx).await?;
         if !live {return Err(Error::Forbidden);}
         Ok(())
     }.await;
@@ -121,23 +121,118 @@ pub(crate) async fn admit(
 ) -> Result<Json<Admission>> {
     let source = crate::api::peer_node(&headers)?;
     let (mut access, description) = lease(&f, source, input.grant_id).await?;
-    let result=async {
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,71003209))")
-            .bind(format!("{source}:{}",description.task.id)).execute(&mut *access.tx).await?;
-        let legacy:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runs WHERE home_node=$1 AND task_id=$2)")
-            .bind(source).bind(description.task.id).fetch_one(&mut *access.tx).await?;
-        if legacy {return Err(Error::Conflict("task already has an incompatible execution".into()));}
-        let proposed=Uuid::new_v4();
-        sqlx::query("INSERT INTO authorization_remote_admissions(id,source_node,grant_id,task_id,tenant,credential_id,subject_chain,description) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING")
-            .bind(proposed).bind(source).bind(input.grant_id).bind(description.task.id).bind(&access.identity.tenant).bind(access.identity.credential_id).bind(&access.subjects).bind(serde_json::to_value(&description)?).execute(&mut *access.tx).await?;
-        let record:Record=sqlx::query_as("SELECT * FROM authorization_remote_admissions WHERE source_node=$1 AND grant_id=$2 FOR SHARE").bind(source).bind(input.grant_id).fetch_optional(&mut *access.tx).await?.ok_or_else(||Error::Conflict("source task already has a different admission".into()))?;
-        if !record.matches(&access,&description)? {return Err(Error::Conflict("admission already binds different authority".into()));}
-        let live:bool=sqlx::query_scalar("SELECT $1::timestamptz > clock_timestamp()").bind(description.expires_at).fetch_one(&mut *access.tx).await?;
-        if !live {return Err(Error::Forbidden);}
+    let result = async {
+        sqlx::query(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::Expr::cust(
+                    "PG_ADVISORY_XACT_LOCK(HASHTEXTEXTENDED($1, 71003209))",
+                ))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(format!("{source}:{}", description.task.id))
+        .execute(&mut *access.tx)
+        .await?;
+        let legacy: bool = sqlx::query_scalar(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::Expr::cust(
+                    "EXISTS(SELECT 1 FROM runs WHERE home_node = $1 AND task_id = $2)",
+                ))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(source)
+        .bind(description.task.id)
+        .fetch_one(&mut *access.tx)
+        .await?;
+        if legacy {
+            return Err(Error::Conflict(
+                "task already has an incompatible execution".into(),
+            ));
+        }
+        let proposed = Uuid::new_v4();
+        sqlx::query(
+            &sea_orm::sea_query::Query::insert()
+                .into_table(sea_orm::sea_query::Alias::new(
+                    "authorization_remote_admissions",
+                ))
+                .columns([
+                    sea_orm::sea_query::Alias::new("id"),
+                    sea_orm::sea_query::Alias::new("source_node"),
+                    sea_orm::sea_query::Alias::new("grant_id"),
+                    sea_orm::sea_query::Alias::new("task_id"),
+                    sea_orm::sea_query::Alias::new("tenant"),
+                    sea_orm::sea_query::Alias::new("credential_id"),
+                    sea_orm::sea_query::Alias::new("subject_chain"),
+                    sea_orm::sea_query::Alias::new("description"),
+                ])
+                .values_panic([
+                    sea_orm::sea_query::Expr::cust("$1"),
+                    sea_orm::sea_query::Expr::cust("$2"),
+                    sea_orm::sea_query::Expr::cust("$3"),
+                    sea_orm::sea_query::Expr::cust("$4"),
+                    sea_orm::sea_query::Expr::cust("$5"),
+                    sea_orm::sea_query::Expr::cust("$6"),
+                    sea_orm::sea_query::Expr::cust("$7"),
+                    sea_orm::sea_query::Expr::cust("$8"),
+                ])
+                .on_conflict(
+                    sea_orm::sea_query::OnConflict::new()
+                        .do_nothing()
+                        .to_owned(),
+                )
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(proposed)
+        .bind(source)
+        .bind(input.grant_id)
+        .bind(description.task.id)
+        .bind(&access.identity.tenant)
+        .bind(access.identity.credential_id)
+        .bind(&access.subjects)
+        .bind(serde_json::to_value(&description)?)
+        .execute(&mut *access.tx)
+        .await?;
+        let record: Record = sqlx::query_as(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                ))
+                .from(sea_orm::sea_query::Alias::new(
+                    "authorization_remote_admissions",
+                ))
+                .and_where(sea_orm::sea_query::Expr::cust(
+                    "source_node = $1 AND grant_id = $2",
+                ))
+                .lock(sea_orm::sea_query::LockType::Share)
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(source)
+        .bind(input.grant_id)
+        .fetch_optional(&mut *access.tx)
+        .await?
+        .ok_or_else(|| Error::Conflict("source task already has a different admission".into()))?;
+        if !record.matches(&access, &description)? {
+            return Err(Error::Conflict(
+                "admission already binds different authority".into(),
+            ));
+        }
+        let live: bool = sqlx::query_scalar(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::Expr::cust(
+                    "CAST($1 AS TIMESTAMPTZ) > CLOCK_TIMESTAMP()",
+                ))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(description.expires_at)
+        .fetch_one(&mut *access.tx)
+        .await?;
+        if !live {
+            return Err(Error::Forbidden);
+        }
         // Policy decisions are retained by Access. No unscoped workspace event
         // may disclose this source task to receiver tenants.
         Ok(Json(record.view(&description)))
-    }.await;
+    }
+    .await;
     access.finish(result).await
 }
 
@@ -148,7 +243,17 @@ pub(crate) async fn verify(
 ) -> Result<Json<bool>> {
     let source = crate::api::peer_node(&headers)?;
     let record: Record = sqlx::query_as(
-        "SELECT * FROM authorization_remote_admissions WHERE id=$1 AND source_node=$2",
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new(
+                "authorization_remote_admissions",
+            ))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "id = $1 AND source_node = $2",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(id)
     .bind(source)

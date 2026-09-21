@@ -120,7 +120,7 @@ HTTP tools receive an `Idempotency-Key` header. An idempotent MCP tool must spec
 
 Context compaction uses a Rust reimplementation of [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction), with a separate TypeSafe Jev connection. Set `AIDASH_SECRET_JEV` to your TypeSafe API key on each worker (or combined `serve` process). Optional `AIDASH_JEV_ENDPOINT` and `AIDASH_JEV_MODEL` default to `https://api.typesafe.ai/v1/systemone` and `jev-latest`. Jev is contacted only when the model's context budget is exceeded and old tool pairs can be pruned; those requests send a fitted history view to TypeSafe and use that account's credits.
 
-Jev decides whether to keep each old tool call and its full result. Aidash keeps both, keeps the call with a shortened result, or removes the pair. It preserves the first and latest six history events, all human/non-tool events, current task/workspace/memory, and any legacy summary. It creates no new summaries and never silently falls back to summarization. Missing credentials, invalid decisions or insufficient reduction fail the step without changing its saved context. See the [compaction contract](docs/protocol.md#context-compaction) for input fitting and request limits. Protocol tests use a local Jev fixture; live service access and decision quality are not established by those tests.
+Jev decides whether to keep each old tool call and its full result. Aidash keeps both, keeps the call with a shortened result, or removes the pair. It preserves the first and latest six history events, all human/non-tool events, and any legacy summary. Optional task/workspace/memory snapshot material is separately bounded to the model window with an explicit truncation marker. It creates no new summaries and never silently falls back to summarization. Missing credentials, invalid decisions or insufficient reduction fail the step without changing its saved context. See the [compaction contract](docs/protocol.md#context-compaction) for input fitting and request limits. Protocol tests use a local Jev fixture; live service access and decision quality are not established by those tests.
 
 ## Generated API client
 
@@ -143,6 +143,7 @@ Trunk owns formatting and linting: rustfmt, Clippy, Prettier, ESLint, Ruff and T
 For browser tests, keep that completed fixture environment running in one terminal:
 
 ```sh
+cargo build --locked --bin aidash --example acceptance_queries
 python3 scripts/golden_path.py --binary "$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"] + "/debug/aidash")')" --keep
 ```
 
@@ -157,7 +158,7 @@ Protocol fixtures verify transport, coordination and recovery. They do not estab
 
 ## Database migrations
 
-Schema changes live in the SeaORM migration crate. Create the next migration with `sea-orm-cli migrate generate <name>`, then implement its `up` and `down` methods. Run it with `sea-orm-cli migrate up`; application startup uses the same migrator. Existing SQLx-era databases are adopted only after their recorded checksums are verified. Adopted migrations cannot be rolled back through SeaORM.
+Schema changes live in the SeaORM migration crate. Create the next migration with `sea-orm-cli migrate generate <name>`, then implement its `up` and `down` methods. Run it with `sea-orm-cli migrate up`; application startup uses the same migrator. Migrations use the SeaORM migration ledger directly; legacy SQLx migration ledgers are not supported.
 
 ## CI and coverage
 

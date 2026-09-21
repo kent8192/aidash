@@ -1,23 +1,47 @@
 use super::{LocalStatus, Manifest, coordinator, gate, history, mutation};
 use crate::{Error, Result, federation::Federation};
 use serde_json::json;
-use sqlx::{Postgres, Transaction};
+use sqlx::{Acquire, Postgres, Transaction};
 use uuid::Uuid;
 
 async fn begin(f: &Federation) -> Result<Transaction<'static, Postgres>> {
-    let mut tx = f.store.control_pool.begin().await?;
-    sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
-        .execute(&mut *tx)
-        .await?;
-    Ok(tx)
-}
-async fn load(tx: &mut Transaction<'_, Postgres>, id: Uuid) -> Result<Option<LocalStatus>> {
-    Ok(
-        sqlx::query_as("SELECT * FROM atomic_participants WHERE id=$1 FOR UPDATE")
-            .bind(id)
-            .fetch_optional(&mut **tx)
-            .await?,
+    // PostgreSQL rejects changing isolation from a SELECT inside a transaction.
+    // Configure the acquired session before BEGIN, and discard it afterward so
+    // this transaction's default cannot leak to another control-pool borrower.
+    let mut connection = f.store.control_pool.acquire().await?;
+    connection.close_on_drop();
+    sqlx::query(
+        &sea_orm::sea_query::Query::select()
+            .expr(
+                sea_orm::sea_query::Func::cust(sea_orm::sea_query::Alias::new("set_config")).args(
+                    [
+                        sea_orm::sea_query::Expr::val("default_transaction_isolation").into(),
+                        sea_orm::sea_query::Expr::val("serializable").into(),
+                        sea_orm::sea_query::Expr::val(false).into(),
+                    ],
+                ),
+            )
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
+    .execute(&mut *connection)
+    .await?;
+    Ok(Transaction::begin(connection, None).await?)
+}
+
+async fn load(tx: &mut Transaction<'_, Postgres>, id: Uuid) -> Result<Option<LocalStatus>> {
+    Ok(sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("atomic_participants"))
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .lock(sea_orm::sea_query::LockType::Update)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?)
 }
 fn check(existing: &LocalStatus, manifest: &Manifest) -> Result<()> {
     if existing.coordinator != manifest.coordinator
@@ -40,7 +64,19 @@ fn sender(f: &Federation, caller: &str, manifest: &Manifest) -> Result<()> {
 }
 async fn phase(tx: &mut Transaction<'_, Postgres>, id: Uuid, next: &str) -> Result<LocalStatus> {
     let row = sqlx::query_as(
-        "UPDATE atomic_participants SET phase=$2,updated_at=now() WHERE id=$1 RETURNING *",
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("atomic_participants"))
+            .value(
+                sea_orm::sea_query::Alias::new("phase"),
+                sea_orm::sea_query::Expr::cust("$2"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("updated_at"),
+                sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .returning_all()
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(id)
     .bind(next)
@@ -66,7 +102,11 @@ pub async fn reserve(f: &Federation, caller: &str, manifest: &Manifest) -> Resul
     }
     if caller != f.config.node_id {
         let allowed: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM atomic_peer_trust WHERE node_id=$1 AND enabled)",
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::Expr::cust(
+                    "EXISTS(SELECT 1 FROM atomic_peer_trust WHERE node_id = $1 AND enabled)",
+                ))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
         )
         .bind(caller)
         .fetch_one(&mut *tx)
@@ -78,11 +118,47 @@ pub async fn reserve(f: &Federation, caller: &str, manifest: &Manifest) -> Resul
     if gate::exclusive(&mut tx).await?.is_some() {
         return Err(Error::TransactionPending);
     }
-    let row=sqlx::query_as("INSERT INTO atomic_participants(id,coordinator,digest,manifest,phase) VALUES($1,$2,$3,$4,'RESERVED') RETURNING *").bind(manifest.id).bind(&manifest.coordinator).bind(manifest.digest()?).bind(json!(manifest)).fetch_one(&mut *tx).await?;
-    sqlx::query("UPDATE atomic_gate SET transaction_id=$1 WHERE singleton")
-        .bind(manifest.id)
-        .execute(&mut *tx)
-        .await?;
+    let row = sqlx::query_as(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("atomic_participants"))
+            .columns([
+                sea_orm::sea_query::Alias::new("id"),
+                sea_orm::sea_query::Alias::new("coordinator"),
+                sea_orm::sea_query::Alias::new("digest"),
+                sea_orm::sea_query::Alias::new("manifest"),
+                sea_orm::sea_query::Alias::new("phase"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("$3"),
+                sea_orm::sea_query::Expr::cust("$4"),
+                sea_orm::sea_query::Expr::cust("'RESERVED'"),
+            ])
+            .returning_all()
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(manifest.id)
+    .bind(&manifest.coordinator)
+    .bind(manifest.digest()?)
+    .bind(json!(manifest))
+    .fetch_one(&mut *tx)
+    .await?;
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("atomic_gate"))
+            .value(
+                sea_orm::sea_query::Alias::new("transaction_id"),
+                sea_orm::sea_query::Expr::cust("$1"),
+            )
+            .and_where(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("singleton")),
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(manifest.id)
+    .execute(&mut *tx)
+    .await?;
     history(
         &mut tx,
         manifest.id,
@@ -110,17 +186,19 @@ pub async fn prepare(f: &Federation, caller: &str, manifest: &Manifest) -> Resul
             "participant lost its visibility barrier".into(),
         ));
     }
-    sqlx::query("SELECT set_config('aidash.atomic_transaction',$1,true)")
-        .bind(manifest.id.to_string())
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("SAVEPOINT validate_atomic_mutations")
-        .execute(&mut *tx)
-        .await?;
-    mutation::apply(&f.store, &mut tx, manifest).await?;
-    sqlx::query("ROLLBACK TO SAVEPOINT validate_atomic_mutations")
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust(
+                "SET_CONFIG('aidash.atomic_transaction', $1, TRUE)",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(manifest.id.to_string())
+    .execute(&mut *tx)
+    .await?;
+    let mut validation = tx.begin().await?;
+    mutation::apply(&f.store, &mut validation, manifest).await?;
+    validation.rollback().await?;
     let row = phase(&mut tx, manifest.id, "PREPARED").await?;
     tx.commit().await?;
     Ok(row)
@@ -151,12 +229,47 @@ pub async fn finish(f: &Federation, caller: &str, manifest: &Manifest) -> Result
                     "participant lost its visibility barrier".into(),
                 ));
             }
-            sqlx::query("UPDATE atomic_gate SET transaction_id=NULL WHERE singleton")
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                &sea_orm::sea_query::Query::update()
+                    .table(sea_orm::sea_query::Alias::new("atomic_gate"))
+                    .value(
+                        sea_orm::sea_query::Alias::new("transaction_id"),
+                        sea_orm::sea_query::Expr::cust("NULL"),
+                    )
+                    .and_where(sea_orm::sea_query::SimpleExpr::from(
+                        sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("singleton")),
+                    ))
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+            )
+            .execute(&mut *tx)
+            .await?;
         } else {
             // Abort tombstones prevent a delayed reserve from resurrecting work.
-            sqlx::query("INSERT INTO atomic_participants(id,coordinator,digest,manifest,phase) VALUES($1,$2,$3,$4,'ABORTED')").bind(manifest.id).bind(&manifest.coordinator).bind(manifest.digest()?).bind(json!(manifest)).execute(&mut *tx).await?;
+            sqlx::query(
+                &sea_orm::sea_query::Query::insert()
+                    .into_table(sea_orm::sea_query::Alias::new("atomic_participants"))
+                    .columns([
+                        sea_orm::sea_query::Alias::new("id"),
+                        sea_orm::sea_query::Alias::new("coordinator"),
+                        sea_orm::sea_query::Alias::new("digest"),
+                        sea_orm::sea_query::Alias::new("manifest"),
+                        sea_orm::sea_query::Alias::new("phase"),
+                    ])
+                    .values_panic([
+                        sea_orm::sea_query::Expr::cust("$1"),
+                        sea_orm::sea_query::Expr::cust("$2"),
+                        sea_orm::sea_query::Expr::cust("$3"),
+                        sea_orm::sea_query::Expr::cust("$4"),
+                        sea_orm::sea_query::Expr::cust("'ABORTED'"),
+                    ])
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+            )
+            .bind(manifest.id)
+            .bind(&manifest.coordinator)
+            .bind(manifest.digest()?)
+            .bind(json!(manifest))
+            .execute(&mut *tx)
+            .await?;
         }
         let row = phase(&mut tx, manifest.id, "ABORTED").await?;
         tx.commit().await?;
@@ -179,17 +292,34 @@ pub async fn finish(f: &Federation, caller: &str, manifest: &Manifest) -> Result
         ));
     }
     if existing.phase == "PREPARED" {
-        sqlx::query("SELECT set_config('aidash.atomic_transaction',$1,true)")
-            .bind(manifest.id.to_string())
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::Expr::cust(
+                    "SET_CONFIG('aidash.atomic_transaction', $1, TRUE)",
+                ))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(manifest.id.to_string())
+        .execute(&mut *tx)
+        .await?;
         mutation::apply(&f.store, &mut tx, manifest).await?;
         phase(&mut tx, manifest.id, "APPLIED").await?;
     }
     let row = if proof.visible {
-        sqlx::query("UPDATE atomic_gate SET transaction_id=NULL WHERE singleton")
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            &sea_orm::sea_query::Query::update()
+                .table(sea_orm::sea_query::Alias::new("atomic_gate"))
+                .value(
+                    sea_orm::sea_query::Alias::new("transaction_id"),
+                    sea_orm::sea_query::Expr::cust("NULL"),
+                )
+                .and_where(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("singleton")),
+                ))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .execute(&mut *tx)
+        .await?;
         phase(&mut tx, manifest.id, "COMMITTED").await?
     } else {
         load(&mut tx, manifest.id).await?.unwrap()
@@ -200,7 +330,26 @@ pub async fn finish(f: &Federation, caller: &str, manifest: &Manifest) -> Result
 }
 
 pub async fn recover_once(f: &Federation) -> Result<usize> {
-    let pending:Vec<LocalStatus>=sqlx::query_as("SELECT * FROM atomic_participants WHERE phase IN ('RESERVED','PREPARED','APPLIED') ORDER BY updated_at LIMIT 32").fetch_all(&f.store.control_pool).await?;
+    let pending: Vec<LocalStatus> = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("atomic_participants"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "phase IN ('RESERVED', 'PREPARED', 'APPLIED')",
+            ))
+            .order_by_expr(
+                sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                    sea_orm::sea_query::Alias::new("updated_at"),
+                )),
+                sea_orm::sea_query::Order::Asc,
+            )
+            .limit(32)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_all(&f.store.control_pool)
+    .await?;
     let mut completed = 0;
     for row in pending {
         let manifest: Manifest = serde_json::from_value(row.manifest)?;

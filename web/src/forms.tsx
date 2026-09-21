@@ -144,6 +144,17 @@ export function TaskForm({
   workspace?: string;
 }) {
   const { t } = useI18n();
+  const [selectedWorkspace, setSelectedWorkspace] = useState(workspace ?? "");
+  const [parent, setParent] = useState("");
+  const tasks = data.tasks.filter(
+    (task) => task.workspace_id === selectedWorkspace,
+  );
+  const ancestors = new Set<string>();
+  let ancestor: string | null | undefined = parent;
+  while (ancestor && !ancestors.has(ancestor)) {
+    ancestors.add(ancestor);
+    ancestor = tasks.find((task) => task.id === ancestor)?.parent_id;
+  }
   return (
     <form
       onSubmit={(e) => {
@@ -163,14 +174,22 @@ export function TaskForm({
             title: String(d.get("title")),
             description: String(d.get("description")),
             requirements,
-            dependencies: [],
-            parent_id: null,
+            dependencies: d.getAll("dependencies").map(String),
+            parent_id: parent || null,
           }),
         );
       }}
     >
       <Field label={t("workspace")}>
-        <select name="workspace" required defaultValue={workspace ?? ""}>
+        <select
+          name="workspace"
+          required
+          value={selectedWorkspace}
+          onChange={(event) => {
+            setSelectedWorkspace(event.target.value);
+            setParent("");
+          }}
+        >
           <option value="">{t("choose")}</option>
           {data.workspaces.map((w) => (
             <option key={w.id} value={w.id}>
@@ -184,6 +203,35 @@ export function TaskForm({
       </Field>
       <Field label={t("description")}>
         <textarea name="description" required rows={3} />
+      </Field>
+      <Field label={t("parentTask")}>
+        <select
+          name="parent_id"
+          value={parent}
+          onChange={(event) => setParent(event.target.value)}
+        >
+          <option value="">{t("noParent")}</option>
+          {tasks.map((task) => (
+            <option key={task.id} value={task.id}>
+              {task.title}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label={t("dependencies")}>
+        <select
+          name="dependencies"
+          multiple
+          key={`${selectedWorkspace}:${parent}`}
+        >
+          {tasks
+            .filter((task) => !ancestors.has(task.id))
+            .map((task) => (
+              <option key={task.id} value={task.id}>
+                {task.title}
+              </option>
+            ))}
+        </select>
       </Field>
       <Field label={t("requirements")}>
         <textarea
@@ -609,19 +657,24 @@ export function PeerForm({ submit }: { submit: Submit }) {
 export function AssignForm({
   task,
   discovery,
+  data,
   submit,
 }: {
   task: Task;
   discovery: Discovery;
+  data: State;
   submit: Submit;
 }) {
   const { t, local } = useI18n();
+  const agents = discovery.agents.filter(
+    (a) => data.access.kind === "operator" || a.node_id === data.node.id,
+  );
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
         const d = new FormData(e.currentTarget);
-        const a = discovery.agents.find(
+        const a = agents.find(
           (agent) =>
             JSON.stringify([
               agent.node_id,
@@ -641,7 +694,7 @@ export function AssignForm({
       <Field label={t("agent")}>
         <select name="agent" required defaultValue="">
           <option value="">{t("choose")}</option>
-          {discovery.agents.map((a) => (
+          {agents.map((a) => (
             <option
               value={JSON.stringify([a.node_id, a.entity.id, a.entity.version])}
               key={`${a.node_id}/${a.entity.id}@${a.entity.version}`}
@@ -671,7 +724,13 @@ export function PublishForm({ data, submit }: { data: State; submit: Submit }) {
             entity,
             author: String(d.get("author")),
             permissions: split(String(d.get("permissions"))),
-            dependencies: [],
+            dependencies: d.getAll("dependencies").map((value) => {
+              const [id, version] = JSON.parse(String(value)) as [
+                string,
+                string,
+              ];
+              return { id, version };
+            }),
           }),
         );
       }}
@@ -687,6 +746,18 @@ export function PublishForm({ data, submit }: { data: State; submit: Submit }) {
                 {e.id}@{e.version}
               </option>
             ))}
+        </select>
+      </Field>
+      <Field label={t("dependencies")}>
+        <select name="dependencies" multiple>
+          {data.registry.map((entry) => (
+            <option
+              key={`${entry.id}@${entry.version}`}
+              value={JSON.stringify([entry.id, entry.version])}
+            >
+              {entry.id}@{entry.version}
+            </option>
+          ))}
         </select>
       </Field>
       <Field label={t("author")}>

@@ -214,6 +214,21 @@ pub async fn message(
     id: Uuid,
     content: &str,
 ) -> Result<()> {
+    message_keyed(f, identity, id, content, None).await
+}
+pub async fn message_keyed(
+    f: &Federation,
+    identity: &SubjectIdentity,
+    id: Uuid,
+    content: &str,
+    key: Option<Uuid>,
+) -> Result<()> {
+    let key = key.map(|key| {
+        format!(
+            "subject-human:{}:{}:{id}:{key}",
+            identity.tenant, identity.subject
+        )
+    });
     let mut access = Access::begin(&f.store, identity).await?;
     let result = async {
         let run = access.run_for_interaction(id).await?;
@@ -232,7 +247,7 @@ pub async fn message(
                 run.workspace_id,
                 &identity.subject,
                 content,
-                None,
+                key.as_deref(),
             )
             .await
             .map(|_| ())

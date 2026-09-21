@@ -214,15 +214,35 @@ async fn source_authority(
     Ok(())
 }
 async fn live(access: &mut Access, id: Uuid) -> Result<bool> {
-    Ok(sqlx::query_scalar("SELECT NOT revoked AND expires_at>clock_timestamp() FROM authorization_remote_grants WHERE id=$1")
-        .bind(id).fetch_one(&mut *access.tx).await?)
+    Ok(sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust(
+                "NOT revoked AND expires_at > CLOCK_TIMESTAMP()",
+            ))
+            .from(sea_orm::sea_query::Alias::new(
+                "authorization_remote_grants",
+            ))
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(id)
+    .fetch_one(&mut *access.tx)
+    .await?)
 }
 async fn peer(access: &mut Access, node: &str) -> Result<()> {
-    let peer: Option<Peer> =
-        sqlx::query_as("SELECT * FROM peers WHERE node_id=$1 AND enabled FOR SHARE")
-            .bind(node)
-            .fetch_optional(&mut *access.tx)
-            .await?;
+    let peer: Option<Peer> = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("peers"))
+            .and_where(sea_orm::sea_query::Expr::cust("node_id = $1 AND enabled"))
+            .lock(sea_orm::sea_query::LockType::Share)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(node)
+    .fetch_optional(&mut *access.tx)
+    .await?;
     if peer.is_none_or(|p| p.protocol_version != crate::config::PROTOCOL_VERSION) {
         return Err(Error::Forbidden);
     }
@@ -277,11 +297,11 @@ async fn prepare(
         source_authority(&mut access,&task,&input.node_id,&inspection).await?;
         let metadata=serde_json::to_value(&inspection)?;
         // Retain the task revision through persistence, after read authorization.
-        let current: Task=sqlx::query_as("SELECT * FROM tasks WHERE id=$1 FOR SHARE").bind(task_id).fetch_one(&mut *access.tx).await?;
+        let current: Task=sqlx::query_as(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))).from(sea_orm::sea_query::Alias::new("tasks")).and_where(sea_orm::sea_query::Expr::cust("id = $1")).lock(sea_orm::sea_query::LockType::Share).to_string(sea_orm::sea_query::PostgresQueryBuilder)).bind(task_id).fetch_one(&mut *access.tx).await?;
         if current.revision!=task.revision || current.status!="OPEN" {return Err(Error::Conflict("task changed during grant preparation".into()));}
-        let inserted=sqlx::query("INSERT INTO authorization_remote_grants(id,task_id,task_revision,workspace_id,node_id,tenant,credential_id,root_subject,subject_chain,inspection,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,clock_timestamp()+make_interval(secs=>$11)) ON CONFLICT DO NOTHING")
+        let inserted=sqlx::query(&sea_orm::sea_query::Query::insert().into_table(sea_orm::sea_query::Alias::new("authorization_remote_grants")).columns([sea_orm::sea_query::Alias::new("id"), sea_orm::sea_query::Alias::new("task_id"), sea_orm::sea_query::Alias::new("task_revision"), sea_orm::sea_query::Alias::new("workspace_id"), sea_orm::sea_query::Alias::new("node_id"), sea_orm::sea_query::Alias::new("tenant"), sea_orm::sea_query::Alias::new("credential_id"), sea_orm::sea_query::Alias::new("root_subject"), sea_orm::sea_query::Alias::new("subject_chain"), sea_orm::sea_query::Alias::new("inspection"), sea_orm::sea_query::Alias::new("expires_at")]).values_panic([sea_orm::sea_query::Expr::cust("$1"), sea_orm::sea_query::Expr::cust("$2"), sea_orm::sea_query::Expr::cust("$3"), sea_orm::sea_query::Expr::cust("$4"), sea_orm::sea_query::Expr::cust("$5"), sea_orm::sea_query::Expr::cust("$6"), sea_orm::sea_query::Expr::cust("$7"), sea_orm::sea_query::Expr::cust("$8"), sea_orm::sea_query::Expr::cust("$9"), sea_orm::sea_query::Expr::cust("$10"), sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP() + MAKE_INTERVAL(secs => $11)")]).on_conflict(sea_orm::sea_query::OnConflict::new().do_nothing().to_owned()).to_string(sea_orm::sea_query::PostgresQueryBuilder))
             .bind(input.id).bind(task.id).bind(task.revision).bind(task.workspace_id).bind(&input.node_id).bind(&identity.tenant).bind(identity.credential_id).bind(&identity.subject).bind(&access.subjects).bind(&metadata).bind(input.ttl_seconds as f64).execute(&mut *access.tx).await?.rows_affected();
-        let grant: Grant=sqlx::query_as("SELECT * FROM authorization_remote_grants WHERE id=$1 FOR SHARE").bind(input.id).fetch_one(&mut *access.tx).await?;
+        let grant: Grant=sqlx::query_as(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))).from(sea_orm::sea_query::Alias::new("authorization_remote_grants")).and_where(sea_orm::sea_query::Expr::cust("id = $1")).lock(sea_orm::sea_query::LockType::Share).to_string(sea_orm::sea_query::PostgresQueryBuilder)).bind(input.id).fetch_one(&mut *access.tx).await?;
         if grant.task_id != task_id
             || grant.task_revision != task.revision
             || grant.workspace_id != task.workspace_id
@@ -311,18 +331,60 @@ async fn revoke(
         return Err(Error::Forbidden);
     };
     let mut access = Access::begin(&f.store, &identity).await?;
-    let result=async {
-        let task=access.task_read(task_id).await?;
-        let resource=access.task_resource(&task).await?;
-        access.require(&resource,"task.delegate").await?;
-        let mut grant: Grant=sqlx::query_as("SELECT * FROM authorization_remote_grants WHERE id=$1 AND task_id=$2 AND tenant=$3 AND root_subject=$4 FOR UPDATE").bind(id).bind(task_id).bind(&identity.tenant).bind(&identity.subject).fetch_optional(&mut *access.tx).await?.ok_or(Error::Forbidden)?;
+    let result = async {
+        let task = access.task_read(task_id).await?;
+        let resource = access.task_resource(&task).await?;
+        access.require(&resource, "task.delegate").await?;
+        let mut grant: Grant = sqlx::query_as(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                ))
+                .from(sea_orm::sea_query::Alias::new(
+                    "authorization_remote_grants",
+                ))
+                .and_where(sea_orm::sea_query::Expr::cust(
+                    "id = $1 AND task_id = $2 AND tenant = $3 AND root_subject = $4",
+                ))
+                .lock(sea_orm::sea_query::LockType::Update)
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(id)
+        .bind(task_id)
+        .bind(&identity.tenant)
+        .bind(&identity.subject)
+        .fetch_optional(&mut *access.tx)
+        .await?
+        .ok_or(Error::Forbidden)?;
         if !grant.revoked {
-            sqlx::query("UPDATE authorization_remote_grants SET revoked=true WHERE id=$1").bind(id).execute(&mut *access.tx).await?;
-            f.store.event(&mut access.tx,Some(task.workspace_id),"task.remote_grant_revoked",json!({"grant_id":id,"task_id":task_id})).await?;
-            grant.revoked=true;
+            sqlx::query(
+                &sea_orm::sea_query::Query::update()
+                    .table(sea_orm::sea_query::Alias::new(
+                        "authorization_remote_grants",
+                    ))
+                    .value(
+                        sea_orm::sea_query::Alias::new("revoked"),
+                        sea_orm::sea_query::Expr::cust("TRUE"),
+                    )
+                    .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+            )
+            .bind(id)
+            .execute(&mut *access.tx)
+            .await?;
+            f.store
+                .event(
+                    &mut access.tx,
+                    Some(task.workspace_id),
+                    "task.remote_grant_revoked",
+                    json!({"grant_id":id,"task_id":task_id}),
+                )
+                .await?;
+            grant.revoked = true;
         }
         Ok(Json(grant.prepared()?))
-    }.await;
+    }
+    .await;
     access.finish(result).await
 }
 #[derive(Deserialize)]
@@ -383,13 +445,22 @@ pub(crate) async fn snapshot(
     access.finish(result).await
 }
 async fn description_lease(f: &Federation, node: &str, id: Uuid) -> Result<(Access, Description)> {
-    let grant: Grant =
-        sqlx::query_as("SELECT * FROM authorization_remote_grants WHERE id=$1 AND node_id=$2")
-            .bind(id)
-            .bind(node)
-            .fetch_optional(&f.store.pool)
-            .await?
-            .ok_or(Error::Forbidden)?;
+    let grant: Grant = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new(
+                "authorization_remote_grants",
+            ))
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1 AND node_id = $2"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(id)
+    .bind(node)
+    .fetch_optional(&f.store.pool)
+    .await?
+    .ok_or(Error::Forbidden)?;
     let mut access = Access::begin(&f.store, &grant.identity())
         .await
         .map_err(|e| {
@@ -400,20 +471,39 @@ async fn description_lease(f: &Federation, node: &str, id: Uuid) -> Result<(Acce
             }
         })?;
     let result = async {
-        let current: Grant =
-            sqlx::query_as("SELECT * FROM authorization_remote_grants WHERE id=$1 FOR SHARE")
-                .bind(grant.id)
-                .fetch_one(&mut *access.tx)
-                .await?;
+        let current: Grant = sqlx::query_as(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                ))
+                .from(sea_orm::sea_query::Alias::new(
+                    "authorization_remote_grants",
+                ))
+                .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                .lock(sea_orm::sea_query::LockType::Share)
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(grant.id)
+        .fetch_one(&mut *access.tx)
+        .await?;
         if !live(&mut access, current.id).await? {
             return Err(Error::Forbidden);
         }
         access.subjects = current.subject_chain.clone();
         let task = access.task_read(current.task_id).await?;
-        let locked: Task = sqlx::query_as("SELECT * FROM tasks WHERE id=$1 FOR SHARE")
-            .bind(task.id)
-            .fetch_one(&mut *access.tx)
-            .await?;
+        let locked: Task = sqlx::query_as(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                ))
+                .from(sea_orm::sea_query::Alias::new("tasks"))
+                .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                .lock(sea_orm::sea_query::LockType::Share)
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(task.id)
+        .fetch_one(&mut *access.tx)
+        .await?;
         if locked.revision != task.revision {
             return Err(Error::Forbidden);
         }

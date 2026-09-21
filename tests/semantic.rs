@@ -90,11 +90,20 @@ async fn search(app: &Router, token: &str, workspace: Uuid) -> (u16, Value) {
     .await
 }
 async fn dispose(f: aidash::federation::Federation, url: &str, schema: &str) {
-    let rows: Vec<(String, Value)> =
-        sqlx::query_as("SELECT collection,vector FROM semantic_collections")
-            .fetch_all(&f.store.pool)
-            .await
-            .unwrap();
+    let rows: Vec<(String, Value)> = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("collection")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("vector")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("semantic_collections"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_all(&f.store.pool)
+    .await
+    .unwrap();
     for (collection, config) in rows {
         semantic::backend::delete_collection(
             &f.store.semantic_client,
@@ -345,17 +354,34 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation() {
     )
     .await
     .unwrap();
-    sqlx::query("UPDATE semantic_entries SET next_attempt=clock_timestamp() WHERE id=$1")
-        .bind(Uuid::parse_str(cars["id"].as_str().unwrap()).unwrap())
-        .execute(&f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("semantic_entries"))
+            .value(
+                sea_orm::sea_query::Alias::new("next_attempt"),
+                sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP()"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(Uuid::parse_str(cars["id"].as_str().unwrap()).unwrap())
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     semantic::worker::sweep(&f.store).await.unwrap();
-    let state: String = sqlx::query_scalar("SELECT state FROM semantic_entries WHERE id=$1")
-        .bind(Uuid::parse_str(cars["id"].as_str().unwrap()).unwrap())
-        .fetch_one(&f.store.pool)
-        .await
-        .unwrap();
+    let state: String = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("state")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("semantic_entries"))
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(Uuid::parse_str(cars["id"].as_str().unwrap()).unwrap())
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(state, "REVOKED");
     assert_eq!(search(&app, &token, workspace).await.0, 401);
     dispose(f, &url, &schema).await;
@@ -508,11 +534,17 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals() {
         cars["id"]
     );
     assert_eq!(context["current"]["semantic_memory"]["model_version"], "1");
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM semantic_run_reads WHERE run_id=$1")
-        .bind(run.id)
-        .fetch_one(&f.store.pool)
-        .await
-        .unwrap();
+    let count: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new("semantic_run_reads"))
+            .and_where(sea_orm::sea_query::Expr::cust("run_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(run.id)
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(count, 1);
     worker.worker_once().await.unwrap();
     assert_eq!(
@@ -520,7 +552,18 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals() {
         json!({"note":"A car carries passengers safely."})
     );
     let (agent, authority): (Option<String>, Value) = sqlx::query_as(
-        "SELECT agent,authority FROM semantic_entries WHERE metadata->>'origin'='agent_memory'",
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("agent")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("authority")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("semantic_entries"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "metadata ->> 'origin' = 'agent_memory'",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .fetch_one(&f.store.pool)
     .await
@@ -576,10 +619,17 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals() {
         .0,
         200
     );
-    let managed: Uuid = sqlx::query_scalar("SELECT entry_id FROM semantic_agent_memory")
-        .fetch_one(&f.store.pool)
-        .await
-        .unwrap();
+    let managed: Uuid = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("entry_id")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("semantic_agent_memory"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(
         request(
             &app,
@@ -712,17 +762,34 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority() 
     assert_eq!(filtered["matches"], json!([]));
     // An out-of-band source update invalidates a READY vector immediately. A
     // background sweep allocates a new revision and then indexes the new text.
-    sqlx::query("UPDATE artifacts SET content=$2 WHERE id=$1")
-        .bind(artifact.id)
-        .bind(json!("A car needs brakes."))
-        .execute(&f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("artifacts"))
+            .value(
+                sea_orm::sea_query::Alias::new("content"),
+                sea_orm::sea_query::Expr::cust("$2"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(artifact.id)
+    .bind(json!("A car needs brakes."))
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(search(&app, &token, workspace).await.0, 409);
-    sqlx::query("UPDATE semantic_entries SET next_attempt=clock_timestamp()")
-        .execute(&f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("semantic_entries"))
+            .value(
+                sea_orm::sea_query::Alias::new("next_attempt"),
+                sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP()"),
+            )
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     semantic::worker::sweep(&f.store).await.unwrap();
     semantic::worker::sweep(&f.store).await.unwrap();
     assert!(
@@ -892,20 +959,36 @@ async fn semantic_qdrant_restart_outage_and_lost_points_recover() {
         503,
         "missing points must not become successful empty retrieval"
     );
-    sqlx::query("UPDATE semantic_entries SET next_attempt=clock_timestamp()")
-        .execute(&f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("semantic_entries"))
+            .value(
+                sea_orm::sea_query::Alias::new("next_attempt"),
+                sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP()"),
+            )
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     semantic::worker::sweep(&f.store).await.unwrap();
     assert_eq!(search(&app, &token, workspace).await.0, 200);
     docker(&["stop", "-t", "1", &container.0]).await;
     assert_eq!(search(&app, &token, workspace).await.0, 503);
     put(&app, &token, workspace, "restart", "A car uses roads.", 1).await;
     semantic::worker::sweep(&f.store).await.unwrap();
-    let state: String = sqlx::query_scalar("SELECT state FROM semantic_entries LIMIT 1")
-        .fetch_one(&f.store.pool)
-        .await
-        .unwrap();
+    let state: String = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("state")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("semantic_entries"))
+            .limit(1)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(state, "ERROR");
     docker(&["start", &container.0]).await;
     let until = Instant::now() + Duration::from_secs(30);
@@ -921,10 +1004,18 @@ async fn semantic_qdrant_restart_outage_and_lost_points_recover() {
         assert!(Instant::now() < until);
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    sqlx::query("UPDATE semantic_entries SET next_attempt=clock_timestamp()")
-        .execute(&f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("semantic_entries"))
+            .value(
+                sea_orm::sea_query::Alias::new("next_attempt"),
+                sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP()"),
+            )
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     semantic::worker::sweep(&f.store).await.unwrap();
     assert_eq!(
         search(&app, &token, workspace).await.1["matches"][0]["text"],

@@ -8,15 +8,38 @@ use std::time::Duration;
 use uuid::Uuid;
 
 pub async fn status(f: &Federation, id: Uuid) -> Result<Status> {
-    sqlx::query_as("SELECT * FROM atomic_coordinators WHERE id=$1")
-        .bind(id)
-        .fetch_optional(&f.store.control_pool)
-        .await?
-        .ok_or_else(|| Error::NotFound("transaction".into()))
+    sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("atomic_coordinators"))
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(id)
+    .fetch_optional(&f.store.control_pool)
+    .await?
+    .ok_or_else(|| Error::NotFound("transaction".into()))
 }
 pub async fn votes(f: &Federation, id: Uuid) -> Result<Vec<Vote>> {
     Ok(sqlx::query_as(
-        "SELECT node_id,phase FROM atomic_votes WHERE transaction_id=$1 ORDER BY node_id",
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("node_id")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("phase")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("atomic_votes"))
+            .and_where(sea_orm::sea_query::Expr::cust("transaction_id = $1"))
+            .order_by_expr(
+                sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                    sea_orm::sea_query::Alias::new("node_id"),
+                )),
+                sea_orm::sea_query::Order::Asc,
+            )
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(id)
     .fetch_all(&f.store.control_pool)
@@ -52,7 +75,11 @@ pub async fn submit(f: &Federation, manifest: &Manifest) -> Result<Status> {
         if node.node_id != f.config.node_id {
             f.peer(&node.node_id).await?;
             let allowed: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM atomic_peer_trust WHERE node_id=$1 AND enabled)",
+                &sea_orm::sea_query::Query::select()
+                    .expr(sea_orm::sea_query::Expr::cust(
+                        "EXISTS(SELECT 1 FROM atomic_peer_trust WHERE node_id = $1 AND enabled)",
+                    ))
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
             )
             .bind(&node.node_id)
             .fetch_one(&f.store.control_pool)
@@ -63,11 +90,44 @@ pub async fn submit(f: &Federation, manifest: &Manifest) -> Result<Status> {
         }
     }
     let mut tx = f.store.control_pool.begin().await?;
-    let inserted=sqlx::query("INSERT INTO atomic_coordinators(id,digest,manifest) VALUES($1,$2,$3) ON CONFLICT DO NOTHING").bind(manifest.id).bind(manifest.digest()?).bind(json!(manifest)).execute(&mut *tx).await?.rows_affected();
-    let stored: Status = sqlx::query_as("SELECT * FROM atomic_coordinators WHERE id=$1")
-        .bind(manifest.id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let inserted = sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("atomic_coordinators"))
+            .columns([
+                sea_orm::sea_query::Alias::new("id"),
+                sea_orm::sea_query::Alias::new("digest"),
+                sea_orm::sea_query::Alias::new("manifest"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("$3"),
+            ])
+            .on_conflict(
+                sea_orm::sea_query::OnConflict::new()
+                    .do_nothing()
+                    .to_owned(),
+            )
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(manifest.id)
+    .bind(manifest.digest()?)
+    .bind(json!(manifest))
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    let stored: Status = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("atomic_coordinators"))
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(manifest.id)
+    .fetch_one(&mut *tx)
+    .await?;
     if stored.digest != manifest.digest()? || stored.manifest != json!(manifest) {
         return Err(Error::Conflict(
             "transaction ID already has another immutable manifest".into(),
@@ -75,11 +135,23 @@ pub async fn submit(f: &Federation, manifest: &Manifest) -> Result<Status> {
     }
     if inserted == 1 {
         for node in &manifest.participants {
-            sqlx::query("INSERT INTO atomic_votes(transaction_id,node_id) VALUES($1,$2)")
-                .bind(manifest.id)
-                .bind(&node.node_id)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                &sea_orm::sea_query::Query::insert()
+                    .into_table(sea_orm::sea_query::Alias::new("atomic_votes"))
+                    .columns([
+                        sea_orm::sea_query::Alias::new("transaction_id"),
+                        sea_orm::sea_query::Alias::new("node_id"),
+                    ])
+                    .values_panic([
+                        sea_orm::sea_query::Expr::cust("$1"),
+                        sea_orm::sea_query::Expr::cust("$2"),
+                    ])
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+            )
+            .bind(manifest.id)
+            .bind(&node.node_id)
+            .execute(&mut *tx)
+            .await?;
         }
         history(
             &mut tx,
@@ -180,7 +252,20 @@ async fn send(f: &Federation, manifest: &Manifest, node: &str, phase: &str) -> R
 async fn record_decision(f: &Federation, id: Uuid, decision: &str, reason: &str) -> Result<()> {
     let mut tx = f.store.control_pool.begin().await?;
     let changed = sqlx::query(
-        "UPDATE atomic_coordinators SET decision=$2,last_error=$3 WHERE id=$1 AND decision IS NULL",
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("atomic_coordinators"))
+            .value(
+                sea_orm::sea_query::Alias::new("decision"),
+                sea_orm::sea_query::Expr::cust("$2"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("last_error"),
+                sea_orm::sea_query::Expr::cust("$3"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "id = $1 AND decision IS NULL",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(id)
     .bind(decision)
@@ -196,11 +281,16 @@ async fn record_decision(f: &Federation, id: Uuid, decision: &str, reason: &str)
 }
 async fn lease(f: &Federation, id: Uuid) -> Result<sqlx::Transaction<'static, sqlx::Postgres>> {
     let mut tx = f.store.control_pool.begin().await?;
-    let acquired: bool =
-        sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended('atomic:' || $1,0))")
-            .bind(id.to_string())
-            .fetch_one(&mut *tx)
-            .await?;
+    let acquired: bool = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust(
+                "PG_TRY_ADVISORY_XACT_LOCK(HASHTEXTEXTENDED('atomic:' || $1, 0))",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(id.to_string())
+    .fetch_one(&mut *tx)
+    .await?;
     if !acquired {
         return Err(Error::TransactionPending);
     }
@@ -234,10 +324,19 @@ async fn advance_locked(f: &Federation, id: Uuid) -> Result<Status> {
     if state.complete {
         return Ok(state);
     }
-    sqlx::query("UPDATE atomic_coordinators SET updated_at=clock_timestamp() WHERE id=$1")
-        .bind(id)
-        .execute(&f.store.control_pool)
-        .await?;
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("atomic_coordinators"))
+            .value(
+                sea_orm::sea_query::Alias::new("updated_at"),
+                sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP()"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(id)
+    .execute(&f.store.control_pool)
+    .await?;
     let manifest: Manifest = serde_json::from_value(state.manifest.clone())?;
     if state.decision.is_none() && manifest.deadline <= Utc::now() {
         record_decision(f, id, "ABORT", "deadline elapsed before durable decision").await?;
@@ -296,17 +395,35 @@ async fn advance_locked(f: &Federation, id: Uuid) -> Result<Status> {
                     ));
                 }
                 sqlx::query(
-                    "UPDATE atomic_votes SET phase=$3 WHERE transaction_id=$1 AND node_id=$2",
+                    &sea_orm::sea_query::Query::update()
+                        .table(sea_orm::sea_query::Alias::new("atomic_votes"))
+                        .value(
+                            sea_orm::sea_query::Alias::new("phase"),
+                            sea_orm::sea_query::Expr::cust("$3"),
+                        )
+                        .and_where(sea_orm::sea_query::Expr::cust(
+                            "transaction_id = $1 AND node_id = $2",
+                        ))
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
                 )
                 .bind(id)
                 .bind(&vote.node_id)
                 .bind(&result.phase)
                 .execute(&f.store.control_pool)
                 .await?;
-                sqlx::query("UPDATE atomic_coordinators SET last_error=NULL WHERE id=$1")
-                    .bind(id)
-                    .execute(&f.store.control_pool)
-                    .await?;
+                sqlx::query(
+                    &sea_orm::sea_query::Query::update()
+                        .table(sea_orm::sea_query::Alias::new("atomic_coordinators"))
+                        .value(
+                            sea_orm::sea_query::Alias::new("last_error"),
+                            sea_orm::sea_query::Expr::cust("NULL"),
+                        )
+                        .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                )
+                .bind(id)
+                .execute(&f.store.control_pool)
+                .await?;
             }
             Err(error) => {
                 if state.decision.is_none()
@@ -321,11 +438,20 @@ async fn advance_locked(f: &Federation, id: Uuid) -> Result<Status> {
                 {
                     record_decision(f, id, "ABORT", &error.to_string()).await?;
                 } else {
-                    sqlx::query("UPDATE atomic_coordinators SET last_error=$2 WHERE id=$1")
-                        .bind(id)
-                        .bind(error.to_string())
-                        .execute(&f.store.control_pool)
-                        .await?;
+                    sqlx::query(
+                        &sea_orm::sea_query::Query::update()
+                            .table(sea_orm::sea_query::Alias::new("atomic_coordinators"))
+                            .value(
+                                sea_orm::sea_query::Alias::new("last_error"),
+                                sea_orm::sea_query::Expr::cust("$2"),
+                            )
+                            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                    )
+                    .bind(id)
+                    .bind(error.to_string())
+                    .execute(&f.store.control_pool)
+                    .await?;
                 }
             }
         }
@@ -339,10 +465,23 @@ async fn advance_locked(f: &Federation, id: Uuid) -> Result<Status> {
     } else {
         let mut tx = f.store.control_pool.begin().await?;
         if state.decision.as_deref() == Some("COMMIT") && !state.visible {
-            sqlx::query("UPDATE atomic_coordinators SET visible=true,last_error=NULL WHERE id=$1")
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                &sea_orm::sea_query::Query::update()
+                    .table(sea_orm::sea_query::Alias::new("atomic_coordinators"))
+                    .value(
+                        sea_orm::sea_query::Alias::new("visible"),
+                        sea_orm::sea_query::Expr::cust("TRUE"),
+                    )
+                    .value(
+                        sea_orm::sea_query::Alias::new("last_error"),
+                        sea_orm::sea_query::Expr::cust("NULL"),
+                    )
+                    .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+            )
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
             history(
                 &mut tx,
                 id,
@@ -352,10 +491,23 @@ async fn advance_locked(f: &Federation, id: Uuid) -> Result<Status> {
             )
             .await?;
         } else {
-            sqlx::query("UPDATE atomic_coordinators SET complete=true,last_error=NULL WHERE id=$1")
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                &sea_orm::sea_query::Query::update()
+                    .table(sea_orm::sea_query::Alias::new("atomic_coordinators"))
+                    .value(
+                        sea_orm::sea_query::Alias::new("complete"),
+                        sea_orm::sea_query::Expr::cust("TRUE"),
+                    )
+                    .value(
+                        sea_orm::sea_query::Alias::new("last_error"),
+                        sea_orm::sea_query::Expr::cust("NULL"),
+                    )
+                    .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+            )
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
             history(
                 &mut tx,
                 id,
@@ -371,7 +523,26 @@ async fn advance_locked(f: &Federation, id: Uuid) -> Result<Status> {
 }
 pub async fn recover_once(f: &Federation) -> Result<()> {
     let ids: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM atomic_coordinators WHERE NOT complete ORDER BY updated_at,id LIMIT 32",
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("atomic_coordinators"))
+            .and_where(sea_orm::sea_query::Expr::cust("NOT complete"))
+            .order_by_expr(
+                sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                    sea_orm::sea_query::Alias::new("updated_at"),
+                )),
+                sea_orm::sea_query::Order::Asc,
+            )
+            .order_by_expr(
+                sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                    sea_orm::sea_query::Alias::new("id"),
+                )),
+                sea_orm::sea_query::Order::Asc,
+            )
+            .limit(32)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .fetch_all(&f.store.control_pool)
     .await?;

@@ -94,12 +94,25 @@ async fn seed_history(f: &Federation, run: &aidash::domain::Run) {
     for i in 0..6 {
         history.push(json!({"kind":"tool","call":{"id":format!("recent-{i}"),"name":"read","arguments":{}},"result":"recent"}));
     }
-    sqlx::query("UPDATE runs SET phase='THINKING',context=$2 WHERE id=$1")
-        .bind(run.id)
-        .bind(json!({"history":history,"summary":"","usage":{},"compactions":0}))
-        .execute(&f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("phase"),
+                sea_orm::sea_query::Expr::cust("'THINKING'"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("context"),
+                sea_orm::sea_query::Expr::cust("$2"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(run.id)
+    .bind(json!({"history":history,"summary":"","usage":{},"compactions":0}))
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -112,7 +125,7 @@ async fn approved_compaction_is_pinned_bounded_and_accounted_before_http() {
     let app = Router::new().route("/systemone", post(move |Json(body): Json<Value>| {
         let seen = seen.clone(); let pool = pool.clone(); async move {
             seen.fetch_add(1, Ordering::SeqCst);
-            let attempts: i64 = sqlx::query_scalar("SELECT count(*) FROM generation_compaction_usage").fetch_one(&pool).await.unwrap();
+            let attempts: i64 = sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("COUNT(*)")).from(sea_orm::sea_query::Alias::new("generation_compaction_usage")).to_string(sea_orm::sea_query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
             assert_eq!(attempts, 1, "reservation must be committed before HTTP");
             assert_eq!(body["model"], "fixture-jev");
             let answers: serde_json::Map<_,_> = body["questions"].as_object().unwrap().keys().map(|key| (key.clone(), json!({"noul":0.0}))).collect();
@@ -253,11 +266,20 @@ async fn failed_compaction_attempts_remain_charged_and_exhaustion_prevents_http(
         .await
         .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), expected.min(2));
-        sqlx::query("UPDATE runs SET pending=pending-'retry_at' WHERE id=$1")
-            .bind(run.id)
-            .execute(&f.store.pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            &sea_orm::sea_query::Query::update()
+                .table(sea_orm::sea_query::Alias::new("runs"))
+                .value(
+                    sea_orm::sea_query::Alias::new("pending"),
+                    sea_orm::sea_query::Expr::cust("pending - 'retry_at'"),
+                )
+                .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(run.id)
+        .execute(&f.store.pool)
+        .await
+        .unwrap();
     }
     let current = f.store.run(run.id).await.unwrap();
     assert!(
@@ -267,16 +289,29 @@ async fn failed_compaction_attempts_remain_charged_and_exhaustion_prevents_http(
             .contains("compaction call budget exhausted")
     );
     let counts: (i64, i64) = sqlx::query_as(
-        "SELECT count(*),count(DISTINCT attempt_id) FROM generation_compaction_usage",
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(DISTINCT attempt_id)"))
+            .from(sea_orm::sea_query::Alias::new(
+                "generation_compaction_usage",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .fetch_one(&f.store.pool)
     .await
     .unwrap();
     assert_eq!(counts, (2, 2));
-    let tokens: i64 = sqlx::query_scalar("SELECT used_tokens FROM generation_budgets")
-        .fetch_one(&f.store.pool)
-        .await
-        .unwrap();
+    let tokens: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("used_tokens")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("generation_budgets"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(tokens, 0, "no inference started");
     server.abort();
     cleanup(f, &url, &schema).await;
@@ -322,10 +357,17 @@ async fn compaction_denial_and_catalog_revocation_prevent_disclosure() {
         .await
         .unwrap();
         assert_eq!(f.store.run(run.id).await.unwrap().control, "PAUSED");
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM generation_compaction_usage")
-            .fetch_one(&f.store.pool)
-            .await
-            .unwrap();
+        let count: i64 = sqlx::query_scalar(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+                .from(sea_orm::sea_query::Alias::new(
+                    "generation_compaction_usage",
+                ))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .fetch_one(&f.store.pool)
+        .await
+        .unwrap();
         assert_eq!(count, 0);
         cleanup(f, &url, &schema).await;
     }
@@ -383,7 +425,7 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
             let started=first_compaction.clone(); let calls=compaction_calls.clone(); let pool=f.store.pool.clone();
             move |Json(body):Json<Value>| { let started=started.clone(); let calls=calls.clone(); let pool=pool.clone(); async move {
                 let number=calls.fetch_add(1, Ordering::SeqCst)+1;
-                let committed:i64=sqlx::query_scalar("SELECT count(*) FROM generation_compaction_usage").fetch_one(&pool).await.unwrap();
+                let committed:i64=sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("COUNT(*)")).from(sea_orm::sea_query::Alias::new("generation_compaction_usage")).to_string(sea_orm::sea_query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
                 assert_eq!(committed,number as i64);
                 if number == 1 { started.notify_one(); std::future::pending::<()>().await; }
                 let answers:serde_json::Map<_,_>=body["questions"].as_object().unwrap().keys().map(|k|(k.clone(),json!({"noul":0.0}))).collect();
@@ -419,11 +461,20 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
     assert_eq!(runs.len(), 1);
     let run = &runs[0];
     seed_history(&f, run).await;
-    sqlx::query("UPDATE runs SET lease_until=now()-interval '1 second' WHERE id=$1")
-        .bind(run.id)
-        .execute(&f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("lease_until"),
+                sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP - INTERVAL '1 SECOND'"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(run.id)
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     let worker = WorkerProcess::start(&f, &url, &schema);
     tokio::time::timeout(
         std::time::Duration::from_secs(20),
@@ -432,11 +483,20 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
     .await
     .unwrap();
     drop(worker);
-    sqlx::query("UPDATE runs SET lease_until=now()-interval '1 second' WHERE id=$1")
-        .bind(run.id)
-        .execute(&f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("lease_until"),
+                sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP - INTERVAL '1 SECOND'"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(run.id)
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     let worker = WorkerProcess::start(&f, &url, &schema);
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
         loop {
@@ -465,11 +525,16 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
     .await;
     assert_eq!(usage["compaction_calls"], 2);
     assert_eq!(usage["used_tokens"], 132206); // Uncertain inference + bounded successful inference.
-    let entries: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM registry WHERE id LIKE 'generated-%'")
-            .fetch_one(&f.store.pool)
-            .await
-            .unwrap();
+    let entries: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new("registry"))
+            .and_where(sea_orm::sea_query::Expr::cust("id LIKE 'generated-%'"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(entries, 1);
     server.abort();
     cleanup(f, &url, &schema).await;
@@ -486,7 +551,7 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
         let server=Router::new().route("/systemone",post(move |Json(body):Json<Value>| {
             let seen=seen.clone(); let pool=pool.clone(); async move {
                 seen.fetch_add(1,Ordering::SeqCst);
-                let charges:i64=sqlx::query_scalar("SELECT count(*) FROM generation_compaction_usage").fetch_one(&pool).await.unwrap();
+                let charges:i64=sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("COUNT(*)")).from(sea_orm::sea_query::Alias::new("generation_compaction_usage")).to_string(sea_orm::sea_query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
                 assert_eq!(charges,2,"both ancestor reservations precede disclosure");
                 let answers:serde_json::Map<_,_>=body["questions"].as_object().unwrap().keys().map(|k|(k.clone(),json!({"noul":0.0}))).collect();
                 Json(json!({"answers":answers}))
@@ -500,11 +565,20 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
         let (_, parent) = assign(&app, &token).await;
         aidash::generation::provision::reconcile(&f).await.unwrap();
         let parent_run = f.store.runs().await.unwrap().remove(0);
-        sqlx::query("UPDATE runs SET control='PAUSED' WHERE id=$1")
-            .bind(parent_run.id)
-            .execute(&f.store.pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            &sea_orm::sea_query::Query::update()
+                .table(sea_orm::sea_query::Alias::new("runs"))
+                .value(
+                    sea_orm::sea_query::Alias::new("control"),
+                    sea_orm::sea_query::Expr::cust("'PAUSED'"),
+                )
+                .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(parent_run.id)
+        .execute(&f.store.pool)
+        .await
+        .unwrap();
         if !approved {
             spec["compaction"] = Value::Null;
             assert_eq!(
@@ -532,7 +606,31 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
                 &parent_run.agent_version,
             ),
         ];
-        sqlx::query("INSERT INTO authorization_task_origins(task_id,source_run_id,tenant,root_subject,subject_chain) VALUES($1,$2,'acme','alice',$3)").bind(child_id).bind(parent_run.id).bind(chain).execute(&f.store.pool).await.unwrap();
+        sqlx::query(
+            &sea_orm::sea_query::Query::insert()
+                .into_table(sea_orm::sea_query::Alias::new("authorization_task_origins"))
+                .columns([
+                    sea_orm::sea_query::Alias::new("task_id"),
+                    sea_orm::sea_query::Alias::new("source_run_id"),
+                    sea_orm::sea_query::Alias::new("tenant"),
+                    sea_orm::sea_query::Alias::new("root_subject"),
+                    sea_orm::sea_query::Alias::new("subject_chain"),
+                ])
+                .values_panic([
+                    sea_orm::sea_query::Expr::cust("$1"),
+                    sea_orm::sea_query::Expr::cust("$2"),
+                    sea_orm::sea_query::Expr::cust("'acme'"),
+                    sea_orm::sea_query::Expr::cust("'alice'"),
+                    sea_orm::sea_query::Expr::cust("$3"),
+                ])
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(child_id)
+        .bind(parent_run.id)
+        .bind(chain)
+        .execute(&f.store.pool)
+        .await
+        .unwrap();
         let (status, child) = request(
             &app,
             &token,

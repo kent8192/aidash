@@ -34,6 +34,7 @@ impl MigrationTrait for Migration {
                     .to_owned(),
             )
             .await?;
+        // SeaQuery has no PostgreSQL CREATE TRIGGER builder.
         manager.get_connection().execute_unprepared("CREATE TRIGGER atomic_write_guard BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON authorization_remote_grant_reads FOR EACH STATEMENT EXECUTE FUNCTION atomic_write_guard()").await?;
         Ok(())
     }

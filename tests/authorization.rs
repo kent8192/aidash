@@ -23,6 +23,7 @@ async fn setup() -> (Router, Store, String, String) {
     let url = std::env::var("AIDASH_TEST_DATABASE_URL")
         .expect("AIDASH_TEST_DATABASE_URL must name a disposable PostgreSQL database");
     let schema = format!("authorization_{}", Uuid::new_v4().simple());
+    // SeaQuery has no CREATE/DROP SCHEMA builder; these DDL statements isolate fixtures.
     let mut admin = PgConnection::connect(&url).await.unwrap();
     admin
         .execute(format!("CREATE SCHEMA {schema}").as_str())
@@ -34,13 +35,26 @@ async fn setup() -> (Router, Store, String, String) {
         .after_connect(move |connection, _| {
             let schema = search_path.clone();
             Box::pin(async move {
-                sqlx::query(&format!("SET search_path TO {schema}"))
-                    .execute(&mut *connection)
-                    .await?;
-                sqlx::query("SELECT set_config('application_name', $1, false)")
-                    .bind(&schema)
-                    .execute(connection)
-                    .await?;
+                sqlx::query(
+                    &sea_orm::sea_query::Query::select()
+                        .expr(sea_orm::sea_query::Expr::cust(
+                            "set_config('search_path', $1, false)",
+                        ))
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                )
+                .bind(&schema)
+                .execute(&mut *connection)
+                .await?;
+                sqlx::query(
+                    &sea_orm::sea_query::Query::select()
+                        .expr(sea_orm::sea_query::Expr::cust(
+                            "SET_CONFIG('application_name', $1, FALSE)",
+                        ))
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                )
+                .bind(&schema)
+                .execute(connection)
+                .await?;
                 Ok(())
             })
         })
@@ -53,7 +67,7 @@ async fn setup() -> (Router, Store, String, String) {
         .unwrap();
     let federation = Federation {
         store: store.clone(),
-        registry: Registry::new(pool),
+        registry: Registry::new(pool, &store.node_id),
         config: Config {
             node_id: store.node_id.clone(),
             endpoint: "http://localhost:8080".into(),
@@ -135,6 +149,7 @@ async fn get(app: &Router, path: &str) -> (u16, Value) {
 async fn cleanup(store: Store, url: &str, schema: &str) {
     store.control_pool.close().await;
     store.pool.close().await;
+    // SeaQuery has no CREATE/DROP SCHEMA builder; these DDL statements isolate fixtures.
     let mut admin = PgConnection::connect(url).await.unwrap();
     admin
         .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
@@ -385,12 +400,17 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation() {
     assert!(!credentials.to_string().contains(token));
     assert!(!credentials.to_string().contains("token_hash"));
     assert_eq!(credentials[0]["id"], tokens[0]["credential"]["id"]);
-    let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM authorization_credentials WHERE token_hash=$1")
-            .bind(token.as_bytes())
-            .fetch_one(&store.pool)
-            .await
-            .unwrap();
+    let count: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new("authorization_credentials"))
+            .and_where(sea_orm::sea_query::Expr::cust("token_hash = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(token.as_bytes())
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
     assert_eq!(count, 0, "plaintext token was stored as a digest");
     let mut changed = workspace_policy("acme");
     changed["policies"] = json!([]);
@@ -601,10 +621,16 @@ async fn credential_revocation_serializes_with_workspace_mutation() {
     // Pause at the durable event boundary, after the authorized UPDATE and
     // before commit, to test the actual HTTP mutation rather than a dry run.
     let mut barrier = store.pool.begin().await.unwrap();
-    sqlx::query("SELECT pg_advisory_xact_lock(71003201)")
-        .execute(&mut *barrier)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust(
+                "PG_ADVISORY_XACT_LOCK(71003201)",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .execute(&mut *barrier)
+    .await
+    .unwrap();
     let patch = tokio::spawn({
         let app = app.clone();
         let token = token.clone();
@@ -622,22 +648,44 @@ async fn credential_revocation_serializes_with_workspace_mutation() {
     });
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND wait_event='advisory')")
+            let waiting: bool = sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name = $1 AND wait_event = 'advisory')")).to_string(sea_orm::sea_query::PostgresQueryBuilder))
                 .bind(&schema).fetch_one(&store.pool).await.unwrap();
             if waiting { break; }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }).await.expect("mutation did not reach its event boundary");
     for statement in [
-        "UPDATE authorization_credentials SET revoked_at=clock_timestamp() WHERE id=$1",
-        "UPDATE authorization_bundles SET updated_at=clock_timestamp() WHERE tenant='acme' AND $1::uuid IS NOT NULL",
+        sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("authorization_credentials"))
+            .value(
+                sea_orm::sea_query::Alias::new("revoked_at"),
+                sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP()"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("authorization_bundles"))
+            .value(
+                sea_orm::sea_query::Alias::new("updated_at"),
+                sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP()"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "tenant = 'acme' AND CAST($1 AS UUID) IS NOT NULL",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     ] {
         let mut attempt = store.pool.begin().await.unwrap();
-        sqlx::query("SET LOCAL lock_timeout='100ms'")
-            .execute(&mut *attempt)
-            .await
-            .unwrap();
-        let error = sqlx::query(statement)
+        sqlx::query(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::Expr::cust(
+                    "set_config('lock_timeout','100ms',true)",
+                ))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .execute(&mut *attempt)
+        .await
+        .unwrap();
+        let error = sqlx::query(&statement)
             .bind(credential_id)
             .execute(&mut *attempt)
             .await
@@ -749,8 +797,24 @@ async fn credential_issuance_validates_subjects_lifetime_and_tenant_revocation()
             .0,
         403
     );
-    sqlx::query("UPDATE authorization_credentials SET created_at=clock_timestamp()-interval '2 hours',expires_at=clock_timestamp()-interval '1 hour' WHERE id=$1")
-        .bind(Uuid::parse_str(id).unwrap()).execute(&store.pool).await.unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("authorization_credentials"))
+            .value(
+                sea_orm::sea_query::Alias::new("created_at"),
+                sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP() - INTERVAL '2 HOURS'"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("expires_at"),
+                sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP() - INTERVAL '1 HOUR'"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(Uuid::parse_str(id).unwrap())
+    .execute(&store.pool)
+    .await
+    .unwrap();
     assert_eq!(
         scoped_request(&app, token, "GET", "/api/state", Value::Null)
             .await
@@ -797,8 +861,18 @@ async fn denied_reads_cannot_be_bypassed_through_workspace_update_responses() {
     let unchanged = store.workspace(id).await.unwrap();
     assert_eq!(unchanged.revision, 0);
     assert_eq!(unchanged.state, json!({}));
-    let rejected: i64 = sqlx::query_scalar("SELECT count(*) FROM authorization_decisions WHERE action='workspace.read' AND decision->>'reason'='explicit_deny'")
-        .fetch_one(&store.pool).await.unwrap();
+    let rejected: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new("authorization_decisions"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "action = 'workspace.read' AND decision ->> 'reason' = 'explicit_deny'",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
     assert_eq!(
         rejected, 1,
         "denied request must remain in the audit without committing a mutation"
@@ -840,20 +914,30 @@ async fn authorization_api_enforces_policy_revision_revocation_and_audit() {
     let mut absent = evaluation();
     absent["resource"]["attributes"] = json!({});
     assert_eq!(request(&app, path, absent, true).await.1["allowed"], false);
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM authorization_decisions")
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
+    let count: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new("authorization_decisions"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
     assert_eq!(
         request(&app, "/api/authorization/acme/simulate", evaluation(), true)
             .await
             .1["allowed"],
         true
     );
-    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM authorization_decisions")
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
+    let after: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new("authorization_decisions"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
     assert_eq!(count, after, "dry-run must not add an audit record");
 
     policy["policies"].as_array_mut().unwrap().push(json!({
@@ -902,11 +986,16 @@ async fn authorization_api_enforces_policy_revision_revocation_and_audit() {
         request(&app, path, evaluation(), true).await.1["reason"],
         "subject_disabled"
     );
-    let history: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM authorization_revisions WHERE tenant='acme'")
-            .fetch_one(&store.pool)
-            .await
-            .unwrap();
+    let history: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new("authorization_revisions"))
+            .and_where(sea_orm::sea_query::Expr::cust("tenant = 'acme'"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
     assert_eq!(history, 3);
     let (status, snapshot) = get(&app, "/api/authorization/acme").await;
     assert_eq!(status, 200);
@@ -949,15 +1038,29 @@ async fn authorization_transaction_blocks_revocation_and_concurrent_updates_keep
         .unwrap();
     assert!(decision.allowed);
     let mut concurrent = store.pool.begin().await.unwrap();
-    sqlx::query("SET LOCAL lock_timeout = '100ms'")
-        .execute(&mut *concurrent)
-        .await
-        .unwrap();
-    let error =
-        sqlx::query("UPDATE authorization_bundles SET revision=revision+1 WHERE tenant='acme'")
-            .execute(&mut *concurrent)
-            .await
-            .unwrap_err();
+    sqlx::query(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust(
+                "set_config('lock_timeout','100ms',true)",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .execute(&mut *concurrent)
+    .await
+    .unwrap();
+    let error = sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("authorization_bundles"))
+            .value(
+                sea_orm::sea_query::Alias::new("revision"),
+                sea_orm::sea_query::Expr::cust("revision + 1"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("tenant = 'acme'"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .execute(&mut *concurrent)
+    .await
+    .unwrap_err();
     assert_eq!(
         error.as_database_error().and_then(|e| e.code()).as_deref(),
         Some("55P03")

@@ -63,3 +63,34 @@ The default endpoint is `https://api.typesafe.ai/v1/systemone` and the default m
 The node is a self-hosted package repository. A manifest includes the versioned entity, author, permissions and dependencies. Publication is immutable. Installation verifies the SHA-256 digest, validates dependencies and atomically registers the entity with local installation configuration. This version distributes declarative manifests; it does not execute downloaded code, operate a public SaaS marketplace or handle payments.
 
 UI strings live in `web/src/locales/en-US.json` and `ja-JP.json`. Entity names and descriptions are localized maps. Agent language capabilities are separate metadata used by local and remote discovery. Message translation is not automatic.
+
+### Bounded inspection and retry identifiers
+
+`GET /api/tasks?offset=N` returns up to 500 authorized tasks, newest first, with
+`next_offset` for the next page. `/api/state` includes only the first task page.
+`GET /api/runs/{id}?offset=N` returns at most 100 invocation previews; request the
+next offset when a page is full. Inputs/results over 1 KiB are represented by an
+explicit `truncated` marker and text preview. Durable execution records retain
+original values. Credential inventories use `?offset=N` pages of 200 records.
+Scoped collections fill pages after authorization checks.
+
+Federation discovery returns `entries` and `next_offset`, with at most 64 entries
+and 3 MB of metadata per response. Exact delegation validation uses
+`GET /federation/v0.1/discover/{id}/{version}`. Generated task-bound agents are
+excluded from these legacy discovery routes. Observation returns at most 100
+runs, human requests and invocation previews; run context and pending payloads
+remain available through the authorized run detail API.
+
+Run-message and remote message controls accept a UUID `idempotency_key`. Reuse
+that key when retrying an ambiguous request. The dashboard keeps it until that
+submission succeeds. A stream request with `Last-Event-ID: -1` starts from the
+current high-water mark; the dashboard refreshes state after the connection is
+established and then resumes from acknowledged event IDs on reconnect.
+
+Optional workspace snapshots are reduced to the selected model's available
+context budget before history compaction, with a `snapshot_truncated` marker.
+The durable workspace remains intact and tools can retrieve omitted details.
+Automatic semantic retrieval skips budgets too small to contain provenance.
+
+Agent registration rejects instructions, referenced skills and tool definitions
+that cannot fit the selected model window with output and context reserves.

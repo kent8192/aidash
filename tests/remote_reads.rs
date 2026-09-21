@@ -40,8 +40,8 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
     });
     let a_app = api::router(a.clone());
     let b_app = api::router(b.clone());
-    let (_, token, task) = bootstrap(&a, &a_app, &endpoint).await;
-    bootstrap(&b, &b_app, "http://localhost:1").await;
+    let (a_policy, token, task) = bootstrap(&a, &a_app, &endpoint).await;
+    let (b_policy, _, _) = bootstrap(&b, &b_app, "http://localhost:1").await;
     let mut entry = b.registry.get("research", "1.0.0").await.unwrap();
     entry.id = "remote-only".into();
     entry
@@ -49,8 +49,29 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
         .insert("en".into(), "remote-private-metadata".into());
     b.registry.register(entry).await.unwrap();
     assert_eq!(request(&b_app,&b.config.api_token,"POST","/api/authorization/acme/catalog",json!({"entry":{"id":"remote-only","version":"1.0.0"},"expected_revision":0,"enabled":true})).await.0,200);
-    sqlx::query("INSERT INTO peers(node_id,endpoint,credential_env,protocol_version,enabled) VALUES($1,'http://localhost:1','AIDASH_SECRET_TEST_PEER','0.1',true)")
-        .bind(&a.config.node_id).execute(&b.store.pool).await.unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("peers"))
+            .columns([
+                sea_orm::sea_query::Alias::new("node_id"),
+                sea_orm::sea_query::Alias::new("endpoint"),
+                sea_orm::sea_query::Alias::new("credential_env"),
+                sea_orm::sea_query::Alias::new("protocol_version"),
+                sea_orm::sea_query::Alias::new("enabled"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("'http://localhost:1'"),
+                sea_orm::sea_query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"),
+                sea_orm::sea_query::Expr::cust("'0.1'"),
+                sea_orm::sea_query::Expr::cust("TRUE"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(&a.config.node_id)
+    .execute(&b.store.pool)
+    .await
+    .unwrap();
     let (_, issued) = request(
         &b_app,
         &b.config.api_token,
@@ -92,7 +113,13 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
         loop {
             worker.worker_once().await.unwrap();
             let count: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM authorization_run_remote_reads WHERE entry_id='remote-only'",
+                &sea_orm::sea_query::Query::select()
+                    .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+                    .from(sea_orm::sea_query::Alias::new(
+                        "authorization_run_remote_reads",
+                    ))
+                    .and_where(sea_orm::sea_query::Expr::cust("entry_id = 'remote-only'"))
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
             )
             .fetch_one(&a.store.pool)
             .await
@@ -117,24 +144,89 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
         serde_json::to_value(b.registry.get("remote-only", "1.0.0").await.unwrap()).unwrap();
     let mut altered = original.clone();
     altered["description"]["en"] = json!("substituted metadata");
-    sqlx::query("UPDATE registry SET metadata=$1 WHERE id='remote-only'")
-        .bind(altered)
-        .execute(&b.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("registry"))
+            .value(
+                sea_orm::sea_query::Alias::new("metadata"),
+                sea_orm::sea_query::Expr::cust("$1"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = 'remote-only'"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(altered)
+    .execute(&b.store.pool)
+    .await
+    .unwrap();
     assert_eq!(
         request(&a_app, &token, "GET", &path, Value::Null).await.0,
         403
     );
-    sqlx::query("UPDATE registry SET metadata=$1 WHERE id='remote-only'")
-        .bind(original)
-        .execute(&b.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("registry"))
+            .value(
+                sea_orm::sea_query::Alias::new("metadata"),
+                sea_orm::sea_query::Expr::cust("$1"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = 'remote-only'"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(original)
+    .execute(&b.store.pool)
+    .await
+    .unwrap();
     assert_eq!(
         request(&a_app, &token, "GET", &path, Value::Null).await.0,
         200
     );
+
+    // Discovery admitted both read and execution authority. Revoke only execution
+    // independently at each end while the catalog and credentials remain valid.
+    for (node, app, original, resource) in [
+        (
+            &a,
+            &a_app,
+            &a_policy,
+            aidash::domain::qualified_agent(&b.config.node_id, "remote-only", "1.0.0"),
+        ),
+        (&b, &b_app, &b_policy, "remote-only".to_owned()),
+    ] {
+        let mut denied = original.clone();
+        denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny-remote-execution","effect":"deny","subjects":{"ids":["alice"]},"actions":["agent.execute"],"resources":{"kinds":["agent"],"ids":[resource]}}));
+        assert_eq!(
+            request(
+                app,
+                &node.config.api_token,
+                "POST",
+                "/api/authorization/acme",
+                json!({"expected_revision":1,"bundle":denied})
+            )
+            .await
+            .0,
+            200
+        );
+        assert_eq!(
+            request(&a_app, &token, "GET", &path, Value::Null).await.0,
+            403
+        );
+        assert_eq!(
+            request(
+                app,
+                &node.config.api_token,
+                "POST",
+                "/api/authorization/acme",
+                json!({"expected_revision":2,"bundle":original})
+            )
+            .await
+            .0,
+            200
+        );
+        assert_eq!(
+            request(&a_app, &token, "GET", &path, Value::Null).await.0,
+            200
+        );
+    }
 
     assert_eq!(request(&b_app,&b.config.api_token,"POST","/api/authorization/acme/catalog",json!({"entry":{"id":"remote-only","version":"1.0.0"},"expected_revision":1,"enabled":false})).await.0,200);
     assert_eq!(

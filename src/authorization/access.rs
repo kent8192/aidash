@@ -57,9 +57,6 @@ impl Access {
     ) -> Result<Self> {
         let mut tx = store.pool.begin().await?;
         let snapshot = identity.lock_with_mode(&mut tx, exclusive).await?;
-        sqlx::query("SAVEPOINT authorization_operation")
-            .execute(&mut *tx)
-            .await?;
         Ok(Self {
             remote_read_cache: Default::default(),
             unavailable_peers: Default::default(),
@@ -88,10 +85,7 @@ impl Access {
     // The caller retains the outer Access until this mutation commits. Reusing
     // its locks avoids queuing a second shared lock behind a waiting revoker.
     pub async fn under_lease(lease: &Self) -> Result<Self> {
-        let mut tx = lease.pool.begin().await?;
-        sqlx::query("SAVEPOINT authorization_operation")
-            .execute(&mut *tx)
-            .await?;
+        let tx = lease.pool.begin().await?;
         Ok(Self {
             remote_read_cache: Default::default(),
             unavailable_peers: Default::default(),
@@ -223,21 +217,23 @@ impl Access {
     }
 
     pub async fn finish<T>(mut self, result: Result<T>) -> Result<T> {
-        if result.is_ok() || matches!(result, Err(Error::Forbidden)) {
-            // A compound operation can discover a denial after creating rows.
-            // Retain the decision audit while removing every protected change.
-            // Policy and credential locks predate the savepoint and remain held.
-            if result.is_err() {
-                sqlx::query("ROLLBACK TO SAVEPOINT authorization_operation")
-                    .execute(&mut *self.tx)
-                    .await?;
-            }
+        if result.is_ok() {
             for (input, decision) in &self.pending_decisions {
                 Authorization::record(&mut self.tx, &self.identity.tenant, input, decision).await?;
             }
             self.tx.commit().await?;
         } else {
             self.tx.rollback().await?;
+            if matches!(result, Err(Error::Forbidden)) {
+                // Roll back every protected change, then retain the denial with
+                // its evaluated policy revision in a separate audit transaction.
+                let mut audit = self.pool.begin().await?;
+                for (input, decision) in &self.pending_decisions {
+                    Authorization::record(&mut audit, &self.identity.tenant, input, decision)
+                        .await?;
+                }
+                audit.commit().await?;
+            }
         }
         result
     }

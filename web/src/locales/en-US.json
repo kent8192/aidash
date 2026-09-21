@@ -51,6 +51,8 @@
   "capabilities": "Capabilities",
   "languages": "Supported languages",
   "permissions": "Permissions",
+  "parentTask": "Parent task",
+  "noParent": "No parent",
   "dependencies": "Dependencies",
   "author": "Author",
   "save": "Save",

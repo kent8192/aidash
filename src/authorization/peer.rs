@@ -81,8 +81,32 @@ async fn history(
     if page.after < 0 || !(1..=200).contains(&page.limit) {
         return Err(Error::Invalid("invalid history page".into()));
     }
-    Ok(Json(sqlx::query_as("SELECT * FROM authorization_peer_mapping_history WHERE tenant=$1 AND sequence>$2 ORDER BY sequence LIMIT $3")
-        .bind(tenant).bind(page.after).bind(page.limit).fetch_all(&f.store.pool).await?))
+    Ok(Json(
+        sqlx::query_as(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                ))
+                .from(sea_orm::sea_query::Alias::new(
+                    "authorization_peer_mapping_history",
+                ))
+                .and_where(sea_orm::sea_query::Expr::cust(
+                    "tenant = $1 AND sequence > $2",
+                ))
+                .order_by_expr(
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("sequence"),
+                    )),
+                    sea_orm::sea_query::Order::Asc,
+                )
+                .limit(page.limit as u64)
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(tenant)
+        .bind(page.after)
+        .fetch_all(&f.store.pool)
+        .await?,
+    ))
 }
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -103,8 +127,42 @@ async fn list(
     if page.offset < 0 || !(1..=200).contains(&page.limit) {
         return Err(Error::Invalid("invalid mapping page".into()));
     }
-    Ok(Json(sqlx::query_as("SELECT * FROM authorization_peer_mappings WHERE tenant=$1 ORDER BY source_node,source_tenant,source_subject LIMIT $2 OFFSET $3")
-        .bind(tenant).bind(page.limit).bind(page.offset).fetch_all(&f.store.pool).await?))
+    Ok(Json(
+        sqlx::query_as(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                ))
+                .from(sea_orm::sea_query::Alias::new(
+                    "authorization_peer_mappings",
+                ))
+                .and_where(sea_orm::sea_query::Expr::cust("tenant = $1"))
+                .order_by_expr(
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("source_node"),
+                    )),
+                    sea_orm::sea_query::Order::Asc,
+                )
+                .order_by_expr(
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("source_tenant"),
+                    )),
+                    sea_orm::sea_query::Order::Asc,
+                )
+                .order_by_expr(
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("source_subject"),
+                    )),
+                    sea_orm::sea_query::Order::Asc,
+                )
+                .limit(page.limit as u64)
+                .offset(page.offset as u64)
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(tenant)
+        .fetch_all(&f.store.pool)
+        .await?,
+    ))
 }
 #[utoipa::path(post,path="/authorization/{tenant}/peer-mappings",operation_id="authorization_set_peer_mapping",params(("tenant"=String,Path)),request_body=PeerMappingInput,responses((status=200,body=PeerMapping)),security(("bearer_auth"=[])))]
 async fn set(
@@ -128,7 +186,14 @@ pub async fn write(f: &Federation, tenant: &str, input: PeerMappingInput) -> Res
     let mut tx = f.store.pool.begin().await?;
     Authorization::load(&mut tx, tenant).await?;
     let subject: Option<String> = sqlx::query_scalar(
-        "SELECT subject FROM authorization_credentials WHERE tenant=$1 AND id=$2 FOR SHARE",
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("subject")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("authorization_credentials"))
+            .and_where(sea_orm::sea_query::Expr::cust("tenant = $1 AND id = $2"))
+            .lock(sea_orm::sea_query::LockType::Share)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(tenant)
     .bind(input.credential_id)
@@ -146,14 +211,48 @@ pub async fn write(f: &Federation, tenant: &str, input: PeerMappingInput) -> Res
             .map_err(mapping_authority_error)?;
     }
     let mapping: PeerMapping = if input.expected_revision == 0 {
-        sqlx::query_as("INSERT INTO authorization_peer_mappings(source_node,source_tenant,source_subject,tenant,credential_id,enabled,revision,actor) VALUES($1,$2,$3,$4,$5,$6,1,'operator') ON CONFLICT DO NOTHING RETURNING *")
+        sqlx::query_as(&sea_orm::sea_query::Query::insert().into_table(sea_orm::sea_query::Alias::new("authorization_peer_mappings")).columns([sea_orm::sea_query::Alias::new("source_node"), sea_orm::sea_query::Alias::new("source_tenant"), sea_orm::sea_query::Alias::new("source_subject"), sea_orm::sea_query::Alias::new("tenant"), sea_orm::sea_query::Alias::new("credential_id"), sea_orm::sea_query::Alias::new("enabled"), sea_orm::sea_query::Alias::new("revision"), sea_orm::sea_query::Alias::new("actor")]).values_panic([sea_orm::sea_query::Expr::cust("$1"), sea_orm::sea_query::Expr::cust("$2"), sea_orm::sea_query::Expr::cust("$3"), sea_orm::sea_query::Expr::cust("$4"), sea_orm::sea_query::Expr::cust("$5"), sea_orm::sea_query::Expr::cust("$6"), sea_orm::sea_query::Expr::cust("1"), sea_orm::sea_query::Expr::cust("'operator'")]).on_conflict(sea_orm::sea_query::OnConflict::new().do_nothing().to_owned()).returning_all().to_string(sea_orm::sea_query::PostgresQueryBuilder))
             .bind(&input.source_node).bind(&input.source_tenant).bind(&input.source_subject).bind(tenant).bind(input.credential_id).bind(input.enabled).fetch_optional(&mut *tx).await?
     } else {
-        sqlx::query_as("UPDATE authorization_peer_mappings SET credential_id=$5,enabled=$6,revision=revision+1,actor='operator',updated_at=clock_timestamp() WHERE source_node=$1 AND source_tenant=$2 AND source_subject=$3 AND tenant=$4 AND revision=$7 RETURNING *")
+        sqlx::query_as(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("authorization_peer_mappings")).value(sea_orm::sea_query::Alias::new("credential_id"), sea_orm::sea_query::Expr::cust("$5")).value(sea_orm::sea_query::Alias::new("enabled"), sea_orm::sea_query::Expr::cust("$6")).value(sea_orm::sea_query::Alias::new("revision"), sea_orm::sea_query::Expr::cust("revision + 1")).value(sea_orm::sea_query::Alias::new("actor"), sea_orm::sea_query::Expr::cust("'operator'")).value(sea_orm::sea_query::Alias::new("updated_at"), sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP()")).and_where(sea_orm::sea_query::Expr::cust("source_node = $1 AND source_tenant = $2 AND source_subject = $3 AND tenant = $4 AND revision = $7")).returning_all().to_string(sea_orm::sea_query::PostgresQueryBuilder))
             .bind(&input.source_node).bind(&input.source_tenant).bind(&input.source_subject).bind(tenant).bind(input.credential_id).bind(input.enabled).bind(input.expected_revision).fetch_optional(&mut *tx).await?
     }.ok_or_else(|| Error::Conflict("peer mapping revision or tenant changed".into()))?;
-    sqlx::query("INSERT INTO authorization_peer_mapping_history(source_node,source_tenant,source_subject,tenant,credential_id,enabled,revision,actor) VALUES($1,$2,$3,$4,$5,$6,$7,'operator')")
-        .bind(&mapping.source_node).bind(&mapping.source_tenant).bind(&mapping.source_subject).bind(&mapping.tenant).bind(mapping.credential_id).bind(mapping.enabled).bind(mapping.revision).execute(&mut *tx).await?;
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new(
+                "authorization_peer_mapping_history",
+            ))
+            .columns([
+                sea_orm::sea_query::Alias::new("source_node"),
+                sea_orm::sea_query::Alias::new("source_tenant"),
+                sea_orm::sea_query::Alias::new("source_subject"),
+                sea_orm::sea_query::Alias::new("tenant"),
+                sea_orm::sea_query::Alias::new("credential_id"),
+                sea_orm::sea_query::Alias::new("enabled"),
+                sea_orm::sea_query::Alias::new("revision"),
+                sea_orm::sea_query::Alias::new("actor"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("$3"),
+                sea_orm::sea_query::Expr::cust("$4"),
+                sea_orm::sea_query::Expr::cust("$5"),
+                sea_orm::sea_query::Expr::cust("$6"),
+                sea_orm::sea_query::Expr::cust("$7"),
+                sea_orm::sea_query::Expr::cust("'operator'"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(&mapping.source_node)
+    .bind(&mapping.source_tenant)
+    .bind(&mapping.source_subject)
+    .bind(&mapping.tenant)
+    .bind(mapping.credential_id)
+    .bind(mapping.enabled)
+    .bind(mapping.revision)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(mapping)
 }
@@ -176,10 +275,33 @@ fn mapping_authority_error(error: Error) -> Error {
 async fn access(f: &Federation, node: &str, tenant: &str, subject: &str) -> Result<Access> {
     identifier(tenant)?;
     identifier(subject)?;
-    let mapping: PeerMapping = sqlx::query_as("SELECT * FROM authorization_peer_mappings WHERE source_node=$1 AND source_tenant=$2 AND source_subject=$3 AND enabled")
-        .bind(node).bind(tenant).bind(subject).fetch_optional(&f.store.pool).await?.ok_or(Error::Forbidden)?;
+    let mapping: PeerMapping = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new(
+                "authorization_peer_mappings",
+            ))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "source_node = $1 AND source_tenant = $2 AND source_subject = $3 AND enabled",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(node)
+    .bind(tenant)
+    .bind(subject)
+    .fetch_optional(&f.store.pool)
+    .await?
+    .ok_or(Error::Forbidden)?;
     let local_subject: String = sqlx::query_scalar(
-        "SELECT subject FROM authorization_credentials WHERE id=$1 AND tenant=$2",
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("subject")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("authorization_credentials"))
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1 AND tenant = $2"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(mapping.credential_id)
     .bind(&mapping.tenant)
@@ -199,18 +321,43 @@ async fn access(f: &Federation, node: &str, tenant: &str, subject: &str) -> Resu
     // Lock in the same order as management: policy, credential, then mapping.
     // A binding changed between resolution and this lease cannot select a new
     // credential or tenant under the old identity.
-    let current: Option<PeerMapping> = sqlx::query_as("SELECT * FROM authorization_peer_mappings WHERE source_node=$1 AND source_tenant=$2 AND source_subject=$3 AND enabled FOR SHARE")
-        .bind(node).bind(tenant).bind(subject).fetch_optional(&mut *access.tx).await?;
+    let current: Option<PeerMapping> = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new(
+                "authorization_peer_mappings",
+            ))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "source_node = $1 AND source_tenant = $2 AND source_subject = $3 AND enabled",
+            ))
+            .lock(sea_orm::sea_query::LockType::Share)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(node)
+    .bind(tenant)
+    .bind(subject)
+    .fetch_optional(&mut *access.tx)
+    .await?;
     if current.as_ref() != Some(&mapping) {
         return Err(Error::Forbidden);
     }
     // Retain enabled peer admission through the metadata read, just as the
     // mapped policy, credential and binding remain leased until completion.
-    let enabled: Option<String> =
-        sqlx::query_scalar("SELECT node_id FROM peers WHERE node_id=$1 AND enabled FOR SHARE")
-            .bind(node)
-            .fetch_optional(&mut *access.tx)
-            .await?;
+    let enabled: Option<String> = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("node_id")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("peers"))
+            .and_where(sea_orm::sea_query::Expr::cust("node_id = $1 AND enabled"))
+            .lock(sea_orm::sea_query::LockType::Share)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(node)
+    .fetch_optional(&mut *access.tx)
+    .await?;
     if enabled.is_none() {
         return Err(Error::Forbidden);
     }

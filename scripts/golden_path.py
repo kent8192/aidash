@@ -234,6 +234,8 @@ def main():
     parser.add_argument("--keep", action="store_true", help="Keep the completed local demo running until interrupted")
     parser.add_argument("--dashboard", action="store_true", help="Submit the golden path goal through Chromium instead of the API")
     args = parser.parse_args()
+    query_helper = pathlib.Path(args.binary).resolve().parent / "examples" / "acceptance_queries"
+    queries = json.loads(subprocess.check_output([str(query_helper)], text=True))
     run_id = uuid.uuid4().hex[:12]
     db_a, db_b = f"aidash_e2e_{run_id}_a", f"aidash_e2e_{run_id}_b"
     node_a, node_b = f"aidash://acceptance-{run_id}-a", f"aidash://acceptance-{run_id}-b"
@@ -271,6 +273,7 @@ def main():
             pass
 
     try:
+        # SeaQuery has no CREATE/DROP DATABASE builder; fixture isolation DDL only.
         psql("aidash_a", f"CREATE DATABASE {db_a}")
         psql("aidash_a", f"CREATE DATABASE {db_b}")
         launch(node_a, db_a, port_a, "server")
@@ -325,13 +328,13 @@ def main():
         assert max(fixture.requests.values()) >= 2, "A remote invocation should have been replayed with the same key"
         assert fixture.provider_calls["openai"] > 0 and fixture.provider_calls["anthropic"] > 0
         wait_for(lambda: any(e["type"] == "task.completed" for e in stream_events), label="SSE result delivery")
-        pending_events = int(psql(db_a, "SELECT count(*) FROM events WHERE published_at IS NULL"))
+        pending_events = int(psql(db_a, queries["pending_events"]))
         assert pending_events > 0, "Outage must leave durable events awaiting publication"
-        assert int(psql(db_a, "SELECT count(*) FROM inbox")) == 0
+        assert int(psql(db_a, queries["inbox"])) == 0
         print(f"Servers, workers and SIGKILL recovery passed with NATS unavailable; {pending_events} events queued", flush=True)
         nats_proxy.restore()
-        wait_for(lambda: int(psql(db_a, "SELECT count(*) FROM events WHERE published_at IS NULL")) == 0, label="outbox flush after broker recovery")
-        wait_for(lambda: int(psql(db_a, "SELECT count(*) FROM inbox")) > 0, label="JetStream durable consumption")
+        wait_for(lambda: int(psql(db_a, queries["pending_events"])) == 0, label="outbox flush after broker recovery")
+        wait_for(lambda: int(psql(db_a, queries["inbox"])) > 0, label="JetStream durable consumption")
         assert len({e["id"] for e in stream_events}) == len(stream_events)
         last_sequence = stream_events[-1]["sequence"]
         replay = api_request(base_a, f"/api/events?after={last_sequence - 1}")

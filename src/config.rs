@@ -100,7 +100,7 @@ pub fn validate_endpoint(endpoint: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn secret(name: &str) -> Result<String> {
+pub fn validate_secret_reference(name: &str) -> Result<()> {
     if !name.starts_with("AIDASH_SECRET_")
         || !name
             .chars()
@@ -110,6 +110,10 @@ pub fn secret(name: &str) -> Result<String> {
             "credential references must use AIDASH_SECRET_* environment variables".into(),
         ));
     }
+    Ok(())
+}
+pub fn secret(name: &str) -> Result<String> {
+    validate_secret_reference(name)?;
     env::var(name)
         .map_err(|_| Error::Invalid(format!("credential reference {name} is not configured")))
 }

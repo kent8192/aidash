@@ -59,7 +59,30 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
         200
     );
     for (local, other) in [(&a, &b), (&b, &a)] {
-        sqlx::query("INSERT INTO peers(node_id,endpoint,credential_env,protocol_version,enabled) VALUES($1,$2,'AIDASH_SECRET_TEST_PEER','0.1',true)").bind(&other.config.node_id).bind(&other.config.endpoint).execute(&local.store.pool).await.unwrap();
+        sqlx::query(
+            &sea_orm::sea_query::Query::insert()
+                .into_table(sea_orm::sea_query::Alias::new("peers"))
+                .columns([
+                    sea_orm::sea_query::Alias::new("node_id"),
+                    sea_orm::sea_query::Alias::new("endpoint"),
+                    sea_orm::sea_query::Alias::new("credential_env"),
+                    sea_orm::sea_query::Alias::new("protocol_version"),
+                    sea_orm::sea_query::Alias::new("enabled"),
+                ])
+                .values_panic([
+                    sea_orm::sea_query::Expr::cust("$1"),
+                    sea_orm::sea_query::Expr::cust("$2"),
+                    sea_orm::sea_query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"),
+                    sea_orm::sea_query::Expr::cust("'0.1'"),
+                    sea_orm::sea_query::Expr::cust("TRUE"),
+                ])
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(&other.config.node_id)
+        .bind(&other.config.endpoint)
+        .execute(&local.store.pool)
+        .await
+        .unwrap();
     }
     let (_, credential) = request(
         &ba,
@@ -269,23 +292,41 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
         200
     );
     // Source outage cannot be replaced with the previously accepted grant.
-    sqlx::query("UPDATE peers SET endpoint='http://127.0.0.1:1' WHERE node_id=$1")
-        .bind(&a.config.node_id)
-        .execute(&b.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("peers"))
+            .value(
+                sea_orm::sea_query::Alias::new("endpoint"),
+                sea_orm::sea_query::Expr::cust("'http://127.0.0.1:1'"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("node_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(&a.config.node_id)
+    .execute(&b.store.pool)
+    .await
+    .unwrap();
     assert_ne!(
         peer(&fresh_app, &a.config.node_id, &verification, json!({}))
             .await
             .0,
         200
     );
-    sqlx::query("UPDATE peers SET endpoint=$2 WHERE node_id=$1")
-        .bind(&a.config.node_id)
-        .bind(&a.config.endpoint)
-        .execute(&b.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("peers"))
+            .value(
+                sea_orm::sea_query::Alias::new("endpoint"),
+                sea_orm::sea_query::Expr::cust("$2"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("node_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(&a.config.node_id)
+    .bind(&a.config.endpoint)
+    .execute(&b.store.pool)
+    .await
+    .unwrap();
     assert_eq!(
         peer(&fresh_app, &a.config.node_id, &verification, json!({}))
             .await
@@ -376,10 +417,17 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
         .0,
         200
     );
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM authorization_remote_admissions")
-        .fetch_one(&b.store.pool)
-        .await
-        .unwrap();
+    let count: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new(
+                "authorization_remote_admissions",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&b.store.pool)
+    .await
+    .unwrap();
     assert_eq!(count, 1);
     // Race scoped admission against legacy run creation for a fresh task. The
     // two modes must never both commit, regardless of which request wins.
@@ -418,15 +466,30 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
         b.store
             .accept_run(&candidate, &a.config.node_id, "research", "1.0.0")
     );
-    let runs: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM runs WHERE home_node=$1 AND task_id=$2")
-            .bind(&a.config.node_id)
-            .bind(candidate.id)
-            .fetch_one(&b.store.pool)
-            .await
-            .unwrap();
+    let runs: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new("runs"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "home_node = $1 AND task_id = $2",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(&a.config.node_id)
+    .bind(candidate.id)
+    .fetch_one(&b.store.pool)
+    .await
+    .unwrap();
     let admissions: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM authorization_remote_admissions WHERE source_node=$1 AND task_id=$2",
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new(
+                "authorization_remote_admissions",
+            ))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "source_node = $1 AND task_id = $2",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(&a.config.node_id)
     .bind(candidate.id)
@@ -441,20 +504,30 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
     match legacy {
         Ok(run) => {
             assert_eq!(scoped.0, 409);
-            sqlx::query("DELETE FROM runs WHERE id=$1")
-                .bind(run.id)
-                .execute(&b.store.pool)
-                .await
-                .unwrap();
+            sqlx::query(
+                &sea_orm::sea_query::Query::delete()
+                    .from_table(sea_orm::sea_query::Alias::new("runs"))
+                    .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+            )
+            .bind(run.id)
+            .execute(&b.store.pool)
+            .await
+            .unwrap();
         }
         Err(aidash::Error::Forbidden) => assert_eq!(scoped.0, 200),
         Err(error) => panic!("unexpected legacy admission error: {error}"),
     }
     for f in [&a, &b] {
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM runs")
-            .fetch_one(&f.store.pool)
-            .await
-            .unwrap();
+        let count: i64 = sqlx::query_scalar(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+                .from(sea_orm::sea_query::Alias::new("runs"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .fetch_one(&f.store.pool)
+        .await
+        .unwrap();
         assert_eq!(
             count, 0,
             "admission may not bypass scoped worker activation"

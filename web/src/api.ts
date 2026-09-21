@@ -4,7 +4,7 @@ export async function subscribe(
   onEvent: () => void,
   onStatus: (status: "live" | "reconnecting") => void,
 ) {
-  let cursor = "0";
+  let cursor = "-1";
   while (!signal.aborted) {
     try {
       const response = await stream(undefined, {
@@ -15,6 +15,7 @@ export async function subscribe(
       });
       if (!response.ok || !response.body) throw new Error("stream unavailable");
       onStatus("live");
+      onEvent();
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";

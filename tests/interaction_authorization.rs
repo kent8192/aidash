@@ -21,19 +21,34 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans() 
         request(&app, &token, "POST", "/api/conversations", conversation()).await;
     assert_eq!(status, 200, "{created}");
     let workspace = created["workspace"]["id"].as_str().unwrap();
-    let run: Run = sqlx::query_as("SELECT * FROM runs WHERE workspace_id=$1")
-        .bind(workspace.parse::<Uuid>().unwrap())
-        .fetch_one(&f.store.pool)
-        .await
-        .unwrap();
+    let run: Run = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("runs"))
+            .and_where(sea_orm::sea_query::Expr::cust("workspace_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(workspace.parse::<Uuid>().unwrap())
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(created["task"]["status"], "CLAIMED");
     assert_eq!(created["delegation"]["delivered"], true);
-    let chain: Vec<String> =
-        sqlx::query_scalar("SELECT subject_chain FROM authorization_execution WHERE run_id=$1")
-            .bind(run.id)
-            .fetch_one(&f.store.pool)
-            .await
-            .unwrap();
+    let chain: Vec<String> = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("subject_chain")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("authorization_execution"))
+            .and_where(sea_orm::sea_query::Expr::cust("run_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(run.id)
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(
         chain,
         vec![
@@ -41,13 +56,21 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans() 
             qualified_agent(&f.config.node_id, "research", "1.0.0")
         ]
     );
-    let sender: String = sqlx::query_scalar("SELECT sender FROM messages WHERE workspace_id=$1")
-        .bind(run.workspace_id)
-        .fetch_one(&f.store.pool)
-        .await
-        .unwrap();
+    let sender: String = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("sender")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("messages"))
+            .and_where(sea_orm::sea_query::Expr::cust("workspace_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(run.workspace_id)
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(sender, "alice");
-    let before:Value=sqlx::query_scalar("SELECT jsonb_build_array((SELECT count(*) FROM workspaces),(SELECT count(*) FROM authorization_workspaces),(SELECT count(*) FROM tasks),(SELECT count(*) FROM conversations),(SELECT count(*) FROM runs),(SELECT count(*) FROM messages),(SELECT count(*) FROM events))").fetch_one(&f.store.pool).await.unwrap();
+    let before:Value=sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("JSONB_BUILD_ARRAY((SELECT COUNT(*) FROM workspaces), (SELECT COUNT(*) FROM authorization_workspaces), (SELECT COUNT(*) FROM tasks), (SELECT COUNT(*) FROM conversations), (SELECT COUNT(*) FROM runs), (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM events))")).to_string(sea_orm::sea_query::PostgresQueryBuilder)).fetch_one(&f.store.pool).await.unwrap();
     policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-execution","effect":"deny","subjects":{"any":true},"actions":["task.execute"],"resources":{"kinds":["task"]}}));
     assert_eq!(
         request(
@@ -67,12 +90,23 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans() 
             .0,
         403
     );
-    let after:Value=sqlx::query_scalar("SELECT jsonb_build_array((SELECT count(*) FROM workspaces),(SELECT count(*) FROM authorization_workspaces),(SELECT count(*) FROM tasks),(SELECT count(*) FROM conversations),(SELECT count(*) FROM runs),(SELECT count(*) FROM messages),(SELECT count(*) FROM events))").fetch_one(&f.store.pool).await.unwrap();
+    let after:Value=sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("JSONB_BUILD_ARRAY((SELECT COUNT(*) FROM workspaces), (SELECT COUNT(*) FROM authorization_workspaces), (SELECT COUNT(*) FROM tasks), (SELECT COUNT(*) FROM conversations), (SELECT COUNT(*) FROM runs), (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM events))")).to_string(sea_orm::sea_query::PostgresQueryBuilder)).fetch_one(&f.store.pool).await.unwrap();
     assert_eq!(
         before, after,
         "a late admission denial must roll back the entire conversation"
     );
-    let denied:i64=sqlx::query_scalar("SELECT count(*) FROM authorization_decisions WHERE action='task.execute' AND decision->>'reason'='explicit_deny'").fetch_one(&f.store.pool).await.unwrap();
+    let denied: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new("authorization_decisions"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "action = 'task.execute' AND decision ->> 'reason' = 'explicit_deny'",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(
         denied, 2,
         "root and agent rejection decisions must survive the rollback"
@@ -95,11 +129,19 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
         .unwrap()
         .parse::<Uuid>()
         .unwrap();
-    let run: Run = sqlx::query_as("SELECT * FROM runs WHERE workspace_id=$1")
-        .bind(workspace)
-        .fetch_one(&f.store.pool)
-        .await
-        .unwrap();
+    let run: Run = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("runs"))
+            .and_where(sea_orm::sea_query::Expr::cust("workspace_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(workspace)
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     let human = f
         .store
         .human_request(
@@ -162,7 +204,15 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
         200
     );
     let sender: String = sqlx::query_scalar(
-        "SELECT sender FROM messages WHERE workspace_id=$1 AND content='authorized message'",
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("sender")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("messages"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "workspace_id = $1 AND content = 'authorized message'",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(workspace)
     .fetch_one(&f.store.pool)
@@ -204,7 +254,13 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
         409
     );
     let answered: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM events WHERE workspace_id=$1 AND kind='human.answered'",
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new("events"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "workspace_id = $1 AND kind = 'human.answered'",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(workspace)
     .fetch_one(&f.store.pool)
@@ -253,15 +309,28 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
         .0,
         403
     );
-    let response: Option<Value> =
-        sqlx::query_scalar("SELECT response FROM human_requests WHERE id=$1")
-            .bind(second.id)
-            .fetch_one(&f.store.pool)
-            .await
-            .unwrap();
+    let response: Option<Value> = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("response")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("human_requests"))
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(second.id)
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert!(response.is_none());
     let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM messages WHERE workspace_id=$1 AND content='forbidden message'",
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new("messages"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "workspace_id = $1 AND content = 'forbidden message'",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(workspace)
     .fetch_one(&f.store.pool)
@@ -283,7 +352,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
     );
     // A journal can contain copied human prompts. Denying the source also hides
     // that run's aggregate data instead of exposing it through its context.
-    sqlx::query("UPDATE runs SET phase='WAITING',pending=$2,context=$3 WHERE id=$1")
+    sqlx::query(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("runs")).value(sea_orm::sea_query::Alias::new("phase"), sea_orm::sea_query::Expr::cust("'WAITING'")).value(sea_orm::sea_query::Alias::new("pending"), sea_orm::sea_query::Expr::cust("$2")).value(sea_orm::sea_query::Alias::new("context"), sea_orm::sea_query::Expr::cust("$3")).and_where(sea_orm::sea_query::Expr::cust("id = $1")).to_string(sea_orm::sea_query::PostgresQueryBuilder))
         .bind(run.id).bind(json!({"human_request_id":human.id,"resume_phase":"THINKING"}))
         .bind(json!({"history":[{"kind":"human","request":"private approval prompt"}],"summary":"","usage":{},"compactions":0})).execute(&f.store.pool).await.unwrap();
     assert_eq!(
@@ -376,7 +445,13 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
     assert_eq!(status, 200);
     assert_eq!(abandoned["status"], "ABANDONED");
     let actor: String = sqlx::query_scalar(
-        "SELECT data->>'actor' FROM events WHERE workspace_id=$1 AND kind='task.abandoned'",
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("data ->> 'actor'"))
+            .from(sea_orm::sea_query::Alias::new("events"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "workspace_id = $1 AND kind = 'task.abandoned'",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(workspace)
     .fetch_one(&f.store.pool)

@@ -223,3 +223,76 @@ test("preserves a draft after a failed message request and clears it after succe
   await page.getByRole("button", { name: "送信", exact: true }).first().click();
   await expect(input).toHaveValue("");
 });
+
+test("creates task dependencies and a parent through the dashboard", async ({
+  page,
+}) => {
+  const headers = { authorization: "Bearer acceptance-access-token" };
+  const name = `Relationships ${Date.now()}`;
+  const workspace = await (
+    await page.request.post("/api/workspaces", {
+      headers,
+      data: { title: name, goal: "Task relationships" },
+    })
+  ).json();
+  const tasks = [];
+  for (const title of ["Parent", "Prerequisite"]) {
+    const response = await page.request.post(
+      `/api/workspaces/${workspace.id}/tasks`,
+      {
+        headers,
+        data: {
+          title,
+          description: title,
+          requirements: {},
+          dependencies: [],
+          parent_id: null,
+        },
+      },
+    );
+    expect(response.status()).toBe(200);
+    tasks.push(await response.json());
+  }
+  await page
+    .locator(".sidebar")
+    .getByRole("link", { name: "タスク", exact: true })
+    .click();
+  await page.getByRole("button", { name: "タスクを作成", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.locator(`select[name="workspace"] option[value="${workspace.id}"]`),
+  ).toHaveCount(1);
+  await dialog
+    .getByLabel("ワークスペース", { exact: true })
+    .selectOption(workspace.id);
+  await dialog
+    .getByLabel("タイトル", { exact: true })
+    .fill("Child with prerequisite");
+  await dialog
+    .getByLabel("説明", { exact: true })
+    .fill("Created with immutable relationships");
+  await dialog.locator('textarea[name="requirements"]').fill("{}");
+  await dialog
+    .getByLabel("親タスク", { exact: true })
+    .selectOption(tasks[0].id);
+  await expect(
+    dialog.locator(
+      `select[name="dependencies"] option[value="${tasks[0].id}"]`,
+    ),
+  ).toHaveCount(0);
+  await dialog
+    .getByLabel("依存関係", { exact: true })
+    .selectOption([tasks[1].id]);
+  const response = page.waitForResponse(
+    (r) =>
+      r.url().endsWith(`/api/workspaces/${workspace.id}/tasks`) &&
+      r.request().method() === "POST",
+  );
+  await dialog.getByRole("button", { name: "作成", exact: true }).click();
+  const created = await response;
+  expect(created.status()).toBe(200);
+  expect(await created.json()).toMatchObject({
+    parent_id: tasks[0].id,
+    dependencies: [tasks[1].id],
+  });
+});

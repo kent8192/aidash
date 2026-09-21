@@ -66,7 +66,7 @@ impl EventBus {
     }
     pub async fn publish_once(&self, f: &Federation) -> Result<usize> {
         let _visibility = crate::transactions::gate::ReadLease::begin(&f.store).await?;
-        let events: Vec<Event> = sqlx::query_as("UPDATE events SET next_attempt_at=now()+interval '30 seconds' WHERE id IN (SELECT id FROM events WHERE published_at IS NULL AND next_attempt_at<=now() ORDER BY next_attempt_at,sequence LIMIT 100 FOR UPDATE SKIP LOCKED) RETURNING sequence,id,node_id,workspace_id,kind,data,created_at")
+        let events: Vec<Event> = sqlx::query_as(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("events")).value(sea_orm::sea_query::Alias::new("next_attempt_at"), sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP + INTERVAL '30 SECONDS'")).and_where(sea_orm::sea_query::Expr::cust("id IN (SELECT id FROM events WHERE published_at IS NULL AND next_attempt_at <= CURRENT_TIMESTAMP ORDER BY next_attempt_at, sequence LIMIT 100 FOR UPDATE SKIP LOCKED)")).returning(sea_orm::sea_query::Query::returning().exprs([sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("sequence"))), sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id"))), sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("node_id"))), sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("workspace_id"))), sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("kind"))), sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("data"))), sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("created_at")))])).to_string(sea_orm::sea_query::PostgresQueryBuilder))
             .fetch_all(&f.store.pool).await?;
         let mut attempts = futures_util::stream::iter(events.into_iter().map(|event| async move {
             let mut headers = async_nats::HeaderMap::new();
@@ -79,29 +79,68 @@ impl EventBus {
                 // Reject locally: an oversized HPUB disconnects the shared NATS
                 // connection and can discard acknowledgements for healthy events.
                 if payload.len().saturating_add(header_len) > limit {
-                    return Err(Error::External(format!("event exceeds NATS max_payload {limit}")));
+                    return Err(Error::External(format!(
+                        "event exceeds NATS max_payload {limit}"
+                    )));
                 }
-                self.context.publish_with_headers(self.subject.clone(), headers,
-                    payload.into()).await
-                    .map_err(|error| Error::External(error.to_string()))?.await
+                self.context
+                    .publish_with_headers(self.subject.clone(), headers, payload.into())
+                    .await
+                    .map_err(|error| Error::External(error.to_string()))?
+                    .await
                     .map_err(|error| Error::External(error.to_string()))?;
                 Result::Ok(())
-            }.await;
+            }
+            .await;
             match result {
                 Ok(()) => {
-                    sqlx::query("UPDATE events SET published_at=now(),publish_error=NULL WHERE id=$1")
-                        .bind(event.id).execute(&f.store.pool).await?;
+                    sqlx::query(
+                        &sea_orm::sea_query::Query::update()
+                            .table(sea_orm::sea_query::Alias::new("events"))
+                            .value(
+                                sea_orm::sea_query::Alias::new("published_at"),
+                                sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP"),
+                            )
+                            .value(
+                                sea_orm::sea_query::Alias::new("publish_error"),
+                                sea_orm::sea_query::Expr::cust("NULL"),
+                            )
+                            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                    )
+                    .bind(event.id)
+                    .execute(&f.store.pool)
+                    .await?;
                     Ok(1)
                 }
                 Err(error) => {
                     // Retain the event and a visible error; later rows keep flowing.
-                    sqlx::query("UPDATE events SET publish_error=$2,next_attempt_at=now()+interval '30 seconds' WHERE id=$1")
-                        .bind(event.id).bind(error.to_string()).execute(&f.store.pool).await?;
+                    sqlx::query(
+                        &sea_orm::sea_query::Query::update()
+                            .table(sea_orm::sea_query::Alias::new("events"))
+                            .value(
+                                sea_orm::sea_query::Alias::new("publish_error"),
+                                sea_orm::sea_query::Expr::cust("$2"),
+                            )
+                            .value(
+                                sea_orm::sea_query::Alias::new("next_attempt_at"),
+                                sea_orm::sea_query::Expr::cust(
+                                    "CURRENT_TIMESTAMP + INTERVAL '30 SECONDS'",
+                                ),
+                            )
+                            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                    )
+                    .bind(event.id)
+                    .bind(error.to_string())
+                    .execute(&f.store.pool)
+                    .await?;
                     tracing::warn!(event_id=%event.id, %error, "outbox event retained for retry");
                     Ok::<usize, Error>(0)
                 }
             }
-        })).buffer_unordered(8);
+        }))
+        .buffer_unordered(8);
         let mut published = 0;
         while let Some(result) = attempts.next().await {
             published += result?;
@@ -142,19 +181,38 @@ impl EventBus {
                 .map_err(|e| Error::External(e.to_string()))?;
             while let Some(message) = messages.next().await {
                 let message = message.map_err(|e| Error::External(e.to_string()))?;
-                let event: Value = serde_json::from_slice(&message.payload)?;
-                let id = event["id"]
-                    .as_str()
-                    .ok_or_else(|| Error::Invalid("event id missing".into()))?
-                    .parse::<uuid::Uuid>()
-                    .map_err(|_| Error::Invalid("invalid event id".into()))?;
+                let id = serde_json::from_slice::<Value>(&message.payload)
+                    .ok()
+                    .and_then(|event| {
+                        event["id"]
+                            .as_str()
+                            .and_then(|id| id.parse::<uuid::Uuid>().ok())
+                    });
+                let Some(id) = id else {
+                    message
+                        .ack_with(jetstream::AckKind::Term)
+                        .await
+                        .map_err(|e| Error::External(e.to_string()))?;
+                    tracing::warn!("discarded malformed broker event");
+                    continue;
+                };
                 let mut tx = f.store.pool.begin().await?;
-                let inserted =
-                    sqlx::query("INSERT INTO inbox(event_id) VALUES($1) ON CONFLICT DO NOTHING")
-                        .bind(id)
-                        .execute(&mut *tx)
-                        .await?
-                        .rows_affected();
+                let inserted = sqlx::query(
+                    &sea_orm::sea_query::Query::insert()
+                        .into_table(sea_orm::sea_query::Alias::new("inbox"))
+                        .columns([sea_orm::sea_query::Alias::new("event_id")])
+                        .values_panic([sea_orm::sea_query::Expr::cust("$1")])
+                        .on_conflict(
+                            sea_orm::sea_query::OnConflict::new()
+                                .do_nothing()
+                                .to_owned(),
+                        )
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                )
+                .bind(id)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
                 tx.commit().await?;
                 // The durable task/run tables are the consumer's work queue.
                 // Restart scanning recovers a crash between commit and wakeup.

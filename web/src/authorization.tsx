@@ -94,7 +94,14 @@ function TenantAuthorization({
   const current = !snapshot.isError ? snapshot.data : undefined;
   const credentials = useQuery({
     queryKey: ["authorization", tenant, "credentials"],
-    queryFn: () => authorizationCredentials(path),
+    queryFn: async () => {
+      const all: Credential[] = [];
+      for (let offset = 0; ; offset += 200) {
+        const page = await authorizationCredentials(path, { offset });
+        all.push(...page);
+        if (page.length < 200) return all;
+      }
+    },
     enabled: !!current,
     refetchInterval: 5000,
   });

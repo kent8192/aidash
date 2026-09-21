@@ -45,6 +45,7 @@ pub async fn request(
 pub async fn setup() -> (Federation, String, String) {
     let url = std::env::var("AIDASH_TEST_DATABASE_URL").expect("disposable PostgreSQL required");
     let schema = format!("execution_{}", Uuid::new_v4().simple());
+    // SeaQuery has no CREATE/DROP SCHEMA builder; these DDL statements isolate fixtures.
     let mut admin = PgConnection::connect(&url).await.unwrap();
     admin
         .execute(format!("CREATE SCHEMA {schema}").as_str())
@@ -56,13 +57,26 @@ pub async fn setup() -> (Federation, String, String) {
         .after_connect(move |connection, _| {
             let schema = search.clone();
             Box::pin(async move {
-                sqlx::query(&format!("SET search_path TO {schema}"))
-                    .execute(&mut *connection)
-                    .await?;
-                sqlx::query("SELECT set_config('application_name',$1,false)")
-                    .bind(&schema)
-                    .execute(connection)
-                    .await?;
+                sqlx::query(
+                    &sea_orm::sea_query::Query::select()
+                        .expr(sea_orm::sea_query::Expr::cust(
+                            "set_config('search_path', $1, false)",
+                        ))
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                )
+                .bind(&schema)
+                .execute(&mut *connection)
+                .await?;
+                sqlx::query(
+                    &sea_orm::sea_query::Query::select()
+                        .expr(sea_orm::sea_query::Expr::cust(
+                            "SET_CONFIG('application_name', $1, FALSE)",
+                        ))
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                )
+                .bind(&schema)
+                .execute(connection)
+                .await?;
                 Ok(())
             })
         })
@@ -75,7 +89,7 @@ pub async fn setup() -> (Federation, String, String) {
         .unwrap();
     let federation = Federation {
         store,
-        registry: Registry::new(pool),
+        registry: Registry::new(pool, "aidash://execution-test"),
         config: Config {
             node_id: "aidash://execution-test".into(),
             endpoint: "http://localhost:8080".into(),

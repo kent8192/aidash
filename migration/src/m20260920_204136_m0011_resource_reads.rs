@@ -4,7 +4,6 @@ pub struct Migration;
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        if crate::legacy_applied(manager,10,"ce739651f7e0630527879f555fb6754d22fc0d6fe1fe48cfd93c9797953a24b11b982a0773481d24008e13a2f63719f0").await? { return Ok(()); }
         manager
             .create_table(
                 Table::create()
@@ -22,6 +21,7 @@ impl MigrationTrait for Migration {
                                 "run",
                                 "conversation",
                                 "generation",
+                                "workspace_events",
                             ])),
                     )
                     .col(ColumnDef::new(Alias::new("resource_id")).uuid().not_null())
@@ -137,7 +137,6 @@ impl MigrationTrait for Migration {
         Ok(())
     }
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        crate::ensure_not_legacy(manager, 10).await?;
         manager
             .drop_table(
                 Table::drop()

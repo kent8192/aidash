@@ -10,7 +10,19 @@ impl ReadLease {
     pub async fn begin(store: &Store) -> Result<Self> {
         let mut tx = store.control_pool.begin().await?;
         let pending: Option<Uuid> = sqlx::query_scalar(
-            "SELECT transaction_id FROM atomic_gate WHERE singleton FOR SHARE NOWAIT",
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("transaction_id")),
+                ))
+                .from(sea_orm::sea_query::Alias::new("atomic_gate"))
+                .and_where(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("singleton")),
+                ))
+                .lock_with_behavior(
+                    sea_orm::sea_query::LockType::Share,
+                    sea_orm::sea_query::LockBehavior::Nowait,
+                )
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
         )
         .fetch_one(&mut *tx)
         .await
@@ -32,8 +44,19 @@ pub(crate) fn lock_error(error: sqlx::Error) -> Error {
     }
 }
 pub(crate) async fn exclusive(tx: &mut Transaction<'_, Postgres>) -> Result<Option<Uuid>> {
-    sqlx::query_scalar("SELECT transaction_id FROM atomic_gate WHERE singleton FOR UPDATE NOWAIT")
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(lock_error)
+    sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("transaction_id")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("atomic_gate"))
+            .and_where(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("singleton")),
+            ))
+            .lock(sea_orm::sea_query::LockType::Update)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(lock_error)
 }

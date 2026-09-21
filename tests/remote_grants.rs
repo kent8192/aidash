@@ -63,7 +63,29 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
         .0,
         200
     );
-    sqlx::query("INSERT INTO peers(node_id,endpoint,credential_env,protocol_version,enabled) VALUES($1,'http://localhost:1','AIDASH_SECRET_TEST_PEER','0.1',true)").bind(&a.config.node_id).execute(&b.store.pool).await.unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("peers"))
+            .columns([
+                sea_orm::sea_query::Alias::new("node_id"),
+                sea_orm::sea_query::Alias::new("endpoint"),
+                sea_orm::sea_query::Alias::new("credential_env"),
+                sea_orm::sea_query::Alias::new("protocol_version"),
+                sea_orm::sea_query::Alias::new("enabled"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("'http://localhost:1'"),
+                sea_orm::sea_query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"),
+                sea_orm::sea_query::Expr::cust("'0.1'"),
+                sea_orm::sea_query::Expr::cust("TRUE"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(&a.config.node_id)
+    .execute(&b.store.pool)
+    .await
+    .unwrap();
     let peer_app = ba.clone();
     let server = tokio::spawn(async move { axum::serve(listener, peer_app).await.unwrap() });
     a.register_peer(Peer {
@@ -123,11 +145,19 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
     // Workspace data is filtered before delivery and durable dependencies survive
     // a fresh source connection. Revocation of an already observed sibling must
     // deny the whole grant, even though its execution task is still readable.
-    let workspace: Uuid = sqlx::query_scalar("SELECT workspace_id FROM tasks WHERE id=$1")
-        .bind(task)
-        .fetch_one(&a.store.pool)
-        .await
-        .unwrap();
+    let workspace: Uuid = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("workspace_id")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("tasks"))
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(task)
+    .fetch_one(&a.store.pool)
+    .await
+    .unwrap();
     let (status, sibling) = request(
         &aa,
         &token,
@@ -156,8 +186,22 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
     assert_eq!(status, 200, "{snapshot}");
     assert!(!snapshot.to_string().contains("Sibling secret"));
     assert!(!snapshot.to_string().contains(sibling_id));
-    let tracked: i64 = sqlx::query_scalar("SELECT count(*) FROM authorization_remote_grant_reads WHERE grant_id=$1 AND resource_id=$2")
-        .bind(id).bind(Uuid::parse_str(sibling_id).unwrap()).fetch_one(&a.store.pool).await.unwrap();
+    let tracked: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new(
+                "authorization_remote_grant_reads",
+            ))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "grant_id = $1 AND resource_id = $2",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(id)
+    .bind(Uuid::parse_str(sibling_id).unwrap())
+    .fetch_one(&a.store.pool)
+    .await
+    .unwrap();
     assert_eq!(
         tracked, 0,
         "filtered data must not become a read dependency"
@@ -177,8 +221,22 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
     let (status, snapshot) = grant_request(&fresh_app, &b.config.node_id, id, "snapshot").await;
     assert_eq!(status, 200, "{snapshot}");
     assert!(snapshot.to_string().contains("Sibling secret"));
-    let tracked: i64 = sqlx::query_scalar("SELECT count(*) FROM authorization_remote_grant_reads WHERE grant_id=$1 AND resource_kind='task' AND resource_id=$2")
-        .bind(id).bind(Uuid::parse_str(sibling_id).unwrap()).fetch_one(&a.store.pool).await.unwrap();
+    let tracked: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new(
+                "authorization_remote_grant_reads",
+            ))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "grant_id = $1 AND resource_kind = 'task' AND resource_id = $2",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(id)
+    .bind(Uuid::parse_str(sibling_id).unwrap())
+    .fetch_one(&a.store.pool)
+    .await
+    .unwrap();
     assert_eq!(tracked, 1, "record reads before releasing the response");
     assert_eq!(
         request(
@@ -220,23 +278,49 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
     assert_eq!(verify(&fresh_app, &b.config.node_id, id).await.0, 200);
     // Receiver model metadata changes invalidate the exact execution snapshot,
     // even when the Agent's public definition remains unchanged.
-    let metadata: Value = sqlx::query_scalar("SELECT metadata FROM registry WHERE id='model'")
-        .fetch_one(&b.store.pool)
-        .await
-        .unwrap();
+    let metadata: Value = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("metadata")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("registry"))
+            .and_where(sea_orm::sea_query::Expr::cust("id = 'model'"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&b.store.pool)
+    .await
+    .unwrap();
     let mut changed = metadata.clone();
     changed["description"]["en"] = json!("changed fixture");
-    sqlx::query("UPDATE registry SET metadata=$1 WHERE id='model'")
-        .bind(changed)
-        .execute(&b.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("registry"))
+            .value(
+                sea_orm::sea_query::Alias::new("metadata"),
+                sea_orm::sea_query::Expr::cust("$1"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = 'model'"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(changed)
+    .execute(&b.store.pool)
+    .await
+    .unwrap();
     assert_eq!(verify(&fresh_app, &b.config.node_id, id).await.0, 403);
-    sqlx::query("UPDATE registry SET metadata=$1 WHERE id='model'")
-        .bind(metadata)
-        .execute(&b.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("registry"))
+            .value(
+                sea_orm::sea_query::Alias::new("metadata"),
+                sea_orm::sea_query::Expr::cust("$1"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = 'model'"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(metadata)
+    .execute(&b.store.pool)
+    .await
+    .unwrap();
     assert_eq!(verify(&fresh_app, &b.config.node_id, id).await.0, 200);
     let mut denied = policy.clone();
     denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny-remote-model","effect":"deny","subjects":{"ids":[executor]},"actions":["model.infer"],"resources":{"kinds":["model"]},"condition":{"op":"eq","left":{"source":"resource","path":"/config/provider"},"right":{"source":"literal","value":"openai"}}}));
@@ -301,12 +385,42 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
     );
     // The fixture has one peer secret. Disable its original binding while
     // testing an authenticated different node, then restore it.
-    sqlx::query("UPDATE peers SET enabled=false WHERE node_id=$1")
-        .bind(&b.config.node_id)
-        .execute(&a.store.pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO peers(node_id,endpoint,credential_env,protocol_version,enabled) VALUES('aidash://unrelated','http://localhost:1','AIDASH_SECRET_TEST_PEER','0.1',true)").execute(&a.store.pool).await.unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("peers"))
+            .value(
+                sea_orm::sea_query::Alias::new("enabled"),
+                sea_orm::sea_query::Expr::cust("FALSE"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("node_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(&b.config.node_id)
+    .execute(&a.store.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("peers"))
+            .columns([
+                sea_orm::sea_query::Alias::new("node_id"),
+                sea_orm::sea_query::Alias::new("endpoint"),
+                sea_orm::sea_query::Alias::new("credential_env"),
+                sea_orm::sea_query::Alias::new("protocol_version"),
+                sea_orm::sea_query::Alias::new("enabled"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("'aidash://unrelated'"),
+                sea_orm::sea_query::Expr::cust("'http://localhost:1'"),
+                sea_orm::sea_query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"),
+                sea_orm::sea_query::Expr::cust("'0.1'"),
+                sea_orm::sea_query::Expr::cust("TRUE"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .execute(&a.store.pool)
+    .await
+    .unwrap();
     assert_eq!(
         verify(&aa, "aidash://unrelated", id).await.0,
         403,
@@ -318,15 +432,31 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
             .0,
         403
     );
-    sqlx::query("DELETE FROM peers WHERE node_id='aidash://unrelated'")
-        .execute(&a.store.pool)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE peers SET enabled=true WHERE node_id=$1")
-        .bind(&b.config.node_id)
-        .execute(&a.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::delete()
+            .from_table(sea_orm::sea_query::Alias::new("peers"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "node_id = 'aidash://unrelated'",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .execute(&a.store.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("peers"))
+            .value(
+                sea_orm::sea_query::Alias::new("enabled"),
+                sea_orm::sea_query::Expr::cust("TRUE"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("node_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(&b.config.node_id)
+    .execute(&a.store.pool)
+    .await
+    .unwrap();
     let revoke = format!("{path}/{id}/revoke");
     let (status, revoked) = request(&aa, &token, "POST", &revoke, json!({})).await;
     assert_eq!(status, 200);
@@ -344,7 +474,22 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
     let mut next = input.clone();
     next["id"] = json!(expiry);
     assert_eq!(request(&aa, &token, "POST", &path, next).await.0, 200);
-    sqlx::query("UPDATE authorization_remote_grants SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1").bind(expiry).execute(&a.store.pool).await.unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new(
+                "authorization_remote_grants",
+            ))
+            .value(
+                sea_orm::sea_query::Alias::new("expires_at"),
+                sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP() - INTERVAL '1 SECOND'"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(expiry)
+    .execute(&a.store.pool)
+    .await
+    .unwrap();
     assert_eq!(verify(&fresh_app, &b.config.node_id, expiry).await.0, 403);
     assert_eq!(
         grant_request(&fresh_app, &b.config.node_id, expiry, "snapshot")
@@ -356,17 +501,35 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
     let mut next = input.clone();
     next["id"] = json!(current);
     assert_eq!(request(&aa, &token, "POST", &path, next).await.0, 200);
-    sqlx::query("UPDATE tasks SET revision=revision+1 WHERE id=$1")
-        .bind(task)
-        .execute(&a.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("tasks"))
+            .value(
+                sea_orm::sea_query::Alias::new("revision"),
+                sea_orm::sea_query::Expr::cust("revision + 1"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(task)
+    .execute(&a.store.pool)
+    .await
+    .unwrap();
     assert_eq!(verify(&fresh_app, &b.config.node_id, current).await.0, 403);
-    sqlx::query("UPDATE tasks SET revision=revision-1 WHERE id=$1")
-        .bind(task)
-        .execute(&a.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("tasks"))
+            .value(
+                sea_orm::sea_query::Alias::new("revision"),
+                sea_orm::sea_query::Expr::cust("revision - 1"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(task)
+    .execute(&a.store.pool)
+    .await
+    .unwrap();
     assert_eq!(verify(&fresh_app, &b.config.node_id, current).await.0, 200);
     let (_, replacement) = request(
         &aa,
@@ -384,12 +547,21 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
         409,
         "a replacement credential cannot take over an existing grant"
     );
-    let source_credential: Uuid =
-        sqlx::query_scalar("SELECT credential_id FROM authorization_remote_grants WHERE id=$1")
-            .bind(current)
-            .fetch_one(&a.store.pool)
-            .await
-            .unwrap();
+    let source_credential: Uuid = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("credential_id")),
+            ))
+            .from(sea_orm::sea_query::Alias::new(
+                "authorization_remote_grants",
+            ))
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(current)
+    .fetch_one(&a.store.pool)
+    .await
+    .unwrap();
     assert_eq!(
         request(
             &aa,
@@ -458,16 +630,28 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
             .0,
         200
     );
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM authorization_remote_grants")
-        .fetch_one(&a.store.pool)
-        .await
-        .unwrap();
+    let count: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new(
+                "authorization_remote_grants",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&a.store.pool)
+    .await
+    .unwrap();
     assert_eq!(count, 4);
     for f in [&a, &b] {
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM runs")
-            .fetch_one(&f.store.pool)
-            .await
-            .unwrap();
+        let count: i64 = sqlx::query_scalar(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+                .from(sea_orm::sea_query::Alias::new("runs"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .fetch_one(&f.store.pool)
+        .await
+        .unwrap();
         assert_eq!(count, 0, "prepared grants cannot bypass worker admission");
     }
     drop(fresh_app);

@@ -47,11 +47,19 @@ pub(crate) async fn discover_in(
         }
         // Configuration changes and disablement wait for this admitted read.
         // Compare the complete record to reject endpoint changes during admission.
-        let current: Option<Peer> =
-            sqlx::query_as("SELECT * FROM peers WHERE node_id=$1 AND enabled FOR SHARE")
-                .bind(&peer.node_id)
-                .fetch_optional(&mut *access.tx)
-                .await?;
+        let current: Option<Peer> = sqlx::query_as(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                ))
+                .from(sea_orm::sea_query::Alias::new("peers"))
+                .and_where(sea_orm::sea_query::Expr::cust("node_id = $1 AND enabled"))
+                .lock(sea_orm::sea_query::LockType::Share)
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(&peer.node_id)
+        .fetch_optional(&mut *access.tx)
+        .await?;
         if current.is_some_and(|current| {
             current.endpoint == peer.endpoint
                 && current.credential_env == peer.credential_env

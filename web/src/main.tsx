@@ -1026,6 +1026,7 @@ function Dashboard({
               )}
             {dialog.kind === "assign" && dialog.task && (
               <AssignForm
+                data={data}
                 task={dialog.task}
                 discovery={discovery.data ?? { agents: [], errors: [] }}
                 submit={submit}
@@ -1864,16 +1865,30 @@ function RunDetails({
             e.preventDefault();
             const form = e.currentTarget;
             const content = String(new FormData(form).get("content"));
+            if (form.dataset.messageContent !== content) {
+              form.dataset.messageKey = crypto.randomUUID();
+              form.dataset.messageContent = content;
+            }
+            const idempotency_key =
+              form.dataset.messageKey ?? crypto.randomUUID();
+            form.dataset.messageKey = idempotency_key;
             setMessageError("");
             setMessageSent(false);
             try {
               await (node === localNode
-                ? runMessage(run.id, { content })
+                ? runMessage(run.id, { content, idempotency_key })
                 : remoteAction({
                     node_id: node,
-                    control: { run_id: run.id, action: "message", content },
+                    control: {
+                      run_id: run.id,
+                      action: "message",
+                      content,
+                      idempotency_key,
+                    },
                   }));
               form.reset();
+              delete form.dataset.messageKey;
+              delete form.dataset.messageContent;
               setMessageSent(true);
             } catch (error) {
               setMessageError(String(error));

@@ -34,7 +34,28 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
     let (f, url, schema) = setup().await;
     let app = api::router(f.clone());
     let (policy, user_token, _) = bootstrap(&f, &app, "http://localhost:1").await;
-    sqlx::query("INSERT INTO peers(node_id,endpoint,credential_env,protocol_version,enabled) VALUES('aidash://source','http://localhost:1','AIDASH_SECRET_TEST_PEER','0.1',true)").execute(&f.store.pool).await.unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("peers"))
+            .columns([
+                sea_orm::sea_query::Alias::new("node_id"),
+                sea_orm::sea_query::Alias::new("endpoint"),
+                sea_orm::sea_query::Alias::new("credential_env"),
+                sea_orm::sea_query::Alias::new("protocol_version"),
+                sea_orm::sea_query::Alias::new("enabled"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("'aidash://source'"),
+                sea_orm::sea_query::Expr::cust("'http://localhost:1'"),
+                sea_orm::sea_query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"),
+                sea_orm::sea_query::Expr::cust("'0.1'"),
+                sea_orm::sea_query::Expr::cust("TRUE"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     let token = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
     let input = json!({"tenant":"remote","subject":"bob","agent":{"id":"research","version":"1.0.0"},"requirements":{}});
     assert_eq!(inspect(&app, &token, input.clone()).await.0, 403);
@@ -163,10 +184,15 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
         200
     );
     assert_eq!(inspect(&app, &token, input).await.0, 403);
-    let runs: i64 = sqlx::query_scalar("SELECT count(*) FROM runs")
-        .fetch_one(&f.store.pool)
-        .await
-        .unwrap();
+    let runs: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new("runs"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(runs, 0, "inspection must not create an executable run");
     cleanup(f, &url, &schema).await;
 }

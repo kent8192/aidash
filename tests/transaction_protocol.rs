@@ -26,7 +26,10 @@ impl Node {
         PgConnection::connect(&admin)
             .await
             .unwrap()
-            .execute(format!("CREATE DATABASE {database}").as_str())
+            .execute(
+                // SeaQuery has no CREATE/DROP DATABASE builder.
+                format!("CREATE DATABASE {database}").as_str(),
+            )
             .await
             .unwrap();
         let mut url = reqwest::Url::parse(&admin).unwrap();
@@ -46,7 +49,7 @@ impl Node {
             lease_seconds: 30,
         };
         let f = Federation {
-            registry: Registry::new(store.pool.clone()),
+            registry: Registry::new(store.pool.clone(), &store.node_id),
             store,
             config,
             client: reqwest::Client::new(),
@@ -78,7 +81,7 @@ impl Node {
             .await
             .unwrap();
         self.f = Federation {
-            registry: Registry::new(store.pool.clone()),
+            registry: Registry::new(store.pool.clone(), &store.node_id),
             store,
             notify: Arc::new(tokio::sync::Notify::new()),
             ..self.f.clone()
@@ -124,7 +127,10 @@ impl Node {
         PgConnection::connect(&self.admin)
             .await
             .unwrap()
-            .execute(format!("DROP DATABASE {} WITH (FORCE)", self.database).as_str())
+            .execute(
+                // SeaQuery has no DROP DATABASE WITH FORCE builder.
+                format!("DROP DATABASE {} WITH (FORCE)", self.database).as_str(),
+            )
             .await
             .unwrap();
     }
@@ -241,11 +247,17 @@ async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lea
     coordinator::submit(&a.f, &manifest).await.unwrap();
     steps(&a, manifest.id, 4).await; // Both votes are prepared, still undecided.
     let mut transition = a.f.store.control_pool.begin().await.unwrap();
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('atomic:' || $1,0))")
-        .bind(manifest.id.to_string())
-        .execute(&mut *transition)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust(
+                "PG_ADVISORY_XACT_LOCK(HASHTEXTEXTENDED('atomic:' || $1, 0))",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(manifest.id.to_string())
+    .execute(&mut *transition)
+    .await
+    .unwrap();
     // A recovery step can hold this lease during slow peer I/O. An operator's
     // durable abort must not be lost merely because that step is in flight.
     let (status, body) = a
@@ -271,8 +283,19 @@ async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lea
     assert_eq!(final_state.decision.as_deref(), Some("ABORT"));
     assert_eq!(a.f.store.workspace(wa).await.unwrap().state, json!({}));
     assert_eq!(b.f.store.workspace(wb).await.unwrap().state, json!({}));
-    let decisions: i64 = sqlx::query_scalar("SELECT count(*) FROM atomic_history WHERE transaction_id=$1 AND role='coordinator' AND phase IN ('COMMIT','ABORT')")
-        .bind(manifest.id).fetch_one(&a.f.store.control_pool).await.unwrap();
+    let decisions: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new("atomic_history"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "transaction_id = $1 AND role = 'coordinator' AND phase IN ('COMMIT', 'ABORT')",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(manifest.id)
+    .fetch_one(&a.f.store.control_pool)
+    .await
+    .unwrap();
     assert_eq!(decisions, 1);
     a.cleanup().await;
     b.cleanup().await;
@@ -310,11 +333,20 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
     );
     assert!(coordinator::abort(&a.f, manifest.id).await.is_err());
     assert!(
-        sqlx::query("UPDATE atomic_coordinators SET decision='ABORT' WHERE id=$1")
-            .bind(manifest.id)
-            .execute(&a.f.store.control_pool)
-            .await
-            .is_err()
+        sqlx::query(
+            &sea_orm::sea_query::Query::update()
+                .table(sea_orm::sea_query::Alias::new("atomic_coordinators"))
+                .value(
+                    sea_orm::sea_query::Alias::new("decision"),
+                    sea_orm::sea_query::Expr::cust("'ABORT'")
+                )
+                .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder)
+        )
+        .bind(manifest.id)
+        .execute(&a.f.store.control_pool)
+        .await
+        .is_err()
     );
     steps(&a, manifest.id, 1).await;
     assert_eq!(
@@ -360,7 +392,13 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
             "COMMITTED"
         );
         let updates: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM events WHERE workspace_id=$1 AND kind='workspace.updated'",
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+                .from(sea_orm::sea_query::Alias::new("events"))
+                .and_where(sea_orm::sea_query::Expr::cust(
+                    "workspace_id = $1 AND kind = 'workspace.updated'",
+                ))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
         )
         .bind(workspace)
         .fetch_one(&node.f.store.pool)
@@ -499,13 +537,38 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once() {
             .transition(task.id, 1, &owner, "RUNNING")
             .await
             .unwrap();
-    sqlx::query("INSERT INTO delegations(task_id,node_id,agent_id,agent_version,delivered) VALUES($1,$2,$3,$4,true)").bind(task.id).bind(&b.f.config.node_id).bind(&agent.id).bind(&agent.version).execute(&a.f.store.pool).await.unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("delegations"))
+            .columns([
+                sea_orm::sea_query::Alias::new("task_id"),
+                sea_orm::sea_query::Alias::new("node_id"),
+                sea_orm::sea_query::Alias::new("agent_id"),
+                sea_orm::sea_query::Alias::new("agent_version"),
+                sea_orm::sea_query::Alias::new("delivered"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("$3"),
+                sea_orm::sea_query::Expr::cust("$4"),
+                sea_orm::sea_query::Expr::cust("TRUE"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(task.id)
+    .bind(&b.f.config.node_id)
+    .bind(&agent.id)
+    .bind(&agent.version)
+    .execute(&a.f.store.pool)
+    .await
+    .unwrap();
     let run =
         b.f.store
             .accept_run(&task, &a.f.config.node_id, &agent.id, &agent.version)
             .await
             .unwrap();
-    sqlx::query("UPDATE runs SET phase='TOOL_CALL',pending=$2 WHERE id=$1")
+    sqlx::query(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("runs")).value(sea_orm::sea_query::Alias::new("phase"), sea_orm::sea_query::Expr::cust("'TOOL_CALL'")).value(sea_orm::sea_query::Alias::new("pending"), sea_orm::sea_query::Expr::cust("$2")).and_where(sea_orm::sea_query::Expr::cust("id = $1")).to_string(sea_orm::sea_query::PostgresQueryBuilder))
         .bind(run.id)
         .bind(json!({"response":{"text":"one committed result","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0}))
         .execute(&b.f.store.pool)
@@ -517,7 +580,14 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once() {
     let mut invalid = manifest.clone();
     invalid.id = Uuid::new_v4();
     sqlx::query(
-        "UPDATE runs SET pending=jsonb_set(pending,'{response,tool_calls}',$2) WHERE id=$1",
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("pending"),
+                sea_orm::sea_query::Expr::cust("JSONB_SET(pending, '{response,tool_calls}', $2)"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(run.id)
     .bind(json!([{"id":"unfinished","name":"http","arguments":{}}]))
@@ -531,7 +601,22 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once() {
     );
     assert_eq!(a.f.store.task(task.id).await.unwrap().status, "RUNNING");
     assert!(a.f.store.snapshot(wa).await.unwrap().artifacts.is_empty());
-    sqlx::query("UPDATE runs SET pending=jsonb_set(pending,'{response,tool_calls}','[]'::jsonb) WHERE id=$1").bind(run.id).execute(&b.f.store.pool).await.unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("pending"),
+                sea_orm::sea_query::Expr::cust(
+                    "JSONB_SET(pending, '{response,tool_calls}', CAST('[]' AS JSONB))",
+                ),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(run.id)
+    .execute(&b.f.store.pool)
+    .await
+    .unwrap();
     coordinator::submit(&a.f, &manifest).await.unwrap();
     assert_eq!(
         complete(&a, manifest.id).await.decision.as_deref(),
@@ -800,12 +885,19 @@ async fn actual_worker_sigkill_after_commit_recovers_without_replaying_effects()
     let worker = WorkerProcess::start(&a);
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         loop {
-            let phase: String =
-                sqlx::query_scalar("SELECT phase FROM atomic_participants WHERE id=$1")
-                    .bind(manifest.id)
-                    .fetch_one(&a.f.store.control_pool)
-                    .await
-                    .unwrap();
+            let phase: String = sqlx::query_scalar(
+                &sea_orm::sea_query::Query::select()
+                    .expr(sea_orm::sea_query::SimpleExpr::from(
+                        sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("phase")),
+                    ))
+                    .from(sea_orm::sea_query::Alias::new("atomic_participants"))
+                    .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+            )
+            .bind(manifest.id)
+            .fetch_one(&a.f.store.control_pool)
+            .await
+            .unwrap();
             if phase == "APPLIED" {
                 break;
             }
@@ -846,7 +938,13 @@ async fn actual_worker_sigkill_after_commit_recovers_without_replaying_effects()
     for (node, workspace) in [(&a, wa), (&b, wb)] {
         assert_eq!(node.f.store.workspace(workspace).await.unwrap().revision, 1);
         let events: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM events WHERE workspace_id=$1 AND kind='workspace.updated'",
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+                .from(sea_orm::sea_query::Alias::new("events"))
+                .and_where(sea_orm::sea_query::Expr::cust(
+                    "workspace_id = $1 AND kind = 'workspace.updated'",
+                ))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
         )
         .bind(workspace)
         .fetch_one(&node.f.store.pool)

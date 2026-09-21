@@ -88,11 +88,20 @@ pub(crate) async fn assign_in(
             "generation reason exceeds 4096 bytes".into(),
         ));
     }
-    let task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id=$1 FOR UPDATE")
-        .bind(task_id)
-        .fetch_optional(&mut *access.tx)
-        .await?
-        .ok_or(Error::Forbidden)?;
+    let task: Task = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("tasks"))
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .lock(sea_orm::sea_query::LockType::Update)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(task_id)
+    .fetch_optional(&mut *access.tx)
+    .await?
+    .ok_or(Error::Forbidden)?;
     let workspace = access.workspace(task.workspace_id).await?;
     access.context = workspace.attributes.clone();
     if !execution::inherit_task_origin(access, task_id).await?
@@ -112,11 +121,18 @@ pub(crate) async fn assign_in(
         .await?;
     // The policy lock serializes quota reservations and identical task retries.
     let policy = policy::load(&mut access.tx, &access.identity.tenant, policy_id, true).await?;
-    let existing: Option<Request> =
-        sqlx::query_as("SELECT * FROM generation_requests WHERE task_id=$1")
-            .bind(task_id)
-            .fetch_optional(&mut *access.tx)
-            .await?;
+    let existing: Option<Request> = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("generation_requests"))
+            .and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(task_id)
+    .fetch_optional(&mut *access.tx)
+    .await?;
     if let Some(existing) = existing {
         if existing.tenant != access.identity.tenant
             || existing.root_subject != access.identity.subject
@@ -136,8 +152,46 @@ pub(crate) async fn assign_in(
         });
     }
     if task.status != "OPEN" {
-        let existing:Option<(String,String,Vec<String>)>=sqlx::query_as("SELECT r.agent_id,r.agent_version,e.subject_chain FROM authorization_execution e JOIN runs r ON r.id=e.run_id WHERE e.task_id=$1 AND e.tenant=$2 AND e.root_subject=$3")
-            .bind(task_id).bind(&access.identity.tenant).bind(&access.identity.subject).fetch_optional(&mut *access.tx).await?;
+        let existing: Option<(String, String, Vec<String>)> = sqlx::query_as(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col((
+                        sea_orm::sea_query::Alias::new("r"),
+                        sea_orm::sea_query::Alias::new("agent_id"),
+                    )),
+                ))
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col((
+                        sea_orm::sea_query::Alias::new("r"),
+                        sea_orm::sea_query::Alias::new("agent_version"),
+                    )),
+                ))
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col((
+                        sea_orm::sea_query::Alias::new("e"),
+                        sea_orm::sea_query::Alias::new("subject_chain"),
+                    )),
+                ))
+                .from_as(
+                    sea_orm::sea_query::Alias::new("authorization_execution"),
+                    sea_orm::sea_query::Alias::new("e"),
+                )
+                .join_as(
+                    sea_orm::sea_query::JoinType::InnerJoin,
+                    sea_orm::sea_query::Alias::new("runs"),
+                    sea_orm::sea_query::Alias::new("r"),
+                    sea_orm::sea_query::Expr::cust("r.id = e.run_id"),
+                )
+                .and_where(sea_orm::sea_query::Expr::cust(
+                    "e.task_id = $1 AND e.tenant = $2 AND e.root_subject = $3",
+                ))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(task_id)
+        .bind(&access.identity.tenant)
+        .bind(&access.identity.subject)
+        .fetch_optional(&mut *access.tx)
+        .await?;
         if let Some((id, version, chain)) = existing {
             let mut expected = access.subjects.clone();
             expected.push(qualified_agent(&f.config.node_id, &id, &version));
@@ -168,7 +222,7 @@ pub(crate) async fn assign_in(
     let mut search: Search = serde_json::from_value(task.requirements.clone())?;
     search.kind = Some("agent".into());
     for entry in catalog::list_in(access, &search).await? {
-        let generated:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM generation_requests WHERE agent_id=$1 AND agent_version=$2)")
+        let generated:bool=sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("EXISTS(SELECT 1 FROM generation_requests WHERE agent_id = $1 AND agent_version = $2)")).to_string(sea_orm::sea_query::PostgresQueryBuilder))
             .bind(&entry.id).bind(&entry.version).fetch_one(&mut *access.tx).await?;
         if generated {
             continue;
@@ -236,11 +290,23 @@ pub(crate) async fn assign_in(
         catalog::entry(access, reference, "registry.read").await?;
         catalog::entry(access, reference, action).await?;
     }
-    let previous_depth:Option<i32>=sqlx::query_scalar("SELECT max(depth) FROM generation_requests WHERE tenant=$1 AND ($2 || '/agents/' || agent_id || '@' || agent_version)=ANY($3)")
-        .bind(&access.identity.tenant).bind(&f.config.node_id).bind(&access.subjects).fetch_one(&mut *access.tx).await?;
+    let previous_depth: Option<i32> = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("MAX(depth)"))
+            .from(sea_orm::sea_query::Alias::new("generation_requests"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "tenant = $1 AND ($2 || '/agents/' || agent_id || '@' || agent_version) = ANY($3)",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(&access.identity.tenant)
+    .bind(&f.config.node_id)
+    .bind(&access.subjects)
+    .fetch_one(&mut *access.tx)
+    .await?;
     let depth = previous_depth.unwrap_or(0) + 1;
     let limits = &policy.spec.limits;
-    let active:i64=sqlx::query_scalar("SELECT count(*) FROM generation_requests WHERE tenant=$1 AND policy_id=$2 AND status IN ('PENDING_APPROVAL','QUEUED','ACTIVE')")
+    let active:i64=sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("COUNT(*)")).from(sea_orm::sea_query::Alias::new("generation_requests")).and_where(sea_orm::sea_query::Expr::cust("tenant = $1 AND policy_id = $2 AND status IN ('PENDING_APPROVAL', 'QUEUED', 'ACTIVE')")).to_string(sea_orm::sea_query::PostgresQueryBuilder))
         .bind(&access.identity.tenant).bind(policy_id).fetch_one(&mut *access.tx).await?;
     let compaction_calls = policy
         .spec
@@ -293,20 +359,137 @@ pub(crate) async fn assign_in(
     } else {
         "QUEUED"
     };
-    let generated:Request=sqlx::query_as("INSERT INTO generation_requests(id,tenant,policy_id,policy_revision,task_id,workspace_id,credential_id,root_subject,subject_chain,agent_id,agent_version,definition,status,reason,depth,token_limit,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,clock_timestamp()+make_interval(secs=>$17)) RETURNING *")
-        .bind(id).bind(&access.identity.tenant).bind(policy_id).bind(policy.revision).bind(task_id).bind(task.workspace_id).bind(access.identity.credential_id).bind(&access.identity.subject).bind(&access.subjects)
-        .bind(&definition.id).bind(&definition.version).bind(json!(definition)).bind(status).bind(reason).bind(depth).bind(limits.tokens_per_agent).bind(limits.lifetime_seconds as f64).fetch_one(&mut *access.tx).await?;
-    sqlx::query("UPDATE generation_policies SET generated_count=generated_count+1,allocated_tokens=allocated_tokens+$3,allocated_compaction_calls=allocated_compaction_calls+$4,allocated_embedding_calls=allocated_embedding_calls+$5 WHERE tenant=$1 AND id=$2")
-        .bind(&access.identity.tenant).bind(policy_id).bind(limits.tokens_per_agent).bind(compaction_calls).bind(embedding_calls).execute(&mut *access.tx).await?;
-    sqlx::query("INSERT INTO generation_budgets(request_id,token_limit,compaction_call_limit,embedding_call_limit) VALUES($1,$2,$3,$4)")
-        .bind(id)
-        .bind(limits.tokens_per_agent)
-        .bind(compaction_calls)
-        .bind(embedding_calls)
-        .execute(&mut *access.tx)
-        .await?;
+    let generated: Request = sqlx::query_as(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("generation_requests"))
+            .columns([
+                sea_orm::sea_query::Alias::new("id"),
+                sea_orm::sea_query::Alias::new("tenant"),
+                sea_orm::sea_query::Alias::new("policy_id"),
+                sea_orm::sea_query::Alias::new("policy_revision"),
+                sea_orm::sea_query::Alias::new("task_id"),
+                sea_orm::sea_query::Alias::new("workspace_id"),
+                sea_orm::sea_query::Alias::new("credential_id"),
+                sea_orm::sea_query::Alias::new("root_subject"),
+                sea_orm::sea_query::Alias::new("subject_chain"),
+                sea_orm::sea_query::Alias::new("agent_id"),
+                sea_orm::sea_query::Alias::new("agent_version"),
+                sea_orm::sea_query::Alias::new("definition"),
+                sea_orm::sea_query::Alias::new("status"),
+                sea_orm::sea_query::Alias::new("reason"),
+                sea_orm::sea_query::Alias::new("depth"),
+                sea_orm::sea_query::Alias::new("token_limit"),
+                sea_orm::sea_query::Alias::new("expires_at"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("$3"),
+                sea_orm::sea_query::Expr::cust("$4"),
+                sea_orm::sea_query::Expr::cust("$5"),
+                sea_orm::sea_query::Expr::cust("$6"),
+                sea_orm::sea_query::Expr::cust("$7"),
+                sea_orm::sea_query::Expr::cust("$8"),
+                sea_orm::sea_query::Expr::cust("$9"),
+                sea_orm::sea_query::Expr::cust("$10"),
+                sea_orm::sea_query::Expr::cust("$11"),
+                sea_orm::sea_query::Expr::cust("$12"),
+                sea_orm::sea_query::Expr::cust("$13"),
+                sea_orm::sea_query::Expr::cust("$14"),
+                sea_orm::sea_query::Expr::cust("$15"),
+                sea_orm::sea_query::Expr::cust("$16"),
+                sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP() + MAKE_INTERVAL(secs => $17)"),
+            ])
+            .returning_all()
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(id)
+    .bind(&access.identity.tenant)
+    .bind(policy_id)
+    .bind(policy.revision)
+    .bind(task_id)
+    .bind(task.workspace_id)
+    .bind(access.identity.credential_id)
+    .bind(&access.identity.subject)
+    .bind(&access.subjects)
+    .bind(&definition.id)
+    .bind(&definition.version)
+    .bind(json!(definition))
+    .bind(status)
+    .bind(reason)
+    .bind(depth)
+    .bind(limits.tokens_per_agent)
+    .bind(limits.lifetime_seconds as f64)
+    .fetch_one(&mut *access.tx)
+    .await?;
     sqlx::query(
-        "INSERT INTO generation_history(request_id,status,actor,reason) VALUES($1,$2,$3,$4)",
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("generation_policies"))
+            .value(
+                sea_orm::sea_query::Alias::new("generated_count"),
+                sea_orm::sea_query::Expr::cust("generated_count + 1"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("allocated_tokens"),
+                sea_orm::sea_query::Expr::cust("allocated_tokens + $3"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("allocated_compaction_calls"),
+                sea_orm::sea_query::Expr::cust("allocated_compaction_calls + $4"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("allocated_embedding_calls"),
+                sea_orm::sea_query::Expr::cust("allocated_embedding_calls + $5"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("tenant = $1 AND id = $2"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(&access.identity.tenant)
+    .bind(policy_id)
+    .bind(limits.tokens_per_agent)
+    .bind(compaction_calls)
+    .bind(embedding_calls)
+    .execute(&mut *access.tx)
+    .await?;
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("generation_budgets"))
+            .columns([
+                sea_orm::sea_query::Alias::new("request_id"),
+                sea_orm::sea_query::Alias::new("token_limit"),
+                sea_orm::sea_query::Alias::new("compaction_call_limit"),
+                sea_orm::sea_query::Alias::new("embedding_call_limit"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("$3"),
+                sea_orm::sea_query::Expr::cust("$4"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(id)
+    .bind(limits.tokens_per_agent)
+    .bind(compaction_calls)
+    .bind(embedding_calls)
+    .execute(&mut *access.tx)
+    .await?;
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("generation_history"))
+            .columns([
+                sea_orm::sea_query::Alias::new("request_id"),
+                sea_orm::sea_query::Alias::new("status"),
+                sea_orm::sea_query::Alias::new("actor"),
+                sea_orm::sea_query::Alias::new("reason"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("$3"),
+                sea_orm::sea_query::Expr::cust("$4"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(id)
     .bind(status)

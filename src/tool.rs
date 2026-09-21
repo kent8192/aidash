@@ -59,6 +59,9 @@ pub enum ToolConfig {
 }
 
 pub fn validate_config(value: &Value) -> Result<()> {
+    validate_config_in(value, true)
+}
+pub(crate) fn validate_config_in(value: &Value, local: bool) -> Result<()> {
     let cfg: ToolConfig =
         serde_json::from_value(value.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
     match &cfg {
@@ -87,7 +90,10 @@ pub fn validate_config(value: &Value) -> Result<()> {
         } => {
             validate_endpoint(endpoint)?;
             if let Some(name) = credential_env {
-                secret(name)?;
+                crate::config::validate_secret_reference(name)?;
+                if local {
+                    secret(name)?;
+                }
             }
             if !matches!(replay.as_str(), "read_only" | "idempotent" | "unsafe") {
                 return Err(Error::Invalid(
@@ -108,10 +114,31 @@ pub fn validate_config(value: &Value) -> Result<()> {
                 ));
             }
         }
-        ToolConfig::Agent { node_id, .. } => crate::config::validate_node_id(node_id)?,
+        ToolConfig::Agent { node_id, agent } => {
+            crate::config::validate_node_id(node_id)?;
+            if agent.id.is_empty()
+                || agent.id.len() > 100
+                || !agent
+                    .id
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                || !agent
+                    .id
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+                || semver::Version::parse(&agent.version).is_err()
+            {
+                return Err(Error::Invalid(
+                    "agent tool requires a valid executor ID and semantic version".into(),
+                ));
+            }
+        }
     }
     Ok(())
 }
+
+mod mcp;
 
 pub struct PluginTool {
     pub entry: Entry,
@@ -119,21 +146,24 @@ pub struct PluginTool {
     pub config: ToolConfig,
     pub client: reqwest::Client,
 }
+pub(crate) fn plugin_specification(entry: &Entry, alias: &str) -> ToolSpec {
+    ToolSpec {
+        name: alias.into(),
+        description: entry
+            .description
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" / "),
+        parameters: entry.schema.clone(),
+    }
+}
 #[async_trait]
 impl Tool for PluginTool {
     fn specification(&self) -> ToolSpec {
-        ToolSpec {
-            name: self.alias.clone(),
-            description: self
-                .entry
-                .description
-                .values()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(" / "),
-            parameters: self.entry.schema.clone(),
-        }
+        plugin_specification(&self.entry, &self.alias)
     }
+
     fn replay_safe(&self) -> bool {
         match &self.config {
             ToolConfig::Http { replay, .. } | ToolConfig::Mcp { replay, .. } => replay != "unsafe",
@@ -213,7 +243,7 @@ impl Tool for PluginTool {
                     transport_config.auth_header = Some(secret(name)?);
                 }
                 let transport = StreamableHttpClientTransport::with_client(
-                    self.client.clone(),
+                    mcp::BoundedClient(self.client.clone()),
                     transport_config,
                 );
                 let service = ()

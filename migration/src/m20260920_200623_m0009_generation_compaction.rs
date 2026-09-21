@@ -1,3 +1,5 @@
+// SeaQuery 0.32 cannot express PostgreSQL trigger functions, triggers, or ALTER CHECK constraints.
+// Those DDL operations intentionally use SeaORM execution; ordinary queries use builders.
 use sea_orm_migration::prelude::*;
 
 #[derive(DeriveMigrationName)]
@@ -6,7 +8,6 @@ pub struct Migration;
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        if crate::legacy_applied(manager, 9, "1e6ff7194666d33e6a359f1359fc9fa14f4729e927f1bb464eb086123818cca341a064407ff1e20e1324482dd859e348").await? { return Ok(()); }
         // SeaQuery 0.32 has no ALTER TABLE CHECK constraint builder.
         manager
             .get_connection()
@@ -108,7 +109,6 @@ impl MigrationTrait for Migration {
         Ok(())
     }
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        crate::ensure_not_legacy(manager, 9).await?;
         manager
             .drop_table(
                 Table::drop()

@@ -48,8 +48,29 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority() 
     let (mut policy, subject_token, _) = bootstrap(&f, &app, "http://localhost:1").await;
     // A peer record is a fixture prerequisite, not a substitute for the inbound
     // middleware: every discovery below passes through real authentication.
-    sqlx::query("INSERT INTO peers(node_id,endpoint,credential_env,protocol_version,enabled) VALUES($1,'http://localhost:1','AIDASH_SECRET_TEST_PEER','0.1',true)")
-        .bind(SOURCE).execute(&f.store.pool).await.unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("peers"))
+            .columns([
+                sea_orm::sea_query::Alias::new("node_id"),
+                sea_orm::sea_query::Alias::new("endpoint"),
+                sea_orm::sea_query::Alias::new("credential_env"),
+                sea_orm::sea_query::Alias::new("protocol_version"),
+                sea_orm::sea_query::Alias::new("enabled"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("'http://localhost:1'"),
+                sea_orm::sea_query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"),
+                sea_orm::sea_query::Expr::cust("'0.1'"),
+                sea_orm::sea_query::Expr::cust("TRUE"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(SOURCE)
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     let peer_token = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
     assert_eq!(
         discover(&app, SOURCE, &peer_token, "remote", "bob").await.0,
@@ -174,10 +195,17 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority() 
             .0,
         200
     );
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM authorization_peer_mapping_history")
-        .fetch_one(&f.store.pool)
-        .await
-        .unwrap();
+    let count: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new(
+                "authorization_peer_mapping_history",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(count, 4, "failed writes must not create history");
     let (status, first) = request(
         &app,
@@ -236,8 +264,29 @@ async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_dis
     let (f, url, schema) = setup().await;
     let app = api::router(f.clone());
     let (mut policy, _, _) = bootstrap(&f, &app, "http://localhost:1").await;
-    sqlx::query("INSERT INTO peers(node_id,endpoint,credential_env,protocol_version,enabled) VALUES($1,'http://localhost:1','AIDASH_SECRET_TEST_PEER','0.1',true)")
-        .bind(SOURCE).execute(&f.store.pool).await.unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("peers"))
+            .columns([
+                sea_orm::sea_query::Alias::new("node_id"),
+                sea_orm::sea_query::Alias::new("endpoint"),
+                sea_orm::sea_query::Alias::new("credential_env"),
+                sea_orm::sea_query::Alias::new("protocol_version"),
+                sea_orm::sea_query::Alias::new("enabled"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("'http://localhost:1'"),
+                sea_orm::sea_query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"),
+                sea_orm::sea_query::Expr::cust("'0.1'"),
+                sea_orm::sea_query::Expr::cust("TRUE"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(SOURCE)
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     let peer_token = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
     let (_, issued) = request(
         &app,
@@ -358,8 +407,24 @@ async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_dis
         200
     );
     // Expiry is a durable database clock check, including for active mappings.
-    sqlx::query("UPDATE authorization_credentials SET created_at=clock_timestamp()-interval '2 seconds', expires_at=clock_timestamp()-interval '1 second' WHERE id=$1")
-        .bind(uuid::Uuid::parse_str(credential.as_str().unwrap()).unwrap()).execute(&f.store.pool).await.unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("authorization_credentials"))
+            .value(
+                sea_orm::sea_query::Alias::new("created_at"),
+                sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP() - INTERVAL '2 SECONDS'"),
+            )
+            .value(
+                sea_orm::sea_query::Alias::new("expires_at"),
+                sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP() - INTERVAL '1 SECOND'"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(uuid::Uuid::parse_str(credential.as_str().unwrap()).unwrap())
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(
         discover(&app, SOURCE, &peer_token, "remote", "bob").await.0,
         403

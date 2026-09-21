@@ -25,8 +25,29 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens() {
     let b_app = api::router(b.clone());
     let (mut policy, token, _) = bootstrap(&a, &a_app, "http://localhost:1").await;
     bootstrap(&b, &b_app, "http://localhost:1").await;
-    sqlx::query("INSERT INTO peers(node_id,endpoint,credential_env,protocol_version,enabled) VALUES($1,'http://localhost:1','AIDASH_SECRET_TEST_PEER','0.1',true)")
-        .bind(&a.config.node_id).execute(&b.store.pool).await.unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("peers"))
+            .columns([
+                sea_orm::sea_query::Alias::new("node_id"),
+                sea_orm::sea_query::Alias::new("endpoint"),
+                sea_orm::sea_query::Alias::new("credential_env"),
+                sea_orm::sea_query::Alias::new("protocol_version"),
+                sea_orm::sea_query::Alias::new("enabled"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("'http://localhost:1'"),
+                sea_orm::sea_query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"),
+                sea_orm::sea_query::Expr::cust("'0.1'"),
+                sea_orm::sea_query::Expr::cust("TRUE"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(&a.config.node_id)
+    .execute(&b.store.pool)
+    .await
+    .unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = calls.clone();
     let peer_token = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
@@ -220,8 +241,29 @@ async fn in_flight_discovery_retains_source_authority_and_subsequent_requests_ho
     let server = tokio::spawn(async move {
         axum::serve(listener, peer).await.unwrap();
     });
-    sqlx::query("INSERT INTO peers(node_id,endpoint,credential_env,protocol_version,enabled) VALUES('aidash://slow-peer',$1,'AIDASH_SECRET_TEST_PEER','0.1',true)")
-        .bind(endpoint).execute(&f.store.pool).await.unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("peers"))
+            .columns([
+                sea_orm::sea_query::Alias::new("node_id"),
+                sea_orm::sea_query::Alias::new("endpoint"),
+                sea_orm::sea_query::Alias::new("credential_env"),
+                sea_orm::sea_query::Alias::new("protocol_version"),
+                sea_orm::sea_query::Alias::new("enabled"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("'aidash://slow-peer'"),
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"),
+                sea_orm::sea_query::Expr::cust("'0.1'"),
+                sea_orm::sea_query::Expr::cust("TRUE"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(endpoint)
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     let active_app = app.clone();
     let active_token = token.clone();
     let active = tokio::spawn(async move {
@@ -237,11 +279,18 @@ async fn in_flight_discovery_retains_source_authority_and_subsequent_requests_ho
     tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
         .await
         .unwrap();
-    let credential: uuid::Uuid =
-        sqlx::query_scalar("SELECT id FROM authorization_credentials WHERE subject='alice'")
-            .fetch_one(&f.store.pool)
-            .await
-            .unwrap();
+    let credential: uuid::Uuid = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("authorization_credentials"))
+            .and_where(sea_orm::sea_query::Expr::cust("subject = 'alice'"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     let revoker_app = app.clone();
     let operator = f.config.api_token.clone();
     let mut revoker = tokio::spawn(async move {
@@ -320,8 +369,29 @@ async fn source_filters_search_results_and_rejects_invalid_peer_metadata() {
     let server = tokio::spawn(async move {
         axum::serve(listener, peer).await.unwrap();
     });
-    sqlx::query("INSERT INTO peers(node_id,endpoint,credential_env,protocol_version,enabled) VALUES('aidash://untrusted-peer',$1,'AIDASH_SECRET_TEST_PEER','0.1',true)")
-        .bind(endpoint).execute(&f.store.pool).await.unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("peers"))
+            .columns([
+                sea_orm::sea_query::Alias::new("node_id"),
+                sea_orm::sea_query::Alias::new("endpoint"),
+                sea_orm::sea_query::Alias::new("credential_env"),
+                sea_orm::sea_query::Alias::new("protocol_version"),
+                sea_orm::sea_query::Alias::new("enabled"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("'aidash://untrusted-peer'"),
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("'AIDASH_SECRET_TEST_PEER'"),
+                sea_orm::sea_query::Expr::cust("'0.1'"),
+                sea_orm::sea_query::Expr::cust("TRUE"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(endpoint)
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     let (_, result) = request(
         &app,
         &token,

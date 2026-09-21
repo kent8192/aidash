@@ -131,6 +131,9 @@ impl Authorization {
     }
 
     pub async fn credentials(&self, tenant: &str) -> Result<Vec<Credential>> {
+        self.credentials_page(tenant, 0).await
+    }
+    pub async fn credentials_page(&self, tenant: &str, offset: u64) -> Result<Vec<Credential>> {
         Ok(sqlx::query_as(
             &Query::select()
                 .column(Alias::new("id"))
@@ -145,6 +148,7 @@ impl Authorization {
                 .order_by(Alias::new("created_at"), Order::Desc)
                 .order_by(Alias::new("id"), Order::Asc)
                 .limit(200)
+                .offset(offset)
                 .to_string(PostgresQueryBuilder),
         )
         .bind(tenant)

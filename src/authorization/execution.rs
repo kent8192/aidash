@@ -665,8 +665,31 @@ impl Guard {
             // The outer authority/source leases remain held through this step.
             let mut tx = store.pool.begin().await?;
             for matched in &result.matches {
-                sqlx::query("INSERT INTO semantic_run_reads(run_id,entry_id,revision) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
-                    .bind(self.run.id).bind(matched.entry_id).bind(matched.revision).execute(&mut *tx).await?;
+                sqlx::query(
+                    &sea_orm::sea_query::Query::insert()
+                        .into_table(sea_orm::sea_query::Alias::new("semantic_run_reads"))
+                        .columns([
+                            sea_orm::sea_query::Alias::new("run_id"),
+                            sea_orm::sea_query::Alias::new("entry_id"),
+                            sea_orm::sea_query::Alias::new("revision"),
+                        ])
+                        .values_panic([
+                            sea_orm::sea_query::Expr::cust("$1"),
+                            sea_orm::sea_query::Expr::cust("$2"),
+                            sea_orm::sea_query::Expr::cust("$3"),
+                        ])
+                        .on_conflict(
+                            sea_orm::sea_query::OnConflict::new()
+                                .do_nothing()
+                                .to_owned(),
+                        )
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                )
+                .bind(self.run.id)
+                .bind(matched.entry_id)
+                .bind(matched.revision)
+                .execute(&mut *tx)
+                .await?;
             }
             tx.commit().await?;
         }
@@ -911,6 +934,14 @@ pub async fn control(
 }
 
 pub async fn details(f: &Federation, identity: &SubjectIdentity, id: Uuid) -> Result<RunDetails> {
+    details_page(f, identity, id, 0).await
+}
+pub async fn details_page(
+    f: &Federation,
+    identity: &SubjectIdentity,
+    id: Uuid,
+    offset: u64,
+) -> Result<RunDetails> {
     let mut access = Access::begin(&f.store, identity).await?;
     let result = async {
         let run: Run = sqlx::query_as(
@@ -931,11 +962,13 @@ pub async fn details(f: &Federation, identity: &SubjectIdentity, id: Uuid) -> Re
             return Err(Error::Forbidden);
         }
         let invocations: Vec<Invocation> = sqlx::query_as(
-            &Query::select()
-                .column(Asterisk)
+            &crate::store::invocation_summary(None)
                 .from(Alias::new("invocations"))
                 .cond_where(Expr::col(Alias::new("run_id")).eq(Expr::cust("$1")))
                 .order_by(Alias::new("created_at"), Order::Asc)
+                .order_by(Alias::new("idempotency_key"), Order::Asc)
+                .limit(100)
+                .offset(offset)
                 .to_string(PostgresQueryBuilder),
         )
         .bind(id)
@@ -949,13 +982,15 @@ pub async fn details(f: &Federation, identity: &SubjectIdentity, id: Uuid) -> Re
                     Condition::all()
                         .add(Expr::col(Alias::new("agent_id")).eq(Expr::cust("$1")))
                         .add(Expr::col(Alias::new("agent_version")).eq(Expr::cust("$2")))
-                        .add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$3"))),
+                        .add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$3")))
+                        .add(Expr::col(Alias::new("home_node")).eq(Expr::cust("$4"))),
                 )
                 .to_string(PostgresQueryBuilder),
         )
         .bind(&run.agent_id)
         .bind(&run.agent_version)
         .bind(run.workspace_id)
+        .bind(f.store.memory_home(&run))
         .fetch_optional(&mut *access.tx)
         .await?;
         Ok(RunDetails {

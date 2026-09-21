@@ -51,6 +51,8 @@
   "capabilities": "能力",
   "languages": "対応言語",
   "permissions": "権限",
+  "parentTask": "親タスク",
+  "noParent": "親タスクなし",
   "dependencies": "依存関係",
   "author": "作成者",
   "save": "保存",

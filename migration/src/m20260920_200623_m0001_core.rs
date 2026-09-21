@@ -6,7 +6,6 @@ pub struct Migration;
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        if crate::legacy_applied(manager, 1, "bc84c62b45ab09a7de69aeae16ebcb82f7b0b3e33f453ea9c8dc85f11b29aa4e3d43f69f2f4970488cce841e423e8f99").await? { return Ok(()); }
         manager
             .create_table(
                 Table::create()
@@ -376,7 +375,6 @@ impl MigrationTrait for Migration {
         Ok(())
     }
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        crate::ensure_not_legacy(manager, 1).await?;
         manager
             .drop_table(Table::drop().table(Alias::new("installations")).to_owned())
             .await?;

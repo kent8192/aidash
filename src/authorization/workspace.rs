@@ -308,13 +308,119 @@ impl Access {
         }
     }
 
-    async fn filter_events(&mut self, events: Vec<Event>) -> Result<Vec<Event>> {
-        let mut result = vec![];
-        for event in events {
-            if self.event_visible(&event).await? {
-                result.push(event);
+    async fn task_page(
+        &mut self,
+        workspaces: &[Uuid],
+        offset: u64,
+    ) -> Result<crate::api_schema::TaskPage> {
+        let mut cursor = offset;
+        let mut tasks = vec![];
+        loop {
+            let rows: Vec<Task> = sqlx::query_as(
+                &Query::select()
+                    .column(Asterisk)
+                    .from(Alias::new("tasks"))
+                    .and_where(Expr::cust("workspace_id=ANY($1)"))
+                    .order_by(Alias::new("created_at"), Order::Desc)
+                    .order_by(Alias::new("id"), Order::Desc)
+                    .limit(500)
+                    .offset(cursor)
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(workspaces)
+            .fetch_all(&mut *self.tx)
+            .await?;
+            let exhausted = rows.len() < 500;
+            for task in rows {
+                cursor = cursor.saturating_add(1);
+                if self.task_visible(&task).await? {
+                    tasks.push(task);
+                }
+                if tasks.len() == 500 {
+                    return Ok(crate::api_schema::TaskPage {
+                        tasks,
+                        next_offset: Some(cursor),
+                    });
+                }
+            }
+            if exhausted {
+                return Ok(crate::api_schema::TaskPage {
+                    tasks,
+                    next_offset: None,
+                });
             }
         }
+    }
+
+    async fn latest_visible_events(&mut self, workspaces: &[Uuid]) -> Result<Vec<Event>> {
+        let mut cursor = i64::MAX;
+        let mut result = vec![];
+        loop {
+            let rows: Vec<Event> = sqlx::query_as(
+                &Query::select()
+                    .column(Asterisk)
+                    .from(Alias::new("events"))
+                    .and_where(Expr::cust("workspace_id=ANY($1)"))
+                    .and_where(Expr::col(Alias::new("sequence")).lt(Expr::cust("$2")))
+                    .order_by(Alias::new("sequence"), Order::Desc)
+                    .limit(100)
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(workspaces)
+            .bind(cursor)
+            .fetch_all(&mut *self.tx)
+            .await?;
+            let exhausted = rows.len() < 100;
+            for event in rows {
+                cursor = event.sequence;
+                if self.event_visible(&event).await? {
+                    result.push(event);
+                }
+                if result.len() == 100 {
+                    break;
+                }
+            }
+            if exhausted || result.len() == 100 {
+                break;
+            }
+        }
+        result.reverse();
+        Ok(result)
+    }
+
+    async fn latest_visible_messages(&mut self, workspace: Uuid) -> Result<Vec<Message>> {
+        let mut offset = 0;
+        let mut result = vec![];
+        loop {
+            let rows: Vec<Message> = sqlx::query_as(
+                &Query::select()
+                    .column(Asterisk)
+                    .from(Alias::new("messages"))
+                    .and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+                    .order_by(Alias::new("created_at"), Order::Desc)
+                    .order_by(Alias::new("id"), Order::Desc)
+                    .limit(100)
+                    .offset(offset)
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(workspace)
+            .fetch_all(&mut *self.tx)
+            .await?;
+            let exhausted = rows.len() < 100;
+            for message in rows {
+                if self.message_visible(&message).await? {
+                    result.push(message);
+                }
+                if result.len() == 100 {
+                    break;
+                }
+            }
+            if exhausted || result.len() == 100 {
+                break;
+            }
+            offset += 100;
+        }
+        result.reverse();
         Ok(result)
     }
 
@@ -322,29 +428,10 @@ impl Access {
         let workspace = self.workspace(id).await?;
         self.require(&workspace, "workspace.read").await?;
         let events = if self.decide(&workspace, "workspace.events").await? {
-            sqlx::query_as(
-                &Query::select()
-                    .column(Asterisk)
-                    .from_subquery(
-                        Query::select()
-                            .column(Asterisk)
-                            .from(Alias::new("events"))
-                            .cond_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
-                            .order_by(Alias::new("sequence"), Order::Desc)
-                            .limit(100)
-                            .to_owned(),
-                        Alias::new("e"),
-                    )
-                    .order_by(Alias::new("sequence"), Order::Asc)
-                    .to_string(PostgresQueryBuilder),
-            )
-            .bind(id)
-            .fetch_all(&mut *self.tx)
-            .await?
+            self.latest_visible_events(&[id]).await?
         } else {
             vec![]
         };
-        let events = self.filter_events(events).await?;
         let mut snapshot = WorkspaceSnapshot {
             workspace: sqlx::query_as(
                 &Query::select()
@@ -380,25 +467,7 @@ impl Access {
             .bind(id)
             .fetch_all(&mut *self.tx)
             .await?,
-            messages: sqlx::query_as(
-                &Query::select()
-                    .column(Asterisk)
-                    .from_subquery(
-                        Query::select()
-                            .column(Asterisk)
-                            .from(Alias::new("messages"))
-                            .cond_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
-                            .order_by(Alias::new("created_at"), Order::Desc)
-                            .limit(100)
-                            .to_owned(),
-                        Alias::new("m"),
-                    )
-                    .order_by(Alias::new("created_at"), Order::Asc)
-                    .to_string(PostgresQueryBuilder),
-            )
-            .bind(id)
-            .fetch_all(&mut *self.tx)
-            .await?,
+            messages: self.latest_visible_messages(id).await?,
             events,
         };
         let mut tasks = vec![];
@@ -428,6 +497,16 @@ impl Access {
 }
 
 impl Workspaces {
+    pub async fn task_page(&self, offset: u64) -> Result<crate::api_schema::TaskPage> {
+        let mut access = Access::begin(&self.store, &self.identity).await?;
+        let result = async {
+            let workspaces = access.visible("workspace.read").await?;
+            access.task_page(&workspaces, offset).await
+        }
+        .await;
+        access.finish(result).await
+    }
+
     pub async fn create(&self, title: &str, goal: &str) -> Result<Workspace> {
         let mut access = Access::begin(&self.store, &self.identity).await?;
         let result = access.create_workspace(&self.store, title, goal).await;
@@ -537,49 +616,13 @@ impl Workspaces {
                 .bind(&visible)
                 .fetch_all(&mut *access.tx)
                 .await?,
-                tasks: sqlx::query_as(
-                    &Query::select()
-                        .column(Asterisk)
-                        .from(Alias::new("tasks"))
-                        .cond_where(Expr::cust("workspace_id=ANY($1)"))
-                        .order_by(Alias::new("created_at"), Order::Asc)
-                        .order_by(Alias::new("id"), Order::Asc)
-                        .to_string(PostgresQueryBuilder),
-                )
-                .bind(&visible)
-                .fetch_all(&mut *access.tx)
-                .await?,
+                tasks: access.task_page(&visible, 0).await?.tasks,
                 artifacts: vec![],
                 runs: vec![],
                 human_requests: vec![],
                 conversations: vec![],
-                events: sqlx::query_as(
-                    &Query::select()
-                        .column(Asterisk)
-                        .from_subquery(
-                            Query::select()
-                                .column(Asterisk)
-                                .from(Alias::new("events"))
-                                .cond_where(Expr::cust("workspace_id=ANY($1)"))
-                                .order_by(Alias::new("sequence"), Order::Desc)
-                                .limit(100)
-                                .to_owned(),
-                            Alias::new("e"),
-                        )
-                        .order_by(Alias::new("sequence"), Order::Asc)
-                        .to_string(PostgresQueryBuilder),
-                )
-                .bind(&event_workspaces)
-                .fetch_all(&mut *access.tx)
-                .await?,
+                events: access.latest_visible_events(&event_workspaces).await?,
             };
-            let mut tasks = vec![];
-            for task in state.tasks {
-                if access.task_visible(&task).await? {
-                    tasks.push(task);
-                }
-            }
-            state.tasks = tasks;
             let mut offset = 0_u64;
             loop {
                 let batch: Vec<Artifact> = sqlx::query_as(
@@ -703,7 +746,7 @@ impl Workspaces {
                 }
                 offset += 500;
             }
-            state.events = access.filter_events(state.events).await?;
+
             Ok(state)
         }
         .await;

@@ -4,7 +4,7 @@ use crate::{
     domain::empty_object,
 };
 use sea_orm::{
-    ActiveValue::Set, DbBackend, QueryOrder, Statement, TransactionTrait, entity::prelude::*,
+    ActiveValue::Set, DbBackend, QueryOrder, QuerySelect, TransactionTrait, entity::prelude::*,
     sea_query::OnConflict,
 };
 use serde::{Deserialize, Serialize};
@@ -112,6 +112,9 @@ pub struct CompactorConfig {
 }
 impl CompactorConfig {
     pub fn validate(&self) -> Result<()> {
+        self.validate_in(true)
+    }
+    pub(crate) fn validate_in(&self, local: bool) -> Result<()> {
         validate_endpoint(&self.endpoint)?;
         if self.provider != "typesafe-system-one"
             || self.model.trim().is_empty()
@@ -124,7 +127,8 @@ impl CompactorConfig {
                 "invalid compactor transport or request/response bounds".into(),
             ));
         }
-        if secret(&self.credential_env)?.trim().is_empty() {
+        crate::config::validate_secret_reference(&self.credential_env)?;
+        if local && secret(&self.credential_env)?.trim().is_empty() {
             return Err(Error::Invalid(
                 "compactor credential must not be empty".into(),
             ));
@@ -177,11 +181,13 @@ impl Search {
 #[derive(Clone)]
 pub struct Registry {
     pub db: DatabaseConnection,
+    node_id: String,
 }
 impl Registry {
-    pub fn new(pool: sqlx::PgPool) -> Self {
+    pub fn new(pool: sqlx::PgPool, node_id: &str) -> Self {
         Self {
             db: sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(pool),
+            node_id: node_id.into(),
         }
     }
     pub async fn get(&self, id: &str, version: &str) -> Result<Entry> {
@@ -189,7 +195,20 @@ impl Registry {
             .one(&self.db)
             .await?
             .ok_or_else(|| Error::NotFound(format!("entity {id}@{version}")))?;
-        Ok(serde_json::from_value(row.metadata)?)
+        self.effective(serde_json::from_value(row.metadata)?).await
+    }
+    async fn effective(&self, mut entry: Entry) -> Result<Entry> {
+        use sea_orm::sea_query::{Alias, Expr, Query};
+        let query = Query::select()
+            .column(Alias::new("config"))
+            .from(Alias::new("installations"))
+            .and_where(Expr::col(Alias::new("id")).eq(&entry.id))
+            .and_where(Expr::col(Alias::new("version")).eq(&entry.version))
+            .to_owned();
+        if let Some(row) = self.db.query_one(DbBackend::Postgres.build(&query)).await? {
+            overlay_config(&mut entry.config, &row.try_get::<Value>("", "config")?)?;
+        }
+        Ok(entry)
     }
     pub async fn list(&self, search: &Search) -> Result<Vec<Entry>> {
         let mut query = record::Entity::find();
@@ -203,12 +222,83 @@ impl Registry {
             .await?;
         let mut result = Vec::new();
         for row in rows {
-            let e: Entry = serde_json::from_value(row.metadata)?;
+            let e = self
+                .effective(serde_json::from_value(row.metadata)?)
+                .await?;
             if search.matches(&e) {
                 result.push(e);
             }
         }
         Ok(result)
+    }
+    pub async fn legacy_agents(&self, search: &Search, offset: u64) -> Result<AgentPage> {
+        use sea_orm::sea_query::{Alias, Expr, Query};
+        let mut cursor = offset;
+        let mut entries = vec![];
+        let mut bytes = 0;
+        loop {
+            let rows = record::Entity::find()
+                .filter(record::Column::Kind.eq("agent"))
+                .order_by_asc(record::Column::Id)
+                .order_by_asc(record::Column::Version)
+                .limit(64)
+                .offset(cursor)
+                .all(&self.db)
+                .await?;
+            let exhausted = rows.len() < 64;
+            for row in rows {
+                let generated = Query::select()
+                    .column(Alias::new("id"))
+                    .from(Alias::new("generation_requests"))
+                    .and_where(Expr::col(Alias::new("agent_id")).eq(&row.id))
+                    .and_where(Expr::col(Alias::new("agent_version")).eq(&row.version))
+                    .limit(1)
+                    .to_owned();
+                if self
+                    .db
+                    .query_one(DbBackend::Postgres.build(&generated))
+                    .await?
+                    .is_some()
+                {
+                    cursor += 1;
+                    continue;
+                }
+                let entry = self
+                    .effective(serde_json::from_value(row.metadata)?)
+                    .await?;
+                if !search.matches(&entry) {
+                    cursor += 1;
+                    continue;
+                }
+                let size = serde_json::to_vec(&entry)?.len() + 1;
+                if bytes + size > 3_000_000 {
+                    if entries.is_empty() {
+                        return Err(Error::Invalid(
+                            "agent metadata exceeds discovery page limit".into(),
+                        ));
+                    }
+                    return Ok(AgentPage {
+                        entries,
+                        next_offset: Some(cursor),
+                    });
+                }
+                bytes += size;
+                cursor += 1;
+                entries.push(entry);
+                if entries.len() == 64 {
+                    return Ok(AgentPage {
+                        entries,
+                        next_offset: Some(cursor),
+                    });
+                }
+            }
+            if exhausted {
+                return Ok(AgentPage {
+                    entries,
+                    next_offset: None,
+                });
+            }
+        }
     }
     pub async fn register(&self, e: Entry) -> Result<Entry> {
         self.validate_references(&e).await?;
@@ -221,15 +311,29 @@ impl Registry {
         validate(e)?;
         if e.kind == "agent" {
             let cfg: AgentConfig = serde_json::from_value(e.config.clone())?;
+            let mut references = Vec::new();
             for (r, kind) in std::iter::once((&cfg.model, "model"))
                 .chain(cfg.tools.iter().map(|r| (r, "tool")))
                 .chain(cfg.skills.iter().map(|r| (r, "skill")))
                 .chain(cfg.cluster.iter().map(|r| (r, "cluster")))
             {
-                if self.get(&r.id, &r.version).await?.kind != kind {
+                let referenced = self.get(&r.id, &r.version).await?;
+                if referenced.kind != kind {
                     return Err(Error::Invalid(format!("{} must reference a {kind}", r.id)));
                 }
+                references.push(referenced);
             }
+            validate_agent_prompt(&cfg, &references)?;
+        }
+        if e.kind == "tool"
+            && let crate::tool::ToolConfig::Agent { node_id, agent } =
+                serde_json::from_value(e.config.clone())?
+            && node_id == self.node_id
+            && self.get(&agent.id, &agent.version).await?.kind != "agent"
+        {
+            return Err(Error::Invalid(
+                "agent tool executor must reference an agent".into(),
+            ));
         }
         if e.kind == "cluster" {
             let config: ClusterConfig = serde_json::from_value(e.config.clone())?;
@@ -277,6 +381,12 @@ async fn insert_entry<C: ConnectionTrait>(db: &C, e: &Entry) -> Result<()> {
 }
 
 pub fn validate(e: &Entry) -> Result<()> {
+    validate_in(e, true)
+}
+pub(crate) fn validate_structure(e: &Entry) -> Result<()> {
+    validate_in(e, false)
+}
+fn validate_in(e: &Entry, local: bool) -> Result<()> {
     let schema = json!({"type":"object","required":["id","version","kind","name","description","capabilities","tags","languages","schema","config"],
         "properties":{
             "id":{"type":"string","pattern":"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$"},
@@ -294,6 +404,13 @@ pub fn validate(e: &Entry) -> Result<()> {
         .map_err(|e| Error::Invalid(e.to_string()))?;
     semver::Version::parse(&e.version)
         .map_err(|_| Error::Invalid("version must be semantic versioning".into()))?;
+    // Reserve the largest valid node ID (108 bytes), `/agents/`, and `@`.
+    // Every accepted agent must fit the 256-byte authorization subject limit.
+    if e.kind == "agent" && e.id.len() + e.version.len() > 139 {
+        return Err(Error::Invalid(
+            "qualified agent identity exceeds 256 bytes".into(),
+        ));
+    }
     for locale in e.name.keys().chain(e.description.keys()) {
         if locale.is_empty()
             || !locale.split('-').all(|p| {
@@ -311,10 +428,10 @@ pub fn validate(e: &Entry) -> Result<()> {
     match e.kind.as_str() {
         "embedding" => serde_json::from_value::<crate::semantic::EmbeddingConfig>(e.config.clone())
             .map_err(|e| Error::Invalid(e.to_string()))?
-            .validate()?,
+            .validate_in(local)?,
         "compactor" => serde_json::from_value::<CompactorConfig>(e.config.clone())
             .map_err(|e| Error::Invalid(e.to_string()))?
-            .validate()?,
+            .validate_in(local)?,
         "model" => {
             let m: ModelConfig = serde_json::from_value(e.config.clone())
                 .map_err(|e| Error::Invalid(e.to_string()))?;
@@ -327,7 +444,10 @@ pub fn validate(e: &Entry) -> Result<()> {
             }
             validate_endpoint(&m.endpoint)?;
             if let Some(name) = m.credential_env {
-                secret(&name)?;
+                crate::config::validate_secret_reference(&name)?;
+                if local {
+                    secret(&name)?;
+                }
             }
         }
         "agent" => {
@@ -352,7 +472,7 @@ pub fn validate(e: &Entry) -> Result<()> {
                 ));
             }
         }
-        "tool" => crate::tool::validate_config(&e.config)?,
+        "tool" => crate::tool::validate_config_in(&e.config, local)?,
         "skill"
             if e.config
                 .get("instructions")
@@ -367,6 +487,7 @@ pub fn validate(e: &Entry) -> Result<()> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Package {
     pub entity: Entry,
     pub author: String,
@@ -400,17 +521,61 @@ impl Registry {
         }
         let value = serde_json::to_value(&package)?;
         let hash = digest(&value);
-        sqlx::query("INSERT INTO packages(id,version,manifest,digest) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING")
-            .bind(&package.entity.id).bind(&package.entity.version).bind(&value).bind(&hash).execute(pool).await?;
-        let record =
-            sqlx::query_as::<_, PackageRecord>("SELECT * FROM packages WHERE id=$1 AND version=$2")
-                .bind(&package.entity.id)
-                .bind(&package.entity.version)
-                .fetch_one(pool)
-                .await?;
+        let mut tx = pool.begin().await?;
+        let inserted = sqlx::query(
+            &sea_orm::sea_query::Query::insert()
+                .into_table(sea_orm::sea_query::Alias::new("packages"))
+                .columns([
+                    sea_orm::sea_query::Alias::new("id"),
+                    sea_orm::sea_query::Alias::new("version"),
+                    sea_orm::sea_query::Alias::new("manifest"),
+                    sea_orm::sea_query::Alias::new("digest"),
+                ])
+                .values_panic([
+                    sea_orm::sea_query::Expr::cust("$1"),
+                    sea_orm::sea_query::Expr::cust("$2"),
+                    sea_orm::sea_query::Expr::cust("$3"),
+                    sea_orm::sea_query::Expr::cust("$4"),
+                ])
+                .on_conflict(
+                    sea_orm::sea_query::OnConflict::new()
+                        .do_nothing()
+                        .to_owned(),
+                )
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(&package.entity.id)
+        .bind(&package.entity.version)
+        .bind(&value)
+        .bind(&hash)
+        .execute(&mut *tx)
+        .await?;
+        let record = sqlx::query_as::<_, PackageRecord>(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                ))
+                .from(sea_orm::sea_query::Alias::new("packages"))
+                .and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(&package.entity.id)
+        .bind(&package.entity.version)
+        .fetch_one(&mut *tx)
+        .await?;
         if record.digest != hash {
             return Err(Error::Conflict("package version is immutable".into()));
         }
+        if inserted.rows_affected() > 0 {
+            package_event(
+                &mut tx,
+                &self.node_id,
+                "package.published",
+                json!({"id":record.id,"version":record.version}),
+            )
+            .await?;
+        }
+        tx.commit().await?;
         Ok(record)
     }
     pub async fn install(
@@ -421,13 +586,20 @@ impl Registry {
         expected_digest: &str,
         config: Value,
     ) -> Result<Entry> {
-        let record =
-            sqlx::query_as::<_, PackageRecord>("SELECT * FROM packages WHERE id=$1 AND version=$2")
-                .bind(id)
-                .bind(version)
-                .fetch_optional(pool)
-                .await?
-                .ok_or_else(|| Error::NotFound("package".into()))?;
+        let record = sqlx::query_as::<_, PackageRecord>(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                ))
+                .from(sea_orm::sea_query::Alias::new("packages"))
+                .and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(id)
+        .bind(version)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| Error::NotFound("package".into()))?;
         if record.digest != expected_digest || digest(&record.manifest) != expected_digest {
             return Err(Error::Conflict("package digest changed".into()));
         }
@@ -438,15 +610,139 @@ impl Registry {
         for dep in &package.dependencies {
             self.get(&dep.id, &dep.version).await?;
         }
-        // Registry registration and local installation configuration are atomic.
-        let tx = self.db.begin().await?;
-        insert_entry(&tx, &effective).await?;
-        tx.execute(Statement::from_sql_and_values(DbBackend::Postgres,
-            "INSERT INTO installations(id,version,digest,config) VALUES($1,$2,$3,$4) ON CONFLICT(id,version) DO UPDATE SET config=EXCLUDED.config",
-            [id.into(), version.into(), expected_digest.into(), config.into()])).await?;
+        let mut tx = pool.begin().await?;
+        let original = serde_json::to_value(&package.entity)?;
+        sqlx::query(
+            &sea_orm::sea_query::Query::insert()
+                .into_table(sea_orm::sea_query::Alias::new("registry"))
+                .columns([
+                    sea_orm::sea_query::Alias::new("id"),
+                    sea_orm::sea_query::Alias::new("version"),
+                    sea_orm::sea_query::Alias::new("kind"),
+                    sea_orm::sea_query::Alias::new("metadata"),
+                ])
+                .values_panic([
+                    sea_orm::sea_query::Expr::cust("$1"),
+                    sea_orm::sea_query::Expr::cust("$2"),
+                    sea_orm::sea_query::Expr::cust("$3"),
+                    sea_orm::sea_query::Expr::cust("$4"),
+                ])
+                .on_conflict(
+                    sea_orm::sea_query::OnConflict::new()
+                        .do_nothing()
+                        .to_owned(),
+                )
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(id)
+        .bind(version)
+        .bind(&package.entity.kind)
+        .bind(&original)
+        .execute(&mut *tx)
+        .await?;
+        let stored: Value = sqlx::query_scalar(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("metadata")),
+                ))
+                .from(sea_orm::sea_query::Alias::new("registry"))
+                .and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
+                .lock(sea_orm::sea_query::LockType::Update)
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(id)
+        .bind(version)
+        .fetch_one(&mut *tx)
+        .await?;
+        if stored != original {
+            return Err(Error::Conflict(
+                "package entity conflicts with immutable registry version".into(),
+            ));
+        }
+        let changed = sqlx::query(
+            &sea_orm::sea_query::Query::insert()
+                .into_table(sea_orm::sea_query::Alias::new("installations"))
+                .columns([
+                    sea_orm::sea_query::Alias::new("id"),
+                    sea_orm::sea_query::Alias::new("version"),
+                    sea_orm::sea_query::Alias::new("digest"),
+                    sea_orm::sea_query::Alias::new("config"),
+                ])
+                .values_panic([
+                    sea_orm::sea_query::Expr::cust("$1"),
+                    sea_orm::sea_query::Expr::cust("$2"),
+                    sea_orm::sea_query::Expr::cust("$3"),
+                    sea_orm::sea_query::Expr::cust("$4"),
+                ])
+                .on_conflict(
+                    sea_orm::sea_query::OnConflict::columns([
+                        sea_orm::sea_query::Alias::new("id"),
+                        sea_orm::sea_query::Alias::new("version"),
+                    ])
+                    .value(
+                        sea_orm::sea_query::Alias::new("config"),
+                        sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+                            sea_orm::sea_query::Alias::new("excluded"),
+                            sea_orm::sea_query::Alias::new("config"),
+                        ))),
+                    )
+                    .action_and_where(sea_orm::sea_query::Expr::cust(
+                        "installations.config IS DISTINCT FROM EXCLUDED.config",
+                    ))
+                    .to_owned(),
+                )
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(id)
+        .bind(version)
+        .bind(expected_digest)
+        .bind(config)
+        .execute(&mut *tx)
+        .await?;
+        if changed.rows_affected() > 0 {
+            package_event(
+                &mut tx,
+                &self.node_id,
+                "package.installed",
+                json!({"id":id,"version":version}),
+            )
+            .await?;
+        }
         tx.commit().await?;
         Ok(effective)
     }
+}
+
+async fn package_event(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    node: &str,
+    kind: &str,
+    data: Value,
+) -> Result<()> {
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("events"))
+            .columns([
+                sea_orm::sea_query::Alias::new("id"),
+                sea_orm::sea_query::Alias::new("node_id"),
+                sea_orm::sea_query::Alias::new("kind"),
+                sea_orm::sea_query::Alias::new("data"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("$3"),
+                sea_orm::sea_query::Expr::cust("$4"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(node)
+    .bind(kind)
+    .bind(data)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 /// Transactional registration for compound admission. References and metadata
@@ -454,37 +750,100 @@ impl Registry {
 pub(crate) async fn register_in(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     entry: &Entry,
-) -> Result<()> {
+    node_id: &str,
+) -> Result<bool> {
     validate(entry)?;
+    if entry.kind == "tool"
+        && let crate::tool::ToolConfig::Agent {
+            node_id: target,
+            agent,
+        } = serde_json::from_value(entry.config.clone())?
+        && target == node_id
+    {
+        use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+        let kind: Option<String> = sqlx::query_scalar(
+            &Query::select()
+                .column(Alias::new("kind"))
+                .from(Alias::new("registry"))
+                .and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                .and_where(Expr::col(Alias::new("version")).eq(Expr::cust("$2")))
+                .to_string(PostgresQueryBuilder),
+        )
+        .bind(&agent.id)
+        .bind(&agent.version)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if kind.as_deref() != Some("agent") {
+            return Err(Error::Invalid(
+                "agent tool executor must reference a local agent".into(),
+            ));
+        }
+    }
     if entry.kind == "agent" {
         let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
+        let mut references = Vec::new();
         for (reference, kind) in std::iter::once((&config.model, "model"))
             .chain(config.tools.iter().map(|r| (r, "tool")))
             .chain(config.skills.iter().map(|r| (r, "skill")))
             .chain(config.cluster.iter().map(|r| (r, "cluster")))
         {
-            let actual: Option<String> =
-                sqlx::query_scalar("SELECT kind FROM registry WHERE id=$1 AND version=$2")
-                    .bind(&reference.id)
-                    .bind(&reference.version)
-                    .fetch_optional(&mut **tx)
-                    .await?;
-            if actual.as_deref() != Some(kind) {
+            let actual: Option<Value> = sqlx::query_scalar(
+                &sea_orm::sea_query::Query::select()
+                    .expr(sea_orm::sea_query::SimpleExpr::from(
+                        sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("metadata")),
+                    ))
+                    .from(sea_orm::sea_query::Alias::new("registry"))
+                    .and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+            )
+            .bind(&reference.id)
+            .bind(&reference.version)
+            .fetch_optional(&mut **tx)
+            .await?;
+            let mut referenced: Entry = serde_json::from_value(
+                actual.ok_or_else(|| Error::NotFound(reference.id.clone()))?,
+            )?;
+            if referenced.kind != kind {
                 return Err(Error::Invalid(format!(
                     "{} must reference a {kind}",
                     reference.id
                 )));
             }
+            use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+            let overrides: Option<Value> = sqlx::query_scalar(
+                &Query::select()
+                    .column(Alias::new("config"))
+                    .from(Alias::new("installations"))
+                    .and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                    .and_where(Expr::col(Alias::new("version")).eq(Expr::cust("$2")))
+                    .to_string(PostgresQueryBuilder),
+            )
+            .bind(&reference.id)
+            .bind(&reference.version)
+            .fetch_optional(&mut **tx)
+            .await?;
+            if let Some(overrides) = overrides {
+                overlay_config(&mut referenced.config, &overrides)?;
+            }
+            references.push(referenced);
         }
+        validate_agent_prompt(&config, &references)?;
     }
     if entry.kind == "cluster" {
         let config: ClusterConfig = serde_json::from_value(entry.config.clone())?;
-        let kind: Option<String> =
-            sqlx::query_scalar("SELECT kind FROM registry WHERE id=$1 AND version=$2")
-                .bind(config.coordinator.id)
-                .bind(config.coordinator.version)
-                .fetch_optional(&mut **tx)
-                .await?;
+        let kind: Option<String> = sqlx::query_scalar(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("kind")),
+                ))
+                .from(sea_orm::sea_query::Alias::new("registry"))
+                .and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(config.coordinator.id)
+        .bind(config.coordinator.version)
+        .fetch_optional(&mut **tx)
+        .await?;
         if kind.as_deref() != Some("agent") {
             return Err(Error::Invalid(
                 "cluster coordinator must reference an agent".into(),
@@ -492,27 +851,55 @@ pub(crate) async fn register_in(
         }
     }
     let value = serde_json::to_value(entry)?;
-    sqlx::query(
-        "INSERT INTO registry(id,version,kind,metadata) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING",
+    let inserted = sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("registry"))
+            .columns([
+                sea_orm::sea_query::Alias::new("id"),
+                sea_orm::sea_query::Alias::new("version"),
+                sea_orm::sea_query::Alias::new("kind"),
+                sea_orm::sea_query::Alias::new("metadata"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("$3"),
+                sea_orm::sea_query::Expr::cust("$4"),
+            ])
+            .on_conflict(
+                sea_orm::sea_query::OnConflict::new()
+                    .do_nothing()
+                    .to_owned(),
+            )
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(&entry.id)
     .bind(&entry.version)
     .bind(&entry.kind)
     .bind(&value)
     .execute(&mut **tx)
+    .await?
+    .rows_affected()
+        != 0;
+    let stored: Value = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("metadata")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("registry"))
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(&entry.id)
+    .bind(&entry.version)
+    .fetch_one(&mut **tx)
     .await?;
-    let stored: Value =
-        sqlx::query_scalar("SELECT metadata FROM registry WHERE id=$1 AND version=$2")
-            .bind(&entry.id)
-            .bind(&entry.version)
-            .fetch_one(&mut **tx)
-            .await?;
     if stored != value {
         return Err(Error::Conflict(
             "published versions are immutable; choose a new version".into(),
         ));
     }
-    Ok(())
+    Ok(inserted)
 }
 
 fn overlay_config(target: &mut Value, overrides: &Value) -> Result<()> {
@@ -592,4 +979,46 @@ mod tests {
         e.config = json!({"coordinator":{"id":"research","version":"1.0.0"}});
         validate(&e).unwrap();
     }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AgentPage {
+    pub entries: Vec<Entry>,
+    pub next_offset: Option<u64>,
+}
+
+fn validate_agent_prompt(config: &AgentConfig, references: &[Entry]) -> Result<()> {
+    let get = |reference: &EntityRef| {
+        references
+            .iter()
+            .find(|e| e.id == reference.id && e.version == reference.version)
+            .ok_or_else(|| Error::NotFound(reference.id.clone()))
+    };
+    let model: ModelConfig = serde_json::from_value(get(&config.model)?.config.clone())?;
+    let mut instructions = crate::context::agent_instructions(&config.instructions);
+    for skill in &config.skills {
+        if let Some(text) = get(skill)?.config["instructions"].as_str() {
+            instructions.push('\n');
+            instructions.push_str(text);
+        }
+    }
+    let mut specifications = crate::tool::builtins()
+        .values()
+        .map(|t| t.specification())
+        .collect::<Vec<_>>();
+    for (index, tool) in config.tools.iter().enumerate() {
+        specifications.push(crate::tool::plugin_specification(
+            get(tool)?,
+            &format!("plugin_{index}"),
+        ));
+    }
+    // Match both the inference token estimate and its conservative wire-byte check.
+    let cost = |text: &str| crate::context::estimated_tokens(text).max(text.len());
+    let overhead = cost(&serde_json::to_string(&instructions)?)
+        .saturating_add(cost(&serde_json::to_string(&specifications)?));
+    let output = (model.context_window / 8).clamp(256, 4096);
+    if overhead.saturating_add(output).saturating_add(2048) > model.context_window {
+        return Err(Error::Invalid("agent instructions, skills and tools cannot fit the model window with output and context reserves".into()));
+    }
+    Ok(())
 }

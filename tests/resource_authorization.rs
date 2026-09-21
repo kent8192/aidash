@@ -194,6 +194,14 @@ async fn hidden_task_cannot_be_claimed_or_used_as_a_dependency() {
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
 async fn recorded_source_revocation_hides_journals_and_pauses_before_provider_io() {
+    retained_snapshot_revocation(false).await;
+}
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn workspace_event_revocation_hides_journals_and_pauses_before_provider_io() {
+    retained_snapshot_revocation(true).await;
+}
+async fn retained_snapshot_revocation(events_only: bool) {
     use axum::{Json, Router, routing::post};
     use std::sync::{
         Arc,
@@ -207,7 +215,7 @@ async fn recorded_source_revocation_hides_journals_and_pauses_before_provider_io
         let seen=seen.clone();let pool=pool.clone();async move {
             seen.fetch_add(1,Ordering::SeqCst);
             assert!(body.to_string().contains("private-artifact-content"));
-            let sources:i64=sqlx::query_scalar("SELECT count(*) FROM authorization_run_reads WHERE resource_kind='artifact'").fetch_one(&pool).await.unwrap();
+            let sources:i64=sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("COUNT(*)")).from(sea_orm::sea_query::Alias::new("authorization_run_reads")).and_where(sea_orm::sea_query::Expr::cust("resource_kind = 'artifact'")).to_string(sea_orm::sea_query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
             assert_eq!(sources,1,"membership must commit before provider I/O");
             Json(json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"observe","type":"function","function":{"name":"workspace_observe","arguments":"{}"}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
         }
@@ -270,7 +278,12 @@ async fn recorded_source_revocation_hides_journals_and_pauses_before_provider_io
         .find(|event| event.kind == "tool.completed")
         .unwrap();
     assert!(scope.can_emit(protected).await.unwrap());
-    bundle["policies"].as_array_mut().unwrap().push(json!({"id":"revoke-source","effect":"deny","subjects":{"ids":["alice"]},"actions":["artifact.read"],"resources":{"kinds":["artifact"],"ids":[artifact.id]}}));
+    let denial = if events_only {
+        json!({"id":"revoke-events","effect":"deny","subjects":{"ids":["alice"]},"actions":["workspace.events"],"resources":{"kinds":["workspace"],"ids":[workspace]}})
+    } else {
+        json!({"id":"revoke-source","effect":"deny","subjects":{"ids":["alice"]},"actions":["artifact.read"],"resources":{"kinds":["artifact"],"ids":[artifact.id]}})
+    };
+    bundle["policies"].as_array_mut().unwrap().push(denial);
     assert_eq!(
         request(
             &app,
@@ -299,17 +312,19 @@ async fn recorded_source_revocation_hides_journals_and_pauses_before_provider_io
         .0,
         403
     );
-    for path in [
-        "/api/state".to_owned(),
-        format!("/api/workspaces/{workspace}"),
-        format!("/api/events?workspace_id={workspace}"),
-    ] {
-        let (status, body) = request(&app, &token, "GET", &path, Value::Null).await;
-        assert_eq!(status, 200, "{body}");
-        assert!(
-            !body.to_string().contains("private-artifact-content"),
-            "{path}"
-        );
+    if !events_only {
+        for path in [
+            "/api/state".to_owned(),
+            format!("/api/workspaces/{workspace}"),
+            format!("/api/events?workspace_id={workspace}"),
+        ] {
+            let (status, body) = request(&app, &token, "GET", &path, Value::Null).await;
+            assert_eq!(status, 200, "{body}");
+            assert!(
+                !body.to_string().contains("private-artifact-content"),
+                "{path}"
+            );
+        }
     }
     worker.worker_once().await.unwrap();
     assert_eq!(f.store.run(run.id).await.unwrap().control, "PAUSED");
@@ -443,7 +458,18 @@ async fn denied_new_task_read_rolls_back_creation_but_retains_the_decision() {
             .iter()
             .any(|e| e.data.to_string().contains("Blocked new task"))
     );
-    let denied:i64=sqlx::query_scalar("SELECT count(*) FROM authorization_decisions WHERE action='task.read' AND decision->>'allowed'='false'").fetch_one(&f.store.pool).await.unwrap();
+    let denied: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new("authorization_decisions"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "action = 'task.read' AND decision ->> 'allowed' = 'false'",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert!(denied > 0);
     cleanup(f, &url, &schema).await;
 }
@@ -477,24 +503,47 @@ async fn legacy_journal_migration_retains_sources_and_cyclic_read_graphs_termina
             200
         );
     }
-    sqlx::query("UPDATE runs SET context=$1")
-        .bind(json!({"history":[{"kind":"assistant","text":"old private content"}]}))
-        .execute(&f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("context"),
+                sea_orm::sea_query::Expr::cust("$1"),
+            )
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(json!({"history":[{"kind":"assistant","text":"old private content"}]}))
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     // Exercise the actual upgrade against populated old journals in this test's
     // isolated schema; no production table or other fixture is modified.
-    sqlx::query("DROP TABLE authorization_run_reads")
-        .execute(&f.store.pool)
-        .await
-        .unwrap();
-    sqlx::query("DELETE FROM seaql_migrations WHERE version LIKE '%m0011_resource_reads'")
-        .execute(&f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Table::drop()
+            .table(sea_orm::sea_query::Alias::new("authorization_run_reads"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::delete()
+            .from_table(sea_orm::sea_query::Alias::new("seaql_migrations"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "version LIKE '%m0011_resource_reads'",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     aidash::store::Store::migrate(&f.store.pool).await.unwrap();
     let sources: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM authorization_run_reads WHERE resource_kind='run'",
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new("authorization_run_reads"))
+            .and_where(sea_orm::sea_query::Expr::cust("resource_kind = 'run'"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .fetch_one(&f.store.pool)
     .await
@@ -648,7 +697,13 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records() {
         200
     );
     let hidden: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM authorization_run_reads WHERE resource_id=$1 OR resource_id=$2",
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new("authorization_run_reads"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "resource_id = $1 OR resource_id = $2",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(artifact.id)
     .bind(hidden_message)
@@ -668,7 +723,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records() {
         .find(|m| m.content == "Visible work completed")
         .unwrap();
     let recorded: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM authorization_run_reads WHERE run_id=$1 AND ((resource_kind='artifact' AND resource_id=$2) OR (resource_kind='message' AND resource_id=$3))",
+        &sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("COUNT(*)")).from(sea_orm::sea_query::Alias::new("authorization_run_reads")).and_where(sea_orm::sea_query::Expr::cust("run_id = $1 AND ((resource_kind = 'artifact' AND resource_id = $2) OR (resource_kind = 'message' AND resource_id = $3))")).to_string(sea_orm::sea_query::PostgresQueryBuilder),
     )
     .bind(run.id)
     .bind(output.id)
@@ -736,10 +791,83 @@ async fn artifact_state_page_is_filled_after_task_denials() {
     )
     .await;
     let visible: uuid::Uuid = visible["id"].as_str().unwrap().parse().unwrap();
-    sqlx::query("INSERT INTO artifacts(id,workspace_id,task_id,kind,name,content,created_by,idempotency_key,created_at) SELECT gen_random_uuid(),$1,$2,'text','Hidden','\"hidden\"','alice','hidden-'||i,now() FROM generate_series(1,500) i")
-        .bind(workspace).bind(hidden).execute(&f.store.pool).await.unwrap();
-    sqlx::query("INSERT INTO artifacts(id,workspace_id,task_id,kind,name,content,created_by,idempotency_key,created_at) VALUES(gen_random_uuid(),$1,$2,'text','Visible','\"readable\"','alice','visible',now()-interval '1 day')")
-        .bind(workspace).bind(visible).execute(&f.store.pool).await.unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("artifacts"))
+            .columns([
+                sea_orm::sea_query::Alias::new("id"),
+                sea_orm::sea_query::Alias::new("workspace_id"),
+                sea_orm::sea_query::Alias::new("task_id"),
+                sea_orm::sea_query::Alias::new("kind"),
+                sea_orm::sea_query::Alias::new("name"),
+                sea_orm::sea_query::Alias::new("content"),
+                sea_orm::sea_query::Alias::new("created_by"),
+                sea_orm::sea_query::Alias::new("idempotency_key"),
+                sea_orm::sea_query::Alias::new("created_at"),
+            ])
+            .select_from(
+                sea_orm::sea_query::Query::select()
+                    .expr(sea_orm::sea_query::Expr::cust("GEN_RANDOM_UUID()"))
+                    .expr(sea_orm::sea_query::Expr::cust("$1"))
+                    .expr(sea_orm::sea_query::Expr::cust("$2"))
+                    .expr(sea_orm::sea_query::Expr::cust("'text'"))
+                    .expr(sea_orm::sea_query::Expr::cust("'Hidden'"))
+                    .expr(sea_orm::sea_query::Expr::cust("'\"hidden\"'"))
+                    .expr(sea_orm::sea_query::Expr::cust("'alice'"))
+                    .expr(sea_orm::sea_query::Expr::cust("'hidden-' || i"))
+                    .expr(sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP"))
+                    .from_function(
+                        sea_orm::sea_query::Func::cust(sea_orm::sea_query::Alias::new(
+                            "generate_series",
+                        ))
+                        .args([
+                            sea_orm::sea_query::Expr::val(1).into(),
+                            sea_orm::sea_query::Expr::val(500).into(),
+                        ]),
+                        sea_orm::sea_query::Alias::new("i"),
+                    )
+                    .to_owned(),
+            )
+            .expect("valid insert projection")
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(workspace)
+    .bind(hidden)
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("artifacts"))
+            .columns([
+                sea_orm::sea_query::Alias::new("id"),
+                sea_orm::sea_query::Alias::new("workspace_id"),
+                sea_orm::sea_query::Alias::new("task_id"),
+                sea_orm::sea_query::Alias::new("kind"),
+                sea_orm::sea_query::Alias::new("name"),
+                sea_orm::sea_query::Alias::new("content"),
+                sea_orm::sea_query::Alias::new("created_by"),
+                sea_orm::sea_query::Alias::new("idempotency_key"),
+                sea_orm::sea_query::Alias::new("created_at"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("GEN_RANDOM_UUID()"),
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("'text'"),
+                sea_orm::sea_query::Expr::cust("'Visible'"),
+                sea_orm::sea_query::Expr::cust("'\"readable\"'"),
+                sea_orm::sea_query::Expr::cust("'alice'"),
+                sea_orm::sea_query::Expr::cust("'visible'"),
+                sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP - INTERVAL '1 DAY'"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(workspace)
+    .bind(visible)
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
     bundle["policies"].as_array_mut().unwrap().push(json!({"id":"hide-task","effect":"deny","subjects":{"ids":["alice"]},"actions":["task.read"],"resources":{"kinds":["task"],"ids":[hidden]}}));
     assert_eq!(
         request(
@@ -813,7 +941,21 @@ async fn discovered_registry_entries_remain_live_journal_dependencies() {
     let (status, journal) = request(&app, &token, "GET", &path, Value::Null).await;
     assert_eq!(status, 200);
     assert!(journal.to_string().contains("discovered-private-metadata"));
-    let tracked:i64=sqlx::query_scalar("SELECT count(*) FROM authorization_run_registry_reads WHERE run_id=$1 AND entry_id='discovered-only'").bind(run.id).fetch_one(&f.store.pool).await.unwrap();
+    let tracked: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .from(sea_orm::sea_query::Alias::new(
+                "authorization_run_registry_reads",
+            ))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "run_id = $1 AND entry_id = 'discovered-only'",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(run.id)
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(tracked, 1);
     // Verify an existing journal is protected when upgrading from the previous schema.
     let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());

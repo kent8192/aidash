@@ -260,3 +260,25 @@ fn jev_token_estimate_matches_upstream_examples() {
         assert_eq!(compaction::estimate_tokens(input), tokens);
     }
 }
+
+#[test]
+fn large_optional_workspace_snapshot_fits_without_changing_task_identity() {
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut pinned = json!({"task":{"id":id,"description":"important task"},"workspace":{"tasks":(0..300).map(|_|json!({"description":"x".repeat(10000)})).collect::<Vec<_>>()},"memory":"y".repeat(100000)});
+    super::bound_snapshot(&mut pinned, 2048).unwrap();
+    assert_eq!(pinned["task"]["id"], id);
+    assert_eq!(pinned["snapshot_truncated"], true);
+    assert!(super::estimated_tokens(&pinned.to_string()) <= 2048);
+}
+
+#[test]
+fn snapshot_budget_also_bounds_wide_state_objects() {
+    let state: serde_json::Map<String, Value> = (0..4000)
+        .map(|n| (format!("field-{n}"), json!(true)))
+        .collect();
+    let mut pinned = json!({"identity":{"agent_id":"research"},"task":{"id":"task-id"},"workspace":{"state":state}});
+    bound_snapshot(&mut pinned, 2000).unwrap();
+    assert!(estimated_tokens(&pinned.to_string()) <= 2000);
+    assert_eq!(pinned["task"]["id"], "task-id");
+    assert_eq!(pinned["snapshot_truncated"], true);
+}

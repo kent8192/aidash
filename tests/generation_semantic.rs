@@ -51,9 +51,9 @@ impl Fixture {
                 async move {
                     let before = calls.fetch_add(1, Ordering::SeqCst);
                     if before > 0 && allowance.is_some() && input["input"] != "A car carries passengers." {
-                        let attempts: i64 = sqlx::query_scalar("SELECT count(*) FROM generation_embedding_usage").fetch_one(&pool).await.unwrap();
+                        let attempts: i64 = sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("COUNT(*)")).from(sea_orm::sea_query::Alias::new("generation_embedding_usage")).to_string(sea_orm::sea_query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
                         assert!(attempts > 0, "the attempt must be durable before HTTP");
-                        let charged: i64 = sqlx::query_scalar("SELECT used_tokens FROM generation_budgets LIMIT 1").fetch_one(&pool).await.unwrap();
+                        let charged: i64 = sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("used_tokens")))).from(sea_orm::sea_query::Alias::new("generation_budgets")).limit(1).to_string(sea_orm::sea_query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
                         assert!(charged >= 1024, "input tokens must be reserved before HTTP");
                     }
                     if mode.load(Ordering::SeqCst) == 1 {
@@ -206,11 +206,20 @@ impl Fixture {
             };
             loop {
                 worker.worker_once().await.unwrap();
-                let entry: Option<Uuid> =
-                    sqlx::query_scalar("SELECT entry_id FROM semantic_agent_memory LIMIT 1")
-                        .fetch_optional(&self.f.store.pool)
-                        .await
-                        .unwrap();
+                let entry: Option<Uuid> = sqlx::query_scalar(
+                    &sea_orm::sea_query::Query::select()
+                        .expr(sea_orm::sea_query::SimpleExpr::from(
+                            sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new(
+                                "entry_id",
+                            )),
+                        ))
+                        .from(sea_orm::sea_query::Alias::new("semantic_agent_memory"))
+                        .limit(1)
+                        .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+                )
+                .fetch_optional(&self.f.store.pool)
+                .await
+                .unwrap();
                 if let Some(entry) = entry {
                     break entry;
                 }
@@ -236,11 +245,20 @@ impl Fixture {
         value
     }
     async fn dispose(self) {
-        let collections: Vec<(String, Value)> =
-            sqlx::query_as("SELECT collection,vector FROM semantic_collections")
-                .fetch_all(&self.f.store.pool)
-                .await
-                .unwrap();
+        let collections: Vec<(String, Value)> = sqlx::query_as(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("collection")),
+                ))
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("vector")),
+                ))
+                .from(sea_orm::sea_query::Alias::new("semantic_collections"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .fetch_all(&self.f.store.pool)
+        .await
+        .unwrap();
         for (collection, config) in collections {
             semantic::backend::delete_collection(
                 &self.f.store.semantic_client,
@@ -326,21 +344,36 @@ async fn generated_embeddings_are_pinned_reserved_and_limited_with_reported_usag
 async fn missing_embedding_usage_retains_input_reservation_and_expired_agents_make_no_call() {
     let fixture = Fixture::new(Some(1), None).await;
     fixture.drive().await;
-    let reserved: i64 =
-        sqlx::query_scalar("SELECT reserved_tokens FROM generation_embedding_usage LIMIT 1")
-            .fetch_one(&fixture.f.store.pool)
-            .await
-            .unwrap();
+    let reserved: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("reserved_tokens")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("generation_embedding_usage"))
+            .limit(1)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&fixture.f.store.pool)
+    .await
+    .unwrap();
     let usage = fixture.usage().await;
     assert_eq!(usage["embedding_calls"], 1);
     assert_eq!(usage["used_tokens"], reserved + 12);
     assert_eq!(fixture.embeddings.load(Ordering::SeqCst), 2);
     fixture.dispose().await;
     let fixture = Fixture::new(Some(2), Some(2)).await;
-    sqlx::query("UPDATE generation_requests SET expires_at=clock_timestamp()-interval '1 second'")
-        .execute(&fixture.f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("generation_requests"))
+            .value(
+                sea_orm::sea_query::Alias::new("expires_at"),
+                sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP() - INTERVAL '1 SECOND'"),
+            )
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .execute(&fixture.f.store.pool)
+    .await
+    .unwrap();
     fixture.drive().await;
     assert_eq!(fixture.embeddings.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.inference.load(Ordering::SeqCst), 0);
@@ -417,26 +450,61 @@ async fn background_indexing_retains_failed_charges_across_recovery_and_cannot_o
     .await
     .expect("concurrent indexers must not deadlock the durable reservation");
     assert_eq!(fixture.embeddings.load(Ordering::SeqCst), 3);
-    let (reserved, reported): (i64, Option<i64>) = sqlx::query_as("SELECT reserved_tokens,reported_tokens FROM generation_embedding_usage WHERE purpose='index' AND entry_id=$1")
-        .bind(entry).fetch_one(&fixture.f.store.pool).await.unwrap();
+    let (reserved, reported): (i64, Option<i64>) = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("reserved_tokens")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("reported_tokens")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("generation_embedding_usage"))
+            .and_where(sea_orm::sea_query::Expr::cust(
+                "purpose = 'index' AND entry_id = $1",
+            ))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(entry)
+    .fetch_one(&fixture.f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(reported, None);
     assert_eq!(fixture.usage().await["used_tokens"], reserved + 14);
     fixture.response_mode.store(0, Ordering::SeqCst);
-    sqlx::query("UPDATE semantic_entries SET next_attempt=clock_timestamp() WHERE id=$1")
-        .bind(entry)
-        .execute(&fixture.f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("semantic_entries"))
+            .value(
+                sea_orm::sea_query::Alias::new("next_attempt"),
+                sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP()"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(entry)
+    .execute(&fixture.f.store.pool)
+    .await
+    .unwrap();
     let recovered = fixture.f.store.isolated_pool().await.unwrap();
     semantic::worker::sweep(&recovered).await.unwrap();
     recovered.pool.close().await;
     recovered.control_pool.close().await;
-    let (state, attempts): (String, i32) =
-        sqlx::query_as("SELECT state,attempts FROM semantic_entries WHERE id=$1")
-            .bind(entry)
-            .fetch_one(&fixture.f.store.pool)
-            .await
-            .unwrap();
+    let (state, attempts): (String, i32) = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("state")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("attempts")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("semantic_entries"))
+            .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(entry)
+    .fetch_one(&fixture.f.store.pool)
+    .await
+    .unwrap();
     assert_eq!((state.as_str(), attempts), ("ERROR", 2));
     assert_eq!(
         fixture.embeddings.load(Ordering::SeqCst),
@@ -455,7 +523,13 @@ async fn background_indexing_uses_generated_authority_and_checks_expiry_before_h
         let entry = fixture.remember().await;
         if expired {
             sqlx::query(
-                "UPDATE generation_requests SET expires_at=clock_timestamp()-interval '1 second'",
+                &sea_orm::sea_query::Query::update()
+                    .table(sea_orm::sea_query::Alias::new("generation_requests"))
+                    .value(
+                        sea_orm::sea_query::Alias::new("expires_at"),
+                        sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP() - INTERVAL '1 SECOND'"),
+                    )
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
             )
             .execute(&fixture.f.store.pool)
             .await
@@ -468,11 +542,19 @@ async fn background_indexing_uses_generated_authority_and_checks_expiry_before_h
         .await
         .expect("indexing must not block on a source held by its own authority lease")
         .unwrap();
-        let state: String = sqlx::query_scalar("SELECT state FROM semantic_entries WHERE id=$1")
-            .bind(entry)
-            .fetch_one(&fixture.f.store.pool)
-            .await
-            .unwrap();
+        let state: String = sqlx::query_scalar(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("state")),
+                ))
+                .from(sea_orm::sea_query::Alias::new("semantic_entries"))
+                .and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(entry)
+        .fetch_one(&fixture.f.store.pool)
+        .await
+        .unwrap();
         assert_eq!(state, if expired { "ERROR" } else { "READY" });
         assert_eq!(
             fixture.embeddings.load(Ordering::SeqCst),
@@ -495,11 +577,17 @@ async fn background_indexing_uses_generated_authority_and_checks_expiry_before_h
 async fn excessive_embedding_usage_retains_reservation_and_prevents_inference() {
     let fixture = Fixture::new(Some(2), Some(1_000_000)).await;
     fixture.drive().await;
-    let reserved: i64 =
-        sqlx::query_scalar("SELECT reserved_tokens FROM generation_embedding_usage")
-            .fetch_one(&fixture.f.store.pool)
-            .await
-            .unwrap();
+    let reserved: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("reserved_tokens")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("generation_embedding_usage"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&fixture.f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(fixture.embeddings.load(Ordering::SeqCst), 2);
     assert_eq!(fixture.inference.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.usage().await["used_tokens"], reserved);
@@ -557,8 +645,31 @@ async fn nested_embeddings_intersect_pinned_providers_and_charge_each_ancestor()
                 &parent_run.agent_version,
             ),
         ];
-        sqlx::query("INSERT INTO authorization_task_origins(task_id,source_run_id,tenant,root_subject,subject_chain) VALUES($1,$2,'acme','alice',$3)")
-            .bind(task).bind(parent_run.id).bind(chain).execute(&fixture.f.store.pool).await.unwrap();
+        sqlx::query(
+            &sea_orm::sea_query::Query::insert()
+                .into_table(sea_orm::sea_query::Alias::new("authorization_task_origins"))
+                .columns([
+                    sea_orm::sea_query::Alias::new("task_id"),
+                    sea_orm::sea_query::Alias::new("source_run_id"),
+                    sea_orm::sea_query::Alias::new("tenant"),
+                    sea_orm::sea_query::Alias::new("root_subject"),
+                    sea_orm::sea_query::Alias::new("subject_chain"),
+                ])
+                .values_panic([
+                    sea_orm::sea_query::Expr::cust("$1"),
+                    sea_orm::sea_query::Expr::cust("$2"),
+                    sea_orm::sea_query::Expr::cust("'acme'"),
+                    sea_orm::sea_query::Expr::cust("'alice'"),
+                    sea_orm::sea_query::Expr::cust("$3"),
+                ])
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(task)
+        .bind(parent_run.id)
+        .bind(chain)
+        .execute(&fixture.f.store.pool)
+        .await
+        .unwrap();
         let (status, child) = request(
             &fixture.app,
             &fixture.token,
@@ -574,7 +685,14 @@ async fn nested_embeddings_intersect_pinned_providers_and_charge_each_ancestor()
             .unwrap();
         if case == "token_exhausted" {
             sqlx::query(
-                "UPDATE generation_budgets SET used_tokens=token_limit-1 WHERE request_id=$1",
+                &sea_orm::sea_query::Query::update()
+                    .table(sea_orm::sea_query::Alias::new("generation_budgets"))
+                    .value(
+                        sea_orm::sea_query::Alias::new("used_tokens"),
+                        sea_orm::sea_query::Expr::cust("token_limit - 1"),
+                    )
+                    .and_where(sea_orm::sea_query::Expr::cust("request_id = $1"))
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
             )
             .bind(parent["id"].as_str().unwrap().parse::<Uuid>().unwrap())
             .execute(&fixture.f.store.pool)
@@ -666,18 +784,32 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
         worker.0.try_wait()
     );
     drop(worker); // Real SIGKILL, before the provider returns usage or a vector.
-    let reserved: i64 =
-        sqlx::query_scalar("SELECT reserved_tokens FROM generation_embedding_usage")
-            .fetch_one(&fixture.f.store.pool)
-            .await
-            .unwrap();
+    let reserved: i64 = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("reserved_tokens")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("generation_embedding_usage"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&fixture.f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(fixture.usage().await["used_tokens"], reserved);
     assert_eq!(fixture.usage().await["embedding_calls"], 1);
     fixture.response_mode.store(0, Ordering::SeqCst);
-    sqlx::query("UPDATE runs SET lease_until=clock_timestamp()-interval '1 second'")
-        .execute(&fixture.f.store.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        &sea_orm::sea_query::Query::update()
+            .table(sea_orm::sea_query::Alias::new("runs"))
+            .value(
+                sea_orm::sea_query::Alias::new("lease_until"),
+                sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP() - INTERVAL '1 SECOND'"),
+            )
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .execute(&fixture.f.store.pool)
+    .await
+    .unwrap();
     let worker = WorkerProcess::start(&fixture);
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
         loop {
@@ -696,11 +828,16 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
     assert_eq!(fixture.inference.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.usage().await["embedding_calls"], 2);
     assert_eq!(fixture.usage().await["used_tokens"], reserved + 14);
-    let attempts: (i64, i64) =
-        sqlx::query_as("SELECT count(*),count(reported_tokens) FROM generation_embedding_usage")
-            .fetch_one(&fixture.f.store.pool)
-            .await
-            .unwrap();
+    let attempts: (i64, i64) = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+            .expr(sea_orm::sea_query::Expr::cust("COUNT(reported_tokens)"))
+            .from(sea_orm::sea_query::Alias::new("generation_embedding_usage"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_one(&fixture.f.store.pool)
+    .await
+    .unwrap();
     assert_eq!(attempts, (2, 1));
     fixture.dispose().await;
 }

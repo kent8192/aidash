@@ -54,7 +54,12 @@ pub(crate) async fn verify(
                 Err(Error::Forbidden | Error::NotFound(_)) => return Ok(Json(false)),
                 Err(error) => return Err(error),
             };
-            if entry.kind != "agent" || digest(&serde_json::to_value(&entry)?) != reference.digest {
+            if entry.kind != "agent"
+                || digest(&serde_json::to_value(&entry)?) != reference.digest
+                || !access
+                    .decide(&catalog::resource(&access, &entry), "agent.execute")
+                    .await?
+            {
                 return Ok(Json(false));
             }
         }
@@ -80,8 +85,42 @@ impl Access {
         let mut tx = self.pool.begin().await?;
         for agent in agents.iter().filter(|agent| agent.node_id != self.node_id) {
             let metadata = serde_json::to_value(&agent.entity)?;
-            sqlx::query("INSERT INTO authorization_run_remote_reads(run_id,node_id,entry_id,entry_version,digest,metadata) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING")
-                .bind(run).bind(&agent.node_id).bind(&agent.entity.id).bind(&agent.entity.version).bind(digest(&metadata)).bind(metadata).execute(&mut *tx).await?;
+            sqlx::query(
+                &sea_orm::sea_query::Query::insert()
+                    .into_table(sea_orm::sea_query::Alias::new(
+                        "authorization_run_remote_reads",
+                    ))
+                    .columns([
+                        sea_orm::sea_query::Alias::new("run_id"),
+                        sea_orm::sea_query::Alias::new("node_id"),
+                        sea_orm::sea_query::Alias::new("entry_id"),
+                        sea_orm::sea_query::Alias::new("entry_version"),
+                        sea_orm::sea_query::Alias::new("digest"),
+                        sea_orm::sea_query::Alias::new("metadata"),
+                    ])
+                    .values_panic([
+                        sea_orm::sea_query::Expr::cust("$1"),
+                        sea_orm::sea_query::Expr::cust("$2"),
+                        sea_orm::sea_query::Expr::cust("$3"),
+                        sea_orm::sea_query::Expr::cust("$4"),
+                        sea_orm::sea_query::Expr::cust("$5"),
+                        sea_orm::sea_query::Expr::cust("$6"),
+                    ])
+                    .on_conflict(
+                        sea_orm::sea_query::OnConflict::new()
+                            .do_nothing()
+                            .to_owned(),
+                    )
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+            )
+            .bind(run)
+            .bind(&agent.node_id)
+            .bind(&agent.entity.id)
+            .bind(&agent.entity.version)
+            .bind(digest(&metadata))
+            .bind(metadata)
+            .execute(&mut *tx)
+            .await?;
         }
         tx.commit().await?;
         Ok(())
@@ -97,8 +136,56 @@ impl Access {
         Ok(allowed)
     }
     async fn remote_reads_visible_in(&mut self, run: Uuid) -> Result<bool> {
-        let rows: Vec<(String,String,String,String,Value)> = sqlx::query_as("SELECT node_id,entry_id,entry_version,digest,metadata FROM authorization_run_remote_reads WHERE run_id=$1 ORDER BY node_id,entry_id,entry_version,digest")
-            .bind(run).fetch_all(&mut *self.tx).await?;
+        let rows: Vec<(String, String, String, String, Value)> = sqlx::query_as(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("node_id")),
+                ))
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("entry_id")),
+                ))
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("entry_version")),
+                ))
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("digest")),
+                ))
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("metadata")),
+                ))
+                .from(sea_orm::sea_query::Alias::new(
+                    "authorization_run_remote_reads",
+                ))
+                .and_where(sea_orm::sea_query::Expr::cust("run_id = $1"))
+                .order_by_expr(
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("node_id"),
+                    )),
+                    sea_orm::sea_query::Order::Asc,
+                )
+                .order_by_expr(
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("entry_id"),
+                    )),
+                    sea_orm::sea_query::Order::Asc,
+                )
+                .order_by_expr(
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("entry_version"),
+                    )),
+                    sea_orm::sea_query::Order::Asc,
+                )
+                .order_by_expr(
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("digest"),
+                    )),
+                    sea_orm::sea_query::Order::Asc,
+                )
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(run)
+        .fetch_all(&mut *self.tx)
+        .await?;
         let mut nodes: BTreeMap<String, Vec<Reference>> = BTreeMap::new();
         for (node, id, version, hash, metadata) in rows {
             let entry: Entry = serde_json::from_value(metadata.clone())?;
@@ -112,7 +199,9 @@ impl Access {
             let mut resource = catalog::resource(self, &entry);
             resource.id = crate::domain::qualified_agent(&node, &id, &version);
             resource.attributes["remote_node"] = json!(node);
-            if !self.decide(&resource, "registry.read").await? {
+            if !self.decide(&resource, "registry.read").await?
+                || !self.decide(&resource, "agent.execute").await?
+            {
                 return Ok(false);
             }
             nodes.entry(node).or_default().push(Reference {
@@ -128,11 +217,19 @@ impl Access {
             if !self.decide(&resource, "federation.discover").await? {
                 return Ok(false);
             }
-            let peer: Option<Peer> =
-                sqlx::query_as("SELECT * FROM peers WHERE node_id=$1 AND enabled FOR SHARE")
-                    .bind(&node)
-                    .fetch_optional(&mut *self.tx)
-                    .await?;
+            let peer: Option<Peer> = sqlx::query_as(
+                &sea_orm::sea_query::Query::select()
+                    .expr(sea_orm::sea_query::SimpleExpr::from(
+                        sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                    ))
+                    .from(sea_orm::sea_query::Alias::new("peers"))
+                    .and_where(sea_orm::sea_query::Expr::cust("node_id = $1 AND enabled"))
+                    .lock(sea_orm::sea_query::LockType::Share)
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+            )
+            .bind(&node)
+            .fetch_optional(&mut *self.tx)
+            .await?;
             let Some(peer) = peer else {
                 return Ok(false);
             };

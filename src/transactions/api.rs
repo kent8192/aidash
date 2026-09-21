@@ -56,9 +56,23 @@ async fn submit(
 #[utoipa::path(get,path="/transactions",operation_id="transactions",responses((status=200,body=[Status])),security(("bearer_auth"=[])))]
 async fn list(State(f): State<Federation>) -> Result<Json<Vec<Status>>> {
     Ok(Json(
-        sqlx::query_as("SELECT * FROM atomic_coordinators ORDER BY created_at DESC LIMIT 200")
-            .fetch_all(&f.store.control_pool)
-            .await?,
+        sqlx::query_as(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                ))
+                .from(sea_orm::sea_query::Alias::new("atomic_coordinators"))
+                .order_by_expr(
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("created_at"),
+                    )),
+                    sea_orm::sea_query::Order::Desc,
+                )
+                .limit(200)
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .fetch_all(&f.store.control_pool)
+        .await?,
     ))
 }
 #[utoipa::path(get,path="/transactions/{id}",operation_id="transaction_details",params(("id"=Uuid,Path)),responses((status=200,body=TransactionDetails)),security(("bearer_auth"=[])))]
@@ -71,7 +85,19 @@ async fn details(
         transaction,
         participants: coordinator::votes(&f, id).await?,
         history: sqlx::query_as(
-            "SELECT * FROM atomic_history WHERE transaction_id=$1 ORDER BY sequence",
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                ))
+                .from(sea_orm::sea_query::Alias::new("atomic_history"))
+                .and_where(sea_orm::sea_query::Expr::cust("transaction_id = $1"))
+                .order_by_expr(
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("sequence"),
+                    )),
+                    sea_orm::sea_query::Order::Asc,
+                )
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
         )
         .bind(id)
         .fetch_all(&f.store.control_pool)
@@ -85,17 +111,47 @@ async fn abort(State(f): State<Federation>, Path(id): Path<Uuid>) -> Result<Json
 #[utoipa::path(get,path="/transactions/participants",operation_id="transaction_participants",responses((status=200,body=[LocalStatus])),security(("bearer_auth"=[])))]
 async fn participants(State(f): State<Federation>) -> Result<Json<Vec<LocalStatus>>> {
     Ok(Json(
-        sqlx::query_as("SELECT * FROM atomic_participants ORDER BY updated_at DESC LIMIT 200")
-            .fetch_all(&f.store.control_pool)
-            .await?,
+        sqlx::query_as(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                ))
+                .from(sea_orm::sea_query::Alias::new("atomic_participants"))
+                .order_by_expr(
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("updated_at"),
+                    )),
+                    sea_orm::sea_query::Order::Desc,
+                )
+                .limit(200)
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .fetch_all(&f.store.control_pool)
+        .await?,
     ))
 }
 #[utoipa::path(get,path="/transactions/trust",operation_id="transaction_trust_list",responses((status=200,body=[TransactionTrust])),security(("bearer_auth"=[])))]
 async fn trust_list(State(f): State<Federation>) -> Result<Json<Vec<TransactionTrust>>> {
     Ok(Json(
-        sqlx::query_as("SELECT node_id,enabled FROM atomic_peer_trust ORDER BY node_id")
-            .fetch_all(&f.store.control_pool)
-            .await?,
+        sqlx::query_as(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("node_id")),
+                ))
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("enabled")),
+                ))
+                .from(sea_orm::sea_query::Alias::new("atomic_peer_trust"))
+                .order_by_expr(
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("node_id"),
+                    )),
+                    sea_orm::sea_query::Order::Asc,
+                )
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .fetch_all(&f.store.control_pool)
+        .await?,
     ))
 }
 #[utoipa::path(post,path="/transactions/trust",operation_id="transaction_trust",request_body=TransactionTrust,responses((status=200,body=TransactionTrust)),security(("bearer_auth"=[])))]
@@ -103,9 +159,44 @@ async fn trust(
     State(f): State<Federation>,
     Json(input): Json<TransactionTrust>,
 ) -> Result<Json<TransactionTrust>> {
-    f.peer(&input.node_id).await?;
+    if input.enabled {
+        f.peer(&input.node_id).await?;
+    }
     let mut tx = f.store.control_pool.begin().await?;
-    sqlx::query("INSERT INTO atomic_peer_trust(node_id,enabled) VALUES($1,$2) ON CONFLICT(node_id) DO UPDATE SET enabled=EXCLUDED.enabled,updated_at=now()").bind(&input.node_id).bind(input.enabled).execute(&mut *tx).await?;
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("atomic_peer_trust"))
+            .columns([
+                sea_orm::sea_query::Alias::new("node_id"),
+                sea_orm::sea_query::Alias::new("enabled"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+            ])
+            .on_conflict(
+                sea_orm::sea_query::OnConflict::columns([sea_orm::sea_query::Alias::new(
+                    "node_id",
+                )])
+                .value(
+                    sea_orm::sea_query::Alias::new("enabled"),
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+                        sea_orm::sea_query::Alias::new("excluded"),
+                        sea_orm::sea_query::Alias::new("enabled"),
+                    ))),
+                )
+                .value(
+                    sea_orm::sea_query::Alias::new("updated_at"),
+                    sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP"),
+                )
+                .to_owned(),
+            )
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(&input.node_id)
+    .bind(input.enabled)
+    .execute(&mut *tx)
+    .await?;
     super::history(
         &mut tx,
         Uuid::nil(),

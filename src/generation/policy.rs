@@ -132,11 +132,63 @@ pub(crate) async fn load(
     exclusive: bool,
 ) -> Result<Policy> {
     let query = if exclusive {
-        "SELECT revision,spec,generated_count,allocated_tokens,allocated_compaction_calls,allocated_embedding_calls FROM generation_policies WHERE tenant=$1 AND id=$2 FOR UPDATE"
+        sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("revision")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("spec")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("generated_count")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("allocated_tokens")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new(
+                    "allocated_compaction_calls",
+                )),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new(
+                    "allocated_embedding_calls",
+                )),
+            ))
+            .from(sea_orm::sea_query::Alias::new("generation_policies"))
+            .and_where(sea_orm::sea_query::Expr::cust("tenant = $1 AND id = $2"))
+            .lock(sea_orm::sea_query::LockType::Update)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder)
     } else {
-        "SELECT revision,spec,generated_count,allocated_tokens,allocated_compaction_calls,allocated_embedding_calls FROM generation_policies WHERE tenant=$1 AND id=$2 FOR SHARE"
+        sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("revision")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("spec")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("generated_count")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("allocated_tokens")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new(
+                    "allocated_compaction_calls",
+                )),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new(
+                    "allocated_embedding_calls",
+                )),
+            ))
+            .from(sea_orm::sea_query::Alias::new("generation_policies"))
+            .and_where(sea_orm::sea_query::Expr::cust("tenant = $1 AND id = $2"))
+            .lock(sea_orm::sea_query::LockType::Share)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder)
     };
-    let row: Option<(i64, Value, i64, i64, i64, i64)> = sqlx::query_as(query)
+    let row: Option<(i64, Value, i64, i64, i64, i64)> = sqlx::query_as(&query)
         .bind(tenant)
         .bind(id)
         .fetch_optional(&mut **tx)
@@ -175,17 +227,33 @@ pub(crate) async fn write(
     if !(0..i64::MAX).contains(&expected) {
         return Err(Error::Invalid("invalid generation policy revision".into()));
     }
-    let document: Value =
-        sqlx::query_scalar("SELECT document FROM authorization_bundles WHERE tenant=$1 FOR UPDATE")
-            .bind(tenant)
-            .fetch_optional(&mut **tx)
-            .await?
-            .ok_or_else(|| Error::NotFound("authorization policy".into()))?;
+    let document: Value = sqlx::query_scalar(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("document")),
+            ))
+            .from(sea_orm::sea_query::Alias::new("authorization_bundles"))
+            .and_where(sea_orm::sea_query::Expr::cust("tenant = $1"))
+            .lock(sea_orm::sea_query::LockType::Update)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(tenant)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| Error::NotFound("authorization policy".into()))?;
     // Revocation must never prevent an otherwise unchanged policy from being
     // disabled. Re-enabling or editing still validates every live dependency.
     let disabling = if expected > 0 && !spec.enabled {
         let previous: Option<Value> = sqlx::query_scalar(
-            "SELECT spec FROM generation_policies WHERE tenant=$1 AND id=$2 AND revision=$3",
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::SimpleExpr::from(
+                    sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("spec")),
+                ))
+                .from(sea_orm::sea_query::Alias::new("generation_policies"))
+                .and_where(sea_orm::sea_query::Expr::cust(
+                    "tenant = $1 AND id = $2 AND revision = $3",
+                ))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
         )
         .bind(tenant)
         .bind(id)
@@ -210,8 +278,40 @@ pub(crate) async fn write(
             .chain(spec.compaction.iter().map(|c| (&c.provider, "compactor")))
             .chain(spec.embedding.iter().map(|c| (&c.provider, "embedding")))
         {
-            let metadata:Option<Value>=sqlx::query_scalar("SELECT r.metadata FROM authorization_catalog c JOIN registry r ON r.id=c.entry_id AND r.version=c.entry_version WHERE c.tenant=$1 AND c.entry_id=$2 AND c.entry_version=$3 AND c.enabled FOR SHARE OF c")
-            .bind(tenant).bind(&reference.id).bind(&reference.version).fetch_optional(&mut **tx).await?;
+            let metadata: Option<Value> = sqlx::query_scalar(
+                &sea_orm::sea_query::Query::select()
+                    .expr(sea_orm::sea_query::SimpleExpr::from(
+                        sea_orm::sea_query::Expr::col((
+                            sea_orm::sea_query::Alias::new("r"),
+                            sea_orm::sea_query::Alias::new("metadata"),
+                        )),
+                    ))
+                    .from_as(
+                        sea_orm::sea_query::Alias::new("authorization_catalog"),
+                        sea_orm::sea_query::Alias::new("c"),
+                    )
+                    .join_as(
+                        sea_orm::sea_query::JoinType::InnerJoin,
+                        sea_orm::sea_query::Alias::new("registry"),
+                        sea_orm::sea_query::Alias::new("r"),
+                        sea_orm::sea_query::Expr::cust(
+                            "r.id = c.entry_id AND r.version = c.entry_version",
+                        ),
+                    )
+                    .and_where(sea_orm::sea_query::Expr::cust(
+                        "c.tenant = $1 AND c.entry_id = $2 AND c.entry_version = $3 AND c.enabled",
+                    ))
+                    .lock_with_tables(
+                        sea_orm::sea_query::LockType::Share,
+                        [sea_orm::sea_query::Alias::new("c")],
+                    )
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+            )
+            .bind(tenant)
+            .bind(&reference.id)
+            .bind(&reference.version)
+            .fetch_optional(&mut **tx)
+            .await?;
             let entry: Entry = serde_json::from_value(metadata.ok_or_else(|| {
                 Error::Invalid("generation components require tenant catalog approval".into())
             })?)?;
@@ -233,15 +333,94 @@ pub(crate) async fn write(
         }
     }
     let revision: Option<i64> = if expected == 0 {
-        sqlx::query_scalar("INSERT INTO generation_policies(tenant,id,revision,spec) VALUES($1,$2,1,$3) ON CONFLICT DO NOTHING RETURNING revision")
-            .bind(tenant).bind(id).bind(json!(spec)).fetch_optional(&mut **tx).await?
+        sqlx::query_scalar(
+            &sea_orm::sea_query::Query::insert()
+                .into_table(sea_orm::sea_query::Alias::new("generation_policies"))
+                .columns([
+                    sea_orm::sea_query::Alias::new("tenant"),
+                    sea_orm::sea_query::Alias::new("id"),
+                    sea_orm::sea_query::Alias::new("revision"),
+                    sea_orm::sea_query::Alias::new("spec"),
+                ])
+                .values_panic([
+                    sea_orm::sea_query::Expr::cust("$1"),
+                    sea_orm::sea_query::Expr::cust("$2"),
+                    sea_orm::sea_query::Expr::cust("1"),
+                    sea_orm::sea_query::Expr::cust("$3"),
+                ])
+                .on_conflict(
+                    sea_orm::sea_query::OnConflict::new()
+                        .do_nothing()
+                        .to_owned(),
+                )
+                .returning(sea_orm::sea_query::Query::returning().exprs([
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("revision"),
+                    )),
+                ]))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(tenant)
+        .bind(id)
+        .bind(json!(spec))
+        .fetch_optional(&mut **tx)
+        .await?
     } else {
-        sqlx::query_scalar("UPDATE generation_policies SET revision=revision+1,spec=$4 WHERE tenant=$1 AND id=$2 AND revision=$3 RETURNING revision")
-            .bind(tenant).bind(id).bind(expected).bind(json!(spec)).fetch_optional(&mut **tx).await?
+        sqlx::query_scalar(
+            &sea_orm::sea_query::Query::update()
+                .table(sea_orm::sea_query::Alias::new("generation_policies"))
+                .value(
+                    sea_orm::sea_query::Alias::new("revision"),
+                    sea_orm::sea_query::Expr::cust("revision + 1"),
+                )
+                .value(
+                    sea_orm::sea_query::Alias::new("spec"),
+                    sea_orm::sea_query::Expr::cust("$4"),
+                )
+                .and_where(sea_orm::sea_query::Expr::cust(
+                    "tenant = $1 AND id = $2 AND revision = $3",
+                ))
+                .returning(sea_orm::sea_query::Query::returning().exprs([
+                    sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                        sea_orm::sea_query::Alias::new("revision"),
+                    )),
+                ]))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .bind(tenant)
+        .bind(id)
+        .bind(expected)
+        .bind(json!(spec))
+        .fetch_optional(&mut **tx)
+        .await?
     };
     let revision =
         revision.ok_or_else(|| Error::Conflict("generation policy revision changed".into()))?;
-    sqlx::query("INSERT INTO generation_policy_history(tenant,policy_id,revision,spec,actor) VALUES($1,$2,$3,$4,$5)")
-        .bind(tenant).bind(id).bind(revision).bind(json!(spec)).bind(actor).execute(&mut **tx).await?;
+    sqlx::query(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("generation_policy_history"))
+            .columns([
+                sea_orm::sea_query::Alias::new("tenant"),
+                sea_orm::sea_query::Alias::new("policy_id"),
+                sea_orm::sea_query::Alias::new("revision"),
+                sea_orm::sea_query::Alias::new("spec"),
+                sea_orm::sea_query::Alias::new("actor"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("$3"),
+                sea_orm::sea_query::Expr::cust("$4"),
+                sea_orm::sea_query::Expr::cust("$5"),
+            ])
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(tenant)
+    .bind(id)
+    .bind(revision)
+    .bind(json!(spec))
+    .bind(actor)
+    .execute(&mut **tx)
+    .await?;
     load(tx, tenant, id, false).await
 }

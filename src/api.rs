@@ -57,6 +57,7 @@ fn ordinary_routes() -> OpenApiRouter<Federation> {
         .routes(routes!(registry_get))
         .routes(routes!(registry_list))
         .routes(routes!(state))
+        .routes(routes!(task_list))
         .routes(routes!(workspace_create))
         .routes(routes!(workspace_get))
         .routes(routes!(workspace_update))
@@ -102,6 +103,7 @@ pub fn router(f: Federation) -> Router {
     let api = api.route_layer(middleware::from_fn_with_state(f.clone(), api_auth));
     let federation = Router::new()
         .route("/discover", post(peer_discover))
+        .route("/discover/{id}/{version}", get(peer_agent))
         .route(
             "/scoped/discover",
             post(crate::authorization::peer::discover),
@@ -249,21 +251,28 @@ pub(crate) fn peer_node(headers: &HeaderMap) -> Result<&str> {
         .ok_or(Error::Unauthorized)
 }
 async fn health(State(f): State<Federation>) -> Result<Json<Value>> {
-    sqlx::query("SELECT 1").execute(&f.store.pool).await?;
+    sqlx::query(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::Expr::cust("1"))
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .execute(&f.store.pool)
+    .await?;
     Ok(Json(json!({"status":"ok","node_id":f.config.node_id})))
 }
 async fn identity(State(f): State<Federation>) -> Result<Json<Value>> {
-    let clusters = f
-        .registry
-        .list(&Search {
-            kind: Some("cluster".into()),
-            ..Default::default()
-        })
-        .await?
-        .into_iter()
-        .map(|e| format!("{}@{}", e.id, e.version))
-        .collect();
-    Ok(Json(json!(f.config.identity(clusters))))
+    Ok(Json(json!(f.config.identity(vec![]))))
+}
+#[utoipa::path(get, path = "/tasks", operation_id = "task_list", params(PageQuery), responses((status = 200, body = TaskPage)), security(("bearer_auth" = [])))]
+async fn task_list(
+    State(f): State<Federation>,
+    Extension(actor): Extension<Actor>,
+    Query(page): Query<PageQuery>,
+) -> Result<Json<TaskPage>> {
+    if let Some(scope) = scoped(&f, actor) {
+        return Ok(Json(scope.task_page(page.offset).await?));
+    }
+    Ok(Json(f.store.task_page(page.offset).await?))
 }
 #[utoipa::path(get, path = "/state", operation_id = "state", responses((status = 200, body = StateResponse)), security(("bearer_auth" = [])))]
 async fn state(
@@ -274,29 +283,128 @@ async fn state(
         return Ok(Json(scope.state(f.config.identity(vec![])).await?));
     }
     let records = f.registry.list(&Search::default()).await?;
-    let events:Vec<crate::domain::Event>=sqlx::query_as("SELECT sequence,id,node_id,workspace_id,kind,data,created_at FROM (SELECT * FROM events ORDER BY sequence DESC LIMIT 100) e ORDER BY sequence").fetch_all(&f.store.pool).await?;
-    let human: Vec<HumanRequest> =
-        sqlx::query_as("SELECT * FROM human_requests ORDER BY created_at DESC LIMIT 500")
-            .fetch_all(&f.store.pool)
-            .await?;
-    let conversations: Vec<Conversation> =
-        sqlx::query_as("SELECT * FROM conversations ORDER BY created_at DESC LIMIT 500")
-            .fetch_all(&f.store.pool)
-            .await?;
-    let artifacts: Vec<Artifact> =
-        sqlx::query_as("SELECT * FROM artifacts ORDER BY created_at DESC LIMIT 500")
-            .fetch_all(&f.store.pool)
-            .await?;
-    let installations: Vec<Installation> =
-        sqlx::query_as("SELECT * FROM installations ORDER BY installed_at DESC")
-            .fetch_all(&f.store.pool)
-            .await?;
+    let events: Vec<crate::domain::Event> = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("sequence")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("node_id")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("workspace_id")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("kind")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("data")),
+            ))
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("created_at")),
+            ))
+            .from_subquery(
+                sea_orm::sea_query::Query::select()
+                    .expr(sea_orm::sea_query::SimpleExpr::from(
+                        sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+                    ))
+                    .from(sea_orm::sea_query::Alias::new("events"))
+                    .order_by_expr(
+                        sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                            sea_orm::sea_query::Alias::new("sequence"),
+                        )),
+                        sea_orm::sea_query::Order::Desc,
+                    )
+                    .limit(100)
+                    .to_owned(),
+                sea_orm::sea_query::Alias::new("e"),
+            )
+            .order_by_expr(
+                sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                    sea_orm::sea_query::Alias::new("sequence"),
+                )),
+                sea_orm::sea_query::Order::Asc,
+            )
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_all(&f.store.pool)
+    .await?;
+    let human: Vec<HumanRequest> = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("human_requests"))
+            .order_by_expr(
+                sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                    sea_orm::sea_query::Alias::new("created_at"),
+                )),
+                sea_orm::sea_query::Order::Desc,
+            )
+            .limit(500)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_all(&f.store.pool)
+    .await?;
+    let conversations: Vec<Conversation> = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("conversations"))
+            .order_by_expr(
+                sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                    sea_orm::sea_query::Alias::new("created_at"),
+                )),
+                sea_orm::sea_query::Order::Desc,
+            )
+            .limit(500)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_all(&f.store.pool)
+    .await?;
+    let artifacts: Vec<Artifact> = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("artifacts"))
+            .order_by_expr(
+                sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                    sea_orm::sea_query::Alias::new("created_at"),
+                )),
+                sea_orm::sea_query::Order::Desc,
+            )
+            .limit(500)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_all(&f.store.pool)
+    .await?;
+    let installations: Vec<Installation> = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("installations"))
+            .order_by_expr(
+                sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                    sea_orm::sea_query::Alias::new("installed_at"),
+                )),
+                sea_orm::sea_query::Order::Desc,
+            )
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_all(&f.store.pool)
+    .await?;
     Ok(Json(StateResponse {
         access: AccessProfile::Operator,
         node: f.config.identity(vec![]),
         registry: records,
         workspaces: f.store.workspaces().await?,
-        tasks: f.store.tasks(None).await?,
+        tasks: f.store.task_page(0).await?.tasks,
         runs: f.store.runs().await?,
         human_requests: human,
         conversations,
@@ -336,15 +444,16 @@ async fn registry_create(
     Json(entry): Json<Entry>,
 ) -> Result<Json<Entry>> {
     let mut tx = f.store.pool.begin().await?;
-    crate::registry::register_in(&mut tx, &entry).await?;
-    f.store
-        .event(
-            &mut tx,
-            None,
-            "registry.registered",
-            json!({"id":entry.id,"version":entry.version,"kind":entry.kind}),
-        )
-        .await?;
+    if crate::registry::register_in(&mut tx, &entry, &f.config.node_id).await? {
+        f.store
+            .event(
+                &mut tx,
+                None,
+                "registry.registered",
+                json!({"id":entry.id,"version":entry.version,"kind":entry.kind}),
+            )
+            .await?;
+    }
     tx.commit().await?;
     Ok(Json(entry))
 }
@@ -434,6 +543,7 @@ async fn task_create(
 #[serde(deny_unknown_fields)]
 struct MessageInput {
     content: String,
+    idempotency_key: Option<Uuid>,
 }
 #[utoipa::path(post, path = "/workspaces/{id}/messages", operation_id = "message_create", request_body = MessageInput, params(("id" = Uuid, Path)), responses((status = 200, body = SentResponse)), security(("bearer_auth" = [])))]
 async fn message_create(
@@ -575,8 +685,30 @@ async fn conversation_create(
         .store
         .create_workspace_in(&mut tx, Uuid::new_v4(), &input.title, &input.goal)
         .await?;
-    let c:Conversation=sqlx::query_as("INSERT INTO conversations(id,workspace_id,target,target_kind) VALUES($1,$2,$3,$4) RETURNING *")
-        .bind(Uuid::new_v4()).bind(workspace.id).bind(format!("{}@{}",input.target.id,input.target.version)).bind(input.target_kind).fetch_one(&mut *tx).await?;
+    let c: Conversation = sqlx::query_as(
+        &sea_orm::sea_query::Query::insert()
+            .into_table(sea_orm::sea_query::Alias::new("conversations"))
+            .columns([
+                sea_orm::sea_query::Alias::new("id"),
+                sea_orm::sea_query::Alias::new("workspace_id"),
+                sea_orm::sea_query::Alias::new("target"),
+                sea_orm::sea_query::Alias::new("target_kind"),
+            ])
+            .values_panic([
+                sea_orm::sea_query::Expr::cust("$1"),
+                sea_orm::sea_query::Expr::cust("$2"),
+                sea_orm::sea_query::Expr::cust("$3"),
+                sea_orm::sea_query::Expr::cust("$4"),
+            ])
+            .returning_all()
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(Uuid::new_v4())
+    .bind(workspace.id)
+    .bind(format!("{}@{}", input.target.id, input.target.version))
+    .bind(input.target_kind)
+    .fetch_one(&mut *tx)
+    .await?;
     f.store
         .event(
             &mut tx,
@@ -618,21 +750,40 @@ async fn conversation_create(
         delegation,
     }))
 }
-#[utoipa::path(get, path = "/runs/{id}", operation_id = "run_get", params(("id" = Uuid, Path)), responses((status = 200, body = RunDetails)), security(("bearer_auth" = [])))]
+#[utoipa::path(get, path = "/runs/{id}", operation_id = "run_get", params(("id" = Uuid, Path), PageQuery), responses((status = 200, body = RunDetails)), security(("bearer_auth" = [])))]
 async fn run_get(
     State(f): State<Federation>,
     Extension(actor): Extension<Actor>,
     Path(id): Path<Uuid>,
+    Query(page): Query<PageQuery>,
 ) -> Result<Json<RunDetails>> {
     if let Actor::Subject(identity) = actor {
-        return Ok(Json(execution::details(&f, &identity, id).await?));
+        return Ok(Json(
+            execution::details_page(&f, &identity, id, page.offset).await?,
+        ));
     }
     let run = f.store.run(id).await?;
-    let invocations: Vec<Invocation> =
-        sqlx::query_as("SELECT * FROM invocations WHERE run_id=$1 ORDER BY created_at")
-            .bind(id)
-            .fetch_all(&f.store.pool)
-            .await?;
+    let invocations: Vec<Invocation> = sqlx::query_as(
+        &crate::store::invocation_summary(None)
+            .from(sea_orm::sea_query::Alias::new("invocations"))
+            .and_where(sea_orm::sea_query::Expr::cust("run_id = $1"))
+            .order_by_expr(
+                sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                    sea_orm::sea_query::Alias::new("created_at"),
+                )),
+                sea_orm::sea_query::Order::Asc,
+            )
+            .order_by(
+                sea_orm::sea_query::Alias::new("idempotency_key"),
+                sea_orm::sea_query::Order::Asc,
+            )
+            .limit(100)
+            .offset(page.offset)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(id)
+    .fetch_all(&f.store.pool)
+    .await?;
     Ok(Json(RunDetails {
         memory: f.store.memory(&run).await?,
         run,
@@ -667,13 +818,20 @@ async fn run_message(
     Json(input): Json<MessageInput>,
 ) -> Result<Json<SentResponse>> {
     if let Actor::Subject(identity) = actor {
-        interaction::message(&f, &identity, id, &input.content).await?;
+        interaction::message_keyed(&f, &identity, id, &input.content, input.idempotency_key)
+            .await?;
         return Ok(Json(SentResponse { sent: true }));
     }
     let run = f.store.run(id).await?;
     let home = crate::federation::Home::new(f, run);
-    home.human_message(&format!("human:{}", Uuid::new_v4()), &input.content)
-        .await?;
+    home.human_message(
+        &format!(
+            "human:{id}:{}",
+            input.idempotency_key.unwrap_or_else(Uuid::new_v4)
+        ),
+        &input.content,
+    )
+    .await?;
     Ok(Json(SentResponse { sent: true }))
 }
 #[utoipa::path(post, path = "/human-requests/{id}/answer", operation_id = "human_answer", request_body = Value, params(("id" = Uuid, Path)), responses((status = 200, body = HumanRequest)), security(("bearer_auth" = [])))]
@@ -712,9 +870,28 @@ async fn marketplace(
     State(f): State<Federation>,
     Query(query): Query<Search>,
 ) -> Result<Json<Vec<PackageRecord>>> {
-    let all: Vec<PackageRecord> = sqlx::query_as("SELECT * FROM packages ORDER BY id,version")
-        .fetch_all(&f.store.pool)
-        .await?;
+    let all: Vec<PackageRecord> = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .expr(sea_orm::sea_query::SimpleExpr::from(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
+            ))
+            .from(sea_orm::sea_query::Alias::new("packages"))
+            .order_by_expr(
+                sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                    sea_orm::sea_query::Alias::new("id"),
+                )),
+                sea_orm::sea_query::Order::Asc,
+            )
+            .order_by_expr(
+                sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                    sea_orm::sea_query::Alias::new("version"),
+                )),
+                sea_orm::sea_query::Order::Asc,
+            )
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .fetch_all(&f.store.pool)
+    .await?;
     Ok(Json(
         all.into_iter()
             .filter(|p| {
@@ -730,16 +907,10 @@ async fn package_publish(
     Json(package): Json<Package>,
 ) -> Result<Json<PackageRecord>> {
     let p = f.registry.publish(&f.store.pool, package).await?;
-    f.store
-        .emit(
-            None,
-            "package.published",
-            json!({"id":p.id,"version":p.version}),
-        )
-        .await?;
     Ok(Json(p))
 }
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 struct InstallInput {
     digest: String,
     #[serde(default = "empty_object")]
@@ -754,13 +925,6 @@ async fn package_install(
     let e = f
         .registry
         .install(&f.store.pool, &id, &version, &input.digest, input.config)
-        .await?;
-    f.store
-        .emit(
-            None,
-            "package.installed",
-            json!({"id":id,"version":version}),
-        )
         .await?;
     Ok(Json(e))
 }
@@ -795,6 +959,16 @@ async fn stream(
         .and_then(|h| h.to_str().ok())
         .and_then(|s| s.parse().ok())
         .unwrap_or(q.after);
+    if cursor < 0 {
+        cursor = sqlx::query_scalar(
+            &sea_orm::sea_query::Query::select()
+                .expr(sea_orm::sea_query::Expr::cust("coalesce(max(sequence),0)"))
+                .from(sea_orm::sea_query::Alias::new("events"))
+                .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+        )
+        .fetch_one(&f.store.pool)
+        .await?;
+    }
     // Validate the requested workspace before committing the SSE response.
     if let Some(scope) = &scope {
         scope.events(cursor, q.workspace_id, 1).await?;
@@ -839,10 +1013,22 @@ async fn stream(
 
 async fn peer_discover(
     State(f): State<Federation>,
+    Query(page): Query<PageQuery>,
     Json(mut query): Json<Search>,
-) -> Result<Json<Vec<Entry>>> {
+) -> Result<Json<crate::registry::AgentPage>> {
     query.kind = Some("agent".into());
-    Ok(Json(f.registry.list(&query).await?))
+    Ok(Json(f.registry.legacy_agents(&query, page.offset).await?))
+}
+async fn peer_agent(
+    State(f): State<Federation>,
+    Path((id, version)): Path<(String, String)>,
+) -> Result<Json<Entry>> {
+    f.store.require_legacy_agent(&id, &version).await?;
+    let entry = f.registry.get(&id, &version).await?;
+    if entry.kind != "agent" {
+        return Err(Error::NotFound("agent".into()));
+    }
+    Ok(Json(entry))
 }
 async fn peer_offer(
     State(f): State<Federation>,
@@ -1035,7 +1221,22 @@ async fn peer_workspace(
             bytes.copy_from_slice(&hash[..16]);
             let id = Uuid::from_bytes(bytes);
             let inserted = sqlx::query(
-                "INSERT INTO peer_events(node_id,event_id) VALUES($1,$2) ON CONFLICT DO NOTHING",
+                &sea_orm::sea_query::Query::insert()
+                    .into_table(sea_orm::sea_query::Alias::new("peer_events"))
+                    .columns([
+                        sea_orm::sea_query::Alias::new("node_id"),
+                        sea_orm::sea_query::Alias::new("event_id"),
+                    ])
+                    .values_panic([
+                        sea_orm::sea_query::Expr::cust("$1"),
+                        sea_orm::sea_query::Expr::cust("$2"),
+                    ])
+                    .on_conflict(
+                        sea_orm::sea_query::OnConflict::new()
+                            .do_nothing()
+                            .to_owned(),
+                    )
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
             )
             .bind(node)
             .bind(id)
@@ -1054,13 +1255,103 @@ async fn peer_workspace(
 }
 async fn peer_observe(State(f): State<Federation>, headers: HeaderMap) -> Result<Json<Value>> {
     let node = peer_node(&headers)?;
-    let runs: Vec<Run> =
-        sqlx::query_as("SELECT * FROM runs WHERE home_node=$1 ORDER BY updated_at DESC LIMIT 500")
-            .bind(node)
-            .fetch_all(&f.store.pool)
-            .await?;
-    let requests:Vec<HumanRequest>=sqlx::query_as("SELECT h.* FROM human_requests h JOIN runs r ON r.id=h.run_id WHERE r.home_node=$1 ORDER BY h.created_at DESC LIMIT 500").bind(node).fetch_all(&f.store.pool).await?;
-    let invocations:Vec<Invocation>=sqlx::query_as("SELECT i.* FROM invocations i JOIN runs r ON r.id=i.run_id WHERE r.home_node=$1 ORDER BY i.created_at DESC LIMIT 500").bind(node).fetch_all(&f.store.pool).await?;
+    let runs: Vec<Run> = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .columns([
+                sea_orm::sea_query::Alias::new("id"),
+                sea_orm::sea_query::Alias::new("task_id"),
+                sea_orm::sea_query::Alias::new("workspace_id"),
+                sea_orm::sea_query::Alias::new("home_node"),
+                sea_orm::sea_query::Alias::new("agent_id"),
+                sea_orm::sea_query::Alias::new("agent_version"),
+                sea_orm::sea_query::Alias::new("phase"),
+                sea_orm::sea_query::Alias::new("control"),
+                sea_orm::sea_query::Alias::new("step"),
+                sea_orm::sea_query::Alias::new("revision"),
+                sea_orm::sea_query::Alias::new("lease_owner"),
+                sea_orm::sea_query::Alias::new("lease_until"),
+                sea_orm::sea_query::Alias::new("updated_at"),
+            ])
+            .expr_as(
+                sea_orm::sea_query::Expr::cust("'{}'::jsonb"),
+                sea_orm::sea_query::Alias::new("context"),
+            )
+            .expr_as(
+                sea_orm::sea_query::Expr::cust("'{}'::jsonb"),
+                sea_orm::sea_query::Alias::new("pending"),
+            )
+            .expr_as(
+                sea_orm::sea_query::Expr::cust("left(error,1024)"),
+                sea_orm::sea_query::Alias::new("error"),
+            )
+            .from(sea_orm::sea_query::Alias::new("runs"))
+            .and_where(sea_orm::sea_query::Expr::cust("home_node = $1"))
+            .order_by_expr(
+                sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+                    sea_orm::sea_query::Alias::new("updated_at"),
+                )),
+                sea_orm::sea_query::Order::Desc,
+            )
+            .limit(100)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(node)
+    .fetch_all(&f.store.pool)
+    .await?;
+    let requests: Vec<HumanRequest> = sqlx::query_as(
+        &sea_orm::sea_query::Query::select().columns([(sea_orm::sea_query::Alias::new("h"),sea_orm::sea_query::Alias::new("answered_by")),(sea_orm::sea_query::Alias::new("h"),sea_orm::sea_query::Alias::new("id")),(sea_orm::sea_query::Alias::new("h"),sea_orm::sea_query::Alias::new("workspace_id")),(sea_orm::sea_query::Alias::new("h"),sea_orm::sea_query::Alias::new("run_id")),(sea_orm::sea_query::Alias::new("h"),sea_orm::sea_query::Alias::new("kind")),(sea_orm::sea_query::Alias::new("h"),sea_orm::sea_query::Alias::new("created_at"))])
+ .expr_as(sea_orm::sea_query::Expr::cust("left(h.prompt,1024)"), sea_orm::sea_query::Alias::new("prompt"))
+ .expr_as(sea_orm::sea_query::Expr::cust("CASE WHEN octet_length(h.response::text)>1024 THEN jsonb_build_object('truncated',true,'preview',left(h.response::text,1024)) ELSE h.response END"), sea_orm::sea_query::Alias::new("response"))
+            .from_as(
+                sea_orm::sea_query::Alias::new("human_requests"),
+                sea_orm::sea_query::Alias::new("h"),
+            )
+            .join_as(
+                sea_orm::sea_query::JoinType::InnerJoin,
+                sea_orm::sea_query::Alias::new("runs"),
+                sea_orm::sea_query::Alias::new("r"),
+                sea_orm::sea_query::Expr::cust("r.id = h.run_id"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("r.home_node = $1"))
+            .order_by_expr(
+                sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+                    sea_orm::sea_query::Alias::new("h"),
+                    sea_orm::sea_query::Alias::new("created_at"),
+                ))),
+                sea_orm::sea_query::Order::Desc,
+            )
+            .limit(100)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(node)
+    .fetch_all(&f.store.pool)
+    .await?;
+    let invocations: Vec<Invocation> = sqlx::query_as(
+        &crate::store::invocation_summary(Some("i"))
+            .from_as(
+                sea_orm::sea_query::Alias::new("invocations"),
+                sea_orm::sea_query::Alias::new("i"),
+            )
+            .join_as(
+                sea_orm::sea_query::JoinType::InnerJoin,
+                sea_orm::sea_query::Alias::new("runs"),
+                sea_orm::sea_query::Alias::new("r"),
+                sea_orm::sea_query::Expr::cust("r.id = i.run_id"),
+            )
+            .and_where(sea_orm::sea_query::Expr::cust("r.home_node = $1"))
+            .order_by_expr(
+                sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((
+                    sea_orm::sea_query::Alias::new("i"),
+                    sea_orm::sea_query::Alias::new("created_at"),
+                ))),
+                sea_orm::sea_query::Order::Desc,
+            )
+            .limit(100)
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(node)
+    .fetch_all(&f.store.pool)
+    .await?;
     Ok(Json(
         json!({"node_id":f.config.node_id,"runs":runs,"human_requests":requests,"invocations":invocations}),
     ))
@@ -1072,6 +1363,7 @@ struct RemoteControl {
     request_id: Option<Uuid>,
     response: Option<Value>,
     content: Option<String>,
+    idempotency_key: Option<Uuid>,
 }
 async fn peer_control(
     State(f): State<Federation>,
@@ -1089,7 +1381,11 @@ async fn peer_control(
                 .request_id
                 .ok_or_else(|| Error::Invalid("request_id required".into()))?;
             let valid: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM human_requests WHERE id=$1 AND run_id=$2)",
+                &sea_orm::sea_query::Query::select()
+                    .expr(sea_orm::sea_query::Expr::cust(
+                        "EXISTS(SELECT 1 FROM human_requests WHERE id = $1 AND run_id = $2)",
+                    ))
+                    .to_string(sea_orm::sea_query::PostgresQueryBuilder),
             )
             .bind(id)
             .bind(run.id)
@@ -1113,9 +1409,13 @@ async fn peer_control(
             let content = input
                 .content
                 .ok_or_else(|| Error::Invalid("content required".into()))?;
+            let key = format!(
+                "human:{}:{}",
+                run.id,
+                input.idempotency_key.unwrap_or_else(Uuid::new_v4)
+            );
             let home = crate::federation::Home::new(f, run);
-            home.human_message(&format!("human:{}", Uuid::new_v4()), &content)
-                .await?;
+            home.human_message(&key, &content).await?;
             Ok(Json(json!({"sent":true})))
         }
         action => Ok(Json(json!(f.store.control(run.id, action).await?))),
@@ -1136,7 +1436,11 @@ async fn mesh(State(f): State<Federation>) -> Result<Json<MeshResponse>> {
     .buffer_unordered(8);
     while let Some((peer, response)) = responses.next().await {
         match response {
-            Ok(data) => nodes.push(data),
+            Ok(data) if data.node_id == peer.node_id => nodes.push(data),
+            Ok(_) => errors.push(PeerError {
+                node_id: peer.node_id,
+                error: "peer observation node identity mismatch".into(),
+            }),
             Err(e) => errors.push(PeerError {
                 node_id: peer.node_id,
                 error: e.to_string(),
@@ -1184,9 +1488,10 @@ mod schema_tests {
                 .values()
                 .map(|path| path.as_object().unwrap().len())
                 .sum::<usize>(),
-            68
+            69
         );
         for (path, method) in [
+            ("/api/tasks", "get"),
             ("/api/tasks/{id}/remote-grants", "post"),
             ("/api/tasks/{id}/remote-grants/{grant}/revoke", "post"),
             ("/api/authorization/{tenant}/peer-mappings", "get"),

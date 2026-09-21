@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 docker compose up -d --wait
 export RUSTC_WRAPPER=
-cargo build --locked --bin aidash
+cargo build --locked --bin aidash --example acceptance_queries
 npm ci --prefix web
 # prebuild generates the ignored Rust-owned OpenAPI contract and TypeScript client.
 npm run build --prefix web

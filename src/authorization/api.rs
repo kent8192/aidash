@@ -94,12 +94,15 @@ async fn issue_credential(
             .await?,
     ))
 }
-#[utoipa::path(get, path = "/authorization/{tenant}/credentials", operation_id = "authorization_credentials", params(("tenant" = String, Path)), responses((status = 200, body = [Credential])), security(("bearer_auth" = [])))]
+#[utoipa::path(get, path = "/authorization/{tenant}/credentials", operation_id = "authorization_credentials", params(("tenant" = String, Path), crate::api_schema::PageQuery), responses((status = 200, body = [Credential])), security(("bearer_auth" = [])))]
 async fn credentials(
     State(f): State<Federation>,
     Path(tenant): Path<String>,
+    Query(page): Query<crate::api_schema::PageQuery>,
 ) -> Result<Json<Vec<Credential>>> {
-    Ok(Json(service(f).credentials(&tenant).await?))
+    Ok(Json(
+        service(f).credentials_page(&tenant, page.offset).await?,
+    ))
 }
 #[utoipa::path(post, path = "/authorization/{tenant}/credentials/{id}/revoke", operation_id = "authorization_revoke_credential", params(("tenant" = String, Path), ("id" = Uuid, Path)), responses((status = 200, body = Credential)), security(("bearer_auth" = [])))]
 async fn revoke_credential(
