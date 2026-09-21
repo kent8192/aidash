@@ -10,7 +10,7 @@ async fn seaorm_migrations_round_trip_a_fresh_schema() {
 	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());
 	assert_eq!(
 		Migrator::get_applied_migrations(&db).await.unwrap().len(),
-		20
+		Migrator::migrations().len()
 	);
 	Migrator::down(&db, None).await.unwrap();
 	assert!(

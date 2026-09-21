@@ -3,7 +3,11 @@ import { useQuery } from "@tanstack/react-query";
 import { openrouterModels } from "./generated/aidash";
 import { Field, useI18n } from "./ui";
 
-export function OpenRouterModelPicker() {
+export function OpenRouterModelPicker({
+  onNameChange,
+}: {
+  onNameChange?: (name: string) => void;
+}) {
   const { t } = useI18n();
   const listId = useId();
   const [search, setSearch] = useState("");
@@ -27,10 +31,24 @@ export function OpenRouterModelPicker() {
   const matches = (catalog.data ?? []).filter(
     (m) => !query || `${m.name} ${m.id}`.toLowerCase().includes(query),
   );
+  const suggestName = (
+    model: NonNullable<typeof catalog.data>[number],
+    effort = "",
+  ) => {
+    const level =
+      effort ||
+      model.reasoning?.default_effort ||
+      (model.reasoning?.supported_efforts?.length ? "default" : "none");
+    const id = model.id.includes("/") ? model.id : `openrouter/${model.id}`;
+    onNameChange?.(
+      `${id}-${level}`.toLowerCase().replace(/[^a-z0-9._-]+/g, "-"),
+    );
+  };
   const choose = (model: NonNullable<typeof catalog.data>[number]) => {
     setSelectedId(model.id);
     setSearch(`${model.name} · ${model.id}`);
     setOpen(false);
+    suggestName(model);
   };
   const perMillion = (price: string | undefined) => {
     if (price === undefined || price.trim() === "") return null;
@@ -58,6 +76,7 @@ export function OpenRouterModelPicker() {
             onChange={(e) => {
               setSearch(e.target.value);
               setSelectedId("");
+              onNameChange?.("");
               setActive(0);
               setOpen(true);
             }}
@@ -133,6 +152,9 @@ export function OpenRouterModelPicker() {
           key={selectedId}
           defaultValue=""
           disabled={effortLevels.length === 0}
+          onChange={(event) => {
+            if (selected) suggestName(selected, event.target.value);
+          }}
         >
           <option value="">
             {effortLevels.length

@@ -80,11 +80,9 @@ test("registers an agent with selected versioned skills", async ({ page }) => {
     .click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("エンティティの種類").selectOption("agent");
-  await dialog.getByLabel("エンティティID").fill("skilled-agent");
-  await dialog.getByLabel("名前 · English").fill("Skilled agent");
-  await dialog
-    .getByLabel("説明 · English")
-    .fill("Uses selected skill versions");
+  await expect(dialog.getByLabel("エンティティID")).toHaveCount(0);
+  await dialog.getByLabel("名前").fill("Skilled agent");
+  await dialog.getByLabel("説明").fill("Uses selected skill versions");
   await dialog.locator('[name="model"]').selectOption("model@1.0.0");
   await dialog.locator('[name="instructions"]').fill("Use the selected skill");
   await dialog.locator('[name="skills"][value="research-skill@2.0.0"]').check();

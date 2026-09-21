@@ -1,4 +1,5 @@
-import { Fragment, useState } from "react";
+import { Fragment, useRef, useState } from "react";
+import { EntityConfiguration } from "./entity-configuration";
 import { OpenRouterModelPicker } from "./openrouter-model-picker";
 import { useForm } from "@tanstack/react-form";
 import { Field, useI18n } from "./ui";
@@ -256,6 +257,33 @@ export function EntityForm({
 }) {
   const { t } = useI18n();
   const [kind, setKind] = useState(initial);
+  const registration = useRef<{ body: string; key: string } | null>(null);
+  const [modelName, setModelName] = useState("");
+  const [customModelName, setCustomModelName] = useState<string | null>(null);
+  const [defaultName] = useState(() => {
+    const adjectives = [
+      "calm",
+      "bright",
+      "clever",
+      "gentle",
+      "swift",
+      "curious",
+      "nimble",
+      "brave",
+    ];
+    const animals = [
+      "otter",
+      "fox",
+      "owl",
+      "panda",
+      "dolphin",
+      "falcon",
+      "lynx",
+      "badger",
+    ];
+    const values = crypto.getRandomValues(new Uint32Array(2));
+    return `${adjectives[values[0] % adjectives.length]}-${animals[values[1] % animals.length]}`;
+  });
   const [error, setError] = useState("");
   const models = data.registry.filter((e) => e.kind === "model");
   const toolEntries = data.registry.filter((e) => e.kind === "tool");
@@ -296,7 +324,9 @@ export function EntityForm({
                   ? {
                       provider: "openai",
                       endpoint: s("endpoint"),
-                      credential_env: s("credential_env") || null,
+                      credential_env: d.has("embedding_credentials")
+                        ? "AIDASH_SECRET_EMBEDDING"
+                        : null,
                       model: s("model_id"),
                       model_version: s("model_version"),
                       dimensions: Number(s("dimensions")),
@@ -306,20 +336,19 @@ export function EntityForm({
                         provider: "typesafe-system-one",
                         endpoint: s("endpoint"),
                         model: s("model_id"),
-                        credential_env: s("credential_env"),
+                        credential_env: "AIDASH_SECRET_JEV",
                         max_request_bytes: Number(s("max_request_bytes")),
                         max_questions: Number(s("max_questions")),
                         max_response_bytes: Number(s("max_response_bytes")),
                       }
                     : JSON.parse(s("config"));
           const entry = {
-            id: s("id"),
+            id: "",
             version: s("version"),
             kind,
-            name: { en: s("name_en"), ja: s("name_ja") || s("name_en") },
+            name: { en: s("name_en") },
             description: {
               en: s("description_en"),
-              ja: s("description_ja") || s("description_en"),
             },
             capabilities: split(s("capabilities")),
             languages: split(s("languages")),
@@ -328,14 +357,28 @@ export function EntityForm({
             schema: kind === "tool" ? JSON.parse(s("schema")) : {},
             config,
           };
-          void submit(() => registryCreate(entry));
+          const body = JSON.stringify(entry);
+          if (registration.current?.body !== body) {
+            registration.current = { body, key: crypto.randomUUID() };
+          }
+          const key = registration.current.key;
+          void submit(() =>
+            registryCreate(entry, { headers: { "Idempotency-Key": key } }),
+          );
         } catch (err) {
           setError(String(err));
         }
       }}
     >
       <Field label={t("entityKind")}>
-        <select value={kind} onChange={(e) => setKind(e.target.value)}>
+        <select
+          value={kind}
+          onChange={(e) => {
+            setKind(e.target.value);
+            setModelName("");
+            setCustomModelName(null);
+          }}
+        >
           {[
             "agent",
             "model",
@@ -350,34 +393,40 @@ export function EntityForm({
           ))}
         </select>
       </Field>
-      <div className="two-columns">
-        <Field label={t("entityId")}>
-          <input name="id" required pattern="[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}" />
-        </Field>
-        <Field label={t("version")}>
-          <input name="version" required defaultValue="1.0.0" />
-        </Field>
-      </div>
-      <div className="two-columns">
-        <Field label={`${t("name")} · English`}>
-          <input name="name_en" required />
-        </Field>
-        <Field label={`${t("name")} · 日本語`}>
-          <input name="name_ja" />
-        </Field>
-      </div>
-      <Field label={`${t("description")} · English`}>
-        <textarea name="description_en" required />
+      <Field label={t("version")}>
+        <input name="version" required defaultValue="1.0.0" />
       </Field>
-      <Field label={`${t("description")} · 日本語`}>
-        <textarea name="description_ja" />
+      <Field label={t("name")}>
+        {kind === "model" ? (
+          <input
+            key="model-name"
+            name="name_en"
+            required
+            value={customModelName ?? modelName}
+            onChange={(event) => setCustomModelName(event.target.value || null)}
+          />
+        ) : (
+          <input
+            key="entity-name"
+            name="name_en"
+            required
+            defaultValue={defaultName}
+          />
+        )}
+      </Field>
+      <Field label={t("description")}>
+        <textarea name="description_en" required />
       </Field>
       <div className="two-columns">
         <Field label={t("capabilities")}>
           <input name="capabilities" placeholder="web.search, coding" />
         </Field>
         <Field label={t("languages")}>
-          <input name="languages" defaultValue="ja, en" />
+          <input
+            name="languages"
+            placeholder={t("commaSeparated")}
+            defaultValue="ja, en"
+          />
         </Field>
       </div>
       <Field label={t("tags")}>
@@ -449,7 +498,7 @@ export function EntityForm({
         ) : kind === "model" ? (
           <>
             <p className="muted">{t("modelHelp")}</p>
-            <OpenRouterModelPicker />
+            <OpenRouterModelPicker onNameChange={setModelName} />
           </>
         ) : kind === "embedding" ? (
           <>
@@ -477,12 +526,10 @@ export function EntityForm({
                 max={8192}
               />
             </Field>
-            <Field label={t("credentials")}>
-              <input
-                name="credential_env"
-                placeholder="AIDASH_SECRET_EMBEDDING"
-              />
-            </Field>
+            <label className="check">
+              <input type="checkbox" name="embedding_credentials" />
+              {t("configuredCredentials")}
+            </label>
           </>
         ) : kind === "compactor" ? (
           <>
@@ -503,13 +550,7 @@ export function EntityForm({
                 defaultValue="https://api.typesafe.ai/v1/systemone"
               />
             </Field>
-            <Field label={t("credentials")}>
-              <input
-                name="credential_env"
-                required
-                defaultValue="AIDASH_SECRET_JEV"
-              />
-            </Field>
+
             <Field label={t("compactorRequestBytes")}>
               <input
                 name="max_request_bytes"
@@ -542,35 +583,7 @@ export function EntityForm({
             </Field>
           </>
         ) : (
-          <>
-            <Field label={t("configuration")}>
-              <textarea
-                key={kind}
-                name="config"
-                rows={6}
-                defaultValue={JSON.stringify(
-                  kind === "skill"
-                    ? { instructions: "" }
-                    : kind === "cluster"
-                      ? { coordinator: { id: "", version: "1.0.0" } }
-                      : kind === "tool"
-                        ? { transport: "native", operation: "echo" }
-                        : {},
-                  null,
-                  2,
-                )}
-              />
-            </Field>
-            {kind === "tool" && (
-              <Field label={t("schema")}>
-                <textarea
-                  name="schema"
-                  rows={4}
-                  defaultValue={'{"type":"object"}'}
-                />
-              </Field>
-            )}
-          </>
+          <EntityConfiguration kind={kind} data={data} />
         )}
       </Fragment>
       {error && (

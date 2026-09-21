@@ -763,6 +763,61 @@ async fn package_event(
 
 /// Transactional registration for compound admission. References and metadata
 /// use the same immutable version contract as the public Registry operation.
+/// Keep server-assigned IDs stable across retries, atomically with registration.
+pub(crate) async fn assign_id_in(
+	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	entry: &mut Entry,
+	key: Option<uuid::Uuid>,
+) -> Result<()> {
+	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+	let request = serde_json::to_value(&*entry)?;
+	if entry.id.is_empty() {
+		entry.id = uuid::Uuid::now_v7().to_string();
+	}
+	let Some(key) = key else {
+		return Ok(());
+	};
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("registry_requests"))
+			.columns([
+				Alias::new("key"),
+				Alias::new("request"),
+				Alias::new("entity_id"),
+			])
+			.values_panic([Expr::cust("$1"), Expr::cust("$2"), Expr::cust("$3")])
+			.on_conflict(
+				OnConflict::column(Alias::new("key"))
+					.do_nothing()
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(key)
+	.bind(&request)
+	.bind(&entry.id)
+	.execute(&mut **tx)
+	.await?;
+	// A conflicting insert waits for the winning transaction before this read.
+	let (stored, id): (Value, String) = sqlx::query_as(
+		&Query::select()
+			.columns([Alias::new("request"), Alias::new("entity_id")])
+			.from(Alias::new("registry_requests"))
+			.and_where(Expr::col(Alias::new("key")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(key)
+	.fetch_one(&mut **tx)
+	.await?;
+	if stored != request {
+		return Err(Error::Conflict(
+			"registration idempotency key reused with different input".into(),
+		));
+	}
+	entry.id = id;
+	Ok(())
+}
+
 pub(crate) async fn register_in(
 	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 	entry: &Entry,

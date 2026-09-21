@@ -103,9 +103,9 @@ test("searches and selects a model without credential input", async ({
     0,
   );
   await expect(dialog.getByLabel("資格情報の参照名")).toHaveCount(0);
-  await dialog.getByLabel("エンティティID").fill("openrouter-model");
-  await dialog.getByLabel("名前 · English").fill("OpenRouter test model");
-  await dialog.getByLabel("説明 · English").fill("A model for agent execution");
+  await expect(dialog.getByLabel("エンティティID")).toHaveCount(0);
+  await dialog.getByLabel("名前").fill("OpenRouter test model");
+  await dialog.getByLabel("説明").fill("A model for agent execution");
   const picker = dialog.getByRole("combobox", {
     name: "プロバイダーのモデルID",
   });
@@ -149,9 +149,9 @@ test("requires a catalog selection and supports keyboard selection", async ({
   page,
 }) => {
   const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("エンティティID").fill("openrouter-model");
-  await dialog.getByLabel("名前 · English").fill("Model");
-  await dialog.getByLabel("説明 · English").fill("Model description");
+  await expect(dialog.getByLabel("エンティティID")).toHaveCount(0);
+  await dialog.getByLabel("名前").fill("Model");
+  await dialog.getByLabel("説明").fill("Model description");
   const picker = dialog.getByRole("combobox", {
     name: "プロバイダーのモデルID",
   });
@@ -216,4 +216,53 @@ test("clears reasoning settings when selecting an unsupported model", async ({
   await expect(dialog.getByLabel("Reasoning Effort")).toBeDisabled();
   await expect(dialog.getByLabel("Reasoning Effort")).toHaveValue("");
   await expect(dialog.getByLabel("コンテキスト上限")).toHaveValue("8192");
+  await expect(dialog.getByLabel("名前", { exact: true })).toHaveValue(
+    "other-model-none",
+  );
+});
+
+test("model names follow provider, model and effort until manually edited", async ({
+  page,
+}) => {
+  const dialog = page.getByRole("dialog");
+  const name = dialog.getByLabel("名前", { exact: true });
+  await expect(name).toHaveValue("");
+  const picker = dialog.getByRole("combobox", {
+    name: "プロバイダーのモデルID",
+  });
+  await picker.fill("fixture");
+  await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
+  await expect(name).toHaveValue("vendor-fixture-model-low");
+  await dialog.getByLabel("Reasoning Effort").selectOption("high");
+  await expect(name).toHaveValue("vendor-fixture-model-high");
+  await dialog.getByLabel("説明").fill("Auto-named model");
+  const posted = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "エンティティを登録", exact: true })
+    .click();
+  expect((await posted).postDataJSON().name).toEqual({
+    en: "vendor-fixture-model-high",
+  });
+});
+
+test("manual model names survive model and effort changes", async ({
+  page,
+}) => {
+  const dialog = page.getByRole("dialog");
+  const name = dialog.getByLabel("名前", { exact: true });
+  await name.fill("My research model");
+  const picker = dialog.getByRole("combobox", {
+    name: "プロバイダーのモデルID",
+  });
+  await picker.fill("fixture");
+  await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
+  await dialog.getByLabel("Reasoning Effort").selectOption("high");
+  await expect(name).toHaveValue("My research model");
+  await name.fill("");
+  await expect(name).toHaveValue("vendor-fixture-model-high");
+  await dialog.getByLabel("Reasoning Effort").selectOption("");
+  await expect(name).toHaveValue("vendor-fixture-model-low");
 });
