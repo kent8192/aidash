@@ -88,9 +88,10 @@ test("skill defaults are editable and need no JSON or localized metadata", async
   await expect(dialog.getByLabel("Entity ID")).toHaveValue("");
   await expect(
     dialog.locator(
-      '[name="name_ja"], [name="description_ja"], [name="languages"], textarea[name="config"], textarea[name="schema"]',
+      '[name="name_ja"], [name="description_ja"], textarea[name="config"], textarea[name="schema"]',
     ),
   ).toHaveCount(0);
+  await expect(dialog.getByLabel("Supported languages")).toHaveValue("ja, en");
   await dialog.getByLabel("Instructions").fill("Research reliable sources.");
   const posted = page.waitForRequest(
     (request) =>
@@ -99,13 +100,58 @@ test("skill defaults are editable and need no JSON or localized metadata", async
   await dialog
     .getByRole("button", { name: "Register entity", exact: true })
     .click();
-  expect((await posted).postDataJSON()).toMatchObject({
-    id: "",
+  const body = (await posted).postDataJSON();
+  expect(body).toMatchObject({
     name: { en: original },
     description: { en: "Fixture configuration" },
+    languages: ["ja", "en"],
     config: { instructions: "Research reliable sources." },
   });
-  expect(Object.keys((await posted).postDataJSON().name)).toEqual(["en"]);
+  expect(body.id).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
+  expect(Object.keys(body.name)).toEqual(["en"]);
+});
+
+test("retains an automatic ID when registration is retried", async ({
+  page,
+}) => {
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("skill");
+  await dialog.getByLabel("Instructions").fill("Retry safely.");
+  let fail = true;
+  await page.route("**/api/registry", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    if (fail) {
+      fail = false;
+      return route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "temporary failure" }),
+      });
+    }
+    return route.fallback();
+  });
+  const first = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  const firstBody = (await first).postDataJSON();
+  await expect(dialog.getByLabel("Entity ID")).toHaveValue(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
+  await expect(page.getByRole("alert")).toContainText("temporary failure");
+  const second = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  expect((await second).postDataJSON().id).toBe(firstBody.id);
 });
 
 test("cluster chooses an exact agent version", async ({ page }) => {
