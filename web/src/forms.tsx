@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useForm } from "@tanstack/react-form";
 import { Field, useI18n } from "./ui";
 import type { State, EntityRef, Discovery, Task } from "./types";
@@ -240,17 +240,26 @@ export function EntityForm({
                     modalities: ["text"],
                     cost: JSON.parse(s("cost")),
                   }
-                : kind === "compactor"
+                : kind === "embedding"
                   ? {
-                      provider: "typesafe-system-one",
+                      provider: "openai",
                       endpoint: s("endpoint"),
+                      credential_env: s("credential_env") || null,
                       model: s("model_id"),
-                      credential_env: s("credential_env"),
-                      max_request_bytes: Number(s("max_request_bytes")),
-                      max_questions: Number(s("max_questions")),
-                      max_response_bytes: Number(s("max_response_bytes")),
+                      model_version: s("model_version"),
+                      dimensions: Number(s("dimensions")),
                     }
-                  : JSON.parse(s("config"));
+                  : kind === "compactor"
+                    ? {
+                        provider: "typesafe-system-one",
+                        endpoint: s("endpoint"),
+                        model: s("model_id"),
+                        credential_env: s("credential_env"),
+                        max_request_bytes: Number(s("max_request_bytes")),
+                        max_questions: Number(s("max_questions")),
+                        max_response_bytes: Number(s("max_response_bytes")),
+                      }
+                    : JSON.parse(s("config"));
           const entry = {
             id: s("id"),
             version: s("version"),
@@ -283,6 +292,7 @@ export function EntityForm({
             "cluster",
             "node",
             "compactor",
+            "embedding",
           ].map((k) => (
             <option key={k}>{k}</option>
           ))}
@@ -321,32 +331,14 @@ export function EntityForm({
       <Field label={t("tags")}>
         <input name="tags" placeholder={t("commaSeparated")} />
       </Field>
-      {kind === "agent" ? (
-        <>
-          <p className="muted">{t("agentHelp")}</p>
-          <Field label={t("model")}>
-            <select name="model" required defaultValue="">
-              <option value="">{t("choose")}</option>
-              {models.map((e) => (
-                <option
-                  key={`${e.id}@${e.version}`}
-                  value={`${e.id}@${e.version}`}
-                >
-                  {e.id} · {e.version}
-                </option>
-              ))}
-            </select>
-          </Field>
-          {models.length === 0 && <p className="notice">{t("noModel")}</p>}
-          <Field label={t("instructions")}>
-            <textarea name="instructions" required rows={5} />
-          </Field>
-          <Field label={t("cluster")}>
-            <select name="cluster" defaultValue="">
-              <option value="">{t("noAssignment")}</option>
-              {data.registry
-                .filter((e) => e.kind === "cluster")
-                .map((e) => (
+      <Fragment key={kind}>
+        {kind === "agent" ? (
+          <>
+            <p className="muted">{t("agentHelp")}</p>
+            <Field label={t("model")}>
+              <select name="model" required defaultValue="">
+                <option value="">{t("choose")}</option>
+                {models.map((e) => (
                   <option
                     key={`${e.id}@${e.version}`}
                     value={`${e.id}@${e.version}`}
@@ -354,164 +346,217 @@ export function EntityForm({
                     {e.id} · {e.version}
                   </option>
                 ))}
-            </select>
-          </Field>
-          <fieldset>
-            <legend>{t("tools")}</legend>
-            {toolEntries.map((e) => (
-              <label className="check" key={`${e.id}@${e.version}`}>
-                <input
-                  type="checkbox"
-                  name="tools"
-                  value={`${e.id}@${e.version}`}
-                />
-                {e.id} · {e.version}
-              </label>
-            ))}
-          </fieldset>
-        </>
-      ) : kind === "model" ? (
-        <>
-          <p className="muted">{t("modelHelp")}</p>
-          <Field label={t("provider")}>
-            <select
-              name="provider"
-              value={modelProvider}
-              onChange={(e) => setModelProvider(e.target.value)}
-            >
-              <option value="openai">{t("openaiCompatible")}</option>
-              <option value="anthropic">Anthropic</option>
-              <option value="openrouter">OpenRouter</option>
-            </select>
-          </Field>
-          <Field label={t("modelId")}>
-            <input name="model_id" required />
-          </Field>
-          <Field label={t("endpoint")}>
-            <input
-              key={modelProvider}
-              name="endpoint"
-              type="url"
-              required
-              defaultValue={
-                modelProvider === "openrouter"
-                  ? "https://openrouter.ai/api/v1"
-                  : ""
-              }
-              placeholder="https://api.openai.com/v1"
-            />
-          </Field>
-          <Field label={t("credentials")}>
-            <input
-              name="credential_env"
-              placeholder={`AIDASH_SECRET_${modelProvider.toUpperCase()}`}
-            />
-          </Field>
-          <Field label={t("contextWindow")}>
-            <input
-              name="context_window"
-              type="number"
-              min={2048}
-              defaultValue={128000}
-            />
-          </Field>
-          <Field label={t("costMetadata")}>
-            <textarea
-              name="cost"
-              defaultValue={
-                '{"input_per_million":null,"output_per_million":null,"currency":"USD"}'
-              }
-            />
-          </Field>
-        </>
-      ) : kind === "compactor" ? (
-        <>
-          <p className="muted">{t("compactorHelp")}</p>
-          <Field label={t("model")}>
-            <input
-              name="model_id"
-              required
-              maxLength={128}
-              defaultValue="jev-latest"
-            />
-          </Field>
-          <Field label={t("endpoint")}>
-            <input
-              name="endpoint"
-              type="url"
-              required
-              defaultValue="https://api.typesafe.ai/v1/systemone"
-            />
-          </Field>
-          <Field label={t("credentials")}>
-            <input
-              name="credential_env"
-              required
-              defaultValue="AIDASH_SECRET_JEV"
-            />
-          </Field>
-          <Field label={t("compactorRequestBytes")}>
-            <input
-              name="max_request_bytes"
-              type="number"
-              required
-              min={1024}
-              max={1048576}
-              defaultValue={200000}
-            />
-          </Field>
-          <Field label={t("compactorQuestions")}>
-            <input
-              name="max_questions"
-              type="number"
-              required
-              min={1}
-              max={1024}
-              defaultValue={200}
-            />
-          </Field>
-          <Field label={t("compactorResponseBytes")}>
-            <input
-              name="max_response_bytes"
-              type="number"
-              required
-              min={128}
-              max={1048576}
-              defaultValue={16000}
-            />
-          </Field>
-        </>
-      ) : (
-        <>
-          <Field label={t("configuration")}>
-            <textarea
-              key={kind}
-              name="config"
-              rows={6}
-              defaultValue={JSON.stringify(
-                kind === "skill"
-                  ? { instructions: "" }
-                  : kind === "cluster"
-                    ? { coordinator: { id: "", version: "1.0.0" } }
-                    : kind === "tool"
-                      ? { transport: "native", operation: "echo" }
-                      : {},
-                null,
-                2,
-              )}
-            />
-          </Field>
-          {kind === "tool" && (
-            <Field label={t("schema")}>
-              <textarea
-                name="schema"
-                rows={4}
-                defaultValue={'{"type":"object"}'}
+              </select>
+            </Field>
+            {models.length === 0 && <p className="notice">{t("noModel")}</p>}
+            <Field label={t("instructions")}>
+              <textarea name="instructions" required rows={5} />
+            </Field>
+            <Field label={t("cluster")}>
+              <select name="cluster" defaultValue="">
+                <option value="">{t("noAssignment")}</option>
+                {data.registry
+                  .filter((e) => e.kind === "cluster")
+                  .map((e) => (
+                    <option
+                      key={`${e.id}@${e.version}`}
+                      value={`${e.id}@${e.version}`}
+                    >
+                      {e.id} · {e.version}
+                    </option>
+                  ))}
+              </select>
+            </Field>
+            <fieldset>
+              <legend>{t("tools")}</legend>
+              {toolEntries.map((e) => (
+                <label className="check" key={`${e.id}@${e.version}`}>
+                  <input
+                    type="checkbox"
+                    name="tools"
+                    value={`${e.id}@${e.version}`}
+                  />
+                  {e.id} · {e.version}
+                </label>
+              ))}
+            </fieldset>
+          </>
+        ) : kind === "model" ? (
+          <>
+            <p className="muted">{t("modelHelp")}</p>
+            <Field label={t("provider")}>
+              <select
+                name="provider"
+                value={modelProvider}
+                onChange={(e) => setModelProvider(e.target.value)}
+              >
+                <option value="openai">{t("openaiCompatible")}</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="openrouter">OpenRouter</option>
+              </select>
+            </Field>
+            <Field label={t("modelId")}>
+              <input name="model_id" required />
+            </Field>
+            <Field label={t("endpoint")}>
+              <input
+                key={modelProvider}
+                name="endpoint"
+                type="url"
+                required
+                defaultValue={
+                  modelProvider === "openrouter"
+                    ? "https://openrouter.ai/api/v1"
+                    : ""
+                }
+                placeholder="https://api.openai.com/v1"
               />
             </Field>
-          )}
-        </>
-      )}
+            <Field label={t("credentials")}>
+              <input
+                name="credential_env"
+                placeholder={`AIDASH_SECRET_${modelProvider.toUpperCase()}`}
+              />
+            </Field>
+            <Field label={t("contextWindow")}>
+              <input
+                name="context_window"
+                type="number"
+                min={2048}
+                defaultValue={128000}
+              />
+            </Field>
+            <Field label={t("costMetadata")}>
+              <textarea
+                name="cost"
+                defaultValue={
+                  '{"input_per_million":null,"output_per_million":null,"currency":"USD"}'
+                }
+              />
+            </Field>
+          </>
+        ) : kind === "embedding" ? (
+          <>
+            <p className="muted">{t("embeddingRegistryHelp")}</p>
+            <Field label={t("endpoint")}>
+              <input
+                name="endpoint"
+                type="url"
+                required
+                placeholder="https://provider.example/v1"
+              />
+            </Field>
+            <Field label={t("modelId")}>
+              <input name="model_id" required />
+            </Field>
+            <Field label={t("embeddingModelVersion")}>
+              <input name="model_version" required />
+            </Field>
+            <Field label={t("embeddingDimensions")}>
+              <input
+                name="dimensions"
+                type="number"
+                required
+                min={1}
+                max={8192}
+              />
+            </Field>
+            <Field label={t("credentials")}>
+              <input
+                name="credential_env"
+                placeholder="AIDASH_SECRET_EMBEDDING"
+              />
+            </Field>
+          </>
+        ) : kind === "compactor" ? (
+          <>
+            <p className="muted">{t("compactorHelp")}</p>
+            <Field label={t("model")}>
+              <input
+                name="model_id"
+                required
+                maxLength={128}
+                defaultValue="jev-latest"
+              />
+            </Field>
+            <Field label={t("endpoint")}>
+              <input
+                name="endpoint"
+                type="url"
+                required
+                defaultValue="https://api.typesafe.ai/v1/systemone"
+              />
+            </Field>
+            <Field label={t("credentials")}>
+              <input
+                name="credential_env"
+                required
+                defaultValue="AIDASH_SECRET_JEV"
+              />
+            </Field>
+            <Field label={t("compactorRequestBytes")}>
+              <input
+                name="max_request_bytes"
+                type="number"
+                required
+                min={1024}
+                max={1048576}
+                defaultValue={200000}
+              />
+            </Field>
+            <Field label={t("compactorQuestions")}>
+              <input
+                name="max_questions"
+                type="number"
+                required
+                min={1}
+                max={1024}
+                defaultValue={200}
+              />
+            </Field>
+            <Field label={t("compactorResponseBytes")}>
+              <input
+                name="max_response_bytes"
+                type="number"
+                required
+                min={128}
+                max={1048576}
+                defaultValue={16000}
+              />
+            </Field>
+          </>
+        ) : (
+          <>
+            <Field label={t("configuration")}>
+              <textarea
+                key={kind}
+                name="config"
+                rows={6}
+                defaultValue={JSON.stringify(
+                  kind === "skill"
+                    ? { instructions: "" }
+                    : kind === "cluster"
+                      ? { coordinator: { id: "", version: "1.0.0" } }
+                      : kind === "tool"
+                        ? { transport: "native", operation: "echo" }
+                        : {},
+                  null,
+                  2,
+                )}
+              />
+            </Field>
+            {kind === "tool" && (
+              <Field label={t("schema")}>
+                <textarea
+                  name="schema"
+                  rows={4}
+                  defaultValue={'{"type":"object"}'}
+                />
+              </Field>
+            )}
+          </>
+        )}
+      </Fragment>
       {error && (
         <p role="alert" className="error">
           {error}

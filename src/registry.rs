@@ -280,7 +280,7 @@ pub fn validate(e: &Entry) -> Result<()> {
     let schema = json!({"type":"object","required":["id","version","kind","name","description","capabilities","tags","languages","schema","config"],
         "properties":{
             "id":{"type":"string","pattern":"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$"},
-            "version":{"type":"string"}, "kind":{"enum":["agent","model","tool","skill","cluster","node","compactor"]},
+            "version":{"type":"string"}, "kind":{"enum":["agent","model","tool","skill","cluster","node","compactor","embedding"]},
             "name":{"type":"object","minProperties":1,"additionalProperties":{"type":"string","minLength":1}},
             "description":{"type":"object","minProperties":1,"additionalProperties":{"type":"string"}},
             "capabilities":{"type":"array","items":{"type":"string"},"uniqueItems":true},
@@ -309,6 +309,9 @@ pub fn validate(e: &Entry) -> Result<()> {
     jsonschema::validator_for(&e.schema)
         .map_err(|e| Error::Invalid(format!("invalid entity schema: {e}")))?;
     match e.kind.as_str() {
+        "embedding" => serde_json::from_value::<crate::semantic::EmbeddingConfig>(e.config.clone())
+            .map_err(|e| Error::Invalid(e.to_string()))?
+            .validate()?,
         "compactor" => serde_json::from_value::<CompactorConfig>(e.config.clone())
             .map_err(|e| Error::Invalid(e.to_string()))?
             .validate()?,

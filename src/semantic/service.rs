@@ -557,14 +557,15 @@ pub async fn search(
 ) -> Result<SearchResult> {
     let mut lease = Lease::begin(store, actor).await?;
     lease.durable();
-    let result = search_in(&store.semantic_client, &mut lease, workspace, input).await;
+    let result = search_in(store, &mut lease, workspace, input, None).await;
     lease.finish(result).await
 }
 pub(crate) async fn search_in(
-    client: &reqwest::Client,
+    store: &Store,
     lease: &mut Lease<'_>,
     workspace: Uuid,
     input: Search,
+    run: Option<Uuid>,
 ) -> Result<SearchResult> {
     lease.workspace(workspace, "semantic.search").await?;
     let index = index(lease.tx(), workspace, false).await?;
@@ -654,7 +655,7 @@ pub(crate) async fn search_in(
         return Ok(result);
     }
     if !backend::present(
-        client,
+        &store.semantic_client,
         &spec.vector,
         &index.collection,
         &allowed.keys().copied().collect::<Vec<_>>(),
@@ -664,11 +665,17 @@ pub(crate) async fn search_in(
     {
         return Err(Error::SemanticUnavailable);
     }
-    let vector = backend::embed(client, &spec.embedding, &input.query)
-        .await
-        .map_err(|_| Error::SemanticUnavailable)?;
+    let vector = embed(
+        store,
+        lease,
+        workspace,
+        &spec.embedding,
+        &input.query,
+        crate::generation::embedding::Origin::Query(run),
+    )
+    .await?;
     let points = backend::query(
-        client,
+        &store.semantic_client,
         &spec.vector,
         &index.collection,
         &vector,
@@ -771,7 +778,7 @@ pub async fn history_list(store: &Store, actor: &Actor, workspace: Uuid) -> Resu
 }
 
 pub(crate) async fn context_in(
-    client: &reqwest::Client,
+    store: &Store,
     lease: &mut Lease<'_>,
     run: &crate::domain::Run,
     query: &str,
@@ -798,7 +805,7 @@ pub(crate) async fn context_in(
         query.truncate(end);
     }
     search_in(
-        client,
+        store,
         lease,
         run.workspace_id,
         Search {
@@ -812,6 +819,7 @@ pub(crate) async fn context_in(
             limit: spec.max_results,
             max_tokens: budget.min(spec.max_result_tokens),
         },
+        Some(run.id),
     )
     .await
     .map(Some)
@@ -892,4 +900,28 @@ pub(crate) async fn remember_in(
         sqlx::query("INSERT INTO semantic_agent_memory(entry_id,workspace_id,agent_id,agent_version,home_node) VALUES($1,$2,$3,$4,'') ON CONFLICT(entry_id) DO NOTHING").bind(entry.id).bind(run.workspace_id).bind(&run.agent_id).bind(&run.agent_version).execute(&mut **lease.tx()).await?;
     }
     store.remember_in(lease.tx(), run, data).await
+}
+
+/// Keep the authority lease through reservation, provider I/O and settlement.
+pub(crate) async fn embed(
+    store: &Store,
+    lease: &mut Lease<'_>,
+    workspace: Uuid,
+    config: &EmbeddingConfig,
+    text: &str,
+    origin: crate::generation::embedding::Origin,
+) -> Result<Vec<f32>> {
+    let reservation = if let Some(access) = lease.access() {
+        crate::generation::embedding::reserve(access, store, workspace, config, text, origin)
+            .await?
+    } else {
+        None
+    };
+    let output = backend::embed(&store.semantic_client, config, text)
+        .await
+        .map_err(|_| Error::SemanticUnavailable)?;
+    if let Some(reservation) = reservation {
+        reservation.settle(output.tokens).await?;
+    }
+    Ok(output.vector)
 }

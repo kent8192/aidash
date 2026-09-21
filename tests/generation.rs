@@ -368,7 +368,7 @@ async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_all
     assert_eq!(status, 200);
     assert_eq!(
         usage,
-        json!({"token_limit":200000,"used_tokens":140,"inference_attempts":1,"compaction_call_limit":0,"compaction_calls":0})
+        json!({"token_limit":200000,"used_tokens":140,"inference_attempts":1,"compaction_call_limit":0,"compaction_calls":0,"embedding_call_limit":0,"embedding_calls":0})
     );
     assert_eq!(jobs[0]["id"], job["id"]);
     assert_eq!(

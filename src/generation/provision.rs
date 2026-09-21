@@ -40,7 +40,8 @@ async fn activate(f: &Federation, job: &Request) -> Result<()> {
             .chain(config.tools.iter().map(|r|(r,"tool.invoke")))
             .chain(config.skills.iter().map(|r|(r,"skill.use")))
             .chain(config.cluster.iter().map(|r|(r,"cluster.execute")))
-            .chain(spec.compaction.iter().map(|c| (&c.provider,"compaction.invoke"))) {
+            .chain(spec.compaction.iter().map(|c| (&c.provider,"compaction.invoke")))
+            .chain(spec.embedding.iter().map(|c| (&c.provider,"embedding.invoke"))) {
             catalog::entry(&mut access,reference,"registry.read").await?;
             catalog::entry(&mut access,reference,action).await?;
         }

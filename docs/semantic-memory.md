@@ -82,6 +82,14 @@ permission withdrawal hide dependent run journals and pause the next execution b
 Existing remote legacy execution does not acquire implicit cross-node source authority;
 scoped semantic federation remains part of the broader federation integration gate.
 
+Generated Agents additionally need an approved, immutable `embedding` Registry provider
+in their pinned generation policy, matching the workspace index configuration exactly.
+Every generated ancestor supplies call allowance and shared token budget for both query
+embeddings and background memory indexing. Live authority, expiry, catalog approval and
+`embedding.invoke` are rechecked before each call. Failed or interrupted attempts remain
+charged, and unapproved providers are rejected before disclosure. The bilingual Registry
+and generation forms expose this contract; see [approved embeddings](generation.md#approved-embeddings).
+
 ## Recovery and visibility
 
 Both server and worker processes run the durable indexer. `PENDING`, `READY`, `ERROR`,

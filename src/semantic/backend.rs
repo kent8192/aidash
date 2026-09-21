@@ -51,20 +51,24 @@ async fn response(request: reqwest::RequestBuilder) -> Result<Value> {
     }
     crate::response::json(response, 1_048_576).await
 }
+pub struct Embedding {
+    pub vector: Vec<f32>,
+    pub tokens: Option<u64>,
+}
 pub async fn embed(
     client: &reqwest::Client,
     config: &EmbeddingConfig,
     text: &str,
-) -> Result<Vec<f32>> {
+) -> Result<Embedding> {
     #[derive(Deserialize)]
-    struct Embedding {
+    struct EmbeddingDatum {
         index: usize,
         embedding: Vec<f32>,
     }
     #[derive(Deserialize)]
     struct Embeddings {
         model: String,
-        data: Vec<Embedding>,
+        data: Vec<EmbeddingDatum>,
     }
     if config.provider != "openai" {
         return Err(Error::Invalid("unsupported embedding provider".into()));
@@ -83,6 +87,9 @@ pub async fn embed(
         .json(&json!({"model":config.model,"input":text,"encoding_format":"float"})),
     )
     .await?;
+    let prompt = value["usage"]["prompt_tokens"].as_u64();
+    let total = value["usage"]["total_tokens"].as_u64();
+    let tokens = prompt.filter(|count| *count > 0 && Some(*count) == total);
     let output: Embeddings = serde_json::from_value(value)
         .map_err(|_| Error::External("invalid embedding response".into()))?;
     if output.model != config.model || output.data.len() != 1 || output.data[0].index != 0 {
@@ -106,7 +113,7 @@ pub async fn embed(
             "invalid embedding dimensions or values".into(),
         ));
     }
-    Ok(vector)
+    Ok(Embedding { vector, tokens })
 }
 fn collection_path(collection: &str) -> Result<String> {
     if !collection.starts_with("aidash_")

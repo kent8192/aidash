@@ -451,5 +451,15 @@
   "authReason_subject_disabled": "主体が無効化されています。",
   "authReason_no_matching_allow": "この条件に一致する許可ルールがありません。",
   "authReason_explicit_deny": "明示的な拒否が許可ルールに優先します。",
-  "authReason_allowed": "主体と委任元の権限がこの操作を許可しています。"
+  "authReason_allowed": "主体と委任元の権限がこの操作を許可しています。",
+  "generationEmbedding": "承認済み埋め込み",
+  "generationEmbeddingHelp": "ワークスペースのインデックスと一致する、承認済みの埋め込みプロバイダーを選択します。生成された委任元すべてが同じバージョンを承認する必要があります。検索とインデックス作成は呼び出し枠とトークン予算を消費し、失敗や使用量が不明な場合は予約を保持します。",
+  "generationEmbedder": "埋め込みプロバイダー",
+  "generationEmbeddingDisabled": "埋め込み呼び出しを許可しない",
+  "generationEmbeddingPerAgent": "Agentごとの埋め込み呼び出し上限",
+  "generationEmbeddingBudget": "埋め込み呼び出しの総予算",
+  "generationEmbeddingCalls": "埋め込み試行数",
+  "embeddingRegistryHelp": "セマンティックインデックスで使用する埋め込みプロバイダー、モデル・バージョン、次元数を登録します。生成ポリシーで選択する前に、このコンポーネントのバージョンをテナントで承認してください。",
+  "embeddingModelVersion": "埋め込みモデルのバージョン",
+  "embeddingDimensions": "埋め込みの次元数"
 }

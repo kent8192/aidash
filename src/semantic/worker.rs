@@ -87,7 +87,7 @@ async fn process(store: &Store, id: Uuid) -> Result<bool> {
         }
         let result=async {
             service::validate_text(&text,spec.max_input_bytes)?;
-            let vector=backend::embed(&store.semantic_client, &spec.embedding,&text).await?;
+            let vector=service::embed(store, &mut lease, workspace, &spec.embedding, &text, crate::generation::embedding::Origin::Index(id)).await?;
             backend::ensure_collection(&store.semantic_client, &spec.vector,&index.collection,spec.embedding.dimensions).await?;
             backend::upsert(&store.semantic_client, &spec.vector,&index.collection,entry.point_id,&vector,json!({"entry_id":id,"revision":entry.revision,"index_revision":index.revision,"workspace_id":workspace,"tenant":index.tenant})).await
         }.await;

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 #[schema(as = SemanticEmbeddingConfig)]
 pub struct EmbeddingConfig {
@@ -42,38 +42,47 @@ pub struct IndexSpec {
     pub max_result_tokens: usize,
     pub max_input_bytes: usize,
 }
-impl IndexSpec {
+impl EmbeddingConfig {
     pub fn validate(&self) -> Result<()> {
-        if self.embedding.provider != "openai" || self.vector.provider != "qdrant" {
-            return Err(Error::Invalid(
-                "supported semantic providers are openai and qdrant".into(),
-            ));
-        }
-        crate::config::validate_endpoint(&self.embedding.endpoint)?;
-        crate::config::validate_endpoint(&self.vector.endpoint)?;
-        for name in [&self.embedding.credential_env, &self.vector.credential_env]
-            .into_iter()
-            .flatten()
-        {
+        crate::config::validate_endpoint(&self.endpoint)?;
+        if let Some(name) = &self.credential_env {
             crate::config::secret(name)?;
         }
-        if self.embedding.model.trim().is_empty()
-            || self.embedding.model.len() > 256
-            || self.embedding.model_version.trim().is_empty()
-            || self.embedding.model_version.len() > 128
-            || !(1..=8192).contains(&self.embedding.dimensions)
-            || !(1..=1024).contains(&self.max_sources)
-            || !(1..=20).contains(&self.max_results)
-            || !(128..=32768).contains(&self.max_result_tokens)
-            || !(128..=32768).contains(&self.max_input_bytes)
+        if self.provider != "openai"
+            || self.model.trim().is_empty()
+            || self.model.len() > 256
+            || self.model_version.trim().is_empty()
+            || self.model_version.len() > 128
+            || !(1..=8192).contains(&self.dimensions)
         {
             return Err(Error::Invalid(
-                "invalid semantic model, version or resource limits".into(),
+                "invalid embedding provider, model, version or dimensions".into(),
             ));
         }
         Ok(())
     }
 }
+impl IndexSpec {
+    pub fn validate(&self) -> Result<()> {
+        self.embedding.validate()?;
+        if self.vector.provider != "qdrant" {
+            return Err(Error::Invalid("supported vector provider is qdrant".into()));
+        }
+        crate::config::validate_endpoint(&self.vector.endpoint)?;
+        if let Some(name) = &self.vector.credential_env {
+            crate::config::secret(name)?;
+        }
+        if !(1..=1024).contains(&self.max_sources)
+            || !(1..=20).contains(&self.max_results)
+            || !(128..=32768).contains(&self.max_result_tokens)
+            || !(128..=32768).contains(&self.max_input_bytes)
+        {
+            return Err(Error::Invalid("invalid semantic resource limits".into()));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 #[schema(as = SemanticConfigureIndex)]

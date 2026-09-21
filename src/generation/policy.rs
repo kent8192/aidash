@@ -41,6 +41,14 @@ pub struct Compaction {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
+#[schema(as = GenerationEmbedding)]
+pub struct Embedding {
+    pub provider: EntityRef,
+    pub calls_per_agent: i64,
+    pub call_budget: i64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 #[schema(as = GenerationSpec)]
 pub struct Spec {
     pub enabled: bool,
@@ -50,6 +58,8 @@ pub struct Spec {
     pub approval_required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction: Option<Compaction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<Embedding>,
 }
 #[derive(Serialize, utoipa::ToSchema)]
 #[schema(as = GenerationPolicy)]
@@ -61,6 +71,7 @@ pub struct Policy {
     pub generated_count: i64,
     pub allocated_tokens: i64,
     pub allocated_compaction_calls: i64,
+    pub allocated_embedding_calls: i64,
 }
 
 impl Spec {
@@ -76,6 +87,12 @@ impl Spec {
                 || !(1..=c.call_budget).contains(&c.calls_per_agent)
         }) {
             return Err(Error::Invalid("invalid compaction call limits".into()));
+        }
+        if self.embedding.as_ref().is_some_and(|c| {
+            !(1..=1_000_000).contains(&c.call_budget)
+                || !(1..=c.call_budget).contains(&c.calls_per_agent)
+        }) {
+            return Err(Error::Invalid("invalid embedding call limits".into()));
         }
         let limits = &self.limits;
         if !(1..=512).contains(&limits.max_agents)
@@ -115,17 +132,23 @@ pub(crate) async fn load(
     exclusive: bool,
 ) -> Result<Policy> {
     let query = if exclusive {
-        "SELECT revision,spec,generated_count,allocated_tokens,allocated_compaction_calls FROM generation_policies WHERE tenant=$1 AND id=$2 FOR UPDATE"
+        "SELECT revision,spec,generated_count,allocated_tokens,allocated_compaction_calls,allocated_embedding_calls FROM generation_policies WHERE tenant=$1 AND id=$2 FOR UPDATE"
     } else {
-        "SELECT revision,spec,generated_count,allocated_tokens,allocated_compaction_calls FROM generation_policies WHERE tenant=$1 AND id=$2 FOR SHARE"
+        "SELECT revision,spec,generated_count,allocated_tokens,allocated_compaction_calls,allocated_embedding_calls FROM generation_policies WHERE tenant=$1 AND id=$2 FOR SHARE"
     };
-    let row: Option<(i64, Value, i64, i64, i64)> = sqlx::query_as(query)
+    let row: Option<(i64, Value, i64, i64, i64, i64)> = sqlx::query_as(query)
         .bind(tenant)
         .bind(id)
         .fetch_optional(&mut **tx)
         .await?;
-    let (revision, spec, generated_count, allocated_tokens, allocated_compaction_calls) =
-        row.ok_or_else(|| Error::NotFound("generation policy".into()))?;
+    let (
+        revision,
+        spec,
+        generated_count,
+        allocated_tokens,
+        allocated_compaction_calls,
+        allocated_embedding_calls,
+    ) = row.ok_or_else(|| Error::NotFound("generation policy".into()))?;
     Ok(Policy {
         tenant: tenant.into(),
         id: id.into(),
@@ -134,6 +157,7 @@ pub(crate) async fn load(
         generated_count,
         allocated_tokens,
         allocated_compaction_calls,
+        allocated_embedding_calls,
     })
 }
 
@@ -184,6 +208,7 @@ pub(crate) async fn write(
             .chain(cfg.skills.iter().map(|r| (r, "skill")))
             .chain(cfg.cluster.iter().map(|r| (r, "cluster")))
             .chain(spec.compaction.iter().map(|c| (&c.provider, "compactor")))
+            .chain(spec.embedding.iter().map(|c| (&c.provider, "embedding")))
         {
             let metadata:Option<Value>=sqlx::query_scalar("SELECT r.metadata FROM authorization_catalog c JOIN registry r ON r.id=c.entry_id AND r.version=c.entry_version WHERE c.tenant=$1 AND c.entry_id=$2 AND c.entry_version=$3 AND c.enabled FOR SHARE OF c")
             .bind(tenant).bind(&reference.id).bind(&reference.version).fetch_optional(&mut **tx).await?;

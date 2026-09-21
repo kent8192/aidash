@@ -273,6 +273,8 @@ pub struct Usage {
     pub inference_attempts: i64,
     pub compaction_call_limit: i64,
     pub compaction_calls: i64,
+    pub embedding_calls: i64,
+    pub embedding_call_limit: i64,
 }
 #[utoipa::path(get,path="/generation/{tenant}/requests/{id}/usage",operation_id="generation_usage",params(("tenant"=String,Path),("id"=Uuid,Path)),responses((status=200,body=Usage)),security(("bearer_auth"=[])))]
 async fn usage(
@@ -282,7 +284,7 @@ async fn usage(
 ) -> Result<Json<Usage>> {
     // One statement observes the counters and committed attempt ledger at the
     // same PostgreSQL snapshot while a worker reserves or settles its call.
-    let query = "SELECT b.token_limit,b.used_tokens,b.compaction_call_limit,b.compaction_calls,(SELECT count(*) FROM generation_usage u WHERE u.request_id=r.id) AS inference_attempts FROM generation_requests r JOIN generation_budgets b ON b.request_id=r.id WHERE r.tenant=$1 AND r.id=$2";
+    let query = "SELECT b.token_limit,b.used_tokens,b.compaction_call_limit,b.compaction_calls,b.embedding_calls,b.embedding_call_limit,(SELECT count(*) FROM generation_usage u WHERE u.request_id=r.id) AS inference_attempts FROM generation_requests r JOIN generation_budgets b ON b.request_id=r.id WHERE r.tenant=$1 AND r.id=$2";
     match actor {
         Actor::Operator => Ok(Json(
             sqlx::query_as(query)

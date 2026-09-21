@@ -451,5 +451,15 @@
   "authReason_subject_disabled": "The subject is disabled.",
   "authReason_no_matching_allow": "No allow rule matches this scenario.",
   "authReason_explicit_deny": "An explicit deny overrides matching allows.",
-  "authReason_allowed": "The subject and its delegation chain allow this action."
+  "authReason_allowed": "The subject and its delegation chain allow this action.",
+  "generationEmbedding": "Approved embeddings",
+  "generationEmbeddingHelp": "Select an approved, immutable embedding provider matching the workspace index. Every generated ancestor must approve the same version. Query and indexing attempts consume call allowance and token budget; failures and uncertain usage retain their reservations.",
+  "generationEmbedder": "Embedding provider",
+  "generationEmbeddingDisabled": "Embedding calls disabled",
+  "generationEmbeddingPerAgent": "Embedding calls per agent",
+  "generationEmbeddingBudget": "Total embedding call budget",
+  "generationEmbeddingCalls": "Embedding attempts",
+  "embeddingRegistryHelp": "Register the embedding provider, model/version and dimensions used by a semantic index. Approve this exact component version for the tenant before selecting it in a generation policy.",
+  "embeddingModelVersion": "Embedding model version",
+  "embeddingDimensions": "Embedding dimensions"
 }

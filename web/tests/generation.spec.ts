@@ -8,9 +8,30 @@ test("generation dashboard manages policy, approval, completion and retained his
   request,
 }) => {
   test.setTimeout(90000);
+  let embeddingCalls = 0;
+  const semanticContexts: unknown[] = [];
+  let semanticIndex:
+    | { collection: string; spec: { vector: { endpoint: string } } }
+    | undefined;
   const provider = createServer(async (req, res) => {
-    for await (const chunk of req) void chunk;
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    const input = JSON.parse(Buffer.concat(chunks).toString());
     res.writeHead(200, { "content-type": "application/json" });
+    if (req.url === "/v1/embeddings") {
+      embeddingCalls++;
+      res.end(
+        JSON.stringify({
+          model: input.model,
+          data: [{ index: 0, embedding: [1, 0, 0] }],
+          usage: { prompt_tokens: 2, total_tokens: 2 },
+        }),
+      );
+      return;
+    }
+    semanticContexts.push(
+      JSON.parse(input.messages[1].content).current.semantic_memory,
+    );
     res.end(
       JSON.stringify({
         choices: [
@@ -107,10 +128,19 @@ test("generation dashboard manages policy, approval, completion and retained his
     const credential = await api(`/api/authorization/${tenant}/credentials`, {
       subject: "alice",
     });
+    const embedder = `${id}-embedding`;
+    const embeddingConfig = {
+      provider: "openai",
+      endpoint: `http://127.0.0.1:${(provider.address() as AddressInfo).port}/v1`,
+      credential_env: null,
+      model: "fixture-embedding",
+      model_version: "v1",
+      dimensions: 3,
+    };
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto("/");
-    await page.getByLabel("アクセストークン").fill(credential.token);
+    await page.getByLabel("アクセストークン").fill("acceptance-access-token");
     await page.getByRole("button", { name: "接続", exact: true }).click();
     await expect(page.getByRole("heading", { name: "概要." })).toBeVisible();
     const navigate = async (label: string) =>
@@ -118,6 +148,50 @@ test("generation dashboard manages policy, approval, completion and retained his
         .locator(".sidebar")
         .getByRole("link", { name: label, exact: true })
         .click();
+    await navigate("レジストリ");
+    await page
+      .getByRole("button", { name: "エンティティを登録", exact: true })
+      .click();
+    const registryDialog = page.getByRole("dialog");
+    await registryDialog
+      .getByLabel("エンティティの種類")
+      .selectOption("embedding");
+    await registryDialog.getByLabel("エンティティID").fill(embedder);
+    await registryDialog
+      .getByLabel("名前 · English")
+      .fill("Approved embedding");
+    await registryDialog
+      .getByLabel("説明 · English")
+      .fill("Local semantic provider");
+    await registryDialog
+      .locator('[name="endpoint"]')
+      .fill(embeddingConfig.endpoint);
+    await registryDialog
+      .locator('[name="model_id"]')
+      .fill(embeddingConfig.model);
+    await registryDialog
+      .getByLabel("埋め込みモデルのバージョン", { exact: true })
+      .fill("v1");
+    await registryDialog
+      .getByLabel("埋め込みの次元数", { exact: true })
+      .fill("3");
+    await registryDialog
+      .getByRole("button", { name: "エンティティを登録", exact: true })
+      .click();
+    await expect(registryDialog).toHaveCount(0);
+    expect((await api(`/api/registry/${embedder}/1.0.0`)).config).toEqual(
+      embeddingConfig,
+    );
+    await api(`/api/authorization/${tenant}/catalog`, {
+      entry: { id: embedder, version: "1.0.0" },
+      expected_revision: 0,
+      enabled: true,
+    });
+    await page.evaluate(
+      (token) => sessionStorage.setItem("aidash-token", token),
+      credential.token,
+    );
+    await page.reload();
     await navigate("Agent生成");
     await page
       .getByRole("button", { name: "生成ポリシーを作成", exact: true })
@@ -151,6 +225,15 @@ test("generation dashboard manages policy, approval, completion and retained his
       .getByLabel("Agentごとの圧縮呼び出し上限", { exact: true })
       .fill("2");
     await dialog.getByLabel("圧縮呼び出しの総予算", { exact: true }).fill("8");
+    await dialog
+      .getByLabel("埋め込みプロバイダー", { exact: true })
+      .selectOption(`${embedder}@1.0.0`);
+    await dialog
+      .getByLabel("Agentごとの埋め込み呼び出し上限", { exact: true })
+      .fill("2");
+    await dialog
+      .getByLabel("埋め込み呼び出しの総予算", { exact: true })
+      .fill("8");
     await expect(dialog.getByLabel("実行前に承認を必要とする")).toBeChecked();
     await dialog.getByRole("button", { name: "保存", exact: true }).click();
     await expect(dialog).toHaveCount(0);
@@ -167,6 +250,12 @@ test("generation dashboard manages policy, approval, completion and retained his
       dialog.getByLabel("Agentごとの圧縮呼び出し上限", { exact: true }),
     ).toHaveValue("2");
     await dialog.getByLabel("最大同時Agent数", { exact: true }).fill("2");
+    await expect(
+      dialog.getByLabel("埋め込みプロバイダー", { exact: true }),
+    ).toHaveValue(`${embedder}@1.0.0`);
+    await expect(
+      dialog.getByLabel("Agentごとの埋め込み呼び出し上限", { exact: true }),
+    ).toHaveValue("2");
     await dialog.getByRole("button", { name: "保存", exact: true }).click();
     await expect(dialog).toHaveCount(0);
     await navigate("ワークスペース");
@@ -179,6 +268,46 @@ test("generation dashboard manages policy, approval, completion and retained his
       .fill("Complete work with a missing specialist");
     await dialog.getByRole("button", { name: "作成", exact: true }).click();
     await expect(dialog).toHaveCount(0);
+    const { workspaces } = await api("/api/state", undefined, credential.token);
+    const workspace = workspaces.find(
+      (item: { title: string }) => item.title === id,
+    );
+    const semanticRoot = `/api/workspaces/${workspace.id}/semantic`;
+    semanticIndex = await api(`${semanticRoot}/index`, {
+      expected_revision: 0,
+      spec: {
+        embedding: embeddingConfig,
+        vector: {
+          provider: "qdrant",
+          endpoint:
+            process.env.AIDASH_TEST_QDRANT_URL ?? "http://127.0.0.1:63370",
+          credential_env: "AIDASH_SECRET_TEST_QDRANT",
+        },
+        enabled: true,
+        auto_context: true,
+        max_sources: 64,
+        max_results: 10,
+        max_result_tokens: 4096,
+        max_input_bytes: 8192,
+      },
+    });
+    const memory = await api(
+      `${semanticRoot}/entries`,
+      {
+        key: "vehicle",
+        expected_revision: 0,
+        source: { kind: "memory", text: "A car carries passengers." },
+        metadata: {},
+      },
+      credential.token,
+    );
+    await expect
+      .poll(
+        async () =>
+          (await api(`${semanticRoot}/entries`, undefined, credential.token))[0]
+            .state,
+      )
+      .toBe("READY");
     const assign = async (title: string) => {
       await navigate("タスク");
       await page
@@ -240,6 +369,8 @@ test("generation dashboard manages policy, approval, completion and retained his
       .fill("定義と上限を確認済み");
     await expect(dialog).toContainText(`${compactor}@1.0.0`);
     await expect(dialog).toContainText("圧縮呼び出し消費数 / 上限");
+    await expect(dialog).toContainText(`${embedder}@1.0.0`);
+    await expect(dialog).toContainText("埋め込み試行数");
     await page.screenshot({
       path: "../.ignore/dashboard-generation-approval-ja.png",
       fullPage: true,
@@ -250,7 +381,18 @@ test("generation dashboard manages policy, approval, completion and retained his
     await expect(dialog).toHaveCount(0);
     await expect(completed).toContainText("完了", { timeout: 20000 });
     await completed.click();
-    await expect(dialog).toContainText("24 / 200,000");
+    await expect(dialog).toContainText("26 / 200,000");
+    expect(semanticContexts).toEqual([
+      expect.objectContaining({
+        matches: [
+          expect.objectContaining({
+            entry_id: memory.id,
+            text: "A car carries passengers.",
+          }),
+        ],
+      }),
+    ]);
+    expect(embeddingCalls).toBe(2);
     await expect(dialog.locator(".generation-history")).toContainText(
       "定義と上限を確認済み",
     );
@@ -268,6 +410,9 @@ test("generation dashboard manages policy, approval, completion and retained his
     ).toBeVisible();
     await expect(
       dialog.getByText("Charged tokens / limit", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      dialog.getByText("Embedding attempts", { exact: true }),
     ).toBeVisible();
     await page.screenshot({
       path: "../.ignore/dashboard-generation-complete-en.png",
@@ -327,7 +472,8 @@ test("generation dashboard manages policy, approval, completion and retained his
       credential.token,
     );
     expect(policies[0].generated_count).toBe(3);
-    expect(policies[0].allocated_tokens).toBe(24);
+    expect(policies[0].allocated_tokens).toBe(26);
+    expect(policies[0].allocated_embedding_calls).toBe(1);
     const jobs = await api(
       `/api/generation/${tenant}/requests`,
       undefined,
@@ -344,5 +490,18 @@ test("generation dashboard manages policy, approval, completion and retained his
     await new Promise<void>((resolve, reject) =>
       provider.close((error) => (error ? reject(error) : resolve())),
     );
+    if (semanticIndex) {
+      const response = await request.delete(
+        `${semanticIndex.spec.vector.endpoint}/collections/${semanticIndex.collection}`,
+        {
+          headers: {
+            "api-key":
+              process.env.AIDASH_SECRET_TEST_QDRANT ??
+              "local-semantic-vector-fixture-key-0123456789",
+          },
+        },
+      );
+      expect(response.ok()).toBe(true);
+    }
   }
 });

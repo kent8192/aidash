@@ -90,14 +90,14 @@ pub(crate) async fn transition(
         "COMPLETED" | "DENIED" | "STOPPED" | "EXPIRED" | "FAILED" | "DELETED"
     ) && !job.quota_released
     {
-        let (unused, unused_calls): (i64, i64) = sqlx::query_as(
-            "SELECT token_limit-used_tokens,compaction_call_limit-compaction_calls FROM generation_budgets WHERE request_id=$1 FOR UPDATE",
+        let (unused, unused_calls, unused_embeddings): (i64, i64, i64) = sqlx::query_as(
+            "SELECT token_limit-used_tokens,compaction_call_limit-compaction_calls,embedding_call_limit-embedding_calls FROM generation_budgets WHERE request_id=$1 FOR UPDATE",
         )
         .bind(job.id)
         .fetch_one(&mut **tx)
         .await?;
-        sqlx::query("UPDATE generation_policies SET allocated_tokens=allocated_tokens-$3,allocated_compaction_calls=allocated_compaction_calls-$4 WHERE tenant=$1 AND id=$2")
-            .bind(&job.tenant).bind(&job.policy_id).bind(unused).bind(unused_calls).execute(&mut **tx).await?;
+        sqlx::query("UPDATE generation_policies SET allocated_tokens=allocated_tokens-$3,allocated_compaction_calls=allocated_compaction_calls-$4,allocated_embedding_calls=allocated_embedding_calls-$5 WHERE tenant=$1 AND id=$2")
+            .bind(&job.tenant).bind(&job.policy_id).bind(unused).bind(unused_calls).bind(unused_embeddings).execute(&mut **tx).await?;
         sqlx::query("UPDATE generation_requests SET quota_released=true WHERE id=$1")
             .bind(job.id)
             .execute(&mut **tx)

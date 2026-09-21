@@ -10,6 +10,7 @@ Use `POST /api/generation/{tenant}/policies/{id}` with `expected_revision` (zero
 - `permissions`: existing role/group IDs and generated subject attributes.
 - `limits`: `max_agents`, `max_concurrent`, `max_depth`, `token_budget`, `tokens_per_agent` and `lifetime_seconds`.
 - Optional `compaction`: an approved `provider` reference, `calls_per_agent` and total `call_budget`. Omitting it forbids external compaction for that generated definition.
+- Optional `embedding`: an approved embedding `provider` reference, `calls_per_agent` and total `call_budget`. Omitting it forbids embedding calls under that generated authority.
 
 All referenced components must already be approved in that tenant's catalog. The model must be selected explicitly; generation does not route between models. Policies and immutable revisions are stored alongside their actor and quota counters. A request pins its definition and permission specification to the policy revision; later changes affect new requests. Disabling the policy prevents further activation and generated execution at the next authority boundary. An unchanged policy can still be disabled after one of its components is revoked; re-enabling or changing its definition requires all current approvals again.
 
@@ -29,9 +30,9 @@ A running request is `ACTIVE`. Completed, failed, denied, stopped and expired re
 
 ## Dashboard
 
-Open **Agent generation** with a tenant subject credential to manage that tenant. An operator selects the tenant explicitly. Create or edit a policy using the model, tool and skill selectors, role/group IDs, permission attributes and numeric limits. The list shows each policy revision, lifetime definition count and allocated token/call allowances, with enable/disable controls. The compaction selector uses tenant-approved providers and exposes per-agent and total call limits.
+Open **Agent generation** with a tenant subject credential to manage that tenant. An operator selects the tenant explicitly. Create or edit a policy using the model, tool and skill selectors, role/group IDs, permission attributes and numeric limits. The list shows each policy revision, lifetime definition count and allocated token/call allowances, with enable/disable controls. Compaction and embedding selectors use tenant-approved providers and expose per-agent and total call limits.
 
-On an open task, choose **Assign with policy** and record the reason. The generation page shows pending, running and terminal requests. Before approval, its detail view loads the immutable request-time policy snapshot, including permissions and limits; a later policy edit cannot change the displayed approval target. Approve, deny, stop and archive actions require a recorded reason. The same view shows charged tokens, inference attempts, compaction calls/limit, origin chain, definition and lifecycle history. Archiving retains the record and task journals. Controls and responsive layouts support Japanese and English.
+On an open task, choose **Assign with policy** and record the reason. The generation page shows pending, running and terminal requests. Before approval, its detail view loads the immutable request-time policy snapshot, including permissions and limits; a later policy edit cannot change the displayed approval target. Approve, deny, stop and archive actions require a recorded reason. The same view shows charged tokens, inference attempts, compaction and embedding calls/limits, origin chain, definition and lifecycle history. Archiving retains the record and task journals. Controls and responsive layouts support Japanese and English.
 
 ## Read APIs
 
@@ -50,7 +51,7 @@ Ordinary workspace, task, Registry, model, tool and execution permissions are al
 
 ## Budget contract
 
-The budget is an input/output model-token allowance, not a monetary or arbitrary external-tool spending limit. Each generated definition reserves `tokens_per_agent` against its policy. Every model attempt first commits a conservative reservation of the approved context window plus maximum output, charging all generated ancestors as well as the generated executor. This prevents ordinary child agents from escaping an ancestor's token allowance.
+The budget covers inference input/output and embedding input tokens, not monetary or arbitrary external-tool spending. Each generated definition reserves `tokens_per_agent` against its policy. Every model attempt first commits a conservative reservation of the approved context window plus maximum output, charging all generated ancestors as well as the generated executor. This prevents ordinary child agents from escaping an ancestor's token allowance.
 
 Successful, complete, positive and bounded provider usage refunds unused reservation. Anthropic input usage includes its separate cache creation and cache read counters, following the [provider accounting contract](https://platform.claude.com/docs/en/build-with-claude/prompt-caching). Missing, invalid or uncertain usage remains charged in full. Crashes and failed attempts retain their reservation; a retry requires a new reservation. Request bytes must fit the reserved context window before provider I/O. These checks assume the approved provider honors its declared model limits; out-of-contract usage is an execution error and does not refund allowance.
 
@@ -76,6 +77,28 @@ Input bytes and question counts are checked before reservation. The worker then 
 
 No configured compaction permission is needed when the context already fits. Generated chains never fall back to the node's environment-selected Jev provider. Ordinary agents outside a generated chain retain that provider selection, with bounded 1 MiB request/response payloads and at most 1024 questions per request.
 
+## Approved embeddings
+
+Register an `embedding` Registry entry and approve its exact version in the tenant catalog. The bilingual Registry form exposes the OpenAI-compatible API base endpoint, model, model version, vector dimensions and optional `AIDASH_SECRET_*` credential reference. This configuration must equal the workspace index's `embedding` configuration, including its endpoint, model/version, dimensions and credential reference. Matching just the display name or model is insufficient.
+
+Select that provider in the generation policy and set per-agent and total call allowances:
+
+```json
+{
+  "embedding": {
+    "provider": { "id": "approved-embedding", "version": "1.0.0" },
+    "calls_per_agent": 10,
+    "call_budget": 100
+  }
+}
+```
+
+The request pins the provider and limits to its policy revision. Before a query or background indexing call, every generated ancestor must remain active, unexpired and enabled, and approve the same provider version. Current catalog approval, `registry.read` and `embedding.invoke` must allow all originating subjects. Background memory indexing restores the original credential and subject chain instead of borrowing operator authority. Changing a workspace index cannot expand that pinned approval.
+
+One call and an input-token reservation of UTF-8 input bytes plus 1,024 framing tokens commit for every generated ancestor before HTTP. The call allowance is independent, while embedding tokens share the inference token budget. Valid, positive, equal `prompt_tokens` and `total_tokens` refund only unused reserved tokens. Missing or malformed usage keeps the full reservation. Usage above the reserved bound fails execution without a refund. Failed or interrupted calls remain charged; retries require new allowance. Concurrent indexers cannot fund the same attempt twice. Terminal generation releases unused allocation once while retaining consumed calls and tokens.
+
+`generation_embedding_usage` retains the attempt ID, request, workspace, optional run/source, provider version, input byte count, reservation and reported usage. It stores neither source text nor credentials. The dashboard displays pinned approval and charged embedding calls in each request and total allocated calls in its policy. Ordinary callers outside a generated chain keep the operator-configured workspace index behavior.
+
 ## Acceptance evidence
 
 The fixtures use local HTTP providers and real PostgreSQL; no paid provider quality is inferred.
@@ -91,8 +114,10 @@ The fixtures use local HTTP providers and real PostgreSQL; no paid provider qual
 | Lifetime, stop and revocation       | Expiry and revoked credentials prevent provider calls; stop waits for an in-flight lease and blocks the next boundary                                                    |
 | Compaction                          | Long history is pruned with the pinned provider; call reservations commit before HTTP and intersect all generated ancestors                                              |
 | Compaction limits and failures      | Concurrent allocation is bounded; failed calls stay charged, exhausted budgets prevent HTTP and unused allowance releases once                                           |
+| Generated semantic memory           | Queries and background indexing require the pinned provider, intersect ancestor authority and charge shared tokens plus embedding call limits                            |
+| Embedding recovery                  | Concurrent indexers, failed/unknown/overreported usage, expiry, catalog denial and real worker SIGKILL/restart retain durable reservations and prevent unfunded calls    |
 | Process failure                     | Real worker processes are killed during inference and compaction; new processes finish the original run with one generated definition and retained uncertain usage       |
 | Tenant and read scope               | Requests, specifications, usage, histories and events honor tenant/read permission boundaries                                                                            |
 | Management dashboard                | Japanese/English policy creation/editing, compaction selection, immutable approval review, completion, denial, stop, archive and enable/disable pass in the real browser |
 
-The cases are in `tests/generation.rs`, `tests/generation_compaction.rs`, `src/context/jev.rs` and `web/tests/generation.spec.ts`. The broader two-node dashboard golden path also passes. These results establish the standalone generation contract; the six-capability integrated release gate remains separate.
+The cases are in `tests/generation.rs`, `tests/generation_compaction.rs`, `tests/generation_semantic.rs`, `src/context/jev.rs` and `web/tests/generation.spec.ts`. The broader two-node dashboard golden path also passes. These results establish the standalone generation and local semantic integration contracts; the six-capability integrated release gate remains separate.

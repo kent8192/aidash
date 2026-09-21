@@ -208,6 +208,11 @@ export function GenerationPage({ data }: { data: State }) {
                           {policy.allocated_compaction_calls} /{" "}
                           {policy.spec.compaction?.call_budget ?? "—"}
                         </dd>
+                        <dt>{t("generationEmbeddingBudget")}</dt>
+                        <dd>
+                          {policy.allocated_embedding_calls} /{" "}
+                          {policy.spec.embedding?.call_budget ?? "—"}
+                        </dd>
                       </dl>
                       <div className="generation-actions">
                         <button
@@ -427,7 +432,11 @@ function PolicyEditor({
   const [compactor, setCompactor] = useState(
     initial?.compaction ? key(initial.compaction.provider) : "",
   );
+  const [embedding, setEmbedding] = useState(
+    initial?.embedding ? key(initial.embedding.provider) : "",
+  );
   const [error, setError] = useState("");
+  const embeddings = entries.filter((entry) => entry.kind === "embedding");
   const compactors = entries.filter((entry) => entry.kind === "compactor");
   const models = entries.filter((entry) => entry.kind === "model");
   const modelEntry = models.find((entry) => key(entry) === model);
@@ -494,6 +503,13 @@ function PolicyEditor({
               provider: entityRef(compactor),
               calls_per_agent: Number(text("calls_per_agent")),
               call_budget: Number(text("call_budget")),
+            }
+          : undefined,
+        embedding: embedding
+          ? {
+              provider: entityRef(embedding),
+              calls_per_agent: Number(text("embedding_calls_per_agent")),
+              call_budget: Number(text("embedding_call_budget")),
             }
           : undefined,
         template,
@@ -754,6 +770,52 @@ function PolicyEditor({
           </Field>
         </div>
       )}
+      <h3>{t("generationEmbedding")}</h3>
+      <p className="muted">{t("generationEmbeddingHelp")}</p>
+      <Field label={t("generationEmbedder")}>
+        <select
+          name="embedding"
+          value={embedding}
+          onChange={(e) => setEmbedding(e.target.value)}
+        >
+          <option value="">{t("generationEmbeddingDisabled")}</option>
+          {embeddings.map((entry) => (
+            <option key={key(entry)} value={key(entry)}>
+              {local(entry.name)} · {key(entry)}
+            </option>
+          ))}
+          {embedding &&
+            !embeddings.some((entry) => key(entry) === embedding) && (
+              <option value={embedding}>
+                {embedding} · {t("generationReferenceUnavailable")}
+              </option>
+            )}
+        </select>
+      </Field>
+      {embedding && (
+        <div className="two-columns">
+          <Field label={t("generationEmbeddingPerAgent")}>
+            <input
+              type="number"
+              name="embedding_calls_per_agent"
+              required
+              min={1}
+              max={1000000}
+              defaultValue={initial?.embedding?.calls_per_agent ?? 10}
+            />
+          </Field>
+          <Field label={t("generationEmbeddingBudget")}>
+            <input
+              type="number"
+              name="embedding_call_budget"
+              required
+              min={1}
+              max={1000000}
+              defaultValue={initial?.embedding?.call_budget ?? 100}
+            />
+          </Field>
+        </div>
+      )}
       <h3>{t("generationLimits")}</h3>
       <p className="muted">{t("generationBudgetHelp")}</p>
       <div className="two-columns">
@@ -886,6 +948,10 @@ function RequestDetail({
             <dd>
               {usage.data.compaction_calls} / {usage.data.compaction_call_limit}
             </dd>
+            <dt>{t("generationEmbeddingCalls")}</dt>
+            <dd>
+              {usage.data.embedding_calls} / {usage.data.embedding_call_limit}
+            </dd>
           </dl>
         )
       )}
@@ -916,6 +982,18 @@ function RequestDetail({
                 <>
                   <dt>{t("generationCompactionPerAgent")}</dt>
                   <dd>{pinned.data.compaction.calls_per_agent}</dd>
+                </>
+              )}
+              <dt>{t("generationEmbedder")}</dt>
+              <dd>
+                {pinned.data.embedding
+                  ? key(pinned.data.embedding.provider)
+                  : t("generationEmbeddingDisabled")}
+              </dd>
+              {pinned.data.embedding && (
+                <>
+                  <dt>{t("generationEmbeddingPerAgent")}</dt>
+                  <dd>{pinned.data.embedding.calls_per_agent}</dd>
                 </>
               )}
             </dl>

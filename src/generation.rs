@@ -1,6 +1,7 @@
 pub mod api;
 pub(crate) mod budget;
 pub(crate) mod compaction;
+pub(crate) mod embedding;
 pub mod lifecycle;
 pub mod policy;
 pub mod provision;
@@ -224,6 +225,13 @@ pub(crate) async fn assign_in(
                 .iter()
                 .map(|c| (&c.provider, "compaction.invoke")),
         )
+        .chain(
+            policy
+                .spec
+                .embedding
+                .iter()
+                .map(|c| (&c.provider, "embedding.invoke")),
+        )
     {
         catalog::entry(access, reference, "registry.read").await?;
         catalog::entry(access, reference, action).await?;
@@ -239,9 +247,19 @@ pub(crate) async fn assign_in(
         .compaction
         .as_ref()
         .map_or(0, |c| c.calls_per_agent);
+    let embedding_calls = policy
+        .spec
+        .embedding
+        .as_ref()
+        .map_or(0, |c| c.calls_per_agent);
     if policy.spec.compaction.as_ref().is_some_and(|c| {
         policy
             .allocated_compaction_calls
+            .checked_add(c.calls_per_agent)
+            .is_none_or(|n| n > c.call_budget)
+    }) || policy.spec.embedding.as_ref().is_some_and(|c| {
+        policy
+            .allocated_embedding_calls
             .checked_add(c.calls_per_agent)
             .is_none_or(|n| n > c.call_budget)
     }) || policy.generated_count >= limits.max_agents
@@ -254,7 +272,8 @@ pub(crate) async fn assign_in(
             .is_none_or(|n| n > limits.token_budget)
     {
         return Err(Error::Conflict(
-            "generation count, concurrency, depth, token or compaction budget exceeded".into(),
+            "generation count, concurrency, depth, token, compaction or embedding budget exceeded"
+                .into(),
         ));
     }
     let id = Uuid::new_v4();
@@ -277,12 +296,13 @@ pub(crate) async fn assign_in(
     let generated:Request=sqlx::query_as("INSERT INTO generation_requests(id,tenant,policy_id,policy_revision,task_id,workspace_id,credential_id,root_subject,subject_chain,agent_id,agent_version,definition,status,reason,depth,token_limit,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,clock_timestamp()+make_interval(secs=>$17)) RETURNING *")
         .bind(id).bind(&access.identity.tenant).bind(policy_id).bind(policy.revision).bind(task_id).bind(task.workspace_id).bind(access.identity.credential_id).bind(&access.identity.subject).bind(&access.subjects)
         .bind(&definition.id).bind(&definition.version).bind(json!(definition)).bind(status).bind(reason).bind(depth).bind(limits.tokens_per_agent).bind(limits.lifetime_seconds as f64).fetch_one(&mut *access.tx).await?;
-    sqlx::query("UPDATE generation_policies SET generated_count=generated_count+1,allocated_tokens=allocated_tokens+$3,allocated_compaction_calls=allocated_compaction_calls+$4 WHERE tenant=$1 AND id=$2")
-        .bind(&access.identity.tenant).bind(policy_id).bind(limits.tokens_per_agent).bind(compaction_calls).execute(&mut *access.tx).await?;
-    sqlx::query("INSERT INTO generation_budgets(request_id,token_limit,compaction_call_limit) VALUES($1,$2,$3)")
+    sqlx::query("UPDATE generation_policies SET generated_count=generated_count+1,allocated_tokens=allocated_tokens+$3,allocated_compaction_calls=allocated_compaction_calls+$4,allocated_embedding_calls=allocated_embedding_calls+$5 WHERE tenant=$1 AND id=$2")
+        .bind(&access.identity.tenant).bind(policy_id).bind(limits.tokens_per_agent).bind(compaction_calls).bind(embedding_calls).execute(&mut *access.tx).await?;
+    sqlx::query("INSERT INTO generation_budgets(request_id,token_limit,compaction_call_limit,embedding_call_limit) VALUES($1,$2,$3,$4)")
         .bind(id)
         .bind(limits.tokens_per_agent)
         .bind(compaction_calls)
+        .bind(embedding_calls)
         .execute(&mut *access.tx)
         .await?;
     sqlx::query(
