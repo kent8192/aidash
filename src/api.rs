@@ -1155,8 +1155,15 @@ mod schema_tests {
                 .values()
                 .map(|path| path.as_object().unwrap().len())
                 .sum::<usize>(),
-            63
+            66
         );
+        for (path, method) in [
+            ("/api/authorization/{tenant}/peer-mappings", "get"),
+            ("/api/authorization/{tenant}/peer-mappings", "post"),
+            ("/api/authorization/{tenant}/peer-mapping-history", "get"),
+        ] {
+            assert!(document["paths"][path][method].is_object());
+        }
         for (path, operations) in paths {
             assert!(path.starts_with("/api/"));
             for operation in operations.as_object().unwrap().values() {
