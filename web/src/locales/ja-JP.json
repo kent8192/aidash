@@ -461,5 +461,19 @@
   "generationEmbeddingCalls": "埋め込み試行数",
   "embeddingRegistryHelp": "セマンティックインデックスで使用する埋め込みプロバイダー、モデル・バージョン、次元数を登録します。生成ポリシーで選択する前に、このコンポーネントのバージョンをテナントで承認してください。",
   "embeddingModelVersion": "埋め込みモデルのバージョン",
-  "embeddingDimensions": "埋め込みの次元数"
+  "embeddingDimensions": "埋め込みの次元数",
+  "authPeerMappings": "接続ノードの主体対応付け",
+  "authAddPeerMapping": "主体対応付けを追加",
+  "authEditPeerMapping": "主体対応付けを編集",
+  "authPeerMappingHelp": "接続元ノード・テナント・主体をローカルの資格情報に対応付けます。探索には受信側のポリシーとカタログ承認も適用されます。",
+  "authNoPeerMappings": "主体の対応付けはありません。",
+  "authMappedCredential": "ローカル資格情報",
+  "authPeerMappingHistory": "主体対応付けの変更履歴",
+  "authSourceNode": "接続元ノード",
+  "authSourceTenant": "接続元テナント",
+  "authSourceSubject": "接続元主体",
+  "authSelectCredential": "ローカル資格情報を選択",
+  "authPeerMappingSaveHelp": "保存すると対応付けが有効になります。有効なローカル資格情報を選択してください。",
+  "authSavePeerMapping": "対応付けを保存して有効化",
+  "authPeerMappingDenied": "対応付けた資格情報には現在権限がありません。有効な資格情報を選び、主体のポリシーを確認してください。"
 }

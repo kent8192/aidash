@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { PeerMappings } from "./peer-mappings";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   authorizationSnapshot,
@@ -317,6 +318,10 @@ function TenantAuthorization({
               <p className="auth-padding">{t("loading")}</p>
             )}
           </Panel>
+          <PeerMappings
+            tenant={tenant}
+            credentials={!credentials.isError ? (credentials.data ?? []) : []}
+          />
           <HistoryPanel
             key={`${tenant}-revisions`}
             tenant={tenant}

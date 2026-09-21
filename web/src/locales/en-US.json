@@ -461,5 +461,19 @@
   "generationEmbeddingCalls": "Embedding attempts",
   "embeddingRegistryHelp": "Register the embedding provider, model/version and dimensions used by a semantic index. Approve this exact component version for the tenant before selecting it in a generation policy.",
   "embeddingModelVersion": "Embedding model version",
-  "embeddingDimensions": "Embedding dimensions"
+  "embeddingDimensions": "Embedding dimensions",
+  "authPeerMappings": "Peer identity mappings",
+  "authAddPeerMapping": "Add peer mapping",
+  "authEditPeerMapping": "Edit peer mapping",
+  "authPeerMappingHelp": "Bind a source node, tenant and subject to a local credential. The receiving policy and catalog still control discovery.",
+  "authNoPeerMappings": "No peer identity mappings.",
+  "authMappedCredential": "Local credential",
+  "authPeerMappingHistory": "Peer mapping history",
+  "authSourceNode": "Source node",
+  "authSourceTenant": "Source tenant",
+  "authSourceSubject": "Source subject",
+  "authSelectCredential": "Select a local credential",
+  "authPeerMappingSaveHelp": "Saving enables this mapping. Only active local credentials can be selected.",
+  "authSavePeerMapping": "Save and enable mapping",
+  "authPeerMappingDenied": "The mapped credential is no longer authorized. Select an active credential and check its subject policy."
 }

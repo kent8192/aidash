@@ -314,3 +314,119 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
   await expect(page.locator(".auth-history")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+
+test("peer identity mappings preserve revisions, credential rotation and bilingual administration", async ({
+  page,
+  request,
+}) => {
+  const tenant = `peer-${randomUUID()}`;
+  const base = `/api/authorization/${tenant}`;
+  const headers = { authorization: "Bearer acceptance-access-token" };
+  const api = async (path: string, data?: unknown) => {
+    const response =
+      data === undefined
+        ? await request.get(path, { headers })
+        : await request.post(path, { headers, data });
+    expect(response.status(), await response.text()).toBe(200);
+    return response.json();
+  };
+  const state = await api("/api/state");
+  const peer = state.peers.find((value: { enabled: boolean }) => value.enabled);
+  expect(peer, "fixture requires a configured peer").toBeTruthy();
+  await api(base, {
+    expected_revision: 0,
+    bundle: { tenant, subjects: { bridge: { kind: "user" } }, policies: [] },
+  });
+  const first = await api(`${base}/credentials`, { subject: "bridge" });
+  const second = await api(`${base}/credentials`, { subject: "bridge" });
+  await page.addInitScript(() => {
+    sessionStorage.setItem("aidash-token", "acceptance-access-token");
+    localStorage.setItem("aidash-locale", "en-US");
+  });
+  await page.goto("/authorization");
+  await page.getByLabel("Tenant", { exact: true }).fill(tenant);
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  const panel = page.locator(".panel").filter({
+    has: page.getByRole("heading", {
+      name: "Peer identity mappings",
+      exact: true,
+    }),
+  });
+  await panel.getByRole("button", { name: "Add peer mapping" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Source node", { exact: true }).fill(peer.node_id);
+  await dialog
+    .getByLabel("Source tenant", { exact: true })
+    .fill("remote-tenant");
+  await dialog
+    .getByLabel("Source subject", { exact: true })
+    .fill("remote-user");
+  await dialog
+    .getByLabel("Local credential", { exact: true })
+    .selectOption(first.credential.id);
+  await dialog.getByRole("button", { name: "Save and enable mapping" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(panel).toContainText(first.credential.id);
+  expect((await api(`${base}/peer-mappings`))[0].revision).toBe(1);
+  await panel.getByRole("button", { name: "Edit peer mapping" }).click();
+  await expect(
+    dialog.getByLabel("Source node", { exact: true }),
+  ).toHaveAttribute("readonly", "");
+  // An operator on another session advances the revision while this form is open.
+  const current = (await api(`${base}/peer-mappings`))[0];
+  const input = {
+    source_node: current.source_node,
+    source_tenant: current.source_tenant,
+    source_subject: current.source_subject,
+    credential_id: current.credential_id,
+    expected_revision: 1,
+    enabled: false,
+  };
+  await api(`${base}/peer-mappings`, input);
+  await dialog.getByRole("button", { name: "Save and enable mapping" }).click();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  expect((await api(`${base}/peer-mappings`))[0].enabled).toBe(false);
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await panel.getByRole("button", { name: "Edit peer mapping" }).click();
+  await dialog
+    .getByLabel("Local credential", { exact: true })
+    .selectOption(second.credential.id);
+  await dialog.getByRole("button", { name: "Save and enable mapping" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(panel).toContainText(second.credential.id);
+  await api(`${base}/credentials/${second.credential.id}/revoke`, {});
+  await panel.getByRole("button", { name: "Disable approval" }).click();
+  await expect(
+    panel.getByRole("button", { name: "Approve", exact: true }),
+  ).toBeVisible();
+  await panel.getByRole("button", { name: "Approve", exact: true }).click();
+  await expect(panel.getByRole("alert")).toBeVisible();
+  expect((await api(`${base}/peer-mappings`))[0].enabled).toBe(false);
+  const history = await api(`${base}/peer-mapping-history`);
+  expect(history.map((value: { revision: number }) => value.revision)).toEqual([
+    1, 2, 3, 4,
+  ]);
+  expect(JSON.stringify(history)).not.toContain(first.token);
+  await panel.scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: "../.ignore/dashboard-peer-mappings-en.png",
+    fullPage: true,
+  });
+  await page.getByLabel("Language", { exact: true }).selectOption("ja-JP");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(
+    page.getByRole("heading", {
+      name: "接続ノードの主体対応付け",
+      exact: true,
+    }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({
+    path: "../.ignore/dashboard-peer-mappings-ja.png",
+    fullPage: true,
+  });
+});
