@@ -155,7 +155,9 @@ impl Fixture {
         }
     }
     async fn drive(&self) {
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        // Several real database/provider boundaries run concurrently under
+        // coverage in CI. This fixture deadline is not a runtime latency SLO.
+        let settled = tokio::time::timeout(std::time::Duration::from_secs(20), async {
             let worker = Harness {
                 federation: self.f.clone(),
             };
@@ -178,8 +180,23 @@ impl Fixture {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         })
-        .await
-        .unwrap();
+        .await;
+        if settled.is_err() {
+            let states: Vec<_> = self
+                .f
+                .store
+                .runs()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|run| (run.agent_id, run.phase, run.control))
+                .collect();
+            panic!(
+                "generated execution did not settle in 20s: {states:?}; embedding calls={}, inference calls={}",
+                self.embeddings.load(Ordering::SeqCst),
+                self.inference.load(Ordering::SeqCst)
+            );
+        }
     }
     async fn remember(&self) -> Uuid {
         self.remember.store(1, Ordering::SeqCst);
