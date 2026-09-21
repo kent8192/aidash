@@ -109,6 +109,10 @@ pub fn router(f: Federation) -> Router {
             "/scoped/registry/verify",
             post(crate::authorization::peer::reads::verify),
         )
+        .route(
+            "/scoped/execution/inspect",
+            post(crate::authorization::peer::execution::inspect),
+        )
         .route("/offers", post(peer_offer))
         .route("/workspace", post(peer_workspace))
         .route("/observe", get(peer_observe))

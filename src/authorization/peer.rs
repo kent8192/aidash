@@ -1,6 +1,7 @@
 //! Explicit inbound identity mappings. Peer authentication alone grants no
 //! tenant authority, and local subject bearer tokens never cross this boundary.
 pub(crate) mod discovery;
+pub(crate) mod execution;
 pub(crate) mod reads;
 
 use super::{
