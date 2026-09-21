@@ -21,7 +21,11 @@ pub(crate) async fn discover(
     access.finish(result).await
 }
 
-async fn discover_in(f: &Federation, access: &mut Access, search: &Search) -> Result<Discovery> {
+pub(crate) async fn discover_in(
+    f: &Federation,
+    access: &mut Access,
+    search: &Search,
+) -> Result<Discovery> {
     let mut query = search.clone();
     query.kind = Some("agent".into());
     let local = catalog::list_in(access, &query).await?;
@@ -124,5 +128,6 @@ async fn discover_in(f: &Federation, access: &mut Access, search: &Search) -> Re
     result
         .errors
         .sort_by(|left, right| left.node_id.cmp(&right.node_id));
+    access.track_discovery(&result.agents).await?;
     Ok(result)
 }

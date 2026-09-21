@@ -32,11 +32,20 @@ impl Access {
         .ok_or(Error::Forbidden)?;
         let resource = self.task_resource(&task).await?;
         self.require(&resource, "task.read").await?;
+        if !self
+            .output_visible(task.workspace_id, "task", task.id)
+            .await?
+        {
+            return Err(Error::Forbidden);
+        }
         Ok(task)
     }
     pub(crate) async fn task_visible(&mut self, task: &Task) -> Result<bool> {
         let resource = self.task_resource(task).await?;
-        self.decide(&resource, "task.read").await
+        Ok(self.decide(&resource, "task.read").await?
+            && self
+                .output_visible(task.workspace_id, "task", task.id)
+                .await?)
     }
     pub(crate) async fn related_tasks(
         &mut self,
@@ -79,9 +88,21 @@ impl Access {
         .fetch_optional(&mut *self.tx)
         .await?;
         match task {
-            Some(task) => self.task_visible(&task).await,
-            None => Ok(false),
+            Some(task) if self.task_visible(&task).await? => {}
+            _ => return Ok(false),
         }
+        self.output_visible(artifact.workspace_id, "artifact", artifact.id)
+            .await
+    }
+    async fn output_visible(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<bool> {
+        let producers: Vec<Uuid> = sqlx::query_scalar("SELECT run_id FROM authorization_run_outputs WHERE workspace_id=$1 AND resource_kind=$2 AND resource_id=$3 ORDER BY run_id")
+            .bind(workspace).bind(kind).bind(id).fetch_all(&mut *self.tx).await?;
+        for producer in producers {
+            if !Box::pin(self.run_reads_visible(producer)).await? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
     pub(crate) async fn memory_resource(&mut self, run: &crate::domain::Run) -> Result<Resource> {
         let workspace = self.workspace(run.workspace_id).await?;
@@ -114,7 +135,10 @@ impl Access {
     }
     pub(crate) async fn message_visible(&mut self, message: &Message) -> Result<bool> {
         let resource = self.message_resource(message).await?;
-        self.decide(&resource, "message.read").await
+        Ok(self.decide(&resource, "message.read").await?
+            && self
+                .output_visible(message.workspace_id, "message", message.id)
+                .await?)
     }
     pub(crate) async fn resource_event_visible(&mut self, event: &Event) -> Result<Option<bool>> {
         let id = |value: &serde_json::Value| value.as_str().and_then(|s| s.parse::<Uuid>().ok());
@@ -396,13 +420,24 @@ impl Access {
     /// Walk recorded run dependencies iteratively; cycles between observation
     /// journals must terminate without skipping any resource's current policy.
     pub(crate) async fn run_reads_visible(&mut self, run: Uuid) -> Result<bool> {
+        let key = (run, self.authority_context());
+        if !self.checking_reads.insert(key.clone()) {
+            return Ok(true);
+        }
+        let result = self.run_reads_visible_in(run).await;
+        self.checking_reads.remove(&key);
+        result
+    }
+    async fn run_reads_visible_in(&mut self, run: Uuid) -> Result<bool> {
         let mut pending = vec![run];
         let mut visited = std::collections::BTreeSet::new();
         while let Some(run) = pending.pop() {
             if !visited.insert(run) {
                 continue;
             }
-            if !self.registry_reads_visible(run).await? || !self.semantic_reads_visible(run).await?
+            if !self.registry_reads_visible(run).await?
+                || !self.remote_reads_visible(run).await?
+                || !self.semantic_reads_visible(run).await?
             {
                 return Ok(false);
             }

@@ -11,6 +11,11 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 pub(crate) struct Access {
+    pub(super) remote_read_cache: std::collections::BTreeMap<(Uuid, String), bool>,
+    pub(super) unavailable_peers: std::collections::BTreeSet<String>,
+    pub(super) checking_reads: std::collections::BTreeSet<(Uuid, String)>,
+    pub(super) peer_client: reqwest::Client,
+    pub(super) node_id: String,
     pub tx: Transaction<'static, Postgres>,
     pub identity: SubjectIdentity,
     pub snapshot: Snapshot,
@@ -29,6 +34,13 @@ pub(crate) struct Access {
 }
 
 impl Access {
+    // The same compound operation can narrow its subject chain or change the
+    // workspace context. Never reuse a read decision from its earlier authority.
+    pub(super) fn authority_context(&self) -> String {
+        crate::registry::digest(
+            &json!({"subjects":self.subjects,"context":self.context,"environment":self.environment}),
+        )
+    }
     pub async fn begin(store: &Store, identity: &SubjectIdentity) -> Result<Self> {
         Self::begin_with_lock(store, identity, false).await
     }
@@ -48,6 +60,11 @@ impl Access {
             .execute(&mut *tx)
             .await?;
         Ok(Self {
+            remote_read_cache: Default::default(),
+            unavailable_peers: Default::default(),
+            checking_reads: Default::default(),
+            peer_client: store.semantic_client.clone(),
+            node_id: store.node_id.clone(),
             tx,
             identity: identity.clone(),
             snapshot,
@@ -74,6 +91,11 @@ impl Access {
             .execute(&mut *tx)
             .await?;
         Ok(Self {
+            remote_read_cache: Default::default(),
+            unavailable_peers: Default::default(),
+            checking_reads: Default::default(),
+            peer_client: lease.peer_client.clone(),
+            node_id: lease.node_id.clone(),
             tx,
             identity: lease.identity.clone(),
             snapshot: lease.snapshot.clone(),

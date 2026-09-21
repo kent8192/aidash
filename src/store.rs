@@ -708,6 +708,7 @@ impl Store {
             return Err(Error::Forbidden);
         }
         sqlx::query("INSERT INTO authorization_run_reads(run_id,workspace_id,resource_kind,resource_id) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind(run).bind(workspace).bind(kind).bind(id).execute(&mut **tx).await?;
+        sqlx::query("INSERT INTO authorization_run_outputs(run_id,workspace_id,resource_kind,resource_id) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind(run).bind(workspace).bind(kind).bind(id).execute(&mut **tx).await?;
         Ok(())
     }
     pub(crate) async fn message_in(

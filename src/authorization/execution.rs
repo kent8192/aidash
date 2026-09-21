@@ -3,7 +3,7 @@ use crate::{
     Error, Result,
     api_schema::RunDetails,
     domain::*,
-    federation::{Delegation, DiscoveredAgent, Discovery, Federation},
+    federation::{Delegation, Discovery, Federation},
     provider::ToolCall,
     registry::{AgentConfig, EntityRef, Search},
     store::{Invocation, Store},
@@ -555,20 +555,7 @@ impl WorkerAuthority {
     }
     pub async fn discover(&self, f: &Federation, search: &Search) -> Result<Discovery> {
         let mut access = self.access.lock().await;
-        let mut query = search.clone();
-        query.kind = Some("agent".into());
-        let entries = catalog::list_in(&mut access, &query).await?;
-        access.track_registry(&entries).await?;
-        Ok(Discovery {
-            agents: entries
-                .into_iter()
-                .map(|entity| DiscoveredAgent {
-                    node_id: f.config.node_id.clone(),
-                    entity,
-                })
-                .collect(),
-            errors: vec![],
-        })
+        super::peer::discovery::discover_in(f, &mut access, search).await
     }
 }
 
