@@ -983,19 +983,7 @@ pub async fn discover(
     identity: &SubjectIdentity,
     search: &Search,
 ) -> Result<Discovery> {
-    let mut query = search.clone();
-    query.kind = Some("agent".into());
-    let entries = catalog::list(&f.store, identity, &query).await?;
-    Ok(Discovery {
-        agents: entries
-            .into_iter()
-            .map(|entity| DiscoveredAgent {
-                node_id: f.config.node_id.clone(),
-                entity,
-            })
-            .collect(),
-        errors: vec![],
-    })
+    super::peer::discovery::discover(f, identity, search).await
 }
 
 pub(crate) async fn cancel_if_scoped(store: &Store, run: &Run, token: Uuid) -> Result<bool> {
