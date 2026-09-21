@@ -216,4 +216,53 @@ test("clears reasoning settings when selecting an unsupported model", async ({
   await expect(dialog.getByLabel("Reasoning Effort")).toBeDisabled();
   await expect(dialog.getByLabel("Reasoning Effort")).toHaveValue("");
   await expect(dialog.getByLabel("コンテキスト上限")).toHaveValue("8192");
+  await expect(dialog.getByLabel("名前", { exact: true })).toHaveValue(
+    "other-model-none",
+  );
+});
+
+test("model names follow provider, model and effort until manually edited", async ({
+  page,
+}) => {
+  const dialog = page.getByRole("dialog");
+  const name = dialog.getByLabel("名前", { exact: true });
+  await expect(name).toHaveValue("");
+  const picker = dialog.getByRole("combobox", {
+    name: "プロバイダーのモデルID",
+  });
+  await picker.fill("fixture");
+  await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
+  await expect(name).toHaveValue("vendor-fixture-model-low");
+  await dialog.getByLabel("Reasoning Effort").selectOption("high");
+  await expect(name).toHaveValue("vendor-fixture-model-high");
+  await dialog.getByLabel("説明").fill("Auto-named model");
+  const posted = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "エンティティを登録", exact: true })
+    .click();
+  expect((await posted).postDataJSON().name).toEqual({
+    en: "vendor-fixture-model-high",
+  });
+});
+
+test("manual model names survive model and effort changes", async ({
+  page,
+}) => {
+  const dialog = page.getByRole("dialog");
+  const name = dialog.getByLabel("名前", { exact: true });
+  await name.fill("My research model");
+  const picker = dialog.getByRole("combobox", {
+    name: "プロバイダーのモデルID",
+  });
+  await picker.fill("fixture");
+  await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
+  await dialog.getByLabel("Reasoning Effort").selectOption("high");
+  await expect(name).toHaveValue("My research model");
+  await name.fill("");
+  await expect(name).toHaveValue("vendor-fixture-model-high");
+  await dialog.getByLabel("Reasoning Effort").selectOption("");
+  await expect(name).toHaveValue("vendor-fixture-model-low");
 });

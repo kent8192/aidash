@@ -258,6 +258,8 @@ export function EntityForm({
   const { t } = useI18n();
   const [kind, setKind] = useState(initial);
   const registration = useRef<{ body: string; key: string } | null>(null);
+  const [modelName, setModelName] = useState("");
+  const [customModelName, setCustomModelName] = useState<string | null>(null);
   const [defaultName] = useState(() => {
     const adjectives = [
       "calm",
@@ -369,7 +371,14 @@ export function EntityForm({
       }}
     >
       <Field label={t("entityKind")}>
-        <select value={kind} onChange={(e) => setKind(e.target.value)}>
+        <select
+          value={kind}
+          onChange={(e) => {
+            setKind(e.target.value);
+            setModelName("");
+            setCustomModelName(null);
+          }}
+        >
           {[
             "agent",
             "model",
@@ -388,7 +397,22 @@ export function EntityForm({
         <input name="version" required defaultValue="1.0.0" />
       </Field>
       <Field label={t("name")}>
-        <input name="name_en" required defaultValue={defaultName} />
+        {kind === "model" ? (
+          <input
+            key="model-name"
+            name="name_en"
+            required
+            value={customModelName ?? modelName}
+            onChange={(event) => setCustomModelName(event.target.value || null)}
+          />
+        ) : (
+          <input
+            key="entity-name"
+            name="name_en"
+            required
+            defaultValue={defaultName}
+          />
+        )}
       </Field>
       <Field label={t("description")}>
         <textarea name="description_en" required />
@@ -474,7 +498,7 @@ export function EntityForm({
         ) : kind === "model" ? (
           <>
             <p className="muted">{t("modelHelp")}</p>
-            <OpenRouterModelPicker />
+            <OpenRouterModelPicker onNameChange={setModelName} />
           </>
         ) : kind === "embedding" ? (
           <>

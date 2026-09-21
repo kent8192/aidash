@@ -77,6 +77,7 @@ test("skill defaults are editable and need no JSON or localized metadata", async
   page,
 }) => {
   const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("skill");
   const original = await dialog
     .getByLabel("Name", { exact: true })
     .inputValue();
