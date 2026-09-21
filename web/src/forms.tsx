@@ -1,4 +1,4 @@
-import { Fragment, useRef, useState } from "react";
+import { Fragment, useState } from "react";
 import { EntityConfiguration } from "./entity-configuration";
 import { OpenRouterModelPicker } from "./openrouter-model-picker";
 import { useForm } from "@tanstack/react-form";
@@ -22,19 +22,6 @@ const split = (s: string) =>
 const ref = (s: string): EntityRef => {
   const index = s.lastIndexOf("@");
   return { id: s.slice(0, index), version: s.slice(index + 1) };
-};
-const uuidV7 = () => {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  const timestamp = Date.now();
-  for (let index = 0; index < 6; index += 1) {
-    bytes[index] = Math.floor(timestamp / 2 ** (40 - index * 8)) & 0xff;
-  }
-  bytes[6] = (bytes[6] & 0x0f) | 0x70;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = Array.from(bytes, (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 };
 export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
   const { t } = useI18n();
@@ -270,8 +257,6 @@ export function EntityForm({
 }) {
   const { t } = useI18n();
   const [kind, setKind] = useState(initial);
-  const [entityId, setEntityId] = useState("");
-  const generatedId = useRef<string | undefined>(undefined);
   const [defaultName] = useState(() => {
     const adjectives = [
       "calm",
@@ -355,15 +340,7 @@ export function EntityForm({
                       }
                     : JSON.parse(s("config"));
           const entry = {
-            id:
-              s("id") ||
-              generatedId.current ||
-              (() => {
-                const id = uuidV7();
-                generatedId.current = id;
-                setEntityId(id);
-                return id;
-              })(),
+            id: "",
             version: s("version"),
             kind,
             name: { en: s("name_en") },
@@ -399,20 +376,9 @@ export function EntityForm({
           ))}
         </select>
       </Field>
-      <div className="two-columns">
-        <Field label={t("entityId")}>
-          <input
-            name="id"
-            value={entityId}
-            onChange={(e) => setEntityId(e.target.value)}
-            placeholder={t("entityIdAutomatic")}
-            pattern="[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}"
-          />
-        </Field>
-        <Field label={t("version")}>
-          <input name="version" required defaultValue="1.0.0" />
-        </Field>
-      </div>
+      <Field label={t("version")}>
+        <input name="version" required defaultValue="1.0.0" />
+      </Field>
       <Field label={t("name")}>
         <input name="name_en" required defaultValue={defaultName} />
       </Field>

@@ -488,7 +488,6 @@
   "modelZdr": "Zero Data Retention：常時有効。ZDR対応の接続先がないモデルは実行できません。",
   "modelReasoningDefault": "モデルの既定値",
   "modelReasoningUnavailable": "推論強度の指定に非対応",
-  "entityIdAutomatic": "自動生成（UUID v7）",
   "configuredCredentials": "設定済みの資格情報を使用",
   "clusterCoordinator": "担当Agent",
   "nodeNoConfiguration": "この登録に追加設定は不要です。接続はMesh画面で管理します。",

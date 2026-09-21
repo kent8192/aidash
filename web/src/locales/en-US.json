@@ -488,7 +488,6 @@
   "modelZdr": "Zero Data Retention is always enabled. Models without a ZDR endpoint cannot run.",
   "modelReasoningDefault": "Model default",
   "modelReasoningUnavailable": "Effort selection is unavailable",
-  "entityIdAutomatic": "Automatic (UUID v7)",
   "configuredCredentials": "Use configured credentials",
   "clusterCoordinator": "Coordinator agent",
   "nodeNoConfiguration": "No additional settings are needed for this registry entry. Manage connections on the Mesh page.",

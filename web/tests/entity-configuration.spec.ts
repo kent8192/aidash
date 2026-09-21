@@ -85,7 +85,8 @@ test("skill defaults are editable and need no JSON or localized metadata", async
   await expect(dialog.getByLabel("Name", { exact: true })).toHaveValue(
     original,
   );
-  await expect(dialog.getByLabel("Entity ID")).toHaveValue("");
+  await expect(dialog.getByLabel("Entity ID")).toHaveCount(0);
+  await expect(dialog.getByText(/UUID/i)).toHaveCount(0);
   await expect(
     dialog.locator(
       '[name="name_ja"], [name="description_ja"], textarea[name="config"], textarea[name="schema"]',
@@ -107,13 +108,11 @@ test("skill defaults are editable and need no JSON or localized metadata", async
     languages: ["ja", "en"],
     config: { instructions: "Research reliable sources." },
   });
-  expect(body.id).toMatch(
-    /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  );
+  expect(body.id).toBe("");
   expect(Object.keys(body.name)).toEqual(["en"]);
 });
 
-test("retains an automatic ID when registration is retried", async ({
+test("delegates ID generation to the server on registration and retry", async ({
   page,
 }) => {
   const dialog = page.getByRole("dialog");
@@ -140,9 +139,9 @@ test("retains an automatic ID when registration is retried", async ({
     .getByRole("button", { name: "Register entity", exact: true })
     .click();
   const firstBody = (await first).postDataJSON();
-  await expect(dialog.getByLabel("Entity ID")).toHaveValue(
-    /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  );
+  expect(firstBody.id).toBe("");
+  await expect(dialog.getByLabel("Entity ID")).toHaveCount(0);
+  await expect(dialog.getByText(/UUID/i)).toHaveCount(0);
   await expect(page.getByRole("alert")).toContainText("temporary failure");
   const second = page.waitForRequest(
     (request) =>

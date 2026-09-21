@@ -128,7 +128,6 @@ test("generation dashboard manages policy, approval, completion and retained his
     const credential = await api(`/api/authorization/${tenant}/credentials`, {
       subject: "alice",
     });
-    const embedder = `${id}-embedding`;
     const embeddingConfig = {
       provider: "openai",
       endpoint: `http://127.0.0.1:${(provider.address() as AddressInfo).port}/v1`,
@@ -156,7 +155,7 @@ test("generation dashboard manages policy, approval, completion and retained his
     await registryDialog
       .getByLabel("エンティティの種類")
       .selectOption("embedding");
-    await registryDialog.getByLabel("エンティティID").fill(embedder);
+    await expect(registryDialog.getByLabel("エンティティID")).toHaveCount(0);
     await registryDialog.getByLabel("名前").fill("Approved embedding");
     await registryDialog.getByLabel("説明").fill("Local semantic provider");
     await registryDialog
@@ -171,9 +170,15 @@ test("generation dashboard manages policy, approval, completion and retained his
     await registryDialog
       .getByLabel("埋め込みの次元数", { exact: true })
       .fill("3");
+    const registration = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/registry") &&
+        response.request().method() === "POST",
+    );
     await registryDialog
       .getByRole("button", { name: "エンティティを登録", exact: true })
       .click();
+    const embedder = (await (await registration).json()).id as string;
     await expect(registryDialog).toHaveCount(0);
     expect((await api(`/api/registry/${embedder}/1.0.0`)).config).toEqual(
       embeddingConfig,

@@ -103,7 +103,7 @@ test("searches and selects a model without credential input", async ({
     0,
   );
   await expect(dialog.getByLabel("資格情報の参照名")).toHaveCount(0);
-  await dialog.getByLabel("エンティティID").fill("openrouter-model");
+  await expect(dialog.getByLabel("エンティティID")).toHaveCount(0);
   await dialog.getByLabel("名前").fill("OpenRouter test model");
   await dialog.getByLabel("説明").fill("A model for agent execution");
   const picker = dialog.getByRole("combobox", {
@@ -149,7 +149,7 @@ test("requires a catalog selection and supports keyboard selection", async ({
   page,
 }) => {
   const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("エンティティID").fill("openrouter-model");
+  await expect(dialog.getByLabel("エンティティID")).toHaveCount(0);
   await dialog.getByLabel("名前").fill("Model");
   await dialog.getByLabel("説明").fill("Model description");
   const picker = dialog.getByRole("combobox", {
