@@ -11,6 +11,145 @@ use uuid::Uuid;
 fn tool(id: &str) -> Entry {
 	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":id},"description":{"en":"review regression"},"config":{"transport":"http","endpoint":"http://127.0.0.1:9/original","credential_env":null,"replay":"read_only"}})).unwrap()
 }
+
+async fn register_keyed(app: &axum::Router, token: &str, entry: &Entry, key: &str) -> (u16, Value) {
+	use axum::{
+		body::{Body, to_bytes},
+		http::Request,
+	};
+	use tower::ServiceExt;
+	let response = app
+		.clone()
+		.oneshot(
+			Request::builder()
+				.method("POST")
+				.uri("/api/registry")
+				.header("authorization", format!("Bearer {token}"))
+				.header("content-type", "application/json")
+				.header("idempotency-key", key)
+				.body(Body::from(serde_json::to_vec(entry).unwrap()))
+				.unwrap(),
+		)
+		.await
+		.unwrap();
+	let status = response.status().as_u16();
+	let body = to_bytes(response.into_body(), 1_048_576).await.unwrap();
+	(status, serde_json::from_slice(&body).unwrap())
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn registry_server_ids_survive_retries_and_concurrent_requests() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let mut entry = tool("");
+	entry.name.insert("en".into(), "calm-otter".into());
+	let key = Uuid::new_v4().to_string();
+	let (first, concurrent) = tokio::join!(
+		register_keyed(&app, &f.config.api_token, &entry, &key),
+		register_keyed(&app, &f.config.api_token, &entry, &key),
+	);
+	assert_eq!(first.0, 200, "{first:?}");
+	assert_eq!(first, concurrent);
+	assert_eq!(
+		Uuid::parse_str(first.1["id"].as_str().unwrap())
+			.unwrap()
+			.get_version_num(),
+		7
+	);
+	// A new router models a retry after the committed response was lost.
+	assert_eq!(
+		register_keyed(&api::router(f.clone()), &f.config.api_token, &entry, &key).await,
+		first
+	);
+	let mut changed = entry.clone();
+	changed
+		.description
+		.insert("en".into(), "different input".into());
+	assert_eq!(
+		register_keyed(&app, &f.config.api_token, &changed, &key)
+			.await
+			.0,
+		409
+	);
+	assert_eq!(f.registry.list(&Default::default()).await.unwrap().len(), 1);
+	assert_eq!(
+		f.store
+			.events(0, None, 100)
+			.await
+			.unwrap()
+			.iter()
+			.filter(|event| event.kind == "registry.registered")
+			.count(),
+		1
+	);
+	assert_eq!(
+		register_keyed(&app, &f.config.api_token, &entry, "invalid")
+			.await
+			.0,
+		400
+	);
+	let next = register_keyed(
+		&app,
+		&f.config.api_token,
+		&entry,
+		&Uuid::new_v4().to_string(),
+	)
+	.await;
+	assert_eq!(next.0, 200);
+	assert_ne!(next.1["id"], first.1["id"]);
+	// Failed validation must roll back the request-key reservation as well.
+	let failed_key = Uuid::new_v4().to_string();
+	let mut invalid = entry.clone();
+	invalid.version = "invalid".into();
+	assert_eq!(
+		register_keyed(&app, &f.config.api_token, &invalid, &failed_key)
+			.await
+			.0,
+		400
+	);
+	assert_eq!(
+		register_keyed(&app, &f.config.api_token, &entry, &failed_key)
+			.await
+			.0,
+		200
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn registry_assigns_uuid_v7_to_blank_ids_and_preserves_explicit_ids() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let mut generated = Vec::new();
+	for id in ["", "", "explicit-tool"] {
+		let mut entry = tool(id);
+		entry.name.insert("en".into(), "calm-otter".into());
+		let (status, result) = request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/registry",
+			json!(entry),
+		)
+		.await;
+		assert_eq!(status, 200, "{result}");
+		let assigned = result["id"].as_str().unwrap();
+		if id.is_empty() {
+			assert_eq!(Uuid::parse_str(assigned).unwrap().get_version_num(), 7);
+			generated.push(assigned.to_owned());
+		} else {
+			assert_eq!(assigned, id);
+		}
+		assert_eq!(
+			f.registry.get(assigned, "1.0.0").await.unwrap().id,
+			assigned
+		);
+	}
+	assert_ne!(generated[0], generated[1]);
+	cleanup(f, &url, &schema).await;
+}
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
 async fn installation_reconfiguration_keeps_manifest_and_events_idempotent() {

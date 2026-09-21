@@ -420,8 +420,12 @@ async fn nonblank_constraints_match_rust_unicode_whitespace() {
 			let mut entry = serde_json::to_value(model()).unwrap();
 			entry["id"] = json!(format!("{kind}-{index}"));
 			entry["kind"] = json!(kind);
-			for field in ["model_id", "endpoint", "instructions"] {
-				entry["config"][field] = json!(content);
+			if kind == "model" {
+				entry["config"]["model_id"] = json!(content);
+				entry["config"]["endpoint"] = json!(content);
+			} else {
+				entry["config"] =
+					json!({"instructions":content, "model":{"id":"test-model", "version":"1.0.0"}});
 			}
 			insert_entry(&f.store.pool, &entry).await.unwrap();
 		}
@@ -523,4 +527,551 @@ async fn package_identity_requires_matching_json_strings() {
 	.await
 	.unwrap();
 	cleanup(f, &url, &schema).await;
+}
+
+async fn insert_values(
+	pool: &sqlx::PgPool,
+	table: &str,
+	values: &[(&str, SimpleExpr)],
+) -> Result<(), sqlx::Error> {
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new(table))
+			.columns(values.iter().map(|(name, _)| Alias::new(*name)))
+			.values_panic(values.iter().map(|(_, value)| value.clone()))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(pool)
+	.await
+	.map(|_| ())
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn registry_json_shapes_remain_deserializable() {
+	let (f, url, schema) = setup().await;
+	let good = serde_json::to_value(model()).unwrap();
+	for field in ["capabilities", "tags", "languages", "skills"] {
+		for invalid in [
+			json!(7),
+			Value::Null,
+			json!(true),
+			json!({}),
+			json!([]),
+			json!(["nested"]),
+		] {
+			let mut entry = good.clone();
+			entry[field] = json!(["valid", invalid]);
+			check_rejected(
+				insert_entry(&f.store.pool, &entry).await,
+				"registry_metadata_shape",
+			);
+		}
+	}
+	let mut unknown = good.clone();
+	unknown["unexpected"] = json!(true);
+	check_rejected(
+		insert_entry(&f.store.pool, &unknown).await,
+		"registry_metadata_shape",
+	);
+	for field in ["capabilities", "tags", "languages", "skills"] {
+		unknown.as_object_mut().unwrap().remove(field);
+	}
+	unknown.as_object_mut().unwrap().remove("unexpected");
+	insert_entry(&f.store.pool, &unknown).await.unwrap();
+	assert_eq!(f.registry.list(&Default::default()).await.unwrap().len(), 1);
+	let mut full = good;
+	full["id"] = json!("full");
+	for field in ["capabilities", "tags", "languages", "skills"] {
+		full[field] = json!(["one", "two"]);
+	}
+	insert_entry(&f.store.pool, &full).await.unwrap();
+	assert_eq!(f.registry.list(&Default::default()).await.unwrap().len(), 2);
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn model_and_agent_configs_reject_unusable_shapes() {
+	let (f, url, schema) = setup().await;
+	let good = serde_json::to_value(model()).unwrap();
+	for (field, value) in [
+		("unexpected", json!(true)),
+		("credential_env", json!(7)),
+		("modalities", json!(["text", 7])),
+		("modalities", json!(["text", ["audio"]])),
+		("context_window", json!(1e30)),
+	] {
+		let mut entry = good.clone();
+		entry["config"][field] = value;
+		check_rejected(
+			insert_entry(&f.store.pool, &entry).await,
+			"registry_model_config",
+		);
+	}
+	let mut missing = good.clone();
+	missing["config"].as_object_mut().unwrap().remove("cost");
+	check_rejected(
+		insert_entry(&f.store.pool, &missing).await,
+		"registry_model_config",
+	);
+	let mut agent = good.clone();
+	agent["id"] = json!("agent");
+	agent["kind"] = json!("agent");
+	agent["config"] = json!({"instructions":"Work"});
+	check_rejected(
+		insert_entry(&f.store.pool, &agent).await,
+		"registry_agent_config",
+	);
+	for invalid in [
+		Value::Null,
+		json!([]),
+		json!({}),
+		json!({"id":"m"}),
+		json!({"id":7,"version":"1.0.0"}),
+		json!({"id":"m","version":7}),
+	] {
+		agent["config"]["model"] = invalid;
+		check_rejected(
+			insert_entry(&f.store.pool, &agent).await,
+			"registry_agent_config",
+		);
+	}
+	agent["config"]["model"] = json!({"id":"test-model","version":"1.0.0"});
+	let _: aidash::registry::AgentConfig = serde_json::from_value(agent["config"].clone()).unwrap();
+	insert_entry(&f.store.pool, &agent).await.unwrap();
+	insert_entry(&f.store.pool, &good).await.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn requirements_and_run_state_reject_wrong_shapes() {
+	let (f, url, schema) = setup().await;
+	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
+	let task = f
+		.store
+		.create_task(
+			workspace.id,
+			&NewTask {
+				title: "Task".into(),
+				description: "Work".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"human",
+			None,
+		)
+		.await
+		.unwrap();
+	for invalid in [
+		json!({"unexpected":true}),
+		json!({"capability":7}),
+		json!({"query":["text"]}),
+		json!({"model":{}}),
+	] {
+		check_rejected(
+			update(&f.store.pool, "tasks", "requirements", Expr::val(invalid)).await,
+			"tasks_content",
+		);
+	}
+	let valid = json!({"kind":null,"query":"text","capability":"code","language":"en","skill":"read","tag":"tag","model":"model"});
+	let _: aidash::registry::Search = serde_json::from_value(valid.clone()).unwrap();
+	update(&f.store.pool, "tasks", "requirements", Expr::val(valid))
+		.await
+		.unwrap();
+	f.store
+		.accept_run(&task, "aidash://remote", "executor", "1.0.0")
+		.await
+		.unwrap();
+	for column in ["context", "pending"] {
+		for invalid in [Value::Null, json!([]), json!(7), json!("text")] {
+			check_rejected(
+				update(&f.store.pool, "runs", column, Expr::val(invalid)).await,
+				"runs_counters",
+			);
+		}
+		update(&f.store.pool, "runs", column, Expr::val(json!({})))
+			.await
+			.unwrap();
+	}
+	cleanup(f, &url, &schema).await;
+}
+
+fn index_spec() -> Value {
+	json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9999/v1","model":"embedding","model_version":"1","dimensions":3},
+        "vector":{"provider":"qdrant","endpoint":"http://localhost:6333"},
+        "enabled":true,"auto_context":false,"max_sources":64,"max_results":10,"max_result_tokens":4096,"max_input_bytes":8192})
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn semantic_specs_and_sources_reject_undecodable_records() {
+	let (f, url, schema) = setup().await;
+	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
+	let spec = index_spec();
+	let _: aidash::semantic::IndexSpec = serde_json::from_value(spec.clone()).unwrap();
+	insert_values(
+		&f.store.pool,
+		"semantic_indexes",
+		&[
+			("workspace_id", uuid_expr(workspace.id)),
+			("tenant", Expr::val("test").into()),
+			("revision", Expr::val(1).into()),
+			("spec", Expr::val(spec.clone()).into()),
+			("collection", Expr::val("test").into()),
+		],
+	)
+	.await
+	.unwrap();
+	let mut invalid_specs = vec![json!({}), json!([]), Value::Null];
+	for field in spec.as_object().unwrap().keys() {
+		let mut missing = spec.clone();
+		missing.as_object_mut().unwrap().remove(field);
+		invalid_specs.push(missing);
+		let mut wrong = spec.clone();
+		wrong[field] = Value::Null;
+		invalid_specs.push(wrong);
+	}
+	for (path, value) in [
+		("/unexpected", json!(true)),
+		("/max_results", json!(1.5)),
+		("/max_sources", json!(-1)),
+		("/max_input_bytes", json!("8192")),
+		("/enabled", json!("true")),
+		("/embedding", json!({})),
+		("/vector", json!({})),
+	] {
+		let mut wrong = spec.clone();
+		wrong[path.trim_start_matches('/')] = value;
+		invalid_specs.push(wrong);
+	}
+	for section in ["embedding", "vector"] {
+		for field in spec[section].as_object().unwrap().keys() {
+			let mut wrong = spec.clone();
+			wrong[section].as_object_mut().unwrap().remove(field);
+			invalid_specs.push(wrong);
+			let mut wrong = spec.clone();
+			wrong[section][field] = Value::Null;
+			invalid_specs.push(wrong);
+		}
+		for (field, value) in [("unexpected", json!(true)), ("credential_env", json!(7))] {
+			let mut wrong = spec.clone();
+			wrong[section][field] = value;
+			invalid_specs.push(wrong);
+		}
+	}
+	for invalid in invalid_specs {
+		check_rejected(
+			update(
+				&f.store.pool,
+				"semantic_indexes",
+				"spec",
+				Expr::val(invalid),
+			)
+			.await,
+			"semantic_indexes_revision",
+		);
+	}
+	insert_values(
+		&f.store.pool,
+		"semantic_entries",
+		&[
+			("id", uuid_expr(uuid::Uuid::new_v4())),
+			("workspace_id", uuid_expr(workspace.id)),
+			("key", Expr::val("entry").into()),
+			(
+				"source",
+				Expr::val(json!({"kind":"memory","text":"text"})).into(),
+			),
+			("metadata", Expr::val(json!({})).into()),
+			("revision", Expr::val(1).into()),
+			("point_id", uuid_expr(uuid::Uuid::new_v4())),
+			("index_revision", Expr::val(1).into()),
+			("state", Expr::val("PENDING").into()),
+			("created_by", Expr::val("human").into()),
+			("authority", Expr::val(json!({})).into()),
+		],
+	)
+	.await
+	.unwrap();
+	for invalid in [
+		json!({}),
+		json!([]),
+		Value::Null,
+		json!({"kind":"unknown"}),
+		json!({"kind":"memory"}),
+		json!({"kind":"memory","text":7}),
+		json!({"kind":"memory","text":"text","unexpected":true}),
+		json!({"kind":"artifact","id":"invalid"}),
+		json!({"kind":"message","id":7}),
+		json!({"kind":"artifact"}),
+		json!({"kind":"message","id":uuid::Uuid::new_v4(),"text":"extra"}),
+	] {
+		check_rejected(
+			update(
+				&f.store.pool,
+				"semantic_entries",
+				"source",
+				Expr::val(invalid),
+			)
+			.await,
+			"semantic_entries_counters",
+		);
+	}
+	let id = uuid::Uuid::new_v4();
+	for kind in ["artifact", "message"] {
+		for id in [
+			id.to_string(),
+			id.simple().to_string(),
+			id.urn().to_string(),
+			id.braced().to_string(),
+		] {
+			let source = json!({"kind":kind,"id":id});
+			let _: aidash::semantic::Source = serde_json::from_value(source.clone()).unwrap();
+			update(
+				&f.store.pool,
+				"semantic_entries",
+				"source",
+				Expr::val(source),
+			)
+			.await
+			.unwrap();
+		}
+	}
+	cleanup(f, &url, &schema).await;
+}
+
+fn dependencies_update() -> String {
+	Query::update()
+		.table(Alias::new("tasks"))
+		.value(Alias::new("dependencies"), Expr::cust("$2"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+		.to_string(PostgresQueryBuilder)
+}
+fn delete_task() -> String {
+	Query::delete()
+		.from_table(Alias::new("tasks"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+		.to_string(PostgresQueryBuilder)
+}
+fn dependency_error(error: sqlx::Error) {
+	let db = error.as_database_error().unwrap();
+	assert_eq!(db.code().as_deref(), Some("23503"), "{error}");
+	assert_eq!(
+		db.constraint(),
+		Some("tasks_dependencies_target_workspace"),
+		"{error}"
+	);
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn task_dependencies_enforce_existence_ownership_and_reverse_changes() {
+	use migration::MigratorTrait;
+	let (f, url, schema) = setup().await;
+	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
+	let other = f.store.create_workspace("Other", "Goal").await.unwrap();
+	let input = NewTask {
+		title: "Task".into(),
+		description: "Work".into(),
+		requirements: json!({}),
+		dependencies: vec![],
+		parent_id: None,
+	};
+	let task = f
+		.store
+		.create_task(workspace.id, &input, "human", None)
+		.await
+		.unwrap();
+	let target = f
+		.store
+		.create_task(workspace.id, &input, "human", None)
+		.await
+		.unwrap();
+	let foreign = f
+		.store
+		.create_task(other.id, &input, "human", None)
+		.await
+		.unwrap();
+	let query = dependencies_update();
+	for dependency in [uuid::Uuid::new_v4(), foreign.id] {
+		dependency_error(
+			sqlx::query(&query)
+				.bind(task.id)
+				.bind(vec![dependency])
+				.execute(&f.store.pool)
+				.await
+				.unwrap_err(),
+		);
+	}
+	// Bypassing the application on insertion must reject a foreign dependency too.
+	dependency_error(
+		insert_values(
+			&f.store.pool,
+			"tasks",
+			&[
+				("id", uuid_expr(uuid::Uuid::new_v4())),
+				("workspace_id", uuid_expr(workspace.id)),
+				("title", Expr::val("Direct").into()),
+				("created_by", Expr::val("human").into()),
+				("description", Expr::val("Work").into()),
+				(
+					"dependencies",
+					Expr::cust(format!("ARRAY['{}'::uuid]", foreign.id)),
+				),
+			],
+		)
+		.await
+		.unwrap_err(),
+	);
+	// Duplicate array entries are compatible; the projection stores distinct edges.
+	sqlx::query(&query)
+		.bind(task.id)
+		.bind(vec![target.id, target.id])
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	dependency_error(
+		sqlx::query(&delete_task())
+			.bind(target.id)
+			.execute(&f.store.pool)
+			.await
+			.unwrap_err(),
+	);
+	let move_target = Query::update()
+		.table(Alias::new("tasks"))
+		.value(Alias::new("workspace_id"), uuid_expr(other.id))
+		.and_where(Expr::col(Alias::new("id")).eq(uuid_expr(target.id)))
+		.to_string(PostgresQueryBuilder);
+	dependency_error(
+		sqlx::query(&move_target)
+			.execute(&f.store.pool)
+			.await
+			.unwrap_err(),
+	);
+	check_rejected(
+		sqlx::query(
+			&Query::delete()
+				.from_table(Alias::new("task_dependencies"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&f.store.pool)
+		.await
+		.map(|_| ()),
+		"tasks_dependencies_managed",
+	);
+	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());
+	migration::Migrator::down(&db, Some(1)).await.unwrap();
+	migration::Migrator::up(&db, None).await.unwrap();
+	dependency_error(
+		sqlx::query(&delete_task())
+			.bind(target.id)
+			.execute(&f.store.pool)
+			.await
+			.unwrap_err(),
+	);
+	migration::Migrator::down(&db, Some(1)).await.unwrap();
+	sqlx::query(&query)
+		.bind(task.id)
+		.bind(vec![foreign.id])
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	assert!(migration::Migrator::up(&db, None).await.is_err());
+	// Correct invalid history and retry the transactionally rolled-back migration.
+	sqlx::query(&query)
+		.bind(task.id)
+		.bind(vec![target.id])
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	migration::Migrator::up(&db, None).await.unwrap();
+	sqlx::query(&delete_task())
+		.bind(task.id)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	sqlx::query(&delete_task())
+		.bind(target.id)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn concurrent_dependency_changes_cannot_race_target_deletion() {
+	use std::time::Duration;
+	let (f, url, schema) = setup().await;
+	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
+	let input = NewTask {
+		title: "Task".into(),
+		description: "Work".into(),
+		requirements: json!({}),
+		dependencies: vec![],
+		parent_id: None,
+	};
+	let task = f
+		.store
+		.create_task(workspace.id, &input, "human", None)
+		.await
+		.unwrap();
+	for deletion_first in [true, false] {
+		let target = f
+			.store
+			.create_task(workspace.id, &input, "human", None)
+			.await
+			.unwrap();
+		let mut transaction = f.store.pool.begin().await.unwrap();
+		if deletion_first {
+			sqlx::query(&delete_task())
+				.bind(target.id)
+				.execute(&mut *transaction)
+				.await
+				.unwrap();
+		} else {
+			sqlx::query(&dependencies_update())
+				.bind(task.id)
+				.bind(vec![target.id])
+				.execute(&mut *transaction)
+				.await
+				.unwrap();
+		}
+		let pool = f.store.pool.clone();
+		let mut competing = tokio::spawn(async move {
+			if deletion_first {
+				sqlx::query(&dependencies_update())
+					.bind(task.id)
+					.bind(vec![target.id])
+					.execute(&pool)
+					.await
+			} else {
+				sqlx::query(&delete_task())
+					.bind(target.id)
+					.execute(&pool)
+					.await
+			}
+		});
+		assert!(
+			tokio::time::timeout(Duration::from_millis(100), &mut competing)
+				.await
+				.is_err()
+		);
+		transaction.commit().await.unwrap();
+		dependency_error(
+			tokio::time::timeout(Duration::from_secs(5), competing)
+				.await
+				.unwrap()
+				.unwrap()
+				.unwrap_err(),
+		);
+	}
+	cleanup(f, &url, &schema).await;
+}
+
+fn uuid_expr(id: uuid::Uuid) -> SimpleExpr {
+	Expr::cust(format!("'{id}'::uuid"))
 }

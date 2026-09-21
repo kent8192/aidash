@@ -447,12 +447,24 @@ async fn openrouter_models(
 	Ok(Json(crate::openrouter::models(&f.client).await?))
 }
 
-#[utoipa::path(post, path = "/registry", operation_id = "registry_create", request_body = Entry, responses((status = 200, body = Entry)), security(("bearer_auth" = [])))]
+#[utoipa::path(post, path = "/registry", operation_id = "registry_create", request_body = Entry, params(("Idempotency-Key" = Option<Uuid>, Header, description = "Reuse for retries of the same registration")), responses((status = 200, body = Entry)), security(("bearer_auth" = [])))]
 async fn registry_create(
 	State(f): State<Federation>,
-	Json(entry): Json<Entry>,
+	headers: HeaderMap,
+	Json(mut entry): Json<Entry>,
 ) -> Result<Json<Entry>> {
+	let key = headers
+		.get("idempotency-key")
+		.map(|value| {
+			value
+				.to_str()
+				.ok()
+				.and_then(|value| Uuid::parse_str(value).ok())
+				.ok_or_else(|| Error::Invalid("Idempotency-Key must be a UUID".into()))
+		})
+		.transpose()?;
 	let mut tx = f.store.pool.begin().await?;
+	crate::registry::assign_id_in(&mut tx, &mut entry, key).await?;
 	if crate::registry::register_in(&mut tx, &entry, &f.config.node_id).await? {
 		f.store
 			.event(

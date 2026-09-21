@@ -102,6 +102,191 @@ const CHECKS: &[(&str, &str, &str)] = &[
 	),
 ];
 
+// These expression builders only receive static migration identifiers/paths.
+fn object_fields(value: &str, fields: &[&str]) -> String {
+	let keys = fields
+		.iter()
+		.map(|key| format!("'{key}'"))
+		.collect::<Vec<_>>()
+		.join(",");
+	format!(
+		"CASE WHEN jsonb_typeof({value}) = 'object' THEN ({value} - ARRAY[{keys}]::text[]) = '{{}}'::jsonb ELSE false END"
+	)
+}
+fn string_array(value: &str) -> String {
+	format!(
+		"jsonb_typeof({value}) = 'array' AND NOT jsonb_path_exists({value}, 'strict $[*] ? (@.type() != \"string\")', '{{}}'::jsonb, true)"
+	)
+}
+fn optional_string(value: &str) -> String {
+	format!("jsonb_typeof(COALESCE({value}, 'null'::jsonb)) IN ('string', 'null')")
+}
+fn unsigned(value: &str) -> String {
+	format!(
+		"CASE WHEN jsonb_typeof({value}) = 'number' AND ({value})::text ~ '^(0|[1-9][0-9]*)$' THEN ({value})::text::numeric <= 18446744073709551615 ELSE false END"
+	)
+}
+fn entity_ref(value: &str) -> String {
+	// EntityRef allows extra keys, but both identity strings are required.
+	format!(
+		"jsonb_typeof({value}) = 'object' AND jsonb_typeof({value}->'id') = 'string' AND jsonb_typeof({value}->'version') = 'string'"
+	)
+}
+fn checks() -> Vec<(&'static str, &'static str, String)> {
+	let mut checks = Vec::new();
+	for &(table, name, expression) in CHECKS {
+		let mut parts = vec![expression.replace("{whitespace}", WHITESPACE_SQL)];
+		match name {
+			"registry_metadata_shape" => {
+				parts.push(object_fields(
+					"metadata",
+					&[
+						"id",
+						"version",
+						"kind",
+						"name",
+						"description",
+						"capabilities",
+						"tags",
+						"languages",
+						"skills",
+						"schema",
+						"config",
+					],
+				));
+				for field in ["capabilities", "tags", "languages", "skills"] {
+					parts.push(string_array(&format!(
+						"COALESCE(metadata->'{field}', '[]'::jsonb)"
+					)));
+				}
+			}
+			"registry_model_config" => {
+				let config = "(metadata->'config')";
+				let shape = [
+					object_fields(
+						config,
+						&[
+							"provider",
+							"model_id",
+							"endpoint",
+							"credential_env",
+							"reasoning_effort",
+							"context_window",
+							"modalities",
+							"cost",
+						],
+					),
+					format!("{config} ? 'cost'"),
+					optional_string("metadata#>'{config,credential_env}'"),
+					string_array("(metadata#>'{config,modalities}')"),
+					unsigned("(metadata#>'{config,context_window}')"),
+				];
+				// Value is intentionally untyped: cost may contain any JSON value.
+				parts.push(format!("kind <> 'model' OR ({})", shape.join(" AND ")));
+			}
+			"registry_agent_config" => {
+				parts.push(format!(
+					"kind <> 'agent' OR ({})",
+					entity_ref("(metadata#>'{config,model}')")
+				));
+			}
+			"tasks_content" => {
+				parts.push(object_fields(
+					"requirements",
+					&[
+						"kind",
+						"query",
+						"capability",
+						"language",
+						"skill",
+						"tag",
+						"model",
+					],
+				));
+				parts.push("NOT jsonb_path_exists(requirements, 'strict $.* ? (@.type() != \"string\" && @.type() != \"null\")', '{}'::jsonb, true)".into());
+			}
+			"runs_counters" => parts.push(
+				"jsonb_typeof(context) = 'object' AND jsonb_typeof(pending) = 'object'".into(),
+			),
+			"semantic_indexes_revision" => {
+				parts.push(object_fields(
+					"spec",
+					&[
+						"embedding",
+						"vector",
+						"enabled",
+						"auto_context",
+						"max_sources",
+						"max_results",
+						"max_result_tokens",
+						"max_input_bytes",
+					],
+				));
+				for field in ["enabled", "auto_context"] {
+					parts.push(format!("jsonb_typeof(spec->'{field}') = 'boolean'"));
+				}
+				for field in [
+					"max_sources",
+					"max_results",
+					"max_result_tokens",
+					"max_input_bytes",
+				] {
+					parts.push(unsigned(&format!("(spec->'{field}')")));
+				}
+				parts.push(object_fields(
+					"(spec->'embedding')",
+					&[
+						"provider",
+						"endpoint",
+						"credential_env",
+						"model",
+						"model_version",
+						"dimensions",
+					],
+				));
+				parts.push(object_fields(
+					"(spec->'vector')",
+					&["provider", "endpoint", "credential_env"],
+				));
+				for section in ["embedding", "vector"] {
+					for field in ["provider", "endpoint"] {
+						parts.push(format!(
+							"jsonb_typeof(spec#>'{{{section},{field}}}') = 'string'"
+						));
+					}
+					parts.push(optional_string(&format!(
+						"spec#>'{{{section},credential_env}}'"
+					)));
+				}
+				for field in ["model", "model_version"] {
+					parts.push(format!(
+						"jsonb_typeof(spec#>'{{embedding,{field}}}') = 'string'"
+					));
+				}
+				parts.push(unsigned("(spec#>'{embedding,dimensions}')"));
+			}
+			"semantic_entries_counters" => {
+				let uuid =
+					"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+				let memory = object_fields("source", &["kind", "text"]);
+				let reference = object_fields("source", &["kind", "id"]);
+				parts.push(format!("CASE source->>'kind' WHEN 'memory' THEN ({memory} AND jsonb_typeof(source->'text') = 'string') WHEN 'artifact' THEN ({reference} AND jsonb_typeof(source->'id') = 'string' AND source->>'id' ~ '^({uuid}|[0-9a-fA-F]{{32}}|urn:uuid:{uuid}|\\{{{uuid}\\}})$') WHEN 'message' THEN ({reference} AND jsonb_typeof(source->'id') = 'string' AND source->>'id' ~ '^({uuid}|[0-9a-fA-F]{{32}}|urn:uuid:{uuid}|\\{{{uuid}\\}})$') ELSE false END"));
+			}
+			_ => {}
+		}
+		checks.push((
+			table,
+			name,
+			parts
+				.into_iter()
+				.map(|part| format!("({part})"))
+				.collect::<Vec<_>>()
+				.join(" AND "),
+		));
+	}
+	checks
+}
+
 const LINKS: &[(&str, &str, &str, &str)] = &[
 	("tasks", "tasks_parent_workspace", "parent_id", "tasks"),
 	("artifacts", "artifacts_task_workspace", "task_id", "tasks"),
@@ -119,11 +304,112 @@ const LINKS: &[(&str, &str, &str, &str)] = &[
 	),
 ];
 
+async fn create_dependencies(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+	manager
+		.create_table(
+			Table::create()
+				.table(Alias::new("task_dependencies"))
+				.col(ColumnDef::new(Alias::new("task_id")).uuid().not_null())
+				.col(ColumnDef::new(Alias::new("workspace_id")).uuid().not_null())
+				.col(
+					ColumnDef::new(Alias::new("dependency_id"))
+						.uuid()
+						.not_null(),
+				)
+				.primary_key(
+					Index::create()
+						.col(Alias::new("task_id"))
+						.col(Alias::new("dependency_id")),
+				)
+				.foreign_key(
+					ForeignKey::create()
+						.name("tasks_dependencies_source_workspace")
+						.from_tbl(Alias::new("task_dependencies"))
+						.from_col(Alias::new("task_id"))
+						.from_col(Alias::new("workspace_id"))
+						.to_tbl(Alias::new("tasks"))
+						.to_col(Alias::new("id"))
+						.to_col(Alias::new("workspace_id"))
+						.on_delete(ForeignKeyAction::Cascade),
+				)
+				.foreign_key(
+					ForeignKey::create()
+						.name("tasks_dependencies_target_workspace")
+						.from_tbl(Alias::new("task_dependencies"))
+						.from_col(Alias::new("dependency_id"))
+						.from_col(Alias::new("workspace_id"))
+						.to_tbl(Alias::new("tasks"))
+						.to_col(Alias::new("id"))
+						.to_col(Alias::new("workspace_id")),
+				)
+				.to_owned(),
+		)
+		.await?;
+	manager
+		.create_index(
+			Index::create()
+				.name("task_dependencies_target")
+				.table(Alias::new("task_dependencies"))
+				.col(Alias::new("dependency_id"))
+				.col(Alias::new("workspace_id"))
+				.to_owned(),
+		)
+		.await?;
+	// Backfill through SeaQuery; the FKs validate historical array references.
+	let select = Query::select()
+		.distinct()
+		.column(Alias::new("id"))
+		.column(Alias::new("workspace_id"))
+		.expr(Expr::cust("unnest(dependencies)"))
+		.from(Alias::new("tasks"))
+		.to_owned();
+	let insert = Query::insert()
+		.into_table(Alias::new("task_dependencies"))
+		.columns(["task_id", "workspace_id", "dependency_id"].map(Alias::new))
+		.select_from(select)
+		.map_err(|error| DbErr::Custom(error.to_string()))?
+		.to_owned();
+	manager
+		.get_connection()
+		.execute(manager.get_database_backend().build(&insert))
+		.await?;
+	// SeaQuery cannot express PostgreSQL trigger/function DDL. The derived table
+	// keeps the array API intact while real FKs protect concurrent writes/deletes.
+	manager
+		.get_connection()
+		.execute_unprepared(
+			r#"
+CREATE FUNCTION sync_task_dependencies() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        DELETE FROM task_dependencies WHERE task_id = OLD.id;
+    END IF;
+    INSERT INTO task_dependencies(task_id, workspace_id, dependency_id)
+        SELECT DISTINCT NEW.id, NEW.workspace_id, unnest(NEW.dependencies);
+    RETURN NEW;
+END $$;
+CREATE TRIGGER tasks_dependencies_sync AFTER INSERT OR UPDATE OF id, workspace_id, dependencies
+    ON tasks FOR EACH ROW EXECUTE FUNCTION sync_task_dependencies();
+CREATE FUNCTION guard_task_dependencies() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF pg_trigger_depth() < 2 THEN
+        RAISE EXCEPTION 'task_dependencies is maintained by tasks'
+            USING ERRCODE = '23514', CONSTRAINT = 'tasks_dependencies_managed';
+    END IF;
+    RETURN NULL;
+END $$;
+CREATE TRIGGER task_dependencies_guard BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE
+    ON task_dependencies FOR EACH STATEMENT EXECUTE FUNCTION guard_task_dependencies();
+"#,
+		)
+		.await?;
+	Ok(())
+}
+
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
 	async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-		for (table, name, expression) in CHECKS {
-			let expression = expression.replace("{whitespace}", WHITESPACE_SQL);
+		for (table, name, expression) in checks() {
 			// PostgreSQL CHECK alone accepts NULL; missing required JSON keys must fail.
 			manager
 				.get_connection()
@@ -160,10 +446,29 @@ impl MigrationTrait for Migration {
 				)
 				.await?;
 		}
+		create_dependencies(manager).await?;
 		Ok(())
 	}
 
 	async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+		// Matching DDL exception: SeaQuery has no trigger/function drop builders.
+		manager
+			.get_connection()
+			.execute_unprepared(
+				"DROP TRIGGER tasks_dependencies_sync ON tasks; DROP FUNCTION sync_task_dependencies();",
+			)
+			.await?;
+		manager
+			.drop_table(
+				Table::drop()
+					.table(Alias::new("task_dependencies"))
+					.to_owned(),
+			)
+			.await?;
+		manager
+			.get_connection()
+			.execute_unprepared("DROP FUNCTION guard_task_dependencies()")
+			.await?;
 		for (table, name, _, _) in LINKS.iter().rev() {
 			manager
 				.drop_foreign_key(
