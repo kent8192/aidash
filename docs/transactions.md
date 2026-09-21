@@ -30,6 +30,8 @@ Required evidence includes two independent databases; commit and abort; conflict
 
 The Japanese/English Transactions page lists coordinator decisions, participant acknowledgements, deadlines, wait reasons and durable history. Operators can review and submit an immutable manifest, abort an undecided transaction, and grant or revoke peer transaction trust. A committed transaction cannot be aborted. Session identity and transaction controls remain usable after reloading during a visibility reservation; ordinary cached data is hidden while its refresh is unavailable.
 
+An abort atomically competes with commit for the first durable decision. It can be recorded while recovery holds a transition lease for peer I/O; that temporary contention does not discard the operator's request. Repeated aborts retain one decision and audit record. A commit that wins the race returns a conflict to the abort caller. Participant finalization remains asynchronous and must still reach `complete`.
+
 Configure and explicitly trust peers on both nodes before submitting. The coordinator must participate, participant IDs must be unique and sorted, and a new deadline must be within the next hour. Use the exact current revisions for workspace, task and execution changes. Submission returns HTTP 202 after durable admission; it does not mean commit or completion. Poll the transaction details until `complete` is true and inspect its decision.
 
 | Mutation            | Preconditions and outcome                                                           |
@@ -55,6 +57,6 @@ Protocol regressions are in `tests/transactions.rs` and `tests/transaction_proto
 | Deadlines and fairness    | Undecided deadline abort and progress of later local work behind 33 unreachable aborted transactions                                                   |
 | Dashboard                 | Review/submission, partition wait, reload during a reservation, abort, completed commit, stale-revision abort and trust revocation in Japanese/English |
 
-The local full Rust suite passes 119 cases, including 12 two-node transaction protocol cases and the admission case. The two-node PostgreSQL/NATS dashboard acceptance passes all eight browser scenarios. Clippy with warnings denied, API/client generation, the production frontend build and Trunk pass. The complete all-phases OS-process/network failure matrix and the expanded authorization/cluster release gates remain open.
+The Rust regression suite verifies the two-node transaction protocol, admission and abort contention. The PostgreSQL/NATS browser scenario verifies the management workflow alongside the other dashboard features. Clippy with warnings denied, API/client generation, the production frontend build and Trunk are also checked. The complete all-phases OS-process/network failure matrix and the expanded authorization/cluster release gates remain open.
 
 The local locking and isolation mechanics use PostgreSQL's [explicit locking](https://www.postgresql.org/docs/17/explicit-locking.html) and [serializable transactions](https://www.postgresql.org/docs/17/transaction-iso.html). The durable cross-node decision and visibility protocol is implemented by Aidash.

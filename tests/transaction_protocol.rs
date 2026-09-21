@@ -236,6 +236,50 @@ async fn unavailable(node: &Node, workspace: Uuid) {
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL and peer fixture credential"]
+async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lease() {
+    let (a, b, manifest, wa, wb) = pair().await;
+    coordinator::submit(&a.f, &manifest).await.unwrap();
+    steps(&a, manifest.id, 4).await; // Both votes are prepared, still undecided.
+    let mut transition = a.f.store.control_pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('atomic:' || $1,0))")
+        .bind(manifest.id.to_string())
+        .execute(&mut *transition)
+        .await
+        .unwrap();
+    // A recovery step can hold this lease during slow peer I/O. An operator's
+    // durable abort must not be lost merely because that step is in flight.
+    let (status, body) = a
+        .request(
+            reqwest::Method::POST,
+            &format!("/api/transactions/{}/abort", manifest.id),
+            None,
+        )
+        .await;
+    transition.commit().await.unwrap();
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["decision"], "ABORT");
+    assert!(!body["complete"].as_bool().unwrap());
+    assert_eq!(
+        coordinator::abort(&a.f, manifest.id)
+            .await
+            .unwrap()
+            .decision
+            .as_deref(),
+        Some("ABORT")
+    );
+    let final_state = complete(&a, manifest.id).await;
+    assert_eq!(final_state.decision.as_deref(), Some("ABORT"));
+    assert_eq!(a.f.store.workspace(wa).await.unwrap().state, json!({}));
+    assert_eq!(b.f.store.workspace(wb).await.unwrap().state, json!({}));
+    let decisions: i64 = sqlx::query_scalar("SELECT count(*) FROM atomic_history WHERE transaction_id=$1 AND role='coordinator' AND phase IN ('COMMIT','ABORT')")
+        .bind(manifest.id).fetch_one(&a.f.store.control_pool).await.unwrap();
+    assert_eq!(decisions, 1);
+    a.cleanup().await;
+    b.cleanup().await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
 async fn two_node_commit_hides_partial_application_and_releases_only_after_all_apply() {
     let (a, b, manifest, wa, wb) = pair().await;
     coordinator::submit(&a.f, &manifest).await.unwrap();

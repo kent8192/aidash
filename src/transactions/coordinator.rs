@@ -207,14 +207,16 @@ async fn lease(f: &Federation, id: Uuid) -> Result<sqlx::Transaction<'static, sq
     Ok(tx)
 }
 pub async fn abort(f: &Federation, id: Uuid) -> Result<Status> {
-    let lease = lease(f, id).await?;
+    // The conditional decision update arbitrates commit versus abort in SQL.
+    // Do not require the recovery lease: it spans peer I/O, and contention must
+    // not discard an operator's abort. An in-flight transition cannot overwrite
+    // this immutable decision; subsequent recovery finalizes the chosen result.
+    record_decision(f, id, "ABORT", "operator requested abort").await?;
     let existing = status(f, id).await?;
     if existing.decision.as_deref() == Some("COMMIT") {
         return Err(Error::Conflict("commit is irrevocable".into()));
     }
-    record_decision(f, id, "ABORT", "operator requested abort").await?;
-    lease.commit().await?;
-    status(f, id).await
+    Ok(existing)
 }
 
 /// Make one durable protocol transition. Recovery repeats this exact function;
