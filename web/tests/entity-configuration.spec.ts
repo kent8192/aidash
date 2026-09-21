@@ -138,7 +138,10 @@ test("delegates ID generation to the server on registration and retry", async ({
   await dialog
     .getByRole("button", { name: "Register entity", exact: true })
     .click();
-  const firstBody = (await first).postDataJSON();
+  const firstRequest = await first;
+  const firstBody = firstRequest.postDataJSON();
+  const key = firstRequest.headers()["idempotency-key"];
+  expect(key).toMatch(/^[0-9a-f-]{36}$/);
   expect(firstBody.id).toBe("");
   await expect(dialog.getByLabel("Entity ID")).toHaveCount(0);
   await expect(dialog.getByText(/UUID/i)).toHaveCount(0);
@@ -150,8 +153,86 @@ test("delegates ID generation to the server on registration and retry", async ({
   await dialog
     .getByRole("button", { name: "Register entity", exact: true })
     .click();
-  expect((await second).postDataJSON().id).toBe(firstBody.id);
+  const secondRequest = await second;
+  expect(secondRequest.postDataJSON().id).toBe(firstBody.id);
+  expect(secondRequest.headers()["idempotency-key"]).toBe(key);
 });
+
+test("edited registration uses a new request key", async ({ page }) => {
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("skill");
+  await dialog.getByLabel("Instructions").fill("Research.");
+  await page.route("**/api/registry", (route) =>
+    route.fulfill({ status: 503, json: { error: "temporary failure" } }),
+  );
+  const keys: string[] = [];
+  for (const name of ["First skill", "Edited skill"]) {
+    await dialog.getByLabel("Name", { exact: true }).fill(name);
+    const posted = page.waitForRequest(
+      (request) =>
+        request.url().endsWith("/api/registry") && request.method() === "POST",
+    );
+    await dialog
+      .getByRole("button", { name: "Register entity", exact: true })
+      .click();
+    keys.push((await posted).headers()["idempotency-key"]);
+    await expect(page.getByRole("alert")).toContainText("temporary failure");
+  }
+  expect(keys[0]).toBeTruthy();
+  expect(keys[1]).toBeTruthy();
+  expect(keys[0]).not.toBe(keys[1]);
+});
+
+for (const remote of [false, true]) {
+  test(`agent tool uses fixed task arguments (${remote ? "remote" : "local"})`, async ({
+    page,
+  }) => {
+    const dialog = page.getByRole("dialog");
+    await dialog.getByLabel("Entity type").selectOption("tool");
+    await dialog
+      .getByRole("button", { name: "Add argument", exact: true })
+      .click();
+    await dialog.getByLabel("Argument name", { exact: true }).fill("unrelated");
+    await dialog.getByLabel("Connection type").selectOption("agent");
+    await expect(
+      dialog.getByRole("button", { name: "Add argument", exact: true }),
+    ).toHaveCount(0);
+    if (remote) {
+      await dialog
+        .getByLabel("Node", { exact: true })
+        .selectOption("aidash://remote");
+      await dialog
+        .getByLabel("Remote agent ID", { exact: true })
+        .fill("executor");
+    } else {
+      await dialog
+        .getByLabel("Executor agent")
+        .selectOption("coordinator@2.0.0");
+    }
+    const posted = page.waitForRequest(
+      (request) =>
+        request.url().endsWith("/api/registry") && request.method() === "POST",
+    );
+    await dialog
+      .getByRole("button", { name: "Register entity", exact: true })
+      .click();
+    expect((await posted).postDataJSON().schema).toEqual({
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        description: { type: "string" },
+        requirements: { type: "object", additionalProperties: true },
+        dependencies: {
+          type: "array",
+          items: { type: "string", format: "uuid" },
+        },
+        parent_id: { type: ["string", "null"], format: "uuid" },
+      },
+      required: ["title", "description"],
+      additionalProperties: false,
+    });
+  });
+}
 
 test("cluster chooses an exact agent version", async ({ page }) => {
   const dialog = page.getByRole("dialog");

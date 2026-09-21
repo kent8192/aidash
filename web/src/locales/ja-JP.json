@@ -522,6 +522,7 @@
   "toolReplay_idempotent": "同じリクエストキーで安全に再試行可能",
   "toolIdempotency": "リクエストキーを渡す引数名",
   "toolAgent": "実行するAgent",
+  "toolTaskArguments": "Agentの呼び出しにはタスクの入力を使用します。タイトルと説明は必須、要件・依存タスク・親タスクは任意です。",
   "toolUrlArgument": "必須のURL引数を受け取ります。許可したホストだけにアクセスできます。",
   "toolRemoteAgentId": "リモートAgentのID",
   "toolRemoteAgentVersion": "リモートAgentのバージョン"

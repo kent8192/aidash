@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react";
+import { Fragment, useRef, useState } from "react";
 import { EntityConfiguration } from "./entity-configuration";
 import { OpenRouterModelPicker } from "./openrouter-model-picker";
 import { useForm } from "@tanstack/react-form";
@@ -257,6 +257,7 @@ export function EntityForm({
 }) {
   const { t } = useI18n();
   const [kind, setKind] = useState(initial);
+  const registration = useRef<{ body: string; key: string } | null>(null);
   const [defaultName] = useState(() => {
     const adjectives = [
       "calm",
@@ -354,7 +355,14 @@ export function EntityForm({
             schema: kind === "tool" ? JSON.parse(s("schema")) : {},
             config,
           };
-          void submit(() => registryCreate(entry));
+          const body = JSON.stringify(entry);
+          if (registration.current?.body !== body) {
+            registration.current = { body, key: crypto.randomUUID() };
+          }
+          const key = registration.current.key;
+          void submit(() =>
+            registryCreate(entry, { headers: { "Idempotency-Key": key } }),
+          );
         } catch (err) {
           setError(String(err));
         }

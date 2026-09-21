@@ -405,7 +405,33 @@ export function EntityConfiguration({
               )}
             </>
           )}
-          {transport === "native" && operation === "http_get" ? (
+          {transport === "agent" ? (
+            <>
+              <p className="muted">{t("toolTaskArguments")}</p>
+              <input
+                type="hidden"
+                name="schema"
+                value={JSON.stringify({
+                  type: "object",
+                  properties: {
+                    title: { type: "string" },
+                    description: { type: "string" },
+                    requirements: {
+                      type: "object",
+                      additionalProperties: true,
+                    },
+                    dependencies: {
+                      type: "array",
+                      items: { type: "string", format: "uuid" },
+                    },
+                    parent_id: { type: ["string", "null"], format: "uuid" },
+                  },
+                  required: ["title", "description"],
+                  additionalProperties: false,
+                })}
+              />
+            </>
+          ) : transport === "native" && operation === "http_get" ? (
             <>
               <p className="muted">{t("toolUrlArgument")}</p>
               <input

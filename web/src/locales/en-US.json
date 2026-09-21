@@ -522,6 +522,7 @@
   "toolReplay_idempotent": "Safe to repeat with the same request key",
   "toolIdempotency": "Request key argument",
   "toolAgent": "Executor agent",
+  "toolTaskArguments": "Agent calls use task inputs: title and description are required; requirements, dependencies and a parent task are optional.",
   "toolUrlArgument": "The tool accepts a required URL argument. Only the allowed hosts can be requested.",
   "toolRemoteAgentId": "Remote agent ID",
   "toolRemoteAgentVersion": "Remote agent version"
