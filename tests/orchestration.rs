@@ -23,7 +23,7 @@ async fn simultaneous_migration_startup_preserves_one_complete_schema() {
             .await
             .unwrap()
             .len(),
-        19
+        migration::Migrator::migrations().len()
     );
     f.store
         .create_workspace("Replica startup", "All migrations applied once")
