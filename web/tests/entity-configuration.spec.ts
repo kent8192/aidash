@@ -298,6 +298,9 @@ test("MCP settings and nested arguments serialize without JSON input", async ({
   await dialog.getByLabel("Request key argument").fill("request_id");
   await dialog.getByLabel("Use configured credentials").check();
   await dialog
+    .getByLabel("Credential reference", { exact: true })
+    .fill("AIDASH_SECRET_SEARCH");
+  await dialog
     .getByRole("button", { name: "Add argument", exact: true })
     .click();
   await dialog.getByLabel("Argument name", { exact: true }).fill("filters");
@@ -332,7 +335,7 @@ test("MCP settings and nested arguments serialize without JSON input", async ({
       transport: "mcp",
       endpoint: "https://example.com/mcp",
       tool_name: "search",
-      credential_env: "AIDASH_SECRET_TOOL",
+      credential_env: "AIDASH_SECRET_SEARCH",
       replay: "idempotent",
       idempotency_argument: "request_id",
     },
@@ -412,6 +415,50 @@ test("HTTP tools validate duplicate argument names and support typed lists", asy
     schema: {
       properties: { tags: { type: "array", items: { type: "string" } } },
       required: ["tags"],
+    },
+  });
+});
+
+test("HTTP arguments preserve JSON Schema constraints", async ({ page }) => {
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("tool");
+  await dialog.getByLabel("Connection type").selectOption("http");
+  await dialog
+    .getByLabel("Endpoint", { exact: true })
+    .fill("https://example.com/tool");
+  await dialog
+    .getByRole("button", { name: "Add argument", exact: true })
+    .click();
+  await dialog.getByLabel("Argument name", { exact: true }).fill("status");
+  await dialog
+    .getByLabel("Allowed values", { exact: true })
+    .fill("ready, done");
+  await dialog.getByLabel("Pattern", { exact: true }).fill("^[a-z]+$");
+  await dialog
+    .getByRole("button", { name: "Add argument", exact: true })
+    .click();
+  await dialog
+    .getByLabel("Argument name", { exact: true })
+    .nth(1)
+    .fill("limit");
+  await dialog.getByLabel("Value type").nth(1).selectOption("integer");
+  await dialog.getByLabel("Minimum", { exact: true }).fill("1");
+  await dialog.getByLabel("Maximum", { exact: true }).fill("100");
+  const posted = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  expect((await posted).postDataJSON().schema).toMatchObject({
+    properties: {
+      status: {
+        type: "string",
+        enum: ["ready", "done"],
+        pattern: "^[a-z]+$",
+      },
+      limit: { type: "integer", minimum: 1, maximum: 100 },
     },
   });
 });

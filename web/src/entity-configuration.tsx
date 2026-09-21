@@ -7,6 +7,10 @@ type Argument = {
   name: string;
   type: string;
   description: string;
+  enumValues: string;
+  pattern: string;
+  minimum: string;
+  maximum: string;
   required: boolean;
   children: Argument[];
   items: string;
@@ -23,6 +27,34 @@ function argumentSchema(fields: Argument[]): Record<string, unknown> {
             ? argumentSchema(field.children)
             : {
                 type: field.type,
+                ...(field.enumValues.trim()
+                  ? {
+                      enum: field.enumValues
+                        .split(",")
+                        .map((value) => value.trim())
+                        .filter(Boolean)
+                        .map((value) => {
+                          if (field.type === "boolean") return value === "true";
+                          if (field.type === "number") return Number(value);
+                          if (field.type === "integer")
+                            return Number.parseInt(value, 10);
+                          return value;
+                        }),
+                    }
+                  : {}),
+                ...(field.type === "string" && field.pattern.trim()
+                  ? { pattern: field.pattern.trim() }
+                  : {}),
+                ...(field.type === "number" || field.type === "integer"
+                  ? {
+                      ...(field.minimum.trim()
+                        ? { minimum: Number(field.minimum) }
+                        : {}),
+                      ...(field.maximum.trim()
+                        ? { maximum: Number(field.maximum) }
+                        : {}),
+                    }
+                  : {}),
                 ...(field.type === "array"
                   ? {
                       items:
@@ -106,6 +138,49 @@ function Arguments({
               }
             />
           </Field>
+          {["string", "number", "integer", "boolean"].includes(field.type) && (
+            <Field label={t("toolArgumentEnum")}>
+              <input
+                value={field.enumValues}
+                placeholder={t("toolArgumentEnumPlaceholder")}
+                onChange={(event) =>
+                  update(index, { enumValues: event.target.value })
+                }
+              />
+            </Field>
+          )}
+          {field.type === "string" && (
+            <Field label={t("toolArgumentPattern")}>
+              <input
+                value={field.pattern}
+                onChange={(event) =>
+                  update(index, { pattern: event.target.value })
+                }
+              />
+            </Field>
+          )}
+          {(field.type === "number" || field.type === "integer") && (
+            <div className="two-columns">
+              <Field label={t("toolArgumentMinimum")}>
+                <input
+                  type="number"
+                  value={field.minimum}
+                  onChange={(event) =>
+                    update(index, { minimum: event.target.value })
+                  }
+                />
+              </Field>
+              <Field label={t("toolArgumentMaximum")}>
+                <input
+                  type="number"
+                  value={field.maximum}
+                  onChange={(event) =>
+                    update(index, { maximum: event.target.value })
+                  }
+                />
+              </Field>
+            </div>
+          )}
           <label className="check">
             <input
               type="checkbox"
@@ -159,6 +234,10 @@ function Arguments({
               name: "",
               type: "string",
               description: "",
+              enumValues: "",
+              pattern: "",
+              minimum: "",
+              maximum: "",
               required: true,
               children: [],
               items: "string",
@@ -184,6 +263,7 @@ export function EntityConfiguration({
   const [operation, setOperation] = useState("echo");
   const [endpoint, setEndpoint] = useState("");
   const [authenticated, setAuthenticated] = useState(false);
+  const [credentialEnv, setCredentialEnv] = useState("AIDASH_SECRET_TOOL");
   const [replay, setReplay] = useState("unsafe");
   const [toolName, setToolName] = useState("");
   const [idempotency, setIdempotency] = useState("");
@@ -231,7 +311,7 @@ export function EntityConfiguration({
               : {
                   transport,
                   endpoint,
-                  credential_env: authenticated ? "AIDASH_SECRET_TOOL" : null,
+                  credential_env: authenticated ? credentialEnv : null,
                   replay,
                   ...(transport === "mcp"
                     ? {
@@ -331,6 +411,15 @@ export function EntityConfiguration({
                 />
                 {t("configuredCredentials")}
               </label>
+              {authenticated && (
+                <Field label={t("credentials")}>
+                  <input
+                    required
+                    value={credentialEnv}
+                    onChange={(event) => setCredentialEnv(event.target.value)}
+                  />
+                </Field>
+              )}
               {transport === "mcp" && (
                 <Field label={t("toolRemoteName")}>
                   <input
