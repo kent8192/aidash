@@ -1,0 +1,78 @@
+[workspace]
+members = ["migration"]
+resolver = "3"
+
+[workspace.lints.clippy]
+# RFC 430 naming convention audit (issue #1271):
+# `module_name_repetitions` fires for types whose names include their containing module name
+# (e.g., `endpoint::EndpointConfig`). These patterns are intentional in this codebase:
+# they provide clarity when types are imported into other modules without module prefix,
+# and follow common Rust library conventions. Reviewed and allowed workspace-wide.
+module_name_repetitions = "allow"
+
+[lints]
+workspace = true
+
+[package]
+name = "aidash"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+publish = false
+
+[dependencies]
+migration = { path = "migration" }
+async-trait = "0.1.89"
+async-nats = "0.46"
+async-stream = "0.3"
+axum = { version = "0.8", features = ["json", "query", "macros"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
+jsonschema = { version = "0.33", default-features = false }
+reqwest = { version = "0.13", default-features = false, features = [
+  "json",
+  "rustls",
+] }
+rmcp = { version = "=1.2.0", default-features = false, features = [
+  "client",
+  "transport-streamable-http-client-reqwest",
+  "reqwest",
+] }
+sea-orm = { version = "1.1.19", default-features = false, features = [
+  "macros",
+  "sqlx-postgres",
+  "runtime-tokio-rustls",
+  "with-json",
+] }
+sse-stream = "0.2.6"
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8.6", default-features = false, features = [
+  "runtime-tokio",
+  "tls-rustls-ring",
+  "postgres",
+  "migrate",
+  "macros",
+  "json",
+  "uuid",
+  "chrono",
+] }
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+utoipa = { version = "5.5.0", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-axum = "0.2.0"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+[profile.dev]
+debug = 1
+
+[profile.release]
+lto = "thin"

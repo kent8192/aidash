@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": [
+    "image",
+    "node",
+    "existingSecret",
+    "server",
+    "worker",
+    "terminationGracePeriodSeconds"
+  ],
+  "properties": {
+    "node": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^aidash://[A-Za-z0-9-]{1,100}$" },
+        "endpoint": { "type": "string" }
+      }
+    },
+    "existingSecret": { "type": "string", "minLength": 1 },
+    "image": {
+      "type": "object",
+      "required": ["repository", "tag", "pullPolicy"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string", "minLength": 1 },
+        "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "server": { "$ref": "#/definitions/role" },
+    "worker": { "$ref": "#/definitions/role" },
+    "terminationGracePeriodSeconds": { "type": "integer", "minimum": 25 },
+    "observability": {
+      "type": "object",
+      "properties": { "enabled": { "type": "boolean" } }
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["ClusterIP", "LoadBalancer", "NodePort"] },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    }
+  },
+  "definitions": {
+    "role": {
+      "type": "object",
+      "required": ["replicas", "resources"],
+      "properties": {
+        "replicas": { "type": "integer", "minimum": 0 },
+        "resources": { "type": "object", "required": ["requests", "limits"] }
+      }
+    }
+  }
+}

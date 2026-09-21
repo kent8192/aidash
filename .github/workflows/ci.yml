@@ -1,0 +1,143 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main, "develop/**"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  RUSTC_WRAPPER: ""
+  CARGO_TERM_COLOR: always
+jobs:
+  lint:
+    name: Trunk
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --prefix web
+      - run: rustup show active-toolchain
+      - uses: trunk-io/trunk-action/setup@e1234e67a86010d61ddac8d8ebf4b783e2ffd2fa # v2.0.0
+      - name: Check formatting and lint
+        run: '"$TRUNK_PATH" check --all --no-fix --no-progress --print-failures'
+  rust-tests:
+    name: Rust tests and coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain
+      - name: Install coverage tool
+        run: cargo install cargo-llvm-cov --version 0.8.7 --locked
+      - name: Test with disposable PostgreSQL and collect LCOV
+        run: scripts/test-rust.sh --coverage
+      - name: Upload Rust coverage to Codecov
+        uses: codecov/codecov-action@04b047e8bb82a0c002c8312c1c880fbc6a999d45 # v5
+        with:
+          use_oidc: true
+          files: coverage/rust.lcov
+          flags: rust
+          disable_search: true
+          fail_ci_if_error: true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: rust-coverage
+          path: coverage/rust.lcov
+          if-no-files-found: error
+      - name: Stop verification services
+        if: always()
+        run: docker compose down
+  acceptance:
+    name: Federation and browser tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: rustup show active-toolchain
+      - name: Test federation, recovery and Chromium dashboard
+        run: scripts/test-acceptance.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: acceptance-evidence
+          include-hidden-files: true
+          path: |
+            .ignore/acceptance/
+            .ignore/dashboard-*.png
+            web/test-results/
+      - name: Stop verification services
+        if: always()
+        run: docker compose down
+  orchestration:
+    name: Cluster recovery (${{ matrix.distribution }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        distribution: [kubernetes, k3s]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --ignore-scripts --prefix web
+      - run: npm exec --prefix web -- playwright install --with-deps chromium
+      - name: Test Pod recovery, scaling, rolling updates and dashboard
+        run: bash scripts/test-cluster.sh '${{ matrix.distribution }}'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: cluster-evidence-${{ matrix.distribution }}
+          include-hidden-files: true
+          path: |
+            .ignore/platform/aidash-ops-*/
+            .ignore/dashboard-deployment-cluster-*.png
+  success:
+    name: CI Success
+    needs: [lint, rust-tests, acceptance, orchestration]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every prerequisite job to pass
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          failed = {name: job["result"] for name, job in needs.items() if job["result"] != "success"}
+          if failed:
+              raise SystemExit(f"Required CI jobs did not succeed: {failed}")
+          print("All required CI jobs passed.")
+          PY

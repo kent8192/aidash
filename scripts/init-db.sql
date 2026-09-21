@@ -1,0 +1,2 @@
+CREATE DATABASE aidash_b;
+CREATE DATABASE aidash_test;

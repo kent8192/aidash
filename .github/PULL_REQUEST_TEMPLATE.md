@@ -70,9 +70,7 @@ Related to: #
 
 <!-- If this is a breaking change, describe the impact and migration path. -->
 
--
-
-**Migration Guide:**
+- **Migration Guide:**
 
 <!-- If applicable, provide a step-by-step migration guide for users. -->
 
@@ -103,6 +101,7 @@ Related to: #
 - [ ] I have added tests that prove my fix is effective or that my feature works
 - [ ] New and existing unit tests pass locally with my changes
 - [ ] I have tested with all affected database backends (if applicable)
+
 ## Related Issues
 
 <!-- List any related issues, PRs, or external references. -->
@@ -114,6 +113,7 @@ Related to: #
 <!-- Please apply appropriate labels to help with triage and organization. -->
 
 ### Type Label (select one)
+
 - [ ] `bug` - Bug fix
 - [ ] `enhancement` - New feature or improvement
 - [ ] `documentation` - Documentation update
@@ -122,9 +122,11 @@ Related to: #
 - [ ] `code-quality` - Code quality improvements
 
 ### Additional Labels (apply alongside type label when applicable)
+
 - [ ] `breaking-change` - Breaking change (**MUST** match "Yes" in Breaking Change Assessment above)
 
 ### Scope Label (select all that apply)
+
 - [ ] `database` - Database layer, schema, migrations
 - [ ] `auth` - Authentication, authorization, sessions
 - [ ] `orm` - ORM layer, models, query builder
@@ -139,7 +141,9 @@ Related to: #
 - [ ] `ci-cd` - CI/CD workflow changes
 
 ### Priority Label (for maintainers)
+
 <!-- Maintainers will apply priority labels during triage -->
+
 - [ ] `critical` - Blocks release or major functionality
 - [ ] `high` - Important fix or feature
 - [ ] `medium` - Normal priority

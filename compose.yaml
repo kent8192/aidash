@@ -1,0 +1,37 @@
+name: ${COMPOSE_PROJECT_NAME:-aidash-dev}
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: aidash
+      POSTGRES_PASSWORD: aidash-local
+      POSTGRES_DB: aidash_a
+    ports:
+      - "127.0.0.1:${AIDASH_POSTGRES_PORT:-54370}:5432"
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-databases.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aidash -d aidash_a"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  qdrant:
+    image: qdrant/qdrant:v1.19.1
+    environment:
+      QDRANT__SERVICE__API_KEY: ${AIDASH_SECRET_TEST_QDRANT:-local-semantic-vector-fixture-key-0123456789}
+    ports:
+      - "127.0.0.1:${AIDASH_QDRANT_PORT:-63370}:6333"
+    volumes:
+      - qdrant:/qdrant/storage
+  nats:
+    image: nats:2.12-alpine
+    command: ["-js", "-sd", "/data"]
+    ports:
+      - "127.0.0.1:${AIDASH_NATS_PORT:-42270}:4222"
+    volumes:
+      - nats:/data
+volumes:
+  postgres:
+  nats:
+  qdrant:

@@ -2,3 +2,5 @@
 - Keep verification proportional to the change; expand it only for new changes, failures, or unresolved concerns.
 - Report the outcome, verification evidence, and remaining blockers concisely.
 - `main` tracks the stable release; `develop/x.y.z` tracks version `x.y.z` under development.
+- Use Rust 2024 conventions and `module.rs` with a sibling `module/` directory instead of `module/mod.rs`.
+- Use SeaORM or SeaQuery for all database queries and migrations. Raw SQL is allowed only for DDL that SeaQuery cannot express; document each such exception.

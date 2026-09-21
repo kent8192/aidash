@@ -1,0 +1,31 @@
+image:
+  repository: aidash
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+node:
+  id: ""
+  # Stable reachable URL; defaults to this release's in-cluster Service.
+  endpoint: ""
+# Provision separately: DATABASE_URL, NATS_URL, AIDASH_API_TOKEN and provider/
+# pair-specific AIDASH_SECRET_* variables. No secret values belong in Helm values.
+existingSecret: ""
+server:
+  replicas: 1
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: "2", memory: 1Gi }
+worker:
+  replicas: 1
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: "2", memory: 1Gi }
+service:
+  type: ClusterIP
+  port: 8080
+observability:
+  enabled: true
+terminationGracePeriodSeconds: 30
+nodeSelector: {}
+tolerations: []
+affinity: {}

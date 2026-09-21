@@ -184,3 +184,22 @@ infra/github-runners/lambda-src/*/coverage/
 docs/specs/
 
 **/reviews/
+
+# Aidash application artifacts
+!Cargo.lock
+web/node_modules/
+web/dist/
+web/test-results/
+web/playwright-report/
+
+web/*.tsbuildinfo
+
+# Generated contracts, clients, and coverage reports
+/openapi/aidash.json
+/web/src/generated/
+/coverage/
+*.profraw
+*.profdata
+
+__pycache__/
+*.pyc
