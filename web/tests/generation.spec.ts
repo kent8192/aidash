@@ -214,7 +214,7 @@ test("generation dashboard manages policy, approval, completion and retained his
       .getByLabel("モデル", { exact: true })
       .selectOption(`${id}@1.0.0`);
     await dialog
-      .getByLabel("指示", { exact: true })
+      .getByLabel("追加の指示（任意）", { exact: true })
       .fill("Complete the task using the approved model.");
     await dialog
       .getByLabel("権限属性（JSON）", { exact: true })

@@ -1,3 +1,5 @@
+import { AgentDocuments } from "./agent-documents";
+import type { ReferenceDocument } from "./generated/models";
 import { Fragment, useRef, useState } from "react";
 import { EntityConfiguration } from "./entity-configuration";
 import { OpenRouterModelPicker } from "./openrouter-model-picker";
@@ -9,6 +11,7 @@ import {
   workspaceCreate,
   taskCreate,
   registryCreate,
+  personalAgentCreate,
   peerCreate,
   taskDelegate,
   packagePublish,
@@ -255,7 +258,7 @@ export function EntityForm({
   submit: Submit;
   initial?: string;
 }) {
-  const { t } = useI18n();
+  const { t, local } = useI18n();
   const [kind, setKind] = useState(initial);
   const registration = useRef<{ body: string; key: string } | null>(null);
   const [modelName, setModelName] = useState("");
@@ -288,6 +291,8 @@ export function EntityForm({
   const models = data.registry.filter((e) => e.kind === "model");
   const toolEntries = data.registry.filter((e) => e.kind === "tool");
   const skillEntries = data.registry.filter((e) => e.kind === "skill");
+  const [documents, setDocuments] = useState<ReferenceDocument[]>([]);
+  const [readingDocuments, setReadingDocuments] = useState(false);
   return (
     <form
       onSubmit={(e) => {
@@ -357,13 +362,26 @@ export function EntityForm({
             schema: kind === "tool" ? JSON.parse(s("schema")) : {},
             config,
           };
-          const body = JSON.stringify(entry);
+          if (
+            kind === "agent" &&
+            !s("instructions").trim() &&
+            !d.getAll("skills").length
+          )
+            throw new Error(t("agentNeedsSkill"));
+          if (readingDocuments) return;
+          const personal = kind === "agent" && documents.length > 0;
+          const body = JSON.stringify(personal ? { entry, documents } : entry);
           if (registration.current?.body !== body) {
             registration.current = { body, key: crypto.randomUUID() };
           }
           const key = registration.current.key;
           void submit(() =>
-            registryCreate(entry, { headers: { "Idempotency-Key": key } }),
+            personal
+              ? personalAgentCreate(
+                  { entry, documents },
+                  { headers: { "Idempotency-Key": key } },
+                )
+              : registryCreate(entry, { headers: { "Idempotency-Key": key } }),
           );
         } catch (err) {
           setError(String(err));
@@ -450,9 +468,35 @@ export function EntityForm({
               </select>
             </Field>
             {models.length === 0 && <p className="notice">{t("noModel")}</p>}
-            <Field label={t("instructions")}>
-              <textarea name="instructions" required rows={5} />
+            <fieldset>
+              <legend>{t("skill")}</legend>
+              <p className="muted">{t("agentSkillsHelp")}</p>
+              {skillEntries.length === 0 && (
+                <p className="notice">{t("agentNoSkills")}</p>
+              )}
+              {skillEntries.map((e) => (
+                <label className="check" key={`${e.id}@${e.version}`}>
+                  <input
+                    type="checkbox"
+                    name="skills"
+                    value={`${e.id}@${e.version}`}
+                  />
+                  {local(e.name) || e.id} · {e.version}
+                </label>
+              ))}
+            </fieldset>
+            <Field label={t("additionalInstructions")}>
+              <textarea
+                name="instructions"
+                rows={3}
+                placeholder={t("additionalInstructionsHelp")}
+              />
             </Field>
+            <AgentDocuments
+              documents={documents}
+              change={setDocuments}
+              busyChange={setReadingDocuments}
+            />
             <Field label={t("cluster")}>
               <select name="cluster" defaultValue="">
                 <option value="">{t("noAssignment")}</option>
@@ -475,19 +519,6 @@ export function EntityForm({
                   <input
                     type="checkbox"
                     name="tools"
-                    value={`${e.id}@${e.version}`}
-                  />
-                  {e.id} · {e.version}
-                </label>
-              ))}
-            </fieldset>
-            <fieldset>
-              <legend>{t("skill")}</legend>
-              {skillEntries.map((e) => (
-                <label className="check" key={`${e.id}@${e.version}`}>
-                  <input
-                    type="checkbox"
-                    name="skills"
                     value={`${e.id}@${e.version}`}
                   />
                   {e.id} · {e.version}
@@ -591,7 +622,9 @@ export function EntityForm({
           {error}
         </p>
       )}
-      <button className="primary">{t("register")}</button>
+      <button className="primary" disabled={readingDocuments}>
+        {t("register")}
+      </button>
     </form>
   );
 }

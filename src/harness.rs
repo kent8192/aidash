@@ -304,7 +304,7 @@ impl Harness {
 					store.save_run(run, token, "run.recovered").await?;
 					return Ok(());
 				}
-				let mut instructions = crate::context::agent_instructions(&agent.instructions);
+				let mut instructions = crate::context::agent_instructions("");
 				for skill in &agent.skills {
 					let skill = self
 						.federation
@@ -316,6 +316,10 @@ impl Harness {
 						instructions.push_str(text);
 					}
 				}
+				instructions.push_str("\nAdditional user instructions:\n");
+				instructions.push_str(&agent.instructions);
+				let documents =
+					crate::knowledge::load(&self.federation.registry.db, &entry).await?;
 				let mut context: Context = serde_json::from_value(run.context.clone())?;
 				let mut pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":snapshot,"memory":store.memory(run).await?,"agent_state":{"phase":run.phase,"step":run.step}});
 				let specifications = tools
@@ -326,7 +330,17 @@ impl Harness {
 					+ context::estimated_tokens(&json!(specifications).to_string());
 				let output = (window / 8).clamp(256, 4096) as u32;
 				let budget = window.saturating_sub(overhead + output as usize + 512);
-				context::bound_snapshot(&mut pinned, budget.saturating_sub(512) / 2)?;
+				let document_cost = context::estimated_tokens(&documents.to_string());
+				if agent.knowledge_digest.is_some() && document_cost + 2048 > budget {
+					return Err(Error::Invalid(
+						"reference documents exceed the model context budget".into(),
+					));
+				}
+				context::bound_snapshot(
+					&mut pinned,
+					budget.saturating_sub(document_cost + 512) / 2,
+				)?;
+				pinned["reference_documents"] = documents;
 				let semantic_budget =
 					budget.saturating_sub(context::estimated_tokens(&pinned.to_string()) + 512);
 				if let Some(guard) = guard {

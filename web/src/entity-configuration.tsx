@@ -1,3 +1,4 @@
+import { SkillImport } from "./skill-import";
 import { useState } from "react";
 import type { State } from "./types";
 import { Field, useI18n } from "./ui";
@@ -345,14 +346,17 @@ export function EntityConfiguration({
     <>
       <input type="hidden" name="config" value={JSON.stringify(config)} />
       {kind === "skill" && (
-        <Field label={t("instructions")}>
-          <textarea
-            required
-            rows={6}
-            value={instructions}
-            onChange={(event) => setInstructions(event.target.value)}
-          />
-        </Field>
+        <>
+          <SkillImport change={setInstructions} />
+          <Field label={t("instructions")}>
+            <textarea
+              required
+              rows={6}
+              value={instructions}
+              onChange={(event) => setInstructions(event.target.value)}
+            />
+          </Field>
+        </>
       )}
       {kind === "cluster" && agentSelect}
       {kind === "node" && <p className="muted">{t("nodeNoConfiguration")}</p>}

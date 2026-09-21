@@ -22,3 +22,5 @@ pub use error::{Error, Result};
 pub mod api_schema;
 
 pub(crate) mod response;
+
+pub mod knowledge;

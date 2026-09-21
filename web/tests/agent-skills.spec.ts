@@ -1,6 +1,6 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
-test("registers an agent with selected versioned skills", async ({ page }) => {
+async function setup(page: Page) {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(() => {
@@ -66,14 +66,24 @@ test("registers an agent with selected versioned skills", async ({ page }) => {
     } else if (path === "/api/discover") {
       await route.fulfill({ json: { agents: [], errors: [] } });
     } else if (
-      path === "/api/registry" &&
+      (path === "/api/registry" || path === "/api/agents/personal") &&
       route.request().method() === "POST"
     ) {
-      await route.fulfill({ json: route.request().postDataJSON() });
+      await route.fulfill({
+        json:
+          path === "/api/agents/personal"
+            ? route.request().postDataJSON().entry
+            : route.request().postDataJSON(),
+      });
     } else {
       await route.fulfill({ json: [] });
     }
   });
+  return errors;
+}
+
+test("registers an agent with selected versioned skills", async ({ page }) => {
+  const errors = await setup(page);
   await page.goto("/registry");
   await page
     .getByRole("button", { name: "エンティティを登録", exact: true })
@@ -84,7 +94,10 @@ test("registers an agent with selected versioned skills", async ({ page }) => {
   await dialog.getByLabel("名前").fill("Skilled agent");
   await dialog.getByLabel("説明").fill("Uses selected skill versions");
   await dialog.locator('[name="model"]').selectOption("model@1.0.0");
-  await dialog.locator('[name="instructions"]').fill("Use the selected skill");
+  await expect(dialog.locator('[name="instructions"]')).not.toHaveAttribute(
+    "required",
+    "",
+  );
   await dialog.locator('[name="skills"][value="research-skill@2.0.0"]').check();
   await expect(
     dialog.locator('[name="skills"][value="research-skill@1.0.0"]'),
@@ -100,7 +113,106 @@ test("registers an agent with selected versioned skills", async ({ page }) => {
   expect((await submitted).postDataJSON().config).toMatchObject({
     model: { id: "model", version: "1.0.0" },
     skills: [{ id: "research-skill", version: "2.0.0" }],
+    instructions: "",
   });
   await expect(dialog).not.toBeVisible();
   expect(errors).toEqual([]);
+});
+
+function pdfFixture(): Buffer {
+  const stream = "BT /F1 12 Tf 72 720 Td (Private PDF reference) Tj ET";
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 6\n0000000000 65535 f \n${offsets
+    .slice(1)
+    .map((n) => `${String(n).padStart(10, "0")} 00000 n \n`)
+    .join("")}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  return Buffer.from(pdf);
+}
+
+test("uploads real PDF and Excel reference text separately from registry metadata", async ({
+  page,
+}) => {
+  const errors = await setup(page);
+  const ExcelJS = (await import("exceljs")).default;
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Budget");
+  sheet.getCell("A1").value = "Private Excel reference";
+  sheet.getCell("B2").value = 1234;
+  await page.goto("/registry");
+  await page
+    .getByRole("button", { name: "エンティティを登録", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("エンティティの種類").selectOption("agent");
+  await dialog.getByLabel("名前").fill("Personal agent");
+  await dialog.getByLabel("説明").fill("Personal documents");
+  await dialog.locator('[name="model"]').selectOption("model@1.0.0");
+  await dialog.locator('[name="skills"][value="research-skill@2.0.0"]').check();
+  await dialog.getByLabel("参考資料を追加").setInputFiles([
+    { name: "private.pdf", mimeType: "application/pdf", buffer: pdfFixture() },
+    {
+      name: "budget.xlsx",
+      mimeType:
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      buffer: Buffer.from(await workbook.xlsx.writeBuffer()),
+    },
+  ]);
+  await expect(dialog.getByText("private.pdf", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("budget.xlsx", { exact: true })).toBeVisible();
+  await dialog.getByText("private.pdf", { exact: true }).click();
+  await expect(dialog.getByText(/Private PDF reference/)).toBeVisible();
+  const sent = page.waitForRequest(
+    (r) => new URL(r.url()).pathname === "/api/agents/personal",
+  );
+  await dialog
+    .getByRole("button", { name: "エンティティを登録", exact: true })
+    .click();
+  const input = (await sent).postDataJSON();
+  expect(input.documents).toHaveLength(2);
+  expect(input.documents[0].text).toContain("Private PDF reference");
+  expect(input.documents[1].text).toContain("[Sheet: Budget]");
+  expect(input.documents[1].text).toContain("B2: 1234");
+  expect(JSON.stringify(input.entry)).not.toContain("Private Excel reference");
+  await expect(dialog).not.toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("imports a published SKILL.md and rejects malformed frontmatter", async ({
+  page,
+}) => {
+  await setup(page);
+  await page.goto("/registry");
+  await page
+    .getByRole("button", { name: "エンティティを登録", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("エンティティの種類").selectOption("skill");
+  await dialog.getByLabel("SKILL.md", { exact: true }).setInputFiles({
+    name: "SKILL.md",
+    mimeType: "text/markdown",
+    buffer: Buffer.from("---\nname: Invalid Name\n---\nInstructions"),
+  });
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  const skill =
+    "---\nname: research\ndescription: Research primary sources\nlicense: MIT\n---\nCheck evidence before drawing conclusions.\n";
+  await dialog.getByLabel("SKILL.md", { exact: true }).setInputFiles({
+    name: "SKILL.md",
+    mimeType: "text/markdown",
+    buffer: Buffer.from(skill),
+  });
+  await expect(dialog.getByLabel("指示", { exact: true })).toHaveValue(skill);
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
 });

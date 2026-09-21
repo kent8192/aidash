@@ -67,7 +67,11 @@ pub struct EntityRef {
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
 	pub model: EntityRef,
+	#[serde(default)]
 	pub instructions: String,
+	/// Digest of private, node-local reference documents; never embeds their contents.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub knowledge_digest: Option<String>,
 	#[serde(default)]
 	pub tools: Vec<EntityRef>,
 	#[serde(default)]
@@ -338,7 +342,7 @@ impl Registry {
 				}
 				references.push(referenced);
 			}
-			validate_agent_prompt(&cfg, &references)?;
+			validate_agent_prompt(&cfg, &references, "")?;
 		}
 		if e.kind == "tool"
 			&& let crate::tool::ToolConfig::Agent { node_id, agent } =
@@ -469,9 +473,12 @@ fn validate_in(e: &Entry, local: bool) -> Result<()> {
 		"agent" => {
 			let a: AgentConfig = serde_json::from_value(e.config.clone())
 				.map_err(|e| Error::Invalid(e.to_string()))?;
-			if a.instructions.trim().is_empty() || !(1..=1000).contains(&a.max_steps) {
+			if (a.instructions.trim().is_empty() && a.skills.is_empty())
+				|| !(1..=1000).contains(&a.max_steps)
+			{
 				return Err(Error::Invalid(
-					"agent requires instructions and max_steps in 1..1000".into(),
+					"agent requires skills or additional instructions and max_steps in 1..1000"
+						.into(),
 				));
 			}
 		}
@@ -898,7 +905,7 @@ pub(crate) async fn register_in(
 			}
 			references.push(referenced);
 		}
-		validate_agent_prompt(&config, &references)?;
+		validate_agent_prompt(&config, &references, "")?;
 	}
 	if entry.kind == "cluster" {
 		let config: ClusterConfig = serde_json::from_value(entry.config.clone())?;
@@ -1021,6 +1028,17 @@ mod tests {
 		);
 	}
 	#[test]
+	fn skills_only_agents_do_not_need_custom_prompts() {
+		let mut e = entry();
+		e.kind = "agent".into();
+		e.config = json!({"model":{"id":"model","version":"1.0.0"},"skills":[{"id":"research","version":"1.0.0"}]});
+		assert!(validate(&e).is_ok());
+		e.config["skills"] = json!([]);
+		assert!(validate(&e).is_err());
+		e.config["instructions"] = json!("Legacy instructions");
+		assert!(validate(&e).is_ok());
+	}
+	#[test]
 	fn rejects_invalid_metadata() {
 		let mut e = entry();
 		e.version = "latest".into();
@@ -1058,7 +1076,11 @@ pub struct AgentPage {
 	pub next_offset: Option<u64>,
 }
 
-fn validate_agent_prompt(config: &AgentConfig, references: &[Entry]) -> Result<()> {
+pub(crate) fn validate_agent_prompt(
+	config: &AgentConfig,
+	references: &[Entry],
+	reference_text: &str,
+) -> Result<()> {
 	let get = |reference: &EntityRef| {
 		references
 			.iter()
@@ -1066,13 +1088,15 @@ fn validate_agent_prompt(config: &AgentConfig, references: &[Entry]) -> Result<(
 			.ok_or_else(|| Error::NotFound(reference.id.clone()))
 	};
 	let model: ModelConfig = serde_json::from_value(get(&config.model)?.config.clone())?;
-	let mut instructions = crate::context::agent_instructions(&config.instructions);
+	let mut instructions = crate::context::agent_instructions("");
 	for skill in &config.skills {
 		if let Some(text) = get(skill)?.config["instructions"].as_str() {
 			instructions.push('\n');
 			instructions.push_str(text);
 		}
 	}
+	instructions.push_str("\nAdditional user instructions:\n");
+	instructions.push_str(&config.instructions);
 	let mut specifications = crate::tool::builtins()
 		.values()
 		.map(|t| t.specification())
@@ -1086,7 +1110,8 @@ fn validate_agent_prompt(config: &AgentConfig, references: &[Entry]) -> Result<(
 	// Match both the inference token estimate and its conservative wire-byte check.
 	let cost = |text: &str| crate::context::estimated_tokens(text).max(text.len());
 	let overhead = cost(&serde_json::to_string(&instructions)?)
-		.saturating_add(cost(&serde_json::to_string(&specifications)?));
+		.saturating_add(cost(&serde_json::to_string(&specifications)?))
+		.saturating_add(cost(reference_text));
 	let output = (model.context_window / 8).clamp(256, 4096);
 	if overhead.saturating_add(output).saturating_add(2048) > model.context_window {
 		return Err(Error::Invalid("agent instructions, skills and tools cannot fit the model window with output and context reserves".into()));
