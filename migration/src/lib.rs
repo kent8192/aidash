@@ -18,6 +18,7 @@ mod m20260921_003656_authorization_peer_mappings;
 mod m20260921_010628_authorization_remote_reads;
 mod m20260921_014954_authorization_remote_grants;
 mod m20260921_021051_authorization_remote_admissions;
+mod m20260921_024105_authorization_remote_grant_reads;
 
 pub struct Migrator;
 #[async_trait::async_trait]
@@ -43,6 +44,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260921_010628_authorization_remote_reads::Migration),
             Box::new(m20260921_014954_authorization_remote_grants::Migration),
             Box::new(m20260921_021051_authorization_remote_admissions::Migration),
+            Box::new(m20260921_024105_authorization_remote_grant_reads::Migration),
         ]
     }
 }

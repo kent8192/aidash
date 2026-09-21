@@ -6,13 +6,18 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 async fn verify(app: &Router, node: &str, grant: Uuid) -> (u16, Value) {
+    grant_request(app, node, grant, "verify").await
+}
+async fn grant_request(app: &Router, node: &str, grant: Uuid, operation: &str) -> (u16, Value) {
     let token = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
     let response = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/federation/v0.1/scoped/execution/grants/verify")
+                .uri(format!(
+                    "/federation/v0.1/scoped/execution/grants/{operation}"
+                ))
                 .header("authorization", format!("Bearer {token}"))
                 .header("x-aidash-node", node)
                 .header("x-aidash-protocol", "0.1")
@@ -115,6 +120,104 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
     let mut different = input.clone();
     different["agent"]["id"] = json!("nonexistent");
     assert_ne!(request(&aa, &token, "POST", &path, different).await.0, 200);
+    // Workspace data is filtered before delivery and durable dependencies survive
+    // a fresh source connection. Revocation of an already observed sibling must
+    // deny the whole grant, even though its execution task is still readable.
+    let workspace: Uuid = sqlx::query_scalar("SELECT workspace_id FROM tasks WHERE id=$1")
+        .bind(task)
+        .fetch_one(&a.store.pool)
+        .await
+        .unwrap();
+    let (status, sibling) = request(
+        &aa,
+        &token,
+        "POST",
+        &format!("/api/workspaces/{workspace}/tasks"),
+        json!({"title":"Sibling secret","description":"Scoped snapshot fixture"}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let sibling_id = sibling["id"].as_str().unwrap();
+    let mut hidden = policy.clone();
+    hidden["policies"].as_array_mut().unwrap().push(json!({"id":"hide-sibling","effect":"deny","subjects":{"ids":[executor]},"actions":["task.read"],"resources":{"kinds":["task"],"ids":[sibling_id]}}));
+    assert_eq!(
+        request(
+            &aa,
+            &a.config.api_token,
+            "POST",
+            "/api/authorization/acme",
+            json!({"expected_revision":2,"bundle":hidden})
+        )
+        .await
+        .0,
+        200
+    );
+    let (status, snapshot) = grant_request(&fresh_app, &b.config.node_id, id, "snapshot").await;
+    assert_eq!(status, 200, "{snapshot}");
+    assert!(!snapshot.to_string().contains("Sibling secret"));
+    assert!(!snapshot.to_string().contains(sibling_id));
+    let tracked: i64 = sqlx::query_scalar("SELECT count(*) FROM authorization_remote_grant_reads WHERE grant_id=$1 AND resource_id=$2")
+        .bind(id).bind(Uuid::parse_str(sibling_id).unwrap()).fetch_one(&a.store.pool).await.unwrap();
+    assert_eq!(
+        tracked, 0,
+        "filtered data must not become a read dependency"
+    );
+    assert_eq!(
+        request(
+            &aa,
+            &a.config.api_token,
+            "POST",
+            "/api/authorization/acme",
+            json!({"expected_revision":3,"bundle":policy})
+        )
+        .await
+        .0,
+        200
+    );
+    let (status, snapshot) = grant_request(&fresh_app, &b.config.node_id, id, "snapshot").await;
+    assert_eq!(status, 200, "{snapshot}");
+    assert!(snapshot.to_string().contains("Sibling secret"));
+    let tracked: i64 = sqlx::query_scalar("SELECT count(*) FROM authorization_remote_grant_reads WHERE grant_id=$1 AND resource_kind='task' AND resource_id=$2")
+        .bind(id).bind(Uuid::parse_str(sibling_id).unwrap()).fetch_one(&a.store.pool).await.unwrap();
+    assert_eq!(tracked, 1, "record reads before releasing the response");
+    assert_eq!(
+        request(
+            &aa,
+            &a.config.api_token,
+            "POST",
+            "/api/authorization/acme",
+            json!({"expected_revision":4,"bundle":hidden})
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(verify(&aa, &b.config.node_id, id).await.0, 403);
+    assert_eq!(
+        grant_request(&fresh_app, &b.config.node_id, id, "snapshot")
+            .await
+            .0,
+        403
+    );
+    assert_eq!(
+        grant_request(&fresh_app, &b.config.node_id, id, "describe")
+            .await
+            .0,
+        403
+    );
+    assert_eq!(
+        request(
+            &aa,
+            &a.config.api_token,
+            "POST",
+            "/api/authorization/acme",
+            json!({"expected_revision":5,"bundle":policy})
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(verify(&fresh_app, &b.config.node_id, id).await.0, 200);
     // Receiver model metadata changes invalidate the exact execution snapshot,
     // even when the Agent's public definition remains unchanged.
     let metadata: Value = sqlx::query_scalar("SELECT metadata FROM registry WHERE id='model'")
@@ -143,7 +246,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
             &a.config.api_token,
             "POST",
             "/api/authorization/acme",
-            json!({"expected_revision":2,"bundle":denied})
+            json!({"expected_revision":6,"bundle":denied})
         )
         .await
         .0,
@@ -157,7 +260,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
             &a.config.api_token,
             "POST",
             "/api/authorization/acme",
-            json!({"expected_revision":3,"bundle":policy})
+            json!({"expected_revision":7,"bundle":policy})
         )
         .await
         .0,
@@ -172,7 +275,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
             &a.config.api_token,
             "POST",
             "/api/authorization/acme",
-            json!({"expected_revision":4,"bundle":denied_read})
+            json!({"expected_revision":8,"bundle":denied_read})
         )
         .await
         .0,
@@ -190,7 +293,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
             &a.config.api_token,
             "POST",
             "/api/authorization/acme",
-            json!({"expected_revision":5,"bundle":policy})
+            json!({"expected_revision":9,"bundle":policy})
         )
         .await
         .0,
@@ -208,6 +311,12 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
         verify(&aa, "aidash://unrelated", id).await.0,
         403,
         "an authenticated unrelated peer must not use the grant"
+    );
+    assert_eq!(
+        grant_request(&aa, "aidash://unrelated", id, "snapshot")
+            .await
+            .0,
+        403
     );
     sqlx::query("DELETE FROM peers WHERE node_id='aidash://unrelated'")
         .execute(&a.store.pool)
@@ -237,6 +346,12 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
     assert_eq!(request(&aa, &token, "POST", &path, next).await.0, 200);
     sqlx::query("UPDATE authorization_remote_grants SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1").bind(expiry).execute(&a.store.pool).await.unwrap();
     assert_eq!(verify(&fresh_app, &b.config.node_id, expiry).await.0, 403);
+    assert_eq!(
+        grant_request(&fresh_app, &b.config.node_id, expiry, "snapshot")
+            .await
+            .0,
+        403
+    );
     let current = Uuid::new_v4();
     let mut next = input.clone();
     next["id"] = json!(current);

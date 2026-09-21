@@ -119,6 +119,10 @@ pub fn router(f: Federation) -> Router {
             post(crate::authorization::remote::verify),
         )
         .route(
+            "/scoped/execution/grants/snapshot",
+            post(crate::authorization::remote::snapshot),
+        )
+        .route(
             "/scoped/execution/grants/describe",
             post(crate::authorization::remote::describe),
         )

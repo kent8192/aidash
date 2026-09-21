@@ -267,8 +267,11 @@ impl Access {
         &mut self,
         snapshot: &crate::domain::WorkspaceSnapshot,
     ) -> Result<()> {
-        let Some(run) = self.read_run else {
-            return Ok(());
+        let (scope, table, column) = match (self.read_run, self.read_grant) {
+            (Some(run), None) => (run, "authorization_run_reads", "run_id"),
+            (None, Some(grant)) => (grant, "authorization_remote_grant_reads", "grant_id"),
+            (None, None) => return Ok(()),
+            (Some(_), Some(_)) => return Err(Error::Forbidden),
         };
         let mut sources: std::collections::BTreeSet<(String, Uuid)> = snapshot
             .tasks
@@ -289,7 +292,7 @@ impl Access {
                 id(&event.data["run_id"]).map(|id| ("run", id))
             };
             if let Some((kind, id)) = source
-                && (kind != "run" || id != run)
+                && (kind != "run" || Some(id) != self.read_run)
             {
                 sources.insert((kind.into(), id));
             }
@@ -321,9 +324,9 @@ impl Access {
         let (kinds, ids): (Vec<_>, Vec<_>) = sources.into_iter().unzip();
         sqlx::query(
             &Query::insert()
-                .into_table(Alias::new("authorization_run_reads"))
+                .into_table(Alias::new(table))
                 .columns([
-                    Alias::new("run_id"),
+                    Alias::new(column),
                     Alias::new("workspace_id"),
                     Alias::new("resource_kind"),
                     Alias::new("resource_id"),
@@ -342,7 +345,7 @@ impl Access {
                 .on_conflict(OnConflict::new().do_nothing().to_owned())
                 .to_string(PostgresQueryBuilder),
         )
-        .bind(run)
+        .bind(scope)
         .bind(snapshot.workspace.id)
         .bind(kinds)
         .bind(ids)
@@ -456,141 +459,157 @@ impl Access {
             .fetch_all(&mut *self.tx)
             .await?;
             for (workspace, kind, id) in sources {
-                let allowed = match kind.as_str() {
-                    "task" => {
-                        let source: Option<Task> = sqlx::query_as(
-                            &Query::select()
-                                .column(Asterisk)
-                                .from(Alias::new("tasks"))
-                                .cond_where(
-                                    Condition::all()
-                                        .add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
-                                        .add(
-                                            Expr::col(Alias::new("workspace_id"))
-                                                .eq(Expr::cust("$2")),
-                                        ),
-                                )
-                                .to_string(PostgresQueryBuilder),
-                        )
-                        .bind(id)
-                        .bind(workspace)
-                        .fetch_optional(&mut *self.tx)
-                        .await?;
-                        match source {
-                            Some(source) => self.task_visible(&source).await?,
-                            None => false,
-                        }
-                    }
-                    "artifact" => self.artifact_id_visible(id, Some(workspace)).await?,
-                    "message" => {
-                        let source: Option<Message> = sqlx::query_as(
-                            &Query::select()
-                                .column(Asterisk)
-                                .from(Alias::new("messages"))
-                                .cond_where(
-                                    Condition::all()
-                                        .add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
-                                        .add(
-                                            Expr::col(Alias::new("workspace_id"))
-                                                .eq(Expr::cust("$2")),
-                                        ),
-                                )
-                                .to_string(PostgresQueryBuilder),
-                        )
-                        .bind(id)
-                        .bind(workspace)
-                        .fetch_optional(&mut *self.tx)
-                        .await?;
-                        match source {
-                            Some(source) => self.message_visible(&source).await?,
-                            None => false,
-                        }
-                    }
-                    "run" => {
-                        let source: Option<crate::domain::Run> = sqlx::query_as(
-                            &Query::select()
-                                .column(Asterisk)
-                                .from(Alias::new("runs"))
-                                .cond_where(
-                                    Condition::all()
-                                        .add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
-                                        .add(
-                                            Expr::col(Alias::new("workspace_id"))
-                                                .eq(Expr::cust("$2")),
-                                        ),
-                                )
-                                .to_string(PostgresQueryBuilder),
-                        )
-                        .bind(id)
-                        .bind(workspace)
-                        .fetch_optional(&mut *self.tx)
-                        .await?;
-                        match source {
-                            Some(source) => {
-                                pending.push(source.id);
-                                self.run_base_visible(&source).await?
-                            }
-                            None => false,
-                        }
-                    }
-                    "conversation" => {
-                        let source: Option<crate::domain::Conversation> = sqlx::query_as(
-                            &Query::select()
-                                .column(Asterisk)
-                                .from(Alias::new("conversations"))
-                                .cond_where(
-                                    Condition::all()
-                                        .add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
-                                        .add(
-                                            Expr::col(Alias::new("workspace_id"))
-                                                .eq(Expr::cust("$2")),
-                                        ),
-                                )
-                                .to_string(PostgresQueryBuilder),
-                        )
-                        .bind(id)
-                        .bind(workspace)
-                        .fetch_optional(&mut *self.tx)
-                        .await?;
-                        match source {
-                            Some(source) => {
-                                let resource = self.conversation_resource(&source).await?;
-                                self.decide(&resource, "conversation.read").await?
-                            }
-                            None => false,
-                        }
-                    }
-                    "generation" => {
-                        let source: Option<crate::generation::Request> = sqlx::query_as(
-                            &Query::select()
-                                .column(Asterisk)
-                                .from(Alias::new("generation_requests"))
-                                .cond_where(
-                                    Condition::all()
-                                        .add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
-                                        .add(
-                                            Expr::col(Alias::new("workspace_id"))
-                                                .eq(Expr::cust("$2")),
-                                        ),
-                                )
-                                .to_string(PostgresQueryBuilder),
-                        )
-                        .bind(id)
-                        .bind(workspace)
-                        .fetch_optional(&mut *self.tx)
-                        .await?;
-                        match source {
-                            Some(source) => source.visible(self).await?,
-                            None => false,
-                        }
-                    }
-                    _ => false,
-                };
+                let allowed = self
+                    .read_source_visible(workspace, &kind, id, &mut pending)
+                    .await?;
                 if !allowed {
                     return Ok(false);
                 }
             }
         }
         Ok(true)
+    }
+    pub(crate) async fn grant_reads_visible(&mut self, grant: Uuid) -> Result<bool> {
+        let sources: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
+            "SELECT workspace_id,resource_kind,resource_id FROM authorization_remote_grant_reads WHERE grant_id=$1 ORDER BY resource_kind,resource_id"
+        ).bind(grant).fetch_all(&mut *self.tx).await?;
+        let mut pending = vec![];
+        for (workspace, kind, id) in sources {
+            if !self
+                .read_source_visible(workspace, &kind, id, &mut pending)
+                .await?
+            {
+                return Ok(false);
+            }
+        }
+        for run in pending {
+            if !self.run_reads_visible(run).await? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+    async fn read_source_visible(
+        &mut self,
+        workspace: Uuid,
+        kind: &str,
+        id: Uuid,
+        pending: &mut Vec<Uuid>,
+    ) -> Result<bool> {
+        Ok(match kind {
+            "task" => {
+                let source: Option<Task> = sqlx::query_as(
+                    &Query::select()
+                        .column(Asterisk)
+                        .from(Alias::new("tasks"))
+                        .cond_where(
+                            Condition::all()
+                                .add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                                .add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$2"))),
+                        )
+                        .to_string(PostgresQueryBuilder),
+                )
+                .bind(id)
+                .bind(workspace)
+                .fetch_optional(&mut *self.tx)
+                .await?;
+                match source {
+                    Some(source) => self.task_visible(&source).await?,
+                    None => false,
+                }
+            }
+            "artifact" => self.artifact_id_visible(id, Some(workspace)).await?,
+            "message" => {
+                let source: Option<Message> = sqlx::query_as(
+                    &Query::select()
+                        .column(Asterisk)
+                        .from(Alias::new("messages"))
+                        .cond_where(
+                            Condition::all()
+                                .add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                                .add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$2"))),
+                        )
+                        .to_string(PostgresQueryBuilder),
+                )
+                .bind(id)
+                .bind(workspace)
+                .fetch_optional(&mut *self.tx)
+                .await?;
+                match source {
+                    Some(source) => self.message_visible(&source).await?,
+                    None => false,
+                }
+            }
+            "run" => {
+                let source: Option<crate::domain::Run> = sqlx::query_as(
+                    &Query::select()
+                        .column(Asterisk)
+                        .from(Alias::new("runs"))
+                        .cond_where(
+                            Condition::all()
+                                .add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                                .add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$2"))),
+                        )
+                        .to_string(PostgresQueryBuilder),
+                )
+                .bind(id)
+                .bind(workspace)
+                .fetch_optional(&mut *self.tx)
+                .await?;
+                match source {
+                    Some(source) => {
+                        pending.push(source.id);
+                        self.run_base_visible(&source).await?
+                    }
+                    None => false,
+                }
+            }
+            "conversation" => {
+                let source: Option<crate::domain::Conversation> = sqlx::query_as(
+                    &Query::select()
+                        .column(Asterisk)
+                        .from(Alias::new("conversations"))
+                        .cond_where(
+                            Condition::all()
+                                .add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                                .add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$2"))),
+                        )
+                        .to_string(PostgresQueryBuilder),
+                )
+                .bind(id)
+                .bind(workspace)
+                .fetch_optional(&mut *self.tx)
+                .await?;
+                match source {
+                    Some(source) => {
+                        let resource = self.conversation_resource(&source).await?;
+                        self.decide(&resource, "conversation.read").await?
+                    }
+                    None => false,
+                }
+            }
+            "generation" => {
+                let source: Option<crate::generation::Request> = sqlx::query_as(
+                    &Query::select()
+                        .column(Asterisk)
+                        .from(Alias::new("generation_requests"))
+                        .cond_where(
+                            Condition::all()
+                                .add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+                                .add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$2"))),
+                        )
+                        .to_string(PostgresQueryBuilder),
+                )
+                .bind(id)
+                .bind(workspace)
+                .fetch_optional(&mut *self.tx)
+                .await?;
+                match source {
+                    Some(source) => source.visible(self).await?,
+                    None => false,
+                }
+            }
+            _ => false,
+        })
     }
 }

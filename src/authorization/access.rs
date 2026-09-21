@@ -30,6 +30,7 @@ pub(crate) struct Access {
     pending_decisions: Vec<(Evaluation, Decision)>,
     pub(super) pool: PgPool,
     pub read_run: Option<Uuid>,
+    pub read_grant: Option<Uuid>,
     pub(super) environment: Value,
 }
 
@@ -79,6 +80,7 @@ impl Access {
             pending_decisions: vec![],
             pool: store.pool.clone(),
             read_run: None,
+            read_grant: None,
             environment: json!({"node_id":store.node_id,"transport":"api"}),
         })
     }
@@ -110,6 +112,7 @@ impl Access {
             pending_decisions: vec![],
             pool: lease.pool.clone(),
             read_run: lease.read_run,
+            read_grant: lease.read_grant,
             environment: lease.environment.clone(),
         })
     }

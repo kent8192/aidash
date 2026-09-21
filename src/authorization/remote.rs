@@ -349,19 +349,40 @@ pub(crate) async fn describe(
     headers: HeaderMap,
     Json(input): Json<VerifyInput>,
 ) -> Result<Json<Description>> {
-    description(&f, crate::api::peer_node(&headers)?, input.grant_id)
-        .await
-        .map(Json)
+    let (access, description) =
+        description_lease(&f, crate::api::peer_node(&headers)?, input.grant_id).await?;
+    access.finish(Ok(Json(description))).await
 }
 pub(crate) async fn verify(
     State(f): State<Federation>,
     headers: HeaderMap,
     Json(input): Json<VerifyInput>,
 ) -> Result<Json<bool>> {
-    description(&f, crate::api::peer_node(&headers)?, input.grant_id).await?;
-    Ok(Json(true))
+    let (access, _) =
+        description_lease(&f, crate::api::peer_node(&headers)?, input.grant_id).await?;
+    access.finish(Ok(Json(true))).await
 }
-async fn description(f: &Federation, node: &str, id: Uuid) -> Result<Description> {
+pub(crate) async fn snapshot(
+    State(f): State<Federation>,
+    headers: HeaderMap,
+    Json(input): Json<VerifyInput>,
+) -> Result<Json<crate::domain::WorkspaceSnapshot>> {
+    let (mut access, description) =
+        description_lease(&f, crate::api::peer_node(&headers)?, input.grant_id).await?;
+    access.read_grant = Some(description.grant_id);
+    let result = async {
+        let snapshot = access
+            .workspace_snapshot(description.task.workspace_id)
+            .await?;
+        if !live(&mut access, description.grant_id).await? {
+            return Err(Error::Forbidden);
+        }
+        Ok(Json(snapshot))
+    }
+    .await;
+    access.finish(result).await
+}
+async fn description_lease(f: &Federation, node: &str, id: Uuid) -> Result<(Access, Description)> {
     let grant: Grant =
         sqlx::query_as("SELECT * FROM authorization_remote_grants WHERE id=$1 AND node_id=$2")
             .bind(id)
@@ -404,6 +425,10 @@ async fn description(f: &Federation, node: &str, id: Uuid) -> Result<Description
         }
         let inspection: Inspection = serde_json::from_value(current.inspection)?;
         source_authority(&mut access, &task, node, &inspection).await?;
+        if !access.grant_reads_visible(current.id).await? {
+            return Err(Error::Forbidden);
+        }
+
         let agent = EntityRef {
             id: inspection.agent.id.clone(),
             version: inspection.agent.version.clone(),
@@ -428,7 +453,10 @@ async fn description(f: &Federation, node: &str, id: Uuid) -> Result<Description
         })
     }
     .await;
-    access.finish(result).await
+    match result {
+        Ok(description) => Ok((access, description)),
+        Err(error) => access.finish(Err(error)).await,
+    }
 }
 
 #[cfg(test)]
