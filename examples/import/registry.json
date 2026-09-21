@@ -1,0 +1,26 @@
+{
+  "entries": [
+    {
+      "id": "source-review",
+      "version": "1.0.0",
+      "kind": "skill",
+      "name": { "en": "Source review", "ja": "出典の確認" },
+      "description": {
+        "en": "Separate facts from assumptions and identify missing evidence.",
+        "ja": "事実と仮定を分け、不足している根拠を確認します。"
+      },
+      "config": {
+        "instructions": "Review the available sources. Separate facts from assumptions, identify missing evidence, and propose verification steps. Never invent citations."
+      }
+    },
+    {
+      "id": "echo",
+      "version": "1.0.0",
+      "kind": "tool",
+      "name": { "en": "Echo" },
+      "description": { "en": "Return the input for testing tool connections." },
+      "schema": { "type": "object" },
+      "config": { "transport": "native", "operation": "echo" }
+    }
+  ]
+}

@@ -12,6 +12,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+pub(crate) mod import;
+
 mod record {
 	use sea_orm::entity::prelude::*;
 	#[derive(Clone, Debug, PartialEq, DeriveEntityModel)]

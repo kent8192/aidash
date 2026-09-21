@@ -34,6 +34,38 @@ OpenRouter requests use Bearer authentication and `max_tokens`. Every inference 
 
 Model registration uses an editable `modelprovider-modelname-reasoningeffort` name instead of the general entity default. For example, selecting `anthropic/claude-sonnet` with `high` suggests `anthropic-claude-sonnet-high`. Names follow model and effort changes until manually edited. The suffix uses the catalog's default effort when known, `default` when unspecified, and `none` for models without reasoning support.
 
+### Importing registry entries
+
+Operators can use **Registry → Import entities** to choose multiple files or paste
+content, preview the entries, and import them together. The dashboard accepts up
+to 100 entries and 512 KB per import:
+
+- `SKILL.md`: YAML frontmatter with string `name` and `description`, followed by
+  Markdown instructions. The name becomes the stable registry ID; the editable
+  version defaults to `1.0.0`. Only the instruction body is imported. Companion
+  scripts, references, assets, and other frontmatter settings are not imported or
+  executed. Use self-contained instructions. See [the skill example](examples/import/SKILL.md).
+- Aidash JSON: a single registry entry, an array of entries, or an object with an
+  `entries` array. Each entry needs an explicit ID, semantic version, kind,
+  localized name and description, and valid configuration for its kind. See
+  [the JSON example](examples/import/registry.json), which needs no credentials.
+
+The server orders entries by their dependencies, validates them using the normal
+registration rules, and saves entries and events in one transaction. References
+may target another entry in the batch or an existing local registration. Missing
+or incorrectly typed references, duplicate identities in the batch, cyclic
+references, invalid configuration, or conflicts roll back the entire import.
+Identical existing versions remain unchanged, including on retries; changed
+content requires a new version. A successful import shows the imported and
+unchanged counts and refreshes the registry. Credential references must already
+be configured on the server; do not include secret values in imported files.
+
+The operator-only API is `POST /api/registry/import` with
+`{"entries": [/* registry entries */]}`. It returns
+`{"imported": 2, "unchanged": 0}`. The API allows up to 100 entries and uses the
+ordinary 1 MiB request body limit. Markdown conversion happens in the dashboard;
+the API accepts registry entries only.
+
 ### Migrating existing model registrations
 
 Direct OpenAI and Anthropic inference configurations are no longer supported. Register a new OpenRouter model version using the catalog, then register agent versions referencing that model. Set `AIDASH_SECRET_OPENROUTER` on each server and worker. Existing OpenRouter entries keep their credential references and gain enforced ZDR automatically. Omitting `reasoning_effort` preserves the model default; non-ZDR fallback is not available.

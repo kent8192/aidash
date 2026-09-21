@@ -33,6 +33,7 @@ fn ordinary_routes() -> OpenApiRouter<Federation> {
 	let administration = OpenApiRouter::new()
 		.merge(crate::authorization::api::routes())
 		.routes(routes!(registry_create))
+		.routes(routes!(registry_import))
 		.routes(routes!(openrouter_models))
 		.routes(routes!(peer_create))
 		.routes(routes!(mesh))
@@ -478,6 +479,14 @@ async fn registry_create(
 	tx.commit().await?;
 	Ok(Json(entry))
 }
+#[utoipa::path(post, path = "/registry/import", operation_id = "registry_import", request_body = crate::registry::import::RegistryImport, responses((status = 200, body = crate::registry::import::ImportResult)), security(("bearer_auth" = [])))]
+async fn registry_import(
+	State(f): State<Federation>,
+	Json(input): Json<crate::registry::import::RegistryImport>,
+) -> Result<Json<crate::registry::import::ImportResult>> {
+	Ok(Json(crate::registry::import::import(&f, input).await?))
+}
+
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct WorkspaceInput {

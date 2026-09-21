@@ -44,6 +44,7 @@ import {
   Zap,
 } from "lucide-react";
 import { subscribe } from "./event-stream";
+import { RegistryImportButton } from "./registry-import";
 import { ApiError, AUTHENTICATION_EXPIRED } from "./transport";
 import {
   state as getState,
@@ -472,6 +473,7 @@ function Dashboard({
                         : data?.node.id}
               </p>
             </div>
+            {section === "registry" && operator && <RegistryImportButton />}
             {(operator ||
               ["workspace", "task", "goal"].includes(primary.kind)) &&
               !restrictedSection &&
