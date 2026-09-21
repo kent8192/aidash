@@ -518,6 +518,16 @@ async fn package_identity_requires_matching_json_strings() {
 			"packages_identity",
 		);
 	}
+	for malformed in [
+		json!({"entity":{"id":"1","version":"1.0.0","kind":"skill","name":{"en":"Skill"},"description":{"en":"Description"},"config":{"instructions":"Complete the task"}},"author":"Fixture","permissions":[7],"dependencies":[]}),
+		json!({"entity":{"id":"1","version":"1.0.0","kind":"skill","name":{"en":"Skill"},"description":{"en":"Description"},"config":{"instructions":"Complete the task"},"unexpected":true},"author":"Fixture","permissions":[],"dependencies":[]}),
+		json!({"entity":{"id":"1","version":"1.0.0","kind":"skill","name":{"en":7},"description":{"en":"Description"},"config":{"instructions":"Complete the task"}},"author":"Fixture","permissions":[],"dependencies":[]}),
+	] {
+		check_rejected(
+			update(&f.store.pool, "packages", "manifest", Expr::val(malformed)).await,
+			"packages_identity",
+		);
+	}
 	update(
 		&f.store.pool,
 		"packages",
@@ -638,6 +648,19 @@ async fn model_and_agent_configs_reject_unusable_shapes() {
 		);
 	}
 	agent["config"]["model"] = json!({"id":"test-model","version":"1.0.0"});
+	for (field, invalid) in [
+		("tools", json!([7])),
+		("skills", json!([{"id":"skill"}])),
+		("cluster", json!(7)),
+		("unexpected", json!(true)),
+	] {
+		let mut malformed = agent.clone();
+		malformed["config"][field] = invalid;
+		check_rejected(
+			insert_entry(&f.store.pool, &malformed).await,
+			"registry_agent_config",
+		);
+	}
 	let _: aidash::registry::AgentConfig = serde_json::from_value(agent["config"].clone()).unwrap();
 	insert_entry(&f.store.pool, &agent).await.unwrap();
 	insert_entry(&f.store.pool, &good).await.unwrap();
@@ -1074,4 +1097,139 @@ async fn concurrent_dependency_changes_cannot_race_target_deletion() {
 
 fn uuid_expr(id: uuid::Uuid) -> SimpleExpr {
 	Expr::cust(format!("'{id}'::uuid"))
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn task_parent_cycle_guard_rejects_direct_cycles() {
+	let (f, url, schema) = setup().await;
+	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
+	let input = NewTask {
+		title: "Task".into(),
+		description: "Work".into(),
+		requirements: json!({}),
+		dependencies: vec![],
+		parent_id: None,
+	};
+	let parent = f
+		.store
+		.create_task(workspace.id, &input, "human", None)
+		.await
+		.unwrap();
+	let child = f
+		.store
+		.create_task(workspace.id, &input, "human", None)
+		.await
+		.unwrap();
+	let parent_update = Query::update()
+		.table(Alias::new("tasks"))
+		.value(Alias::new("parent_id"), Expr::cust("$1"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&parent_update)
+		.bind(child.id)
+		.bind(parent.id)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	let error = sqlx::query(&parent_update)
+		.bind(parent.id)
+		.bind(child.id)
+		.execute(&f.store.pool)
+		.await
+		.unwrap_err();
+	let database = error.as_database_error().unwrap();
+	assert_eq!(database.code().as_deref(), Some("23514"), "{error}");
+	assert_eq!(database.constraint(), Some("tasks_parent_cycle"), "{error}");
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn cluster_and_registry_identity_constraints_match_application_bounds() {
+	let (f, url, schema) = setup().await;
+	let mut cluster = serde_json::to_value(model()).unwrap();
+	cluster["id"] = json!("test-cluster");
+	cluster["kind"] = json!("cluster");
+	for config in [
+		json!({}),
+		json!({"coordinator":7}),
+		json!({"coordinator":{"id":"bad id","version":"1.0.0"}}),
+		json!({"coordinator":{"id":"agent","version":"not-semver"}}),
+	] {
+		let mut invalid = cluster.clone();
+		invalid["config"] = config;
+		check_rejected(
+			insert_entry(&f.store.pool, &invalid).await,
+			"registry_cluster_config",
+		);
+	}
+	cluster["config"] = json!({"coordinator":{"id":"agent","version":"1.2.3+build.01"}});
+	insert_entry(&f.store.pool, &cluster).await.unwrap();
+
+	let mut build_only = serde_json::to_value(model()).unwrap();
+	build_only["id"] = json!("build-only");
+	build_only["version"] = json!("1.2.3+build.01");
+	insert_entry(&f.store.pool, &build_only).await.unwrap();
+	let mut oversized = serde_json::to_value(model()).unwrap();
+	oversized["id"] = json!("oversized");
+	oversized["version"] = json!("18446744073709551616.0.0");
+	check_rejected(
+		insert_entry(&f.store.pool, &oversized).await,
+		"registry_semver",
+	);
+
+	let mut agent = serde_json::to_value(model()).unwrap();
+	agent["id"] = json!("a".repeat(100));
+	agent["version"] = json!(format!("1.0.0+{}", "a".repeat(40)));
+	agent["kind"] = json!("agent");
+	agent["config"] = json!({
+		"model":{"id":"test-model","version":"1.0.0"},
+		"instructions":"Work"
+	});
+	check_rejected(
+		insert_entry(&f.store.pool, &agent).await,
+		"registry_identity",
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn installation_constraints_validate_model_overrides() {
+	let (f, url, schema) = setup().await;
+	let entry = serde_json::to_value(model()).unwrap();
+	insert_entry(&f.store.pool, &entry).await.unwrap();
+	insert_values(
+		&f.store.pool,
+		"installations",
+		&[
+			("id", Expr::val("test-model").into()),
+			("version", Expr::val("1.0.0").into()),
+			("digest", Expr::val("sha256:fixture").into()),
+			("config", Expr::val(json!({"context_window":4096})).into()),
+		],
+	)
+	.await
+	.unwrap();
+	for invalid in [
+		json!({"context_window":"bad"}),
+		json!({"context_window":2047}),
+		json!({"provider":"unsupported"}),
+		json!({"unexpected":true}),
+	] {
+		check_rejected(
+			update(&f.store.pool, "installations", "config", Expr::val(invalid)).await,
+			"installations_config",
+		);
+	}
+	update(
+		&f.store.pool,
+		"installations",
+		"config",
+		Expr::val(json!({"context_window":8192})),
+	)
+	.await
+	.unwrap();
+	cleanup(f, &url, &schema).await;
 }
