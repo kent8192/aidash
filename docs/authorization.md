@@ -118,7 +118,7 @@ Each worker boundary reloads and locks the current policy, credential, grant, wo
 
 The `serve` process reserves a separate database pool for workers so API requests waiting to revoke authority cannot exhaust the connections needed to finish an effect. Embedded runners should construct their worker Federation with `Federation::for_workers()` before starting workers. Pool settings and connection initialization hooks are preserved. Deploy this version to all workers before admitting scoped runs; older workers do not enforce execution grants.
 
-Scoped remote delegation and peer admission remain closed pending trusted cross-node identity mapping. Legacy admission also rejects scoped workspaces, including operator requests through that path; use subject credentials for scoped local admission. Tasks created in legacy operator workspaces retain their existing behavior.
+Scoped remote delegation and execution admission remain closed pending durable cross-node execution grants and worker-boundary validation. Legacy admission also rejects scoped workspaces, including operator requests through that path; use subject credentials for scoped local admission. Tasks created in legacy operator workspaces retain their existing behavior.
 
 ## Scoped conversations and human interaction
 
@@ -179,3 +179,13 @@ PostgreSQL integration tests verify API authentication, revision conflicts, deci
 Approved generation compaction uses resource kind `compactor` and action `compaction.invoke`, in addition to `registry.read`. The worker intersects all originating subjects and retains the live policy/credential/catalog lease through each bounded provider call. See [the compaction contract](generation.md#approved-compaction).
 
 Generated semantic queries and background indexing use resource kind `embedding` and action `embedding.invoke`, alongside `registry.read` and current tenant catalog approval. Every generated ancestor must pin the same exact provider, remain live and supply both call and token allowance. Background jobs retain their initiating authority. See [the embedding contract](generation.md#approved-embeddings).
+
+## Inbound peer identity mappings
+
+An operator can bind an authenticated source node, source tenant and source subject to an existing local subject credential using `POST /api/authorization/{tenant}/peer-mappings`. The body contains `source_node`, `source_tenant`, `source_subject`, `credential_id`, `enabled` and `expected_revision` (zero for creation). `GET` on the same path lists the tenant's mappings with `offset` (default zero) and `limit` (default 100, maximum 200). A source identity has one target tenant; it cannot be reassigned through another tenant's management endpoint. Concurrent or stale revisions return a conflict. Disabled mappings can retain expired or revoked credentials for audit, but enabling one requires a currently usable credential and configured peer.
+
+`GET /api/authorization/{tenant}/peer-mapping-history?after=0&limit=100` returns committed revisions in ascending sequence order. Use the last `sequence` as the next cursor; the maximum page size is 200. Failed or conflicting updates do not create history. All mapping management and history endpoints require the operator token.
+
+An authenticated peer may call `POST /federation/v0.1/scoped/discover` with `{"tenant":"source-tenant","subject":"source-subject","search":{}}`. The source node comes from the authenticated peer header, never the JSON body. Peer authentication alone grants no tenant access: an enabled exact mapping and its current local credential and subject chain are required. The request holds policy, credential, mapping and enabled-peer database leases through discovery. The local policy must allow `federation.discover` on the receiving node; results must also have local tenant catalog approval, `registry.read` and `agent.execute`. ABAC receives `environment.transport=federation`, `environment.source_node`, and resource attributes `source_node`, `source_tenant`, `source_subject`. An unusable mapped credential returns forbidden without challenging the valid peer credential.
+
+Only credential IDs are stored in mappings; subject bearer tokens are neither returned by mapping APIs nor forwarded between nodes. This endpoint provides inbound authorized metadata discovery. Outbound subject discovery, remote execution grants, remote budget accounting and their dashboard controls remain separate work; this does not establish end-to-end scoped federation.

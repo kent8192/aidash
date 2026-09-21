@@ -14,6 +14,7 @@ mod m20260920_210304_review_isolation;
 mod m20260920_211600_atomic_transactions;
 mod m20260920_215543_semantic_memory;
 mod m20260920_235900_generation_embeddings;
+mod m20260921_003656_authorization_peer_mappings;
 
 pub struct Migrator;
 #[async_trait::async_trait]
@@ -35,6 +36,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260920_211600_atomic_transactions::Migration),
             Box::new(m20260920_215543_semantic_memory::Migration),
             Box::new(m20260920_235900_generation_embeddings::Migration),
+            Box::new(m20260921_003656_authorization_peer_mappings::Migration),
         ]
     }
 }

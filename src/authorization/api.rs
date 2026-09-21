@@ -18,6 +18,7 @@ use uuid::Uuid;
 /// Evaluation bodies are simulations of authority, never execution credentials.
 pub fn routes() -> OpenApiRouter<Federation> {
     OpenApiRouter::new()
+        .merge(super::peer::routes())
         .routes(routes!(snapshot))
         .routes(routes!(replace))
         .routes(routes!(evaluate))

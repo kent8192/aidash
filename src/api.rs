@@ -101,6 +101,10 @@ pub fn router(f: Federation) -> Router {
     let api = api.route_layer(middleware::from_fn_with_state(f.clone(), api_auth));
     let federation = Router::new()
         .route("/discover", post(peer_discover))
+        .route(
+            "/scoped/discover",
+            post(crate::authorization::peer::discover),
+        )
         .route("/offers", post(peer_offer))
         .route("/workspace", post(peer_workspace))
         .route("/observe", get(peer_observe))

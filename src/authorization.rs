@@ -7,6 +7,7 @@ pub mod catalog;
 pub mod execution;
 pub mod identity;
 pub mod interaction;
+pub mod peer;
 pub mod policy;
 mod resources;
 pub mod workspace;
