@@ -52,6 +52,37 @@ A coordinator's final response remains gated while a child is unresolved. An ope
 
 ### Context compaction
 
+The compaction trigger, post-compaction fit check and final preflight use the
+same complete-request estimate: UTF-8 bytes of the serialized model-visible
+messages and tool definitions, plus `max_output_tokens`, plus 1,024 framing
+tokens. This deliberately conservative estimate is not the provider's actual
+token count. It includes the JSON escaping of context inside message text.
+Output fits inside the registered context window; it is not extra input space.
+Failure to fit leaves saved context unchanged and prevents inference I/O.
+
+The model's pinned workspace and `workspace_observe` use the same bounded view.
+Observations include goal/task previews, artifact IDs and metadata, message
+previews, and event IDs/kinds/timestamps. Event payloads are never automatically
+embedded, so observing an earlier `tool.completed` event cannot copy its full
+observation result into the next request. Durable snapshots, invocation records
+and audit APIs retain their original content.
+
+`workspace_observe` accepts optional `offset` (default 0) and `limit` (default 20,
+maximum 50). Each collection reports its total and next offset. Events/messages
+are newest first; tasks/artifacts retain snapshot order. These are live pages,
+so refresh after concurrent changes. `workspace_read` selects an accessible
+`workspace`, `task`, `artifact`, `message` or `event` by exact ID, through the
+same authorization-filtered Home snapshot. It returns JSON text in Unicode
+character ranges: `offset`, `max_chars` (default 8,000, maximum 16,000),
+`total_chars` and `next_offset`. Concatenate chunks in offset order to recover
+the full record. Missing and inaccessible IDs return the same error. Reading
+mutable records across concurrent changes requires restarting the read.
+
+On replay, legacy `workspace_observe` results are projected into this view in
+the working context. This changes only observation representation; human
+records, other tool results and the underlying audit journal are preserved.
+The conversion commits only when the complete request fits.
+
 Context compaction adapts [fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction/tree/e3f262a7f4d42bd8dd32ced30d26176f7cb545b0) to Aidash's paired tool events. Jev receives a fitted classification view and returns separate call/result retention probabilities; it does not rewrite human messages or summarize history. The first and recent events, non-tool text, instructions, current task/workspace, memory, and existing summaries remain verbatim in the inference context. Unneeded pairs can be dropped and unneeded outputs truncated, while complete invocation results remain in PostgreSQL. Every batch sees the same fitted state, with bounded request size and four concurrent requests. Invalid answers, missing credentials or insufficient compaction leave the original context unchanged. Compaction uses `AIDASH_SECRET_JEV`, with endpoint/model overrides in `.env.example`, independently of the explicitly selected inference model. Token estimates are conservative and are not provider tokenization.
 
 The default retention threshold is 0.5: keep the complete pair when the result probability reaches the threshold; otherwise retain the call with the first 300 result characters and a notice when the call probability reaches it; otherwise drop the pair. Results up to 420 characters are unchanged. The first and latest six history events are pinned.

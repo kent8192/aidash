@@ -836,7 +836,9 @@ impl Guard {
 			),
 			"memory_write" => ("memory.write", "memory", self.run.agent_id.clone()),
 			"human_request" => ("human.request", "run", self.run.id.to_string()),
-			"agent_discover" | "workspace_observe" | "workspace_wait" => return Ok(()),
+			"agent_discover" | "workspace_observe" | "workspace_read" | "workspace_wait" => {
+				return Ok(());
+			}
 			_ => return Err(Error::Forbidden),
 		};
 		let resource = match kind {

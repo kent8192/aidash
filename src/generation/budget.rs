@@ -17,12 +17,12 @@ pub(crate) struct Reservation {
 }
 impl Reservation {
 	pub fn check_request(window: usize, request: &ModelRequest) -> Result<()> {
-		// UTF-8 bytes deliberately overestimate normal provider tokenization.
-		// Leave framing space and refuse overlarge input before network I/O.
-		if serde_json::to_vec(request)?.len().saturating_add(1024) > window {
-			return Err(Error::Invalid(
-				"generated model request exceeds its reserved context window".into(),
-			));
+		let estimated = request.estimated_total_tokens();
+		if estimated > window {
+			return Err(Error::Invalid(format!(
+				"model request exceeds context window: estimated total {estimated}, window {window}, output reserve {}, framing reserve 1024",
+				request.max_output_tokens
+			)));
 		}
 		Ok(())
 	}

@@ -214,10 +214,13 @@ async fn retained_snapshot_revocation(events_only: bool) {
 	let server=Router::new().route("/v1/chat/completions",post(move |Json(body):Json<Value>|{
         let seen=seen.clone();let pool=pool.clone();async move {
             seen.fetch_add(1,Ordering::SeqCst);
-            assert!(body.to_string().contains("private-artifact-content"));
+            let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+            let artifact_id = context["current"]["workspace"]["artifacts"][0]["id"].clone();
+            assert!(artifact_id.is_string());
+            assert!(!body.to_string().contains("private-artifact-content"));
             let sources:i64=sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("COUNT(*)")).from(sea_orm::sea_query::Alias::new("authorization_run_reads")).and_where(sea_orm::sea_query::Expr::cust("resource_kind = 'artifact'")).to_string(sea_orm::sea_query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
             assert_eq!(sources,1,"membership must commit before provider I/O");
-            Json(json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"observe","type":"function","function":{"name":"workspace_observe","arguments":"{}"}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+            Json(json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"read","type":"function","function":{"name":"workspace_read","arguments":json!({"kind":"artifact","id":artifact_id}).to_string()}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
         }
     }));
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

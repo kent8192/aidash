@@ -23,6 +23,30 @@ pub struct ModelRequest {
 	pub tools: Vec<ToolSpec>,
 	pub max_output_tokens: u32,
 }
+
+impl ModelRequest {
+	/// Model-visible payload, shared by transport and context accounting. The
+	/// context is encoded as message text, including its JSON escaping.
+	pub(crate) fn input_body(&self) -> Value {
+		let mut body = json!({"messages":[
+			{"role":"system","content":self.instructions},
+			{"role":"user","content":self.context.to_string()}]});
+		if !self.tools.is_empty() {
+			body["tools"] = Value::Array(self.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
+		}
+		body
+	}
+
+	/// Conservative UTF-8 byte estimate, not a provider tokenizer. Reserve
+	/// completion tokens and framing separately, in the same unit at every gate.
+	pub(crate) fn estimated_total_tokens(&self) -> usize {
+		self.input_body()
+			.to_string()
+			.len()
+			.saturating_add(self.max_output_tokens as usize)
+			.saturating_add(1024)
+	}
+}
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelResponse {
 	pub text: String,
@@ -53,18 +77,14 @@ pub fn provider(client: reqwest::Client, config: ModelConfig) -> Result<Arc<dyn 
 #[async_trait]
 impl ModelProvider for OpenRouterProvider {
 	async fn infer(&self, request: ModelRequest) -> Result<ModelResponse> {
-		let mut body = json!({"model":self.config.model_id,"messages":[
-            {"role":"system","content":request.instructions},
-            {"role":"user","content":request.context.to_string()}]});
+		let mut body = request.input_body();
+		body["model"] = json!(self.config.model_id);
 		body["max_tokens"] = json!(request.max_output_tokens);
 		// Enforce ZDR on every call, including existing registered models. Never
 		// retry against non-ZDR endpoints if no eligible provider is available.
 		body["provider"] = json!({"zdr": true, "require_parameters": true});
 		if let Some(effort) = self.config.reasoning_effort {
 			body["reasoning"] = json!({"effort": effort});
-		}
-		if !request.tools.is_empty() {
-			body["tools"] = Value::Array(request.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
 		}
 		let mut call = self
 			.client

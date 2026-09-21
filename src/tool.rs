@@ -351,7 +351,20 @@ impl Tool for Builtin {
 				ctx.home.message(key, required(&input, "content")?).await?;
 				Ok(json!({"sent":true}))
 			}
-			"workspace_observe" => Ok(json!(ctx.home.snapshot().await?)),
+			"workspace_observe" => Ok(crate::context::observation::project(
+				&ctx.home.snapshot().await?,
+				input["offset"].as_u64().unwrap_or(0) as usize,
+				input["limit"]
+					.as_u64()
+					.unwrap_or(crate::context::observation::DEFAULT_LIMIT as u64) as usize,
+			)),
+			"workspace_read" => crate::context::observation::read(
+				&ctx.home.snapshot().await?,
+				required(&input, "kind")?,
+				required(&input, "id")?,
+				input["offset"].as_u64().unwrap_or(0) as usize,
+				input["max_chars"].as_u64().unwrap_or(8000) as usize,
+			),
 			"workspace_wait" => {
 				Ok(json!({"wait_seconds":input["seconds"].as_u64().unwrap_or(2).clamp(1,60)}))
 			}
@@ -432,8 +445,13 @@ pub fn builtins() -> BTreeMap<String, Arc<dyn Tool>> {
 		},
 		Builtin {
 			name: "workspace_observe",
-			description: "Read current goal, task assignments, artifacts, messages and recent events.",
-			schema: json!({"type":"object","additionalProperties":false}),
+			description: "Read a bounded summary of goal, tasks, artifact references, messages and recent event metadata. Use workspace_read for full records. Collections have separate totals and next_offset; events/messages are newest first. Refresh pagination if the workspace changes.",
+			schema: json!({"type":"object","properties":{"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "workspace_read",
+			description: "Read one accessible workspace record by kind and exact ID. Returns a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. Use to read artifact content and omitted details without repeating side effects.",
+			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event"]},"id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":1,"maximum":16000}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_wait",

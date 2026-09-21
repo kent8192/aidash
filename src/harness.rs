@@ -4,7 +4,7 @@ use crate::{
 	context::{self, Context},
 	domain::*,
 	federation::{Federation, Home},
-	provider::{ModelRequest, ModelResponse, provider},
+	provider::{ModelResponse, provider},
 	registry::{AgentConfig, ModelConfig},
 	tool::{PluginTool, Tool, ToolConfig, ToolContext, builtins},
 };
@@ -317,18 +317,23 @@ impl Harness {
 					}
 				}
 				let mut context: Context = serde_json::from_value(run.context.clone())?;
-				let mut pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":snapshot,"memory":store.memory(run).await?,"agent_state":{"phase":run.phase,"step":run.step}});
+				let mut pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":context::observation::project(&snapshot, 0, context::observation::DEFAULT_LIMIT),"memory":store.memory(run).await?,"agent_state":{"phase":run.phase,"step":run.step}});
 				let specifications = tools
 					.values()
 					.map(|t| t.specification())
 					.collect::<Vec<_>>();
-				let overhead = context::estimated_tokens(&instructions)
-					+ context::estimated_tokens(&json!(specifications).to_string());
 				let output = (window / 8).clamp(256, 4096) as u32;
-				let budget = window.saturating_sub(overhead + output as usize + 512);
-				context::bound_snapshot(&mut pinned, budget.saturating_sub(512) / 2)?;
-				let semantic_budget =
-					budget.saturating_sub(context::estimated_tokens(&pinned.to_string()) + 512);
+				let budget = context::RequestBudget {
+					window,
+					instructions: &instructions,
+					tools: &specifications,
+					max_output_tokens: output,
+				};
+				// Keep room for history and JSON message escaping. The final fitting
+				// decision below measures the complete provider input, not this quota.
+				let available = budget.remaining(&Context::default(), &serde_json::Value::Null);
+				context::bound_snapshot(&mut pinned, available / 4)?;
+				let semantic_budget = budget.remaining(&Context::default(), &pinned) / 2;
 				if let Some(guard) = guard {
 					if let Some(semantic) = guard
 						.semantic_context(
@@ -366,23 +371,11 @@ impl Harness {
 						self.federation.client.clone(),
 					)?)
 				};
-				context::compact(
-					&mut context,
-					compactor.as_ref(),
-					budget,
-					&pinned,
-					&instructions,
-				)
-				.await?;
+				context::compact(&mut context, compactor.as_ref(), &budget, &pinned).await?;
 				if let Some(guard) = guard {
 					guard.inference().await?;
 				}
-				let request = ModelRequest {
-					instructions,
-					context: json!({"current":pinned,"summary":context.summary,"history":context.history}),
-					tools: specifications,
-					max_output_tokens: output,
-				};
+				let request = budget.request(&context, &pinned);
 				crate::generation::budget::Reservation::check_request(window, &request)?;
 				let reservation = if let Some(guard) = guard {
 					guard
