@@ -323,7 +323,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	.unwrap();
 	assert_eq!(verify(&fresh_app, &b.config.node_id, id).await.0, 200);
 	let mut denied = policy.clone();
-	denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny-remote-model","effect":"deny","subjects":{"ids":[executor]},"actions":["model.infer"],"resources":{"kinds":["model"]},"condition":{"op":"eq","left":{"source":"resource","path":"/config/provider"},"right":{"source":"literal","value":"openai"}}}));
+	denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny-remote-model","effect":"deny","subjects":{"ids":[executor]},"actions":["model.infer"],"resources":{"kinds":["model"]},"condition":{"op":"eq","left":{"source":"resource","path":"/config/provider"},"right":{"source":"literal","value":"openrouter"}}}));
 	assert_eq!(
 		request(
 			&aa,

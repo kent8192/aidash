@@ -1706,3 +1706,41 @@ details > summary {
     gap: 6px;
   }
 }
+
+.model-picker {
+  position: relative;
+}
+.model-options {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--surface, #fff);
+  border: 1px solid #aaa;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px #0002;
+}
+.model-options button {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-radius: 0;
+  padding: 10px 12px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.model-options button[aria-selected="true"] {
+  background: #e9edff;
+  color: #17204a;
+}
+.model-options span {
+  font-size: 12px;
+}
+.model-options p {
+  padding: 12px;
+}

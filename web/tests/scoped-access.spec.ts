@@ -71,7 +71,7 @@ test("subject dashboard completes a conversation and clears revoked access", asy
         "model",
         `${id}-model`,
         {
-          provider: "openai",
+          provider: "openrouter",
           model_id: "fixture",
           endpoint: `http://127.0.0.1:${(provider.address() as AddressInfo).port}/v1`,
           context_window: 128000,

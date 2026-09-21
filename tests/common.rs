@@ -142,7 +142,7 @@ pub async fn bootstrap(f: &Federation, app: &Router, endpoint: &str) -> (Value, 
 		(
 			"model",
 			"model",
-			json!({"provider":"openai","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":128000,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":128000,"modalities":["text"],"cost":{}}),
 		),
 		(
 			"tool",

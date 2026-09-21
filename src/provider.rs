@@ -38,35 +38,31 @@ pub trait ModelProvider: Send + Sync {
 	async fn infer(&self, request: ModelRequest) -> Result<ModelResponse>;
 }
 
-pub struct OpenAiProvider {
-	pub client: reqwest::Client,
-	pub config: ModelConfig,
-}
-pub struct AnthropicProvider {
+pub struct OpenRouterProvider {
 	pub client: reqwest::Client,
 	pub config: ModelConfig,
 }
 
 pub fn provider(client: reqwest::Client, config: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
 	match config.provider.as_str() {
-		"openai" | "openrouter" => Ok(Arc::new(OpenAiProvider { client, config })),
-		"anthropic" => Ok(Arc::new(AnthropicProvider { client, config })),
+		"openrouter" => Ok(Arc::new(OpenRouterProvider { client, config })),
 		_ => Err(Error::Invalid("unsupported model provider".into())),
 	}
 }
 
 #[async_trait]
-impl ModelProvider for OpenAiProvider {
+impl ModelProvider for OpenRouterProvider {
 	async fn infer(&self, request: ModelRequest) -> Result<ModelResponse> {
 		let mut body = json!({"model":self.config.model_id,"messages":[
             {"role":"system","content":request.instructions},
             {"role":"user","content":request.context.to_string()}]});
-		let token_limit = if self.config.provider == "openrouter" {
-			"max_tokens"
-		} else {
-			"max_completion_tokens"
-		};
-		body[token_limit] = json!(request.max_output_tokens);
+		body["max_tokens"] = json!(request.max_output_tokens);
+		// Enforce ZDR on every call, including existing registered models. Never
+		// retry against non-ZDR endpoints if no eligible provider is available.
+		body["provider"] = json!({"zdr": true, "require_parameters": true});
+		if let Some(effort) = self.config.reasoning_effort {
+			body["reasoning"] = json!({"effort": effort});
+		}
 		if !request.tools.is_empty() {
 			body["tools"] = Value::Array(request.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
 		}
@@ -83,7 +79,7 @@ impl ModelProvider for OpenAiProvider {
 		let response = call.send().await?;
 		if !response.status().is_success() {
 			return Err(Error::External(format!(
-				"OpenAI-compatible provider returned {}",
+				"OpenRouter provider returned {}",
 				response.status()
 			)));
 		}
@@ -152,94 +148,6 @@ pub fn parse_openai(value: Value) -> Result<ModelResponse> {
 	Ok(result)
 }
 
-#[async_trait]
-impl ModelProvider for AnthropicProvider {
-	async fn infer(&self, request: ModelRequest) -> Result<ModelResponse> {
-		let mut body = json!({"model":self.config.model_id,"system":request.instructions,
-            "messages":[{"role":"user","content":request.context.to_string()}],"max_tokens":request.max_output_tokens});
-		if !request.tools.is_empty() {
-			body["tools"] = Value::Array(
-				request
-					.tools
-					.iter()
-					.map(
-						|t| json!({"name":t.name,"description":t.description,"input_schema":t.parameters}),
-					)
-					.collect(),
-			);
-		}
-		let mut call = self
-			.client
-			.post(format!(
-				"{}/messages",
-				self.config.endpoint.trim_end_matches('/')
-			))
-			.header("anthropic-version", "2023-06-01")
-			.json(&body);
-		if let Some(name) = &self.config.credential_env {
-			call = call.header("x-api-key", secret(name)?);
-		}
-		let response = call.send().await?;
-		if !response.status().is_success() {
-			return Err(Error::External(format!(
-				"Anthropic provider returned {}",
-				response.status()
-			)));
-		}
-		parse_anthropic(crate::response::json(response, 1_048_576).await?)
-	}
-}
-
-pub fn parse_anthropic(value: Value) -> Result<ModelResponse> {
-	if !matches!(value["stop_reason"].as_str(), Some("end_turn" | "tool_use")) {
-		return Err(Error::External(
-			"Anthropic output was truncated or refused".into(),
-		));
-	}
-	// Anthropic reports cached input separately from ordinary input tokens.
-	let mut input = value.pointer("/usage/input_tokens").and_then(Value::as_u64);
-	for key in ["cache_creation_input_tokens", "cache_read_input_tokens"] {
-		if let Some(value) = value["usage"].get(key) {
-			input = input
-				.zip(value.as_u64())
-				.and_then(|(a, b)| a.checked_add(b));
-		}
-	}
-	let mut result = ModelResponse {
-		input_tokens: input.unwrap_or(0),
-		usage_complete: input.is_some()
-			&& value
-				.pointer("/usage/output_tokens")
-				.and_then(Value::as_u64)
-				.is_some(),
-		output_tokens: value
-			.pointer("/usage/output_tokens")
-			.and_then(Value::as_u64)
-			.unwrap_or(0),
-		..Default::default()
-	};
-	for block in value["content"]
-		.as_array()
-		.ok_or_else(|| Error::External("missing Anthropic content".into()))?
-	{
-		match block["type"].as_str() {
-			Some("text") => result.text.push_str(&field(block, "text")?),
-			Some("tool_use") => result.tool_calls.push(ToolCall {
-				id: field(block, "id")?,
-				name: field(block, "name")?,
-				arguments: block["input"].clone(),
-			}),
-			_ => {}
-		}
-	}
-	if (value["stop_reason"] == "tool_use") == result.tool_calls.is_empty() {
-		return Err(Error::External(
-			"Anthropic stop reason does not match tool calls".into(),
-		));
-	}
-	validate_response(&result)?;
-	Ok(result)
-}
 fn field(v: &Value, key: &str) -> Result<String> {
 	v[key]
 		.as_str()
@@ -265,13 +173,9 @@ fn validate_response(r: &ModelResponse) -> Result<()> {
 mod tests {
 	use super::*;
 	#[test]
-	fn adapters_share_one_response_contract() {
-		let a = parse_openai(json!({"choices":[{"finish_reason":"tool_calls","message":{"tool_calls":[{"id":"one","function":{"name":"search","arguments":"{\"q\":\"Rust\"}"}}]}}]})).unwrap();
-		let b = parse_anthropic(json!({"stop_reason":"tool_use","content":[{"type":"tool_use","id":"one","name":"search","input":{"q":"Rust"}}]})).unwrap();
-		assert_eq!(
-			serde_json::to_value(a).unwrap(),
-			serde_json::to_value(b).unwrap()
-		);
+	fn parses_openrouter_tool_calls() {
+		let result = parse_openai(json!({"choices":[{"finish_reason":"tool_calls","message":{"tool_calls":[{"id":"one","function":{"name":"search","arguments":"{\"q\":\"Rust\"}"}}]}}]})).unwrap();
+		assert_eq!(result.tool_calls[0].arguments, json!({"q":"Rust"}));
 	}
 	#[test]
 	fn truncation_cannot_complete_a_task() {
@@ -281,6 +185,5 @@ mod tests {
 			)
 			.is_err()
 		);
-		assert!(parse_anthropic(json!({"stop_reason":"max_tokens","content":[]})).is_err());
 	}
 }

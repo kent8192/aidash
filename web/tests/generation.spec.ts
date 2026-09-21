@@ -90,7 +90,7 @@ test("generation dashboard manages policy, approval, completion and retained his
       name: { en: "Generation fixture model", ja: "生成確認モデル" },
       description: { en: "Local generation fixture" },
       config: {
-        provider: "openai",
+        provider: "openrouter",
         model_id: "fixture",
         endpoint: `http://127.0.0.1:${(provider.address() as AddressInfo).port}/v1`,
         context_window: 128000,

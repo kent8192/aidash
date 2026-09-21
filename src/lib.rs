@@ -9,6 +9,7 @@ pub mod federation;
 pub mod generation;
 pub mod harness;
 pub mod lifecycle;
+pub mod openrouter;
 pub mod orchestration;
 pub mod provider;
 pub mod registry;

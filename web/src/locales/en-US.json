@@ -477,5 +477,15 @@
   "authSelectCredential": "Select a local credential",
   "authPeerMappingSaveHelp": "Saving enables this mapping. Only active local credentials can be selected.",
   "authSavePeerMapping": "Save and enable mapping",
-  "authPeerMappingDenied": "The mapped credential is no longer authorized. Select an active credential and check its subject policy."
+  "authPeerMappingDenied": "The mapped credential is no longer authorized. Select an active credential and check its subject policy.",
+  "modelSearch": "Search by model name or ID",
+  "modelNoMatches": "No matching models.",
+  "modelLoading": "Loading OpenRouter models…",
+  "modelLoadError": "Could not load models. Please retry.",
+  "modelCatalogHelp": "Choose a model supporting text input/output and tool calling.",
+  "modelChoose": "Select a model from the list.",
+  "modelPricing": "Indicative price per million tokens (USD, input / output):",
+  "modelZdr": "Zero Data Retention is always enabled. Models without a ZDR endpoint cannot run.",
+  "modelReasoningDefault": "Model default",
+  "modelReasoningUnavailable": "Effort selection is unavailable"
 }

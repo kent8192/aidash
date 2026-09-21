@@ -33,6 +33,7 @@ fn ordinary_routes() -> OpenApiRouter<Federation> {
 	let administration = OpenApiRouter::new()
 		.merge(crate::authorization::api::routes())
 		.routes(routes!(registry_create))
+		.routes(routes!(openrouter_models))
 		.routes(routes!(peer_create))
 		.routes(routes!(mesh))
 		.routes(routes!(remote_action))
@@ -438,6 +439,14 @@ async fn registry_get(
 	}
 	Ok(Json(f.registry.get(&id, &version).await?))
 }
+
+#[utoipa::path(get, path = "/providers/openrouter/models", operation_id = "openrouter_models", responses((status = 200, body = Vec<crate::openrouter::CatalogModel>)), security(("bearer_auth" = [])))]
+async fn openrouter_models(
+	State(f): State<Federation>,
+) -> Result<Json<Vec<crate::openrouter::CatalogModel>>> {
+	Ok(Json(crate::openrouter::models(&f.client).await?))
+}
+
 #[utoipa::path(post, path = "/registry", operation_id = "registry_create", request_body = Entry, responses((status = 200, body = Entry)), security(("bearer_auth" = [])))]
 async fn registry_create(
 	State(f): State<Federation>,
@@ -1515,9 +1524,10 @@ mod schema_tests {
 				.values()
 				.map(|path| path.as_object().unwrap().len())
 				.sum::<usize>(),
-			69
+			70
 		);
 		for (path, method) in [
+			("/api/providers/openrouter/models", "get"),
 			("/api/tasks", "get"),
 			("/api/tasks/{id}/remote-grants", "post"),
 			("/api/tasks/{id}/remote-grants/{grant}/revoke", "post"),

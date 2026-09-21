@@ -24,23 +24,15 @@ Open <http://127.0.0.1:8080> and enter the token from `AIDASH_API_TOKEN`. The ex
 
 The [authorization API](docs/authorization.md) issues revocable subject tokens for tenant-scoped workspaces, approved Registry discovery, local agent execution and event streams. Workers recheck the root and delegated agents at every durable boundary. The dashboard supports subject tokens for local goals, conversations, human answers and run controls, and shows their tenant identity. Operators use **Access policies / アクセス制御** to edit role/attribute policies, simulate decisions, inspect audits, approve component versions and issue or revoke subject credentials. Scoped remote federation remains under implementation.
 
-The **Registry** screen can register models, tools, skills, clusters, agents, compactors and embedding providers. Register a model before an agent. OpenAI-compatible `/chat/completions`, Anthropic `/messages` and OpenRouter `/chat/completions` endpoints are supported; use a base endpoint ending in `/v1`. Specify the provider's actual model ID, context window, modalities and cost metadata. Credentials are resolved only from `AIDASH_SECRET_*` environment variables. Registry records store the environment variable name, never its value. Model selection is explicit; Aidash does not select fallback models or automatically route between models.
+The **Registry** screen can register models, tools, skills, clusters, agents, compactors and embedding providers. Register a model before an agent. Inference uses OpenRouter `/chat/completions`. Specify the provider's actual model ID, context window, modalities and cost metadata. Credentials are resolved only from `AIDASH_SECRET_*` environment variables. Registry records store the environment variable name, never its value. Model selection is explicit; Aidash does not select fallback models or automatically route between models.
 
-For **OpenRouter**, set `AIDASH_SECRET_OPENROUTER` to your OpenRouter API key in the environment of each node's server and worker processes. Select **OpenRouter** in the Registry model form; it fills in `https://openrouter.ai/api/v1` as the editable base endpoint. Enter an explicit model slug from the [OpenRouter model catalog](https://openrouter.ai/models), its context window and cost metadata, and `AIDASH_SECRET_OPENROUTER` as the credential reference. Choose a text model that supports tool calling, which agents require. A model's Registry `config` looks like this (replace the illustrative model ID and context window with the selected model's values):
+For **OpenRouter**, set `AIDASH_SECRET_OPENROUTER` on the server and worker processes. The Registry model form uses OpenRouter: search the live model catalog by name or ID and select a text model with tool calling. Aidash fills the model ID, endpoint, context window and indicative per-million-token pricing automatically. Catalog failures can be retried from the form. No credential reference is entered in the model form; model registration uses `AIDASH_SECRET_OPENROUTER`. Existing registry entries retain their explicit credential references.
 
-```json
-{
-  "provider": "openrouter",
-  "model_id": "provider/model-name",
-  "endpoint": "https://openrouter.ai/api/v1",
-  "credential_env": "AIDASH_SECRET_OPENROUTER",
-  "context_window": 128000,
-  "modalities": ["text"],
-  "cost": {}
-}
-```
+OpenRouter requests use Bearer authentication and `max_tokens`. Every inference request enforces `provider.zdr = true`; a model without an available ZDR endpoint fails instead of falling back to data-retaining endpoints. The model picker offers only the reasoning effort levels advertised by the catalog, excluding `none` for models with mandatory reasoning. Leaving effort at the model default omits the override. Selected values are saved with the model and sent as `reasoning.effort`; `provider.require_parameters = true` prevents routing to endpoints that ignore requested parameters. See [OpenRouter ZDR](https://openrouter.ai/docs/guides/features/zdr) and [reasoning options](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens). History compaction uses Jev separately, as described below. Local tests use protocol fixtures and do not make paid OpenRouter calls.
 
-OpenRouter requests use Bearer authentication, `max_tokens` and the shared OpenAI-compatible tool-call and usage parser, following the [OpenRouter API contract](https://openrouter.ai/docs/api/reference/overview). OpenRouter's upstream provider routing follows your OpenRouter account settings; Aidash adds no routing overrides. Inference uses the agent's selected model. History compaction uses Jev separately, as described below. Local tests use protocol fixtures and do not make paid OpenRouter calls.
+### Migrating existing model registrations
+
+Direct OpenAI and Anthropic inference configurations are no longer supported. Register a new OpenRouter model version using the catalog, then register agent versions referencing that model. Set `AIDASH_SECRET_OPENROUTER` on each server and worker. Existing OpenRouter entries keep their credential references and gain enforced ZDR automatically. Omitting `reasoning_effort` preserves the model default; non-ZDR fallback is not available.
 
 For a development frontend with hot reload:
 
