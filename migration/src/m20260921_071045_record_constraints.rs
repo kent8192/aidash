@@ -5,8 +5,16 @@ pub struct Migration;
 
 const SEMVER: &str = "version ~ '^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)([.](0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?([+][0-9A-Za-z-]+([.][0-9A-Za-z-]+)*)?$'";
 
-// Static expressions only. SeaQuery 0.32 cannot express ALTER TABLE ADD/DROP CHECK;
-// only that DDL uses SQL. Foreign keys and indexes use SeaQuery builders.
+// Unicode White_Space, matching Rust str::trim without locale-dependent regexes.
+const WHITESPACE_SQL: &str = r"U&'\0009\000A\000B\000C\000D\0020\0085\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000'";
+
+// SeaQuery 0.32.7 TableAlterStatement supports column/foreign-key changes, but
+// not ADD/DROP CHECK (TableCreateStatement::check only applies to new tables).
+// Keep this existing-table DDL exception in SeaORM's transactional migration;
+// foreign keys and indexes use SchemaManager's SeaQuery builders.
+// https://docs.rs/sea-query/0.32.7/sea_query/table/struct.TableAlterStatement.html
+// https://www.sea-ql.org/SeaORM/docs/1.1.x/migration/writing-migration/#using-raw-sql
+// Expressions and identifiers below are static, never application input.
 const CHECKS: &[(&str, &str, &str)] = &[
 	("registry", "registry_semver", SEMVER),
 	("packages", "packages_semver", SEMVER),
@@ -18,32 +26,33 @@ const CHECKS: &[(&str, &str, &str)] = &[
 	(
 		"registry",
 		"registry_metadata_shape",
-		"jsonb_typeof(metadata) = 'object' AND jsonb_typeof(metadata->'name') = 'object' AND metadata->'name' <> '{}'::jsonb AND jsonb_typeof(metadata->'description') = 'object' AND metadata->'description' <> '{}'::jsonb AND jsonb_typeof(metadata->'config') = 'object' AND jsonb_typeof(COALESCE(metadata->'schema', '{}'::jsonb)) = 'object' AND jsonb_typeof(COALESCE(metadata->'capabilities', '[]'::jsonb)) = 'array' AND jsonb_typeof(COALESCE(metadata->'tags', '[]'::jsonb)) = 'array' AND jsonb_typeof(COALESCE(metadata->'languages', '[]'::jsonb)) = 'array' AND jsonb_typeof(COALESCE(metadata->'skills', '[]'::jsonb)) = 'array'",
+		// Strict paths preserve array values; silent mode lets shape checks reject missing keys.
+		"jsonb_typeof(metadata) = 'object' AND jsonb_typeof(metadata->'name') = 'object' AND metadata->'name' <> '{}'::jsonb AND NOT jsonb_path_exists(metadata, 'strict $.name.* ? (@.type() != \"string\")', '{}'::jsonb, true) AND jsonb_typeof(metadata->'description') = 'object' AND metadata->'description' <> '{}'::jsonb AND NOT jsonb_path_exists(metadata, 'strict $.description.* ? (@.type() != \"string\")', '{}'::jsonb, true) AND jsonb_typeof(metadata->'config') = 'object' AND jsonb_typeof(COALESCE(metadata->'schema', '{}'::jsonb)) = 'object' AND jsonb_typeof(COALESCE(metadata->'capabilities', '[]'::jsonb)) = 'array' AND jsonb_typeof(COALESCE(metadata->'tags', '[]'::jsonb)) = 'array' AND jsonb_typeof(COALESCE(metadata->'languages', '[]'::jsonb)) = 'array' AND jsonb_typeof(COALESCE(metadata->'skills', '[]'::jsonb)) = 'array'",
 	),
 	(
 		"registry",
 		"registry_model_config",
-		"kind <> 'model' OR (metadata#>>'{config,provider}' = 'openrouter' AND jsonb_typeof(metadata#>'{config,model_id}') = 'string' AND length(btrim(metadata#>>'{config,model_id}')) > 0 AND jsonb_typeof(metadata#>'{config,endpoint}') = 'string' AND length(btrim(metadata#>>'{config,endpoint}')) > 0 AND CASE WHEN jsonb_typeof(metadata#>'{config,context_window}') = 'number' THEN (metadata#>>'{config,context_window}')::numeric >= 2048 AND trunc((metadata#>>'{config,context_window}')::numeric) = (metadata#>>'{config,context_window}')::numeric ELSE false END AND jsonb_typeof(metadata#>'{config,modalities}') = 'array' AND (metadata#>'{config,modalities}') @> '[\"text\"]'::jsonb AND (NOT (metadata->'config' ? 'reasoning_effort') OR metadata#>'{config,reasoning_effort}' = 'null'::jsonb OR metadata#>>'{config,reasoning_effort}' IN ('none','minimal','low','medium','high','xhigh','max')))",
+		"kind <> 'model' OR (metadata#>>'{config,provider}' = 'openrouter' AND jsonb_typeof(metadata#>'{config,model_id}') = 'string' AND length(btrim(metadata#>>'{config,model_id}', {whitespace})) > 0 AND jsonb_typeof(metadata#>'{config,endpoint}') = 'string' AND length(btrim(metadata#>>'{config,endpoint}', {whitespace})) > 0 AND CASE WHEN jsonb_typeof(metadata#>'{config,context_window}') = 'number' THEN (metadata#>>'{config,context_window}')::numeric >= 2048 AND trunc((metadata#>>'{config,context_window}')::numeric) = (metadata#>>'{config,context_window}')::numeric ELSE false END AND jsonb_typeof(metadata#>'{config,modalities}') = 'array' AND (metadata#>'{config,modalities}') @> '[\"text\"]'::jsonb AND (NOT (metadata->'config' ? 'reasoning_effort') OR metadata#>'{config,reasoning_effort}' = 'null'::jsonb OR metadata#>>'{config,reasoning_effort}' IN ('none','minimal','low','medium','high','xhigh','max')))",
 	),
 	(
 		"registry",
 		"registry_agent_config",
-		"kind <> 'agent' OR (jsonb_typeof(metadata#>'{config,instructions}') = 'string' AND length(btrim(metadata#>>'{config,instructions}')) > 0 AND CASE WHEN NOT (metadata->'config' ? 'max_steps') THEN true WHEN jsonb_typeof(metadata#>'{config,max_steps}') = 'number' THEN (metadata#>>'{config,max_steps}')::numeric BETWEEN 1 AND 1000 AND trunc((metadata#>>'{config,max_steps}')::numeric) = (metadata#>>'{config,max_steps}')::numeric ELSE false END)",
+		"kind <> 'agent' OR (jsonb_typeof(metadata#>'{config,instructions}') = 'string' AND length(btrim(metadata#>>'{config,instructions}', {whitespace})) > 0 AND CASE WHEN NOT (metadata->'config' ? 'max_steps') THEN true WHEN jsonb_typeof(metadata#>'{config,max_steps}') = 'number' THEN (metadata#>>'{config,max_steps}')::numeric BETWEEN 1 AND 1000 AND trunc((metadata#>>'{config,max_steps}')::numeric) = (metadata#>>'{config,max_steps}')::numeric ELSE false END)",
 	),
 	(
 		"registry",
 		"registry_skill_config",
-		"kind <> 'skill' OR (jsonb_typeof(metadata#>'{config,instructions}') = 'string' AND length(btrim(metadata#>>'{config,instructions}')) > 0)",
+		"kind <> 'skill' OR (jsonb_typeof(metadata#>'{config,instructions}') = 'string' AND length(btrim(metadata#>>'{config,instructions}', {whitespace})) > 0)",
 	),
 	(
 		"workspaces",
 		"workspaces_content",
-		"length(btrim(title)) > 0 AND length(btrim(goal)) > 0 AND jsonb_typeof(state) = 'object' AND revision >= 0",
+		"length(btrim(title, {whitespace})) > 0 AND length(btrim(goal, {whitespace})) > 0 AND jsonb_typeof(state) = 'object' AND revision >= 0",
 	),
 	(
 		"tasks",
 		"tasks_content",
-		"length(btrim(title)) > 0 AND length(btrim(description)) > 0 AND jsonb_typeof(requirements) = 'object' AND revision >= 0",
+		"length(btrim(title, {whitespace})) > 0 AND length(btrim(description, {whitespace})) > 0 AND jsonb_typeof(requirements) = 'object' AND revision >= 0",
 	),
 	(
 		"tasks",
@@ -64,7 +73,7 @@ const CHECKS: &[(&str, &str, &str)] = &[
 	(
 		"packages",
 		"packages_identity",
-		"jsonb_typeof(manifest) = 'object' AND manifest#>>'{entity,id}' = id AND manifest#>>'{entity,version}' = version",
+		"jsonb_typeof(manifest) = 'object' AND manifest#>'{entity,id}' = to_jsonb(id) AND manifest#>'{entity,version}' = to_jsonb(version)",
 	),
 	(
 		"semantic_indexes",
@@ -114,6 +123,7 @@ const LINKS: &[(&str, &str, &str, &str)] = &[
 impl MigrationTrait for Migration {
 	async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
 		for (table, name, expression) in CHECKS {
+			let expression = expression.replace("{whitespace}", WHITESPACE_SQL);
 			// PostgreSQL CHECK alone accepts NULL; missing required JSON keys must fail.
 			manager
 				.get_connection()

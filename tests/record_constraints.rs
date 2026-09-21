@@ -359,3 +359,168 @@ async fn constraints_upgrade_and_rollback_preserve_data_and_reject_invalid_histo
 	migration::Migrator::up(&db, None).await.unwrap();
 	cleanup(f, &url, &schema).await;
 }
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn nonblank_constraints_match_rust_unicode_whitespace() {
+	let (f, url, schema) = setup().await;
+	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
+	f.store
+		.create_task(
+			workspace.id,
+			&NewTask {
+				title: "Task".into(),
+				description: "Work".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"human",
+			None,
+		)
+		.await
+		.unwrap();
+	// Derive the complete set independently from Rust, including NBSP and separators.
+	let whitespace: Vec<_> = (0..=0x10ffff)
+		.filter_map(char::from_u32)
+		.filter(|c| c.is_whitespace())
+		.collect();
+	let mut blanks: Vec<_> = whitespace.iter().map(char::to_string).collect();
+	blanks.push(whitespace.iter().collect());
+	blanks.push(String::new());
+	for blank in blanks {
+		assert!(blank.trim().is_empty());
+		for (kind, field, constraint) in [
+			("model", "model_id", "registry_model_config"),
+			("model", "endpoint", "registry_model_config"),
+			("agent", "instructions", "registry_agent_config"),
+			("skill", "instructions", "registry_skill_config"),
+		] {
+			let mut entry = serde_json::to_value(model()).unwrap();
+			entry["kind"] = json!(kind);
+			entry["config"][field] = json!(blank);
+			check_rejected(insert_entry(&f.store.pool, &entry).await, constraint);
+		}
+		for (table, column, constraint) in [
+			("workspaces", "title", "workspaces_content"),
+			("workspaces", "goal", "workspaces_content"),
+			("tasks", "title", "tasks_content"),
+			("tasks", "description", "tasks_content"),
+		] {
+			check_rejected(
+				update(&f.store.pool, table, column, Expr::val(blank.clone())).await,
+				constraint,
+			);
+		}
+	}
+	// Whitespace surrounding real content and non-whitespace Unicode remain valid.
+	for (index, content) in ["\t\u{a0}model\u{3000}\n", "\u{200b}"].iter().enumerate() {
+		assert!(!content.trim().is_empty());
+		for kind in ["model", "agent", "skill"] {
+			let mut entry = serde_json::to_value(model()).unwrap();
+			entry["id"] = json!(format!("{kind}-{index}"));
+			entry["kind"] = json!(kind);
+			for field in ["model_id", "endpoint", "instructions"] {
+				entry["config"][field] = json!(content);
+			}
+			insert_entry(&f.store.pool, &entry).await.unwrap();
+		}
+		for (table, column) in [
+			("workspaces", "title"),
+			("workspaces", "goal"),
+			("tasks", "title"),
+			("tasks", "description"),
+		] {
+			update(&f.store.pool, table, column, Expr::val(*content))
+				.await
+				.unwrap();
+		}
+	}
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn localized_metadata_requires_string_values_for_every_locale() {
+	let (f, url, schema) = setup().await;
+	for field in ["name", "description"] {
+		for invalid in [
+			json!(7),
+			json!(true),
+			Value::Null,
+			json!([]),
+			json!(["text"]),
+			json!({"nested":"text"}),
+		] {
+			let mut entry = serde_json::to_value(model()).unwrap();
+			entry[field] = json!({"en":"Valid", "ja":invalid});
+			check_rejected(
+				insert_entry(&f.store.pool, &entry).await,
+				"registry_metadata_shape",
+			);
+		}
+	}
+	let mut entry = model();
+	entry.name.insert("ja".into(), "モデル".into());
+	entry.description.insert("ja".into(), "説明".into());
+	insert_entry(&f.store.pool, &serde_json::to_value(&entry).unwrap())
+		.await
+		.unwrap();
+	assert_eq!(
+		f.registry.get(&entry.id, &entry.version).await.unwrap(),
+		entry
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn package_identity_requires_matching_json_strings() {
+	let (f, url, schema) = setup().await;
+	let mut entry = model();
+	entry.id = "1".into();
+	entry.kind = "skill".into();
+	entry.config = json!({"instructions":"Complete the task"});
+	let package = aidash::registry::Package {
+		entity: entry,
+		author: "Fixture".into(),
+		permissions: vec![],
+		dependencies: vec![],
+	};
+	let record = f.registry.publish(&f.store.pool, package).await.unwrap();
+	for (field, invalid) in [
+		("id", json!(1)),
+		("id", json!(true)),
+		("id", Value::Null),
+		("id", json!(["1"])),
+		("id", json!({})),
+		("id", json!("other")),
+		("version", json!(1)),
+		("version", Value::Null),
+		("version", json!("2.0.0")),
+	] {
+		let mut manifest = record.manifest.clone();
+		manifest["entity"][field] = invalid;
+		check_rejected(
+			update(&f.store.pool, "packages", "manifest", Expr::val(manifest)).await,
+			"packages_identity",
+		);
+	}
+	for field in ["id", "version"] {
+		let mut manifest = record.manifest.clone();
+		manifest["entity"].as_object_mut().unwrap().remove(field);
+		check_rejected(
+			update(&f.store.pool, "packages", "manifest", Expr::val(manifest)).await,
+			"packages_identity",
+		);
+	}
+	update(
+		&f.store.pool,
+		"packages",
+		"manifest",
+		Expr::val(record.manifest),
+	)
+	.await
+	.unwrap();
+	cleanup(f, &url, &schema).await;
+}
