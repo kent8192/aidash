@@ -477,5 +477,15 @@
   "authSelectCredential": "ローカル資格情報を選択",
   "authPeerMappingSaveHelp": "保存すると対応付けが有効になります。有効なローカル資格情報を選択してください。",
   "authSavePeerMapping": "対応付けを保存して有効化",
-  "authPeerMappingDenied": "対応付けた資格情報には現在権限がありません。有効な資格情報を選び、主体のポリシーを確認してください。"
+  "authPeerMappingDenied": "対応付けた資格情報には現在権限がありません。有効な資格情報を選び、主体のポリシーを確認してください。",
+  "modelSearch": "モデル名・IDで検索",
+  "modelNoMatches": "一致するモデルがありません。",
+  "modelLoading": "OpenRouterのモデル一覧を取得中…",
+  "modelLoadError": "モデル一覧を取得できませんでした。再試行してください。",
+  "modelCatalogHelp": "テキスト入出力・ツール呼び出しに対応したモデルを選択できます。",
+  "modelChoose": "一覧からモデルを選択してください。",
+  "modelPricing": "100万トークンあたりの参考料金（USD、入力 / 出力）：",
+  "modelZdr": "Zero Data Retention：常時有効。ZDR対応の接続先がないモデルは実行できません。",
+  "modelReasoningDefault": "モデルの既定値",
+  "modelReasoningUnavailable": "推論強度の指定に非対応"
 }

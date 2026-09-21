@@ -93,9 +93,24 @@ pub struct ModelConfig {
 	pub model_id: String,
 	pub endpoint: String,
 	pub credential_env: Option<String>,
+	#[serde(default)]
+	pub reasoning_effort: Option<ReasoningEffort>,
 	pub context_window: usize,
 	pub modalities: Vec<String>,
 	pub cost: Value,
+}
+
+/// OpenRouter's normalized reasoning levels; omission retains the model default.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+	None,
+	Minimal,
+	Low,
+	Medium,
+	High,
+	Xhigh,
+	Max,
 }
 
 /// Explicit transport and bounds for System One probability classification.
@@ -433,12 +448,15 @@ fn validate_in(e: &Entry, local: bool) -> Result<()> {
 		"model" => {
 			let m: ModelConfig = serde_json::from_value(e.config.clone())
 				.map_err(|e| Error::Invalid(e.to_string()))?;
-			if !matches!(m.provider.as_str(), "openai" | "anthropic" | "openrouter")
+			if m.provider != "openrouter"
 				|| m.model_id.is_empty()
 				|| m.context_window < 2048
 				|| !m.modalities.iter().any(|m| m == "text")
 			{
-				return Err(Error::Invalid("model requires openai/anthropic/openrouter, model_id, text modality and context_window >= 2048".into()));
+				return Err(Error::Invalid(
+					"model requires openrouter, model_id, text modality and context_window >= 2048"
+						.into(),
+				));
 			}
 			validate_endpoint(&m.endpoint)?;
 			if let Some(name) = m.credential_env {

@@ -1,4 +1,5 @@
 import { Fragment, useState } from "react";
+import { OpenRouterModelPicker } from "./openrouter-model-picker";
 import { useForm } from "@tanstack/react-form";
 import { Field, useI18n } from "./ui";
 import type { State, EntityRef, Discovery, Task } from "./types";
@@ -255,7 +256,6 @@ export function EntityForm({
 }) {
   const { t } = useI18n();
   const [kind, setKind] = useState(initial);
-  const [modelProvider, setModelProvider] = useState("openai");
   const [error, setError] = useState("");
   const models = data.registry.filter((e) => e.kind === "model");
   const toolEntries = data.registry.filter((e) => e.kind === "tool");
@@ -269,6 +269,8 @@ export function EntityForm({
         const s = (k: string) => String(d.get(k) ?? "");
         let config: Record<string, unknown>;
         try {
+          if (kind === "model" && !s("model_id"))
+            throw new Error(t("modelChoose"));
           config =
             kind === "agent"
               ? {
@@ -281,10 +283,11 @@ export function EntityForm({
                 }
               : kind === "model"
                 ? {
-                    provider: s("provider"),
+                    provider: "openrouter",
                     model_id: s("model_id"),
                     endpoint: s("endpoint"),
-                    credential_env: s("credential_env") || null,
+                    credential_env: "AIDASH_SECRET_OPENROUTER",
+                    reasoning_effort: s("reasoning_effort") || null,
                     context_window: Number(s("context_window")),
                     modalities: ["text"],
                     cost: JSON.parse(s("cost")),
@@ -446,56 +449,7 @@ export function EntityForm({
         ) : kind === "model" ? (
           <>
             <p className="muted">{t("modelHelp")}</p>
-            <Field label={t("provider")}>
-              <select
-                name="provider"
-                value={modelProvider}
-                onChange={(e) => setModelProvider(e.target.value)}
-              >
-                <option value="openai">{t("openaiCompatible")}</option>
-                <option value="anthropic">Anthropic</option>
-                <option value="openrouter">OpenRouter</option>
-              </select>
-            </Field>
-            <Field label={t("modelId")}>
-              <input name="model_id" required />
-            </Field>
-            <Field label={t("endpoint")}>
-              <input
-                key={modelProvider}
-                name="endpoint"
-                type="url"
-                required
-                defaultValue={
-                  modelProvider === "openrouter"
-                    ? "https://openrouter.ai/api/v1"
-                    : ""
-                }
-                placeholder="https://api.openai.com/v1"
-              />
-            </Field>
-            <Field label={t("credentials")}>
-              <input
-                name="credential_env"
-                placeholder={`AIDASH_SECRET_${modelProvider.toUpperCase()}`}
-              />
-            </Field>
-            <Field label={t("contextWindow")}>
-              <input
-                name="context_window"
-                type="number"
-                min={2048}
-                defaultValue={128000}
-              />
-            </Field>
-            <Field label={t("costMetadata")}>
-              <textarea
-                name="cost"
-                defaultValue={
-                  '{"input_per_million":null,"output_per_million":null,"currency":"USD"}'
-                }
-              />
-            </Field>
+            <OpenRouterModelPicker />
           </>
         ) : kind === "embedding" ? (
           <>
