@@ -1,5 +1,6 @@
 //! Explicit inbound identity mappings. Peer authentication alone grants no
 //! tenant authority, and local subject bearer tokens never cross this boundary.
+pub(crate) mod admission;
 pub(crate) mod discovery;
 pub(crate) mod execution;
 pub(crate) mod reads;
@@ -243,4 +244,35 @@ pub(crate) async fn discover(
     }
     .await;
     access.finish(result).await
+}
+
+// Authority RPCs distinguish a permanent denial from a transport outage while
+// never reflecting a peer's response body or internal error details.
+pub(crate) async fn authority_request<T: serde::de::DeserializeOwned>(
+    f: &Federation,
+    node: &str,
+    path: &str,
+    body: &serde_json::Value,
+) -> Result<T> {
+    let response = f
+        .peer_response(node, reqwest::Method::POST, path, Some(body))
+        .await
+        .map_err(|_| Error::External("remote execution authority unavailable".into()))?;
+    match response.status().as_u16() {
+        200..=299 => crate::response::json(response, 4_194_304)
+            .await
+            .map_err(|_| Error::External("invalid remote authority response".into())),
+        401 | 403 | 404 => Err(Error::Forbidden),
+        409 => Err(Error::Conflict("remote execution authority changed".into())),
+        503 if response
+            .headers()
+            .get("x-aidash-transaction-pending")
+            .is_some_and(|value| value == "1") =>
+        {
+            Err(Error::TransactionPending)
+        }
+        _ => Err(Error::External(
+            "remote execution authority unavailable".into(),
+        )),
+    }
 }

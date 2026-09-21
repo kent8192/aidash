@@ -118,6 +118,18 @@ pub fn router(f: Federation) -> Router {
             "/scoped/execution/grants/verify",
             post(crate::authorization::remote::verify),
         )
+        .route(
+            "/scoped/execution/grants/describe",
+            post(crate::authorization::remote::describe),
+        )
+        .route(
+            "/scoped/execution/admissions",
+            post(crate::authorization::peer::admission::admit),
+        )
+        .route(
+            "/scoped/execution/admissions/{id}/verify",
+            post(crate::authorization::peer::admission::verify),
+        )
         .route("/offers", post(peer_offer))
         .route("/workspace", post(peer_workspace))
         .route("/observe", get(peer_observe))

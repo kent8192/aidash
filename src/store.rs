@@ -753,6 +753,14 @@ impl Store {
         }
         Ok(())
     }
+    pub(crate) async fn require_legacy_remote_task(&self, home: &str, task: Uuid) -> Result<()> {
+        let admitted: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM authorization_remote_admissions WHERE source_node=$1 AND task_id=$2)")
+            .bind(home).bind(task).fetch_one(&self.pool).await?;
+        if admitted {
+            return Err(Error::Forbidden);
+        }
+        Ok(())
+    }
     pub async fn accept_run(
         &self,
         task: &Task,
@@ -762,6 +770,17 @@ impl Store {
     ) -> Result<Run> {
         self.require_legacy_execution(task.workspace_id).await?;
         let mut tx = self.pool.begin().await?;
+        // Serialize legacy admission against scoped receiver admission. Neither
+        // mode may appear between the other's check and durable commit.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,71003209))")
+            .bind(format!("{home_node}:{}", task.id))
+            .execute(&mut *tx)
+            .await?;
+        let admitted: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM authorization_remote_admissions WHERE source_node=$1 AND task_id=$2)")
+            .bind(home_node).bind(task.id).fetch_one(&mut *tx).await?;
+        if admitted {
+            return Err(Error::Forbidden);
+        }
         self.require_legacy_agent(agent_id, agent_version).await?;
         let row: Option<Run> = sqlx::query_as("INSERT INTO runs(id,task_id,workspace_id,home_node,agent_id,agent_version) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(home_node,task_id) DO NOTHING RETURNING *")
             .bind(Uuid::new_v4()).bind(task.id).bind(task.workspace_id).bind(home_node).bind(agent_id).bind(agent_version).fetch_optional(&mut *tx).await?;

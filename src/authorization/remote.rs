@@ -238,7 +238,7 @@ async fn inspect(
     let resource = access.resource("node", node, json!({"remote_node":node}));
     access.require(&resource, "federation.execute").await?;
     peer(access, node).await?;
-    let inspection: Inspection = f.request(node,reqwest::Method::POST,"/scoped/execution/inspect",Some(&json!({"tenant":access.identity.tenant,"subject":access.identity.subject,"agent":agent,"requirements":requirements}))).await.map_err(|_|Error::External("receiver execution inspection unavailable".into()))?;
+    let inspection: Inspection = super::peer::authority_request(f, node, "/scoped/execution/inspect", &json!({"tenant":access.identity.tenant,"subject":access.identity.subject,"agent":agent,"requirements":requirements})).await?;
     validate(&inspection, node, agent, requirements)?;
     Ok(inspection)
 }
@@ -330,17 +330,41 @@ async fn revoke(
 pub(crate) struct VerifyInput {
     grant_id: Uuid,
 }
-// Verification deliberately returns no task or workspace content. Admission
-// will consume the retained Access when it installs its durable host binding.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Description {
+    pub grant_id: Uuid,
+    pub source_node: String,
+    pub target_node: String,
+    pub source_tenant: String,
+    pub source_subject: String,
+    pub task: Task,
+    pub inspection: Inspection,
+    pub expires_at: DateTime<Utc>,
+}
+// Only the destination peer may obtain the source-authorized task. Both this
+// description and boolean verification share the exact live authority checks.
+pub(crate) async fn describe(
+    State(f): State<Federation>,
+    headers: HeaderMap,
+    Json(input): Json<VerifyInput>,
+) -> Result<Json<Description>> {
+    description(&f, crate::api::peer_node(&headers)?, input.grant_id)
+        .await
+        .map(Json)
+}
 pub(crate) async fn verify(
     State(f): State<Federation>,
     headers: HeaderMap,
     Json(input): Json<VerifyInput>,
 ) -> Result<Json<bool>> {
-    let node = crate::api::peer_node(&headers)?;
+    description(&f, crate::api::peer_node(&headers)?, input.grant_id).await?;
+    Ok(Json(true))
+}
+async fn description(f: &Federation, node: &str, id: Uuid) -> Result<Description> {
     let grant: Grant =
         sqlx::query_as("SELECT * FROM authorization_remote_grants WHERE id=$1 AND node_id=$2")
-            .bind(input.grant_id)
+            .bind(id)
             .bind(node)
             .fetch_optional(&f.store.pool)
             .await?
@@ -384,15 +408,24 @@ pub(crate) async fn verify(
             id: inspection.agent.id.clone(),
             version: inspection.agent.version.clone(),
         };
-        let requirements = serde_json::from_value(task.requirements)?;
-        let fresh = inspect(&f, &mut access, node, &agent, &requirements).await?;
+        let requirements = serde_json::from_value(task.requirements.clone())?;
+        let fresh = inspect(f, &mut access, node, &agent, &requirements).await?;
         if fresh != inspection {
             return Err(Error::Forbidden);
         }
         if !live(&mut access, current.id).await? {
             return Err(Error::Forbidden);
         }
-        Ok(Json(true))
+        Ok(Description {
+            grant_id: current.id,
+            source_node: f.config.node_id.clone(),
+            target_node: current.node_id,
+            source_tenant: current.tenant,
+            source_subject: current.root_subject,
+            task,
+            inspection,
+            expires_at: current.expires_at,
+        })
     }
     .await;
     access.finish(result).await

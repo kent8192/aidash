@@ -65,6 +65,9 @@ async fn grant(store: &Store, run: &Run) -> Result<Option<Grant>> {
             return Err(Error::Forbidden);
         }
     } else {
+        store
+            .require_legacy_remote_task(&run.home_node, run.task_id)
+            .await?;
         store.require_legacy_execution(run.workspace_id).await?;
         store
             .require_legacy_agent(&run.agent_id, &run.agent_version)
