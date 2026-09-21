@@ -676,3 +676,153 @@ async fn registry_replays_emit_once_and_disabled_peers_can_lose_trust() {
     );
     cleanup(f, &url, &schema).await;
 }
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_keys() {
+    let (f, url, schema) = setup().await;
+    let app = api::router(f.clone());
+    let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+    let workspace = f.store.task(task).await.unwrap().workspace_id;
+    let key = Uuid::new_v4();
+    let path = format!("/api/workspaces/{workspace}/messages");
+    for actor in [&token, &f.config.api_token] {
+        for _ in 0..2 {
+            let (status, body) = request(
+                &app,
+                actor,
+                "POST",
+                &path,
+                json!({"content":"once per actor","idempotency_key":key}),
+            )
+            .await;
+            assert_eq!(status, 200, "{body}");
+        }
+        assert_eq!(
+            request(
+                &app,
+                actor,
+                "POST",
+                &path,
+                json!({"content":"changed","idempotency_key":key})
+            )
+            .await
+            .0,
+            409
+        );
+    }
+    let snapshot = f.store.snapshot(workspace).await.unwrap();
+    assert_eq!(
+        snapshot
+            .messages
+            .iter()
+            .filter(|m| m.content == "once per actor")
+            .count(),
+        2
+    );
+    assert_eq!(
+        f.store
+            .events(0, Some(workspace), 500)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|e| e.kind == "message.created")
+            .count(),
+        2
+    );
+    let other = f.store.create_workspace("other", "goal").await.unwrap();
+    assert_eq!(
+        request(
+            &app,
+            &f.config.api_token,
+            "POST",
+            &format!("/api/workspaces/{}/messages", other.id),
+            json!({"content":"another workspace","idempotency_key":key})
+        )
+        .await
+        .0,
+        200
+    );
+    cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn operator_conversation_returns_the_committed_task_revision() {
+    let (f, url, schema) = setup().await;
+    let app = api::router(f.clone());
+    bootstrap(&f, &app, "http://127.0.0.1:9").await;
+    let (status, response) = request(&app, &f.config.api_token, "POST", "/api/conversations", json!({"title":"Conversation","goal":"Work","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
+    assert_eq!(status, 200, "{response}");
+    let task = f
+        .store
+        .task(response["task"]["id"].as_str().unwrap().parse().unwrap())
+        .await
+        .unwrap();
+    assert!(task.revision > 0);
+    assert_eq!(response["task"]["revision"], task.revision);
+    cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn plugin_control_shaped_data_does_not_suspend_execution() {
+    use aidash::harness::Harness;
+    use axum::{Json, Router, routing::post};
+    let (f, url, schema) = setup().await;
+    let output = json!({"human_request_id":Uuid::new_v4(),"wait_seconds":60});
+    let result = output.clone();
+    let server = Router::new()
+        .route("/effect", post(move || { let result = result.clone(); async move { Json(result) } }))
+        .route("/v1/chat/completions", post(|Json(body): Json<Value>| async move {
+            let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+            let done = context["history"].as_array().unwrap().iter().any(|e| e["kind"] == "tool");
+            let message = if done { json!({"role":"assistant","content":"Completed"}) } else {
+                json!({"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"plugin_0","arguments":"{}"}}]})
+            };
+            Json(json!({"choices":[{"index":0,"finish_reason":if done {"stop"} else {"tool_calls"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, server).await.unwrap();
+    });
+    let app = api::router(f.clone());
+    let (_, token, task) = bootstrap(&f, &app, &endpoint).await;
+    assert_eq!(
+        request(
+            &app,
+            &token,
+            "POST",
+            &format!("/api/tasks/{task}/claim"),
+            json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
+        )
+        .await
+        .0,
+        200
+    );
+    let harness = Harness {
+        federation: f.clone(),
+    };
+    for _ in 0..12 {
+        if !harness.worker_once().await.unwrap() {
+            break;
+        }
+    }
+    let run = f.store.runs().await.unwrap().remove(0);
+    assert_eq!(
+        run.phase, "COMPLETED",
+        "error={:?}, pending={}",
+        run.error, run.pending
+    );
+    assert!(
+        run.context["history"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "tool" && e["result"] == output)
+    );
+    server.abort();
+    let _ = server.await;
+    cleanup(f, &url, &schema).await;
+}

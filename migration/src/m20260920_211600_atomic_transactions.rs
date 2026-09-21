@@ -201,7 +201,27 @@ $$;
         Ok(())
     }
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        let pending=manager.get_connection().query_one(sea_orm::Statement::from_string(sea_orm::DbBackend::Postgres,"SELECT EXISTS(SELECT 1 FROM atomic_coordinators WHERE NOT complete) OR EXISTS(SELECT 1 FROM atomic_participants WHERE phase NOT IN ('COMMITTED','ABORTED')) AS pending")).await?.ok_or_else(||DbErr::Custom("atomic state unavailable".into()))?;
+        let coordinators = Query::select()
+            .expr(Expr::val(1))
+            .from(Alias::new("atomic_coordinators"))
+            .and_where(Expr::col(Alias::new("complete")).eq(false))
+            .to_owned();
+        let participants = Query::select()
+            .expr(Expr::val(1))
+            .from(Alias::new("atomic_participants"))
+            .and_where(Expr::col(Alias::new("phase")).is_not_in(["COMMITTED", "ABORTED"]))
+            .to_owned();
+        let query = Query::select()
+            .expr_as(
+                Expr::exists(coordinators).or(Expr::exists(participants)),
+                Alias::new("pending"),
+            )
+            .to_owned();
+        let pending = manager
+            .get_connection()
+            .query_one(manager.get_database_backend().build(&query))
+            .await?
+            .ok_or_else(|| DbErr::Custom("atomic state unavailable".into()))?;
         if pending.try_get::<bool>("", "pending")? {
             return Err(DbErr::Custom(
                 "resolve atomic transactions before downgrading".into(),

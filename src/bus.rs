@@ -74,10 +74,22 @@ impl EventBus {
             let header_len = b"NATS/1.0\r\nNats-Msg-Id: \r\n\r\n".len() + message_id.len();
             headers.insert("Nats-Msg-Id", message_id);
             let result = async {
-                let payload = event.cloud_event().to_string();
+                let mut envelope = event.cloud_event();
+                let mut payload = envelope.to_string();
                 let limit = self.context.client().server_info().max_payload;
-                // Reject locally: an oversized HPUB disconnects the shared NATS
-                // connection and can discard acknowledgements for healthy events.
+                // Keep the durable payload in PostgreSQL and publish a reference
+                // when broker limits cannot accommodate the complete event.
+                if payload.len().saturating_add(header_len) > limit {
+                    envelope
+                        .as_object_mut()
+                        .expect("CloudEvent object")
+                        .remove("data");
+                    envelope["dataref"] =
+                        serde_json::json!(format!("/api/events?after={}", event.sequence - 1));
+                    payload = envelope.to_string();
+                }
+                // Even reference envelopes must fit before HPUB: oversize frames
+                // disconnect the shared connection and disrupt healthy events.
                 if payload.len().saturating_add(header_len) > limit {
                     return Err(Error::External(format!(
                         "event exceeds NATS max_payload {limit}"

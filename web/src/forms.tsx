@@ -259,6 +259,7 @@ export function EntityForm({
   const [error, setError] = useState("");
   const models = data.registry.filter((e) => e.kind === "model");
   const toolEntries = data.registry.filter((e) => e.kind === "tool");
+  const skillEntries = data.registry.filter((e) => e.kind === "skill");
   return (
     <form
       onSubmit={(e) => {
@@ -274,7 +275,7 @@ export function EntityForm({
                   model: ref(s("model")),
                   instructions: s("instructions"),
                   tools: d.getAll("tools").map((v) => ref(String(v))),
-                  skills: [],
+                  skills: d.getAll("skills").map((v) => ref(String(v))),
                   cluster: s("cluster") ? ref(s("cluster")) : null,
                   max_steps: 64,
                 }
@@ -422,6 +423,19 @@ export function EntityForm({
                   <input
                     type="checkbox"
                     name="tools"
+                    value={`${e.id}@${e.version}`}
+                  />
+                  {e.id} · {e.version}
+                </label>
+              ))}
+            </fieldset>
+            <fieldset>
+              <legend>{t("skill")}</legend>
+              {skillEntries.map((e) => (
+                <label className="check" key={`${e.id}@${e.version}`}>
+                  <input
+                    type="checkbox"
+                    name="skills"
                     value={`${e.id}@${e.version}`}
                   />
                   {e.id} · {e.version}

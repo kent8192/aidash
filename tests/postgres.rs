@@ -1428,7 +1428,7 @@ async fn registry_event_and_conversation_creation_roll_back_as_units() {
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL and NATS"]
-async fn rejected_outbox_payload_does_not_block_later_events() {
+async fn oversized_outbox_payload_publishes_a_reference_without_blocking_later_events() {
     let (mut store, url, schema) = setup().await;
     store.node_id = format!("aidash://outbox-{}", Uuid::new_v4().simple());
     let mut f = federation_for(&store);
@@ -1446,7 +1446,7 @@ async fn rejected_outbox_payload_does_not_block_later_events() {
         .await
         .unwrap();
     let healthy = store.emit(None, "small", json!({"ok":true})).await.unwrap();
-    assert_eq!(bus.publish_once(&f).await.unwrap(), 1);
+    assert_eq!(bus.publish_once(&f).await.unwrap(), 2);
     let row: (bool, Option<String>) = sqlx::query_as(
         &sea_orm::sea_query::Query::select()
             .expr(sea_orm::sea_query::Expr::cust("published_at IS NOT NULL"))
@@ -1461,8 +1461,32 @@ async fn rejected_outbox_payload_does_not_block_later_events() {
     .fetch_one(&store.pool)
     .await
     .unwrap();
-    assert!(!row.0);
-    assert!(row.1.is_some());
+    assert!(row.0);
+    assert!(row.1.is_none());
+    let stream = bus.context.get_stream(&bus.stream_name).await.unwrap();
+    let mut saw_reference = false;
+    for sequence in 1..=2 {
+        let message = stream.get_raw_message(sequence).await.unwrap();
+        let envelope: serde_json::Value = serde_json::from_slice(&message.payload).unwrap();
+        if envelope["id"] == poison.id.to_string() {
+            assert!(envelope.get("data").is_none());
+            assert_eq!(
+                envelope["dataref"],
+                format!("/api/events?after={}", poison.sequence - 1)
+            );
+            let replay = store.events(poison.sequence - 1, None, 500).await.unwrap();
+            assert_eq!(
+                replay.iter().find(|e| e.id == poison.id).unwrap().data,
+                poison.data
+            );
+            saw_reference = true;
+        } else {
+            assert_eq!(envelope["id"], healthy.id.to_string());
+            assert_eq!(envelope["data"], healthy.data);
+        }
+    }
+    assert!(saw_reference);
+    assert_eq!(bus.publish_once(&f).await.unwrap(), 0);
     assert!(
         sqlx::query_scalar::<_, bool>(
             &sea_orm::sea_query::Query::select()

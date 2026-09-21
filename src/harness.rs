@@ -558,12 +558,16 @@ impl Harness {
                     .push(json!({"kind":"tool","call":call,"result":output}));
                 run.context = json!(context);
                 run.pending["cursor"] = json!(cursor + 1);
-                if let Some(id) = output.get("human_request_id") {
+                if call.name == "human_request"
+                    && let Some(id) = output.get("human_request_id")
+                {
                     run.pending["human_request_id"] = id.clone();
                     run.pending["resume_phase"] = json!("THINKING");
                     run.step += 1;
                     run.phase = "WAITING".into();
-                } else if let Some(seconds) = output["wait_seconds"].as_i64() {
+                } else if call.name == "workspace_wait"
+                    && let Some(seconds) = output["wait_seconds"].as_i64()
+                {
                     run.pending["wake_at"] =
                         json!(chrono::Utc::now() + chrono::Duration::seconds(seconds));
                     run.pending["resume_phase"] = json!("TOOL_CALL");

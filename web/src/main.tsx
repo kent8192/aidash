@@ -43,7 +43,7 @@ import {
   Workflow,
   Zap,
 } from "lucide-react";
-import { subscribe } from "./api";
+import { subscribe } from "./event-stream";
 import { ApiError, AUTHENTICATION_EXPIRED } from "./transport";
 import {
   state as getState,

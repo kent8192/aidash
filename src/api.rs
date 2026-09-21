@@ -553,10 +553,17 @@ async fn message_create(
     Json(input): Json<MessageInput>,
 ) -> Result<Json<SentResponse>> {
     if let Some(scope) = scoped(&f, actor) {
-        scope.message(id, &input.content).await?;
+        scope
+            .message_keyed(id, &input.content, input.idempotency_key)
+            .await?;
         return Ok(Json(SentResponse { sent: true }));
     }
-    f.store.message(id, "human", &input.content, None).await?;
+    let key = input
+        .idempotency_key
+        .map(|key| format!("workspace-human:{id}:{key}"));
+    f.store
+        .message(id, "human", &input.content, key.as_deref())
+        .await?;
     Ok(Json(SentResponse { sent: true }))
 }
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
@@ -739,6 +746,19 @@ async fn conversation_create(
     let delegation = f
         .delegate_in(&mut tx, &task, &f.config.node_id, &agent)
         .await?;
+    let task = sqlx::query_as(
+        &sea_orm::sea_query::Query::select()
+            .column(sea_orm::sea_query::Asterisk)
+            .from(sea_orm::sea_query::Alias::new("tasks"))
+            .and_where(
+                sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id"))
+                    .eq(sea_orm::sea_query::Expr::cust("$1")),
+            )
+            .to_string(sea_orm::sea_query::PostgresQueryBuilder),
+    )
+    .bind(task.id)
+    .fetch_one(&mut *tx)
+    .await?;
     tx.commit().await?;
     if let Err(error) = f.deliver(&delegation).await {
         tracing::warn!(%error, "conversation execution queued for retry");
