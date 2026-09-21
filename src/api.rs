@@ -450,8 +450,11 @@ async fn openrouter_models(
 #[utoipa::path(post, path = "/registry", operation_id = "registry_create", request_body = Entry, responses((status = 200, body = Entry)), security(("bearer_auth" = [])))]
 async fn registry_create(
 	State(f): State<Federation>,
-	Json(entry): Json<Entry>,
+	Json(mut entry): Json<Entry>,
 ) -> Result<Json<Entry>> {
+	if entry.id.is_empty() {
+		entry.id = Uuid::now_v7().to_string();
+	}
 	let mut tx = f.store.pool.begin().await?;
 	if crate::registry::register_in(&mut tx, &entry, &f.config.node_id).await? {
 		f.store

@@ -157,12 +157,8 @@ test("generation dashboard manages policy, approval, completion and retained his
       .getByLabel("エンティティの種類")
       .selectOption("embedding");
     await registryDialog.getByLabel("エンティティID").fill(embedder);
-    await registryDialog
-      .getByLabel("名前 · English")
-      .fill("Approved embedding");
-    await registryDialog
-      .getByLabel("説明 · English")
-      .fill("Local semantic provider");
+    await registryDialog.getByLabel("名前").fill("Approved embedding");
+    await registryDialog.getByLabel("説明").fill("Local semantic provider");
     await registryDialog
       .locator('[name="endpoint"]')
       .fill(embeddingConfig.endpoint);

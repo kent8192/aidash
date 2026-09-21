@@ -137,7 +137,7 @@ test("creates a workspace and task and receives live assignment changes", async 
   await expect(row).toContainText("完了", { timeout: 30000 });
 });
 
-test("publishes and installs a localized skill through the marketplace", async ({
+test("publishes and installs a skill through the marketplace", async ({
   page,
 }) => {
   const id = `browser-skill-${Date.now()}`;
@@ -151,12 +151,11 @@ test("publishes and installs a localized skill through the marketplace", async (
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("エンティティの種類").selectOption("skill");
   await dialog.getByLabel("エンティティID").fill(id);
-  await dialog.getByLabel("名前 · English").fill("Research checklist");
-  await dialog.getByLabel("名前 · 日本語").fill(`調査チェックリスト ${id}`);
-  await dialog.getByLabel("説明 · English").fill("Cite every factual claim.");
+  await dialog.getByLabel("名前").fill(`Research checklist ${id}`);
+  await dialog.getByLabel("説明").fill("Cite every factual claim.");
   await dialog
-    .getByLabel("構成", { exact: true })
-    .fill('{"instructions":"Cite every factual claim."}');
+    .getByLabel("指示", { exact: true })
+    .fill("Cite every factual claim.");
   await dialog
     .getByRole("button", { name: "エンティティを登録", exact: true })
     .click();
@@ -180,7 +179,7 @@ test("publishes and installs a localized skill through the marketplace", async (
     .getByRole("button")
     .filter({
       has: page.getByRole("heading", {
-        name: `調査チェックリスト ${id}`,
+        name: `Research checklist ${id}`,
         exact: true,
       }),
     })

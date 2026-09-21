@@ -11,6 +11,40 @@ use uuid::Uuid;
 fn tool(id: &str) -> Entry {
 	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"tool","name":{"en":id},"description":{"en":"review regression"},"config":{"transport":"http","endpoint":"http://127.0.0.1:9/original","credential_env":null,"replay":"read_only"}})).unwrap()
 }
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn registry_assigns_uuid_v7_to_blank_ids_and_preserves_explicit_ids() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let mut generated = Vec::new();
+	for id in ["", "", "explicit-tool"] {
+		let mut entry = tool(id);
+		entry.name.insert("en".into(), "calm-otter".into());
+		let (status, result) = request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/registry",
+			json!(entry),
+		)
+		.await;
+		assert_eq!(status, 200, "{result}");
+		let assigned = result["id"].as_str().unwrap();
+		if id.is_empty() {
+			assert_eq!(Uuid::parse_str(assigned).unwrap().get_version_num(), 7);
+			generated.push(assigned.to_owned());
+		} else {
+			assert_eq!(assigned, id);
+		}
+		assert_eq!(
+			f.registry.get(assigned, "1.0.0").await.unwrap().id,
+			assigned
+		);
+	}
+	assert_ne!(generated[0], generated[1]);
+	cleanup(f, &url, &schema).await;
+}
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
 async fn installation_reconfiguration_keeps_manifest_and_events_idempotent() {
