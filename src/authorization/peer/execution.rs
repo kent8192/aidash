@@ -20,17 +20,21 @@ pub(crate) struct InspectInput {
     agent: EntityRef,
     requirements: Search,
 }
-#[derive(Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Definition {
-    entry: EntityRef,
-    kind: String,
-    digest: String,
+    pub entry: EntityRef,
+    pub kind: String,
+    pub digest: String,
+    pub metadata: Entry,
 }
-#[derive(Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Inspection {
-    node_id: String,
-    agent: Entry,
-    definitions: Vec<Definition>,
+    pub node_id: String,
+    pub authority_digest: String,
+    pub agent: Entry,
+    pub definitions: Vec<Definition>,
 }
 
 async fn definition(
@@ -55,6 +59,7 @@ async fn definition(
             entry: reference.clone(),
             kind: entry.kind.clone(),
             digest: digest(&serde_json::to_value(&entry)?),
+            metadata: entry.clone(),
         },
     );
     Ok(entry)
@@ -124,6 +129,7 @@ pub(crate) async fn inspect(
         }
         Ok(Json(Inspection {
             node_id: f.config.node_id.clone(),
+            authority_digest: digest(&json!({"source_node":node,"source_tenant":input.tenant,"source_subject":input.subject,"tenant":access.identity.tenant,"credential_id":access.identity.credential_id,"subjects":access.subjects})),
             agent: entry,
             definitions: definitions.into_values().collect(),
         }))

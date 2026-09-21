@@ -9,6 +9,7 @@ pub mod identity;
 pub mod interaction;
 pub mod peer;
 pub mod policy;
+pub mod remote;
 mod resources;
 pub mod workspace;
 

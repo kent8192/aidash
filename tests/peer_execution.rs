@@ -67,7 +67,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
             definition["digest"],
             digest(&serde_json::to_value(entry).unwrap())
         );
-        assert!(definition.get("config").is_none());
+        assert_eq!(definition["metadata"]["id"], definition["entry"]["id"]);
     }
     let mut mismatch = input.clone();
     mismatch["requirements"] = json!({"capability":"missing-capability"});

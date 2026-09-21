@@ -44,6 +44,7 @@ fn ordinary_routes() -> OpenApiRouter<Federation> {
         .merge(administration)
         .merge(crate::generation::api::routes())
         .merge(crate::semantic::api::routes())
+        .merge(crate::authorization::remote::routes())
         .routes(routes!(human_answer))
         .routes(routes!(run_message))
         .routes(routes!(conversation_create))
@@ -112,6 +113,10 @@ pub fn router(f: Federation) -> Router {
         .route(
             "/scoped/execution/inspect",
             post(crate::authorization::peer::execution::inspect),
+        )
+        .route(
+            "/scoped/execution/grants/verify",
+            post(crate::authorization::remote::verify),
         )
         .route("/offers", post(peer_offer))
         .route("/workspace", post(peer_workspace))
@@ -1163,9 +1168,11 @@ mod schema_tests {
                 .values()
                 .map(|path| path.as_object().unwrap().len())
                 .sum::<usize>(),
-            66
+            68
         );
         for (path, method) in [
+            ("/api/tasks/{id}/remote-grants", "post"),
+            ("/api/tasks/{id}/remote-grants/{grant}/revoke", "post"),
             ("/api/authorization/{tenant}/peer-mappings", "get"),
             ("/api/authorization/{tenant}/peer-mappings", "post"),
             ("/api/authorization/{tenant}/peer-mapping-history", "get"),
