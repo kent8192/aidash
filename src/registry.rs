@@ -449,7 +449,7 @@ fn validate_in(e: &Entry, local: bool) -> Result<()> {
 			let m: ModelConfig = serde_json::from_value(e.config.clone())
 				.map_err(|e| Error::Invalid(e.to_string()))?;
 			if m.provider != "openrouter"
-				|| m.model_id.is_empty()
+				|| m.model_id.trim().is_empty()
 				|| m.context_window < 2048
 				|| !m.modalities.iter().any(|m| m == "text")
 			{
@@ -493,7 +493,7 @@ fn validate_in(e: &Entry, local: bool) -> Result<()> {
 			if e.config
 				.get("instructions")
 				.and_then(Value::as_str)
-				.is_none_or(|s| s.is_empty()) =>
+				.is_none_or(|s| s.trim().is_empty()) =>
 		{
 			return Err(Error::Invalid("skill requires instructions".into()));
 		}
