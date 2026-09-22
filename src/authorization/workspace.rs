@@ -11,7 +11,7 @@ use crate::{
 	Error, Result, api_schema::StateResponse, config::NodeIdentity, domain::*, store::Store,
 };
 use sea_orm::sea_query::{
-	Alias, Asterisk, Condition, Expr, LockType, Order, PostgresQueryBuilder, Query,
+	Alias, Asterisk, Condition, Expr, ExprTrait, LockType, Order, PostgresQueryBuilder, Query,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -506,22 +506,42 @@ impl Access {
 		offset: usize,
 		limit: usize,
 	) -> Result<Value> {
+		self.workspace_observation_fitted(id, offset, limit, |_, _| Ok(true))
+			.await?
+			.map(|(_, output)| output)
+			.ok_or_else(|| Error::Invalid("workspace observation could not be fitted".into()))
+	}
+
+	pub(crate) async fn workspace_observation_fitted<F>(
+		&mut self,
+		id: Uuid,
+		offset: usize,
+		limit: usize,
+		fits: F,
+	) -> Result<Option<(usize, Value)>>
+	where
+		F: FnMut(usize, &Value) -> Result<bool>,
+	{
 		let snapshot = self.workspace_snapshot_untracked(id).await?;
-		let limit = limit.clamp(1, crate::context::observation::MAX_LIMIT);
+		let Some((fitted_limit, output)) =
+			crate::context::observation::fit_projection(&snapshot, offset, limit, fits)?
+		else {
+			return Ok(None);
+		};
 		let dependencies = WorkspaceSnapshot {
 			workspace: snapshot.workspace.clone(),
 			tasks: snapshot
 				.tasks
 				.iter()
 				.skip(offset)
-				.take(limit)
+				.take(fitted_limit)
 				.cloned()
 				.collect(),
 			artifacts: snapshot
 				.artifacts
 				.iter()
 				.skip(offset)
-				.take(limit)
+				.take(fitted_limit)
 				.cloned()
 				.collect(),
 			events: snapshot
@@ -529,7 +549,7 @@ impl Access {
 				.iter()
 				.rev()
 				.skip(offset)
-				.take(limit)
+				.take(fitted_limit)
 				.cloned()
 				.collect(),
 			messages: snapshot
@@ -537,14 +557,12 @@ impl Access {
 				.iter()
 				.rev()
 				.skip(offset)
-				.take(limit)
+				.take(fitted_limit)
 				.cloned()
 				.collect(),
 		};
 		self.track_snapshot(&dependencies).await?;
-		Ok(crate::context::observation::project(
-			&snapshot, offset, limit,
-		))
+		Ok(Some((fitted_limit, output)))
 	}
 
 	pub(crate) async fn workspace_record(
@@ -692,10 +710,24 @@ impl Access {
 			// Keep both the database response and the in-memory page bounded. The
 			// summary needs only the row identity, policy creator, and status.
 			let rows: Vec<ChildTaskSummaryRow> = sqlx::query_as(
-				"SELECT id, created_by, status FROM tasks \
-				 WHERE workspace_id = $1 AND parent_id = $2 \
-				 AND ($3::uuid IS NULL OR id > $3) \
-				 ORDER BY id ASC LIMIT 100",
+				&Query::select()
+					.columns([
+						Alias::new("id"),
+						Alias::new("created_by"),
+						Alias::new("status"),
+					])
+					.from(Alias::new("tasks"))
+					.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+					.and_where(Expr::col(Alias::new("parent_id")).eq(Expr::cust("$2")))
+					.and_where(
+						Condition::any()
+							.add(Expr::cust("$3::uuid").is_null())
+							.add(Expr::col(Alias::new("id")).gt(Expr::cust("$3::uuid")))
+							.into(),
+					)
+					.order_by(Alias::new("id"), Order::Asc)
+					.limit(100)
+					.to_string(PostgresQueryBuilder),
 			)
 			.bind(workspace_id)
 			.bind(parent_id)

@@ -522,7 +522,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		.find(|r| r.task_id == second_id)
 		.unwrap();
 	sqlx::query(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("runs")).value(sea_orm::sea_query::Alias::new("phase"), sea_orm::sea_query::Expr::cust("'TOOL_CALL'")).value(sea_orm::sea_query::Alias::new("pending"), sea_orm::sea_query::Expr::cust("$2")).and_where(sea_orm::sea_query::Expr::cust("id = $1")).to_string(sea_orm::sea_query::PostgresQueryBuilder))
-        .bind(observer.id).bind(json!({"response":{"text":"","tool_calls":[{"id":"observe","name":"workspace_observe","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0}))
+		.bind(observer.id).bind(json!({"response":{"text":"","tool_calls":[{"id":"observe","name":"workspace_observe","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0,"request_window":120000,"request_tokens":0}))
         .execute(&f.store.pool).await.unwrap();
 	Harness {
 		federation: f.clone(),

@@ -722,6 +722,23 @@ impl Home {
 			&snapshot, offset, limit,
 		))
 	}
+	pub async fn observation_fitted<F>(
+		&self,
+		offset: usize,
+		limit: usize,
+		fits: F,
+	) -> Result<Option<(usize, Value)>>
+	where
+		F: FnMut(usize, &Value) -> Result<bool>,
+	{
+		if let Some(authority) = &self.authority {
+			return authority
+				.workspace_observation_fitted(self.run.workspace_id, offset, limit, fits)
+				.await;
+		}
+		let snapshot = self.snapshot().await?;
+		crate::context::observation::fit_projection(&snapshot, offset, limit, fits)
+	}
 	pub async fn read_record(&self, kind: &str, id: &str) -> Result<Value> {
 		if let Some(authority) = &self.authority {
 			let id = id

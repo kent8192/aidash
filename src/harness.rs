@@ -29,7 +29,7 @@ struct WorkspaceReadFitBudget {
 	requested: usize,
 	offset: usize,
 	request_tokens: usize,
-	hard_window: usize,
+	request_window: usize,
 	remaining_calls: usize,
 }
 
@@ -41,7 +41,7 @@ struct WorkspaceReadRange {
 
 fn request_context_window(window: usize, minimum_request: usize) -> usize {
 	let available = window.saturating_sub(minimum_request);
-	let reserve = POST_TOOL_CONTEXT_RESERVE.min(available / 2);
+	let reserve = POST_TOOL_CONTEXT_RESERVE.min(available / 4);
 	window.saturating_sub(reserve.saturating_mul(2))
 }
 
@@ -360,6 +360,11 @@ impl Harness {
 				if let Some(deferred_read) = run.pending.get("deferred_workspace_read") {
 					pinned["deferred_workspace_read"] = deferred_read.clone();
 				}
+				if let Some(deferred_observation) =
+					run.pending.get("deferred_workspace_observation")
+				{
+					pinned["deferred_workspace_observation"] = deferred_observation.clone();
+				}
 				let specifications = tools
 					.values()
 					.map(|t| t.specification())
@@ -443,9 +448,6 @@ impl Harness {
 				run.pending = json!({
 					"response":result,
 					"cursor":0,
-					// Workspace-read fitting needs the model's hard limit, not the
-					// compaction quota that has already reserved post-tool context.
-					"window":window,
 					"request_window":budget.window,
 					"request_tokens":request_tokens
 				});
@@ -535,7 +537,7 @@ impl Harness {
 				}
 				let mut context: Context = serde_json::from_value(run.context.clone())?;
 				let mut call = result.tool_calls[cursor].clone();
-				let mut prepared_read = None;
+				let mut prepared_result = None;
 				if call.name == "workspace_read" {
 					let (read_range, saved_read) =
 						match workspace_read_plan_result(&call, run.step, cursor, &run.pending) {
@@ -546,45 +548,28 @@ impl Harness {
 							Err(error) => return Err(error),
 						};
 					if let Some(output) = saved_read {
-						prepared_read = Some(output.clone());
+						prepared_result = Some(output.clone());
 					} else {
 						let request_tokens =
 							run.pending["request_tokens"].as_u64().unwrap_or(0) as usize;
-						let window = run.pending["window"].as_u64().unwrap_or(0) as usize;
+						let request_window =
+							run.pending["request_window"].as_u64().unwrap_or(0) as usize;
 						match cap_workspace_read(
 							&home,
 							&context,
 							&call,
 							read_range,
 							request_tokens,
-							window,
+							request_window,
 							result.tool_calls.len().saturating_sub(cursor + 1),
 						)
 						.await
 						{
 							Ok(WorkspaceReadFit::Skip) => {}
 							Ok(WorkspaceReadFit::NoEnvelopeRoom) => {
-								let message = "workspace_read deferred because its result envelope does not fit the remaining request budget";
-								let remaining_calls =
-									result.tool_calls.len().saturating_sub(cursor + 1);
-								if workspace_read_error_fits(
-									&context,
-									&call,
-									message,
-									request_tokens,
-									window,
-									remaining_calls,
-								) {
-									run.pending["force_workspace_read_compaction"] = json!(true);
-									run.pending["deferred_workspace_read"] =
-										deferred_workspace_read(&call);
-									return self
-										.tool_error(run, token, &call, cursor, message.into())
-										.await;
-								}
-								// Start a new inference turn so compaction can free room before
-								// retrying a read whose empty result envelope cannot fit. Preserve
-								// its target in the next inference context.
+								// Start a new inference turn without appending an error event:
+								// even that envelope could exceed the smaller forced-compaction
+								// quota on the next request.
 								run.phase = "THINKING".into();
 								run.step += 1;
 								run.pending = json!({
@@ -606,13 +591,72 @@ impl Harness {
 									"cursor":cursor,
 									"result":output
 								});
-								prepared_read = Some(output);
+								prepared_result = Some(output);
 							}
 							Err(Error::Invalid(message)) => {
 								return self.tool_error(run, token, &call, cursor, message).await;
 							}
 							Err(error) => return Err(error),
 						}
+					}
+				}
+				if call.name == "workspace_observe" {
+					let saved_plan = &run.pending["workspace_observation_plan"];
+					let saved_output = (saved_plan["step"].as_i64() == Some(run.step as i64)
+						&& saved_plan["cursor"].as_u64() == Some(cursor as u64)
+						&& saved_plan["call"] == json!(call))
+					.then(|| saved_plan.get("result").cloned())
+					.flatten();
+					if let Some(output) = saved_output {
+						prepared_result = Some(output);
+					} else {
+						let offset = call.arguments["offset"].as_u64().unwrap_or(0) as usize;
+						let requested = call.arguments["limit"]
+							.as_u64()
+							.unwrap_or(context::observation::DEFAULT_LIMIT as u64)
+							as usize;
+						let request_tokens =
+							run.pending["request_tokens"].as_u64().unwrap_or(0) as usize;
+						let request_window =
+							run.pending["request_window"].as_u64().unwrap_or(0) as usize;
+						let remaining_calls = result.tool_calls.len().saturating_sub(cursor + 1);
+						let fitted = home
+							.observation_fitted(offset, requested, |limit, output| {
+								Ok(workspace_observation_event_fits(
+									&context,
+									&call,
+									limit,
+									output,
+									request_tokens,
+									request_window,
+									remaining_calls,
+								))
+							})
+							.await?;
+						let Some((limit, output)) = fitted else {
+							// Retry after compaction without appending an observation event
+							// that cannot fit in the next request quota.
+							run.phase = "THINKING".into();
+							run.step += 1;
+							run.pending = json!({
+								"force_workspace_read_compaction":true,
+								"deferred_workspace_observation":deferred_workspace_observation(&call)
+							});
+							store
+								.save_run(run, token, "run.observation_deferred")
+								.await?;
+							return Ok(());
+						};
+						call.arguments["limit"] = json!(limit);
+						result.tool_calls[cursor] = call.clone();
+						run.pending["response"] = json!(result);
+						run.pending["workspace_observation_plan"] = json!({
+							"step":run.step,
+							"cursor":cursor,
+							"call":call,
+							"result":output
+						});
+						prepared_result = Some(output);
 					}
 				}
 				let call = &call;
@@ -660,7 +704,7 @@ impl Harness {
 					invocation.result.ok_or_else(|| {
 						Error::Conflict("completed invocation has no result".into())
 					})?
-				} else if let Some(output) = prepared_read {
+				} else if let Some(output) = prepared_result {
 					output
 				} else {
 					let ctx = ToolContext {
@@ -692,6 +736,14 @@ impl Harness {
 					&& let Some(object) = run.pending.as_object_mut()
 				{
 					object.remove("workspace_read_plan");
+				}
+				if run.pending["workspace_observation_plan"]["step"].as_i64()
+					== Some(run.step as i64)
+					&& run.pending["workspace_observation_plan"]["cursor"].as_u64()
+						== Some(cursor as u64)
+					&& let Some(object) = run.pending.as_object_mut()
+				{
+					object.remove("workspace_observation_plan");
 				}
 				run.pending["cursor"] = json!(cursor + 1);
 				if call.name == "human_request"
@@ -779,7 +831,7 @@ async fn cap_workspace_read(
 	call: &crate::provider::ToolCall,
 	range: WorkspaceReadRange,
 	request_tokens: usize,
-	window: usize,
+	request_window: usize,
 	remaining_calls: usize,
 ) -> Result<WorkspaceReadFit> {
 	let WorkspaceReadRange { offset, requested } = range;
@@ -798,7 +850,7 @@ async fn cap_workspace_read(
 			requested,
 			offset,
 			request_tokens,
-			hard_window: window,
+			request_window,
 			remaining_calls,
 		},
 	)?
@@ -854,21 +906,6 @@ fn workspace_read_plan_result(
 	Ok((range, saved_result))
 }
 
-fn workspace_read_error_fits(
-	context: &Context,
-	call: &crate::provider::ToolCall,
-	message: &str,
-	request_tokens: usize,
-	hard_window: usize,
-	remaining_calls: usize,
-) -> bool {
-	let event = json!({"kind":"tool","call":call,"result":{"error":message}});
-	let maximum_request = hard_window
-		.saturating_sub(POST_TOOL_CONTEXT_RESERVE)
-		.saturating_sub(remaining_calls.saturating_mul(TOOL_EVENT_RESERVE));
-	request_tokens.saturating_add(context::tool_event_growth(context, &event)) <= maximum_request
-}
-
 fn fit_workspace_read_chars(
 	context: &Context,
 	call: &crate::provider::ToolCall,
@@ -879,13 +916,11 @@ fn fit_workspace_read_chars(
 		requested,
 		offset,
 		request_tokens,
-		hard_window,
+		request_window,
 		remaining_calls,
 	} = budget;
 	let reserve = remaining_calls.saturating_mul(TOOL_EVENT_RESERVE);
-	let maximum_request = hard_window
-		.saturating_sub(POST_TOOL_CONTEXT_RESERVE)
-		.saturating_sub(reserve);
+	let maximum_request = request_window.saturating_sub(reserve);
 	let fits = |chars: usize| -> Result<bool> {
 		let mut bounded_call = call.clone();
 		bounded_call.arguments["max_chars"] = json!(chars);
@@ -953,6 +988,30 @@ fn deferred_workspace_read(call: &crate::provider::ToolCall) -> Value {
 	})
 }
 
+fn deferred_workspace_observation(call: &crate::provider::ToolCall) -> Value {
+	json!({
+		"message":"Retry this workspace_observe after reducing the retained context; its page did not fit.",
+		"call":call
+	})
+}
+
+fn workspace_observation_event_fits(
+	context: &Context,
+	call: &crate::provider::ToolCall,
+	limit: usize,
+	output: &Value,
+	request_tokens: usize,
+	request_window: usize,
+	remaining_calls: usize,
+) -> bool {
+	let mut bounded_call = call.clone();
+	bounded_call.arguments["limit"] = json!(limit);
+	let event = json!({"kind":"tool","call":bounded_call,"result":output});
+	let maximum_request =
+		request_window.saturating_sub(remaining_calls.saturating_mul(TOOL_EVENT_RESERVE));
+	request_tokens.saturating_add(context::tool_event_growth(context, &event)) <= maximum_request
+}
+
 async fn run_id(store: &crate::store::Store, token: Uuid) -> Result<Uuid> {
 	sqlx::query_scalar(
 		&sea_orm::sea_query::Query::select()
@@ -988,6 +1047,32 @@ mod review_tests {
 	}
 
 	#[test]
+	fn tight_windows_leave_room_for_the_pinned_workspace_context() {
+		for slack in [4096, 8192] {
+			let minimum_request = 20_000;
+			let request_window =
+				super::request_context_window(minimum_request + slack, minimum_request);
+			let remaining = request_window.saturating_sub(minimum_request);
+			assert!(remaining > 0, "slack {slack} left no pinned-context budget");
+
+			let snapshot_budget = remaining / 4;
+			let mut pinned = serde_json::json!({
+				"identity":{"node_id":"node-1","agent_id":"agent-1","agent_version":"1"},
+				"task":{"id":"00000000-0000-0000-0000-000000000001","title":"task"},
+				"workspace":{"workspace":{"id":"00000000-0000-0000-0000-000000000002","title":"workspace"}}
+			});
+			crate::context::bound_snapshot(&mut pinned, snapshot_budget).unwrap();
+			assert!(crate::context::estimated_tokens(&pinned.to_string()) <= snapshot_budget);
+			assert_eq!(pinned["identity"]["agent_id"], "agent-1");
+			assert_eq!(pinned["task"]["id"], "00000000-0000-0000-0000-000000000001");
+			assert_eq!(
+				pinned["workspace"]["workspace"]["id"],
+				"00000000-0000-0000-0000-000000000002"
+			);
+		}
+	}
+
+	#[test]
 	fn workspace_read_chunks_fit_remaining_complete_request_budget() {
 		let call = crate::provider::ToolCall {
 			id: "read-1".into(),
@@ -1011,7 +1096,7 @@ mod review_tests {
 		.unwrap();
 		let window = 100_000;
 		let request_window = super::request_context_window(window, 4_000);
-		let allowed = window - super::POST_TOOL_CONTEXT_RESERVE - 2 * super::TOOL_EVENT_RESERVE;
+		let allowed = request_window - 2 * super::TOOL_EVENT_RESERVE;
 		let request_tokens = request_window - 4_000;
 		let chars = super::fit_workspace_read_chars(
 			&context,
@@ -1021,7 +1106,7 @@ mod review_tests {
 				requested: 16_000,
 				offset: 0,
 				request_tokens,
-				hard_window: window,
+				request_window,
 				remaining_calls: 2,
 			},
 		)
@@ -1033,6 +1118,21 @@ mod review_tests {
 		let result = super::workspace_read_result(&output, 16000, 0, chars);
 		let event = serde_json::json!({"kind":"tool","call":bounded_call,"result":result});
 		assert!(request_tokens + crate::context::tool_event_growth(&context, &event) <= allowed);
+		let mut old_quota_call = call.clone();
+		old_quota_call.arguments["max_chars"] = serde_json::json!(chars + 1);
+		let old_quota_result = super::workspace_read_result(&output, 16000, 0, chars + 1);
+		let old_quota_event =
+			serde_json::json!({"kind":"tool","call":old_quota_call,"result":old_quota_result});
+		let old_hard_window_quota =
+			window - super::POST_TOOL_CONTEXT_RESERVE - 2 * super::TOOL_EVENT_RESERVE;
+		assert!(
+			request_tokens + crate::context::tool_event_growth(&context, &old_quota_event)
+				<= old_hard_window_quota
+		);
+		assert!(
+			request_tokens + crate::context::tool_event_growth(&context, &old_quota_event)
+				> allowed
+		);
 		let mut too_large = call;
 		too_large.arguments["max_chars"] = serde_json::json!(chars + 1);
 		let result = super::workspace_read_result(&output, 16000, 0, chars + 1);
@@ -1041,7 +1141,7 @@ mod review_tests {
 	}
 
 	#[test]
-	fn workspace_read_fit_uses_the_hard_window_after_compaction_reserve() {
+	fn workspace_read_fit_uses_the_persisted_request_window() {
 		let call = crate::provider::ToolCall {
 			id: "read-1".into(),
 			name: "workspace_read".into(),
@@ -1072,13 +1172,57 @@ mod review_tests {
 				requested: 16_000,
 				offset: 0,
 				request_tokens,
-				hard_window,
+				request_window,
 				remaining_calls: 0,
 			},
 		)
 		.unwrap()
-		.expect("the post-tool reserve is deducted once from the hard window");
+		.expect("the persisted request quota is used without a duplicate reserve");
 		assert!(chars > 0);
+	}
+
+	#[test]
+	fn workspace_observation_fit_includes_the_adjusted_call_and_following_events() {
+		let context = crate::context::Context::default();
+		let call = crate::provider::ToolCall {
+			id: "observe-1".into(),
+			name: "workspace_observe".into(),
+			arguments: serde_json::json!({"offset":0,"limit":20}),
+		};
+		let output = serde_json::json!({
+			"view":"workspace_observation_v1",
+			"tasks":[{"description_preview":"x".repeat(512),"dependencies":vec!["00000000-0000-0000-0000-000000000001";50]}],
+			"pages":{"tasks":{"limit":1}}
+		});
+		let request_window = 32_000;
+		let remaining_calls = 2;
+		let target = request_window - remaining_calls * super::TOOL_EVENT_RESERVE;
+		let growth = crate::context::tool_event_growth(
+			&context,
+			&serde_json::json!({
+				"kind":"tool",
+				"call":{"id":"observe-1","name":"workspace_observe","arguments":{"offset":0,"limit":1}},
+				"result":output
+			}),
+		);
+		assert!(super::workspace_observation_event_fits(
+			&context,
+			&call,
+			1,
+			&output,
+			target - growth,
+			request_window,
+			remaining_calls
+		));
+		assert!(!super::workspace_observation_event_fits(
+			&context,
+			&call,
+			1,
+			&output,
+			target - growth + 1,
+			request_window,
+			remaining_calls
+		));
 	}
 
 	#[test]
@@ -1135,45 +1279,6 @@ mod review_tests {
 	}
 
 	#[test]
-	fn deferred_read_error_reserves_the_next_turn_context() {
-		let context = crate::context::Context::default();
-		let call = crate::provider::ToolCall {
-			id: "read-1".into(),
-			name: "workspace_read".into(),
-			arguments: serde_json::json!({"kind":"event","id":"event-id","max_chars":16000}),
-		};
-		let message = "workspace_read deferred because its result envelope does not fit the remaining request budget";
-		let event = serde_json::json!({"kind":"tool","call":call,"result":{"error":message}});
-		let growth = crate::context::tool_event_growth(&context, &event);
-		let hard_window = 32_000;
-		let remaining_calls = 2;
-		let future_call_reserve = remaining_calls * super::TOOL_EVENT_RESERVE;
-		let effective_window = hard_window - super::POST_TOOL_CONTEXT_RESERVE - future_call_reserve;
-
-		// This would pass the old hard-window-only check but is too large once
-		// the next-turn reserve is included, so the harness must defer the call.
-		let request_tokens = hard_window - future_call_reserve - growth;
-		assert!(!super::workspace_read_error_fits(
-			&context,
-			&call,
-			message,
-			request_tokens,
-			hard_window,
-			remaining_calls
-		));
-
-		let request_tokens = effective_window - growth;
-		assert!(super::workspace_read_error_fits(
-			&context,
-			&call,
-			message,
-			request_tokens,
-			hard_window,
-			remaining_calls
-		));
-	}
-
-	#[test]
 	fn zero_length_envelope_is_checked_before_deferring_a_read() {
 		let call = crate::provider::ToolCall {
 			id: "read-1".into(),
@@ -1206,7 +1311,7 @@ mod review_tests {
 					requested: 16_000,
 					offset: 0,
 					request_tokens: 0,
-					hard_window: 1,
+					request_window: 1,
 					remaining_calls: 0,
 				},
 			)

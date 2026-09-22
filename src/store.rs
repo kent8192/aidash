@@ -1160,10 +1160,29 @@ impl Store {
 	}
 
 	async fn workspace_record_row(&self, table: &str, workspace: Uuid, id: Uuid) -> Result<Value> {
+		use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 		let record = match table {
 			"tasks" => {
-				let query = "SELECT id, workspace_id, title, description, status, requirements, owner, created_by, dependencies, parent_id, revision, created_at FROM tasks WHERE workspace_id = $1 AND id = $2";
-				sqlx::query_as::<_, Task>(query)
+				let query = Query::select()
+					.columns([
+						Alias::new("id"),
+						Alias::new("workspace_id"),
+						Alias::new("title"),
+						Alias::new("description"),
+						Alias::new("status"),
+						Alias::new("requirements"),
+						Alias::new("owner"),
+						Alias::new("created_by"),
+						Alias::new("dependencies"),
+						Alias::new("parent_id"),
+						Alias::new("revision"),
+						Alias::new("created_at"),
+					])
+					.from(Alias::new("tasks"))
+					.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+					.to_string(PostgresQueryBuilder);
+				sqlx::query_as::<_, Task>(&query)
 					.bind(workspace)
 					.bind(id)
 					.fetch_optional(&self.pool)
@@ -1171,8 +1190,23 @@ impl Store {
 					.map(|record| json!(record))
 			}
 			"artifacts" => {
-				let query = "SELECT id, workspace_id, task_id, kind, name, content, created_by, idempotency_key, created_at FROM artifacts WHERE workspace_id = $1 AND id = $2";
-				sqlx::query_as::<_, Artifact>(query)
+				let query = Query::select()
+					.columns([
+						Alias::new("id"),
+						Alias::new("workspace_id"),
+						Alias::new("task_id"),
+						Alias::new("kind"),
+						Alias::new("name"),
+						Alias::new("content"),
+						Alias::new("created_by"),
+						Alias::new("idempotency_key"),
+						Alias::new("created_at"),
+					])
+					.from(Alias::new("artifacts"))
+					.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+					.to_string(PostgresQueryBuilder);
+				sqlx::query_as::<_, Artifact>(&query)
 					.bind(workspace)
 					.bind(id)
 					.fetch_optional(&self.pool)
@@ -1180,8 +1214,20 @@ impl Store {
 					.map(|record| json!(record))
 			}
 			"messages" => {
-				let query = "SELECT id, workspace_id, sender, content, idempotency_key, created_at FROM messages WHERE workspace_id = $1 AND id = $2";
-				sqlx::query_as::<_, Message>(query)
+				let query = Query::select()
+					.columns([
+						Alias::new("id"),
+						Alias::new("workspace_id"),
+						Alias::new("sender"),
+						Alias::new("content"),
+						Alias::new("idempotency_key"),
+						Alias::new("created_at"),
+					])
+					.from(Alias::new("messages"))
+					.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+					.to_string(PostgresQueryBuilder);
+				sqlx::query_as::<_, Message>(&query)
 					.bind(workspace)
 					.bind(id)
 					.fetch_optional(&self.pool)
@@ -1189,8 +1235,21 @@ impl Store {
 					.map(|record| json!(record))
 			}
 			"events" => {
-				let query = "SELECT sequence, id, node_id, workspace_id, kind, data, created_at FROM events WHERE workspace_id = $1 AND id = $2";
-				sqlx::query_as::<_, Event>(query)
+				let query = Query::select()
+					.columns([
+						Alias::new("sequence"),
+						Alias::new("id"),
+						Alias::new("node_id"),
+						Alias::new("workspace_id"),
+						Alias::new("kind"),
+						Alias::new("data"),
+						Alias::new("created_at"),
+					])
+					.from(Alias::new("events"))
+					.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+					.to_string(PostgresQueryBuilder);
+				sqlx::query_as::<_, Event>(&query)
 					.bind(workspace)
 					.bind(id)
 					.fetch_optional(&self.pool)

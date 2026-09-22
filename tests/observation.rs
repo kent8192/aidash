@@ -200,6 +200,56 @@ async fn observations_do_not_recursively_embed_the_invocation_journal() {
 	.fetch_one(&f.store.pool)
 	.await
 	.unwrap();
+	let artifact_id = Uuid::new_v4();
+	sqlx::query(
+		&sea_orm::sea_query::Query::insert()
+			.into_table(sea_orm::sea_query::Alias::new("artifacts"))
+			.columns([
+				sea_orm::sea_query::Alias::new("id"),
+				sea_orm::sea_query::Alias::new("workspace_id"),
+				sea_orm::sea_query::Alias::new("task_id"),
+				sea_orm::sea_query::Alias::new("kind"),
+				sea_orm::sea_query::Alias::new("name"),
+				sea_orm::sea_query::Alias::new("content"),
+				sea_orm::sea_query::Alias::new("created_by"),
+				sea_orm::sea_query::Alias::new("idempotency_key"),
+			])
+			.values_panic([
+				sea_orm::sea_query::Expr::cust("$1"),
+				sea_orm::sea_query::Expr::cust("$2"),
+				sea_orm::sea_query::Expr::cust("$3"),
+				sea_orm::sea_query::Expr::cust("$4"),
+				sea_orm::sea_query::Expr::cust("$5"),
+				sea_orm::sea_query::Expr::cust("$6"),
+				sea_orm::sea_query::Expr::cust("$7"),
+				sea_orm::sea_query::Expr::cust("$8"),
+			])
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(artifact_id)
+	.bind(workspace.id)
+	.bind(task.id)
+	.bind("text")
+	.bind("review artifact")
+	.bind(json!("record query regression"))
+	.bind("reviewer")
+	.bind("review-artifact")
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	for (kind, id, expected) in [
+		("task", task.id, "Coordinate specialists"),
+		("artifact", artifact_id, "record query regression"),
+		("message", old_message, "old message"),
+		("event", old_event.id, "beyond the recent event snapshot"),
+	] {
+		let record = f
+			.store
+			.workspace_record(workspace.id, kind, id)
+			.await
+			.unwrap();
+		assert!(record.to_string().contains(expected));
+	}
 	for index in 0..105 {
 		f.store
 			.emit(Some(workspace.id), "newer-record", json!({"index":index}))

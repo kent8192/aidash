@@ -504,6 +504,23 @@ impl WorkerAuthority {
 			.await
 	}
 
+	pub async fn workspace_observation_fitted<F>(
+		&self,
+		workspace: Uuid,
+		offset: usize,
+		limit: usize,
+		fits: F,
+	) -> Result<Option<(usize, Value)>>
+	where
+		F: FnMut(usize, &Value) -> Result<bool>,
+	{
+		self.access
+			.lock()
+			.await
+			.workspace_observation_fitted(workspace, offset, limit, fits)
+			.await
+	}
+
 	pub async fn workspace_record(&self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Value> {
 		self.access
 			.lock()
