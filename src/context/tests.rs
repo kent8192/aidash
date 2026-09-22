@@ -48,6 +48,165 @@ fn history() -> Vec<Value> {
 }
 
 #[tokio::test]
+async fn japanese_history_compacts_before_the_final_request_check() {
+	let mut context = Context {
+		history: history(),
+		..Default::default()
+	};
+	context.history[1] = tool("obsolete", &"日".repeat(4000));
+	let asker = FakeJev::new(drop_all);
+	let pinned = json!({"task":"航空会社の新規事業計画"});
+	compact(&mut context, &asker, 12000, &pinned, "")
+		.await
+		.unwrap();
+	let request = crate::provider::ModelRequest {
+		instructions: String::new(),
+		context: json!({"current":pinned,"summary":context.summary,"history":context.history}),
+		tools: vec![],
+		max_output_tokens: 256,
+	};
+	crate::generation::budget::Reservation::check_request(12000, &request).unwrap();
+	assert_eq!(context.compactions, 1);
+}
+
+#[test]
+fn request_check_reserves_completion_tokens() {
+	let request = crate::provider::ModelRequest {
+		instructions: String::new(),
+		context: json!({}),
+		tools: vec![],
+		max_output_tokens: 4096,
+	};
+	assert!(crate::generation::budget::Reservation::check_request(2000, &request).is_err());
+}
+
+#[test]
+fn request_check_reserves_the_registered_model_maximum_with_input_and_framing() {
+	let budget = RequestBudget {
+		window: 1_048_576,
+		instructions: "",
+		tools: &[],
+		max_output_tokens: 65_536,
+	};
+	let request = budget.request(&Context::default(), &json!({}));
+	assert_eq!(request.max_output_tokens, 65_536);
+	assert!(crate::generation::budget::Reservation::check_request(66_000, &request).is_err());
+	assert!(crate::generation::budget::Reservation::check_request(67_000, &request).is_ok());
+}
+
+#[test]
+fn tool_event_growth_matches_the_complete_request_delta() {
+	use crate::provider::ToolSpec;
+	let tools = vec![ToolSpec {
+		name: "workspace_read".into(),
+		description: "Read a record".into(),
+		parameters: json!({"type":"object","properties":{"id":{"type":"string"}}}),
+	}];
+	let pinned = json!({"private":"日本語 \"quoted\" \\ escaped context"});
+	let context = Context {
+		summary: "summary with text".into(),
+		history: vec![tool("previous", "result")],
+		..Default::default()
+	};
+	let event = tool(
+		"read",
+		&json!({"content":"quotes \" and backslashes \\ and 日本語"}).to_string(),
+	);
+	let mut after = context.clone();
+	after.history.push(event.clone());
+	let budget = RequestBudget {
+		window: usize::MAX,
+		instructions: "instructions with newline\n",
+		tools: &tools,
+		max_output_tokens: 2048,
+	};
+	let delta = budget
+		.request(&after, &pinned)
+		.estimated_total_tokens()
+		.saturating_sub(budget.request(&context, &pinned).estimated_total_tokens());
+	assert_eq!(tool_event_growth(&context, &event), delta);
+}
+
+#[tokio::test]
+async fn fitting_and_final_checks_share_escaped_input_tools_and_output_budget() {
+	use crate::{generation::budget::Reservation, provider::ToolSpec};
+	for text in ["ASCII", "日本語", "\"\\\n\t"] {
+		let tools = vec![ToolSpec {
+			name: "lookup".into(),
+			description: text.repeat(200),
+			parameters: json!({"type":"object","properties":{"query":{"type":"string"}}}),
+		}];
+		let pinned = json!({"task":text.repeat(50)});
+		let mut context = Context {
+			history: vec![tool("first", text)],
+			..Default::default()
+		};
+		let mut budget = RequestBudget {
+			window: usize::MAX,
+			instructions: text,
+			tools: &tools,
+			max_output_tokens: 4096,
+		};
+		let request = budget.request(&context, &pinned);
+		budget.window = request.estimated_total_tokens();
+		let asker = FakeJev::new(drop_all);
+		super::compact(&mut context, &asker, &budget, &pinned)
+			.await
+			.unwrap();
+		Reservation::check_request(budget.window, &budget.request(&context, &pinned)).unwrap();
+		let before = json!(context);
+		budget.window -= 1;
+		assert!(Reservation::check_request(budget.window, &request).is_err());
+		assert!(
+			super::compact(&mut context, &asker, &budget, &pinned)
+				.await
+				.is_err()
+		);
+		assert_eq!(json!(context), before);
+		assert!(asker.seen.lock().unwrap().is_empty());
+	}
+}
+
+#[tokio::test]
+async fn legacy_observation_projection_preserves_human_records_and_failed_contexts() {
+	let snapshot = json!({
+		"workspace":{"id":uuid::Uuid::new_v4(),"title":"Airline","goal":"Plan","state":{},"revision":0,"created_at":chrono::Utc::now()},
+		"tasks":[],"artifacts":[],"messages":[],
+		"events":[{"sequence":1,"id":uuid::Uuid::new_v4(),"node_id":"aidash://test","workspace_id":null,"kind":"tool.completed","data":{"result":"nested".repeat(5000)},"created_at":chrono::Utc::now()}]
+	});
+	let mut context = Context {
+		history: vec![
+			json!({"kind":"tool","call":{"id":"observe","name":"workspace_observe","arguments":{}},"result":snapshot}),
+			json!({"kind":"human","response":{"approved":false},"data":snapshot}),
+		],
+		..Default::default()
+	};
+	let before = json!(context);
+	let asker = FakeJev::new(drop_all);
+	assert!(
+		compact(&mut context, &asker, 1, &json!({}), "")
+			.await
+			.is_err()
+	);
+	assert_eq!(json!(context), before);
+	compact(&mut context, &asker, 100000, &json!({}), "")
+		.await
+		.unwrap();
+	assert_eq!(
+		context.history[0]["result"]["view"],
+		"workspace_observation_v1"
+	);
+	assert!(
+		context.history[0]["result"]["events"][0]
+			.get("data")
+			.is_none()
+	);
+	assert_eq!(context.history[0]["call"], before["history"][0]["call"]);
+	assert_eq!(context.history[1], before["history"][1]);
+	assert_eq!(context.compactions, 0);
+}
+
+#[tokio::test]
 async fn compaction_uses_jev_without_rewriting_text_or_legacy_summaries() {
 	let mut context = Context {
 		summary: "Legacy summary remains verbatim".into(),
@@ -286,29 +445,40 @@ fn snapshot_budget_also_bounds_wide_state_objects() {
 #[test]
 fn registration_and_execution_share_the_context_reserve_at_its_boundary() {
 	let instructions = "Use the private reference documents.";
-	let specifications = vec![json!({"name":"workspace_read"})];
-	let window = 8192;
-	let output = (window / 8).clamp(256, 4096);
-	let fixed = estimated_tokens(&serde_json::to_string(instructions).unwrap())
-		.max(serde_json::to_string(instructions).unwrap().len())
-		+ estimated_tokens(&serde_json::to_string(&specifications).unwrap())
-			.max(serde_json::to_string(&specifications).unwrap().len())
-		+ output
-		+ REQUEST_FRAMING_RESERVE
+	let specifications = vec![];
+	let output = 4096;
+	let private_context = json!({"reference_documents":"private \"quoted\" reference"});
+	let request = RequestBudget {
+		window: 0,
+		instructions,
+		tools: &specifications,
+		max_output_tokens: output,
+	};
+	let window = request
+		.request(&Context::default(), &private_context)
+		.estimated_total_tokens()
 		+ MIN_CONTEXT_RESERVE;
-	let private_bytes = window - fixed;
-	let wrapper = r#"{"reference_documents":""}"#;
-	let documents = "x".repeat(private_bytes - wrapper.len());
-	let private_context = json!({"reference_documents":documents});
-	let registration_budget =
-		request_context_budget(window, instructions, &specifications, &private_context).unwrap();
+	let registration_budget = request_context_budget(
+		window,
+		output,
+		instructions,
+		&specifications,
+		&private_context,
+	)
+	.unwrap();
 	let execution_budget =
-		request_context_budget(window, instructions, &specifications, &private_context).unwrap();
+		RequestBudget { window, ..request }.remaining(&Context::default(), &private_context);
 	assert_eq!(registration_budget, MIN_CONTEXT_RESERVE);
 	assert_eq!(execution_budget, registration_budget);
 	assert!(
-		request_context_budget(window - 8, instructions, &specifications, &private_context,)
-			.is_err()
+		request_context_budget(
+			window - 1,
+			output,
+			instructions,
+			&specifications,
+			&private_context
+		)
+		.is_err()
 	);
 }
 
@@ -325,5 +495,62 @@ fn compaction_snapshot_redacts_private_documents_without_mutating_inference_cont
 	assert_eq!(
 		pinned["reference_documents"][0]["text"],
 		"PRIVATE-REFERENCE-123"
+	);
+}
+
+// Exercise the same complete-request fitting path as the harness.
+async fn compact(
+	context: &mut Context,
+	asker: &dyn jev::JevAsker,
+	window: usize,
+	pinned: &Value,
+	instructions: &str,
+) -> Result<()> {
+	super::compact(
+		context,
+		asker,
+		&RequestBudget {
+			window,
+			instructions,
+			tools: &[],
+			max_output_tokens: 256,
+		},
+		pinned,
+	)
+	.await
+}
+
+#[tokio::test]
+async fn compaction_counts_private_documents_without_disclosing_them() {
+	let mut context = Context {
+		history: history(),
+		..Default::default()
+	};
+	let asker = FakeJev::new(drop_all);
+	let pinned =
+		json!({"task":"Summarize", "reference_documents":"PRIVATE-REFERENCE-123".repeat(50)});
+	let budget = RequestBudget {
+		window: 6000,
+		instructions: "",
+		tools: &[],
+		max_output_tokens: 256,
+	};
+	super::compact(&mut context, &asker, &budget, &pinned)
+		.await
+		.unwrap();
+	assert_eq!(context.compactions, 1);
+	let seen = asker.seen.lock().unwrap();
+	assert!(!seen.is_empty());
+	assert!(
+		seen.iter()
+			.all(|(state, _)| !state.to_string().contains("PRIVATE-REFERENCE-123"))
+	);
+	assert!(budget.request(&context, &pinned).estimated_total_tokens() <= budget.window);
+	assert!(
+		budget
+			.request(&context, &pinned)
+			.context
+			.to_string()
+			.contains("PRIVATE-REFERENCE-123")
 	);
 }

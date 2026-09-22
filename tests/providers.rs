@@ -14,9 +14,51 @@ fn config(provider: &str, endpoint: String) -> ModelConfig {
 		credential_env: None,
 		reasoning_effort: None,
 		context_window: 128000,
+		max_output_tokens: Some(65536),
 		modalities: vec!["text".into()],
 		cost: json!({}),
 	}
+}
+
+#[test]
+fn model_configuration_uses_the_catalog_limit_and_preserves_legacy_records() {
+	let selected: ModelConfig = serde_json::from_value(json!({
+		"provider":"openrouter", "model_id":"google/gemini-3.8-flash",
+		"endpoint":"https://openrouter.ai/api/v1", "credential_env":null,
+		"context_window":1048576, "max_output_tokens":65536,
+		"modalities":["text"], "cost":{}
+	}))
+	.unwrap();
+	assert_eq!(selected.output_token_limit(), 65536);
+
+	let legacy: ModelConfig = serde_json::from_value(json!({
+		"provider":"openrouter", "model_id":"vendor/legacy",
+		"endpoint":"https://openrouter.ai/api/v1", "credential_env":null,
+		"context_window":128000, "modalities":["text"], "cost":{}
+	}))
+	.unwrap();
+	assert_eq!(legacy.output_token_limit(), 4096);
+}
+
+#[test]
+fn local_model_registration_requires_a_valid_catalog_output_limit() {
+	let mut entry: Entry = serde_json::from_value(json!({
+		"id":"router-model","version":"1.0.0","kind":"model",
+		"name":{"en":"Router model"},"description":{"en":"Test model"},
+		"config":config("openrouter","https://openrouter.ai/api/v1".into())
+	}))
+	.unwrap();
+	validate(&entry).unwrap();
+	entry.config["max_output_tokens"] = json!(0);
+	assert!(validate(&entry).is_err());
+	entry.config["max_output_tokens"] = json!(131072);
+	assert!(validate(&entry).is_err());
+	entry
+		.config
+		.as_object_mut()
+		.unwrap()
+		.remove("max_output_tokens");
+	assert!(validate(&entry).is_err());
 }
 
 #[test]
@@ -77,6 +119,7 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage() {
 	] {
 		let mut model_config = config("openrouter", endpoint.clone());
 		model_config.reasoning_effort = effort;
+		let max_output_tokens = model_config.output_token_limit();
 		let model = provider(client.clone(), model_config).unwrap();
 		for with_tools in [true, false] {
 			let response = model
@@ -92,7 +135,7 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage() {
 					} else {
 						vec![]
 					},
-					max_output_tokens: 512,
+					max_output_tokens,
 				})
 				.await
 				.unwrap();
@@ -104,7 +147,7 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage() {
 					.unwrap(),
 				json!({"task":"Read notes"})
 			);
-			assert_eq!(request["max_tokens"], 512);
+			assert_eq!(request["max_tokens"], 65536);
 			assert!(request.get("max_completion_tokens").is_none());
 			assert_eq!(request["provider"]["zdr"], true);
 			assert_eq!(request["provider"]["require_parameters"], true);

@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 mod compaction;
 pub mod jev;
+pub(crate) mod observation;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Context {
@@ -21,44 +22,72 @@ pub struct Context {
 // Conservative upper bound for mixed-language text, not a provider tokenizer.
 // The budget includes system instructions, tools, workspace and output reserve.
 pub fn estimated_tokens(value: &str) -> usize {
-	value
-		.chars()
-		.map(|c| if c.is_ascii() { 1 } else { 2 })
-		.sum()
+	value.len()
 }
 
-const REQUEST_FRAMING_RESERVE: usize = 512;
+/// Estimate how much one durable tool event adds to a complete provider
+/// request. Fixed instructions, tools, and pinned context cancel out, so this
+/// probe measures the same encoded context growth without storing that payload.
+pub(crate) fn tool_event_growth(context: &Context, event: &Value) -> usize {
+	fn estimate(context: &Context) -> usize {
+		crate::provider::ModelRequest {
+			instructions: String::new(),
+			context: json!({
+				"current": Value::Null,
+				"summary": context.summary,
+				"history": context.history,
+			}),
+			tools: vec![],
+			max_output_tokens: 0,
+		}
+		.estimated_total_tokens()
+	}
+	let before = estimate(context);
+	let mut after = context.clone();
+	after.history.push(event.clone());
+	estimate(&after).saturating_sub(before)
+}
+
+pub struct RequestBudget<'a> {
+	pub window: usize,
+	pub instructions: &'a str,
+	pub tools: &'a [crate::provider::ToolSpec],
+	pub max_output_tokens: u32,
+}
+
+impl RequestBudget<'_> {
+	pub fn request(&self, context: &Context, pinned: &Value) -> crate::provider::ModelRequest {
+		crate::provider::ModelRequest {
+			instructions: self.instructions.into(),
+			context: json!({"current":pinned,"summary":context.summary,"history":context.history}),
+			tools: self.tools.to_vec(),
+			max_output_tokens: self.max_output_tokens,
+		}
+	}
+
+	pub fn remaining(&self, context: &Context, pinned: &Value) -> usize {
+		self.window
+			.saturating_sub(self.request(context, pinned).estimated_total_tokens())
+	}
+}
+
 const MIN_CONTEXT_RESERVE: usize = 2048;
 
-/// Remaining room for workspace state and conversation history after fixed
-/// request content, output allowance, and framing reserve have been deducted.
-/// Registration and execution share this calculation so accepted agents keep
-/// the same minimum execution allowance.
-pub fn request_context_budget<S: Serialize + ?Sized>(
+/// Reserve room for history using the same complete request estimate as execution.
+pub fn request_context_budget(
 	window: usize,
+	max_output_tokens: u32,
 	instructions: &str,
-	specifications: &S,
+	specifications: &[crate::provider::ToolSpec],
 	private_context: &Value,
 ) -> Result<usize> {
-	let cost = |text: &str| estimated_tokens(text).max(text.len());
-	let instructions = serde_json::to_string(instructions)?;
-	let specifications = serde_json::to_string(specifications)?;
-	let overhead = cost(&instructions)
-		.saturating_add(cost(&specifications))
-		.saturating_add(if private_context.is_null() {
-			0
-		} else {
-			cost(&serde_json::to_string(private_context)?)
-		});
-	let output = (window / 8).clamp(256, 4096);
-	let fixed_reserve = overhead
-		.saturating_add(output)
-		.saturating_add(REQUEST_FRAMING_RESERVE);
-	let budget = window.checked_sub(fixed_reserve).ok_or_else(|| {
-		Error::Invalid(
-			"agent instructions, skills, tools and private context cannot fit the model window with output and context reserves".into(),
-		)
-	})?;
+	let budget = RequestBudget {
+		window,
+		instructions,
+		tools: specifications,
+		max_output_tokens,
+	}
+	.remaining(&Context::default(), private_context);
 	if budget < MIN_CONTEXT_RESERVE {
 		return Err(Error::Invalid(
 			"agent instructions, skills, tools and private context cannot fit the model window with output and context reserves".into(),
@@ -68,8 +97,7 @@ pub fn request_context_budget<S: Serialize + ?Sized>(
 }
 
 /// Strip personal documents before sending pinned context to a compaction
-/// provider. Their request space is reserved separately by
-/// `request_context_budget`.
+/// provider. Complete-request fitting still counts the original pinned context.
 pub fn compaction_snapshot(pinned: &Value) -> Value {
 	let mut snapshot = pinned.clone();
 	if let Some(object) = snapshot.as_object_mut() {
@@ -81,33 +109,30 @@ pub fn compaction_snapshot(pinned: &Value) -> Value {
 pub async fn compact(
 	context: &mut Context,
 	asker: &dyn jev::JevAsker,
-	budget: usize,
+	budget: &RequestBudget<'_>,
 	pinned: &Value,
-	instructions: &str,
 ) -> Result<()> {
-	let size = |c: &Context| {
-		estimated_tokens(
-			&json!({"current":pinned,"summary":c.summary,"history":c.history}).to_string(),
-		)
-	};
-	if size(context) <= budget {
+	let size = |c: &Context| budget.request(c, pinned).estimated_total_tokens();
+	let mut candidate = context.clone();
+	observation::normalize_history(&mut candidate.history);
+	if size(&candidate) <= budget.window {
+		*context = candidate;
 		return Ok(());
 	}
 	let classification_context = json!({
-		"instructions":instructions, "current":pinned, "previous_summary":context.summary
+		"instructions":budget.instructions, "current":compaction_snapshot(pinned), "previous_summary":candidate.summary
 	});
 	let compacted = compaction::prune(
-		&context.history,
+		&candidate.history,
 		&classification_context,
 		asker,
 		&compaction::Options::default(),
 	)
 	.await?;
-	let mut candidate = context.clone();
 	candidate.history = compacted.history;
 	// No summarization fallback: legacy summaries and all non-tool events stay
 	// verbatim. Apply nothing unless the complete inference context fits.
-	if size(&candidate) > budget {
+	if size(&candidate) > budget.window {
 		return Err(Error::Invalid(
 			"Jev compaction could not fit the pinned context and retained history".into(),
 		));

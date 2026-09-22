@@ -8,11 +8,18 @@ pub struct CatalogModel {
 	pub id: String,
 	pub name: String,
 	pub context_length: usize,
+	#[serde(default)]
+	pub top_provider: Option<TopProvider>,
 	pub pricing: Pricing,
 	pub architecture: Architecture,
 	#[serde(default)]
 	pub supported_parameters: Vec<String>,
 	pub reasoning: Option<ReasoningOptions>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct TopProvider {
+	pub max_completion_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, utoipa::ToSchema)]
@@ -73,6 +80,10 @@ fn eligible(models: Vec<CatalogModel>) -> Vec<CatalogModel> {
 		.filter(|m| {
 			!m.id.is_empty()
 				&& m.context_length >= 2048
+				&& m.top_provider
+					.as_ref()
+					.and_then(|p| p.max_completion_tokens)
+					.is_some_and(|tokens| tokens > 0 && tokens as usize <= m.context_length)
 				&& m.architecture.input_modalities.iter().any(|v| v == "text")
 				&& m.architecture.output_modalities.iter().any(|v| v == "text")
 				&& m.supported_parameters.iter().any(|v| v == "tools")
@@ -105,6 +116,7 @@ mod tests {
 	fn catalog_only_offers_models_usable_by_agents() {
 		let model = json!({
 			"id":"vendor/model", "name":"Text model", "context_length":32768,
+			"top_provider":{"max_completion_tokens":8192},
 			"pricing":{"prompt":"0.000001","completion":"0.000002"},
 			"architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},
 			"supported_parameters":["tools"]
@@ -123,5 +135,39 @@ mod tests {
 		assert_eq!(result.len(), 1);
 		assert_eq!(result[0].id, "vendor/model");
 		assert_eq!(result[0].pricing.prompt, "0.000001");
+		assert_eq!(
+			result[0]
+				.top_provider
+				.as_ref()
+				.unwrap()
+				.max_completion_tokens,
+			Some(8192)
+		);
+	}
+
+	#[test]
+	fn catalog_rejects_models_without_a_known_output_limit() {
+		let mut unknown_limit = json!({
+			"id":"vendor/model", "name":"Text model", "context_length":32768,
+			"pricing":{"prompt":"0.000001","completion":"0.000002"},
+			"architecture":{"input_modalities":["text"],"output_modalities":["text"]},
+			"supported_parameters":["tools"]
+		});
+		unknown_limit["top_provider"] = json!({"max_completion_tokens":null});
+		let catalog: Catalog = serde_json::from_value(json!({"data":[unknown_limit]})).unwrap();
+		assert!(eligible(catalog.data).is_empty());
+	}
+
+	#[test]
+	fn catalog_rejects_output_limits_larger_than_the_context_window() {
+		let catalog: Catalog = serde_json::from_value(json!({"data":[{
+			"id":"vendor/model", "name":"Text model", "context_length":32768,
+			"top_provider":{"max_completion_tokens":65536},
+			"pricing":{"prompt":"0.000001","completion":"0.000002"},
+			"architecture":{"input_modalities":["text"],"output_modalities":["text"]},
+			"supported_parameters":["tools"]
+		}]}))
+		.unwrap();
+		assert!(eligible(catalog.data).is_empty());
 	}
 }

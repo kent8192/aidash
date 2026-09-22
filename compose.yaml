@@ -1,7 +1,10 @@
 name: ${COMPOSE_PROJECT_NAME:-aidash-dev}
 services:
   postgres:
-    image: postgres:17-alpine
+    image: aidash-postgres:17-pg-jsonschema-0.3.4
+    build:
+      context: .
+      dockerfile: deploy/postgres/Dockerfile
     environment:
       POSTGRES_USER: aidash
       POSTGRES_PASSWORD: aidash-local
@@ -10,7 +13,6 @@ services:
       - "127.0.0.1:${AIDASH_POSTGRES_PORT:-54370}:5432"
     volumes:
       - postgres:/var/lib/postgresql/data
-      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-databases.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U aidash -d aidash_a"]
       interval: 2s

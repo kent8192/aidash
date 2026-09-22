@@ -491,6 +491,56 @@ impl WorkerAuthority {
 		self.access.lock().await.workspace_snapshot(workspace).await
 	}
 
+	pub async fn workspace_observation(
+		&self,
+		workspace: Uuid,
+		offset: usize,
+		limit: usize,
+	) -> Result<Value> {
+		self.access
+			.lock()
+			.await
+			.workspace_observation(workspace, offset, limit)
+			.await
+	}
+
+	pub async fn workspace_observation_fitted<F>(
+		&self,
+		workspace: Uuid,
+		offset: usize,
+		limit: usize,
+		fits: F,
+	) -> Result<Option<(usize, Value)>>
+	where
+		F: FnMut(usize, &Value) -> Result<bool>,
+	{
+		self.access
+			.lock()
+			.await
+			.workspace_observation_fitted(workspace, offset, limit, fits)
+			.await
+	}
+
+	pub async fn workspace_record(&self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Value> {
+		self.access
+			.lock()
+			.await
+			.workspace_record(workspace, kind, id)
+			.await
+	}
+
+	pub async fn workspace_child_summary(
+		&self,
+		workspace: Uuid,
+		parent: Uuid,
+	) -> Result<ChildTaskSummary> {
+		self.access
+			.lock()
+			.await
+			.workspace_children(workspace, parent)
+			.await
+	}
+
 	pub async fn delegate(
 		&self,
 		f: &Federation,
@@ -836,7 +886,9 @@ impl Guard {
 			),
 			"memory_write" => ("memory.write", "memory", self.run.agent_id.clone()),
 			"human_request" => ("human.request", "run", self.run.id.to_string()),
-			"agent_discover" | "workspace_observe" | "workspace_wait" => return Ok(()),
+			"agent_discover" | "workspace_observe" | "workspace_read" | "workspace_wait" => {
+				return Ok(());
+			}
 			_ => return Err(Error::Forbidden),
 		};
 		let resource = match kind {

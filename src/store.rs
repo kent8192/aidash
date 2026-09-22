@@ -1145,6 +1145,148 @@ impl Store {
 		}
 		Ok(page)
 	}
+	/// Read one exact workspace record without relying on the bounded recent
+	/// event/message collections in `snapshot`.
+	pub async fn workspace_record(&self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Value> {
+		match kind {
+			"workspace" if workspace == id => Ok(json!(self.workspace(workspace).await?)),
+			"workspace" => Err(Error::Invalid("workspace record not available".into())),
+			"task" => self.workspace_record_row("tasks", workspace, id).await,
+			"artifact" => self.workspace_record_row("artifacts", workspace, id).await,
+			"message" => self.workspace_record_row("messages", workspace, id).await,
+			"event" => self.workspace_record_row("events", workspace, id).await,
+			_ => Err(Error::Invalid("unknown workspace record kind".into())),
+		}
+	}
+
+	async fn workspace_record_row(&self, table: &str, workspace: Uuid, id: Uuid) -> Result<Value> {
+		use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+		let record = match table {
+			"tasks" => {
+				let query = Query::select()
+					.columns([
+						Alias::new("id"),
+						Alias::new("workspace_id"),
+						Alias::new("title"),
+						Alias::new("description"),
+						Alias::new("status"),
+						Alias::new("requirements"),
+						Alias::new("owner"),
+						Alias::new("created_by"),
+						Alias::new("dependencies"),
+						Alias::new("parent_id"),
+						Alias::new("revision"),
+						Alias::new("created_at"),
+					])
+					.from(Alias::new("tasks"))
+					.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+					.to_string(PostgresQueryBuilder);
+				sqlx::query_as::<_, Task>(&query)
+					.bind(workspace)
+					.bind(id)
+					.fetch_optional(&self.pool)
+					.await?
+					.map(|record| json!(record))
+			}
+			"artifacts" => {
+				let query = Query::select()
+					.columns([
+						Alias::new("id"),
+						Alias::new("workspace_id"),
+						Alias::new("task_id"),
+						Alias::new("kind"),
+						Alias::new("name"),
+						Alias::new("content"),
+						Alias::new("created_by"),
+						Alias::new("idempotency_key"),
+						Alias::new("created_at"),
+					])
+					.from(Alias::new("artifacts"))
+					.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+					.to_string(PostgresQueryBuilder);
+				sqlx::query_as::<_, Artifact>(&query)
+					.bind(workspace)
+					.bind(id)
+					.fetch_optional(&self.pool)
+					.await?
+					.map(|record| json!(record))
+			}
+			"messages" => {
+				let query = Query::select()
+					.columns([
+						Alias::new("id"),
+						Alias::new("workspace_id"),
+						Alias::new("sender"),
+						Alias::new("content"),
+						Alias::new("idempotency_key"),
+						Alias::new("created_at"),
+					])
+					.from(Alias::new("messages"))
+					.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+					.to_string(PostgresQueryBuilder);
+				sqlx::query_as::<_, Message>(&query)
+					.bind(workspace)
+					.bind(id)
+					.fetch_optional(&self.pool)
+					.await?
+					.map(|record| json!(record))
+			}
+			"events" => {
+				let query = Query::select()
+					.columns([
+						Alias::new("sequence"),
+						Alias::new("id"),
+						Alias::new("node_id"),
+						Alias::new("workspace_id"),
+						Alias::new("kind"),
+						Alias::new("data"),
+						Alias::new("created_at"),
+					])
+					.from(Alias::new("events"))
+					.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+					.to_string(PostgresQueryBuilder);
+				sqlx::query_as::<_, Event>(&query)
+					.bind(workspace)
+					.bind(id)
+					.fetch_optional(&self.pool)
+					.await?
+					.map(|record| json!(record))
+			}
+			_ => return Err(Error::Invalid("unknown workspace record kind".into())),
+		};
+		record.ok_or_else(|| Error::Invalid("workspace record not available".into()))
+	}
+
+	pub async fn child_task_summary(
+		&self,
+		workspace: Uuid,
+		parent: Uuid,
+	) -> Result<ChildTaskSummary> {
+		use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+		let query = Query::select()
+			.expr(Expr::cust(
+				"COALESCE(BOOL_OR(status NOT IN ('COMPLETED', 'ABANDONED')), FALSE)",
+			))
+			.expr(Expr::cust(
+				"COALESCE(BOOL_OR(status IN ('FAILED', 'BLOCKED', 'CANCELLED')), FALSE)",
+			))
+			.from(Alias::new("tasks"))
+			.and_where(Expr::cust("workspace_id = $1 AND parent_id = $2"))
+			.to_string(PostgresQueryBuilder);
+		let (has_pending, has_failed): (bool, bool) = sqlx::query_as(&query)
+			.bind(workspace)
+			.bind(parent)
+			.fetch_one(&self.pool)
+			.await?;
+		Ok(ChildTaskSummary {
+			has_pending,
+			has_failed,
+		})
+	}
 	pub async fn snapshot(&self, id: Uuid) -> Result<WorkspaceSnapshot> {
 		Ok(WorkspaceSnapshot {
 			workspace: self.workspace(id).await?,
@@ -1618,7 +1760,7 @@ impl Store {
 	}
 	pub async fn lease_run(&self, worker: Uuid, seconds: i32) -> Result<Option<Run>> {
 		// SKIP LOCKED permits independent workers; the token fences stale writers.
-		Ok(sqlx::query_as(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("runs")).value(sea_orm::sea_query::Alias::new("pending"), sea_orm::sea_query::Expr::cust("CASE WHEN lease_owner IS NOT NULL THEN pending || CAST('{\"lease_recovered\":true}' AS JSONB) ELSE pending END")).value(sea_orm::sea_query::Alias::new("lease_owner"), sea_orm::sea_query::Expr::cust("$1")).value(sea_orm::sea_query::Alias::new("lease_until"), sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP + MAKE_INTERVAL(secs => $2)")).value(sea_orm::sea_query::Alias::new("revision"), sea_orm::sea_query::Expr::cust("revision + 1")).and_where(sea_orm::sea_query::Expr::cust("id = (SELECT id FROM runs WHERE NOT phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND control <> 'PAUSED' AND (lease_until IS NULL OR lease_until < CURRENT_TIMESTAMP) AND (NOT (pending ? 'retry_at') OR CAST((pending ->> 'retry_at') AS TIMESTAMPTZ) < CURRENT_TIMESTAMP) AND (phase <> 'WAITING' OR control = 'CANCELLED' OR CAST((pending ->> 'wake_at') AS TIMESTAMPTZ) < CURRENT_TIMESTAMP OR EXISTS(SELECT 1 FROM human_requests AS h WHERE CAST(h.id AS TEXT) = runs.pending ->> 'human_request_id' AND h.response IS NOT NULL)) ORDER BY updated_at LIMIT 1 FOR UPDATE SKIP LOCKED)")).returning_all().to_string(sea_orm::sea_query::PostgresQueryBuilder))
+		Ok(sqlx::query_as(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("runs")).value(sea_orm::sea_query::Alias::new("pending"), sea_orm::sea_query::Expr::cust("CASE WHEN lease_owner IS NOT NULL THEN pending || CAST('{\"lease_recovered\":true}' AS JSONB) ELSE pending END")).value(sea_orm::sea_query::Alias::new("lease_owner"), sea_orm::sea_query::Expr::cust("$1")).value(sea_orm::sea_query::Alias::new("lease_until"), sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP + MAKE_INTERVAL(secs => $2)")).value(sea_orm::sea_query::Alias::new("revision"), sea_orm::sea_query::Expr::cust("revision + 1")).and_where(sea_orm::sea_query::Expr::cust("id = (SELECT id FROM runs WHERE NOT phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND control <> 'PAUSED' AND revision < 9223372036854775805 AND (lease_until IS NULL OR lease_until < CURRENT_TIMESTAMP) AND (NOT (pending ? 'retry_at') OR CAST((pending ->> 'retry_at') AS TIMESTAMPTZ) < CURRENT_TIMESTAMP) AND (phase <> 'WAITING' OR control = 'CANCELLED' OR CAST((pending ->> 'wake_at') AS TIMESTAMPTZ) < CURRENT_TIMESTAMP OR EXISTS(SELECT 1 FROM human_requests AS h WHERE CAST(h.id AS TEXT) = runs.pending ->> 'human_request_id' AND h.response IS NOT NULL)) ORDER BY updated_at LIMIT 1 FOR UPDATE SKIP LOCKED)")).returning_all().to_string(sea_orm::sea_query::PostgresQueryBuilder))
             .bind(worker).bind(seconds as f64).fetch_optional(&self.pool).await?)
 	}
 	pub async fn renew_lease(&self, id: Uuid, worker: Uuid, seconds: i32) -> Result<bool> {
@@ -2240,6 +2382,40 @@ impl Store {
 		if valid.is_none() {
 			return Err(Error::Conflict(
 				"worker lease lost before tool invocation".into(),
+			));
+		}
+		// The bounded call and any prepared workspace-read chunk must survive a
+		// worker crash once the idempotency key becomes durable. Keep this update
+		// in the same transaction as invocation creation.
+		let persisted = sqlx::query(
+			&sea_orm::sea_query::Query::update()
+				.table(sea_orm::sea_query::Alias::new("runs"))
+				.value(
+					sea_orm::sea_query::Alias::new("pending"),
+					sea_orm::sea_query::Expr::cust("$3"),
+				)
+				.value(
+					sea_orm::sea_query::Alias::new("revision"),
+					sea_orm::sea_query::Expr::cust("revision + 1"),
+				)
+				.value(
+					sea_orm::sea_query::Alias::new("updated_at"),
+					sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP"),
+				)
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"id = $1 AND lease_owner = $2 AND lease_until > CURRENT_TIMESTAMP",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run.id)
+		.bind(worker)
+		.bind(&run.pending)
+		.execute(&mut *tx)
+		.await?
+		.rows_affected();
+		if persisted != 1 {
+			return Err(Error::Conflict(
+				"worker lease lost before persisting tool input".into(),
 			));
 		}
 		let created = sqlx::query(

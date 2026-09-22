@@ -19,8 +19,8 @@ mod m20260921_010628_authorization_remote_reads;
 mod m20260921_014954_authorization_remote_grants;
 mod m20260921_021051_authorization_remote_admissions;
 mod m20260921_024105_authorization_remote_grant_reads;
-
 mod m20260921_070000_registry_requests;
+mod m20260921_071045_record_constraints;
 
 mod m20260921_230000_agent_knowledge;
 
@@ -50,6 +50,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260921_021051_authorization_remote_admissions::Migration),
 			Box::new(m20260921_024105_authorization_remote_grant_reads::Migration),
 			Box::new(m20260921_070000_registry_requests::Migration),
+			Box::new(m20260921_071045_record_constraints::Migration),
 			Box::new(m20260921_230000_agent_knowledge::Migration),
 		]
 	}

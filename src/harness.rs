@@ -4,13 +4,46 @@ use crate::{
 	context::{self, Context},
 	domain::*,
 	federation::{Federation, Home},
-	provider::{ModelRequest, ModelResponse, provider},
+	provider::{ModelResponse, provider},
 	registry::{AgentConfig, ModelConfig},
 	tool::{PluginTool, Tool, ToolConfig, ToolContext, builtins},
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use uuid::Uuid;
+
+const POST_TOOL_CONTEXT_RESERVE: usize = 4096;
+const TOOL_EVENT_RESERVE: usize = 512;
+
+enum WorkspaceReadFit {
+	Skip,
+	NoEnvelopeRoom,
+	Fitted {
+		call: crate::provider::ToolCall,
+		result: Value,
+	},
+}
+
+#[derive(Clone, Copy)]
+struct WorkspaceReadFitBudget {
+	requested: usize,
+	offset: usize,
+	request_tokens: usize,
+	request_window: usize,
+	remaining_calls: usize,
+}
+
+#[derive(Clone, Copy)]
+struct WorkspaceReadRange {
+	offset: usize,
+	requested: usize,
+}
+
+fn request_context_window(window: usize, minimum_request: usize) -> usize {
+	let available = window.saturating_sub(minimum_request);
+	let reserve = POST_TOOL_CONTEXT_RESERVE.min(available / 4);
+	window.saturating_sub(reserve.saturating_mul(2))
+}
 
 #[derive(Clone)]
 pub struct Harness {
@@ -129,9 +162,15 @@ impl Harness {
 		message: String,
 	) -> Result<()> {
 		let mut context: Context = serde_json::from_value(run.context.clone())?;
-		context
-			.history
-			.push(json!({"kind":"tool","call":call,"result":{"error":message}}));
+		let event = json!({"kind":"tool","call":call,"result":{"error":message}});
+		let growth = context::tool_event_growth(&context, &event);
+		context.history.push(event);
+		run.pending["request_tokens"] = json!(
+			run.pending["request_tokens"]
+				.as_u64()
+				.unwrap_or(0)
+				.saturating_add(growth as u64)
+		);
 		run.context = json!(context);
 		run.pending["cursor"] = json!(cursor + 1);
 		self.federation
@@ -248,24 +287,23 @@ impl Harness {
 			"READY" => {
 				let task = home.task().await?;
 				if !task.dependencies.is_empty() {
-					let snapshot = home.snapshot().await?;
-					if let Some(dependency) = snapshot.tasks.iter().find(|dependency| {
-						task.dependencies.contains(&dependency.id)
-							&& matches!(
-								dependency.status.as_str(),
-								"FAILED" | "CANCELLED" | "ABANDONED"
-							)
-					}) {
-						return Err(Error::Invalid(format!(
-							"dependency {} is {}",
-							dependency.id, dependency.status
-						)));
+					let mut waiting = false;
+					for id in &task.dependencies {
+						let dependency: Task = serde_json::from_value(
+							home.read_record("task", &id.to_string()).await?,
+						)?;
+						if matches!(
+							dependency.status.as_str(),
+							"FAILED" | "CANCELLED" | "ABANDONED"
+						) {
+							return Err(Error::Invalid(format!(
+								"dependency {} is {}",
+								dependency.id, dependency.status
+							)));
+						}
+						waiting |= dependency.status != "COMPLETED";
 					}
-					if task.dependencies.iter().any(|id| {
-						!snapshot.tasks.iter().any(|dependency| {
-							dependency.id == *id && dependency.status == "COMPLETED"
-						})
-					}) {
+					if waiting {
 						run.phase = "WAITING".into();
 						run.pending = json!({"wake_at":chrono::Utc::now()+chrono::Duration::seconds(2),"resume_phase":"READY"});
 						store.save_run(run, token, "run.waiting").await?;
@@ -278,6 +316,8 @@ impl Harness {
 				store.save_run(run, token, "run.started").await?;
 			}
 			"THINKING" => {
+				let force_read_compaction =
+					run.pending["force_workspace_read_compaction"].as_bool() == Some(true);
 				if let Some(guard) = guard {
 					guard.inference().await?;
 				}
@@ -291,14 +331,10 @@ impl Harness {
 					.await?;
 				let model_cfg: ModelConfig = serde_json::from_value(model_entry.config)?;
 				let window = model_cfg.context_window;
+				let output = model_cfg.output_token_limit();
 				let model = provider(self.federation.client.clone(), model_cfg)?;
 				let tools = self.tools(&agent).await?;
-				let snapshot = home.snapshot().await?;
-				let task = snapshot
-					.tasks
-					.iter()
-					.find(|t| t.id == run.task_id)
-					.ok_or_else(|| Error::NotFound("run task".into()))?;
+				let task = home.task().await?;
 				if task.status == "COMPLETED" {
 					run.phase = "COMPLETED".into();
 					store.save_run(run, token, "run.recovered").await?;
@@ -321,7 +357,18 @@ impl Harness {
 				let documents =
 					crate::knowledge::load(&self.federation.registry.db, &entry).await?;
 				let mut context: Context = serde_json::from_value(run.context.clone())?;
-				let mut pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":snapshot,"memory":store.memory(run).await?,"agent_state":{"phase":run.phase,"step":run.step}});
+				let observation = home
+					.observation(0, context::observation::DEFAULT_LIMIT)
+					.await?;
+				let mut pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":observation,"memory":store.memory(run).await?,"agent_state":{"phase":run.phase,"step":run.step}});
+				if let Some(deferred_read) = run.pending.get("deferred_workspace_read") {
+					pinned["deferred_workspace_read"] = deferred_read.clone();
+				}
+				if let Some(deferred_observation) =
+					run.pending.get("deferred_workspace_observation")
+				{
+					pinned["deferred_workspace_observation"] = deferred_observation.clone();
+				}
 				let specifications = tools
 					.values()
 					.map(|t| t.specification())
@@ -331,21 +378,35 @@ impl Harness {
 				} else {
 					serde_json::Value::Null
 				};
-				let budget = context::request_context_budget(
+				context::request_context_budget(
 					window,
+					output,
 					&instructions,
 					&specifications,
 					&private_context,
 				)?;
-				let output = (window / 8).clamp(256, 4096) as u32;
-				context::bound_snapshot(&mut pinned, budget.saturating_sub(512) / 2)?;
+				let mut budget = context::RequestBudget {
+					window,
+					instructions: &instructions,
+					tools: &specifications,
+					max_output_tokens: output,
+				};
+				let minimum_request = budget
+					.request(&Context::default(), &serde_json::Value::Null)
+					.estimated_total_tokens();
+				budget.window = request_context_window(window, minimum_request);
+				if force_read_compaction {
+					budget.window =
+						force_workspace_read_compaction_window(budget.window, minimum_request);
+				}
+				// Keep room for history and JSON message escaping. The final fitting
+				// decision below measures the complete provider input, not this quota.
+				let available = budget.remaining(&Context::default(), &private_context);
+				context::bound_snapshot(&mut pinned, available / 4)?;
 				if agent.knowledge_digest.is_some() {
 					pinned["reference_documents"] = documents;
 				}
-				let compaction_pinned = context::compaction_snapshot(&pinned);
-				let semantic_budget = budget.saturating_sub(
-					context::estimated_tokens(&compaction_pinned.to_string()) + 512,
-				);
+				let semantic_budget = budget.remaining(&Context::default(), &pinned) / 2;
 				if let Some(guard) = guard {
 					if let Some(semantic) = guard
 						.semantic_context(
@@ -383,25 +444,13 @@ impl Harness {
 						self.federation.client.clone(),
 					)?)
 				};
-				let compaction_pinned = context::compaction_snapshot(&pinned);
-				context::compact(
-					&mut context,
-					compactor.as_ref(),
-					budget,
-					&compaction_pinned,
-					&instructions,
-				)
-				.await?;
+				context::compact(&mut context, compactor.as_ref(), &budget, &pinned).await?;
 				if let Some(guard) = guard {
 					guard.inference().await?;
 				}
-				let request = ModelRequest {
-					instructions,
-					context: json!({"current":pinned,"summary":context.summary,"history":context.history}),
-					tools: specifications,
-					max_output_tokens: output,
-				};
+				let request = budget.request(&context, &pinned);
 				crate::generation::budget::Reservation::check_request(window, &request)?;
+				let request_tokens = request.estimated_total_tokens();
 				let reservation = if let Some(guard) = guard {
 					guard
 						.reserve_inference(store, token, window, output)
@@ -415,13 +464,18 @@ impl Harness {
 				}
 				context.usage = json!({"input_tokens":result.input_tokens,"output_tokens":result.output_tokens,"context_window":window,"compactions":context.compactions});
 				run.context = json!(context);
-				run.pending = json!({"response":result,"cursor":0});
+				run.pending = json!({
+					"response":result,
+					"cursor":0,
+					"request_window":budget.window,
+					"request_tokens":request_tokens
+				});
 				run.phase = "TOOL_CALL".into();
 				run.error = None;
 				store.save_run(run, token, "model.completed").await?;
 			}
 			"TOOL_CALL" => {
-				let result: ModelResponse =
+				let mut result: ModelResponse =
 					serde_json::from_value(run.pending["response"].clone())?;
 				if !result.text.is_empty() {
 					if let Some(guard) = guard {
@@ -435,18 +489,9 @@ impl Harness {
 				let cursor = run.pending["cursor"].as_u64().unwrap_or(0) as usize;
 				if cursor >= result.tool_calls.len() {
 					if result.tool_calls.is_empty() {
-						let snapshot = home.snapshot().await?;
-						if snapshot.tasks.iter().any(|t| {
-							t.parent_id == Some(run.task_id)
-								&& !matches!(t.status.as_str(), "COMPLETED" | "ABANDONED")
-						}) {
-							let failed = snapshot.tasks.iter().any(|t| {
-								t.parent_id == Some(run.task_id)
-									&& matches!(
-										t.status.as_str(),
-										"FAILED" | "BLOCKED" | "CANCELLED"
-									)
-							});
+						let children = home.child_summary(run.task_id).await?;
+						if children.has_pending {
+							let failed = children.has_failed;
 							if failed {
 								if let Some(guard) = guard {
 									guard.action("human.request", "run", run.id).await?;
@@ -464,14 +509,7 @@ impl Harness {
 						}
 						let artifact = ArtifactInput {
 							kind: "text".into(),
-							name: result_artifact_name(
-								snapshot
-									.tasks
-									.iter()
-									.find(|t| t.id == run.task_id)
-									.map(|t| t.title.as_str())
-									.unwrap_or("Task"),
-							),
+							name: result_artifact_name(&home.task().await?.title),
 							content: json!(result.text),
 						};
 						if let Some(guard) = guard {
@@ -485,13 +523,8 @@ impl Harness {
 							.await
 						{
 							if matches!(error, Error::Conflict(_))
-								&& home.snapshot().await?.tasks.iter().any(|task| {
-									task.parent_id == Some(run.task_id)
-										&& !matches!(
-											task.status.as_str(),
-											"COMPLETED" | "ABANDONED"
-										)
-								}) {
+								&& home.child_summary(run.task_id).await?.has_pending
+							{
 								run.step += 1;
 								run.phase = "WAITING".into();
 								run.pending = json!({"wake_at":chrono::Utc::now()+chrono::Duration::seconds(2),"resume_phase":"THINKING"});
@@ -505,12 +538,147 @@ impl Harness {
 					} else {
 						run.phase = "THINKING".into();
 						run.step += 1;
-						run.pending = json!({});
+						let force_read_compaction = run.pending["force_workspace_read_compaction"]
+							.as_bool()
+							.unwrap_or(false);
+						let deferred_read = run.pending.get("deferred_workspace_read").cloned();
+						run.pending = if force_read_compaction {
+							json!({
+								"force_workspace_read_compaction":true,
+								"deferred_workspace_read":deferred_read
+							})
+						} else {
+							json!({})
+						};
 						store.save_run(run, token, "run.thinking").await?;
 					}
 					return Ok(());
 				}
-				let call = &result.tool_calls[cursor];
+				let mut context: Context = serde_json::from_value(run.context.clone())?;
+				let mut call = result.tool_calls[cursor].clone();
+				let mut prepared_result = None;
+				if call.name == "workspace_read" {
+					let (read_range, saved_read) =
+						match workspace_read_plan_result(&call, run.step, cursor, &run.pending) {
+							Ok(plan) => plan,
+							Err(Error::Invalid(message)) => {
+								return self.tool_error(run, token, &call, cursor, message).await;
+							}
+							Err(error) => return Err(error),
+						};
+					if let Some(output) = saved_read {
+						prepared_result = Some(output.clone());
+					} else {
+						let request_tokens =
+							run.pending["request_tokens"].as_u64().unwrap_or(0) as usize;
+						let request_window =
+							run.pending["request_window"].as_u64().unwrap_or(0) as usize;
+						match cap_workspace_read(
+							&home,
+							&context,
+							&call,
+							read_range,
+							request_tokens,
+							request_window,
+							result.tool_calls.len().saturating_sub(cursor + 1),
+						)
+						.await
+						{
+							Ok(WorkspaceReadFit::Skip) => {}
+							Ok(WorkspaceReadFit::NoEnvelopeRoom) => {
+								// Start a new inference turn without appending an error event:
+								// even that envelope could exceed the smaller forced-compaction
+								// quota on the next request.
+								run.phase = "THINKING".into();
+								run.step += 1;
+								run.pending = json!({
+									"force_workspace_read_compaction":true,
+									"deferred_workspace_read":deferred_workspace_read(&call)
+								});
+								store.save_run(run, token, "run.read_deferred").await?;
+								return Ok(());
+							}
+							Ok(WorkspaceReadFit::Fitted {
+								call: bounded,
+								result: output,
+							}) => {
+								call = bounded;
+								result.tool_calls[cursor] = call.clone();
+								run.pending["response"] = json!(result);
+								run.pending["workspace_read_plan"] = json!({
+									"step":run.step,
+									"cursor":cursor,
+									"result":output
+								});
+								prepared_result = Some(output);
+							}
+							Err(Error::Invalid(message)) => {
+								return self.tool_error(run, token, &call, cursor, message).await;
+							}
+							Err(error) => return Err(error),
+						}
+					}
+				}
+				if call.name == "workspace_observe" {
+					let saved_plan = &run.pending["workspace_observation_plan"];
+					let saved_output = (saved_plan["step"].as_i64() == Some(run.step as i64)
+						&& saved_plan["cursor"].as_u64() == Some(cursor as u64)
+						&& saved_plan["call"] == json!(call))
+					.then(|| saved_plan.get("result").cloned())
+					.flatten();
+					if let Some(output) = saved_output {
+						prepared_result = Some(output);
+					} else {
+						let offset = call.arguments["offset"].as_u64().unwrap_or(0) as usize;
+						let requested = call.arguments["limit"]
+							.as_u64()
+							.unwrap_or(context::observation::DEFAULT_LIMIT as u64)
+							as usize;
+						let request_tokens =
+							run.pending["request_tokens"].as_u64().unwrap_or(0) as usize;
+						let request_window =
+							run.pending["request_window"].as_u64().unwrap_or(0) as usize;
+						let remaining_calls = result.tool_calls.len().saturating_sub(cursor + 1);
+						let fitted = home
+							.observation_fitted(offset, requested, |limit, output| {
+								Ok(workspace_observation_event_fits(
+									&context,
+									&call,
+									limit,
+									output,
+									request_tokens,
+									request_window,
+									remaining_calls,
+								))
+							})
+							.await?;
+						let Some((limit, output)) = fitted else {
+							// Retry after compaction without appending an observation event
+							// that cannot fit in the next request quota.
+							run.phase = "THINKING".into();
+							run.step += 1;
+							run.pending = json!({
+								"force_workspace_read_compaction":true,
+								"deferred_workspace_observation":deferred_workspace_observation(&call)
+							});
+							store
+								.save_run(run, token, "run.observation_deferred")
+								.await?;
+							return Ok(());
+						};
+						call.arguments["limit"] = json!(limit);
+						result.tool_calls[cursor] = call.clone();
+						run.pending["response"] = json!(result);
+						run.pending["workspace_observation_plan"] = json!({
+							"step":run.step,
+							"cursor":cursor,
+							"call":call,
+							"result":output
+						});
+						prepared_result = Some(output);
+					}
+				}
+				let call = &call;
 				let tools = self.tools(&agent).await?;
 				let Some(tool) = tools.get(&call.name) else {
 					return self
@@ -555,25 +723,47 @@ impl Harness {
 					invocation.result.ok_or_else(|| {
 						Error::Conflict("completed invocation has no result".into())
 					})?
+				} else if let Some(output) = prepared_result {
+					output
 				} else {
 					let ctx = ToolContext {
 						home: home.clone(),
 						store: store.clone(),
 						run: run.clone(),
 					};
-					let output = match tool.invoke(&ctx, call.arguments.clone(), &key).await {
+					match tool.invoke(&ctx, call.arguments.clone(), &key).await {
 						Ok(output) => output,
 						Err(Error::Invalid(message)) => json!({"error":message}),
 						Err(e) => return Err(e),
-					};
-					store.invocation_finish(run, token, &key, &output).await?;
-					output
+					}
 				};
-				let mut context: Context = serde_json::from_value(run.context.clone())?;
-				context
-					.history
-					.push(json!({"kind":"tool","call":call,"result":output}));
+				if invocation.status != "COMPLETED" {
+					store.invocation_finish(run, token, &key, &output).await?;
+				}
+				let event = json!({"kind":"tool","call":call,"result":output});
+				let growth = context::tool_event_growth(&context, &event);
+				context.history.push(event);
+				run.pending["request_tokens"] = json!(
+					run.pending["request_tokens"]
+						.as_u64()
+						.unwrap_or(0)
+						.saturating_add(growth as u64)
+				);
 				run.context = json!(context);
+				if run.pending["workspace_read_plan"]["step"].as_u64() == Some(run.step as u64)
+					&& run.pending["workspace_read_plan"]["cursor"].as_u64() == Some(cursor as u64)
+					&& let Some(object) = run.pending.as_object_mut()
+				{
+					object.remove("workspace_read_plan");
+				}
+				if run.pending["workspace_observation_plan"]["step"].as_i64()
+					== Some(run.step as i64)
+					&& run.pending["workspace_observation_plan"]["cursor"].as_u64()
+						== Some(cursor as u64)
+					&& let Some(object) = run.pending.as_object_mut()
+				{
+					object.remove("workspace_observation_plan");
+				}
 				run.pending["cursor"] = json!(cursor + 1);
 				if call.name == "human_request"
 					&& let Some(id) = output.get("human_request_id")
@@ -654,6 +844,193 @@ impl Harness {
 	}
 }
 
+async fn cap_workspace_read(
+	home: &Home,
+	context: &Context,
+	call: &crate::provider::ToolCall,
+	range: WorkspaceReadRange,
+	request_tokens: usize,
+	request_window: usize,
+	remaining_calls: usize,
+) -> Result<WorkspaceReadFit> {
+	let WorkspaceReadRange { offset, requested } = range;
+	let (Some(kind), Some(id)) = (
+		call.arguments["kind"].as_str(),
+		call.arguments["id"].as_str(),
+	) else {
+		return Ok(WorkspaceReadFit::Skip);
+	};
+	let output = home.read_record_chunk(kind, id, offset, requested).await?;
+	let Some(bounded) = fit_workspace_read_chars(
+		context,
+		call,
+		&output,
+		WorkspaceReadFitBudget {
+			requested,
+			offset,
+			request_tokens,
+			request_window,
+			remaining_calls,
+		},
+	)?
+	else {
+		return Ok(WorkspaceReadFit::NoEnvelopeRoom);
+	};
+	let mut bounded_call = call.clone();
+	bounded_call.arguments["max_chars"] = json!(bounded);
+	Ok(WorkspaceReadFit::Fitted {
+		call: bounded_call,
+		result: workspace_read_result(&output, requested, offset, bounded),
+	})
+}
+
+fn workspace_read_range(call: &crate::provider::ToolCall) -> Result<WorkspaceReadRange> {
+	let offset = match call.arguments.get("offset") {
+		None => 0,
+		Some(value) => usize::try_from(value.as_u64().ok_or_else(|| {
+			Error::Invalid("workspace read offset must be a nonnegative integer".into())
+		})?)
+		.map_err(|_| Error::Invalid("workspace read offset is too large".into()))?,
+	};
+	let requested = match call.arguments.get("max_chars") {
+		None => 8000,
+		Some(value) => {
+			let requested = usize::try_from(value.as_u64().ok_or_else(|| {
+				Error::Invalid("workspace read max_chars must be a nonnegative integer".into())
+			})?)
+			.map_err(|_| Error::Invalid("workspace read max_chars is too large".into()))?;
+			if requested > 16_000 {
+				return Err(Error::Invalid(
+					"workspace read max_chars must not exceed 16000".into(),
+				));
+			}
+			requested
+		}
+	};
+	Ok(WorkspaceReadRange { offset, requested })
+}
+
+fn workspace_read_plan_result(
+	call: &crate::provider::ToolCall,
+	step: i32,
+	cursor: usize,
+	pending: &Value,
+) -> Result<(WorkspaceReadRange, Option<Value>)> {
+	let range = workspace_read_range(call)?;
+	let saved_plan = &pending["workspace_read_plan"];
+	let saved_result = (saved_plan["step"].as_u64() == Some(step as u64)
+		&& saved_plan["cursor"].as_u64() == Some(cursor as u64))
+	.then(|| saved_plan.get("result").cloned())
+	.flatten();
+	Ok((range, saved_result))
+}
+
+fn fit_workspace_read_chars(
+	context: &Context,
+	call: &crate::provider::ToolCall,
+	output: &Value,
+	budget: WorkspaceReadFitBudget,
+) -> Result<Option<usize>> {
+	let WorkspaceReadFitBudget {
+		requested,
+		offset,
+		request_tokens,
+		request_window,
+		remaining_calls,
+	} = budget;
+	let reserve = remaining_calls.saturating_mul(TOOL_EVENT_RESERVE);
+	let maximum_request = request_window.saturating_sub(reserve);
+	let fits = |chars: usize| -> Result<bool> {
+		let mut bounded_call = call.clone();
+		bounded_call.arguments["max_chars"] = json!(chars);
+		let bounded_output = workspace_read_result(output, requested, offset, chars);
+		let event = json!({"kind":"tool","call":bounded_call,"result":bounded_output});
+		Ok(
+			request_tokens.saturating_add(context::tool_event_growth(context, &event))
+				<= maximum_request,
+		)
+	};
+	if !fits(0)? {
+		return Ok(None);
+	}
+	let mut low = 0;
+	let mut high = requested;
+	while low < high {
+		let middle = low + (high - low).div_ceil(2);
+		if fits(middle)? {
+			low = middle;
+		} else {
+			high = middle - 1;
+		}
+	}
+	Ok(Some(low))
+}
+
+fn workspace_read_result(output: &Value, requested: usize, offset: usize, chars: usize) -> Value {
+	let mut result = output.clone();
+	let content: String = output["content"]
+		.as_str()
+		.unwrap_or_default()
+		.chars()
+		.take(chars)
+		.collect();
+	let end = offset.saturating_add(content.chars().count());
+	let total = output["total_chars"].as_u64().unwrap_or(0) as usize;
+	let limited = chars < requested;
+	result["content"] = json!(content);
+	result["next_offset"] = (end < total).then_some(json!(end)).unwrap_or(Value::Null);
+	result["budget_limited"] = json!(chars == 0 || limited);
+	if chars == 0 && limited && offset < total {
+		result["deferred"] = json!(true);
+		result["message"] = json!(
+			"No request budget remains for content. Continue on a later turn; do not repeat this read now."
+		);
+	} else {
+		if let Some(object) = result.as_object_mut() {
+			object.remove("deferred");
+			object.remove("message");
+		}
+	}
+	result
+}
+
+fn force_workspace_read_compaction_window(window: usize, minimum_request: usize) -> usize {
+	window
+		.saturating_sub(POST_TOOL_CONTEXT_RESERVE)
+		.max(minimum_request.min(window))
+}
+
+fn deferred_workspace_read(call: &crate::provider::ToolCall) -> Value {
+	json!({
+		"message":"Retry this workspace_read after reducing the retained context; its result envelope did not fit.",
+		"call":call
+	})
+}
+
+fn deferred_workspace_observation(call: &crate::provider::ToolCall) -> Value {
+	json!({
+		"message":"Retry this workspace_observe after reducing the retained context; its page did not fit.",
+		"call":call
+	})
+}
+
+fn workspace_observation_event_fits(
+	context: &Context,
+	call: &crate::provider::ToolCall,
+	limit: usize,
+	output: &Value,
+	request_tokens: usize,
+	request_window: usize,
+	remaining_calls: usize,
+) -> bool {
+	let mut bounded_call = call.clone();
+	bounded_call.arguments["limit"] = json!(limit);
+	let event = json!({"kind":"tool","call":bounded_call,"result":output});
+	let maximum_request =
+		request_window.saturating_sub(remaining_calls.saturating_mul(TOOL_EVENT_RESERVE));
+	request_tokens.saturating_add(context::tool_event_growth(context, &event)) <= maximum_request
+}
+
 async fn run_id(store: &crate::store::Store, token: Uuid) -> Result<Uuid> {
 	sqlx::query_scalar(
 		&sea_orm::sea_query::Query::select()
@@ -681,6 +1058,293 @@ fn result_artifact_name(title: &str) -> String {
 }
 #[cfg(test)]
 mod review_tests {
+	#[test]
+	fn small_context_windows_keep_their_available_budget() {
+		assert!(super::request_context_window(2048, 1500) >= 1500);
+		assert!(super::request_context_window(4096, 3000) >= 3000);
+		assert!(super::request_context_window(32_000, 4000) < 32_000);
+	}
+
+	#[test]
+	fn tight_windows_leave_room_for_the_pinned_workspace_context() {
+		for slack in [4096, 8192] {
+			let minimum_request = 20_000;
+			let request_window =
+				super::request_context_window(minimum_request + slack, minimum_request);
+			let remaining = request_window.saturating_sub(minimum_request);
+			assert!(remaining > 0, "slack {slack} left no pinned-context budget");
+
+			let snapshot_budget = remaining / 4;
+			let mut pinned = serde_json::json!({
+				"identity":{"node_id":"node-1","agent_id":"agent-1","agent_version":"1"},
+				"task":{"id":"00000000-0000-0000-0000-000000000001","title":"task"},
+				"workspace":{"workspace":{"id":"00000000-0000-0000-0000-000000000002","title":"workspace"}}
+			});
+			crate::context::bound_snapshot(&mut pinned, snapshot_budget).unwrap();
+			assert!(crate::context::estimated_tokens(&pinned.to_string()) <= snapshot_budget);
+			assert_eq!(pinned["identity"]["agent_id"], "agent-1");
+			assert_eq!(pinned["task"]["id"], "00000000-0000-0000-0000-000000000001");
+			assert_eq!(
+				pinned["workspace"]["workspace"]["id"],
+				"00000000-0000-0000-0000-000000000002"
+			);
+		}
+	}
+
+	#[test]
+	fn workspace_read_chunks_fit_remaining_complete_request_budget() {
+		let call = crate::provider::ToolCall {
+			id: "read-1".into(),
+			name: "workspace_read".into(),
+			arguments: serde_json::json!({
+				"kind":"artifact",
+				"id":"00000000-0000-0000-0000-000000000001",
+				"offset":0,
+				"max_chars":16000
+			}),
+		};
+		let context = crate::context::Context::default();
+		let record = serde_json::json!({"content":"界".repeat(20000)});
+		let output = crate::context::observation::chunk_record(
+			record,
+			"artifact",
+			"00000000-0000-0000-0000-000000000001",
+			0,
+			16000,
+		)
+		.unwrap();
+		let window = 100_000;
+		let request_window = super::request_context_window(window, 4_000);
+		let allowed = request_window - 2 * super::TOOL_EVENT_RESERVE;
+		let request_tokens = request_window - 4_000;
+		let chars = super::fit_workspace_read_chars(
+			&context,
+			&call,
+			&output,
+			super::WorkspaceReadFitBudget {
+				requested: 16_000,
+				offset: 0,
+				request_tokens,
+				request_window,
+				remaining_calls: 2,
+			},
+		)
+		.unwrap()
+		.unwrap();
+		assert!(chars > 0 && chars < 16000);
+		let mut bounded_call = call.clone();
+		bounded_call.arguments["max_chars"] = serde_json::json!(chars);
+		let result = super::workspace_read_result(&output, 16000, 0, chars);
+		let event = serde_json::json!({"kind":"tool","call":bounded_call,"result":result});
+		assert!(request_tokens + crate::context::tool_event_growth(&context, &event) <= allowed);
+		let mut old_quota_call = call.clone();
+		old_quota_call.arguments["max_chars"] = serde_json::json!(chars + 1);
+		let old_quota_result = super::workspace_read_result(&output, 16000, 0, chars + 1);
+		let old_quota_event =
+			serde_json::json!({"kind":"tool","call":old_quota_call,"result":old_quota_result});
+		let old_hard_window_quota =
+			window - super::POST_TOOL_CONTEXT_RESERVE - 2 * super::TOOL_EVENT_RESERVE;
+		assert!(
+			request_tokens + crate::context::tool_event_growth(&context, &old_quota_event)
+				<= old_hard_window_quota
+		);
+		assert!(
+			request_tokens + crate::context::tool_event_growth(&context, &old_quota_event)
+				> allowed
+		);
+		let mut too_large = call;
+		too_large.arguments["max_chars"] = serde_json::json!(chars + 1);
+		let result = super::workspace_read_result(&output, 16000, 0, chars + 1);
+		let event = serde_json::json!({"kind":"tool","call":too_large,"result":result});
+		assert!(request_tokens + crate::context::tool_event_growth(&context, &event) > allowed);
+	}
+
+	#[test]
+	fn workspace_read_fit_uses_the_persisted_request_window() {
+		let call = crate::provider::ToolCall {
+			id: "read-1".into(),
+			name: "workspace_read".into(),
+			arguments: serde_json::json!({
+				"kind":"artifact",
+				"id":"00000000-0000-0000-0000-000000000001",
+				"offset":0,
+				"max_chars":16000
+			}),
+		};
+		let context = crate::context::Context::default();
+		let output = crate::context::observation::chunk_record(
+			serde_json::json!({"content":"界".repeat(20000)}),
+			"artifact",
+			"00000000-0000-0000-0000-000000000001",
+			0,
+			16000,
+		)
+		.unwrap();
+		let hard_window = 32_000;
+		let request_window = super::request_context_window(hard_window, 8_000);
+		let request_tokens = request_window - 2_000;
+		let chars = super::fit_workspace_read_chars(
+			&context,
+			&call,
+			&output,
+			super::WorkspaceReadFitBudget {
+				requested: 16_000,
+				offset: 0,
+				request_tokens,
+				request_window,
+				remaining_calls: 0,
+			},
+		)
+		.unwrap()
+		.expect("the persisted request quota is used without a duplicate reserve");
+		assert!(chars > 0);
+	}
+
+	#[test]
+	fn workspace_observation_fit_includes_the_adjusted_call_and_following_events() {
+		let context = crate::context::Context::default();
+		let call = crate::provider::ToolCall {
+			id: "observe-1".into(),
+			name: "workspace_observe".into(),
+			arguments: serde_json::json!({"offset":0,"limit":20}),
+		};
+		let output = serde_json::json!({
+			"view":"workspace_observation_v1",
+			"tasks":[{"description_preview":"x".repeat(512),"dependencies":vec!["00000000-0000-0000-0000-000000000001";50]}],
+			"pages":{"tasks":{"limit":1}}
+		});
+		let request_window = 32_000;
+		let remaining_calls = 2;
+		let target = request_window - remaining_calls * super::TOOL_EVENT_RESERVE;
+		let growth = crate::context::tool_event_growth(
+			&context,
+			&serde_json::json!({
+				"kind":"tool",
+				"call":{"id":"observe-1","name":"workspace_observe","arguments":{"offset":0,"limit":1}},
+				"result":output
+			}),
+		);
+		assert!(super::workspace_observation_event_fits(
+			&context,
+			&call,
+			1,
+			&output,
+			target - growth,
+			request_window,
+			remaining_calls
+		));
+		assert!(!super::workspace_observation_event_fits(
+			&context,
+			&call,
+			1,
+			&output,
+			target - growth + 1,
+			request_window,
+			remaining_calls
+		));
+	}
+
+	#[test]
+	fn workspace_read_rejects_negative_offset_before_fitting() {
+		let call = crate::provider::ToolCall {
+			id: "read-1".into(),
+			name: "workspace_read".into(),
+			arguments: serde_json::json!({"kind":"event","id":"event-id","offset":-1}),
+		};
+		assert!(matches!(
+			super::workspace_read_range(&call),
+			Err(crate::Error::Invalid(message)) if message.contains("offset")
+		));
+	}
+
+	#[test]
+	fn workspace_read_rejects_oversized_max_chars_before_fitting() {
+		let call = crate::provider::ToolCall {
+			id: "read-1".into(),
+			name: "workspace_read".into(),
+			arguments: serde_json::json!({"kind":"event","id":"event-id","max_chars":16001}),
+		};
+		assert!(matches!(
+			super::workspace_read_range(&call),
+			Err(crate::Error::Invalid(message)) if message.contains("16000")
+		));
+	}
+
+	#[test]
+	fn cached_workspace_read_plans_still_validate_the_original_call() {
+		let pending = serde_json::json!({
+			"workspace_read_plan": {
+				"step": 4,
+				"cursor": 0,
+				"result": {"content":"previously prepared"}
+			}
+		});
+		let mut call = crate::provider::ToolCall {
+			id: "read-1".into(),
+			name: "workspace_read".into(),
+			arguments: serde_json::json!({"kind":"event","id":"event-id","offset":-1}),
+		};
+		assert!(matches!(
+			super::workspace_read_plan_result(&call, 4, 0, &pending),
+			Err(crate::Error::Invalid(message)) if message.contains("offset")
+		));
+
+		call.arguments["offset"] = serde_json::json!(0);
+		call.arguments["max_chars"] = serde_json::json!(16001);
+		assert!(matches!(
+			super::workspace_read_plan_result(&call, 4, 0, &pending),
+			Err(crate::Error::Invalid(message)) if message.contains("16000")
+		));
+	}
+
+	#[test]
+	fn zero_length_envelope_is_checked_before_deferring_a_read() {
+		let call = crate::provider::ToolCall {
+			id: "read-1".into(),
+			name: "workspace_read".into(),
+			arguments: serde_json::json!({
+				"kind":"artifact",
+				"id":"00000000-0000-0000-0000-000000000001",
+				"offset":0,
+				"max_chars":16000
+			}),
+		};
+		let context = crate::context::Context::default();
+		let record = serde_json::json!({"content":"界".repeat(20000)});
+		let output = crate::context::observation::chunk_record(
+			record,
+			"artifact",
+			"00000000-0000-0000-0000-000000000001",
+			0,
+			16000,
+		)
+		.unwrap();
+		let zero = super::workspace_read_result(&output, 16000, 0, 0);
+		assert_eq!(zero["deferred"], true);
+		assert!(
+			super::fit_workspace_read_chars(
+				&context,
+				&call,
+				&output,
+				super::WorkspaceReadFitBudget {
+					requested: 16_000,
+					offset: 0,
+					request_tokens: 0,
+					request_window: 1,
+					remaining_calls: 0,
+				},
+			)
+			.unwrap()
+			.is_none()
+		);
+		let next_window = super::force_workspace_read_compaction_window(32_000, 8_000);
+		assert_eq!(next_window, 32_000 - super::POST_TOOL_CONTEXT_RESERVE);
+		assert!(next_window < 32_000);
+		let deferred = super::deferred_workspace_read(&call);
+		assert_eq!(deferred["call"]["arguments"]["offset"], 0);
+		assert_eq!(deferred["call"]["arguments"]["id"], call.arguments["id"]);
+	}
+
 	#[test]
 	fn result_names_fit_for_ascii_and_multibyte_titles() {
 		for title in ["a".repeat(64_000), "界".repeat(21_333)] {

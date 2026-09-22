@@ -73,6 +73,19 @@ pub struct Task {
 	pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChildTaskSummary {
+	pub has_pending: bool,
+	pub has_failed: bool,
+}
+
+impl ChildTaskSummary {
+	pub fn include_status(&mut self, status: &str) {
+		self.has_pending |= !matches!(status, "COMPLETED" | "ABANDONED");
+		self.has_failed |= matches!(status, "FAILED" | "BLOCKED" | "CANCELLED");
+	}
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NewTask {

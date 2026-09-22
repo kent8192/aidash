@@ -51,7 +51,7 @@ Ordinary workspace, task, Registry, model, tool and execution permissions are al
 
 ## Budget contract
 
-The budget covers inference input/output and embedding input tokens, not monetary or arbitrary external-tool spending. Each generated definition reserves `tokens_per_agent` against its policy. Every model attempt first commits a conservative reservation of the approved context window plus maximum output, charging all generated ancestors as well as the generated executor. This prevents ordinary child agents from escaping an ancestor's token allowance.
+The budget covers inference input/output and embedding input tokens, not monetary or arbitrary external-tool spending. Each generated definition reserves `tokens_per_agent` against its policy. Every model attempt first commits a conservative reservation of the approved context window plus the model's catalog maximum output, charging all generated ancestors as well as the generated executor. This prevents ordinary child agents from escaping an ancestor's token allowance.
 
 Successful, complete, positive and bounded provider usage refunds unused reservation. Anthropic input usage includes its separate cache creation and cache read counters, following the [provider accounting contract](https://platform.claude.com/docs/en/build-with-claude/prompt-caching). Missing, invalid or uncertain usage remains charged in full. Crashes and failed attempts retain their reservation; a retry requires a new reservation. Request bytes must fit the reserved context window before provider I/O. These checks assume the approved provider honors its declared model limits; out-of-contract usage is an execution error and does not refund allowance.
 

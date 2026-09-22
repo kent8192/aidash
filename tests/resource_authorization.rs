@@ -1,11 +1,102 @@
 mod common;
 use aidash::{
 	api,
-	domain::{ArtifactInput, qualified_agent},
+	domain::{ArtifactInput, NewTask, qualified_agent},
 	harness::Harness,
 };
 use common::*;
 use serde_json::{Value, json};
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn guarded_child_summary_pages_minimal_visible_rows() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (mut bundle, token, parent_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let parent = f.store.task(parent_id).await.unwrap();
+	for index in 0..102 {
+		f.store
+			.create_task(
+				parent.workspace_id,
+				&NewTask {
+					title: format!("Large child {index}"),
+					description: "bounded summary payload ".repeat(2_500),
+					requirements: json!({}),
+					dependencies: vec![],
+					parent_id: Some(parent_id),
+				},
+				"alice",
+				None,
+			)
+			.await
+			.unwrap();
+	}
+	sqlx::query("UPDATE tasks SET status = 'ABANDONED' WHERE workspace_id = $1 AND parent_id = $2")
+		.bind(parent.workspace_id)
+		.bind(parent_id)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	let ids: Vec<uuid::Uuid> = sqlx::query_scalar(
+		"SELECT id FROM tasks WHERE workspace_id = $1 AND parent_id = $2 ORDER BY id",
+	)
+	.bind(parent.workspace_id)
+	.bind(parent_id)
+	.fetch_all(&f.store.pool)
+	.await
+	.unwrap();
+	let open_children = [ids[ids.len() - 2], ids[ids.len() - 1]];
+	sqlx::query("UPDATE tasks SET status = 'OPEN' WHERE id = ANY($1)")
+		.bind(open_children.as_slice())
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	let authorization = aidash::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	};
+	let aidash::authorization::identity::Actor::Subject(identity) =
+		authorization.authenticate(&token).await.unwrap()
+	else {
+		panic!("subject required")
+	};
+	let scope = aidash::authorization::workspace::Workspaces {
+		store: f.store.clone(),
+		identity,
+	};
+	let summary = scope
+		.child_task_summary(parent.workspace_id, parent_id)
+		.await
+		.unwrap();
+	assert!(summary.has_pending && !summary.has_failed);
+
+	for id in open_children {
+		bundle["policies"].as_array_mut().unwrap().push(json!({
+			"id":format!("deny-child-{id}"),
+			"effect":"deny",
+			"subjects":{"ids":["alice"]},
+			"actions":["task.read"],
+			"resources":{"kinds":["task"],"ids":[id]}
+		}));
+	}
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":bundle})
+		)
+		.await
+		.0,
+		200
+	);
+	let summary = scope
+		.child_task_summary(parent.workspace_id, parent_id)
+		.await
+		.unwrap();
+	assert!(!summary.has_pending && !summary.has_failed);
+	cleanup(f, &url, &schema).await;
+}
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
@@ -214,10 +305,13 @@ async fn retained_snapshot_revocation(events_only: bool) {
 	let server=Router::new().route("/v1/chat/completions",post(move |Json(body):Json<Value>|{
         let seen=seen.clone();let pool=pool.clone();async move {
             seen.fetch_add(1,Ordering::SeqCst);
-            assert!(body.to_string().contains("private-artifact-content"));
+            let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+            let artifact_id = context["current"]["workspace"]["artifacts"][0]["id"].clone();
+            assert!(artifact_id.is_string());
+            assert!(!body.to_string().contains("private-artifact-content"));
             let sources:i64=sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("COUNT(*)")).from(sea_orm::sea_query::Alias::new("authorization_run_reads")).and_where(sea_orm::sea_query::Expr::cust("resource_kind = 'artifact'")).to_string(sea_orm::sea_query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
-            assert_eq!(sources,1,"membership must commit before provider I/O");
-            Json(json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"observe","type":"function","function":{"name":"workspace_observe","arguments":"{}"}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+            assert_eq!(sources,20,"only records exposed by the bounded observation page are tracked before provider I/O");
+            Json(json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"read","type":"function","function":{"name":"workspace_read","arguments":json!({"kind":"artifact","id":artifact_id}).to_string()}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
         }
     }));
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -256,6 +350,26 @@ async fn retained_snapshot_revocation(events_only: bool) {
 		)
 		.await
 		.unwrap();
+	sqlx::query("UPDATE artifacts SET created_at = '2000-01-01T00:00:00Z' WHERE id = $1")
+		.bind(artifact.id)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	for index in 0..25 {
+		f.store
+			.publish_artifact(
+				task,
+				&qualified_agent(&f.config.node_id, "research", "1.0.0"),
+				&format!("unrelated-source-{index}"),
+				&ArtifactInput {
+					kind: "text".into(),
+					name: format!("Unrelated source {index}"),
+					content: json!("unrelated"),
+				},
+			)
+			.await
+			.unwrap();
+	}
 	worker.worker_once().await.unwrap();
 	worker.worker_once().await.unwrap();
 	let run = f.store.runs().await.unwrap().remove(0);
