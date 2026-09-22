@@ -3,7 +3,7 @@ mod common;
 
 use aidash::registry::{Entry, ModelConfig};
 use common::{cleanup, request, setup};
-use migration::MigratorTrait;
+use migration::{Migrator, MigratorTrait};
 use sea_orm::sea_query::{Alias, Expr, OnConflict, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 
@@ -45,9 +45,9 @@ async fn install(pool: &sqlx::PgPool, config: &Value) -> Result<(), sqlx::Error>
 		.into_table(Alias::new("installations"))
 		.columns(["id", "version", "digest", "config"].map(Alias::new))
 		.values_panic([
-			Expr::val("timeout-model"),
-			Expr::val("1.0.0"),
-			Expr::val("fixture"),
+			Expr::val("timeout-model").into(),
+			Expr::val("1.0.0").into(),
+			Expr::val("fixture").into(),
 			Expr::cust("$1"),
 		])
 		.on_conflict(
@@ -65,7 +65,9 @@ async fn install(pool: &sqlx::PgPool, config: &Value) -> Result<(), sqlx::Error>
 
 fn rejected(result: Result<(), sqlx::Error>, constraint: &str) {
 	let error = result.unwrap_err();
-	let database = error.as_database_error().expect("database constraint error");
+	let database = error
+		.as_database_error()
+		.expect("database constraint error");
 	assert_eq!(database.code().as_deref(), Some("23514"), "{error}");
 	assert_eq!(database.constraint(), Some(constraint), "{error}");
 }
@@ -75,9 +77,16 @@ fn rejected(result: Result<(), sqlx::Error>, constraint: &str) {
 async fn configured_timeouts_round_trip_through_the_registry_api() {
 	let (f, url, schema) = setup().await;
 	let app = aidash::api::router(f.clone());
-	for (index, timeout) in [None, Some(Value::Null), Some(json!(1)), Some(json!(900)), Some(json!(1200)), Some(json!(u32::MAX))]
-		.into_iter()
-		.enumerate()
+	for (index, timeout) in [
+		None,
+		Some(Value::Null),
+		Some(json!(1)),
+		Some(json!(900)),
+		Some(json!(1200)),
+		Some(json!(u32::MAX)),
+	]
+	.into_iter()
+	.enumerate()
 	{
 		let mut entry = model(&format!("model-{index}"));
 		if let Some(timeout) = timeout {
@@ -109,19 +118,37 @@ async fn configured_timeouts_round_trip_through_the_registry_api() {
 async fn database_validates_registered_and_overridden_timeouts() {
 	let (f, url, schema) = setup().await;
 	f.registry.register(model("timeout-model")).await.unwrap();
-	for timeout in [Value::Null, json!(1), json!(900), json!(1200), json!(u32::MAX)] {
+	for timeout in [
+		Value::Null,
+		json!(1),
+		json!(900),
+		json!(1200),
+		json!(u32::MAX),
+	] {
 		let config = json!({"request_timeout_secs":timeout});
 		install(&f.store.pool, &config).await.unwrap();
 		let stored = f.registry.get("timeout-model", "1.0.0").await.unwrap();
 		assert_eq!(stored.config["request_timeout_secs"], timeout);
 	}
-	for (index, timeout) in [json!(0), json!(-1), json!(1.5), json!("900"), json!(true), json!([]), json!({}), json!(4294967296_u64)]
-		.into_iter()
-		.enumerate()
+	for (index, timeout) in [
+		json!(0),
+		json!(-1),
+		json!(1.5),
+		json!("900"),
+		json!(true),
+		json!([]),
+		json!({}),
+		json!(4294967296_u64),
+	]
+	.into_iter()
+	.enumerate()
 	{
 		let mut entry = model(&format!("invalid-{index}"));
 		entry.config["request_timeout_secs"] = timeout.clone();
-		rejected(insert_model(&f.store.pool, &entry).await, "registry_model_config");
+		rejected(
+			insert_model(&f.store.pool, &entry).await,
+			"registry_model_config",
+		);
 		rejected(
 			install(&f.store.pool, &json!({"request_timeout_secs":timeout})).await,
 			"installations_config",
@@ -129,7 +156,10 @@ async fn database_validates_registered_and_overridden_timeouts() {
 	}
 	let mut unknown = model("unknown-field");
 	unknown.config["request_timeout_sec"] = json!(900);
-	rejected(insert_model(&f.store.pool, &unknown).await, "registry_model_config");
+	rejected(
+		insert_model(&f.store.pool, &unknown).await,
+		"registry_model_config",
+	);
 	rejected(
 		install(&f.store.pool, &json!({"request_timeout_sec":900})).await,
 		"installations_config",
@@ -142,28 +172,41 @@ async fn database_validates_registered_and_overridden_timeouts() {
 #[ignore = "requires disposable PostgreSQL"]
 async fn timeout_migration_upgrades_existing_models_and_preserves_rollback_safety() {
 	let (f, url, schema) = setup().await;
-	let migrations = migration::Migrator::migrations();
-	assert_eq!(migrations.last().unwrap().name(), "m20260922_134000_inference_timeout_constraints");
-	migration::Migrator::down(&f.registry.db, Some(1)).await.unwrap();
+	let migrations = Migrator::migrations();
+	assert_eq!(
+		migrations.last().unwrap().name(),
+		"m20260922_134000_inference_timeout_constraints"
+	);
+	Migrator::down(&f.registry.db, Some(1)).await.unwrap();
 	let legacy = model("timeout-model");
 	f.registry.register(legacy.clone()).await.unwrap();
 	install(&f.store.pool, &json!({})).await.unwrap();
 	let mut configured = model("configured");
 	configured.config["request_timeout_secs"] = json!(900);
-	rejected(insert_model(&f.store.pool, &configured).await, "registry_model_config");
+	rejected(
+		insert_model(&f.store.pool, &configured).await,
+		"registry_model_config",
+	);
 	rejected(
 		install(&f.store.pool, &json!({"request_timeout_secs":1200})).await,
 		"installations_config",
 	);
-	migration::Migrator::up(&f.registry.db, None).await.unwrap();
-	assert_eq!(f.registry.get("timeout-model", "1.0.0").await.unwrap().config, legacy.config);
+	Migrator::up(&f.registry.db, None).await.unwrap();
+	let stored = f.registry.get("timeout-model", "1.0.0").await.unwrap();
+	assert_eq!(stored.config, legacy.config);
 	// Downgrade and re-upgrade without new fields must preserve existing rows.
-	migration::Migrator::down(&f.registry.db, Some(1)).await.unwrap();
-	migration::Migrator::up(&f.registry.db, None).await.unwrap();
-	install(&f.store.pool, &json!({"request_timeout_secs":1200})).await.unwrap();
+	Migrator::down(&f.registry.db, Some(1)).await.unwrap();
+	Migrator::up(&f.registry.db, None).await.unwrap();
+	install(&f.store.pool, &json!({"request_timeout_secs":1200}))
+		.await
+		.unwrap();
 	// Never silently discard a timeout during downgrade.
-	assert!(migration::Migrator::down(&f.registry.db, Some(1)).await.is_err());
-	assert_eq!(f.registry.get("timeout-model", "1.0.0").await.unwrap().config["request_timeout_secs"], 1200);
+	assert!(Migrator::down(&f.registry.db, Some(1)).await.is_err());
+	let stored = f.registry.get("timeout-model", "1.0.0").await.unwrap();
+	assert_eq!(stored.config["request_timeout_secs"], 1200);
+	install(&f.store.pool, &json!({"request_timeout_secs":900}))
+		.await
+		.unwrap();
 	f.registry.register(configured).await.unwrap();
 	cleanup(f, &url, &schema).await;
 }
