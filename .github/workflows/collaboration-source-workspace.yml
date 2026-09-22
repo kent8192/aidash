@@ -6,32 +6,29 @@ on:
 permissions:
   contents: read
 jobs:
-  source:
+  dependencies:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-          fetch-depth: 1
-      - name: Archive tracked source
-        run: git archive HEAD | gzip > /tmp/current-source.tar.gz
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: collaboration-current-source
-          path: /tmp/current-source.tar.gz
-          retention-days: 1
-      - name: Prepare PostgreSQL verification binaries
+      - name: Download locked Rust dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y postgresql-16
-          mkdir -p /tmp/postgres/lib /tmp/postgres/bin /tmp/postgres/share
-          cp -a /usr/lib/postgresql/16/bin/. /tmp/postgres/bin/
-          cp -a /usr/share/postgresql/16/. /tmp/postgres/share/
-          cp -a /usr/lib/postgresql/16/lib/. /tmp/postgres/lib/
-          tar -czf /tmp/postgres.tar.gz -C /tmp postgres
+          cargo fetch --locked
+          tar -czf /tmp/cargo-cache.tar.gz -C "$HOME/.cargo" registry
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: collaboration-postgres-verification
-          path: /tmp/postgres.tar.gz
+          name: collaboration-offline-cargo
+          path: /tmp/cargo-cache.tar.gz
+          retention-days: 1
+      - name: PostgreSQL runtime libraries
+        run: |
+          mkdir -p /tmp/icu
+          cp -L /usr/lib/x86_64-linux-gnu/libicu*.so.74* /tmp/icu/
+          tar -czf /tmp/icu.tar.gz -C /tmp icu
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: collaboration-postgres-icu
+          path: /tmp/icu.tar.gz
           retention-days: 1
