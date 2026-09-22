@@ -427,12 +427,15 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 					"NOT (context ? 'compactions') OR (jsonb_typeof(context->'compactions') = 'number' AND context->>'compactions' ~ '^(0|[1-9][0-9]*)$' AND (context->>'compactions')::numeric <= 4294967295)".into(),
 				]);
 				let usage = "context->'usage'";
+				let usage_compactions = format!(
+					"jsonb_typeof({usage}->'compactions') = 'number' AND {usage}->>'compactions' ~ '^(0|[1-9][0-9]*)$' AND ({usage}->>'compactions')::numeric <= 4294967295"
+				);
 				parts.push(format!(
 					"NOT (context ? 'usage') OR jsonb_typeof({usage}) = 'null' OR (jsonb_typeof({usage}) = 'object' AND {} AND {} AND {} AND {})",
 					unsigned(&format!("{usage}->'input_tokens'")),
 					unsigned(&format!("{usage}->'output_tokens'")),
 					unsigned(&format!("{usage}->'context_window'")),
-					format!("jsonb_typeof({usage}->'compactions') = 'number' AND {usage}->>'compactions' ~ '^(0|[1-9][0-9]*)$' AND ({usage}->>'compactions')::numeric <= 4294967295"),
+					usage_compactions,
 				));
 				for field in ["retry_at", "wake_at"] {
 					parts.push(format!(
