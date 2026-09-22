@@ -557,12 +557,11 @@ impl Harness {
 						store: store.clone(),
 						run: run.clone(),
 					};
-					let output = match tool.invoke(&ctx, call.arguments.clone(), &key).await {
+					match tool.invoke(&ctx, call.arguments.clone(), &key).await {
 						Ok(output) => output,
 						Err(Error::Invalid(message)) => json!({"error":message}),
 						Err(e) => return Err(e),
-					};
-					output
+					}
 				};
 				if read_was_limited {
 					output["budget_limited"] = json!(true);
