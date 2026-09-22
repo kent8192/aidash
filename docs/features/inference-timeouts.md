@@ -30,10 +30,17 @@ the supported integer range is `1..=4294967295` seconds.
 ## Defaults and compatibility
 
 Omitting `request_timeout_secs`, or setting it to `null`, uses **900 seconds**.
-Existing stored model configurations therefore remain readable without a data
-migration or re-registration. Previously, inference inherited the shared HTTP
+Existing stored model configurations remain readable without rewriting their
+data or re-registering them. Previously, inference inherited the shared HTTP
 client's 120-second total timeout, which could interrupt valid long-running
 completions and trigger retries.
+
+The normal database upgrade applies
+`m20260922_134000_inference_timeout_constraints`. This migration updates and
+revalidates the model registration and installation-override validators to accept
+the new field. Historical migrations and existing configuration values are not
+changed. Downgrading refuses configurations containing the new field rather than
+silently discarding their settings.
 
 Explicit values belong to the model's versioned configuration. To change an
 explicit timeout, register a new model version and update the agents that should
@@ -46,13 +53,21 @@ use it; do not mutate an immutable published version. Rust callers constructing
 Only inference requests override the shared client's total timeout. Other
 outbound traffic retains the shared 120-second default or its own existing
 request-specific limit, such as the model catalog's 15 seconds. The existing
-10-second connection timeout, redirect policy, credentials, response-size bound,
-and retry behavior are unchanged.
+10-second connection timeout, redirect policy, credentials, and response-size
+bound are unchanged.
+
+Cancellation does not wait for the inference deadline. During inference, the
+worker checks committed run control with a 250-millisecond pause between reads,
+independently of lease renewal and process-local notifications. Cancellation drops
+the pending request, including a stalled response-body read, and follows the
+existing durable cancellation path without retrying inference. It does not
+interrupt unrelated tool execution or durable transitions.
 
 This setting does not extend a provider, gateway, or reverse proxy's independent
 deadline. A request that reaches Aidash's configured deadline can still fail and
-follow the existing retry policy; this change does not guarantee exactly-once
-billing.
+follow the existing retry policy. Closing a local HTTP request does not guarantee
+that an upstream provider stops processing or waives charges; this change does
+not guarantee exactly-once billing.
 
 ## Regression tests
 
@@ -62,3 +77,9 @@ multi-minute wall-clock sleeps. They cover a 508-second completion beyond the ol
 120-second cutoff, a configured limit beyond the 900-second default, shorter
 configured limits, the default deadline, unchanged non-inference deadlines, and
 configuration validation and legacy deserialization.
+
+Run `scripts/test-rust.sh --coverage` for the full suite with disposable services.
+This includes the PostgreSQL tests in `tests/inference_cancellation.rs` and
+`tests/provider_timeout_persistence.rs`: cancellation before headers and during
+body reads, API registration, persisted overrides, invalid values, migration
+upgrades, and safe downgrade behavior.
