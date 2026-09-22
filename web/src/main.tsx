@@ -1109,13 +1109,13 @@ function Dashboard({
                   </>
                 );
               })()}
-            {dialog.kind === "entityDetail" && dialog.entity && (
-              state.isError ? (
+            {dialog.kind === "entityDetail" &&
+              dialog.entity &&
+              (state.isError ? (
                 <p role="status">{t("nodeUnavailable")}</p>
               ) : (
                 <EntityDetails entity={dialog.entity} data={data} open={open} />
-              )
-            )}
+              ))}
             {dialog.kind === "run" && dialog.run && (
               <RunDetails
                 run={
