@@ -54,5 +54,9 @@ Authority to perform a particular action in a channel, distinct from permission 
 **Graph View**:
 Aidash's visual view of entities, their relationships, and their activity, linked to contextual operations and related collaboration channels.
 
+**Historical graph**:
+A reconstruction of the recorded entity relationships and states for a selected past time, including the entity versions relevant to that state. It is distinct from displaying the current graph alongside a history list.
+_Avoid_: Execution replay (as a synonym for inspecting past graph state).
+
 **Related channel**:
 A channel associated with a graph entity through its work or participation. A shared agent or other reusable entity may be associated with multiple channels.
