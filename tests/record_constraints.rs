@@ -608,6 +608,55 @@ async fn package_agent_config_requires_all_typed_fields() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn package_tool_config_uses_registry_validation() {
+	let (f, url, schema) = setup().await;
+	let mut tool = model();
+	tool.id = "packaged-tool".into();
+	tool.kind = "tool".into();
+	tool.config = json!({"transport":"native","operation":"echo"});
+	let record = f
+		.registry
+		.publish(
+			&f.store.pool,
+			aidash::registry::Package {
+				entity: tool,
+				author: "Fixture".into(),
+				permissions: vec![],
+				dependencies: vec![],
+			},
+		)
+		.await
+		.unwrap();
+	for invalid in [
+		json!({"transport":"bogus"}),
+		json!({"transport":"native","operation":7}),
+		json!({"transport":"native","operation":"http_get"}),
+	] {
+		let mut manifest = record.manifest.clone();
+		manifest["entity"]["config"] = invalid;
+		let digest = aidash::registry::digest(&manifest);
+		let update_package = Query::update()
+			.table(Alias::new("packages"))
+			.value(Alias::new("manifest"), Expr::val(manifest))
+			.value(Alias::new("digest"), Expr::val(digest))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("version")).eq(Expr::cust("$2")))
+			.to_string(PostgresQueryBuilder);
+		check_rejected(
+			sqlx::query(&update_package)
+				.bind(&record.id)
+				.bind(&record.version)
+				.execute(&f.store.pool)
+				.await
+				.map(|_| ()),
+			"packages_identity",
+		);
+	}
+	cleanup(f, &url, &schema).await;
+}
+
 async fn insert_values(
 	pool: &sqlx::PgPool,
 	table: &str,
@@ -874,7 +923,8 @@ async fn requirements_and_run_state_reject_wrong_shapes() {
 	update(&f.store.pool, "tasks", "requirements", Expr::val(valid))
 		.await
 		.unwrap();
-	f.store
+	let run = f
+		.store
 		.accept_run(&task, "aidash://remote", "executor", "1.0.0")
 		.await
 		.unwrap();
@@ -911,6 +961,60 @@ async fn requirements_and_run_state_reject_wrong_shapes() {
 	)
 	.await
 	.unwrap();
+	for malformed in [
+		json!({"summary":7}),
+		json!({"history":7}),
+		json!({"usage":7}),
+		json!({"usage":{"input_tokens":0}}),
+		json!({"usage":{"input_tokens":"0","output_tokens":0,"context_window":4096,"compactions":0}}),
+		json!({"compactions":-1}),
+		json!({"compactions":1.5}),
+		json!({"compactions":4294967296_u64}),
+	] {
+		check_rejected(
+			update(&f.store.pool, "runs", "context", Expr::val(malformed)).await,
+			"runs_counters",
+		);
+	}
+	update(
+		&f.store.pool,
+		"runs",
+		"context",
+		Expr::val(json!({
+			"summary":"",
+			"history":[],
+			"usage":{"input_tokens":0,"output_tokens":0,"context_window":4096,"compactions":0,"future_metric":true},
+			"compactions":0
+		})),
+	)
+	.await
+	.unwrap();
+	let lease_deadline_update = |deadline: &str| {
+		Query::update()
+			.table(Alias::new("runs"))
+			.value(Alias::new("lease_owner"), Expr::cust("gen_random_uuid()"))
+			.value(
+				Alias::new("lease_until"),
+				Expr::cust(format!("'{deadline}'::timestamptz")),
+			)
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder)
+	};
+	for deadline in ["infinity", "-infinity"] {
+		check_rejected(
+			sqlx::query(&lease_deadline_update(deadline))
+				.bind(run.id)
+				.execute(&f.store.pool)
+				.await
+				.map(|_| ()),
+			"runs_lease",
+		);
+	}
+	sqlx::query(&lease_deadline_update("2030-01-01 00:00:00+00"))
+		.bind(run.id)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1428,6 +1532,94 @@ async fn task_dependency_cycles_include_parent_edges() {
 		Some("tasks_dependency_cycle"),
 		"{error}"
 	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn historical_task_cycles_fail_migration_through_query_validation() {
+	use migration::MigratorTrait;
+	let (f, url, schema) = setup().await;
+	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
+	let input = NewTask {
+		title: "Task".into(),
+		description: "Work".into(),
+		requirements: json!({}),
+		dependencies: vec![],
+		parent_id: None,
+	};
+	let first = f
+		.store
+		.create_task(workspace.id, &input, "human", None)
+		.await
+		.unwrap();
+	let second = f
+		.store
+		.create_task(workspace.id, &input, "human", None)
+		.await
+		.unwrap();
+	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());
+	let parent_update = Query::update()
+		.table(Alias::new("tasks"))
+		.value(Alias::new("parent_id"), Expr::cust("$1"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+		.to_string(PostgresQueryBuilder);
+	migration::Migrator::down(&db, Some(1)).await.unwrap();
+	sqlx::query(&parent_update)
+		.bind(second.id)
+		.bind(first.id)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	sqlx::query(&parent_update)
+		.bind(first.id)
+		.bind(second.id)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	let error = migration::Migrator::up(&db, None).await.unwrap_err();
+	assert!(error.to_string().contains("tasks_parent_cycle"), "{error}");
+	let clear_parents = Query::update()
+		.table(Alias::new("tasks"))
+		.value(Alias::new("parent_id"), Expr::cust("NULL"))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&clear_parents)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	migration::Migrator::up(&db, None).await.unwrap();
+
+	// Parent traversal alone is acyclic here; the backfill must catch the
+	// combined parent/dependency cycle after it projects dependencies.
+	migration::Migrator::down(&db, Some(1)).await.unwrap();
+	sqlx::query(&parent_update)
+		.bind(second.id)
+		.bind(first.id)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	sqlx::query(&dependencies_update())
+		.bind(second.id)
+		.bind(vec![first.id])
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	let error = migration::Migrator::up(&db, None).await.unwrap_err();
+	assert!(
+		error.to_string().contains("tasks_dependency_cycle"),
+		"{error}"
+	);
+	sqlx::query(&clear_parents)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	sqlx::query(&dependencies_update())
+		.bind(second.id)
+		.bind(Vec::<uuid::Uuid>::new())
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	migration::Migrator::up(&db, None).await.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 

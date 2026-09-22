@@ -67,7 +67,7 @@ const CHECKS: &[(&str, &str, &str)] = &[
 	(
 		"runs",
 		"runs_lease",
-		"(lease_owner IS NULL) = (lease_until IS NULL)",
+		"(lease_owner IS NULL) = (lease_until IS NULL) AND (lease_until IS NULL OR isfinite(lease_until))",
 	),
 	(
 		"installations",
@@ -421,6 +421,19 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 				parts.push(
 					"jsonb_typeof(context) = 'object' AND jsonb_typeof(pending) = 'object'".into(),
 				);
+				parts.extend([
+					"NOT (context ? 'summary') OR jsonb_typeof(context->'summary') = 'string'".into(),
+					"NOT (context ? 'history') OR jsonb_typeof(context->'history') = 'array'".into(),
+					"NOT (context ? 'compactions') OR (jsonb_typeof(context->'compactions') = 'number' AND context->>'compactions' ~ '^(0|[1-9][0-9]*)$' AND (context->>'compactions')::numeric <= 4294967295)".into(),
+				]);
+				let usage = "context->'usage'";
+				parts.push(format!(
+					"NOT (context ? 'usage') OR jsonb_typeof({usage}) = 'null' OR (jsonb_typeof({usage}) = 'object' AND {} AND {} AND {} AND {})",
+					unsigned(&format!("{usage}->'input_tokens'")),
+					unsigned(&format!("{usage}->'output_tokens'")),
+					unsigned(&format!("{usage}->'context_window'")),
+					format!("jsonb_typeof({usage}->'compactions') = 'number' AND {usage}->>'compactions' ~ '^(0|[1-9][0-9]*)$' AND ({usage}->>'compactions')::numeric <= 4294967295"),
+				));
 				for field in ["retry_at", "wake_at"] {
 					parts.push(format!(
 						"NOT (pending ? '{field}') OR aidash_valid_pending_timestamp(pending->'{field}')"
@@ -573,6 +586,9 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 				parts.push(format!(
 					"({entity}->>'kind' <> 'skill' OR jsonb_typeof({entity}->'config'->'instructions') = 'string')"
 				));
+				parts.push(format!(
+					"({entity}->>'kind' <> 'tool' OR COALESCE(aidash_tool_config_is_valid({entity_config}), false))"
+				));
 			}
 			_ => {}
 		}
@@ -703,39 +719,13 @@ async fn create_dependencies(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
 		.get_connection()
 		.execute(manager.get_database_backend().build(&insert))
 		.await?;
-	manager
-		.get_connection()
-		.execute_unprepared(
-			r#"
-DO $$
-BEGIN
-    IF EXISTS (
-        WITH RECURSIVE walk(start_id, current_id, path, cycle) AS (
-            SELECT id, id, ARRAY[id], false FROM tasks
-            UNION ALL
-            SELECT w.start_id, edge.target_id, w.path || edge.target_id,
-                   edge.target_id = ANY(w.path)
-            FROM walk w
-            CROSS JOIN LATERAL (
-                SELECT t.parent_id AS target_id
-                FROM tasks t
-                WHERE t.id = w.current_id AND t.parent_id IS NOT NULL
-                UNION ALL
-                SELECT d.dependency_id AS target_id
-                FROM task_dependencies d
-                WHERE d.task_id = w.current_id
-            ) edge
-            WHERE NOT w.cycle
-        )
-        SELECT 1 FROM walk WHERE cycle
-    ) THEN
-        RAISE EXCEPTION 'task dependency graph contains a cycle'
-            USING ERRCODE = '23514', CONSTRAINT = 'tasks_dependency_cycle';
-    END IF;
-END $$;
-"#,
-		)
-		.await?;
+	ensure_task_graph_is_acyclic(
+		manager,
+		true,
+		"tasks_dependency_cycle",
+		"task dependency graph contains a cycle",
+	)
+	.await?;
 	// SeaQuery cannot express PostgreSQL trigger/function DDL. The derived table
 	// keeps the array API intact while real FKs protect concurrent writes/deletes.
 	manager
@@ -773,29 +763,17 @@ async fn create_parent_cycle_guard(manager: &SchemaManager<'_>) -> Result<(), Db
 	// PostgreSQL deliberately disallows cross-row CHECK constraints. A deferred
 	// row trigger gives parent updates the same acyclic guarantee as the Rust
 	// ancestor walk while allowing the existing parent API to remain unchanged.
+	ensure_task_graph_is_acyclic(
+		manager,
+		false,
+		"tasks_parent_cycle",
+		"task parent hierarchy contains a cycle",
+	)
+	.await?;
 	manager
 		.get_connection()
 		.execute_unprepared(
 			r#"
-DO $$
-BEGIN
-    IF EXISTS (
-        WITH RECURSIVE walk(start_id, current_id, parent_id, path, cycle) AS (
-            SELECT id, id, parent_id, ARRAY[id], false
-            FROM tasks
-            WHERE parent_id IS NOT NULL
-            UNION ALL
-            SELECT w.start_id, t.id, t.parent_id, w.path || t.id, t.id = ANY(w.path)
-            FROM walk w
-            JOIN tasks t ON t.id = w.parent_id
-            WHERE NOT w.cycle
-        )
-        SELECT 1 FROM walk WHERE cycle
-    ) THEN
-        RAISE EXCEPTION 'task parent hierarchy contains a cycle'
-            USING ERRCODE = '23514', CONSTRAINT = 'tasks_parent_cycle';
-    END IF;
-END $$;
 CREATE FUNCTION guard_task_parent_cycle() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     -- The statement trigger takes the shared lock before deferred-check
@@ -836,6 +814,80 @@ CREATE TRIGGER tasks_hierarchy_serialize
 "#,
 		)
 		.await?;
+	Ok(())
+}
+
+async fn ensure_task_graph_is_acyclic(
+	manager: &SchemaManager<'_>,
+	include_dependencies: bool,
+	constraint: &str,
+	description: &str,
+) -> Result<(), DbErr> {
+	let mut edges = Query::select()
+		.expr_as(Expr::col(Alias::new("id")), Alias::new("source_id"))
+		.expr_as(Expr::col(Alias::new("parent_id")), Alias::new("target_id"))
+		.from(Alias::new("tasks"))
+		.and_where(Expr::col(Alias::new("parent_id")).is_not_null())
+		.to_owned();
+	if include_dependencies {
+		let dependencies = Query::select()
+			.expr_as(Expr::col(Alias::new("task_id")), Alias::new("source_id"))
+			.expr_as(
+				Expr::col(Alias::new("dependency_id")),
+				Alias::new("target_id"),
+			)
+			.from(Alias::new("task_dependencies"))
+			.to_owned();
+		edges.union(UnionType::All, dependencies);
+	}
+
+	let recursive_walk = Query::select()
+		.expr_as(Expr::col(("walk", "start_id")), Alias::new("start_id"))
+		.expr_as(Expr::col(("edge", "target_id")), Alias::new("current_id"))
+		.expr(Expr::cust("walk.path || edge.target_id"))
+		.expr(Expr::cust("edge.target_id = ANY(walk.path)"))
+		.from(Alias::new("walk"))
+		.join_subquery(
+			JoinType::InnerJoin,
+			edges,
+			Alias::new("edge"),
+			Expr::col(("walk", "current_id")).equals(("edge", "source_id")),
+		)
+		.and_where(Expr::col(("walk", "cycle")).eq(false))
+		.to_owned();
+	let walk = Query::select()
+		.column(Alias::new("id"))
+		.column(Alias::new("id"))
+		.expr(Expr::cust("ARRAY[id]"))
+		.expr(Expr::val(false))
+		.from(Alias::new("tasks"))
+		.to_owned()
+		.union(UnionType::All, recursive_walk)
+		.to_owned();
+	let cte = CommonTableExpression::new()
+		.table_name(Alias::new("walk"))
+		.columns(["start_id", "current_id", "path", "cycle"].map(Alias::new))
+		.query(walk)
+		.to_owned();
+	let with = WithClause::new().recursive(true).cte(cte).to_owned();
+	let cycle = Query::select()
+		.expr(Expr::val(1))
+		.from(Alias::new("walk"))
+		.and_where(Expr::col(Alias::new("cycle")).eq(true))
+		.limit(1)
+		.with_cte(with)
+		.to_owned();
+	let statement = manager.get_database_backend().build(&cycle);
+	if manager
+		.get_connection()
+		.query_one(statement)
+		.await?
+		.is_some()
+	{
+		return Err(DbErr::Migration(format!(
+			"{description} (constraint {constraint})"
+		)));
+	}
 	Ok(())
 }
 
@@ -1003,8 +1055,8 @@ impl MigrationTrait for Migration {
 				.await?;
 		}
 		create_installation_guard(manager).await?;
-		create_dependencies(manager).await?;
 		create_parent_cycle_guard(manager).await?;
+		create_dependencies(manager).await?;
 		create_task_dependency_cycle_guard(manager).await?;
 		Ok(())
 	}
