@@ -331,6 +331,7 @@ impl Harness {
 					.await?;
 				let model_cfg: ModelConfig = serde_json::from_value(model_entry.config)?;
 				let window = model_cfg.context_window;
+				let output = model_cfg.output_token_limit();
 				let model = provider(self.federation.client.clone(), model_cfg)?;
 				let tools = self.tools(&agent).await?;
 				let task = home.task().await?;
@@ -363,7 +364,6 @@ impl Harness {
 					.values()
 					.map(|t| t.specification())
 					.collect::<Vec<_>>();
-				let output = (window / 8).clamp(256, 4096) as u32;
 				let mut budget = context::RequestBudget {
 					window,
 					instructions: &instructions,

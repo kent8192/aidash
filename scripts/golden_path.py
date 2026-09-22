@@ -320,7 +320,7 @@ def main():
         wait_for(lambda: api_request(base_b, "/health"), label="Node B")
         for base, other, endpoint in [(base_a, node_b, base_b), (base_b, node_a, base_a)]:
             api_request(base, "/api/peers", {"node_id": other, "endpoint": endpoint, "credential_env": "AIDASH_SECRET_PEER", "protocol_version": "0.1", "enabled": True})
-            model = entity("model", "fixture-model", {"provider": "openrouter", "model_id": "protocol-fixture", "endpoint": fixture_url + "/v1", "context_window": 256000, "modalities": ["text"], "cost": {"currency": "USD", "input_per_million": 0}, "credential_env": None})
+            model = entity("model", "fixture-model", {"provider": "openrouter", "model_id": "protocol-fixture", "endpoint": fixture_url + "/v1", "context_window": 256000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {"currency": "USD", "input_per_million": 0}, "credential_env": None})
             api_request(base, "/api/registry", model)
             tool = entity("tool", "research-http", {"transport": "http", "endpoint": fixture_url + "/research", "credential_env": None, "replay": "idempotent"})
             tool["schema"] = {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}, "additionalProperties": False}

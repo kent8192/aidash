@@ -59,6 +59,9 @@ tokens. This deliberately conservative estimate is not the provider's actual
 token count. It includes the JSON escaping of context inside message text.
 Output fits inside the registered context window; it is not extra input space.
 Failure to fit leaves saved context unchanged and prevents inference I/O.
+New model registrations capture OpenRouter's advertised maximum completion
+tokens as `max_output_tokens`; model versions created before this field existed
+retain their previous output allowance until re-registered.
 
 The model's pinned workspace and `workspace_observe` use the same bounded view.
 Observations include goal/task previews, artifact IDs and metadata, message
