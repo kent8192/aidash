@@ -727,11 +727,11 @@ async fn package_digest_backfill_preserves_previous_publish_serialization() {
 	entity.kind = "skill".into();
 	entity.schema = json!({
 		"type":"object",
-		"properties":{"fraction":{"type":"number","minimum":1.25e-20,"maximum":3.141592653589793}},
+		"properties":{"fraction":{"type":"number","minimum":1.25e-20,"maximum":std::f64::consts::PI}},
 	});
 	entity.config = json!({
 		"instructions":"Preserve this installed package",
-		"future_extension":{"small":1.25e-20,"large":1.0e20,"precise":0.10000000000000001},
+		"future_extension":{"small":1.25e-20,"large":1.0e20,"precise":f64::from_bits(0x3fb999999999999b)},
 	});
 	let expected_entity = entity.clone();
 	let record = f
