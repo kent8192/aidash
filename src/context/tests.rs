@@ -442,6 +442,62 @@ fn snapshot_budget_also_bounds_wide_state_objects() {
 	assert_eq!(pinned["snapshot_truncated"], true);
 }
 
+#[test]
+fn registration_and_execution_share_the_context_reserve_at_its_boundary() {
+	let instructions = "Use the private reference documents.";
+	let specifications = vec![];
+	let output = 4096;
+	let private_context = json!({"reference_documents":"private \"quoted\" reference"});
+	let request = RequestBudget {
+		window: 0,
+		instructions,
+		tools: &specifications,
+		max_output_tokens: output,
+	};
+	let window = request
+		.request(&Context::default(), &private_context)
+		.estimated_total_tokens()
+		+ MIN_CONTEXT_RESERVE;
+	let registration_budget = request_context_budget(
+		window,
+		output,
+		instructions,
+		&specifications,
+		&private_context,
+	)
+	.unwrap();
+	let execution_budget =
+		RequestBudget { window, ..request }.remaining(&Context::default(), &private_context);
+	assert_eq!(registration_budget, MIN_CONTEXT_RESERVE);
+	assert_eq!(execution_budget, registration_budget);
+	assert!(
+		request_context_budget(
+			window - 1,
+			output,
+			instructions,
+			&specifications,
+			&private_context
+		)
+		.is_err()
+	);
+}
+
+#[test]
+fn compaction_snapshot_redacts_private_documents_without_mutating_inference_context() {
+	let pinned = json!({
+		"task":{"title":"Summarize references"},
+		"reference_documents":[{"text":"PRIVATE-REFERENCE-123"}],
+	});
+	let redacted = compaction_snapshot(&pinned);
+	assert!(redacted.get("reference_documents").is_none());
+	assert!(!redacted.to_string().contains("PRIVATE-REFERENCE-123"));
+	assert_eq!(redacted["task"]["title"], "Summarize references");
+	assert_eq!(
+		pinned["reference_documents"][0]["text"],
+		"PRIVATE-REFERENCE-123"
+	);
+}
+
 // Exercise the same complete-request fitting path as the harness.
 async fn compact(
 	context: &mut Context,
@@ -462,4 +518,39 @@ async fn compact(
 		pinned,
 	)
 	.await
+}
+
+#[tokio::test]
+async fn compaction_counts_private_documents_without_disclosing_them() {
+	let mut context = Context {
+		history: history(),
+		..Default::default()
+	};
+	let asker = FakeJev::new(drop_all);
+	let pinned =
+		json!({"task":"Summarize", "reference_documents":"PRIVATE-REFERENCE-123".repeat(50)});
+	let budget = RequestBudget {
+		window: 6000,
+		instructions: "",
+		tools: &[],
+		max_output_tokens: 256,
+	};
+	super::compact(&mut context, &asker, &budget, &pinned)
+		.await
+		.unwrap();
+	assert_eq!(context.compactions, 1);
+	let seen = asker.seen.lock().unwrap();
+	assert!(!seen.is_empty());
+	assert!(
+		seen.iter()
+			.all(|(state, _)| !state.to_string().contains("PRIVATE-REFERENCE-123"))
+	);
+	assert!(budget.request(&context, &pinned).estimated_total_tokens() <= budget.window);
+	assert!(
+		budget
+			.request(&context, &pinned)
+			.context
+			.to_string()
+			.contains("PRIVATE-REFERENCE-123")
+	);
 }

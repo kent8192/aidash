@@ -33,6 +33,7 @@ fn ordinary_routes() -> OpenApiRouter<Federation> {
 	let administration = OpenApiRouter::new()
 		.merge(crate::authorization::api::routes())
 		.routes(routes!(registry_create))
+		.routes(routes!(crate::knowledge::create))
 		.routes(routes!(openrouter_models))
 		.routes(routes!(peer_create))
 		.routes(routes!(mesh))
@@ -1587,10 +1588,11 @@ mod schema_tests {
 				.values()
 				.map(|path| path.as_object().unwrap().len())
 				.sum::<usize>(),
-			70
+			71
 		);
 		for (path, method) in [
 			("/api/providers/openrouter/models", "get"),
+			("/api/agents/personal", "post"),
 			("/api/tasks", "get"),
 			("/api/tasks/{id}/remote-grants", "post"),
 			("/api/tasks/{id}/remote-grants/{grant}/revoke", "post"),

@@ -71,6 +71,41 @@ impl RequestBudget<'_> {
 	}
 }
 
+pub(crate) const MIN_CONTEXT_RESERVE: usize = 2048;
+
+/// Reserve room for history using the same complete request estimate as execution.
+pub fn request_context_budget(
+	window: usize,
+	max_output_tokens: u32,
+	instructions: &str,
+	specifications: &[crate::provider::ToolSpec],
+	private_context: &Value,
+) -> Result<usize> {
+	let budget = RequestBudget {
+		window,
+		instructions,
+		tools: specifications,
+		max_output_tokens,
+	}
+	.remaining(&Context::default(), private_context);
+	if budget < MIN_CONTEXT_RESERVE {
+		return Err(Error::Invalid(
+			"agent instructions, skills, tools and private context cannot fit the model window with output and context reserves".into(),
+		));
+	}
+	Ok(budget)
+}
+
+/// Strip personal documents before sending pinned context to a compaction
+/// provider. Complete-request fitting still counts the original pinned context.
+pub fn compaction_snapshot(pinned: &Value) -> Value {
+	let mut snapshot = pinned.clone();
+	if let Some(object) = snapshot.as_object_mut() {
+		object.remove("reference_documents");
+	}
+	snapshot
+}
+
 pub async fn compact(
 	context: &mut Context,
 	asker: &dyn jev::JevAsker,
@@ -85,7 +120,7 @@ pub async fn compact(
 		return Ok(());
 	}
 	let classification_context = json!({
-		"instructions":budget.instructions, "current":pinned, "previous_summary":candidate.summary
+		"instructions":budget.instructions, "current":compaction_snapshot(pinned), "previous_summary":candidate.summary
 	});
 	let compacted = compaction::prune(
 		&candidate.history,

@@ -255,8 +255,28 @@ fn entity_ref_array(value: &str) -> String {
 		"jsonb_typeof({value}) = 'array' AND NOT jsonb_path_exists({value}, 'lax $[*] ? (@.type() != \"object\" || !exists(@.id) || @.id.type() != \"string\" || !exists(@.version) || @.version.type() != \"string\")', '{{}}'::jsonb, true)"
 	)
 }
-fn checks() -> Vec<(&'static str, &'static str, String)> {
+// The later personal-agent migration reuses the complete checks so all existing
+// type, reference and package invariants remain enforced.
+fn agent_content(config: &str) -> String {
+	format!(
+		"jsonb_typeof(COALESCE({config}->'instructions', '\"\"'::jsonb)) = 'string' AND (length(btrim(COALESCE({config}->>'instructions', ''), {WHITESPACE_SQL})) > 0 OR CASE WHEN jsonb_typeof({config}->'skills') = 'array' THEN jsonb_array_length({config}->'skills') > 0 ELSE false END) AND {}",
+		optional_string(&format!("{config}->'knowledge_digest'"))
+	)
+}
+
+pub(crate) fn checks(personal_agents: bool) -> Vec<(&'static str, &'static str, String)> {
 	let mut checks = Vec::new();
+	let mut agent_fields = vec![
+		"model",
+		"instructions",
+		"tools",
+		"skills",
+		"cluster",
+		"max_steps",
+	];
+	if personal_agents {
+		agent_fields.push("knowledge_digest");
+	}
 	for &(table, name, expression) in CHECKS {
 		let mut parts = vec![expression.replace("{whitespace}", WHITESPACE_SQL)];
 		match name {
@@ -314,19 +334,14 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 			}
 			"registry_agent_config" => {
 				let config = "(metadata->'config')";
+				if personal_agents {
+					parts[0] = format!(
+						"kind <> 'agent' OR ({} AND CASE WHEN NOT ({config} ? 'max_steps') THEN true WHEN jsonb_typeof({config}->'max_steps') = 'number' AND ({config}->>'max_steps') ~ '^(0|[1-9][0-9]*)$' THEN ({config}->>'max_steps')::numeric BETWEEN 1 AND 1000 ELSE false END)",
+						agent_content(config)
+					);
+				}
 				let shape = [
-					object_fields(
-						config,
-						[
-							"model",
-							"instructions",
-							"tools",
-							"skills",
-							"cluster",
-							"max_steps",
-						]
-						.as_slice(),
-					),
+					object_fields(config, &agent_fields),
 					entity_ref_array(&format!("COALESCE({config}->'tools', '[]'::jsonb)")),
 					entity_ref_array(&format!("COALESCE({config}->'skills', '[]'::jsonb)")),
 					format!(
@@ -599,24 +614,17 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 				let entity_skills =
 					entity_ref_array(&format!("COALESCE({entity_config}->'skills', '[]'::jsonb)"));
 				let agent_config = [
-					object_fields(
-						&entity_config,
-						[
-							"model",
-							"instructions",
-							"tools",
-							"skills",
-							"cluster",
-							"max_steps",
-						]
-						.as_slice(),
-					),
+					object_fields(&entity_config, &agent_fields),
 					format!(
 						"jsonb_typeof({entity_config}->'model') = 'object' AND jsonb_typeof({entity_config}->'model'->'id') = 'string' AND jsonb_typeof({entity_config}->'model'->'version') = 'string'"
 					),
-					format!(
-						"jsonb_typeof({entity_config}->'instructions') = 'string' AND length(btrim({entity_config}->>'instructions', {WHITESPACE_SQL})) > 0"
-					),
+					if personal_agents {
+						agent_content(&entity_config)
+					} else {
+						format!(
+							"jsonb_typeof({entity_config}->'instructions') = 'string' AND length(btrim({entity_config}->>'instructions', {WHITESPACE_SQL})) > 0"
+						)
+					},
 					format!(
 						"CASE WHEN NOT ({entity_config} ? 'max_steps') THEN true WHEN jsonb_typeof({entity_config}->'max_steps') = 'number' AND ({entity_config}->>'max_steps') ~ '^(0|[1-9][0-9]*)$' THEN ({entity_config}->>'max_steps')::numeric BETWEEN 1 AND 1000 ELSE false END"
 					),
@@ -1703,7 +1711,7 @@ impl MigrationTrait for Migration {
 		require_pg_jsonschema(manager).await?;
 		create_sql_validators(manager).await?;
 		prepare_package_manifest_sources(manager).await?;
-		for (table, name, expression) in checks() {
+		for (table, name, expression) in checks(false) {
 			// PostgreSQL CHECK alone accepts NULL; missing required JSON keys must fail.
 			manager
 				.get_connection()

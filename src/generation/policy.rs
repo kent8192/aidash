@@ -121,7 +121,11 @@ impl Spec {
 				return Err(Error::Invalid("generated group does not exist".into()));
 			}
 		}
-		Ok(serde_json::from_value(self.template.config.clone())?)
+		let config: AgentConfig = serde_json::from_value(self.template.config.clone())?;
+		if config.knowledge_digest.is_some() {
+			return Err(Error::Invalid("private reference documents belong to a registered agent, not a generation template".into()));
+		}
+		Ok(config)
 	}
 }
 

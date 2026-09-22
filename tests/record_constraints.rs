@@ -7,6 +7,18 @@ use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query, SimpleExpr};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+async fn rollback_record_constraints(db: &sea_orm::DatabaseConnection) {
+	use migration::MigratorTrait;
+	let migrations = migration::Migrator::migrations();
+	let index = migrations
+		.iter()
+		.position(|migration| migration.name() == "m20260921_071045_record_constraints")
+		.unwrap();
+	migration::Migrator::down(db, Some((migrations.len() - index) as u32))
+		.await
+		.unwrap();
+}
+
 fn model() -> Entry {
 	serde_json::from_value(json!({
 		"id":"test-model", "version":"1.0.0", "kind":"model",
@@ -511,13 +523,13 @@ async fn constraints_upgrade_and_rollback_preserve_data_and_reject_invalid_histo
 	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());
 	let good = serde_json::to_value(model()).unwrap();
 	insert_entry(&f.store.pool, &good).await.unwrap();
-	migration::Migrator::down(&db, Some(1)).await.unwrap();
+	rollback_record_constraints(&db).await;
 	migration::Migrator::up(&db, None).await.unwrap();
 	assert_eq!(
 		f.registry.get("test-model", "1.0.0").await.unwrap(),
 		model()
 	);
-	migration::Migrator::down(&db, Some(1)).await.unwrap();
+	rollback_record_constraints(&db).await;
 	let mut invalid = good.clone();
 	invalid["id"] = json!("invalid");
 	invalid["config"]["context_window"] = json!(0);
@@ -802,7 +814,7 @@ async fn package_digest_backfill_preserves_previous_publish_serialization() {
 	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());
 	// Remove only this migration's new source column, leaving a package row and
 	// digest produced by Registry.publish exactly as on the old schema.
-	migration::Migrator::down(&db, Some(1)).await.unwrap();
+	rollback_record_constraints(&db).await;
 	migration::Migrator::up(&db, None).await.unwrap();
 	let installed = f
 		.registry
@@ -2155,7 +2167,7 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes() {
 		"tasks_dependencies_managed",
 	);
 	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());
-	migration::Migrator::down(&db, Some(1)).await.unwrap();
+	rollback_record_constraints(&db).await;
 	migration::Migrator::up(&db, None).await.unwrap();
 	dependency_error(
 		sqlx::query(&delete_task())
@@ -2164,7 +2176,7 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes() {
 			.await
 			.unwrap_err(),
 	);
-	migration::Migrator::down(&db, Some(1)).await.unwrap();
+	rollback_record_constraints(&db).await;
 	sqlx::query(&query)
 		.bind(task.id)
 		.bind(vec![foreign.id])
@@ -2462,7 +2474,7 @@ async fn historical_task_cycles_fail_migration_through_query_validation() {
 		.value(Alias::new("parent_id"), Expr::cust("$1"))
 		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
 		.to_string(PostgresQueryBuilder);
-	migration::Migrator::down(&db, Some(1)).await.unwrap();
+	rollback_record_constraints(&db).await;
 	sqlx::query(&parent_update)
 		.bind(second.id)
 		.bind(first.id)
@@ -2489,7 +2501,7 @@ async fn historical_task_cycles_fail_migration_through_query_validation() {
 
 	// Parent traversal alone is acyclic here; the backfill must catch the
 	// child-to-parent dependency opposing the parent's parent-to-child edge.
-	migration::Migrator::down(&db, Some(1)).await.unwrap();
+	rollback_record_constraints(&db).await;
 	sqlx::query(&parent_update)
 		.bind(first.id)
 		.bind(second.id)

@@ -41,7 +41,8 @@ struct WorkspaceReadRange {
 
 fn request_context_window(window: usize, minimum_request: usize) -> usize {
 	let available = window.saturating_sub(minimum_request);
-	let reserve = POST_TOOL_CONTEXT_RESERVE.min(available / 4);
+	let reserve =
+		POST_TOOL_CONTEXT_RESERVE.min(available.saturating_sub(context::MIN_CONTEXT_RESERVE) / 4);
 	window.saturating_sub(reserve.saturating_mul(2))
 }
 
@@ -340,7 +341,7 @@ impl Harness {
 					store.save_run(run, token, "run.recovered").await?;
 					return Ok(());
 				}
-				let mut instructions = crate::context::agent_instructions(&agent.instructions);
+				let mut instructions = crate::context::agent_instructions("");
 				for skill in &agent.skills {
 					let skill = self
 						.federation
@@ -352,6 +353,10 @@ impl Harness {
 						instructions.push_str(text);
 					}
 				}
+				instructions.push_str("\nAdditional user instructions:\n");
+				instructions.push_str(&agent.instructions);
+				let documents =
+					crate::knowledge::load(&self.federation.registry.db, &entry).await?;
 				let mut context: Context = serde_json::from_value(run.context.clone())?;
 				let observation = home
 					.observation(0, context::observation::DEFAULT_LIMIT)
@@ -369,6 +374,18 @@ impl Harness {
 					.values()
 					.map(|t| t.specification())
 					.collect::<Vec<_>>();
+				let private_context = if agent.knowledge_digest.is_some() {
+					json!({"reference_documents":documents.clone()})
+				} else {
+					serde_json::Value::Null
+				};
+				context::request_context_budget(
+					window,
+					output,
+					&instructions,
+					&specifications,
+					&private_context,
+				)?;
 				let mut budget = context::RequestBudget {
 					window,
 					instructions: &instructions,
@@ -376,7 +393,7 @@ impl Harness {
 					max_output_tokens: output,
 				};
 				let minimum_request = budget
-					.request(&Context::default(), &serde_json::Value::Null)
+					.request(&Context::default(), &private_context)
 					.estimated_total_tokens();
 				budget.window = request_context_window(window, minimum_request);
 				if force_read_compaction {
@@ -385,8 +402,21 @@ impl Harness {
 				}
 				// Keep room for history and JSON message escaping. The final fitting
 				// decision below measures the complete provider input, not this quota.
-				let available = budget.remaining(&Context::default(), &serde_json::Value::Null);
-				context::bound_snapshot(&mut pinned, available / 4)?;
+				let available = budget.remaining(&Context::default(), &private_context);
+				let snapshot_fit = context::bound_snapshot(&mut pinned, available / 4);
+				if agent.knowledge_digest.is_some() {
+					pinned["reference_documents"] = documents;
+				}
+				// The snapshot quota is a heuristic. Required IDs and other minimum
+				// context may exceed it while the complete request still fits.
+				if let Err(error) = snapshot_fit
+					&& budget
+						.request(&Context::default(), &pinned)
+						.estimated_total_tokens()
+						> budget.window
+				{
+					return Err(error);
+				}
 				let semantic_budget = budget.remaining(&Context::default(), &pinned) / 2;
 				if let Some(guard) = guard {
 					if let Some(semantic) = guard
@@ -1048,12 +1078,15 @@ mod review_tests {
 
 	#[test]
 	fn tight_windows_leave_room_for_the_pinned_workspace_context() {
-		for slack in [4096, 8192] {
+		for slack in [2048, 4096, 8192] {
 			let minimum_request = 20_000;
 			let request_window =
 				super::request_context_window(minimum_request + slack, minimum_request);
 			let remaining = request_window.saturating_sub(minimum_request);
-			assert!(remaining > 0, "slack {slack} left no pinned-context budget");
+			assert!(
+				remaining >= crate::context::MIN_CONTEXT_RESERVE,
+				"slack {slack} consumed the admission reserve"
+			);
 
 			let snapshot_budget = remaining / 4;
 			let mut pinned = serde_json::json!({

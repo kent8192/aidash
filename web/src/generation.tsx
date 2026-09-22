@@ -457,6 +457,10 @@ function PolicyEditor({
     setError("");
     const form = new FormData(event.currentTarget);
     const text = (name: string) => String(form.get(name) ?? "");
+    if (!text("instructions").trim() && !form.getAll("skills").length) {
+      setError(t("agentNeedsSkill"));
+      return;
+    }
     try {
       const attributes: unknown = JSON.parse(text("attributes"));
       if (
@@ -649,14 +653,6 @@ function PolicyEditor({
         {window > 0 &&
           ` ${t("generationMinReservation")}: ${minTokens.toLocaleString()}`}
       </p>
-      <Field label={t("instructions")}>
-        <textarea
-          name="instructions"
-          required
-          rows={4}
-          defaultValue={config?.instructions}
-        />
-      </Field>
       <div className="two-columns">
         <RefChoices
           label={t("tools")}
@@ -674,6 +670,14 @@ function PolicyEditor({
         />
       </div>
       <p className="muted">{t("generationMultiSelect")}</p>
+      <Field label={t("additionalInstructions")}>
+        <textarea
+          name="instructions"
+          rows={4}
+          defaultValue={config?.instructions}
+        />
+      </Field>
+
       <Field label={t("cluster")}>
         <select
           name="cluster"
