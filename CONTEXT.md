@@ -43,6 +43,12 @@ An impediment to a particular task and work dependent on its unresolved result, 
 **Blocked goal**:
 A goal revision recorded as unable to progress or achieve its objective under the current conditions, with a reason, evidence, deciding actor, and conditions needed to resume. It is distinct from a completed goal and from a block or failure of an individual task.
 
+**Block resolution**:
+A verified removal of a condition preventing task or goal progress, distinct from permission to resume execution. Resolution of one condition does not remove other blocks, an explicit human pause, a pending approval, or cancellation.
+
+**Execution resumption**:
+Continuation of previously blocked work after its blocking conditions and current execution prerequisites permit it. It is distinct from reading context while work remains stopped.
+
 **Channel budget**:
 The authorized monetary spending allowance shared by a channel's goal revisions and their associated billable agent work. Updating the goal does not replenish that allowance; token and call limits are supplementary controls, not its monetary meaning.
 
@@ -57,11 +63,17 @@ Removal of a contribution from the ordinary conversation display while retaining
 _Avoid_: Content erasure (as a synonym for withdrawing a message).
 
 **Content erasure**:
-An administrative removal of specified content from Aidash-managed storage, including attachments and historical reconstruction copies. Historical views show an erasure marker instead of the removed content; erasure does not imply recall of copies already received outside Aidash's control.
+An administrative removal of specified content from Aidash-managed storage, including attachments and historical reconstruction copies, with tracked derived content subject to dependency-aware handling. Historical views show an erasure marker instead of the removed content; erasure does not imply recall of copies already received outside Aidash's control.
 _Avoid_: Message withdrawal (as a synonym for erasing retained content).
 
+**Content dependency**:
+A recorded relationship between generated content and the source identities and revisions used to produce it. It identifies affected summaries, memories, artifacts, and execution context when a retained source is erased.
+
+**Erasure-affected content**:
+Managed content whose tracked dependencies include a source subject to erasure. It is unavailable for reuse pending authorized erasure, removal of affected material, or regeneration from remaining permitted sources.
+
 **Delegated channel observation**:
-Task-bound permission for a delegated agent to read authorized retained channel history, including messages preceding delegation, and subsequent stream updates as needed until its delegated task completes. It does not confer continuing channel membership or authority to initiate unrelated work.
+Task-bound permission for a delegated agent to read authorized retained channel history, including messages preceding delegation, and subsequent stream updates while its delegation and read authority remain valid, including temporary pause or block. It ends on completion, cancellation, terminal failure, delegation withdrawal, or permission revocation, and grants neither continuing channel membership nor execution resumption.
 
 **Response batch**:
 A set of unprocessed messages considered together by one agent when deciding whether and how to respond. The messages retain their separate identities, senders, order, and individual decisions.
