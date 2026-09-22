@@ -61,6 +61,13 @@ PY
 fi
 helm lint deploy/helm/aidash --set node.id=aidash://acceptance --set existingSecret=acceptance
 docker build --build-arg CARGO_PROFILE=dev -t aidash:cluster-acceptance .
-if [[ "$distribution" == kubernetes ]]; then kind load docker-image aidash:cluster-acceptance --name "$cluster";
-else k3d image import aidash:cluster-acceptance --cluster "$cluster"; fi
-python3 scripts/cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --dashboard
+postgres_image=aidash-postgres:17-pg-jsonschema-0.3.4
+docker build -f deploy/postgres/Dockerfile -t "$postgres_image" .
+if [[ "$distribution" == kubernetes ]]; then
+  kind load docker-image aidash:cluster-acceptance --name "$cluster"
+  kind load docker-image "$postgres_image" --name "$cluster"
+else
+  k3d image import aidash:cluster-acceptance --cluster "$cluster"
+  k3d image import "$postgres_image" --cluster "$cluster"
+fi
+python3 scripts/cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --postgres-image "$postgres_image" --dashboard
