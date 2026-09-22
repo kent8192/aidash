@@ -105,7 +105,9 @@ pub(crate) fn validate_config_in(value: &Value, local: bool) -> Result<()> {
 				idempotency_argument,
 				..
 			} = &cfg && replay == "idempotent"
-				&& idempotency_argument.as_ref().is_none_or(|s| s.is_empty())
+				&& idempotency_argument
+					.as_ref()
+					.is_none_or(|s| s.trim().is_empty())
 			{
 				return Err(Error::Invalid(
 					"idempotent MCP tools require an idempotency_argument supported by the server"
@@ -482,4 +484,33 @@ pub fn builtins() -> BTreeMap<String, Arc<dyn Tool>> {
 		.into_iter()
 		.map(|t| (t.name.to_owned(), Arc::new(t) as Arc<dyn Tool>))
 		.collect()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn idempotent_mcp_requires_a_nonblank_idempotency_argument() {
+		for argument in ["", " \t\n", "\u{2003}\u{00a0}"] {
+			let config = json!({
+				"transport":"mcp",
+				"endpoint":"http://localhost:9999/mcp",
+				"credential_env":null,
+				"tool_name":"create",
+				"replay":"idempotent",
+				"idempotency_argument":argument
+			});
+			assert!(validate_config_in(&config, false).is_err(), "{argument:?}");
+		}
+		let valid = json!({
+			"transport":"mcp",
+			"endpoint":"http://localhost:9999/mcp",
+			"credential_env":null,
+			"tool_name":"create",
+			"replay":"idempotent",
+			"idempotency_argument":"request_id"
+		});
+		validate_config_in(&valid, false).unwrap();
+	}
 }
