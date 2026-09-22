@@ -1545,9 +1545,10 @@ mod schema_tests {
 				.values()
 				.map(|path| path.as_object().unwrap().len())
 				.sum::<usize>(),
-			70
+			71
 		);
 		for (path, method) in [
+			("/api/registry/import", "post"),
 			("/api/providers/openrouter/models", "get"),
 			("/api/tasks", "get"),
 			("/api/tasks/{id}/remote-grants", "post"),
