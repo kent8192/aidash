@@ -76,17 +76,28 @@ fn ordered(entries: &[Entry], node_id: &str) -> Result<Vec<usize>> {
 	let mut order = Vec::with_capacity(entries.len());
 	let mut included = vec![false; entries.len()];
 	while order.len() < entries.len() {
-		let before = order.len();
-		for (index, dependencies) in dependencies.iter().enumerate() {
-			if !included[index] && dependencies.iter().all(|dependency| included[*dependency]) {
-				included[index] = true;
-				order.push(index);
-			}
-		}
-		if before == order.len() {
+		let mut ready = dependencies
+			.iter()
+			.enumerate()
+			.filter(|(index, dependencies)| {
+				!included[*index] && dependencies.iter().all(|dependency| included[*dependency])
+			})
+			.map(|(index, _)| index)
+			.collect::<Vec<_>>();
+		if ready.is_empty() {
 			return Err(Error::Invalid(
 				"import contains cyclic entity references".into(),
 			));
+		}
+		ready.sort_unstable_by(|left, right| {
+			entries[*left]
+				.id
+				.cmp(&entries[*right].id)
+				.then_with(|| entries[*left].version.cmp(&entries[*right].version))
+		});
+		for index in ready {
+			included[index] = true;
+			order.push(index);
 		}
 	}
 	Ok(order)
@@ -126,4 +137,50 @@ pub(crate) async fn import(f: &Federation, input: RegistryImport) -> Result<Impo
 		imported,
 		unchanged: input.entries.len() - imported,
 	})
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn skill(id: &str, version: &str) -> Entry {
+		serde_json::from_value(json!({
+			"id": id,
+			"version": version,
+			"kind": "skill",
+			"name": {"en": id},
+			"description": {"en": "import fixture"},
+			"config": {"instructions": "Read carefully."}
+		}))
+		.unwrap()
+	}
+
+	#[test]
+	fn orders_independent_ready_entries_by_identity_not_input_order() {
+		let reversed = vec![
+			skill("zeta", "1.0.0"),
+			skill("alpha", "2.0.0"),
+			skill("alpha", "1.0.0"),
+		];
+		let forward = vec![
+			skill("alpha", "1.0.0"),
+			skill("alpha", "2.0.0"),
+			skill("zeta", "1.0.0"),
+		];
+		let ids = |entries: &[Entry]| {
+			ordered(entries, "node")
+				.unwrap()
+				.into_iter()
+				.map(|index| (entries[index].id.clone(), entries[index].version.clone()))
+				.collect::<Vec<_>>()
+		};
+
+		let expected = vec![
+			("alpha".to_owned(), "1.0.0".to_owned()),
+			("alpha".to_owned(), "2.0.0".to_owned()),
+			("zeta".to_owned(), "1.0.0".to_owned()),
+		];
+		assert_eq!(ids(&reversed), expected);
+		assert_eq!(ids(&forward), expected);
+	}
 }
