@@ -6,28 +6,19 @@ on:
 permissions:
   contents: read
 jobs:
-  postgres:
+  extension:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - name: Prepare repository-compatible PostgreSQL and pg_jsonschema
+      - name: Retrieve the exact baseline extension
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y postgresql-17
-          curl -fsSL https://github.com/supabase/pg_jsonschema/releases/download/v0.3.4/pg_jsonschema-v0.3.4-pg17-amd64-linux-gnu.deb -o /tmp/pg_jsonschema.deb
-          echo '4c339c178a7396b4076fb1eb5ffe3430bafd3d5f92fb6c917ad49860237db6c9  /tmp/pg_jsonschema.deb' | sha256sum -c
-          mkdir -p /tmp/pgroot/lib/postgresql /tmp/pgroot/share/postgresql /tmp/extension
-          cp -a /usr/lib/postgresql/17 /tmp/pgroot/lib/postgresql/
-          cp -a /usr/share/postgresql/17 /tmp/pgroot/share/postgresql/
+          curl -fsSL https://github.com/supabase/pg_jsonschema/releases/download/v0.3.4/pg_jsonschema-v0.3.4-pg16-amd64-linux-gnu.deb -o /tmp/pg_jsonschema.deb
+          echo '0135e1df71032880ff52a5e51a787a08cf724e5c3a4b455bba9a22ecd368fb68  /tmp/pg_jsonschema.deb' | sha256sum -c
+          mkdir -p /tmp/extension
           dpkg-deb -x /tmp/pg_jsonschema.deb /tmp/extension
-          cp -a /tmp/extension/usr/lib/postgresql/17/. /tmp/pgroot/lib/postgresql/17/
-          cp -a /tmp/extension/usr/share/postgresql/17/. /tmp/pgroot/share/postgresql/17/
-          tar -czf /tmp/pg17.tar.gz -C /tmp pgroot
+          tar -czf /tmp/extension.tar.gz -C /tmp extension
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: collaboration-postgres17
-          path: /tmp/pg17.tar.gz
+          name: collaboration-jsonschema16
+          path: /tmp/extension.tar.gz
           retention-days: 1
