@@ -1124,7 +1124,13 @@ async fn peer_workspace(
 	let key = || -> Result<String> { Ok(format!("{node}:{}:{}", task.id, required(d, "key")?)) };
 	if !matches!(
 		command.operation.as_str(),
-		"snapshot" | "snapshot_workspace" | "snapshot_page" | "task" | "claim"
+		"snapshot"
+			| "snapshot_workspace"
+			| "snapshot_page"
+			| "workspace_record"
+			| "workspace_record_chunk"
+			| "workspace_children"
+			| "task" | "claim"
 	) && !(task.owner.is_none()
 		&& (command.operation == "human_message"
 			|| (command.operation == "transition"
@@ -1139,7 +1145,13 @@ async fn peer_workspace(
 	) {
 		let read = matches!(
 			command.operation.as_str(),
-			"snapshot" | "snapshot_workspace" | "snapshot_page" | "task"
+			"snapshot"
+				| "snapshot_workspace"
+				| "snapshot_page"
+				| "workspace_record"
+				| "workspace_record_chunk"
+				| "workspace_children"
+				| "task"
 		);
 		let replay_completion = command.operation == "complete" && task.status == "COMPLETED";
 		let replay_transition = command.operation == "transition" && d["status"] == task.status;
@@ -1159,6 +1171,45 @@ async fn peer_workspace(
 				)
 				.await?
 		),
+		"workspace_record" => {
+			let id: Uuid = serde_json::from_value(d["id"].clone())?;
+			f.store
+				.workspace_record(task.workspace_id, required(d, "kind")?, id)
+				.await?
+		}
+		"workspace_record_chunk" => {
+			let id: Uuid = serde_json::from_value(d["id"].clone())?;
+			let offset: usize = serde_json::from_value(d["offset"].clone())?;
+			let max_chars: usize = serde_json::from_value(d["max_chars"].clone())?;
+			if max_chars > 16000 {
+				return Err(Error::Invalid(
+					"workspace record chunk exceeds 16000 characters".into(),
+				));
+			}
+			let kind = required(d, "kind")?;
+			let record = f
+				.store
+				.workspace_record(task.workspace_id, kind, id)
+				.await?;
+			crate::context::observation::chunk_record(
+				record,
+				kind,
+				&id.to_string(),
+				offset,
+				max_chars,
+			)?
+		}
+		"workspace_children" => {
+			let parent_id: Uuid = serde_json::from_value(d["parent_id"].clone())?;
+			if parent_id != task.id {
+				return Err(Error::Unauthorized);
+			}
+			json!(
+				f.store
+					.child_task_summary(task.workspace_id, parent_id)
+					.await?
+			)
+		}
 		"task" => json!(task),
 		"claim" => {
 			let entry: Entry = serde_json::from_value(d["entry"].clone())

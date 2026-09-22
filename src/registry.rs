@@ -98,8 +98,22 @@ pub struct ModelConfig {
 	#[serde(default)]
 	pub reasoning_effort: Option<ReasoningEffort>,
 	pub context_window: usize,
+	/// Maximum completion tokens reported by the selected provider model.
+	/// Missing values are accepted only while reading legacy model versions.
+	#[serde(default)]
+	#[schema(required = true)]
+	pub max_output_tokens: Option<u32>,
 	pub modalities: Vec<String>,
 	pub cost: Value,
+}
+
+impl ModelConfig {
+	/// Preserve the historical output allowance for model versions registered
+	/// before their provider limit was captured in the immutable config.
+	pub fn output_token_limit(&self) -> u32 {
+		self.max_output_tokens
+			.unwrap_or_else(|| (self.context_window / 8).clamp(256, 4096) as u32)
+	}
 }
 
 /// OpenRouter's normalized reasoning levels; omission retains the model default.
@@ -451,12 +465,15 @@ fn validate_in(e: &Entry, local: bool) -> Result<()> {
 			let m: ModelConfig = serde_json::from_value(e.config.clone())
 				.map_err(|e| Error::Invalid(e.to_string()))?;
 			if m.provider != "openrouter"
-				|| m.model_id.is_empty()
+				|| m.model_id.trim().is_empty()
 				|| m.context_window < 2048
+				|| (local && m.max_output_tokens.is_none())
+				|| m.max_output_tokens
+					.is_some_and(|tokens| tokens == 0 || tokens as usize > m.context_window)
 				|| !m.modalities.iter().any(|m| m == "text")
 			{
 				return Err(Error::Invalid(
-					"model requires openrouter, model_id, text modality and context_window >= 2048"
+					"model requires openrouter, model_id, text modality, context_window >= 2048 and a valid max_output_tokens value"
 						.into(),
 				));
 			}
@@ -495,7 +512,7 @@ fn validate_in(e: &Entry, local: bool) -> Result<()> {
 			if e.config
 				.get("instructions")
 				.and_then(Value::as_str)
-				.is_none_or(|s| s.is_empty()) =>
+				.is_none_or(|s| s.trim().is_empty()) =>
 		{
 			return Err(Error::Invalid("skill requires instructions".into()));
 		}
@@ -523,6 +540,15 @@ pub struct PackageRecord {
 	pub digest: String,
 }
 
+#[derive(sqlx::FromRow)]
+struct StoredPackageRecord {
+	id: String,
+	version: String,
+	manifest: Value,
+	digest: String,
+	manifest_source: String,
+}
+
 pub fn digest(value: &Value) -> String {
 	format!("sha256:{:x}", Sha256::digest(value.to_string().as_bytes()))
 }
@@ -538,6 +564,7 @@ impl Registry {
 			));
 		}
 		let value = serde_json::to_value(&package)?;
+		let manifest_source = value.to_string();
 		let hash = digest(&value);
 		let mut tx = pool.begin().await?;
 		let inserted = sqlx::query(
@@ -548,12 +575,14 @@ impl Registry {
 					sea_orm::sea_query::Alias::new("version"),
 					sea_orm::sea_query::Alias::new("manifest"),
 					sea_orm::sea_query::Alias::new("digest"),
+					sea_orm::sea_query::Alias::new("manifest_source"),
 				])
 				.values_panic([
 					sea_orm::sea_query::Expr::cust("$1"),
 					sea_orm::sea_query::Expr::cust("$2"),
 					sea_orm::sea_query::Expr::cust("$3"),
 					sea_orm::sea_query::Expr::cust("$4"),
+					sea_orm::sea_query::Expr::cust("$5"),
 				])
 				.on_conflict(
 					sea_orm::sea_query::OnConflict::new()
@@ -566,13 +595,18 @@ impl Registry {
 		.bind(&package.entity.version)
 		.bind(&value)
 		.bind(&hash)
+		.bind(&manifest_source)
 		.execute(&mut *tx)
 		.await?;
-		let record = sqlx::query_as::<_, PackageRecord>(
+		let stored = sqlx::query_as::<_, StoredPackageRecord>(
 			&sea_orm::sea_query::Query::select()
-				.expr(sea_orm::sea_query::SimpleExpr::from(
-					sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
-				))
+				.columns([
+					sea_orm::sea_query::Alias::new("id"),
+					sea_orm::sea_query::Alias::new("version"),
+					sea_orm::sea_query::Alias::new("manifest"),
+					sea_orm::sea_query::Alias::new("digest"),
+					sea_orm::sea_query::Alias::new("manifest_source"),
+				])
 				.from(sea_orm::sea_query::Alias::new("packages"))
 				.and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
@@ -581,7 +615,7 @@ impl Registry {
 		.bind(&package.entity.version)
 		.fetch_one(&mut *tx)
 		.await?;
-		if record.digest != hash {
+		if stored.digest != hash || stored.manifest_source != manifest_source {
 			return Err(Error::Conflict("package version is immutable".into()));
 		}
 		if inserted.rows_affected() > 0 {
@@ -589,12 +623,17 @@ impl Registry {
 				&mut tx,
 				&self.node_id,
 				"package.published",
-				json!({"id":record.id,"version":record.version}),
+				json!({"id":stored.id,"version":stored.version}),
 			)
 			.await?;
 		}
 		tx.commit().await?;
-		Ok(record)
+		Ok(PackageRecord {
+			id: stored.id,
+			version: stored.version,
+			manifest: stored.manifest,
+			digest: stored.digest,
+		})
 	}
 	pub async fn install(
 		&self,
@@ -604,11 +643,15 @@ impl Registry {
 		expected_digest: &str,
 		config: Value,
 	) -> Result<Entry> {
-		let record = sqlx::query_as::<_, PackageRecord>(
+		let record = sqlx::query_as::<_, StoredPackageRecord>(
 			&sea_orm::sea_query::Query::select()
-				.expr(sea_orm::sea_query::SimpleExpr::from(
-					sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
-				))
+				.columns([
+					sea_orm::sea_query::Alias::new("id"),
+					sea_orm::sea_query::Alias::new("version"),
+					sea_orm::sea_query::Alias::new("manifest"),
+					sea_orm::sea_query::Alias::new("digest"),
+					sea_orm::sea_query::Alias::new("manifest_source"),
+				])
 				.from(sea_orm::sea_query::Alias::new("packages"))
 				.and_where(sea_orm::sea_query::Expr::cust("id = $1 AND version = $2"))
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
@@ -618,10 +661,18 @@ impl Registry {
 		.fetch_optional(pool)
 		.await?
 		.ok_or_else(|| Error::NotFound("package".into()))?;
-		if record.digest != expected_digest || digest(&record.manifest) != expected_digest {
+		let source_digest = format!(
+			"sha256:{:x}",
+			Sha256::digest(record.manifest_source.as_bytes())
+		);
+		let source_manifest: Value = serde_json::from_str(&record.manifest_source)?;
+		if record.digest != expected_digest
+			|| source_digest != expected_digest
+			|| source_manifest != record.manifest
+		{
 			return Err(Error::Conflict("package digest changed".into()));
 		}
-		let package: Package = serde_json::from_value(record.manifest)?;
+		let package: Package = serde_json::from_value(source_manifest)?;
 		let mut effective = package.entity.clone();
 		overlay_config(&mut effective.config, &config)?;
 		self.validate_references(&effective).await?;
@@ -1093,7 +1144,7 @@ fn validate_agent_prompt(config: &AgentConfig, references: &[Entry]) -> Result<(
 	let cost = |text: &str| crate::context::estimated_tokens(text).max(text.len());
 	let overhead = cost(&serde_json::to_string(&instructions)?)
 		.saturating_add(cost(&serde_json::to_string(&specifications)?));
-	let output = (model.context_window / 8).clamp(256, 4096);
+	let output = model.output_token_limit() as usize;
 	if overhead.saturating_add(output).saturating_add(2048) > model.context_window {
 		return Err(Error::Invalid("agent instructions, skills and tools cannot fit the model window with output and context reserves".into()));
 	}

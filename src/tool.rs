@@ -105,7 +105,9 @@ pub(crate) fn validate_config_in(value: &Value, local: bool) -> Result<()> {
 				idempotency_argument,
 				..
 			} = &cfg && replay == "idempotent"
-				&& idempotency_argument.as_ref().is_none_or(|s| s.is_empty())
+				&& idempotency_argument
+					.as_ref()
+					.is_none_or(|s| s.trim().is_empty())
 			{
 				return Err(Error::Invalid(
 					"idempotent MCP tools require an idempotency_argument supported by the server"
@@ -351,7 +353,29 @@ impl Tool for Builtin {
 				ctx.home.message(key, required(&input, "content")?).await?;
 				Ok(json!({"sent":true}))
 			}
-			"workspace_observe" => Ok(json!(ctx.home.snapshot().await?)),
+			"workspace_observe" => {
+				ctx.home
+					.observation(
+						input["offset"].as_u64().unwrap_or(0) as usize,
+						input["limit"]
+							.as_u64()
+							.unwrap_or(crate::context::observation::DEFAULT_LIMIT as u64)
+							as usize,
+					)
+					.await
+			}
+			"workspace_read" => {
+				let kind = required(&input, "kind")?;
+				let id = required(&input, "id")?;
+				ctx.home
+					.read_record_chunk(
+						kind,
+						id,
+						input["offset"].as_u64().unwrap_or(0) as usize,
+						input["max_chars"].as_u64().unwrap_or(8000) as usize,
+					)
+					.await
+			}
 			"workspace_wait" => {
 				Ok(json!({"wait_seconds":input["seconds"].as_u64().unwrap_or(2).clamp(1,60)}))
 			}
@@ -432,8 +456,13 @@ pub fn builtins() -> BTreeMap<String, Arc<dyn Tool>> {
 		},
 		Builtin {
 			name: "workspace_observe",
-			description: "Read current goal, task assignments, artifacts, messages and recent events.",
-			schema: json!({"type":"object","additionalProperties":false}),
+			description: "Read a bounded summary of goal, tasks, artifact references, messages and recent event metadata. Use workspace_read for full records. Collections have separate totals and next_offset; events/messages are newest first. Refresh pagination if the workspace changes.",
+			schema: json!({"type":"object","properties":{"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "workspace_read",
+			description: "Read one accessible workspace record by kind and exact ID. Returns a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.",
+			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event"]},"id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_wait",
@@ -455,4 +484,33 @@ pub fn builtins() -> BTreeMap<String, Arc<dyn Tool>> {
 		.into_iter()
 		.map(|t| (t.name.to_owned(), Arc::new(t) as Arc<dyn Tool>))
 		.collect()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn idempotent_mcp_requires_a_nonblank_idempotency_argument() {
+		for argument in ["", " \t\n", "\u{2003}\u{00a0}"] {
+			let config = json!({
+				"transport":"mcp",
+				"endpoint":"http://localhost:9999/mcp",
+				"credential_env":null,
+				"tool_name":"create",
+				"replay":"idempotent",
+				"idempotency_argument":argument
+			});
+			assert!(validate_config_in(&config, false).is_err(), "{argument:?}");
+		}
+		let valid = json!({
+			"transport":"mcp",
+			"endpoint":"http://localhost:9999/mcp",
+			"credential_env":null,
+			"tool_name":"create",
+			"replay":"idempotent",
+			"idempotency_argument":"request_id"
+		});
+		validate_config_in(&valid, false).unwrap();
+	}
 }

@@ -20,6 +20,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--kubeconfig", required=True)
     parser.add_argument("--image", default="aidash:orchestration-local")
+    parser.add_argument("--postgres-image", default="aidash-postgres:17-pg-jsonschema-0.3.4")
     parser.add_argument("--distribution", choices=["kubernetes", "k3s"], required=True)
     parser.add_argument("--keep", action="store_true")
     parser.add_argument("--dashboard", action="store_true")
@@ -64,13 +65,12 @@ def main():
         created = True
         print(f"Created {args.distribution} acceptance namespace {namespace}", flush=True)
         apply({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "fixture-code"}, "data": {name: (ROOT / "scripts" / name).read_text() for name in ["golden_path.py", "cluster_fixture.py"]}})
-        database = stateful("postgres", "postgres:17-alpine", 5432, {"args": ["-c", "max_connections=400"], "env": [{"name": "POSTGRES_USER", "value": "aidash"}, {"name": "POSTGRES_PASSWORD", "value": "acceptance-local-password"}, {"name": "POSTGRES_DB", "value": "aidash_a"}], "readinessProbe": {"exec": {"command": ["pg_isready", "-h", "127.0.0.1", "-U", "aidash", "-d", "aidash_a"]}, "periodSeconds": 2}}, "/var/lib/postgresql/data")
+        database = stateful("postgres", args.postgres_image, 5432, {"args": ["-c", "max_connections=400"], "env": [{"name": "POSTGRES_USER", "value": "aidash"}, {"name": "POSTGRES_PASSWORD", "value": "acceptance-local-password"}, {"name": "POSTGRES_DB", "value": "aidash_a"}], "readinessProbe": {"exec": {"command": ["pg_isready", "-h", "127.0.0.1", "-U", "aidash", "-d", "aidash_a"]}, "periodSeconds": 2}}, "/var/lib/postgresql/data")
         nats = stateful("nats", "nats:2.12-alpine", 4222, {"args": ["-js", "-sd", "/data"], "readinessProbe": {"tcpSocket": {"port": 4222}, "periodSeconds": 2}}, "/data")
         qdrant = stateful("qdrant", "qdrant/qdrant:v1.19.1", 6333, {"readinessProbe": {"tcpSocket": {"port": 6333}, "periodSeconds": 2}}, "/qdrant/storage")
         fixture = {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "fixture"}, "spec": {"replicas": 1, "selector": {"matchLabels": {"app": "fixture"}}, "template": {"metadata": {"labels": {"app": "fixture"}}, "spec": {"automountServiceAccountToken": False, "containers": [{"name": "fixture", "image": "python:3.13-alpine", "command": ["python3", "/scripts/cluster_fixture.py"], "ports": [{"containerPort": 8000}], "volumeMounts": [{"name": "code", "mountPath": "/scripts", "readOnly": True}], "readinessProbe": {"httpGet": {"path": "/status", "port": 8000}}, "resources": {"requests": {"cpu": "50m", "memory": "64Mi"}, "limits": {"cpu": "1", "memory": "256Mi"}}}], "volumes": [{"name": "code", "configMap": {"name": "fixture-code"}}]}}}}
         apply({"apiVersion": "v1", "kind": "List", "items": [database, nats, qdrant, fixture, service("postgres", 5432), service("nats", 4222), service("qdrant", 6333), service("fixture", 8000)]})
         kube("rollout", "status", "statefulset/postgres", "--timeout=180s")
-        kube("exec", "postgres-0", "--", "psql", "-U", "aidash", "-d", "aidash_a", "-c", "CREATE DATABASE aidash_b")
         for node in ["a", "b"]:
             apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": f"aidash-{node}"}, "stringData": {"DATABASE_URL": f"postgres://aidash:acceptance-local-password@postgres:5432/aidash_{node}", "NATS_URL": "nats://nats:4222", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN}})
             repo, tag = args.image.rsplit(":", 1)
@@ -85,7 +85,7 @@ def main():
         base_a, base_b = bases
         for base, other in [(base_a, "b"), (base_b, "a")]:
             api_request(base, "/api/peers", {"node_id": f"aidash://ops-{other}", "endpoint": f"http://ops-{other}-aidash:8080", "credential_env": "AIDASH_SECRET_PEER", "protocol_version": "0.1", "enabled": True})
-            api_request(base, "/api/registry", entity("model", "fixture-model", {"provider": "openrouter", "model_id": "protocol-fixture", "endpoint": "http://fixture:8000/v1", "context_window": 256000, "modalities": ["text"], "cost": {}, "credential_env": None}))
+            api_request(base, "/api/registry", entity("model", "fixture-model", {"provider": "openrouter", "model_id": "protocol-fixture", "endpoint": "http://fixture:8000/v1", "context_window": 256000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}, "credential_env": None}))
             tool = entity("tool", "research-http", {"transport": "http", "endpoint": "http://fixture:8000/research", "credential_env": None, "replay": "idempotent"})
             tool["schema"] = {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}, "additionalProperties": False}
             api_request(base, "/api/registry", tool)

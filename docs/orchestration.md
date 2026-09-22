@@ -46,6 +46,27 @@ of the Aidash Helm release. Concurrent startup serializes migration execution.
 Back up the database before an upgrade; schema rollback requires the migration's
 documented preconditions, including resolving pending atomic transactions.
 
+Aidash migrations require PostgreSQL 17 with `pg_jsonschema` 0.3.4 installed and
+the extension created in each Aidash database before the application role runs
+migrations. A database server administrator must install the extension files and
+run this command as a PostgreSQL superuser (the extension declares
+`superuser = true`):
+
+```sql
+CREATE EXTENSION pg_jsonschema WITH SCHEMA public;
+```
+
+The migration calls `public.jsonschema_is_valid(json)` directly and fails if the
+extension is unavailable; it does not substitute partial JSON shape checks.
+Ensure the Aidash database role can execute that public function. The local
+PostgreSQL image installs the pinned extension package and initializes
+`template1` plus `aidash_a`; `aidash_b` and `aidash_test` inherit it from
+`template1`. The init script runs only for an empty data directory. For an
+existing local volume, a server administrator must create the extension in
+`template1` and every existing Aidash database before applying this migration.
+The Helm chart uses externally managed databases, so provision this prerequisite
+on those databases separately.
+
 NATS must enable JetStream and persist its storage directory. Its connection URL
 comes from the Secret. A broker outage leaves a durable PostgreSQL outbox;
 readiness depends on PostgreSQL so agents can continue durable work during that

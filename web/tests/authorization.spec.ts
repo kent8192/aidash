@@ -30,6 +30,7 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
       model_id: "fixture",
       endpoint: "http://127.0.0.1:1/v1",
       context_window: 128000,
+      max_output_tokens: 4096,
       modalities: ["text"],
       cost: {},
     },

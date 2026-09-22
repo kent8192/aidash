@@ -181,6 +181,14 @@ export function OpenRouterModelPicker({
           value={selected?.context_length ?? ""}
         />
       </Field>
+      <Field label={t("modelMaxOutputTokens")}>
+        <input
+          name="max_output_tokens"
+          type="number"
+          readOnly
+          value={selected?.top_provider?.max_completion_tokens ?? ""}
+        />
+      </Field>
       <input
         type="hidden"
         name="cost"

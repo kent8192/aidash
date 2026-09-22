@@ -18,6 +18,7 @@ test.beforeEach(async ({ page }) => {
             id: "vendor/fixture-model",
             name: "Fixture Chat",
             context_length: 65536,
+            top_provider: { max_completion_tokens: 65536 },
             pricing: { prompt: "0.000001", completion: "0.000003" },
             architecture: {
               input_modalities: ["text"],
@@ -34,6 +35,7 @@ test.beforeEach(async ({ page }) => {
             id: "other/model",
             name: "Other Model",
             context_length: 8192,
+            top_provider: { max_completion_tokens: 4096 },
             pricing: { prompt: "0", completion: "0" },
             architecture: {
               input_modalities: ["text"],
@@ -117,6 +119,7 @@ test("searches and selects a model without credential input", async ({
   );
   await dialog.getByRole("option", { name: /Fixture Chat/ }).click();
   await expect(dialog.getByLabel("コンテキスト上限")).toHaveValue("65536");
+  await expect(dialog.getByLabel("最大出力トークン数")).toHaveValue("65536");
   await expect(dialog.getByText(/1 \/ 3$/)).toBeVisible();
   await expect(dialog.getByText(/Zero Data Retention：常時有効/)).toBeVisible();
   const effort = dialog.getByLabel("Reasoning Effort");
@@ -140,6 +143,7 @@ test("searches and selects a model without credential input", async ({
     credential_env: "AIDASH_SECRET_OPENROUTER",
     reasoning_effort: "high",
     context_window: 65536,
+    max_output_tokens: 65536,
     cost: { input_per_million: 1, output_per_million: 3, currency: "USD" },
   });
   await expect(dialog).not.toBeVisible();

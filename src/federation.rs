@@ -306,6 +306,11 @@ impl Federation {
 					Error::TransactionPending
 				} else if status == reqwest::StatusCode::CONFLICT {
 					Error::Conflict("remote task state changed".into())
+				} else if status == reqwest::StatusCode::BAD_REQUEST {
+					let error_body = response.json::<Value>().await.unwrap_or(Value::Null);
+					map_workspace_chunk_bad_request(path, body, &error_body).unwrap_or_else(|| {
+						Error::External(format!("peer {node} returned {status}"))
+					})
 				} else {
 					Error::External(format!("peer {node} returned {status}"))
 				},
@@ -644,6 +649,7 @@ pub struct Home {
 	pub run: Run,
 	pub(crate) authority: Option<crate::authorization::execution::WorkerAuthority>,
 }
+
 impl Home {
 	pub fn new(federation: Federation, run: Run) -> Self {
 		Self {
@@ -705,6 +711,120 @@ impl Home {
 			Ok(snapshot)
 		}
 	}
+	pub async fn observation(&self, offset: usize, limit: usize) -> Result<Value> {
+		if let Some(authority) = &self.authority {
+			return authority
+				.workspace_observation(self.run.workspace_id, offset, limit)
+				.await;
+		}
+		let snapshot = self.snapshot().await?;
+		Ok(crate::context::observation::project(
+			&snapshot, offset, limit,
+		))
+	}
+	pub async fn observation_fitted<F>(
+		&self,
+		offset: usize,
+		limit: usize,
+		fits: F,
+	) -> Result<Option<(usize, Value)>>
+	where
+		F: FnMut(usize, &Value) -> Result<bool>,
+	{
+		if let Some(authority) = &self.authority {
+			return authority
+				.workspace_observation_fitted(self.run.workspace_id, offset, limit, fits)
+				.await;
+		}
+		let snapshot = self.snapshot().await?;
+		crate::context::observation::fit_projection(&snapshot, offset, limit, fits)
+	}
+	pub async fn read_record(&self, kind: &str, id: &str) -> Result<Value> {
+		if let Some(authority) = &self.authority {
+			let id = id
+				.parse::<Uuid>()
+				.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
+			return authority
+				.workspace_record(self.run.workspace_id, kind, id)
+				.await;
+		}
+		if self.local() {
+			let id = id
+				.parse::<Uuid>()
+				.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
+			return self
+				.federation
+				.store
+				.workspace_record(self.run.workspace_id, kind, id)
+				.await;
+		}
+		self.command("workspace_record", json!({"kind":kind,"id":id}))
+			.await
+	}
+	pub async fn read_record_chunk(
+		&self,
+		kind: &str,
+		id: &str,
+		offset: usize,
+		max_chars: usize,
+	) -> Result<Value> {
+		if let Some(authority) = &self.authority {
+			let id = id
+				.parse::<Uuid>()
+				.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
+			let record = authority
+				.workspace_record(self.run.workspace_id, kind, id)
+				.await?;
+			return crate::context::observation::chunk_record(
+				record,
+				kind,
+				&id.to_string(),
+				offset,
+				max_chars,
+			);
+		}
+		if self.local() {
+			let id = id
+				.parse::<Uuid>()
+				.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
+			let record = self
+				.federation
+				.store
+				.workspace_record(self.run.workspace_id, kind, id)
+				.await?;
+			return crate::context::observation::chunk_record(
+				record,
+				kind,
+				&id.to_string(),
+				offset,
+				max_chars,
+			);
+		}
+		let id = id
+			.parse::<Uuid>()
+			.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
+		self.command(
+			"workspace_record_chunk",
+			json!({"kind":kind,"id":id,"offset":offset,"max_chars":max_chars.min(16000)}),
+		)
+		.await
+	}
+	pub(crate) async fn child_summary(&self, parent: Uuid) -> Result<ChildTaskSummary> {
+		if let Some(authority) = &self.authority {
+			return authority
+				.workspace_child_summary(self.run.workspace_id, parent)
+				.await;
+		}
+		if self.local() {
+			return self
+				.federation
+				.store
+				.child_task_summary(self.run.workspace_id, parent)
+				.await;
+		}
+		self.command("workspace_children", json!({"parent_id":parent}))
+			.await
+	}
 	async fn snapshot_collection<T: DeserializeOwned>(&self, collection: &str) -> Result<Vec<T>> {
 		let mut items = vec![];
 		let mut after: Option<Uuid> = None;
@@ -733,6 +853,13 @@ impl Home {
 		}
 	}
 	pub async fn task(&self) -> Result<Task> {
+		if self.authority.is_some() {
+			return serde_json::from_value(
+				self.read_record("task", &self.run.task_id.to_string())
+					.await?,
+			)
+			.map_err(Into::into);
+		}
 		if self.local() {
 			self.federation.store.task(self.run.task_id).await
 		} else {
@@ -890,5 +1017,53 @@ impl Home {
 		self.command::<Value>("event", json!({"key":key,"kind":kind,"data":data}))
 			.await?;
 		Ok(())
+	}
+}
+
+fn map_workspace_chunk_bad_request(
+	path: &str,
+	request: Option<&Value>,
+	error: &Value,
+) -> Option<Error> {
+	if path != "/workspace"
+		|| request.is_none_or(|body| body["operation"] != "workspace_record_chunk")
+	{
+		return None;
+	}
+	Some(Error::Invalid(
+		error["error"]
+			.as_str()
+			.unwrap_or("invalid remote workspace record chunk")
+			.to_owned(),
+	))
+}
+
+#[cfg(test)]
+mod review_tests {
+	use super::*;
+
+	#[test]
+	fn remote_workspace_chunk_bad_requests_keep_the_tool_error_type() {
+		let request = json!({"operation":"workspace_record_chunk"});
+		let error = json!({"error":"workspace record offset out of range"});
+		assert!(matches!(
+			map_workspace_chunk_bad_request("/workspace", Some(&request), &error),
+			Some(Error::Invalid(message)) if message == "workspace record offset out of range"
+		));
+		assert!(map_workspace_chunk_bad_request("/discover", Some(&request), &error).is_none());
+		assert!(map_workspace_chunk_bad_request("/workspace", None, &error).is_none());
+	}
+
+	#[test]
+	fn child_task_summary_is_independent_of_child_payload_sizes() {
+		let mut summary = ChildTaskSummary {
+			has_pending: false,
+			has_failed: false,
+		};
+		for status in ["RUNNING", "FAILED"] {
+			summary.include_status(status);
+		}
+		assert!(summary.has_pending && summary.has_failed);
+		assert!(serde_json::to_vec(&summary).unwrap().len() < 64);
 	}
 }
