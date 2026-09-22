@@ -37,10 +37,19 @@ A completion decision for a particular goal revision submitted by any participat
 A goal revision recorded as unable to progress or achieve its objective under the current conditions, with a reason for the block. It is distinct from a completed goal and from the failure of an individual task.
 
 **Channel budget**:
-The authorized spending allowance shared by a channel's goal revisions and their associated agent work. Updating the goal does not replenish that allowance.
+The authorized monetary spending allowance shared by a channel's goal revisions and their associated billable agent work. Updating the goal does not replenish that allowance; token and call limits are supplementary controls, not its monetary meaning.
+
+**Cost reservation**:
+An amount of the channel budget set aside for a particular billable operation before it starts. An unsettled reservation is unavailable for other operations until its outcome is accounted for.
 
 **Shared channel history**:
 The messages, attachments, and artifacts shared with a channel, including material shared before a human participant joined. It excludes an agent's owner-private reference material.
+
+**Delegated channel observation**:
+Task-bound permission for a delegated agent to read the channel's authorized stream as context until its delegated task completes. It does not confer continuing channel membership or authority to initiate unrelated work.
+
+**Response batch**:
+A set of unprocessed messages considered together by one agent when deciding whether and how to respond. The messages retain their separate identities, senders, order, and individual decisions.
 
 **Channel comment**:
 Information or discussion shared in a channel or thread, distinct from an authorized instruction to initiate or change work. A comment does not by itself grant execution or approval authority.
