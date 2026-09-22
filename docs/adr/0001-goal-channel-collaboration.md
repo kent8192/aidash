@@ -8,6 +8,14 @@ Reuse the existing Workspace as the persistent identity of a channel, preserving
 
 Keep the record revision used for optimistic concurrency separate from the goal revision that identifies the objective of a task or run. A thread remains a conversation structure rather than an executable task.
 
+## Channel preparation and agent selection
+
+Allow a channel to exist in preparation so people can discuss its proposed goal and share material before starting agent execution. Creating the channel alone must not start billable agent processing, including response evaluation. Start execution only after the required participants, authority, and monetary budget are in place. Provide a combined create-and-start action when those prerequisites are already satisfied; two separate user actions are not mandatory.
+
+The channel creator explicitly selects the initial agents for ongoing participation from Registry candidates or saved configurations. Candidate suggestions do not automatically admit an unselected agent. Subsequent authorized task delegation remains distinct from selecting those initial participants.
+
+Agents eligible for use are additionally selected on an opt-in basis. Registry registration or discovery alone does not make an agent available for execution. Eligibility and initial channel participation are separate choices: an allowed helper need not be a continuing participant, and eligibility does not replace operation authorization, delegated context boundaries, or budget checks.
+
 ## Registry storage responsibility
 
 The Registry stores Aidash information, including component definitions, interactions, channel messages, task and run states, artifacts, and their histories. It is not merely a component catalog or a policy directory pointing to an unrelated interaction-history store. Graph reconstruction uses the information retained by the Registry and remains available for the period that the Registry supports; there is no product-wide fixed retention duration.
@@ -63,6 +71,12 @@ The delegate's work remains visible through recorded delegation and execution re
 For a given agent, multiple unprocessed messages may be evaluated together rather than requiring a separate inference call for each message. Preserve every message's ID, sender, order, and individual decision; batching must not merge permissions, discard earlier constraints, or initiate duplicate work on replay. Stop, cancel, and authorization-revocation controls do not wait for conversation batching.
 
 The default channel timeline emphasizes human and agent conversation. Agent-to-agent collaborative messages remain readable; low-level tool arguments, results, and retries are grouped into task cards and expandable execution details rather than flooding the conversation. Approval requests, goal blocks, budget exhaustion, and completion remain visible in the channel. Presentation grouping does not remove durable records, historical reconstruction data, or context needed for authorized agent work.
+
+## Mobile interaction
+
+Core collaboration and intervention must be usable on smartphones, not only on desktop. Support conversation, attachments, answers to agent questions, authorized approvals and stop controls, goal updates, and result inspection without requiring a PC. Graph View must support touch-based target selection, details, and navigation to related channels.
+
+Use separate views or panels for conversation, graph, and details on narrow screens rather than compressing the desktop information density. Preserve an accessible list/detail alternative for navigating complex relationships. This core-operation requirement does not require every advanced administrative setting to have desktop-equivalent mobile usability.
 
 ## Shared monetary channel budget
 
