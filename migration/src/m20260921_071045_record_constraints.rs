@@ -1,4 +1,5 @@
 use sea_orm_migration::prelude::*;
+use sha2::{Digest, Sha256};
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;
@@ -27,7 +28,7 @@ const CHECKS: &[(&str, &str, &str)] = &[
 		"registry",
 		"registry_metadata_shape",
 		// Strict paths preserve array values; silent mode lets shape checks reject missing keys.
-		"jsonb_typeof(metadata) = 'object' AND jsonb_typeof(metadata->'name') = 'object' AND metadata->'name' <> '{}'::jsonb AND NOT jsonb_path_exists(metadata, 'strict $.name.* ? (@.type() != \"string\")', '{}'::jsonb, true) AND jsonb_typeof(metadata->'description') = 'object' AND metadata->'description' <> '{}'::jsonb AND NOT jsonb_path_exists(metadata, 'strict $.description.* ? (@.type() != \"string\")', '{}'::jsonb, true) AND jsonb_typeof(metadata->'config') = 'object' AND jsonb_typeof(COALESCE(metadata->'schema', '{}'::jsonb)) = 'object' AND jsonb_typeof(COALESCE(metadata->'capabilities', '[]'::jsonb)) = 'array' AND jsonb_typeof(COALESCE(metadata->'tags', '[]'::jsonb)) = 'array' AND jsonb_typeof(COALESCE(metadata->'languages', '[]'::jsonb)) = 'array' AND jsonb_typeof(COALESCE(metadata->'skills', '[]'::jsonb)) = 'array'",
+		"jsonb_typeof(metadata) = 'object' AND jsonb_typeof(metadata->'name') = 'object' AND metadata->'name' <> '{}'::jsonb AND NOT jsonb_path_exists(metadata, 'strict $.name.* ? (@.type() != \"string\")', '{}'::jsonb, true) AND jsonb_typeof(metadata->'description') = 'object' AND metadata->'description' <> '{}'::jsonb AND NOT jsonb_path_exists(metadata, 'strict $.description.* ? (@.type() != \"string\")', '{}'::jsonb, true) AND jsonb_typeof(metadata->'config') = 'object' AND jsonb_typeof(COALESCE(metadata->'schema', '{}'::jsonb)) = 'object' AND public.jsonschema_is_valid(COALESCE(metadata->'schema', '{}'::jsonb)::json) AND jsonb_typeof(COALESCE(metadata->'capabilities', '[]'::jsonb)) = 'array' AND jsonb_typeof(COALESCE(metadata->'tags', '[]'::jsonb)) = 'array' AND jsonb_typeof(COALESCE(metadata->'languages', '[]'::jsonb)) = 'array' AND jsonb_typeof(COALESCE(metadata->'skills', '[]'::jsonb)) = 'array'",
 	),
 	(
 		"registry",
@@ -63,7 +64,16 @@ const CHECKS: &[(&str, &str, &str)] = &[
 		"tasks_no_self_reference",
 		"(parent_id IS NULL OR parent_id <> id) AND NOT (id = ANY(dependencies)) AND array_position(dependencies, NULL) IS NULL",
 	),
-	("runs", "runs_counters", "step >= 0 AND revision >= 0"),
+	(
+		"tasks",
+		"tasks_active_owner",
+		"status NOT IN ('CLAIMED', 'RUNNING') OR owner IS NOT NULL",
+	),
+	(
+		"runs",
+		"runs_counters",
+		"step >= 0 AND revision >= 0 AND revision < 9223372036854775807",
+	),
 	(
 		"runs",
 		"runs_lease",
@@ -78,6 +88,11 @@ const CHECKS: &[(&str, &str, &str)] = &[
 		"packages",
 		"packages_identity",
 		"jsonb_typeof(manifest) = 'object' AND manifest#>'{entity,id}' = to_jsonb(id) AND manifest#>'{entity,version}' = to_jsonb(version)",
+	),
+	(
+		"packages",
+		"packages_digest",
+		"aidash_package_source_matches(manifest, manifest_source) AND digest = 'sha256:' || encode(sha256(convert_to(manifest_source, 'UTF8')), 'hex')",
 	),
 	(
 		"semantic_indexes",
@@ -164,9 +179,7 @@ fn tool_config_is_valid_expression(config: &str) -> String {
 	.join(" AND ");
 	let http = [
 		object_fields(config, &["transport", "endpoint", "credential_env", "replay"]),
-		format!(
-			"jsonb_typeof({config}->'endpoint') = 'string' AND length(btrim({config}->>'endpoint', {WHITESPACE_SQL})) > 0"
-		),
+		format!("aidash_valid_http_endpoint({config}->'endpoint')"),
 		optional_string(&format!("{config}->'credential_env'")),
 		format!(
 			"jsonb_typeof({config}->'replay') = 'string' AND {config}->>'replay' IN ('read_only', 'idempotent', 'unsafe')"
@@ -185,9 +198,7 @@ fn tool_config_is_valid_expression(config: &str) -> String {
 				"idempotency_argument",
 			],
 		),
-		format!(
-			"jsonb_typeof({config}->'endpoint') = 'string' AND length(btrim({config}->>'endpoint', {WHITESPACE_SQL})) > 0"
-		),
+		format!("aidash_valid_http_endpoint({config}->'endpoint')"),
 		optional_string(&format!("{config}->'credential_env'")),
 		format!("jsonb_typeof({config}->'tool_name') = 'string'"),
 		format!(
@@ -441,11 +452,17 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 				parts.push(format!(
 					"NOT (context ? 'usage') OR jsonb_typeof({usage}) = 'null' OR (jsonb_typeof({usage}) = 'object' AND ({usage} = '{{}}'::jsonb OR ({usage_fields})))",
 				));
+				parts.push(
+					"(phase <> 'TOOL_CALL' AND NOT (phase = 'WAITING' AND pending->>'resume_phase' IS NOT DISTINCT FROM 'TOOL_CALL')) OR CASE WHEN aidash_model_response_is_valid(pending->'response') AND jsonb_typeof(pending->'cursor') = 'number' AND pending->>'cursor' ~ '^(0|[1-9][0-9]*)$' THEN (pending->>'cursor')::numeric <= jsonb_array_length(pending#>'{response,tool_calls}') ELSE false END".into(),
+				);
 				for field in ["retry_at", "wake_at"] {
 					parts.push(format!(
 						"NOT (pending ? '{field}') OR aidash_valid_pending_timestamp(pending->'{field}')"
 					));
 				}
+				parts.push(
+					"phase <> 'WAITING' OR COALESCE(aidash_valid_pending_timestamp(pending->'wake_at'), false) OR jsonb_typeof(pending->'human_request_id') = 'string'".into(),
+				);
 			}
 			"semantic_indexes_revision" => {
 				parts.push(object_fields(
@@ -464,13 +481,17 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 				for field in ["enabled", "auto_context"] {
 					parts.push(format!("jsonb_typeof(spec->'{field}') = 'boolean'"));
 				}
-				for field in [
-					"max_sources",
-					"max_results",
-					"max_result_tokens",
-					"max_input_bytes",
+				for (field, minimum, maximum) in [
+					("max_sources", 1, 1024),
+					("max_results", 1, 20),
+					("max_result_tokens", 128, 32768),
+					("max_input_bytes", 128, 32768),
 				] {
-					parts.push(unsigned(&format!("(spec->'{field}')")));
+					parts.push(unsigned_between(
+						&format!("(spec->'{field}')"),
+						minimum,
+						maximum,
+					));
 				}
 				parts.push(object_fields(
 					"(spec->'embedding')",
@@ -487,29 +508,30 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 					"(spec->'vector')",
 					&["provider", "endpoint", "credential_env"],
 				));
-				for section in ["embedding", "vector"] {
-					for field in ["provider", "endpoint"] {
-						parts.push(format!(
-							"jsonb_typeof(spec#>'{{{section},{field}}}') = 'string'"
-						));
-					}
-					parts.push(optional_string(&format!(
-						"spec#>'{{{section},credential_env}}'"
-					)));
-				}
-				for field in ["model", "model_version"] {
+				for (section, provider) in [("embedding", "openai"), ("vector", "qdrant")] {
+					parts.push(format!("spec#>>'{{{section},provider}}' = '{provider}'"));
 					parts.push(format!(
-						"jsonb_typeof(spec#>'{{embedding,{field}}}') = 'string'"
+						"aidash_valid_http_endpoint(spec#>'{{{section},endpoint}}')"
+					));
+					let credential = format!("spec#>'{{{section},credential_env}}'");
+					parts.push(format!(
+						"({credential} IS NULL OR {credential} = 'null'::jsonb OR (jsonb_typeof({credential}) = 'string' AND spec#>>'{{{section},credential_env}}' ~ '^AIDASH_SECRET_[A-Z0-9_]*$'))"
 					));
 				}
-				parts.push(unsigned("(spec#>'{embedding,dimensions}')"));
+				parts.push(format!("jsonb_typeof(spec#>'{{embedding,model}}') = 'string' AND length(btrim(spec#>>'{{embedding,model}}', {WHITESPACE_SQL})) > 0 AND octet_length(spec#>>'{{embedding,model}}') <= 256"));
+				parts.push(format!("jsonb_typeof(spec#>'{{embedding,model_version}}') = 'string' AND length(btrim(spec#>>'{{embedding,model_version}}', {WHITESPACE_SQL})) > 0 AND octet_length(spec#>>'{{embedding,model_version}}') <= 128"));
+				parts.push(unsigned_between(
+					"(spec#>'{embedding,dimensions}')",
+					1,
+					8192,
+				));
 			}
 			"semantic_entries_counters" => {
 				let uuid =
 					"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
 				let memory = object_fields("source", &["kind", "text"]);
 				let reference = object_fields("source", &["kind", "id"]);
-				parts.push(format!("CASE source->>'kind' WHEN 'memory' THEN ({memory} AND jsonb_typeof(source->'text') = 'string') WHEN 'artifact' THEN ({reference} AND jsonb_typeof(source->'id') = 'string' AND source->>'id' ~ '^({uuid}|[0-9a-fA-F]{{32}}|urn:uuid:{uuid}|\\{{{uuid}\\}})$') WHEN 'message' THEN ({reference} AND jsonb_typeof(source->'id') = 'string' AND source->>'id' ~ '^({uuid}|[0-9a-fA-F]{{32}}|urn:uuid:{uuid}|\\{{{uuid}\\}})$') ELSE false END"));
+				parts.push(format!("CASE source->>'kind' WHEN 'memory' THEN ({memory} AND jsonb_typeof(source->'text') = 'string' AND (deleted OR length(btrim(source->>'text', {WHITESPACE_SQL})) > 0)) WHEN 'artifact' THEN ({reference} AND jsonb_typeof(source->'id') = 'string' AND source->>'id' ~ '^({uuid}|[0-9a-fA-F]{{32}}|urn:uuid:{uuid}|\\{{{uuid}\\}})$') WHEN 'message' THEN ({reference} AND jsonb_typeof(source->'id') = 'string' AND source->>'id' ~ '^({uuid}|[0-9a-fA-F]{{32}}|urn:uuid:{uuid}|\\{{{uuid}\\}})$') ELSE false END"));
 			}
 			"packages_identity" => {
 				parts.push(object_fields(
@@ -552,7 +574,7 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 					)));
 				}
 				parts.push(format!(
-					"jsonb_typeof({entity}->'schema') = 'object' AND jsonb_typeof({entity}->'config') = 'object'"
+					"jsonb_typeof({entity}->'schema') = 'object' AND public.jsonschema_is_valid(({entity}->'schema')::json) AND jsonb_typeof({entity}->'config') = 'object'"
 				));
 				let entity_config = format!("{entity}->'config'");
 				let entity_tools =
@@ -575,7 +597,9 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 					format!(
 						"jsonb_typeof({entity_config}->'model') = 'object' AND jsonb_typeof({entity_config}->'model'->'id') = 'string' AND jsonb_typeof({entity_config}->'model'->'version') = 'string'"
 					),
-					format!("jsonb_typeof({entity_config}->'instructions') = 'string'"),
+					format!(
+						"jsonb_typeof({entity_config}->'instructions') = 'string' AND length(btrim({entity_config}->>'instructions', {WHITESPACE_SQL})) > 0"
+					),
 					format!(
 						"CASE WHEN NOT ({entity_config} ? 'max_steps') THEN true WHEN jsonb_typeof({entity_config}->'max_steps') = 'number' AND ({entity_config}->>'max_steps') ~ '^(0|[1-9][0-9]*)$' THEN ({entity_config}->>'max_steps')::numeric BETWEEN 1 AND 1000 ELSE false END"
 					),
@@ -591,7 +615,7 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 					agent_config.join(" AND ")
 				));
 				parts.push(format!(
-					"({entity}->>'kind' <> 'skill' OR jsonb_typeof({entity}->'config'->'instructions') = 'string')"
+					"({entity}->>'kind' <> 'skill' OR (jsonb_typeof({entity}->'config'->'instructions') = 'string' AND length(btrim({entity}->'config'->>'instructions', {WHITESPACE_SQL})) > 0))"
 				));
 				parts.push(format!(
 					"({entity}->>'kind' <> 'tool' OR COALESCE(aidash_tool_config_is_valid({entity_config}), false))"
@@ -613,6 +637,126 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 }
 
 async fn create_sql_validators(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+	manager
+		.get_connection()
+		.execute_unprepared(
+			r#"
+CREATE FUNCTION aidash_valid_http_endpoint(input_value jsonb) RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE AS $function$
+DECLARE
+    endpoint text;
+    authority text;
+    host text;
+    port_text text;
+BEGIN
+    IF input_value IS NULL OR jsonb_typeof(input_value) <> 'string' THEN
+        RETURN false;
+    END IF;
+    endpoint := input_value #>> '{}';
+    IF endpoint !~* '^https?://' OR strpos(endpoint, '?') > 0 OR strpos(endpoint, '#') > 0
+       OR endpoint ~ '[[:cntrl:]]'
+       OR endpoint ~ '%([^0-9A-Fa-f]|$)'
+       OR endpoint ~ '%[0-9A-Fa-f]([^0-9A-Fa-f]|$)' THEN
+        RETURN false;
+    END IF;
+
+    endpoint := regexp_replace(endpoint, '^https?://', '', 'i');
+    authority := split_part(endpoint, '/', 1);
+    IF authority = '' OR authority ~ '[@[:space:]]' THEN
+        RETURN false;
+    END IF;
+
+    IF left(authority, 1) = '[' THEN
+        IF authority !~ '^\[[0-9A-Fa-f:.]+\](:[0-9]*)?$' THEN
+            RETURN false;
+        END IF;
+        host := substring(authority FROM 2 FOR strpos(authority, ']') - 2);
+        IF strpos(host, ':') = 0 THEN
+            RETURN false;
+        END IF;
+        PERFORM host::inet;
+        IF authority ~ ':[0-9]+$' THEN
+            port_text := regexp_replace(authority, '^.*:', '');
+        END IF;
+    ELSE
+        IF authority ~ ':[0-9]*$' THEN
+            port_text := regexp_replace(authority, '^.*:', '');
+            IF port_text = '' THEN
+                port_text := NULL;
+            END IF;
+            host := regexp_replace(authority, ':[0-9]*$', '');
+        ELSE
+            host := authority;
+        END IF;
+        IF host !~ '^([[:alnum:]_]([[:alnum:]_-]*[[:alnum:]_])?)(\.([[:alnum:]_]([[:alnum:]_-]*[[:alnum:]_])?))*\.?$' THEN
+            RETURN false;
+        END IF;
+        IF host ~ '^[0-9.]+$' THEN
+            -- Do not let an invalid numeric IPv4 literal pass as a DNS name.
+            PERFORM host::inet;
+        END IF;
+    END IF;
+
+    IF port_text IS NOT NULL AND port_text::numeric NOT BETWEEN 0 AND 65535 THEN
+        RETURN false;
+    END IF;
+    RETURN true;
+EXCEPTION WHEN OTHERS THEN
+    RETURN false;
+END
+$function$;
+CREATE FUNCTION aidash_package_source_matches(input_manifest jsonb, input_source text) RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE AS $function$
+BEGIN
+    IF input_source IS NULL THEN
+        RETURN false;
+    END IF;
+    RETURN input_source::jsonb = input_manifest;
+EXCEPTION WHEN OTHERS THEN
+    RETURN false;
+END
+$function$;
+CREATE FUNCTION aidash_model_response_is_valid(input_value jsonb) RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE AS $function$
+DECLARE
+    tool_call jsonb;
+    token_value text;
+BEGIN
+    IF jsonb_typeof(input_value) IS DISTINCT FROM 'object'
+       OR jsonb_typeof(input_value->'text') IS DISTINCT FROM 'string'
+       OR jsonb_typeof(input_value->'tool_calls') IS DISTINCT FROM 'array'
+       OR jsonb_typeof(input_value->'input_tokens') IS DISTINCT FROM 'number'
+       OR jsonb_typeof(input_value->'output_tokens') IS DISTINCT FROM 'number' THEN
+        RETURN false;
+    END IF;
+    IF input_value ? 'usage_complete' AND jsonb_typeof(input_value->'usage_complete') <> 'boolean' THEN
+        RETURN false;
+    END IF;
+    FOREACH token_value IN ARRAY ARRAY[
+        input_value->>'input_tokens',
+        input_value->>'output_tokens'
+    ] LOOP
+        IF token_value !~ '^(0|[1-9][0-9]*)$'
+           OR token_value::numeric > 18446744073709551615 THEN
+            RETURN false;
+        END IF;
+    END LOOP;
+    FOR tool_call IN SELECT value FROM jsonb_array_elements(input_value->'tool_calls') LOOP
+        IF jsonb_typeof(tool_call) IS DISTINCT FROM 'object'
+           OR jsonb_typeof(tool_call->'id') IS DISTINCT FROM 'string'
+           OR jsonb_typeof(tool_call->'name') IS DISTINCT FROM 'string'
+           OR NOT (tool_call ? 'arguments') THEN
+            RETURN false;
+        END IF;
+    END LOOP;
+    RETURN true;
+EXCEPTION WHEN OTHERS THEN
+    RETURN false;
+END
+$function$;
+"#,
+		)
+		.await?;
 	let tool_config = tool_config_is_valid_expression("input_value");
 	manager
 		.get_connection()
@@ -636,6 +780,211 @@ END
 $function$;
 "#,
 		)
+		.await?;
+	Ok(())
+}
+
+async fn require_pg_jsonschema(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+	let query = Query::select()
+		.expr_as(
+			Expr::cust("to_regprocedure('public.jsonschema_is_valid(json)') IS NOT NULL"),
+			Alias::new("available"),
+		)
+		.to_owned();
+	let statement = manager.get_database_backend().build(&query);
+	let row = manager
+		.get_connection()
+		.query_one(statement)
+		.await?
+		.ok_or_else(|| DbErr::Migration("pg_jsonschema 0.3.4 is required".into()))?;
+	let available: bool = row.try_get("", "available")?;
+	if !available {
+		return Err(DbErr::Migration(
+			"pg_jsonschema 0.3.4 must be installed in public before Aidash migrations".into(),
+		));
+	}
+	Ok(())
+}
+
+async fn prepare_package_manifest_sources(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+	manager
+		.alter_table(
+			Table::alter()
+				.table(Alias::new("packages"))
+				.add_column(
+					ColumnDef::new(Alias::new("manifest_source"))
+						.text()
+						.not_null()
+						.default(Expr::val("")),
+				)
+				.to_owned(),
+		)
+		.await?;
+	let select = Query::select()
+		.columns([
+			Alias::new("id"),
+			Alias::new("version"),
+			Alias::new("manifest"),
+			Alias::new("digest"),
+		])
+		.from(Alias::new("packages"))
+		.to_owned();
+	let rows = manager
+		.get_connection()
+		.query_all(manager.get_database_backend().build(&select))
+		.await?;
+	for row in rows {
+		let id: String = row.try_get("", "id")?;
+		let version: String = row.try_get("", "version")?;
+		let manifest: serde_json::Value = row.try_get("", "manifest")?;
+		let stored_digest: String = row.try_get("", "digest")?;
+		let source = manifest.to_string();
+		let expected_digest = format!("sha256:{:x}", Sha256::digest(source.as_bytes()));
+		if stored_digest != expected_digest {
+			return Err(DbErr::Migration(format!(
+				"cannot backfill manifest source for package {id}@{version}: stored digest does not match the canonical Serde JSON bytes"
+			)));
+		}
+		let update = Query::update()
+			.table(Alias::new("packages"))
+			.value(Alias::new("manifest_source"), Expr::val(source))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::val(id)))
+			.and_where(Expr::col(Alias::new("version")).eq(Expr::val(version)))
+			.to_owned();
+		manager
+			.get_connection()
+			.execute(manager.get_database_backend().build(&update))
+			.await?;
+	}
+	Ok(())
+}
+
+async fn create_waiting_human_request_guard(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+	manager
+		.get_connection()
+		.execute_unprepared(
+			r#"
+ALTER TABLE human_requests
+    ADD CONSTRAINT human_requests_id_run_id_key UNIQUE (id, run_id);
+ALTER TABLE runs
+    ADD COLUMN pending_human_request_id uuid GENERATED ALWAYS AS (
+        CASE
+            WHEN jsonb_typeof(pending->'human_request_id') = 'string'
+             AND pending->>'human_request_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+            THEN (pending->>'human_request_id')::uuid
+            ELSE NULL
+        END
+    ) STORED;
+ALTER TABLE runs
+    ADD CONSTRAINT runs_human_request_ref
+    FOREIGN KEY (pending_human_request_id, id)
+    REFERENCES human_requests (id, run_id)
+    ON DELETE RESTRICT ON UPDATE RESTRICT;
+CREATE FUNCTION guard_waiting_human_request() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.pending ? 'human_request_id' THEN
+        IF jsonb_typeof(NEW.pending->'human_request_id') <> 'string'
+           OR NEW.pending->>'human_request_id' !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+            RAISE EXCEPTION 'pending human request id must be a string naming a request for this run'
+                USING ERRCODE = '23514', CONSTRAINT = 'runs_waiting_request';
+        END IF;
+    END IF;
+
+    IF NEW.phase = 'WAITING'
+       AND NOT COALESCE(aidash_valid_pending_timestamp(NEW.pending->'wake_at'), false)
+       AND NOT (NEW.pending ? 'human_request_id') THEN
+        RAISE EXCEPTION 'waiting run requires a valid wake_at or a request belonging to the run'
+            USING ERRCODE = '23514', CONSTRAINT = 'runs_waiting_request';
+    END IF;
+    RETURN NEW;
+END $$;
+CREATE TRIGGER runs_waiting_request_guard
+    BEFORE INSERT OR UPDATE OF id, phase, pending ON runs
+    FOR EACH ROW EXECUTE FUNCTION guard_waiting_human_request();
+"#,
+		)
+		.await?;
+	let backfill = Query::update()
+		.table(Alias::new("runs"))
+		.value(Alias::new("pending"), Expr::col(Alias::new("pending")))
+		.to_owned();
+	manager
+		.get_connection()
+		.execute(manager.get_database_backend().build(&backfill))
+		.await?;
+	Ok(())
+}
+
+async fn create_semantic_memory_byte_guards(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+	manager
+		.get_connection()
+		.execute_unprepared(
+			r#"
+CREATE FUNCTION guard_semantic_memory_entry_bytes() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    max_bytes_text text;
+BEGIN
+    IF NEW.source->>'kind' <> 'memory' THEN
+        RETURN NEW;
+    END IF;
+
+    -- Lock the workspace's index row so a concurrent index-limit reduction
+    -- cannot race an entry write that exceeds the new limit.
+    SELECT spec->>'max_input_bytes' INTO max_bytes_text
+    FROM semantic_indexes
+    WHERE workspace_id = NEW.workspace_id
+    FOR UPDATE;
+    IF NOT FOUND OR max_bytes_text !~ '^(0|[1-9][0-9]*)$' THEN
+        RAISE EXCEPTION 'active semantic memory requires a valid index input limit'
+            USING ERRCODE = '23514', CONSTRAINT = 'semantic_memory_input_bytes';
+    END IF;
+    IF octet_length(NEW.source->>'text') > max_bytes_text::numeric THEN
+        RAISE EXCEPTION 'semantic memory text exceeds the index max_input_bytes'
+            USING ERRCODE = '23514', CONSTRAINT = 'semantic_memory_input_bytes';
+    END IF;
+    RETURN NEW;
+END $$;
+CREATE TRIGGER semantic_memory_entry_bytes_guard
+    BEFORE INSERT OR UPDATE OF workspace_id, source, deleted ON semantic_entries
+    FOR EACH ROW EXECUTE FUNCTION guard_semantic_memory_entry_bytes();
+
+CREATE FUNCTION guard_semantic_index_input_limit() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    max_bytes_text text;
+BEGIN
+    max_bytes_text := NEW.spec->>'max_input_bytes';
+    -- Let the row CHECK report malformed specs; this trigger only enforces the
+    -- cross-table invariant once the limit has the expected numeric shape.
+    IF jsonb_typeof(NEW.spec->'max_input_bytes') <> 'number'
+       OR max_bytes_text !~ '^(0|[1-9][0-9]*)$' THEN
+        RETURN NEW;
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM semantic_entries e
+        WHERE e.workspace_id = NEW.workspace_id
+          AND e.source->>'kind' = 'memory'
+          AND octet_length(e.source->>'text') > max_bytes_text::numeric
+    ) THEN
+        RAISE EXCEPTION 'semantic index max_input_bytes is below existing active memory text'
+            USING ERRCODE = '23514', CONSTRAINT = 'semantic_index_input_bytes';
+    END IF;
+    RETURN NEW;
+END $$;
+CREATE TRIGGER semantic_index_input_limit_guard
+    BEFORE INSERT OR UPDATE OF workspace_id, spec ON semantic_indexes
+    FOR EACH ROW EXECUTE FUNCTION guard_semantic_index_input_limit();
+"#,
+		)
+		.await?;
+	// Validate pre-existing memory rows against their workspace index limit via
+	// SeaQuery, using the same trigger as future inserts and updates.
+	let backfill = Query::update()
+		.table(Alias::new("semantic_entries"))
+		.value(Alias::new("source"), Expr::col(Alias::new("source")))
+		.to_owned();
+	manager
+		.get_connection()
+		.execute(manager.get_database_backend().build(&backfill))
 		.await?;
 	Ok(())
 }
@@ -848,39 +1197,48 @@ async fn ensure_task_graph_is_acyclic(
 		edges.union(UnionType::All, dependencies);
 	}
 
-	let recursive_walk = Query::select()
-		.expr_as(Expr::col(("walk", "start_id")), Alias::new("start_id"))
+	let recursive_reachability = Query::select()
+		.expr_as(Expr::col(("reachable", "start_id")), Alias::new("start_id"))
 		.expr_as(Expr::col(("edge", "target_id")), Alias::new("current_id"))
-		.expr(Expr::cust("walk.path || edge.target_id"))
-		.expr(Expr::cust("edge.target_id = ANY(walk.path)"))
-		.from(Alias::new("walk"))
+		.from(Alias::new("reachable"))
 		.join_subquery(
 			JoinType::InnerJoin,
-			edges,
+			Query::select()
+				.column(Alias::new("source_id"))
+				.column(Alias::new("target_id"))
+				.from(Alias::new("edges"))
+				.to_owned(),
 			Alias::new("edge"),
-			Expr::col(("walk", "current_id")).equals(("edge", "source_id")),
+			Expr::col(("reachable", "current_id")).equals(("edge", "source_id")),
 		)
-		.and_where(Expr::col(("walk", "cycle")).eq(false))
 		.to_owned();
-	let walk = Query::select()
-		.column(Alias::new("id"))
-		.column(Alias::new("id"))
-		.expr(Expr::cust("ARRAY[id]"))
-		.expr(Expr::val(false))
-		.from(Alias::new("tasks"))
-		.to_owned()
-		.union(UnionType::All, recursive_walk)
+	let mut seed = Query::select()
+		.column(Alias::new("source_id"))
+		.column(Alias::new("target_id"))
+		.from(Alias::new("edges"))
 		.to_owned();
-	let cte = CommonTableExpression::new()
-		.table_name(Alias::new("walk"))
-		.columns(["start_id", "current_id", "path", "cycle"].map(Alias::new))
-		.query(walk)
+	let reachable = seed
+		.union(UnionType::Distinct, recursive_reachability)
 		.to_owned();
-	let with = WithClause::new().recursive(true).cte(cte).to_owned();
+	let edges_cte = CommonTableExpression::new()
+		.table_name(Alias::new("edges"))
+		.columns(["source_id", "target_id"].map(Alias::new))
+		.query(edges)
+		.to_owned();
+	let reachable_cte = CommonTableExpression::new()
+		.table_name(Alias::new("reachable"))
+		.columns(["start_id", "current_id"].map(Alias::new))
+		.query(reachable)
+		.to_owned();
+	let with = WithClause::new()
+		.recursive(true)
+		.cte(edges_cte)
+		.cte(reachable_cte)
+		.to_owned();
 	let cycle = Query::select()
 		.expr(Expr::val(1))
-		.from(Alias::new("walk"))
-		.and_where(Expr::col(Alias::new("cycle")).eq(true))
+		.from(Alias::new("reachable"))
+		.and_where(Expr::col(("reachable", "start_id")).equals(("reachable", "current_id")))
 		.limit(1)
 		.with_cte(with)
 		.to_owned();
@@ -906,24 +1264,18 @@ async fn create_task_dependency_cycle_guard(manager: &SchemaManager<'_>) -> Resu
 CREATE FUNCTION guard_task_dependency_cycle() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF EXISTS (
-        WITH RECURSIVE walk(current_id, path, cycle) AS (
-            SELECT NEW.id, ARRAY[NEW.id], false
+        WITH RECURSIVE edges(source_id, target_id) AS (
+            SELECT id, parent_id FROM tasks WHERE parent_id IS NOT NULL
             UNION ALL
-            SELECT edge.target_id, w.path || edge.target_id,
-                   edge.target_id = ANY(w.path)
-            FROM walk w
-            CROSS JOIN LATERAL (
-                SELECT t.parent_id AS target_id
-                FROM tasks t
-                WHERE t.id = w.current_id AND t.parent_id IS NOT NULL
-                UNION ALL
-                SELECT d.dependency_id AS target_id
-                FROM task_dependencies d
-                WHERE d.task_id = w.current_id
-            ) edge
-            WHERE NOT w.cycle
+            SELECT task_id, dependency_id FROM task_dependencies
+        ), reachable(current_id) AS (
+            SELECT target_id FROM edges WHERE source_id = NEW.id
+            UNION
+            SELECT edge.target_id
+            FROM reachable r
+            JOIN edges edge ON edge.source_id = r.current_id
         )
-        SELECT 1 FROM walk WHERE cycle
+        SELECT 1 FROM reachable WHERE current_id = NEW.id
     ) THEN
         RAISE EXCEPTION 'task dependency graph contains a cycle'
             USING ERRCODE = '23514', CONSTRAINT = 'tasks_dependency_cycle';
@@ -984,11 +1336,29 @@ BEGIN
             USING ERRCODE = '23514', CONSTRAINT = 'installations_config';
     END IF;
 
+    IF target_kind = 'agent' AND NEW.config ? 'model' AND NOT EXISTS (
+        SELECT 1 FROM registry model_record
+        WHERE model_record.id = NEW.config#>>'{model,id}'
+          AND model_record.version = NEW.config#>>'{model,version}'
+          AND model_record.kind = 'model'
+    ) THEN
+        RAISE EXCEPTION 'installed agent model override must reference a registered model'
+            USING ERRCODE = '23514', CONSTRAINT = 'registry_agent_model_installation_reference';
+    END IF;
+
     IF target_kind = 'cluster' AND NOT COALESCE(
         (NEW.config - ARRAY['coordinator']::text[]) = '{}'::jsonb
         AND (NOT NEW.config ? 'coordinator' OR (jsonb_typeof(NEW.config->'coordinator') = 'object' AND jsonb_typeof(NEW.config->'coordinator'->'id') = 'string' AND jsonb_typeof(NEW.config->'coordinator'->'version') = 'string'))
     , false) THEN
         RAISE EXCEPTION 'installation override is not a valid cluster configuration'
+            USING ERRCODE = '23514', CONSTRAINT = 'installations_config';
+    END IF;
+
+    IF target_kind = 'skill' AND NOT COALESCE(
+        (NEW.config - ARRAY['instructions']::text[]) = '{}'::jsonb
+        AND (NOT NEW.config ? 'instructions' OR (jsonb_typeof(NEW.config->'instructions') = 'string' AND length(btrim(NEW.config->>'instructions', U&'\0009\000A\000B\000C\000D\0020\0085\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000')) > 0))
+    , false) THEN
+        RAISE EXCEPTION 'installation override is not a valid skill configuration'
             USING ERRCODE = '23514', CONSTRAINT = 'installations_config';
     END IF;
 
@@ -1004,6 +1374,45 @@ END $$;
 CREATE TRIGGER installations_config_guard
     BEFORE INSERT OR UPDATE OF id, version, config ON installations
     FOR EACH ROW EXECUTE FUNCTION guard_installation_config();
+CREATE FUNCTION lock_registry_installation_writes() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    -- Acquire one schema-scoped lock before either table takes row locks. This
+    -- gives base-record edits and installation edits a consistent lock order.
+    PERFORM pg_advisory_xact_lock(70721023, hashtext(TG_TABLE_SCHEMA));
+    RETURN NULL;
+END $$;
+CREATE TRIGGER registry_installation_writes_lock
+    BEFORE INSERT OR UPDATE OR DELETE ON registry
+    FOR EACH STATEMENT EXECUTE FUNCTION lock_registry_installation_writes();
+CREATE TRIGGER installations_registry_writes_lock
+    BEFORE INSERT OR UPDATE OR DELETE ON installations
+    FOR EACH STATEMENT EXECUTE FUNCTION lock_registry_installation_writes();
+CREATE FUNCTION validate_registry_installations() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    -- Re-run the same effective-config validation when a base registry record
+    -- changes; otherwise previously-valid overrides can become invalid.
+    IF TG_OP = 'UPDATE' THEN
+        UPDATE installations SET config = config
+        WHERE id = NEW.id AND version = NEW.version;
+    END IF;
+    -- Model overrides are independent registry references. Revalidate them
+    -- when their target is updated or deleted as well.
+    UPDATE installations AS installed SET config = installed.config
+    FROM registry AS agent_record
+    WHERE agent_record.id = installed.id
+      AND agent_record.version = installed.version
+      AND agent_record.kind = 'agent'
+      AND installed.config#>>'{model,id}' = OLD.id
+      AND installed.config#>>'{model,version}' = OLD.version;
+    IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+    RETURN NEW;
+END $$;
+CREATE TRIGGER registry_installations_config_guard
+    AFTER UPDATE OF id, version, kind, metadata ON registry
+    FOR EACH ROW EXECUTE FUNCTION validate_registry_installations();
+CREATE TRIGGER registry_installations_model_override_guard
+    AFTER DELETE ON registry
+    FOR EACH ROW EXECUTE FUNCTION validate_registry_installations();
 "#,
 		)
 		.await?;
@@ -1020,10 +1429,145 @@ CREATE TRIGGER installations_config_guard
 	Ok(())
 }
 
+async fn create_registry_agent_model_refs(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+	manager
+		.create_index(
+			Index::create()
+				.name("registry_id_version_kind_unique")
+				.table(Alias::new("registry"))
+				.col(Alias::new("id"))
+				.col(Alias::new("version"))
+				.col(Alias::new("kind"))
+				.unique()
+				.to_owned(),
+		)
+		.await?;
+	manager
+		.create_table(
+			Table::create()
+				.table(Alias::new("registry_agent_model_refs"))
+				.col(ColumnDef::new(Alias::new("agent_id")).text().not_null())
+				.col(
+					ColumnDef::new(Alias::new("agent_version"))
+						.text()
+						.not_null(),
+				)
+				.col(ColumnDef::new(Alias::new("model_id")).text().not_null())
+				.col(
+					ColumnDef::new(Alias::new("model_version"))
+						.text()
+						.not_null(),
+				)
+				.col(
+					ColumnDef::new(Alias::new("model_kind"))
+						.text()
+						.not_null()
+						.default(Expr::cust("'model'"))
+						.check(Expr::col(Alias::new("model_kind")).eq("model")),
+				)
+				.primary_key(
+					Index::create()
+						.col(Alias::new("agent_id"))
+						.col(Alias::new("agent_version")),
+				)
+				.foreign_key(
+					ForeignKey::create()
+						.name("registry_agent_model_source")
+						.from_tbl(Alias::new("registry_agent_model_refs"))
+						.from_col(Alias::new("agent_id"))
+						.from_col(Alias::new("agent_version"))
+						.to_tbl(Alias::new("registry"))
+						.to_col(Alias::new("id"))
+						.to_col(Alias::new("version"))
+						.on_delete(ForeignKeyAction::Cascade)
+						.on_update(ForeignKeyAction::Cascade),
+				)
+				.foreign_key(
+					ForeignKey::create()
+						.name("registry_agent_model_target")
+						.from_tbl(Alias::new("registry_agent_model_refs"))
+						.from_col(Alias::new("model_id"))
+						.from_col(Alias::new("model_version"))
+						.from_col(Alias::new("model_kind"))
+						.to_tbl(Alias::new("registry"))
+						.to_col(Alias::new("id"))
+						.to_col(Alias::new("version"))
+						.to_col(Alias::new("kind"))
+						.on_delete(ForeignKeyAction::Restrict)
+						.on_update(ForeignKeyAction::Restrict),
+				)
+				.to_owned(),
+		)
+		.await?;
+	let source = Query::select()
+		.expr_as(Expr::col(Alias::new("id")), Alias::new("agent_id"))
+		.expr_as(
+			Expr::col(Alias::new("version")),
+			Alias::new("agent_version"),
+		)
+		.expr_as(
+			Expr::cust("metadata#>>'{config,model,id}'"),
+			Alias::new("model_id"),
+		)
+		.expr_as(
+			Expr::cust("metadata#>>'{config,model,version}'"),
+			Alias::new("model_version"),
+		)
+		.from(Alias::new("registry"))
+		.and_where(Expr::col(Alias::new("kind")).eq("agent"))
+		.to_owned();
+	let backfill = Query::insert()
+		.into_table(Alias::new("registry_agent_model_refs"))
+		.columns(["agent_id", "agent_version", "model_id", "model_version"].map(Alias::new))
+		.select_from(source)
+		.map_err(|error| DbErr::Custom(error.to_string()))?
+		.to_owned();
+	manager
+		.get_connection()
+		.execute(manager.get_database_backend().build(&backfill))
+		.await?;
+	manager
+		.get_connection()
+		.execute_unprepared(
+			r#"
+CREATE FUNCTION sync_registry_agent_model_refs() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' AND OLD.kind = 'agent' THEN
+        DELETE FROM registry_agent_model_refs
+        WHERE agent_id = OLD.id AND agent_version = OLD.version;
+    END IF;
+    IF NEW.kind = 'agent' THEN
+        INSERT INTO registry_agent_model_refs(agent_id, agent_version, model_id, model_version)
+        VALUES (NEW.id, NEW.version, NEW.metadata#>>'{config,model,id}', NEW.metadata#>>'{config,model,version}');
+    END IF;
+    RETURN NEW;
+END $$;
+CREATE TRIGGER registry_agent_model_refs_sync
+    AFTER INSERT OR UPDATE OF id, version, kind, metadata ON registry
+    FOR EACH ROW EXECUTE FUNCTION sync_registry_agent_model_refs();
+CREATE FUNCTION guard_registry_agent_model_refs() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF pg_trigger_depth() < 2 THEN
+        RAISE EXCEPTION 'registry_agent_model_refs is maintained by registry'
+            USING ERRCODE = '23514', CONSTRAINT = 'registry_agent_model_reference';
+    END IF;
+    RETURN NULL;
+END $$;
+CREATE TRIGGER registry_agent_model_refs_guard
+    BEFORE INSERT OR UPDATE OR DELETE ON registry_agent_model_refs
+    FOR EACH STATEMENT EXECUTE FUNCTION guard_registry_agent_model_refs();
+"#,
+		)
+		.await?;
+	Ok(())
+}
+
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
 	async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+		require_pg_jsonschema(manager).await?;
 		create_sql_validators(manager).await?;
+		prepare_package_manifest_sources(manager).await?;
 		for (table, name, expression) in checks() {
 			// PostgreSQL CHECK alone accepts NULL; missing required JSON keys must fail.
 			manager
@@ -1033,6 +1577,8 @@ impl MigrationTrait for Migration {
 				))
 				.await?;
 		}
+		create_waiting_human_request_guard(manager).await?;
+		create_semantic_memory_byte_guards(manager).await?;
 		for table in ["tasks", "runs"] {
 			manager
 				.create_index(
@@ -1061,6 +1607,7 @@ impl MigrationTrait for Migration {
 				)
 				.await?;
 		}
+		create_registry_agent_model_refs(manager).await?;
 		create_installation_guard(manager).await?;
 		create_parent_cycle_guard(manager).await?;
 		create_dependencies(manager).await?;
@@ -1072,7 +1619,7 @@ impl MigrationTrait for Migration {
 		manager
 			.get_connection()
 			.execute_unprepared(
-				"DROP TRIGGER installations_config_guard ON installations; DROP FUNCTION guard_installation_config(); DROP TRIGGER zz_tasks_dependency_cycle_guard ON tasks; DROP FUNCTION guard_task_dependency_cycle(); DROP TRIGGER tasks_parent_cycle_guard ON tasks; DROP FUNCTION guard_task_parent_cycle(); DROP TRIGGER tasks_hierarchy_serialize ON tasks; DROP FUNCTION lock_task_hierarchy_before_change();",
+				"ALTER TABLE runs DROP CONSTRAINT runs_human_request_ref; ALTER TABLE runs DROP COLUMN pending_human_request_id; ALTER TABLE human_requests DROP CONSTRAINT human_requests_id_run_id_key; DROP TRIGGER runs_waiting_request_guard ON runs; DROP FUNCTION guard_waiting_human_request(); DROP TRIGGER semantic_memory_entry_bytes_guard ON semantic_entries; DROP FUNCTION guard_semantic_memory_entry_bytes(); DROP TRIGGER semantic_index_input_limit_guard ON semantic_indexes; DROP FUNCTION guard_semantic_index_input_limit(); DROP TRIGGER installations_config_guard ON installations; DROP FUNCTION guard_installation_config(); DROP TRIGGER installations_registry_writes_lock ON installations; DROP TRIGGER registry_installation_writes_lock ON registry; DROP FUNCTION lock_registry_installation_writes(); DROP TRIGGER registry_installations_model_override_guard ON registry; DROP TRIGGER registry_installations_config_guard ON registry; DROP FUNCTION validate_registry_installations(); DROP TRIGGER registry_agent_model_refs_sync ON registry; DROP TRIGGER registry_agent_model_refs_guard ON registry_agent_model_refs; DROP FUNCTION sync_registry_agent_model_refs(); DROP FUNCTION guard_registry_agent_model_refs(); DROP TABLE registry_agent_model_refs; DROP INDEX registry_id_version_kind_unique; DROP TRIGGER zz_tasks_dependency_cycle_guard ON tasks; DROP FUNCTION guard_task_dependency_cycle(); DROP TRIGGER tasks_parent_cycle_guard ON tasks; DROP FUNCTION guard_task_parent_cycle(); DROP TRIGGER tasks_hierarchy_serialize ON tasks; DROP FUNCTION lock_task_hierarchy_before_change();",
 			)
 			.await?;
 		// Matching DDL exception: SeaQuery has no trigger/function drop builders.
@@ -1122,9 +1669,17 @@ impl MigrationTrait for Migration {
 				.await?;
 		}
 		manager
+			.alter_table(
+				Table::alter()
+					.table(Alias::new("packages"))
+					.drop_column(Alias::new("manifest_source"))
+					.to_owned(),
+			)
+			.await?;
+		manager
 			.get_connection()
 			.execute_unprepared(
-				"DROP FUNCTION aidash_valid_pending_timestamp(jsonb); DROP FUNCTION aidash_tool_config_is_valid(jsonb);",
+				"DROP FUNCTION aidash_valid_pending_timestamp(jsonb); DROP FUNCTION aidash_model_response_is_valid(jsonb); DROP FUNCTION aidash_tool_config_is_valid(jsonb); DROP FUNCTION aidash_package_source_matches(jsonb, text); DROP FUNCTION aidash_valid_http_endpoint(jsonb);",
 			)
 			.await?;
 		Ok(())

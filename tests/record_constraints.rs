@@ -5,6 +5,7 @@ use aidash::{domain::NewTask, registry::Entry};
 use common::{cleanup, setup};
 use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query, SimpleExpr};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 fn model() -> Entry {
 	serde_json::from_value(json!({
@@ -48,6 +49,15 @@ fn check_rejected(result: Result<(), sqlx::Error>, name: &str) {
 	assert_eq!(database.constraint(), Some(name), "{error}");
 }
 
+fn check_foreign_key_rejected(result: Result<(), sqlx::Error>, name: &str) {
+	let error = result.unwrap_err();
+	let database = error
+		.as_database_error()
+		.expect("database foreign-key error");
+	assert_eq!(database.code().as_deref(), Some("23503"), "{error}");
+	assert_eq!(database.constraint(), Some(name), "{error}");
+}
+
 async fn update(
 	pool: &sqlx::PgPool,
 	table: &str,
@@ -60,6 +70,136 @@ async fn update(
 			.value(Alias::new(column), value)
 			.to_string(PostgresQueryBuilder),
 	)
+	.execute(pool)
+	.await
+	.map(|_| ())
+}
+
+async fn update_package_manifest(
+	pool: &sqlx::PgPool,
+	id: &str,
+	version: &str,
+	manifest: Value,
+) -> Result<(), sqlx::Error> {
+	let source = manifest.to_string();
+	let digest = aidash::registry::digest(&manifest);
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("packages"))
+			.value(Alias::new("manifest"), Expr::cust("$1"))
+			.value(Alias::new("manifest_source"), Expr::cust("$2"))
+			.value(Alias::new("digest"), Expr::cust("$3"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$4")))
+			.and_where(Expr::col(Alias::new("version")).eq(Expr::cust("$5")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(manifest)
+	.bind(source)
+	.bind(digest)
+	.bind(id)
+	.bind(version)
+	.execute(pool)
+	.await
+	.map(|_| ())
+}
+
+async fn update_package_digest(
+	pool: &sqlx::PgPool,
+	id: &str,
+	version: &str,
+	digest: &str,
+) -> Result<(), sqlx::Error> {
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("packages"))
+			.value(Alias::new("digest"), Expr::cust("$1"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+			.and_where(Expr::col(Alias::new("version")).eq(Expr::cust("$3")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(digest)
+	.bind(id)
+	.bind(version)
+	.execute(pool)
+	.await
+	.map(|_| ())
+}
+
+async fn update_package_source(
+	pool: &sqlx::PgPool,
+	id: &str,
+	version: &str,
+	source: &str,
+	digest: &str,
+) -> Result<(), sqlx::Error> {
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("packages"))
+			.value(Alias::new("manifest_source"), Expr::cust("$1"))
+			.value(Alias::new("digest"), Expr::cust("$2"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$3")))
+			.and_where(Expr::col(Alias::new("version")).eq(Expr::cust("$4")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(source)
+	.bind(digest)
+	.bind(id)
+	.bind(version)
+	.execute(pool)
+	.await
+	.map(|_| ())
+}
+
+async fn update_registry_config(
+	pool: &sqlx::PgPool,
+	id: &str,
+	version: &str,
+	config: Value,
+) -> Result<(), sqlx::Error> {
+	let select = Query::select()
+		.column(Alias::new("metadata"))
+		.from(Alias::new("registry"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+		.and_where(Expr::col(Alias::new("version")).eq(Expr::cust("$2")))
+		.to_string(PostgresQueryBuilder);
+	let (mut metadata,): (Value,) = sqlx::query_as(&select)
+		.bind(id)
+		.bind(version)
+		.fetch_one(pool)
+		.await?;
+	metadata["config"] = config;
+	let update = Query::update()
+		.table(Alias::new("registry"))
+		.value(Alias::new("metadata"), Expr::cust("$1"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+		.and_where(Expr::col(Alias::new("version")).eq(Expr::cust("$3")))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&update)
+		.bind(metadata)
+		.bind(id)
+		.bind(version)
+		.execute(pool)
+		.await
+		.map(|_| ())
+}
+
+async fn update_run_state(
+	pool: &sqlx::PgPool,
+	run_id: uuid::Uuid,
+	phase: &str,
+	pending: Value,
+) -> Result<(), sqlx::Error> {
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("runs"))
+			.value(Alias::new("phase"), Expr::cust("$1"))
+			.value(Alias::new("pending"), Expr::cust("$2"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$3")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(phase)
+	.bind(pending)
+	.bind(run_id)
 	.execute(pool)
 	.await
 	.map(|_| ())
@@ -364,6 +504,9 @@ async fn constraints_upgrade_and_rollback_preserve_data_and_reject_invalid_histo
 #[ignore = "requires disposable PostgreSQL"]
 async fn nonblank_constraints_match_rust_unicode_whitespace() {
 	let (f, url, schema) = setup().await;
+	insert_entry(&f.store.pool, &serde_json::to_value(model()).unwrap())
+		.await
+		.unwrap();
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	f.store
 		.create_task(
@@ -506,7 +649,7 @@ async fn package_identity_requires_matching_json_strings() {
 		let mut manifest = record.manifest.clone();
 		manifest["entity"][field] = invalid;
 		check_rejected(
-			update(&f.store.pool, "packages", "manifest", Expr::val(manifest)).await,
+			update_package_manifest(&f.store.pool, &record.id, &record.version, manifest).await,
 			"packages_identity",
 		);
 	}
@@ -514,7 +657,7 @@ async fn package_identity_requires_matching_json_strings() {
 		let mut manifest = record.manifest.clone();
 		manifest["entity"].as_object_mut().unwrap().remove(field);
 		check_rejected(
-			update(&f.store.pool, "packages", "manifest", Expr::val(manifest)).await,
+			update_package_manifest(&f.store.pool, &record.id, &record.version, manifest).await,
 			"packages_identity",
 		);
 	}
@@ -524,18 +667,103 @@ async fn package_identity_requires_matching_json_strings() {
 		json!({"entity":{"id":"1","version":"1.0.0","kind":"skill","name":{"en":7},"description":{"en":"Description"},"config":{"instructions":"Complete the task"}},"author":"Fixture","permissions":[],"dependencies":[]}),
 	] {
 		check_rejected(
-			update(&f.store.pool, "packages", "manifest", Expr::val(malformed)).await,
+			update_package_manifest(&f.store.pool, &record.id, &record.version, malformed).await,
 			"packages_identity",
 		);
 	}
-	update(
+	for invalid_schema in [
+		json!({"type":7}),
+		json!({"items":7}),
+		json!({"properties":{"count":{"required":"name"}}}),
+	] {
+		let mut manifest = record.manifest.clone();
+		manifest["entity"]["schema"] = invalid_schema;
+		check_rejected(
+			update_package_manifest(&f.store.pool, &record.id, &record.version, manifest).await,
+			"packages_identity",
+		);
+	}
+	check_rejected(
+		update_package_digest(
+			&f.store.pool,
+			&record.id,
+			&record.version,
+			"sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		)
+		.await,
+		"packages_digest",
+	);
+	let alternate_source = format!(" \n{}\n", record.manifest);
+	let alternate_digest = format!("sha256:{:x}", Sha256::digest(alternate_source.as_bytes()));
+	update_package_source(
 		&f.store.pool,
-		"packages",
-		"manifest",
-		Expr::val(record.manifest),
+		&record.id,
+		&record.version,
+		&alternate_source,
+		&alternate_digest,
 	)
 	.await
 	.unwrap();
+	f.registry
+		.install(
+			&f.store.pool,
+			&record.id,
+			&record.version,
+			&alternate_digest,
+			json!({}),
+		)
+		.await
+		.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn package_digest_backfill_preserves_previous_publish_serialization() {
+	use migration::MigratorTrait;
+	let (f, url, schema) = setup().await;
+	let mut entity = model();
+	entity.id = "legacy-digest".into();
+	entity.kind = "skill".into();
+	entity.schema = json!({
+		"type":"object",
+		"properties":{"fraction":{"type":"number","minimum":1.25e-20,"maximum":3.141592653589793}},
+	});
+	entity.config = json!({
+		"instructions":"Preserve this installed package",
+		"future_extension":{"small":1.25e-20,"large":1.0e20,"precise":0.10000000000000001},
+	});
+	let expected_entity = entity.clone();
+	let record = f
+		.registry
+		.publish(
+			&f.store.pool,
+			aidash::registry::Package {
+				entity,
+				author: "Fixture".into(),
+				permissions: vec![],
+				dependencies: vec![],
+			},
+		)
+		.await
+		.unwrap();
+	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());
+	// Remove only this migration's new source column, leaving a package row and
+	// digest produced by Registry.publish exactly as on the old schema.
+	migration::Migrator::down(&db, Some(1)).await.unwrap();
+	migration::Migrator::up(&db, None).await.unwrap();
+	let installed = f
+		.registry
+		.install(
+			&f.store.pool,
+			&record.id,
+			&record.version,
+			&record.digest,
+			json!({}),
+		)
+		.await
+		.unwrap();
+	assert_eq!(installed, expected_entity);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -581,7 +809,15 @@ async fn package_agent_config_requires_all_typed_fields() {
 		let mut manifest = record.manifest.clone();
 		manifest["entity"]["config"]["max_steps"] = invalid;
 		check_rejected(
-			update(&f.store.pool, "packages", "manifest", Expr::val(manifest)).await,
+			update_package_manifest(&f.store.pool, &record.id, &record.version, manifest).await,
+			"packages_identity",
+		);
+	}
+	for invalid in [json!(7), json!(""), json!(" \t\n\u{2003}")] {
+		let mut manifest = record.manifest.clone();
+		manifest["entity"]["config"]["instructions"] = invalid;
+		check_rejected(
+			update_package_manifest(&f.store.pool, &record.id, &record.version, manifest).await,
 			"packages_identity",
 		);
 	}
@@ -593,18 +829,13 @@ async fn package_agent_config_requires_all_typed_fields() {
 		let mut manifest = record.manifest.clone();
 		manifest["entity"]["config"]["cluster"] = invalid;
 		check_rejected(
-			update(&f.store.pool, "packages", "manifest", Expr::val(manifest)).await,
+			update_package_manifest(&f.store.pool, &record.id, &record.version, manifest).await,
 			"packages_identity",
 		);
 	}
-	update(
-		&f.store.pool,
-		"packages",
-		"manifest",
-		Expr::val(record.manifest),
-	)
-	.await
-	.unwrap();
+	update_package_manifest(&f.store.pool, &record.id, &record.version, record.manifest)
+		.await
+		.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -636,21 +867,16 @@ async fn package_tool_config_uses_registry_validation() {
 	] {
 		let mut manifest = record.manifest.clone();
 		manifest["entity"]["config"] = invalid;
-		let digest = aidash::registry::digest(&manifest);
-		let update_package = Query::update()
-			.table(Alias::new("packages"))
-			.value(Alias::new("manifest"), Expr::val(manifest))
-			.value(Alias::new("digest"), Expr::val(digest))
-			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
-			.and_where(Expr::col(Alias::new("version")).eq(Expr::cust("$2")))
-			.to_string(PostgresQueryBuilder);
 		check_rejected(
-			sqlx::query(&update_package)
-				.bind(&record.id)
-				.bind(&record.version)
-				.execute(&f.store.pool)
-				.await
-				.map(|_| ()),
+			update_package_manifest(&f.store.pool, &record.id, &record.version, manifest).await,
+			"packages_identity",
+		);
+	}
+	for invalid in [json!(" "), json!("\t\n\u{2003}"), json!("")] {
+		let mut manifest = record.manifest.clone();
+		manifest["entity"]["config"]["instructions"] = invalid;
+		check_rejected(
+			update_package_manifest(&f.store.pool, &record.id, &record.version, manifest).await,
 			"packages_identity",
 		);
 	}
@@ -679,6 +905,18 @@ async fn insert_values(
 async fn registry_json_shapes_remain_deserializable() {
 	let (f, url, schema) = setup().await;
 	let good = serde_json::to_value(model()).unwrap();
+	for invalid_schema in [
+		json!({"type":7}),
+		json!({"items":7}),
+		json!({"properties":{"count":{"required":"name"}}}),
+	] {
+		let mut invalid = good.clone();
+		invalid["schema"] = invalid_schema;
+		check_rejected(
+			insert_entry(&f.store.pool, &invalid).await,
+			"registry_metadata_shape",
+		);
+	}
 	for field in ["capabilities", "tags", "languages", "skills"] {
 		for invalid in [
 			json!(7),
@@ -751,6 +989,12 @@ async fn model_and_agent_configs_reject_unusable_shapes() {
 		insert_entry(&f.store.pool, &agent).await,
 		"registry_agent_config",
 	);
+	insert_entry(&f.store.pool, &good).await.unwrap();
+	let mut other_kind = serde_json::to_value(model()).unwrap();
+	other_kind["id"] = json!("not-a-model");
+	other_kind["kind"] = json!("tool");
+	other_kind["config"] = json!({"transport":"native","operation":"echo"});
+	insert_entry(&f.store.pool, &other_kind).await.unwrap();
 	for invalid in [
 		Value::Null,
 		json!([]),
@@ -766,6 +1010,20 @@ async fn model_and_agent_configs_reject_unusable_shapes() {
 		);
 	}
 	agent["config"]["model"] = json!({"id":"test-model","version":"1.0.0"});
+	let mut missing_model = agent.clone();
+	missing_model["id"] = json!("missing-model-agent");
+	missing_model["config"]["model"] = json!({"id":"does-not-exist","version":"1.0.0"});
+	check_foreign_key_rejected(
+		insert_entry(&f.store.pool, &missing_model).await,
+		"registry_agent_model_target",
+	);
+	let mut wrong_kind_model = agent.clone();
+	wrong_kind_model["id"] = json!("wrong-kind-model-agent");
+	wrong_kind_model["config"]["model"] = json!({"id":"not-a-model","version":"1.0.0"});
+	check_foreign_key_rejected(
+		insert_entry(&f.store.pool, &wrong_kind_model).await,
+		"registry_agent_model_target",
+	);
 	for (field, invalid) in [
 		("tools", json!([7])),
 		("skills", json!([{"id":"skill"}])),
@@ -793,7 +1051,6 @@ async fn model_and_agent_configs_reject_unusable_shapes() {
 	insert_entry(&f.store.pool, &integer_steps).await.unwrap();
 	let _: aidash::registry::AgentConfig = serde_json::from_value(agent["config"].clone()).unwrap();
 	insert_entry(&f.store.pool, &agent).await.unwrap();
-	insert_entry(&f.store.pool, &good).await.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -806,6 +1063,13 @@ async fn tool_configs_reject_undecodable_shapes() {
 	tool["kind"] = json!("tool");
 	for config in [
 		json!({"transport":"http"}),
+		json!({"transport":"http","endpoint":"not a URL","replay":"read_only"}),
+		json!({"transport":"http","endpoint":"ftp://example.com","replay":"read_only"}),
+		json!({"transport":"http","endpoint":"http:///missing-host","replay":"read_only"}),
+		json!({"transport":"http","endpoint":"https://user:pass@example.com","replay":"read_only"}),
+		json!({"transport":"http","endpoint":"http://example.com?token=value","replay":"read_only"}),
+		json!({"transport":"http","endpoint":"https://example.com/path#fragment","replay":"read_only"}),
+		json!({"transport":"mcp","endpoint":"http://example.com?token=value","tool_name":"call","replay":"read_only"}),
 		json!({"transport":"native","operation":"http_get","allowed_hosts":[]}),
 		json!({"transport":"native","operation":"echo","allowed_hosts":[7]}),
 		json!({"transport":"http","endpoint":"http://localhost","replay":"invalid"}),
@@ -820,13 +1084,21 @@ async fn tool_configs_reject_undecodable_shapes() {
 			"registry_tool_config",
 		);
 	}
-	tool["config"] = json!({
-		"transport":"http",
-		"endpoint":"http://localhost",
-		"credential_env":null,
-		"replay":"read_only"
-	});
-	insert_entry(&f.store.pool, &tool).await.unwrap();
+	for (id, endpoint) in [
+		("tool", "http://model_gateway:8080/v1"),
+		("tool-leading-underscore", "http://_model_gateway:8080/v1"),
+		("tool-underscore-label", "http://model._gateway:8080/v1"),
+	] {
+		reqwest::Url::parse(endpoint).unwrap();
+		tool["id"] = json!(id);
+		tool["config"] = json!({
+			"transport":"http",
+			"endpoint":endpoint,
+			"credential_env":null,
+			"replay":"read_only"
+		});
+		insert_entry(&f.store.pool, &tool).await.unwrap();
+	}
 	cleanup(f, &url, &schema).await;
 }
 
@@ -907,6 +1179,19 @@ async fn requirements_and_run_state_reject_wrong_shapes() {
 		)
 		.await
 		.unwrap();
+	let claimed_without_owner = Query::update()
+		.table(Alias::new("tasks"))
+		.value(Alias::new("status"), Expr::val("CLAIMED"))
+		.value(Alias::new("owner"), Expr::cust("NULL"))
+		.and_where(Expr::col(Alias::new("id")).eq(uuid_expr(task.id)))
+		.to_string(PostgresQueryBuilder);
+	check_rejected(
+		sqlx::query(&claimed_without_owner)
+			.execute(&f.store.pool)
+			.await
+			.map(|_| ()),
+		"tasks_active_owner",
+	);
 	for invalid in [
 		json!({"unexpected":true}),
 		json!({"capability":7}),
@@ -961,6 +1246,207 @@ async fn requirements_and_run_state_reject_wrong_shapes() {
 	)
 	.await
 	.unwrap();
+	update_run_state(
+		&f.store.pool,
+		run.id,
+		"WAITING",
+		json!({"wake_at":"2030-01-01T00:00:00Z"}),
+	)
+	.await
+	.unwrap();
+	update_run_state(&f.store.pool, run.id, "READY", json!({}))
+		.await
+		.unwrap();
+	check_rejected(
+		update_run_state(
+			&f.store.pool,
+			run.id,
+			"WAITING",
+			json!({"human_request_id":"not-a-uuid"}),
+		)
+		.await,
+		"runs_waiting_request",
+	);
+	check_foreign_key_rejected(
+		update_run_state(
+			&f.store.pool,
+			run.id,
+			"WAITING",
+			json!({"human_request_id":uuid::Uuid::new_v4()}),
+		)
+		.await,
+		"runs_human_request_ref",
+	);
+	let request = f
+		.store
+		.human_request(&run, "QUESTION", "Continue?", "waiting-shape-test")
+		.await
+		.unwrap();
+	update_run_state(
+		&f.store.pool,
+		run.id,
+		"WAITING",
+		json!({"human_request_id":request.id}),
+	)
+	.await
+	.unwrap();
+	check_foreign_key_rejected(
+		update(
+			&f.store.pool,
+			"human_requests",
+			"id",
+			uuid_expr(uuid::Uuid::new_v4()),
+		)
+		.await,
+		"runs_human_request_ref",
+	);
+	let other_task = f
+		.store
+		.create_task(
+			workspace.id,
+			&NewTask {
+				title: "Other request task".into(),
+				description: "Work".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"human",
+			None,
+		)
+		.await
+		.unwrap();
+	let other_run = f
+		.store
+		.accept_run(&other_task, "aidash://remote", "executor", "1.0.0")
+		.await
+		.unwrap();
+	check_foreign_key_rejected(
+		update(
+			&f.store.pool,
+			"human_requests",
+			"run_id",
+			uuid_expr(other_run.id),
+		)
+		.await,
+		"runs_human_request_ref",
+	);
+	let delete_request = Query::delete()
+		.from_table(Alias::new("human_requests"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+		.to_string(PostgresQueryBuilder);
+	check_foreign_key_rejected(
+		sqlx::query(&delete_request)
+			.bind(request.id)
+			.execute(&f.store.pool)
+			.await
+			.map(|_| ()),
+		"runs_human_request_ref",
+	);
+	update_run_state(&f.store.pool, other_run.id, "COMPLETED", json!({}))
+		.await
+		.unwrap();
+	update_run_state(&f.store.pool, run.id, "READY", json!({}))
+		.await
+		.unwrap();
+	let tool_response = json!({
+		"text":"",
+		"tool_calls":[{"id":"call-1","name":"echo","arguments":{}}],
+		"input_tokens":0,
+		"output_tokens":0
+	});
+	let valid_tool_pending = json!({"response":tool_response,"cursor":1});
+	update_run_state(
+		&f.store.pool,
+		run.id,
+		"TOOL_CALL",
+		valid_tool_pending.clone(),
+	)
+	.await
+	.unwrap();
+	update_run_state(&f.store.pool, run.id, "READY", json!({}))
+		.await
+		.unwrap();
+	for invalid in [
+		json!({"response":{"text":"x","tool_calls":"bad","input_tokens":0,"output_tokens":0},"cursor":0}),
+		json!({"response":tool_response,"cursor":2}),
+		json!({"response":{"text":"x","tool_calls":[{"id":7,"name":"echo","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0}),
+		json!({"response":{"tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0}),
+		json!({"response":{"text":"x","tool_calls":[],"output_tokens":0},"cursor":0}),
+		json!({"response":{"text":"x","tool_calls":[{"name":"echo","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0}),
+		json!({"response":{"text":"x","tool_calls":[{"id":"call-1","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0}),
+	] {
+		check_rejected(
+			update_run_state(&f.store.pool, run.id, "TOOL_CALL", invalid).await,
+			"runs_counters",
+		);
+	}
+	let waiting_tool_pending = json!({
+		"resume_phase":"TOOL_CALL",
+		"wake_at":"2030-01-01T00:00:00Z",
+		"response":tool_response,
+		"cursor":1,
+	});
+	update_run_state(
+		&f.store.pool,
+		run.id,
+		"WAITING",
+		waiting_tool_pending.clone(),
+	)
+	.await
+	.unwrap();
+	let mut invalid_waiting_tool = waiting_tool_pending;
+	invalid_waiting_tool["cursor"] = json!(2);
+	check_rejected(
+		update_run_state(&f.store.pool, run.id, "WAITING", invalid_waiting_tool).await,
+		"runs_counters",
+	);
+	update_run_state(&f.store.pool, run.id, "READY", json!({}))
+		.await
+		.unwrap();
+	check_rejected(
+		update(&f.store.pool, "runs", "revision", Expr::val(i64::MAX)).await,
+		"runs_counters",
+	);
+	let second_task = f
+		.store
+		.create_task(
+			workspace.id,
+			&NewTask {
+				title: "Second task".into(),
+				description: "Work".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"human",
+			None,
+		)
+		.await
+		.unwrap();
+	let second_run = f
+		.store
+		.accept_run(&second_task, "aidash://remote", "executor", "1.0.0")
+		.await
+		.unwrap();
+	let max_safe_revision = Query::update()
+		.table(Alias::new("runs"))
+		.value(Alias::new("revision"), Expr::cust("$1"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&max_safe_revision)
+		.bind(i64::MAX - 1)
+		.bind(run.id)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	let leased = f
+		.store
+		.lease_run(uuid::Uuid::new_v4(), 30)
+		.await
+		.unwrap()
+		.unwrap();
+	assert_eq!(leased.id, second_run.id);
 	for malformed in [
 		json!({"summary":7}),
 		json!({"history":7}),
@@ -1053,6 +1539,63 @@ async fn semantic_specs_and_sources_reject_undecodable_records() {
 	)
 	.await
 	.unwrap();
+	let mut empty_port = spec.clone();
+	empty_port["embedding"]["endpoint"] = json!("http://localhost:");
+	let runtime: aidash::semantic::IndexSpec = serde_json::from_value(empty_port.clone()).unwrap();
+	runtime.validate().unwrap();
+	update(
+		&f.store.pool,
+		"semantic_indexes",
+		"spec",
+		Expr::val(empty_port),
+	)
+	.await
+	.unwrap();
+	for (field, minimum, maximum) in [
+		("max_sources", 1, 1024),
+		("max_results", 1, 20),
+		("max_result_tokens", 128, 32768),
+		("max_input_bytes", 128, 32768),
+	] {
+		for value in [minimum, maximum] {
+			let mut boundary = spec.clone();
+			boundary[field] = json!(value);
+			let runtime: aidash::semantic::IndexSpec =
+				serde_json::from_value(boundary.clone()).unwrap();
+			runtime.validate().unwrap();
+			update(
+				&f.store.pool,
+				"semantic_indexes",
+				"spec",
+				Expr::val(boundary),
+			)
+			.await
+			.unwrap();
+		}
+	}
+	for value in [1, 8192] {
+		let mut boundary = spec.clone();
+		boundary["embedding"]["dimensions"] = json!(value);
+		let runtime: aidash::semantic::IndexSpec =
+			serde_json::from_value(boundary.clone()).unwrap();
+		runtime.validate().unwrap();
+		update(
+			&f.store.pool,
+			"semantic_indexes",
+			"spec",
+			Expr::val(boundary),
+		)
+		.await
+		.unwrap();
+	}
+	update(
+		&f.store.pool,
+		"semantic_indexes",
+		"spec",
+		Expr::val(spec.clone()),
+	)
+	.await
+	.unwrap();
 	let mut invalid_specs = vec![json!({}), json!([]), Value::Null];
 	for field in spec.as_object().unwrap().keys() {
 		let mut missing = spec.clone();
@@ -1075,6 +1618,23 @@ async fn semantic_specs_and_sources_reject_undecodable_records() {
 		wrong[path.trim_start_matches('/')] = value;
 		invalid_specs.push(wrong);
 	}
+	for (field, invalid) in [
+		("max_sources", [0, 1025]),
+		("max_results", [0, 21]),
+		("max_result_tokens", [127, 32769]),
+		("max_input_bytes", [127, 32769]),
+	] {
+		for value in invalid {
+			let mut wrong = spec.clone();
+			wrong[field] = json!(value);
+			invalid_specs.push(wrong);
+		}
+	}
+	for value in [0, 8193] {
+		let mut wrong = spec.clone();
+		wrong["embedding"]["dimensions"] = json!(value);
+		invalid_specs.push(wrong);
+	}
 	for section in ["embedding", "vector"] {
 		for field in spec[section].as_object().unwrap().keys() {
 			let mut wrong = spec.clone();
@@ -1089,6 +1649,34 @@ async fn semantic_specs_and_sources_reject_undecodable_records() {
 			wrong[section][field] = value;
 			invalid_specs.push(wrong);
 		}
+	}
+	for (section, field, value) in [
+		("embedding", "provider", json!("unsupported")),
+		("vector", "provider", json!("pgvector")),
+		(
+			"embedding",
+			"endpoint",
+			json!("http://user:password@localhost/v1"),
+		),
+		(
+			"embedding",
+			"endpoint",
+			json!("http://localhost/v1?token=x"),
+		),
+		("vector", "endpoint", json!("file:///tmp/vectors")),
+		(
+			"vector",
+			"endpoint",
+			json!("http://999.999.999.999/vectors"),
+		),
+		("embedding", "credential_env", json!("OPENAI_API_KEY")),
+		("embedding", "model", json!("  ")),
+		("embedding", "model", json!("m".repeat(257))),
+		("embedding", "model_version", json!("v".repeat(129))),
+	] {
+		let mut wrong = spec.clone();
+		wrong[section][field] = value;
+		invalid_specs.push(wrong);
 	}
 	for invalid in invalid_specs {
 		check_rejected(
@@ -1158,6 +1746,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records() {
 		json!({"kind":"unknown"}),
 		json!({"kind":"memory"}),
 		json!({"kind":"memory","text":7}),
+		json!({"kind":"memory","text":" \t\u{2003}"}),
 		json!({"kind":"memory","text":"text","unexpected":true}),
 		json!({"kind":"artifact","id":"invalid"}),
 		json!({"kind":"message","id":7}),
@@ -1175,6 +1764,38 @@ async fn semantic_specs_and_sources_reject_undecodable_records() {
 			"semantic_entries_counters",
 		);
 	}
+	update(
+		&f.store.pool,
+		"semantic_entries",
+		"deleted",
+		Expr::val(true),
+	)
+	.await
+	.unwrap();
+	update(
+		&f.store.pool,
+		"semantic_entries",
+		"source",
+		Expr::val(json!({"kind":"memory","text":""})),
+	)
+	.await
+	.unwrap();
+	update(
+		&f.store.pool,
+		"semantic_entries",
+		"source",
+		Expr::val(json!({"kind":"memory","text":"text"})),
+	)
+	.await
+	.unwrap();
+	update(
+		&f.store.pool,
+		"semantic_entries",
+		"deleted",
+		Expr::val(false),
+	)
+	.await
+	.unwrap();
 	let id = uuid::Uuid::new_v4();
 	for kind in ["artifact", "message"] {
 		for id in [
@@ -1195,6 +1816,52 @@ async fn semantic_specs_and_sources_reject_undecodable_records() {
 			.unwrap();
 		}
 	}
+	update(
+		&f.store.pool,
+		"semantic_entries",
+		"source",
+		Expr::val(json!({"kind":"memory","text":"x".repeat(129)})),
+	)
+	.await
+	.unwrap();
+	let mut smaller_limit = spec.clone();
+	smaller_limit["max_input_bytes"] = json!(128);
+	check_rejected(
+		update(
+			&f.store.pool,
+			"semantic_indexes",
+			"spec",
+			Expr::val(smaller_limit.clone()),
+		)
+		.await,
+		"semantic_index_input_bytes",
+	);
+	update(
+		&f.store.pool,
+		"semantic_entries",
+		"source",
+		Expr::val(json!({"kind":"memory","text":"short"})),
+	)
+	.await
+	.unwrap();
+	update(
+		&f.store.pool,
+		"semantic_indexes",
+		"spec",
+		Expr::val(smaller_limit),
+	)
+	.await
+	.unwrap();
+	check_rejected(
+		update(
+			&f.store.pool,
+			"semantic_entries",
+			"source",
+			Expr::val(json!({"kind":"memory","text":"é".repeat(65)})),
+		)
+		.await,
+		"semantic_memory_input_bytes",
+	);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1546,6 +2213,58 @@ async fn task_dependency_cycles_include_parent_edges() {
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
+async fn task_cycle_checks_deduplicate_diamond_reachability() {
+	let (f, url, schema) = setup().await;
+	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
+	let input = NewTask {
+		title: "Task".into(),
+		description: "Work".into(),
+		requirements: json!({}),
+		dependencies: vec![],
+		parent_id: None,
+	};
+	let mut levels: Vec<Vec<uuid::Uuid>> = Vec::new();
+	for _ in 0..20 {
+		let mut level = Vec::new();
+		for _ in 0..2 {
+			level.push(
+				f.store
+					.create_task(workspace.id, &input, "human", None)
+					.await
+					.unwrap()
+					.id,
+			);
+		}
+		if let Some(previous) = levels.last() {
+			for task_id in &level {
+				sqlx::query(&dependencies_update())
+					.bind(task_id)
+					.bind(previous.clone())
+					.execute(&f.store.pool)
+					.await
+					.unwrap();
+			}
+		}
+		levels.push(level);
+	}
+	let error = sqlx::query(&dependencies_update())
+		.bind(levels[0][0])
+		.bind(vec![levels.last().unwrap()[0]])
+		.execute(&f.store.pool)
+		.await
+		.unwrap_err();
+	let database = error.as_database_error().unwrap();
+	assert_eq!(database.code().as_deref(), Some("23514"), "{error}");
+	assert_eq!(
+		database.constraint(),
+		Some("tasks_dependency_cycle"),
+		"{error}"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
 async fn historical_task_cycles_fail_migration_through_query_validation() {
 	use migration::MigratorTrait;
 	let (f, url, schema) = setup().await;
@@ -1779,6 +2498,78 @@ async fn installation_constraints_validate_model_overrides() {
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
+async fn agent_installation_model_overrides_keep_valid_registry_references() {
+	let (f, url, schema) = setup().await;
+	let mut base_model = serde_json::to_value(model()).unwrap();
+	base_model["id"] = json!("base-model");
+	insert_entry(&f.store.pool, &base_model).await.unwrap();
+	let mut override_model = serde_json::to_value(model()).unwrap();
+	override_model["id"] = json!("override-model");
+	insert_entry(&f.store.pool, &override_model).await.unwrap();
+	let mut wrong_kind = serde_json::to_value(model()).unwrap();
+	wrong_kind["id"] = json!("not-a-model");
+	wrong_kind["kind"] = json!("tool");
+	wrong_kind["config"] = json!({"transport":"native","operation":"echo"});
+	insert_entry(&f.store.pool, &wrong_kind).await.unwrap();
+	let mut agent = serde_json::to_value(model()).unwrap();
+	agent["id"] = json!("installed-agent");
+	agent["kind"] = json!("agent");
+	agent["config"] = json!({
+		"model":{"id":"base-model","version":"1.0.0"},
+		"instructions":"Work"
+	});
+	insert_entry(&f.store.pool, &agent).await.unwrap();
+	for model_ref in [
+		json!({"id":"missing-model","version":"1.0.0"}),
+		json!({"id":"not-a-model","version":"1.0.0"}),
+	] {
+		check_rejected(
+			insert_values(
+				&f.store.pool,
+				"installations",
+				&[
+					("id", Expr::val("installed-agent").into()),
+					("version", Expr::val("1.0.0").into()),
+					("digest", Expr::val("sha256:fixture").into()),
+					("config", Expr::val(json!({"model":model_ref})).into()),
+				],
+			)
+			.await,
+			"registry_agent_model_installation_reference",
+		);
+	}
+	insert_values(
+		&f.store.pool,
+		"installations",
+		&[
+			("id", Expr::val("installed-agent").into()),
+			("version", Expr::val("1.0.0").into()),
+			("digest", Expr::val("sha256:fixture").into()),
+			(
+				"config",
+				Expr::val(json!({"model":{"id":"override-model","version":"1.0.0"}})).into(),
+			),
+		],
+	)
+	.await
+	.unwrap();
+	let delete_override_model = Query::delete()
+		.from_table(Alias::new("registry"))
+		.and_where(Expr::col(Alias::new("id")).eq("override-model"))
+		.and_where(Expr::col(Alias::new("version")).eq("1.0.0"))
+		.to_string(PostgresQueryBuilder);
+	check_rejected(
+		sqlx::query(&delete_override_model)
+			.execute(&f.store.pool)
+			.await
+			.map(|_| ()),
+		"registry_agent_model_installation_reference",
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
 async fn installation_constraints_validate_effective_tool_config() {
 	let (f, url, schema) = setup().await;
 	let mut tool = serde_json::to_value(model()).unwrap();
@@ -1821,5 +2612,166 @@ async fn installation_constraints_validate_effective_tool_config() {
 	)
 	.await
 	.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn installation_constraints_validate_skill_overrides() {
+	let (f, url, schema) = setup().await;
+	let mut skill = serde_json::to_value(model()).unwrap();
+	skill["id"] = json!("installed-skill");
+	skill["kind"] = json!("skill");
+	skill["config"] = json!({"instructions":"Base instructions"});
+	insert_entry(&f.store.pool, &skill).await.unwrap();
+	insert_values(
+		&f.store.pool,
+		"installations",
+		&[
+			("id", Expr::val("installed-skill").into()),
+			("version", Expr::val("1.0.0").into()),
+			("digest", Expr::val("sha256:fixture").into()),
+			("config", Expr::val(json!({})).into()),
+		],
+	)
+	.await
+	.unwrap();
+	for invalid in [
+		json!({"instructions":7}),
+		json!({"instructions":" \t\u{2003}"}),
+		json!({"unexpected":true}),
+	] {
+		check_rejected(
+			update(&f.store.pool, "installations", "config", Expr::val(invalid)).await,
+			"installations_config",
+		);
+	}
+	update(
+		&f.store.pool,
+		"installations",
+		"config",
+		Expr::val(json!({"instructions":"Override instructions"})),
+	)
+	.await
+	.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn registry_updates_revalidate_installed_tool_overrides() {
+	let (f, url, schema) = setup().await;
+	let mut tool = serde_json::to_value(model()).unwrap();
+	tool["id"] = json!("changing-tool");
+	tool["kind"] = json!("tool");
+	tool["config"] = json!({
+		"transport":"http",
+		"endpoint":"http://localhost:9999/base",
+		"credential_env":null,
+		"replay":"read_only"
+	});
+	insert_entry(&f.store.pool, &tool).await.unwrap();
+	insert_values(
+		&f.store.pool,
+		"installations",
+		&[
+			("id", Expr::val("changing-tool").into()),
+			("version", Expr::val("1.0.0").into()),
+			("digest", Expr::val("sha256:fixture").into()),
+			(
+				"config",
+				Expr::val(json!({"endpoint":"http://localhost:7777/override"})).into(),
+			),
+		],
+	)
+	.await
+	.unwrap();
+	check_rejected(
+		update_registry_config(
+			&f.store.pool,
+			"changing-tool",
+			"1.0.0",
+			json!({"transport":"native","operation":"echo"}),
+		)
+		.await,
+		"installations_config",
+	);
+	update_registry_config(
+		&f.store.pool,
+		"changing-tool",
+		"1.0.0",
+		json!({
+			"transport":"http",
+			"endpoint":"http://localhost:8888/base",
+			"credential_env":null,
+			"replay":"read_only"
+		}),
+	)
+	.await
+	.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn concurrent_registry_and_installation_writes_use_one_lock_order() {
+	let (f, url, schema) = setup().await;
+	let mut tool = serde_json::to_value(model()).unwrap();
+	tool["id"] = json!("concurrent-tool");
+	tool["kind"] = json!("tool");
+	tool["config"] = json!({
+		"transport":"http",
+		"endpoint":"http://localhost:9999/base",
+		"credential_env":null,
+		"replay":"read_only"
+	});
+	insert_entry(&f.store.pool, &tool).await.unwrap();
+	insert_values(
+		&f.store.pool,
+		"installations",
+		&[
+			("id", Expr::val("concurrent-tool").into()),
+			("version", Expr::val("1.0.0").into()),
+			("digest", Expr::val("sha256:fixture").into()),
+			("config", Expr::val(json!({})).into()),
+		],
+	)
+	.await
+	.unwrap();
+	let start = std::sync::Arc::new(tokio::sync::Barrier::new(3));
+	let registry_start = start.clone();
+	let registry_pool = f.store.pool.clone();
+	let registry_update = tokio::spawn(async move {
+		registry_start.wait().await;
+		update_registry_config(
+			&registry_pool,
+			"concurrent-tool",
+			"1.0.0",
+			json!({"transport":"native","operation":"echo"}),
+		)
+		.await
+	});
+	let installation_start = start.clone();
+	let installation_pool = f.store.pool.clone();
+	let installation_update = tokio::spawn(async move {
+		installation_start.wait().await;
+		update(
+			&installation_pool,
+			"installations",
+			"config",
+			Expr::val(json!({"endpoint":"http://localhost:7777/override"})),
+		)
+		.await
+	});
+	start.wait().await;
+	let (registry_result, installation_result) =
+		tokio::time::timeout(std::time::Duration::from_secs(5), async {
+			tokio::join!(registry_update, installation_update)
+		})
+		.await
+		.expect("registry and installation writes must not deadlock");
+	let registry_result = registry_result.unwrap();
+	let installation_result = installation_result.unwrap();
+	assert!(registry_result.is_ok() || installation_result.is_ok());
 	cleanup(f, &url, &schema).await;
 }
