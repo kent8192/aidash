@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 mod compaction;
 pub mod jev;
+pub(crate) mod observation;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Context {
@@ -21,42 +22,82 @@ pub struct Context {
 // Conservative upper bound for mixed-language text, not a provider tokenizer.
 // The budget includes system instructions, tools, workspace and output reserve.
 pub fn estimated_tokens(value: &str) -> usize {
-	value
-		.chars()
-		.map(|c| if c.is_ascii() { 1 } else { 2 })
-		.sum()
+	value.len()
+}
+
+/// Estimate how much one durable tool event adds to a complete provider
+/// request. Fixed instructions, tools, and pinned context cancel out, so this
+/// probe measures the same encoded context growth without storing that payload.
+pub(crate) fn tool_event_growth(context: &Context, event: &Value) -> usize {
+	fn estimate(context: &Context) -> usize {
+		crate::provider::ModelRequest {
+			instructions: String::new(),
+			context: json!({
+				"current": Value::Null,
+				"summary": context.summary,
+				"history": context.history,
+			}),
+			tools: vec![],
+			max_output_tokens: 0,
+		}
+		.estimated_total_tokens()
+	}
+	let before = estimate(context);
+	let mut after = context.clone();
+	after.history.push(event.clone());
+	estimate(&after).saturating_sub(before)
+}
+
+pub struct RequestBudget<'a> {
+	pub window: usize,
+	pub instructions: &'a str,
+	pub tools: &'a [crate::provider::ToolSpec],
+	pub max_output_tokens: u32,
+}
+
+impl RequestBudget<'_> {
+	pub fn request(&self, context: &Context, pinned: &Value) -> crate::provider::ModelRequest {
+		crate::provider::ModelRequest {
+			instructions: self.instructions.into(),
+			context: json!({"current":pinned,"summary":context.summary,"history":context.history}),
+			tools: self.tools.to_vec(),
+			max_output_tokens: self.max_output_tokens,
+		}
+	}
+
+	pub fn remaining(&self, context: &Context, pinned: &Value) -> usize {
+		self.window
+			.saturating_sub(self.request(context, pinned).estimated_total_tokens())
+	}
 }
 
 pub async fn compact(
 	context: &mut Context,
 	asker: &dyn jev::JevAsker,
-	budget: usize,
+	budget: &RequestBudget<'_>,
 	pinned: &Value,
-	instructions: &str,
 ) -> Result<()> {
-	let size = |c: &Context| {
-		estimated_tokens(
-			&json!({"current":pinned,"summary":c.summary,"history":c.history}).to_string(),
-		)
-	};
-	if size(context) <= budget {
+	let size = |c: &Context| budget.request(c, pinned).estimated_total_tokens();
+	let mut candidate = context.clone();
+	observation::normalize_history(&mut candidate.history);
+	if size(&candidate) <= budget.window {
+		*context = candidate;
 		return Ok(());
 	}
 	let classification_context = json!({
-		"instructions":instructions, "current":pinned, "previous_summary":context.summary
+		"instructions":budget.instructions, "current":pinned, "previous_summary":candidate.summary
 	});
 	let compacted = compaction::prune(
-		&context.history,
+		&candidate.history,
 		&classification_context,
 		asker,
 		&compaction::Options::default(),
 	)
 	.await?;
-	let mut candidate = context.clone();
 	candidate.history = compacted.history;
 	// No summarization fallback: legacy summaries and all non-tool events stay
 	// verbatim. Apply nothing unless the complete inference context fits.
-	if size(&candidate) > budget {
+	if size(&candidate) > budget.window {
 		return Err(Error::Invalid(
 			"Jev compaction could not fit the pinned context and retained history".into(),
 		));

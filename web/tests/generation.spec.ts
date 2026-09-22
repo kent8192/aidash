@@ -94,6 +94,7 @@ test("generation dashboard manages policy, approval, completion and retained his
         model_id: "fixture",
         endpoint: `http://127.0.0.1:${(provider.address() as AddressInfo).port}/v1`,
         context_window: 128000,
+        max_output_tokens: 4096,
         modalities: ["text"],
         cost: {},
       },

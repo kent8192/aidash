@@ -96,8 +96,22 @@ pub struct ModelConfig {
 	#[serde(default)]
 	pub reasoning_effort: Option<ReasoningEffort>,
 	pub context_window: usize,
+	/// Maximum completion tokens reported by the selected provider model.
+	/// Missing values are accepted only while reading legacy model versions.
+	#[serde(default)]
+	#[schema(required = true)]
+	pub max_output_tokens: Option<u32>,
 	pub modalities: Vec<String>,
 	pub cost: Value,
+}
+
+impl ModelConfig {
+	/// Preserve the historical output allowance for model versions registered
+	/// before their provider limit was captured in the immutable config.
+	pub fn output_token_limit(&self) -> u32 {
+		self.max_output_tokens
+			.unwrap_or_else(|| (self.context_window / 8).clamp(256, 4096) as u32)
+	}
 }
 
 /// OpenRouter's normalized reasoning levels; omission retains the model default.
@@ -451,10 +465,13 @@ fn validate_in(e: &Entry, local: bool) -> Result<()> {
 			if m.provider != "openrouter"
 				|| m.model_id.trim().is_empty()
 				|| m.context_window < 2048
+				|| (local && m.max_output_tokens.is_none())
+				|| m.max_output_tokens
+					.is_some_and(|tokens| tokens == 0 || tokens as usize > m.context_window)
 				|| !m.modalities.iter().any(|m| m == "text")
 			{
 				return Err(Error::Invalid(
-					"model requires openrouter, model_id, text modality and context_window >= 2048"
+					"model requires openrouter, model_id, text modality, context_window >= 2048 and a valid max_output_tokens value"
 						.into(),
 				));
 			}
@@ -1121,7 +1138,7 @@ fn validate_agent_prompt(config: &AgentConfig, references: &[Entry]) -> Result<(
 	let cost = |text: &str| crate::context::estimated_tokens(text).max(text.len());
 	let overhead = cost(&serde_json::to_string(&instructions)?)
 		.saturating_add(cost(&serde_json::to_string(&specifications)?));
-	let output = (model.context_window / 8).clamp(256, 4096);
+	let output = model.output_token_limit() as usize;
 	if overhead.saturating_add(output).saturating_add(2048) > model.context_window {
 		return Err(Error::Invalid("agent instructions, skills and tools cannot fit the model window with output and context reserves".into()));
 	}

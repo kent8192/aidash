@@ -317,6 +317,7 @@ export function EntityForm({
                     credential_env: "AIDASH_SECRET_OPENROUTER",
                     reasoning_effort: s("reasoning_effort") || null,
                     context_window: Number(s("context_window")),
+                    max_output_tokens: Number(s("max_output_tokens")),
                     modalities: ["text"],
                     cost: JSON.parse(s("cost")),
                   }

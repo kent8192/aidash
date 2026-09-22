@@ -47,6 +47,62 @@ impl Access {
 				.output_visible(task.workspace_id, "task", task.id)
 				.await?)
 	}
+	pub(crate) async fn task_summary_visible(
+		&mut self,
+		workspace: &Resource,
+		workspace_id: Uuid,
+		task_id: Uuid,
+		created_by: &str,
+	) -> Result<bool> {
+		let mut attributes = workspace.attributes.clone();
+		attributes["created_by"] = json!(created_by);
+		attributes["task_id"] = json!(task_id);
+		let resource = self.resource("task", task_id, attributes);
+		Ok(self.decide(&resource, "task.read").await?
+			&& self.output_visible(workspace_id, "task", task_id).await?)
+	}
+	pub(crate) async fn track_task_reads(&mut self, workspace: Uuid, tasks: &[Uuid]) -> Result<()> {
+		if tasks.is_empty() {
+			return Ok(());
+		}
+		let (scope, table, column) = match (self.read_run, self.read_grant) {
+			(Some(run), None) => (run, "authorization_run_reads", "run_id"),
+			(None, Some(grant)) => (grant, "authorization_remote_grant_reads", "grant_id"),
+			(None, None) => return Ok(()),
+			(Some(_), Some(_)) => return Err(Error::Forbidden),
+		};
+		let kinds = vec!["task".to_owned(); tasks.len()];
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new(table))
+				.columns([
+					Alias::new(column),
+					Alias::new("workspace_id"),
+					Alias::new("resource_kind"),
+					Alias::new("resource_id"),
+				])
+				.select_from(
+					Query::select()
+						.exprs([
+							Expr::cust("$1"),
+							Expr::cust("$2"),
+							Expr::cust("unnest($3::text[])"),
+							Expr::cust("unnest($4::uuid[])"),
+						])
+						.to_owned(),
+				)
+				.map_err(|error| Error::Invalid(error.to_string()))?
+				.on_conflict(OnConflict::new().do_nothing().to_owned())
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(scope)
+		.bind(workspace)
+		.bind(kinds)
+		.bind(tasks)
+		.execute(&self.pool)
+		.await?;
+		Ok(())
+	}
 	pub(crate) async fn related_tasks(
 		&mut self,
 		workspace: Uuid,

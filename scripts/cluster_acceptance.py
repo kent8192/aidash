@@ -85,7 +85,7 @@ def main():
         base_a, base_b = bases
         for base, other in [(base_a, "b"), (base_b, "a")]:
             api_request(base, "/api/peers", {"node_id": f"aidash://ops-{other}", "endpoint": f"http://ops-{other}-aidash:8080", "credential_env": "AIDASH_SECRET_PEER", "protocol_version": "0.1", "enabled": True})
-            api_request(base, "/api/registry", entity("model", "fixture-model", {"provider": "openrouter", "model_id": "protocol-fixture", "endpoint": "http://fixture:8000/v1", "context_window": 256000, "modalities": ["text"], "cost": {}, "credential_env": None}))
+            api_request(base, "/api/registry", entity("model", "fixture-model", {"provider": "openrouter", "model_id": "protocol-fixture", "endpoint": "http://fixture:8000/v1", "context_window": 256000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}, "credential_env": None}))
             tool = entity("tool", "research-http", {"transport": "http", "endpoint": "http://fixture:8000/research", "credential_env": None, "replay": "idempotent"})
             tool["schema"] = {"type": "object", "required": ["topic"], "properties": {"topic": {"type": "string"}}, "additionalProperties": False}
             api_request(base, "/api/registry", tool)
