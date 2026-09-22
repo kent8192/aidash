@@ -60,6 +60,10 @@ An authorized, reasoned removal of a task from a goal revision's required work. 
 **Goal completion**:
 A completion decision for a particular goal revision submitted by any participating agent with completion authority and accepted only when common completion conditions hold. Neither human sign-off nor agreement from every participating agent is required; completion does not imply human satisfaction.
 
+**Post-completion conversation**:
+Discussion of a completed goal's existing results and shared history by currently authorized continuing participants, without reopening the goal or its tasks. New investigation or external action is distinct from this discussion and requires a goal update.
+_Avoid_: Goal reopening, execution replay (as synonyms for explaining completed results).
+
 **Task block**:
 An impediment to a particular task and work dependent on its unresolved result, distinct from a block on the channel's entire goal.
 
