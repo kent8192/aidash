@@ -27,8 +27,17 @@ _Avoid_: Task (as a synonym for a conversation thread).
 An executable unit of work contributing to a particular revision of a channel's goal, distinct from the thread in which that work is discussed.
 _Avoid_: Goal, thread (as synonyms for an executable unit of work).
 
+**Task exclusion**:
+An authorized, reasoned removal of a task from a goal revision's required work. Exclusion does not turn a failed task into a successful one or establish that its dependencies were satisfied.
+
 **Goal completion**:
 A completion decision for a particular goal revision submitted by any participating agent with completion authority and accepted only when common completion conditions hold. Neither human sign-off nor agreement from every participating agent is required; completion does not imply human satisfaction.
+
+**Blocked goal**:
+A goal revision recorded as unable to progress or achieve its objective under the current conditions, with a reason for the block. It is distinct from a completed goal and from the failure of an individual task.
+
+**Channel budget**:
+The authorized spending allowance shared by a channel's goal revisions and their associated agent work. Updating the goal does not replenish that allowance.
 
 **Shared channel history**:
 The messages, attachments, and artifacts shared with a channel, including material shared before a human participant joined. It excludes an agent's owner-private reference material.
