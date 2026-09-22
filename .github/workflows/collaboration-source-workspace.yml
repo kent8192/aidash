@@ -1,0 +1,37 @@
+name: Collaboration source workspace
+on:
+  push:
+    branches: [feat/issue-14-collaboration-space]
+    paths: [.github/workflows/collaboration-source-workspace.yml]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Archive tracked source
+        run: git archive HEAD | gzip > /tmp/current-source.tar.gz
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: collaboration-current-source
+          path: /tmp/current-source.tar.gz
+          retention-days: 1
+      - name: Prepare PostgreSQL verification binaries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql-16
+          mkdir -p /tmp/postgres/lib /tmp/postgres/bin /tmp/postgres/share
+          cp -a /usr/lib/postgresql/16/bin/. /tmp/postgres/bin/
+          cp -a /usr/share/postgresql/16/. /tmp/postgres/share/
+          cp -a /usr/lib/postgresql/16/lib/. /tmp/postgres/lib/
+          tar -czf /tmp/postgres.tar.gz -C /tmp postgres
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: collaboration-postgres-verification
+          path: /tmp/postgres.tar.gz
+          retention-days: 1
