@@ -457,6 +457,10 @@ function PolicyEditor({
     setError("");
     const form = new FormData(event.currentTarget);
     const text = (name: string) => String(form.get(name) ?? "");
+    if (!text("instructions").trim() && !form.getAll("skills").length) {
+      setError(t("agentNeedsSkill"));
+      return;
+    }
     try {
       const attributes: unknown = JSON.parse(text("attributes"));
       if (
