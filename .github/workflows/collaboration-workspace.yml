@@ -8,28 +8,33 @@ permissions:
 jobs:
   workspace:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Archive tracked verification sources
-        run: git archive --format=tar.gz --output=source.tar.gz HEAD
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: collaboration-source
-          path: source.tar.gz
-          retention-days: 1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '22'
-      - name: Prepare frontend verification dependencies
+      - name: Export API contract and prepare frontend
         run: |
           npm ci --ignore-scripts --prefix web
-          npm install --ignore-scripts --prefix web --save-exact cytoscape@3.34.1
-          tar -czf frontend-dependencies.tar.gz web/node_modules web/package.json web/package-lock.json
+          scripts/generate-api.sh
+          tar -czf api-contract.tar.gz openapi web/src/generated
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: collaboration-frontend-dependencies
-          path: frontend-dependencies.tar.gz
+          name: collaboration-api-contract
+          path: api-contract.tar.gz
+          retention-days: 1
+      - name: Archive offline compiler and dependencies
+        run: |
+          toolchain=$(rustc --print sysroot)
+          tar -czf rust-toolchain.tar.gz -C "$toolchain" bin lib libexec
+          tar -czf cargo-registry.tar.gz -C "$HOME/.cargo" registry
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: collaboration-rust-verification
+          path: |
+            rust-toolchain.tar.gz
+            cargo-registry.tar.gz
           retention-days: 1
