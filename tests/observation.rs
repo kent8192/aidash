@@ -143,6 +143,121 @@ async fn observations_do_not_recursively_embed_the_invocation_journal() {
 			.map(|e| json!(e.id))
 			.collect::<Vec<_>>()
 	);
+	for index in 0..70 {
+		let child = f
+			.store
+			.create_task(
+				workspace.id,
+				&NewTask {
+					title: format!("Child {index}"),
+					description: "large child description ".repeat(2_500),
+					requirements: json!({}),
+					dependencies: vec![],
+					parent_id: Some(task.id),
+				},
+				"human",
+				None,
+			)
+			.await
+			.unwrap();
+		if index == 0 {
+			f.store
+				.transition(child.id, child.revision, "human", "FAILED")
+				.await
+				.unwrap();
+		}
+	}
+	let children = f
+		.store
+		.child_task_summary(workspace.id, task.id)
+		.await
+		.unwrap();
+	assert!(children.has_pending && children.has_failed);
+	assert!(serde_json::to_vec(&children).unwrap().len() < 128);
+	let old_event = f
+		.store
+		.emit(
+			Some(workspace.id),
+			"old-record-regression",
+			json!({"marker":"beyond the recent event snapshot"}),
+		)
+		.await
+		.unwrap();
+	f.store
+		.message(workspace.id, "review-test", "old message", None)
+		.await
+		.unwrap();
+	let old_message: Uuid = sqlx::query_scalar(
+		&sea_orm::sea_query::Query::select()
+			.column(sea_orm::sea_query::Alias::new("id"))
+			.from(sea_orm::sea_query::Alias::new("messages"))
+			.and_where(sea_orm::sea_query::Expr::cust(
+				"workspace_id = $1 AND sender = 'review-test' AND content = 'old message'",
+			))
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(workspace.id)
+	.fetch_one(&f.store.pool)
+	.await
+	.unwrap();
+	for index in 0..105 {
+		f.store
+			.emit(Some(workspace.id), "newer-record", json!({"index":index}))
+			.await
+			.unwrap();
+		f.store
+			.message(
+				workspace.id,
+				"review-test",
+				&format!("new message {index}"),
+				None,
+			)
+			.await
+			.unwrap();
+	}
+	let recent = f.store.snapshot(workspace.id).await.unwrap();
+	assert!(!recent.events.iter().any(|event| event.id == old_event.id));
+	assert!(
+		!recent
+			.messages
+			.iter()
+			.any(|message| message.id == old_message)
+	);
+	for (kind, id, expected) in [
+		("event", old_event.id, "beyond the recent event snapshot"),
+		("message", old_message, "old message"),
+	] {
+		let result = tools["workspace_read"]
+			.invoke(
+				&ctx,
+				json!({"kind":kind,"id":id,"max_chars":2000}),
+				"old-record",
+			)
+			.await
+			.unwrap();
+		let record: serde_json::Value =
+			serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
+		assert!(record.to_string().contains(expected));
+	}
+	let mut prepared_run = run.clone();
+	prepared_run.pending = json!({
+		"response":{"tool_calls":[{"id":"read-1","name":"workspace_read","arguments":{"max_chars":97}}]},
+		"workspace_read_plan":{"step":prepared_run.step,"cursor":0,"result":{"content":"stable chunk"}}
+	});
+	let prepared_input = json!({"kind":"artifact","id":Uuid::new_v4(),"max_chars":97});
+	f.store
+		.invocation_start(
+			&prepared_run,
+			worker,
+			"workspace-read-plan-durability",
+			"workspace_read",
+			&prepared_input,
+			true,
+		)
+		.await
+		.unwrap();
+	let recovered = f.store.run(run.id).await.unwrap();
+	assert_eq!(recovered.pending, prepared_run.pending);
 	let other = f
 		.store
 		.create_workspace("Private", "Another workspace")

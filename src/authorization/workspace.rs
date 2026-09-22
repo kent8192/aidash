@@ -680,55 +680,67 @@ impl Access {
 		&mut self,
 		workspace_id: Uuid,
 		parent_id: Uuid,
-	) -> Result<Vec<Task>> {
+	) -> Result<ChildTaskSummary> {
 		let resource = self.workspace(workspace_id).await?;
 		self.require(&resource, "workspace.read").await?;
-		let workspace: Workspace = sqlx::query_as(
-			&Query::select()
-				.column(Asterisk)
-				.from(Alias::new("workspaces"))
-				.cond_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
-				.to_string(PostgresQueryBuilder),
-		)
-		.bind(workspace_id)
-		.fetch_one(&mut *self.tx)
-		.await?;
-		let candidates: Vec<Task> = sqlx::query_as(
-			&Query::select()
-				.column(Asterisk)
-				.from(Alias::new("tasks"))
-				.cond_where(
-					Condition::all()
-						.add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
-						.add(Expr::col(Alias::new("parent_id")).eq(Expr::cust("$2"))),
-				)
-				.order_by(Alias::new("created_at"), Order::Asc)
-				.order_by(Alias::new("id"), Order::Asc)
-				.to_string(PostgresQueryBuilder),
-		)
-		.bind(workspace_id)
-		.bind(parent_id)
-		.fetch_all(&mut *self.tx)
-		.await?;
-		let mut tasks = Vec::new();
-		for task in candidates {
-			if self.task_visible(&task).await? {
-				tasks.push(task);
+		let mut summary = ChildTaskSummary {
+			has_pending: false,
+			has_failed: false,
+		};
+		let mut after: Option<Uuid> = None;
+		loop {
+			// Keep both the database response and the in-memory page bounded. The
+			// summary needs only the row identity, policy creator, and status.
+			let rows: Vec<ChildTaskSummaryRow> = sqlx::query_as(
+				"SELECT id, created_by, status FROM tasks \
+				 WHERE workspace_id = $1 AND parent_id = $2 \
+				 AND ($3::uuid IS NULL OR id > $3) \
+				 ORDER BY id ASC LIMIT 100",
+			)
+			.bind(workspace_id)
+			.bind(parent_id)
+			.bind(after)
+			.fetch_all(&mut *self.tx)
+			.await?;
+			let exhausted = rows.len() < 100;
+			let mut visible_ids = Vec::with_capacity(rows.len());
+			for row in rows {
+				after = Some(row.id);
+				if !self
+					.task_summary_visible(&resource, workspace_id, row.id, &row.created_by)
+					.await?
+				{
+					continue;
+				}
+				visible_ids.push(row.id);
+				summary.include_status(&row.status);
+			}
+			self.track_task_reads(workspace_id, &visible_ids).await?;
+			if exhausted {
+				return Ok(summary);
 			}
 		}
-		self.track_snapshot(&WorkspaceSnapshot {
-			workspace,
-			tasks: tasks.clone(),
-			artifacts: vec![],
-			events: vec![],
-			messages: vec![],
-		})
-		.await?;
-		Ok(tasks)
 	}
 }
 
+#[derive(sqlx::FromRow)]
+struct ChildTaskSummaryRow {
+	id: Uuid,
+	created_by: String,
+	status: String,
+}
+
 impl Workspaces {
+	pub async fn child_task_summary(
+		&self,
+		workspace: Uuid,
+		parent: Uuid,
+	) -> Result<ChildTaskSummary> {
+		let mut access = Access::begin(&self.store, &self.identity).await?;
+		let result = access.workspace_children(workspace, parent).await;
+		access.finish(result).await
+	}
+
 	pub async fn task_page(&self, offset: u64) -> Result<crate::api_schema::TaskPage> {
 		let mut access = Access::begin(&self.store, &self.identity).await?;
 		let result = async {

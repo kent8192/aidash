@@ -1,11 +1,102 @@
 mod common;
 use aidash::{
 	api,
-	domain::{ArtifactInput, qualified_agent},
+	domain::{ArtifactInput, NewTask, qualified_agent},
 	harness::Harness,
 };
 use common::*;
 use serde_json::{Value, json};
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn guarded_child_summary_pages_minimal_visible_rows() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (mut bundle, token, parent_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let parent = f.store.task(parent_id).await.unwrap();
+	for index in 0..102 {
+		f.store
+			.create_task(
+				parent.workspace_id,
+				&NewTask {
+					title: format!("Large child {index}"),
+					description: "bounded summary payload ".repeat(2_500),
+					requirements: json!({}),
+					dependencies: vec![],
+					parent_id: Some(parent_id),
+				},
+				"alice",
+				None,
+			)
+			.await
+			.unwrap();
+	}
+	sqlx::query("UPDATE tasks SET status = 'ABANDONED' WHERE workspace_id = $1 AND parent_id = $2")
+		.bind(parent.workspace_id)
+		.bind(parent_id)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	let ids: Vec<uuid::Uuid> = sqlx::query_scalar(
+		"SELECT id FROM tasks WHERE workspace_id = $1 AND parent_id = $2 ORDER BY id",
+	)
+	.bind(parent.workspace_id)
+	.bind(parent_id)
+	.fetch_all(&f.store.pool)
+	.await
+	.unwrap();
+	let open_children = [ids[ids.len() - 2], ids[ids.len() - 1]];
+	sqlx::query("UPDATE tasks SET status = 'OPEN' WHERE id = ANY($1)")
+		.bind(open_children.as_slice())
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	let authorization = aidash::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	};
+	let aidash::authorization::identity::Actor::Subject(identity) =
+		authorization.authenticate(&token).await.unwrap()
+	else {
+		panic!("subject required")
+	};
+	let scope = aidash::authorization::workspace::Workspaces {
+		store: f.store.clone(),
+		identity,
+	};
+	let summary = scope
+		.child_task_summary(parent.workspace_id, parent_id)
+		.await
+		.unwrap();
+	assert!(summary.has_pending && !summary.has_failed);
+
+	for id in open_children {
+		bundle["policies"].as_array_mut().unwrap().push(json!({
+			"id":format!("deny-child-{id}"),
+			"effect":"deny",
+			"subjects":{"ids":["alice"]},
+			"actions":["task.read"],
+			"resources":{"kinds":["task"],"ids":[id]}
+		}));
+	}
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":bundle})
+		)
+		.await
+		.0,
+		200
+	);
+	let summary = scope
+		.child_task_summary(parent.workspace_id, parent_id)
+		.await
+		.unwrap();
+	assert!(!summary.has_pending && !summary.has_failed);
+	cleanup(f, &url, &schema).await;
+}
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]

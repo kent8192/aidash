@@ -365,14 +365,14 @@ impl Tool for Builtin {
 			"workspace_read" => {
 				let kind = required(&input, "kind")?;
 				let id = required(&input, "id")?;
-				let record = ctx.home.read_record(kind, id).await?;
-				crate::context::observation::chunk_record(
-					record,
-					kind,
-					id,
-					input["offset"].as_u64().unwrap_or(0) as usize,
-					input["max_chars"].as_u64().unwrap_or(8000) as usize,
-				)
+				ctx.home
+					.read_record_chunk(
+						kind,
+						id,
+						input["offset"].as_u64().unwrap_or(0) as usize,
+						input["max_chars"].as_u64().unwrap_or(8000) as usize,
+					)
+					.await
 			}
 			"workspace_wait" => {
 				Ok(json!({"wait_seconds":input["seconds"].as_u64().unwrap_or(2).clamp(1,60)}))

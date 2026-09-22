@@ -1119,6 +1119,7 @@ async fn peer_workspace(
 			| "snapshot_workspace"
 			| "snapshot_page"
 			| "workspace_record"
+			| "workspace_record_chunk"
 			| "workspace_children"
 			| "task" | "claim"
 	) && !(task.owner.is_none()
@@ -1139,6 +1140,7 @@ async fn peer_workspace(
 				| "snapshot_workspace"
 				| "snapshot_page"
 				| "workspace_record"
+				| "workspace_record_chunk"
 				| "workspace_children"
 				| "task"
 		);
@@ -1161,22 +1163,42 @@ async fn peer_workspace(
 				.await?
 		),
 		"workspace_record" => {
-			let snapshot = f.store.snapshot(task.workspace_id).await?;
-			crate::context::observation::select_record(
-				&snapshot,
-				required(d, "kind")?,
-				required(d, "id")?,
+			let id: Uuid = serde_json::from_value(d["id"].clone())?;
+			f.store
+				.workspace_record(task.workspace_id, required(d, "kind")?, id)
+				.await?
+		}
+		"workspace_record_chunk" => {
+			let id: Uuid = serde_json::from_value(d["id"].clone())?;
+			let offset: usize = serde_json::from_value(d["offset"].clone())?;
+			let max_chars: usize = serde_json::from_value(d["max_chars"].clone())?;
+			if max_chars > 16000 {
+				return Err(Error::Invalid(
+					"workspace record chunk exceeds 16000 characters".into(),
+				));
+			}
+			let kind = required(d, "kind")?;
+			let record = f
+				.store
+				.workspace_record(task.workspace_id, kind, id)
+				.await?;
+			crate::context::observation::chunk_record(
+				record,
+				kind,
+				&id.to_string(),
+				offset,
+				max_chars,
 			)?
 		}
 		"workspace_children" => {
 			let parent_id: Uuid = serde_json::from_value(d["parent_id"].clone())?;
-			let snapshot = f.store.snapshot(task.workspace_id).await?;
+			if parent_id != task.id {
+				return Err(Error::Unauthorized);
+			}
 			json!(
-				snapshot
-					.tasks
-					.into_iter()
-					.filter(|child| child.parent_id == Some(parent_id))
-					.collect::<Vec<_>>()
+				f.store
+					.child_task_summary(task.workspace_id, parent_id)
+					.await?
 			)
 		}
 		"task" => json!(task),

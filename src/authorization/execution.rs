@@ -512,7 +512,11 @@ impl WorkerAuthority {
 			.await
 	}
 
-	pub async fn workspace_children(&self, workspace: Uuid, parent: Uuid) -> Result<Vec<Task>> {
+	pub async fn workspace_child_summary(
+		&self,
+		workspace: Uuid,
+		parent: Uuid,
+	) -> Result<ChildTaskSummary> {
 		self.access
 			.lock()
 			.await
