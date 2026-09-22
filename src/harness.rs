@@ -469,7 +469,16 @@ impl Harness {
 				} else {
 					None
 				};
-				let result = model.infer(request).await?;
+				// Race only inference, not replay-unsafe tools or durable transitions.
+				// Dropping the losing future also stops a stalled response-body read.
+				let result = tokio::select! {
+					biased;
+					cancelled = wait_for_inference_cancellation(store, run.id) => {
+						cancelled?;
+						return Err(Error::Conflict("run cancelled during inference".into()));
+					}
+					result = model.infer(request) => result?,
+				};
 				if let Some(reservation) = reservation {
 					reservation.settle(&result).await?;
 				}
@@ -852,6 +861,29 @@ impl Harness {
 			_ => return Err(Error::Conflict("run is not executable".into())),
 		}
 		Ok(())
+	}
+}
+
+async fn wait_for_inference_cancellation(store: &crate::store::Store, id: Uuid) -> Result<()> {
+	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+
+	// Read committed control outside the step's authority lease. Notify is
+	// process-local, and a long worker heartbeat must not delay cancellation.
+	// Fetch only control rather than repeatedly copying the run's context.
+	let query = Query::select()
+		.column(Alias::new("control"))
+		.from(Alias::new("runs"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+		.to_string(PostgresQueryBuilder);
+	loop {
+		let control: String = sqlx::query_scalar(&query)
+			.bind(id)
+			.fetch_one(&store.pool)
+			.await?;
+		if control == "CANCELLED" {
+			return Ok(());
+		}
+		tokio::time::sleep(Duration::from_millis(250)).await;
 	}
 }
 
