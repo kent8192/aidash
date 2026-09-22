@@ -23,10 +23,14 @@ A channel in which people can discuss a proposed goal and share material before 
 An agent selected by the channel creator to participate in the channel's ongoing collaboration from the start. It is distinct from an agent merely permitted to be used or engaged for a delegated task.
 
 **Account agent allowlist**:
-An account's opt-in selection of agent versions that supplies the default available-agent selection for a channel. It is distinct from the channel-specific selection and from organization-level authorization.
+An account's opt-in selection of agent versions used as the initial available-agent selection when a channel is created. Later edits do not automatically change existing channel selections and are distinct from an authorization revocation.
 
 **Channel agent allowlist**:
-The available-agent selection for a particular channel, using the account agent allowlist as its default and permitting channel-specific changes. Eligibility does not itself confer channel membership or operation authority.
+A channel's independently maintained available-agent selection, initially copied from the account agent allowlist and thereafter changed explicitly. Eligibility does not itself confer channel membership or operation authority.
+
+**Channel eligibility revocation**:
+Removal of an agent's use permission or a generation-policy opt-in in a channel, affecting both new work and ongoing work that depends on that permission. It also ends dependent delegated observation, but does not erase history or withdraw independently granted rights.
+_Avoid_: Account default edit, stop-new-assignment-only (as synonyms for revoking channel eligibility).
 
 **Allowed agent**:
 An agent eligible for use through explicit selection of its exact node, ID, and version, or through an explicitly opted-in generation policy for a task-bound generated agent. Registry discoverability alone does not establish eligibility, and eligibility does not itself establish ongoing channel participation or grant every operation.
