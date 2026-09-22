@@ -8,6 +8,12 @@ Reuse the existing Workspace as the persistent identity of a channel, preserving
 
 Keep the record revision used for optimistic concurrency separate from the goal revision that identifies the objective of a task or run. A thread remains a conversation structure rather than an executable task.
 
+## Registry storage responsibility
+
+The Registry stores Aidash information, including component definitions, interactions, channel messages, task and run states, artifacts, and their histories. It is not merely a component catalog or a policy directory pointing to an unrelated interaction-history store. Graph reconstruction uses the information retained by the Registry and remains available for the period that the Registry supports; there is no product-wide fixed retention duration.
+
+This logical storage responsibility does not collapse the established Home/executing-node ownership or imply a single global Registry instance. Storage and exposure remain separate: discovery and federation must not expose owner-private references, credentials, or other information outside the caller's authorization. Grouping information under the Registry does not require placing every record in the component-metadata table.
+
 ## Goal revisions and completion
 
 Updating a goal adds a new revision within the same channel instead of overwriting the objective used by previous work. Tasks, runs, and completion records identify the goal revision they concern. Earlier work and results remain available as history; a delayed completion for an earlier revision cannot complete the current revision.
@@ -18,13 +24,17 @@ Any participating agent with completion authority may submit a goal-completion d
 
 Tasks are required by default. A human or agent with separately granted exclusion authority may make a task optional or exclude it from the required work, recording the reason. Completion authority alone does not grant exclusion authority. Exclusion does not rewrite failure as success, satisfy an unmet dependency, or bypass pending approvals or uncertain external-effect reconciliation.
 
-A goal revision can itself be blocked with a recorded reason when progress is impossible or its objective cannot be achieved under the current conditions. Goal-level blocking is distinct from an individual task failing and does not satisfy goal-completion conditions. Required work must not be silently discarded to produce a successful completion.
+A task block stops that task and work dependent on its unresolved result; independent work may continue. A required task becoming blocked does not automatically stop the entire goal, but an unresolved required task still prevents goal completion.
+
+An authorized agent may separately block a goal revision when the goal as a whole cannot progress or be achieved under the current conditions. Record the reason, evidence, deciding actor, and conditions needed to resume. A goal-level block stops new execution for that revision and brings active work to safe, persisted boundaries; it does not undo completed external effects. Blocking does not satisfy goal-completion conditions, and required work must not be silently discarded to produce a successful completion.
 
 ## Shared history and operation authority
 
 A human participant with channel read access can read the channel's shared history, including material shared before joining. This does not expose an agent's owner-private reference material or grant every operation: posting, execution, control, goal changes, and approval remain subject to separately granted authority. Equivalent operations use the same authorization regardless of whether they originate in collaboration or Graph View.
 
-Ordinary comments are not execution instructions or approvals. The server checks the sender's authority for the requested action; natural-language claims such as "already approved" do not substitute for an authorized approval. This separation does not require human approval for every step of agent work that is already authorized.
+Use one message composer without requiring a comment-versus-instruction mode. Agents may interpret the intent of an ordinary message, but the server verifies the authenticated sender's authority and the allowed scope when admitting an operation. Posting a message does not grant execution authority. Information supplied during already authorized work does not implicitly expand that work's permissions.
+
+Ambiguous requests require clarification rather than being treated as authorization to act. Goal changes, budget increases, and approvals use explicit confirmations, such as cards identifying the target and proposed change, together with server-side authorization. Natural-language claims such as "already approved" do not substitute for an authorized approval. This does not require human approval for every step of agent work that is already authorized.
 
 ## Delegation and channel observation
 
@@ -62,9 +72,11 @@ Graph View must support selecting a past time and reconstructing the recorded re
 
 Use observation-time semantics: reconstruct information known at the selected time, not a hindsight-corrected account based on reports learned later. Distinguish observation time from source-reported occurrence time; an earlier reported occurrence does not, by itself, establish that the information was already known. Do not silently mix these two meanings of time.
 
-Federated historical reconstruction is required. Retrieve authorized histories held by multiple participating nodes, including remote execution history not already retained by the node serving the dashboard. The scope is not limited to the receiving node's local history. Historical access must respect the participating nodes' authorization and privacy boundaries.
+Federated historical reconstruction is required. Retrieve authorized histories held by multiple participating nodes, including remote execution history not already retained by the node serving the dashboard. Present each node's historical observations with their provenance instead of forcing every observation into one Home node's perspective. If an executing node had recorded a start while Home had not yet received the report, preserve both perspectives. Do not imply a globally simultaneous, universally known state merely by combining timestamps.
 
-Historical reconstruction remains available for as long as the Registry permits the required history to be retained. No fixed retention duration is mandated.
+Display the available portion when some history cannot be obtained, and identify the reconstruction as partial. Distinguish fetching, communication failure, and unavailable retention coverage where the viewer may know those distinctions. Missing history is unknown, not an empty graph or a count of zero. Never fill a historical gap with present state. Coverage and omission indicators must not disclose unauthorized entities, nodes, or counts.
+
+Reconstruction is available over the periods for which the Registry retains the required information. Indicate missing or unavailable intervals rather than fabricating states outside retained coverage. Participating Registries may provide different coverage; that does not prevent displaying the authorized portions that are available.
 
 Historical mode is read-only. Users may inspect details and navigate to related channels while retaining the relevant historical context. Pause, resume, cancel, and other state-changing operations require an explicit switch to the current state and current authorization checks. Viewing history never re-executes model calls or external tools. Historical reads also apply current authorization; past access does not bypass present restrictions.
 
@@ -78,6 +90,8 @@ Retain HTTP for submissions and control operations, and authenticated SSE for br
 
 ## Consequences
 
-These boundaries favor goal-oriented work without treating every conversation as an executable task, and preserve agent autonomy without making channel membership blanket execution authority. Workspace reuse avoids introducing another ownership boundary solely to match Slack terminology. Revision-specific work and completion protect the meaning of historical results. Safe-boundary transitions preserve external-effect evidence; goal-level blocking exposes inability to proceed instead of claiming success. Separate authority for execution, task exclusion, and budget increases prevents one permission from implicitly granting the others.
+These boundaries favor goal-oriented work without treating every conversation as an executable task, and preserve agent autonomy without making channel membership blanket execution authority. Workspace reuse avoids introducing another ownership boundary solely to match Slack terminology. A single composer keeps conversation natural while authorization and explicit confirmations protect consequential operations. Revision-specific work and completion protect the meaning of historical results. Safe-boundary transitions preserve external-effect evidence; task-level blocks need not halt independent work, while goal-level blocks expose inability to proceed instead of claiming success.
 
-Task-bound stream access lets delegates acquire context without becoming permanent participants. Batched evaluation limits repeated inference work without collapsing message identities or authority, while conversation-focused presentation retains inspectable execution records. Home-managed monetary reservations trade admission availability during Home outages for a single budget allocation authority per channel. Aggregation and contextual navigation make relationship exploration the primary graph interaction rather than requiring an unbounded all-entities canvas. Federated historical reconstruction requires access to retained remote relationships and states, not merely their current values; observation-time semantics and read-only inspection preserve the distinction between historical knowledge and present operations.
+Separate authority for execution, task exclusion, and budget increases prevents one permission from implicitly granting the others. Task-bound stream access lets delegates acquire context without becoming permanent participants. Batched evaluation limits repeated inference work without collapsing message identities or authority, while conversation-focused presentation retains inspectable execution records. Home-managed monetary reservations trade admission availability during Home outages for a single budget allocation authority per channel.
+
+The Registry owns interaction and execution history as well as component registrations, so its retained coverage determines historical reconstruction. Aggregation and contextual navigation make relationship exploration the primary graph interaction rather than requiring an unbounded all-entities canvas. Federated historical reconstruction preserves node-specific knowledge and remains useful with explicit gaps; observation-time semantics, current authorization, and read-only inspection keep historical knowledge separate from present operations.
