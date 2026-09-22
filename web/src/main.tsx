@@ -99,6 +99,7 @@ import { SemanticPage } from "./semantic";
 import { AuthorizationPage } from "./authorization";
 import { DeploymentPage } from "./deployment";
 import { TransactionsPage } from "./transactions";
+import { EntityDetails } from "./entity-details";
 import "./style.css";
 const sections = [
   ["overview", LayoutDashboard],
@@ -400,7 +401,7 @@ function Dashboard({
                   <small>
                     {
                       data.tasks.filter((x) =>
-                        ["RUNNING", "CLAIMED"].includes(x.status),
+                        ["CLAIMED", "RUNNING"].includes(x.status),
                       ).length
                     }
                   </small>
@@ -1109,35 +1110,11 @@ function Dashboard({
                 );
               })()}
             {dialog.kind === "entityDetail" && dialog.entity && (
-              <>
-                <h3>{local(dialog.entity.name)}</h3>
-                <p>{local(dialog.entity.description)}</p>
-                <div className="tags">
-                  {dialog.entity.capabilities.map((c) => (
-                    <span key={c}>{c}</span>
-                  ))}
-                </div>
-                <h4>{t("execution")}</h4>
-                {allRuns
-                  .filter(
-                    (x) =>
-                      x.run.agent_id === dialog.entity?.id &&
-                      x.run.agent_version === dialog.entity?.version,
-                  )
-                  .map((x) => (
-                    <button
-                      className="run-choice"
-                      key={x.run.id}
-                      onClick={() => open({ kind: "run", ...x })}
-                    >
-                      <Badge value={x.run.phase} />
-                      {x.run.task_id.slice(0, 8)}
-                      <ArrowUpRight size={15} />
-                    </button>
-                  ))}
-                <h4>{t("metadata")}</h4>
-                <JsonView value={dialog.entity} />
-              </>
+              state.isError ? (
+                <p role="status">{t("nodeUnavailable")}</p>
+              ) : (
+                <EntityDetails entity={dialog.entity} data={data} open={open} />
+              )
             )}
             {dialog.kind === "run" && dialog.run && (
               <RunDetails
