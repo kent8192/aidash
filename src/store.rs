@@ -14,6 +14,23 @@ pub struct Store {
 	pub node_id: String,
 	pub semantic_client: reqwest::Client,
 }
+
+/// Serialize work that writes registry entries and their durable events.
+/// Event transactions hold this lock until commit, so registration must take
+/// it before acquiring registry row locks.
+pub(crate) async fn lock_event_sequence(tx: &mut Transaction<'_, Postgres>) -> Result<()> {
+	sqlx::query(
+		&sea_orm::sea_query::Query::select()
+			.expr(sea_orm::sea_query::Expr::cust(
+				"PG_ADVISORY_XACT_LOCK(71003201)",
+			))
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.execute(&mut **tx)
+	.await?;
+	Ok(())
+}
+
 impl Store {
 	// Legacy admission cannot supply durable scoped execution authority.
 	pub(crate) async fn require_legacy_execution(&self, workspace: Uuid) -> Result<()> {
@@ -144,15 +161,7 @@ impl Store {
 		data: Value,
 	) -> Result<Event> {
 		// Sequence allocation and commit order must agree for Last-Event-ID replay.
-		sqlx::query(
-			&sea_orm::sea_query::Query::select()
-				.expr(sea_orm::sea_query::Expr::cust(
-					"PG_ADVISORY_XACT_LOCK(71003201)",
-				))
-				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
-		)
-		.execute(&mut **tx)
-		.await?;
+		lock_event_sequence(tx).await?;
 		Ok(sqlx::query_as(
 			&sea_orm::sea_query::Query::insert()
 				.into_table(sea_orm::sea_query::Alias::new("events"))

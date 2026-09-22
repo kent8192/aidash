@@ -826,6 +826,10 @@ pub(crate) async fn register_in(
 	node_id: &str,
 ) -> Result<bool> {
 	validate(entry)?;
+	// Take the event lock before any registry row lock. Event transactions hold
+	// that same lock until commit, so acquiring it after the insert can deadlock
+	// against another registration that owns a later row.
+	crate::store::lock_event_sequence(tx).await?;
 	if entry.kind == "tool"
 		&& let crate::tool::ToolConfig::Agent {
 			node_id: target,
