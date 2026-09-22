@@ -966,6 +966,7 @@ async fn requirements_and_run_state_reject_wrong_shapes() {
 		json!({"history":7}),
 		json!({"usage":7}),
 		json!({"usage":{"input_tokens":0}}),
+		json!({"usage":{"input_tokens":0,"output_tokens":0,"context_window":4096}}),
 		json!({"usage":{"input_tokens":"0","output_tokens":0,"context_window":4096,"compactions":0}}),
 		json!({"compactions":-1}),
 		json!({"compactions":1.5}),
@@ -976,6 +977,14 @@ async fn requirements_and_run_state_reject_wrong_shapes() {
 			"runs_counters",
 		);
 	}
+	update(
+		&f.store.pool,
+		"runs",
+		"context",
+		Expr::val(json!({"usage":{},"history":[{"kind":"message"}]})),
+	)
+	.await
+	.unwrap();
 	update(
 		&f.store.pool,
 		"runs",

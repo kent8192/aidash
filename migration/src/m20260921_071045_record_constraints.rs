@@ -428,14 +428,18 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 				]);
 				let usage = "context->'usage'";
 				let usage_compactions = format!(
-					"jsonb_typeof({usage}->'compactions') = 'number' AND {usage}->>'compactions' ~ '^(0|[1-9][0-9]*)$' AND ({usage}->>'compactions')::numeric <= 4294967295"
+					"CASE WHEN {} THEN ({usage}->>'compactions')::numeric <= 4294967295 ELSE false END",
+					unsigned(&format!("{usage}->'compactions'")),
 				);
-				parts.push(format!(
-					"NOT (context ? 'usage') OR jsonb_typeof({usage}) = 'null' OR (jsonb_typeof({usage}) = 'object' AND {} AND {} AND {} AND {})",
+				let usage_fields = format!(
+					"{} AND {} AND {} AND {}",
 					unsigned(&format!("{usage}->'input_tokens'")),
 					unsigned(&format!("{usage}->'output_tokens'")),
 					unsigned(&format!("{usage}->'context_window'")),
 					usage_compactions,
+				);
+				parts.push(format!(
+					"NOT (context ? 'usage') OR jsonb_typeof({usage}) = 'null' OR (jsonb_typeof({usage}) = 'object' AND ({usage} = '{{}}'::jsonb OR ({usage_fields})))",
 				));
 				for field in ["retry_at", "wake_at"] {
 					parts.push(format!(
