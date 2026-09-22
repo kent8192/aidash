@@ -32,6 +32,16 @@ async fn personal(app: &axum::Router, token: &str, key: Uuid, value: Value) -> (
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
 async fn private_documents_are_atomic_idempotent_and_absent_from_registry() {
+	personal_agent_roundtrip(false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn admitted_large_private_documents_fit_the_execution_soft_window() {
+	personal_agent_roundtrip(true).await;
+}
+
+async fn personal_agent_roundtrip(large_documents: bool) {
 	let (f, url, schema) = setup().await;
 	let received = std::sync::Arc::new(std::sync::Mutex::new(None::<Value>));
 	let capture = received.clone();
@@ -56,7 +66,38 @@ async fn private_documents_are_atomic_idempotent_and_absent_from_registry() {
 			.0,
 		200
 	);
-	let input = json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Personal"},"description":{"en":"Skills first"},"config":{"model":{"id":"model","version":"1.0.0"},"skills":[{"id":"writing","version":"1.0.0"}]}},"documents":[{"name":"private.pdf","media_type":"application/pdf","text":"PRIVATE-REFERENCE-123"}]});
+	let mut input = json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Personal"},"description":{"en":"Skills first"},"config":{"model":{"id":"model","version":"1.0.0"},"skills":[{"id":"writing","version":"1.0.0"}]}},"documents":[{"name":"private.pdf","media_type":"application/pdf","text":"PRIVATE-REFERENCE-123"}]});
+	if large_documents {
+		let mut model = f.registry.get("model", "1.0.0").await.unwrap();
+		model.id = "small-model".into();
+		model.config["context_window"] = json!(32768);
+		f.registry.register(model).await.unwrap();
+		input["entry"]["config"]["model"]["id"] = json!("small-model");
+		let tools = aidash::tool::builtins()
+			.values()
+			.map(|tool| tool.specification())
+			.collect::<Vec<_>>();
+		let budget = aidash::context::RequestBudget {
+			window: 32768,
+			instructions: "",
+			tools: &tools,
+			max_output_tokens: 4096,
+		};
+		let private = json!({"reference_documents":input["documents"]});
+		// Leave 6,000 units for the system prompt and workspace: admission fits,
+		// but reserving 8,192 units without accounting for documents cannot.
+		let padding = budget.remaining(&aidash::context::Context::default(), &private) - 6000;
+		input["documents"][0]["text"] =
+			json!(format!("PRIVATE-REFERENCE-123{}", "x".repeat(padding)));
+	}
+	let expected_text = input["documents"][0]["text"].clone();
+	for field in ["name", "text"] {
+		let mut invalid = input.clone();
+		invalid["documents"][0][field] = json!("invalid\0document");
+		let rejected = personal(&app, &f.config.api_token, Uuid::new_v4(), invalid).await;
+		assert_eq!(rejected.0, 400, "{rejected:?}");
+		assert!(rejected.1.to_string().contains("NUL"));
+	}
 	let key = Uuid::new_v4();
 	assert_eq!(
 		personal(&app, &subject_token, key, input.clone()).await.0,
@@ -73,7 +114,7 @@ async fn private_documents_are_atomic_idempotent_and_absent_from_registry() {
 	let documents = aidash::knowledge::load(&f.registry.db, &entry)
 		.await
 		.unwrap();
-	assert_eq!(documents[0]["text"], "PRIVATE-REFERENCE-123");
+	assert_eq!(documents[0]["text"], expected_text);
 	let mut changed = input.clone();
 	changed["documents"][0]["text"] = json!("Different");
 	assert_eq!(
@@ -83,6 +124,23 @@ async fn private_documents_are_atomic_idempotent_and_absent_from_registry() {
 	let (_, state) = request(&app, &f.config.api_token, "GET", "/api/state", Value::Null).await;
 	assert!(!state.to_string().contains("PRIVATE-REFERENCE"));
 	assert!(!state.to_string().contains("private.pdf"));
+	let package = aidash::registry::Package {
+		entity: entry.clone(),
+		author: "fixture".into(),
+		permissions: vec![],
+		dependencies: vec![],
+	};
+	let published = f.registry.publish(&f.store.pool, package).await.unwrap();
+	f.registry
+		.install(
+			&f.store.pool,
+			&published.id,
+			&published.version,
+			&published.digest,
+			json!({}),
+		)
+		.await
+		.unwrap();
 	let mut cloned = entry.clone();
 	cloned.id = "cloned-personal".into();
 	f.registry.register(cloned.clone()).await.unwrap();
@@ -137,6 +195,13 @@ async fn private_documents_are_atomic_idempotent_and_absent_from_registry() {
 			break;
 		}
 	}
+	let (_, diagnostic_state) =
+		request(&app, &f.config.api_token, "GET", "/api/state", Value::Null).await;
+	assert!(
+		received.lock().unwrap().is_some(),
+		"no inference: {}",
+		diagnostic_state["runs"]
+	);
 	let body = received
 		.lock()
 		.unwrap()
@@ -146,7 +211,7 @@ async fn private_documents_are_atomic_idempotent_and_absent_from_registry() {
 		serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
 	assert_eq!(
 		context["current"]["reference_documents"][0]["text"],
-		"PRIVATE-REFERENCE-123"
+		expected_text
 	);
 	let instructions = body["messages"][0]["content"].as_str().unwrap();
 	assert!(instructions.contains("Use the provided reference documents."));

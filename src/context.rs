@@ -71,7 +71,7 @@ impl RequestBudget<'_> {
 	}
 }
 
-const MIN_CONTEXT_RESERVE: usize = 2048;
+pub(crate) const MIN_CONTEXT_RESERVE: usize = 2048;
 
 /// Reserve room for history using the same complete request estimate as execution.
 pub fn request_context_budget(

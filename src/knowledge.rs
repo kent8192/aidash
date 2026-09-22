@@ -38,6 +38,9 @@ fn validate(documents: &[ReferenceDocument]) -> Result<()> {
 		));
 	}
 	for d in documents {
+		if d.name.contains('\0') || d.text.contains('\0') {
+			return Err(Error::Invalid("reference document names and text must not contain NUL characters; decode text as UTF-8 before upload".into()));
+		}
 		if d.name.trim().is_empty()
 			|| d.name.len() > 255
 			|| d.text.trim().is_empty()
