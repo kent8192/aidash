@@ -47,6 +47,9 @@ jobs:
           set -e
           test "$status" -eq 1
           node web/node_modules/prettier/bin/prettier.cjs --write "${files[@]}"
+          cp web/tests/agent-graph.spec.ts /tmp/agent-graph-first-pass.ts
+          node web/node_modules/prettier/bin/prettier.cjs --write web/tests/agent-graph.spec.ts
+          diff -u /tmp/agent-graph-first-pass.ts web/tests/agent-graph.spec.ts || test "$?" -eq 1
           node web/node_modules/prettier/bin/prettier.cjs --check "${files[@]}"
           git diff --check
           npm run test:graph --prefix web
@@ -55,6 +58,7 @@ jobs:
         run: |
           git diff --stat
           git add web/src/agent-graph/canvas.tsx web/src/agent-graph/copy.ts web/src/agent-graph/model.ts web/src/agent-graph/style.css web/src/agent-graph.tsx web/src/entity-details.tsx web/src/main.tsx web/tests/agent-graph.spec.ts web/unit/agent-graph.test.mjs
+          git rm .github/workflows/pr-15-formatting.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'style(web): format agent relationship graph with Prettier 3.6.2'
