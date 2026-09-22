@@ -69,6 +69,7 @@ utoipa-axum = "0.2.0"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
 
 [profile.dev]

@@ -12,6 +12,7 @@ fn config(provider: &str, endpoint: String) -> ModelConfig {
 		model_id: "vendor/fixture-model".into(),
 		endpoint,
 		credential_env: None,
+		request_timeout_secs: None,
 		reasoning_effort: None,
 		context_window: 128000,
 		max_output_tokens: Some(65536),
