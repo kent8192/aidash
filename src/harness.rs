@@ -876,12 +876,22 @@ async fn wait_for_inference_cancellation(store: &crate::store::Store, id: Uuid) 
 		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
 		.to_string(PostgresQueryBuilder);
 	loop {
-		let control: String = sqlx::query_scalar(&query)
+		let control = sqlx::query_scalar::<_, String>(&query)
 			.bind(id)
 			.fetch_one(&store.pool)
-			.await?;
-		if control == "CANCELLED" {
-			return Ok(());
+			.await;
+		match control {
+			Ok(control) if control == "CANCELLED" => return Ok(()),
+			Ok(_) => {}
+			Err(error) => {
+				// A failed observation is not cancellation. Keep the in-flight
+				// request alive; the existing heartbeat still fences the lease.
+				tracing::warn!(
+					run_id = %id,
+					error = %error,
+					"inference cancellation poll failed; retrying"
+				);
+			}
 		}
 		tokio::time::sleep(Duration::from_millis(250)).await;
 	}
@@ -1101,6 +1111,30 @@ fn result_artifact_name(title: &str) -> String {
 }
 #[cfg(test)]
 mod review_tests {
+	#[tokio::test(start_paused = true)]
+	async fn inference_cancellation_poll_errors_do_not_signal_cancellation() {
+		let pool = sqlx::postgres::PgPoolOptions::new()
+			.connect_lazy("postgres://localhost/unused")
+			.unwrap();
+		pool.close().await;
+		let store = crate::store::Store {
+			pool: pool.clone(),
+			control_pool: pool,
+			node_id: "cancellation-poll-test".into(),
+			semantic_client: reqwest::Client::new(),
+		};
+		let cancellation = super::wait_for_inference_cancellation(&store, uuid::Uuid::new_v4());
+		tokio::pin!(cancellation);
+		for _ in 0..3 {
+			assert!(
+				tokio::time::timeout(std::time::Duration::from_millis(250), &mut cancellation)
+					.await
+					.is_err(),
+				"a failed control read must not interrupt the in-flight inference"
+			);
+		}
+	}
+
 	#[test]
 	fn small_context_windows_keep_their_available_budget() {
 		assert!(super::request_context_window(2048, 1500) >= 1500);
