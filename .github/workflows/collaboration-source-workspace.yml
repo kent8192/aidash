@@ -6,29 +6,28 @@ on:
 permissions:
   contents: read
 jobs:
-  dependencies:
+  postgres:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Download locked Rust dependencies
+      - name: Prepare repository-compatible PostgreSQL and pg_jsonschema
         run: |
-          cargo fetch --locked
-          tar -czf /tmp/cargo-cache.tar.gz -C "$HOME/.cargo" registry
+          sudo apt-get update -qq
+          sudo apt-get install -y postgresql-17
+          curl -fsSL https://github.com/supabase/pg_jsonschema/releases/download/v0.3.4/pg_jsonschema-v0.3.4-pg17-amd64-linux-gnu.deb -o /tmp/pg_jsonschema.deb
+          echo '4c339c178a7396b4076fb1eb5ffe3430bafd3d5f92fb6c917ad49860237db6c9  /tmp/pg_jsonschema.deb' | sha256sum -c
+          mkdir -p /tmp/pgroot/lib/postgresql /tmp/pgroot/share/postgresql /tmp/extension
+          cp -a /usr/lib/postgresql/17 /tmp/pgroot/lib/postgresql/
+          cp -a /usr/share/postgresql/17 /tmp/pgroot/share/postgresql/
+          dpkg-deb -x /tmp/pg_jsonschema.deb /tmp/extension
+          cp -a /tmp/extension/usr/lib/postgresql/17/. /tmp/pgroot/lib/postgresql/17/
+          cp -a /tmp/extension/usr/share/postgresql/17/. /tmp/pgroot/share/postgresql/17/
+          tar -czf /tmp/pg17.tar.gz -C /tmp pgroot
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: collaboration-offline-cargo
-          path: /tmp/cargo-cache.tar.gz
-          retention-days: 1
-      - name: PostgreSQL runtime libraries
-        run: |
-          mkdir -p /tmp/icu
-          cp -L /usr/lib/x86_64-linux-gnu/libicu*.so.74* /tmp/icu/
-          tar -czf /tmp/icu.tar.gz -C /tmp icu
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: collaboration-postgres-icu
-          path: /tmp/icu.tar.gz
+          name: collaboration-postgres17
+          path: /tmp/pg17.tar.gz
           retention-days: 1
