@@ -161,6 +161,15 @@ fn unsigned_between(value: &str, min: u64, max: u64) -> String {
 		"CASE WHEN jsonb_typeof({value}) = 'number' AND ({value})::text ~ '^(0|[1-9][0-9]*)$' THEN ({value})::text::numeric BETWEEN {min} AND {max} ELSE false END"
 	)
 }
+fn optional_model_output_tokens(config: &str) -> String {
+	let value = format!("{config}->'max_output_tokens'");
+	let text = format!("{config}->>'max_output_tokens'");
+	let window = format!("{config}->'context_window'");
+	let window_text = format!("{config}->>'context_window'");
+	format!(
+		"CASE WHEN NOT ({config} ? 'max_output_tokens') OR {value} = 'null'::jsonb THEN true WHEN jsonb_typeof({value}) = 'number' AND {text} ~ '^(0|[1-9][0-9]*)$' THEN CASE WHEN jsonb_typeof({window}) = 'number' AND {window_text} ~ '^(0|[1-9][0-9]*)$' THEN ({text})::numeric BETWEEN 1 AND LEAST(4294967295::numeric, ({window_text})::numeric) ELSE false END ELSE false END"
+	)
+}
 fn tool_config_is_valid_expression(config: &str) -> String {
 	let native_hosts = format!(
 		"(NOT ({config} ? 'allowed_hosts') OR {})",
@@ -283,6 +292,7 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 							"credential_env",
 							"reasoning_effort",
 							"context_window",
+							"max_output_tokens",
 							"modalities",
 							"cost",
 						],
@@ -291,6 +301,7 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 					optional_string("metadata#>'{config,credential_env}'"),
 					string_array("(metadata#>'{config,modalities}')"),
 					unsigned("(metadata#>'{config,context_window}')"),
+					optional_model_output_tokens(config),
 				];
 				// Value is intentionally untyped: cost may contain any JSON value.
 				parts.push(format!("kind <> 'model' OR ({})", shape.join(" AND ")));

@@ -217,6 +217,10 @@ async fn registry_constraints_reject_invalid_models_without_application_validati
 		("context_window", json!(0)),
 		("context_window", json!(2048.5)),
 		("context_window", json!("4096")),
+		("max_output_tokens", json!(0)),
+		("max_output_tokens", json!(4097)),
+		("max_output_tokens", json!(4096.5)),
+		("max_output_tokens", json!("4096")),
 		("modalities", json!(["audio"])),
 		("reasoning_effort", json!("extreme")),
 	] {
@@ -248,6 +252,10 @@ async fn registry_constraints_reject_invalid_models_without_application_validati
 		check_rejected(insert_entry(&f.store.pool, &entry).await, "registry_semver");
 	}
 	insert_entry(&f.store.pool, &good).await.unwrap();
+	let mut bounded = good.clone();
+	bounded["id"] = json!("bounded-output-model");
+	bounded["config"]["max_output_tokens"] = json!(4096);
+	insert_entry(&f.store.pool, &bounded).await.unwrap();
 	// An alias and a distinct version are intentionally valid; names/config are not unique keys.
 	let mut alias = good.clone();
 	alias["id"] = json!("alias");
