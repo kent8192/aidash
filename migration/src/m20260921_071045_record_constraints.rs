@@ -800,7 +800,9 @@ CREATE FUNCTION guard_task_parent_cycle() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     -- The statement trigger takes the shared lock before deferred-check
     -- snapshots are established; keep this acquisition as a defensive guard.
-    PERFORM pg_advisory_xact_lock(70721021::bigint);
+    -- Scope serialization to this schema's task hierarchy. Isolated tenant/test
+    -- schemas share a database but must not block one another's graph writes.
+    PERFORM pg_advisory_xact_lock(70721021, hashtext(TG_TABLE_SCHEMA));
     IF EXISTS (
         WITH RECURSIVE walk(current_id, parent_id, path, cycle) AS (
             SELECT id, parent_id, ARRAY[id], false
@@ -825,7 +827,7 @@ CREATE CONSTRAINT TRIGGER tasks_parent_cycle_guard
     FOR EACH ROW EXECUTE FUNCTION guard_task_parent_cycle();
 CREATE FUNCTION lock_task_hierarchy_before_change() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    PERFORM pg_advisory_xact_lock(70721021::bigint);
+    PERFORM pg_advisory_xact_lock(70721021, hashtext(TG_TABLE_SCHEMA));
     RETURN NULL;
 END $$;
 CREATE TRIGGER tasks_hierarchy_serialize
