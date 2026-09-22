@@ -52,8 +52,16 @@ An amount of the channel budget set aside for a particular billable operation be
 **Shared channel history**:
 The messages, attachments, and artifacts shared with a channel, including material shared before a human participant joined. It excludes an agent's owner-private reference material.
 
+**Message withdrawal**:
+Removal of a contribution from the ordinary conversation display while retaining its original content in authorized history.
+_Avoid_: Content erasure (as a synonym for withdrawing a message).
+
+**Content erasure**:
+An administrative removal of specified content from Aidash-managed storage, including attachments and historical reconstruction copies. Historical views show an erasure marker instead of the removed content; erasure does not imply recall of copies already received outside Aidash's control.
+_Avoid_: Message withdrawal (as a synonym for erasing retained content).
+
 **Delegated channel observation**:
-Task-bound permission for a delegated agent to read the channel's authorized stream as context until its delegated task completes. It does not confer continuing channel membership or authority to initiate unrelated work.
+Task-bound permission for a delegated agent to read authorized retained channel history, including messages preceding delegation, and subsequent stream updates as needed until its delegated task completes. It does not confer continuing channel membership or authority to initiate unrelated work.
 
 **Response batch**:
 A set of unprocessed messages considered together by one agent when deciding whether and how to respond. The messages retain their separate identities, senders, order, and individual decisions.
