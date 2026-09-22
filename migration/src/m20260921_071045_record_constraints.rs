@@ -33,7 +33,7 @@ const CHECKS: &[(&str, &str, &str)] = &[
 	(
 		"registry",
 		"registry_model_config",
-		"kind <> 'model' OR (metadata#>>'{config,provider}' = 'openrouter' AND jsonb_typeof(metadata#>'{config,model_id}') = 'string' AND length(btrim(metadata#>>'{config,model_id}', {whitespace})) > 0 AND jsonb_typeof(metadata#>'{config,endpoint}') = 'string' AND length(btrim(metadata#>>'{config,endpoint}', {whitespace})) > 0 AND CASE WHEN jsonb_typeof(metadata#>'{config,context_window}') = 'number' THEN (metadata#>>'{config,context_window}')::numeric >= 2048 AND trunc((metadata#>>'{config,context_window}')::numeric) = (metadata#>>'{config,context_window}')::numeric ELSE false END AND jsonb_typeof(metadata#>'{config,modalities}') = 'array' AND (metadata#>'{config,modalities}') @> '[\"text\"]'::jsonb AND (NOT (metadata->'config' ? 'reasoning_effort') OR metadata#>'{config,reasoning_effort}' = 'null'::jsonb OR metadata#>>'{config,reasoning_effort}' IN ('none','minimal','low','medium','high','xhigh','max')))",
+		"kind <> 'model' OR (metadata#>>'{config,provider}' = 'openrouter' AND jsonb_typeof(metadata#>'{config,model_id}') = 'string' AND length(btrim(metadata#>>'{config,model_id}', {whitespace})) > 0 AND aidash_valid_http_endpoint(metadata#>'{config,endpoint}') AND CASE WHEN jsonb_typeof(metadata#>'{config,context_window}') = 'number' THEN (metadata#>>'{config,context_window}')::numeric >= 2048 AND trunc((metadata#>>'{config,context_window}')::numeric) = (metadata#>>'{config,context_window}')::numeric ELSE false END AND jsonb_typeof(metadata#>'{config,modalities}') = 'array' AND (metadata#>'{config,modalities}') @> '[\"text\"]'::jsonb AND (NOT (metadata->'config' ? 'reasoning_effort') OR metadata#>'{config,reasoning_effort}' = 'null'::jsonb OR metadata#>>'{config,reasoning_effort}' IN ('none','minimal','low','medium','high','xhigh','max')))",
 	),
 	(
 		"registry",
@@ -57,7 +57,7 @@ const CHECKS: &[(&str, &str, &str)] = &[
 	(
 		"tasks",
 		"tasks_content",
-		"length(btrim(title, {whitespace})) > 0 AND length(btrim(description, {whitespace})) > 0 AND jsonb_typeof(requirements) = 'object' AND revision >= 0",
+		"length(btrim(title, {whitespace})) > 0 AND length(btrim(description, {whitespace})) > 0 AND jsonb_typeof(requirements) = 'object' AND revision >= 0 AND revision < 9223372036854775807",
 	),
 	(
 		"tasks",
@@ -97,7 +97,7 @@ const CHECKS: &[(&str, &str, &str)] = &[
 	(
 		"semantic_indexes",
 		"semantic_indexes_revision",
-		"revision > 0 AND jsonb_typeof(spec) = 'object'",
+		"revision > 0 AND revision < 9223372036854775807 AND jsonb_typeof(spec) = 'object'",
 	),
 	(
 		"semantic_entries",
@@ -189,7 +189,10 @@ fn tool_config_is_valid_expression(config: &str) -> String {
 	let http = [
 		object_fields(config, &["transport", "endpoint", "credential_env", "replay"]),
 		format!("aidash_valid_http_endpoint({config}->'endpoint')"),
-		optional_string(&format!("{config}->'credential_env'")),
+		format!(
+			"{} AND (jsonb_typeof(COALESCE({config}->'credential_env', 'null'::jsonb)) <> 'string' OR {config}->>'credential_env' ~ '^AIDASH_SECRET_[A-Z0-9_]*$')",
+			optional_string(&format!("{config}->'credential_env'"))
+		),
 		format!(
 			"jsonb_typeof({config}->'replay') = 'string' AND {config}->>'replay' IN ('read_only', 'idempotent', 'unsafe')"
 		),
@@ -208,7 +211,10 @@ fn tool_config_is_valid_expression(config: &str) -> String {
 			],
 		),
 		format!("aidash_valid_http_endpoint({config}->'endpoint')"),
-		optional_string(&format!("{config}->'credential_env'")),
+		format!(
+			"{} AND (jsonb_typeof(COALESCE({config}->'credential_env', 'null'::jsonb)) <> 'string' OR {config}->>'credential_env' ~ '^AIDASH_SECRET_[A-Z0-9_]*$')",
+			optional_string(&format!("{config}->'credential_env'"))
+		),
 		format!("jsonb_typeof({config}->'tool_name') = 'string'"),
 		format!(
 			"jsonb_typeof({config}->'replay') = 'string' AND {config}->>'replay' IN ('read_only', 'idempotent', 'unsafe')"
@@ -1191,8 +1197,8 @@ async fn ensure_task_graph_is_acyclic(
 	description: &str,
 ) -> Result<(), DbErr> {
 	let mut edges = Query::select()
-		.expr_as(Expr::col(Alias::new("id")), Alias::new("source_id"))
-		.expr_as(Expr::col(Alias::new("parent_id")), Alias::new("target_id"))
+		.expr_as(Expr::col(Alias::new("parent_id")), Alias::new("source_id"))
+		.expr_as(Expr::col(Alias::new("id")), Alias::new("target_id"))
 		.from(Alias::new("tasks"))
 		.and_where(Expr::col(Alias::new("parent_id")).is_not_null())
 		.to_owned();
@@ -1276,7 +1282,7 @@ CREATE FUNCTION guard_task_dependency_cycle() RETURNS trigger LANGUAGE plpgsql A
 BEGIN
     IF EXISTS (
         WITH RECURSIVE edges(source_id, target_id) AS (
-            SELECT id, parent_id FROM tasks WHERE parent_id IS NOT NULL
+            SELECT parent_id, id FROM tasks WHERE parent_id IS NOT NULL
             UNION ALL
             SELECT task_id, dependency_id FROM task_dependencies
         ), reachable(current_id) AS (
@@ -1456,6 +1462,65 @@ async fn create_registry_agent_model_refs(manager: &SchemaManager<'_>) -> Result
 	manager
 		.create_table(
 			Table::create()
+				.table(Alias::new("registry_agent_resource_refs"))
+				.col(ColumnDef::new(Alias::new("agent_id")).text().not_null())
+				.col(
+					ColumnDef::new(Alias::new("agent_version"))
+						.text()
+						.not_null(),
+				)
+				.col(
+					ColumnDef::new(Alias::new("required_kind"))
+						.text()
+						.not_null()
+						.check(Expr::cust("required_kind IN ('tool','skill','cluster')")),
+				)
+				.col(ColumnDef::new(Alias::new("ordinal")).integer().not_null())
+				.col(ColumnDef::new(Alias::new("reference_id")).text().not_null())
+				.col(
+					ColumnDef::new(Alias::new("reference_version"))
+						.text()
+						.not_null(),
+				)
+				.primary_key(
+					Index::create()
+						.col(Alias::new("agent_id"))
+						.col(Alias::new("agent_version"))
+						.col(Alias::new("required_kind"))
+						.col(Alias::new("ordinal")),
+				)
+				.foreign_key(
+					ForeignKey::create()
+						.name("registry_agent_resource_source")
+						.from_tbl(Alias::new("registry_agent_resource_refs"))
+						.from_col(Alias::new("agent_id"))
+						.from_col(Alias::new("agent_version"))
+						.to_tbl(Alias::new("registry"))
+						.to_col(Alias::new("id"))
+						.to_col(Alias::new("version"))
+						.on_delete(ForeignKeyAction::Cascade)
+						.on_update(ForeignKeyAction::Cascade),
+				)
+				.foreign_key(
+					ForeignKey::create()
+						.name("registry_agent_resource_target")
+						.from_tbl(Alias::new("registry_agent_resource_refs"))
+						.from_col(Alias::new("reference_id"))
+						.from_col(Alias::new("reference_version"))
+						.from_col(Alias::new("required_kind"))
+						.to_tbl(Alias::new("registry"))
+						.to_col(Alias::new("id"))
+						.to_col(Alias::new("version"))
+						.to_col(Alias::new("kind"))
+						.on_delete(ForeignKeyAction::Restrict)
+						.on_update(ForeignKeyAction::Restrict),
+				)
+				.to_owned(),
+		)
+		.await?;
+	manager
+		.create_table(
+			Table::create()
 				.table(Alias::new("registry_agent_model_refs"))
 				.col(ColumnDef::new(Alias::new("agent_id")).text().not_null())
 				.col(
@@ -1565,10 +1630,69 @@ BEGIN
     RETURN NULL;
 END $$;
 CREATE TRIGGER registry_agent_model_refs_guard
-    BEFORE INSERT OR UPDATE OR DELETE ON registry_agent_model_refs
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON registry_agent_model_refs
     FOR EACH STATEMENT EXECUTE FUNCTION guard_registry_agent_model_refs();
+CREATE FUNCTION sync_registry_agent_resource_refs() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' AND OLD.kind = 'agent' THEN
+        DELETE FROM registry_agent_resource_refs
+        WHERE agent_id = OLD.id AND agent_version = OLD.version;
+    END IF;
+    IF NEW.kind = 'agent' THEN
+        INSERT INTO registry_agent_resource_refs(
+            agent_id, agent_version, required_kind, ordinal, reference_id, reference_version
+        )
+        SELECT NEW.id, NEW.version, 'tool', reference.ordinality::integer,
+               reference.value->>'id', reference.value->>'version'
+        FROM jsonb_array_elements(COALESCE(NEW.metadata#>'{config,tools}', '[]'::jsonb))
+             WITH ORDINALITY AS reference(value, ordinality);
+        INSERT INTO registry_agent_resource_refs(
+            agent_id, agent_version, required_kind, ordinal, reference_id, reference_version
+        )
+        SELECT NEW.id, NEW.version, 'skill', reference.ordinality::integer,
+               reference.value->>'id', reference.value->>'version'
+        FROM jsonb_array_elements(COALESCE(NEW.metadata#>'{config,skills}', '[]'::jsonb))
+             WITH ORDINALITY AS reference(value, ordinality);
+        IF jsonb_typeof(NEW.metadata#>'{config,cluster}') = 'object' THEN
+            INSERT INTO registry_agent_resource_refs(
+                agent_id, agent_version, required_kind, ordinal, reference_id, reference_version
+            )
+            VALUES (
+                NEW.id, NEW.version, 'cluster', 1,
+                NEW.metadata#>>'{config,cluster,id}',
+                NEW.metadata#>>'{config,cluster,version}'
+            );
+        END IF;
+    END IF;
+    RETURN NEW;
+END $$;
+CREATE TRIGGER registry_agent_resource_refs_sync
+    AFTER INSERT OR UPDATE OF id, version, kind, metadata ON registry
+    FOR EACH ROW EXECUTE FUNCTION sync_registry_agent_resource_refs();
+CREATE FUNCTION guard_registry_agent_resource_refs() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF pg_trigger_depth() < 2 THEN
+        RAISE EXCEPTION 'registry_agent_resource_refs is maintained by registry'
+            USING ERRCODE = '23514', CONSTRAINT = 'registry_agent_resource_reference';
+    END IF;
+    RETURN NULL;
+END $$;
+CREATE TRIGGER registry_agent_resource_refs_guard
+    BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON registry_agent_resource_refs
+    FOR EACH STATEMENT EXECUTE FUNCTION guard_registry_agent_resource_refs();
 "#,
 		)
+		.await?;
+	// Re-project existing references through the same trigger and typed foreign
+	// keys used for subsequent registry writes.
+	let backfill = Query::update()
+		.table(Alias::new("registry"))
+		.value(Alias::new("metadata"), Expr::col(Alias::new("metadata")))
+		.and_where(Expr::col(Alias::new("kind")).eq("agent"))
+		.to_owned();
+	manager
+		.get_connection()
+		.execute(manager.get_database_backend().build(&backfill))
 		.await?;
 	Ok(())
 }
@@ -1630,7 +1754,7 @@ impl MigrationTrait for Migration {
 		manager
 			.get_connection()
 			.execute_unprepared(
-				"ALTER TABLE runs DROP CONSTRAINT runs_human_request_ref; ALTER TABLE runs DROP COLUMN pending_human_request_id; ALTER TABLE human_requests DROP CONSTRAINT human_requests_id_run_id_key; DROP TRIGGER runs_waiting_request_guard ON runs; DROP FUNCTION guard_waiting_human_request(); DROP TRIGGER semantic_memory_entry_bytes_guard ON semantic_entries; DROP FUNCTION guard_semantic_memory_entry_bytes(); DROP TRIGGER semantic_index_input_limit_guard ON semantic_indexes; DROP FUNCTION guard_semantic_index_input_limit(); DROP TRIGGER installations_config_guard ON installations; DROP FUNCTION guard_installation_config(); DROP TRIGGER installations_registry_writes_lock ON installations; DROP TRIGGER registry_installation_writes_lock ON registry; DROP FUNCTION lock_registry_installation_writes(); DROP TRIGGER registry_installations_model_override_guard ON registry; DROP TRIGGER registry_installations_config_guard ON registry; DROP FUNCTION validate_registry_installations(); DROP TRIGGER registry_agent_model_refs_sync ON registry; DROP TRIGGER registry_agent_model_refs_guard ON registry_agent_model_refs; DROP FUNCTION sync_registry_agent_model_refs(); DROP FUNCTION guard_registry_agent_model_refs(); DROP TABLE registry_agent_model_refs; DROP INDEX registry_id_version_kind_unique; DROP TRIGGER zz_tasks_dependency_cycle_guard ON tasks; DROP FUNCTION guard_task_dependency_cycle(); DROP TRIGGER tasks_parent_cycle_guard ON tasks; DROP FUNCTION guard_task_parent_cycle(); DROP TRIGGER tasks_hierarchy_serialize ON tasks; DROP FUNCTION lock_task_hierarchy_before_change();",
+				"ALTER TABLE runs DROP CONSTRAINT runs_human_request_ref; ALTER TABLE runs DROP COLUMN pending_human_request_id; ALTER TABLE human_requests DROP CONSTRAINT human_requests_id_run_id_key; DROP TRIGGER runs_waiting_request_guard ON runs; DROP FUNCTION guard_waiting_human_request(); DROP TRIGGER semantic_memory_entry_bytes_guard ON semantic_entries; DROP FUNCTION guard_semantic_memory_entry_bytes(); DROP TRIGGER semantic_index_input_limit_guard ON semantic_indexes; DROP FUNCTION guard_semantic_index_input_limit(); DROP TRIGGER installations_config_guard ON installations; DROP FUNCTION guard_installation_config(); DROP TRIGGER installations_registry_writes_lock ON installations; DROP TRIGGER registry_installation_writes_lock ON registry; DROP FUNCTION lock_registry_installation_writes(); DROP TRIGGER registry_installations_model_override_guard ON registry; DROP TRIGGER registry_installations_config_guard ON registry; DROP FUNCTION validate_registry_installations(); DROP TRIGGER registry_agent_resource_refs_sync ON registry; DROP TRIGGER registry_agent_resource_refs_guard ON registry_agent_resource_refs; DROP FUNCTION sync_registry_agent_resource_refs(); DROP FUNCTION guard_registry_agent_resource_refs(); DROP TABLE registry_agent_resource_refs; DROP TRIGGER registry_agent_model_refs_sync ON registry; DROP TRIGGER registry_agent_model_refs_guard ON registry_agent_model_refs; DROP FUNCTION sync_registry_agent_model_refs(); DROP FUNCTION guard_registry_agent_model_refs(); DROP TABLE registry_agent_model_refs; DROP INDEX registry_id_version_kind_unique; DROP TRIGGER zz_tasks_dependency_cycle_guard ON tasks; DROP FUNCTION guard_task_dependency_cycle(); DROP TRIGGER tasks_parent_cycle_guard ON tasks; DROP FUNCTION guard_task_parent_cycle(); DROP TRIGGER tasks_hierarchy_serialize ON tasks; DROP FUNCTION lock_task_hierarchy_before_change();",
 			)
 			.await?;
 		// Matching DDL exception: SeaQuery has no trigger/function drop builders.
