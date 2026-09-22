@@ -16,6 +16,16 @@ _Avoid_: Task (when referring to the channel's overall objective).
 A shared collaboration space associated with one goal, containing the conversation and shared work for that goal across its revisions.
 _Avoid_: Agent chat, task (as synonyms for the goal-level collaboration space).
 
+**Prepared channel**:
+A channel in which people can discuss a proposed goal and share material before agent execution begins. Its existence does not itself authorize billable agent work.
+
+**Initial participant**:
+An agent selected by the channel creator to participate in the channel's ongoing collaboration from the start. It is distinct from an agent merely permitted to be used or engaged for a delegated task.
+
+**Allowed agent**:
+An agent explicitly selected on an opt-in basis as eligible for use. Registry discoverability alone does not establish eligibility, and eligibility does not itself establish ongoing channel participation or grant every operation.
+_Avoid_: Initial participant (as a synonym for every agent eligible for use).
+
 **Goal revision**:
 A distinct version of a channel's objective to which tasks, runs, and completion records relate. A later revision does not replace the objective against which earlier work was performed.
 _Avoid_: Message edit (as a synonym for a change to the objective).
