@@ -206,9 +206,9 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
       subjectPage.getByText("This page is available to administrators."),
     ).toBeVisible();
     await expect(
-      subjectPage
-        .locator(".sidebar")
-        .getByRole("link", { name: "Access policies", exact: true }),
+      subjectPage.locator(
+        '.collab-settings-select option[value="authorization"]',
+      ),
     ).toHaveCount(0);
     expect(
       (

@@ -141,20 +141,17 @@ test("subject dashboard completes a conversation and clears revoked access", asy
     await page.goto("/");
     await page.getByLabel("アクセストークン").fill(credential.token);
     await page.getByRole("button", { name: "接続", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "概要." })).toBeVisible();
+    await expect(page.locator(".collab-app")).toBeVisible();
+    await page.goto("/settings");
     await expect(
-      page
-        .locator(".sidebar")
-        .getByRole("link", { name: "メッシュ", exact: true }),
+      page.locator('.collab-settings-select option[value="marketplace"]'),
     ).toHaveCount(0);
     await expect(
-      page
-        .locator(".sidebar")
-        .getByRole("link", { name: "マーケットプレイス", exact: true }),
+      page.locator('.collab-settings-select option[value="authorization"]'),
     ).toHaveCount(0);
+    await page.goto("/collaboration");
     await page
-      .locator(".page-heading")
-      .getByRole("button", { name: "新しいゴール" })
+      .getByRole("button", { name: "ゴールを作成して実行", exact: true })
       .click();
     const dialog = page.getByRole("dialog");
     await dialog.getByLabel("タイトル", { exact: true }).fill(id);
@@ -199,10 +196,7 @@ test("subject dashboard completes a conversation and clears revoked access", asy
     expect(scoped.conversations[0].created_by).toBe("alice");
     expect(scoped.human_requests[0].answered_by).toBe("alice");
     expect(scoped.artifacts).toHaveLength(1);
-    await page
-      .locator(".sidebar")
-      .getByRole("link", { name: "設定", exact: true })
-      .click();
+    await page.goto("/settings");
     await expect(page.getByText(tenant, { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Peerを追加" })).toHaveCount(
       0,

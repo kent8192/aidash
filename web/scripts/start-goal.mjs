@@ -8,8 +8,7 @@ try {
   await page.getByLabel("アクセストークン").fill("acceptance-access-token");
   await page.getByRole("button", { name: "接続", exact: true }).click();
   await page
-    .locator("main")
-    .getByRole("button", { name: "新しいゴール", exact: true })
+    .getByRole("button", { name: "ゴールを作成して実行", exact: true })
     .click();
   const dialog = page.getByRole("dialog");
   await dialog

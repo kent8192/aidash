@@ -4,7 +4,7 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/");
   await page.getByLabel("アクセストークン").fill("acceptance-access-token");
   await page.getByRole("button", { name: "接続", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "概要." })).toBeVisible();
+  await expect(page.locator(".collab-app")).toBeVisible();
 });
 
 test("observes the two-node execution and all management screens", async ({
@@ -12,35 +12,37 @@ test("observes the two-node execution and all management screens", async ({
 }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  await expect(page.locator(".stream-status")).toHaveText("リアルタイム更新中");
+  await expect(page.locator(".stream-status")).toHaveText("接続中");
   await expect(
-    page.locator(".stats .stat").nth(2).locator("strong"),
-  ).toHaveText(/^[4-9]$|^\d{2,}$/);
-  await expect(
-    page.locator(".stats .stat").nth(3).locator("strong"),
-  ).toHaveText("2");
-  for (const label of [
-    "エージェント",
-    "Agent生成",
-    "クラスター",
-    "メッシュ",
-    "タスク",
-    "ワークスペース",
-    "会話",
-    "レジストリ",
-    "マーケットプレイス",
-    "イベント",
-    "設定",
-    "概要",
+    page.locator(".collab-rail nav").first().getByRole("link"),
+  ).toHaveCount(2);
+  await page.goto("/graph");
+  await page
+    .getByRole("button", { name: "ノード構成と通信", exact: true })
+    .click();
+  await expect(page.locator(".mesh-canvas svg > g")).toHaveCount(2);
+  await expect(page.locator(".collab-run-grid button")).not.toHaveCount(0);
+  for (const view of [
+    "agents",
+    "generation",
+    "clusters",
+    "registry",
+    "marketplace",
+    "node",
   ]) {
-    await page
-      .locator(".sidebar")
-      .getByRole("link", { name: label, exact: true })
-      .click();
-    await expect(page.locator("main.content h1")).toHaveText(label + ".");
+    await page.goto(`/settings?view=${view}`);
+    await expect(page.locator(".collab-settings-select select")).toHaveValue(
+      view,
+    );
+    await expect(page.locator(".collab-settings h1")).toHaveText("設定");
   }
+  await page.goto("/collaboration");
   await page.getByLabel("言語").selectOption("en-US");
-  await expect(page.locator("main.content h1")).toHaveText("Overview.");
+  await expect(
+    page
+      .locator(".collab-rail nav")
+      .getByRole("link", { name: "Collaboration", exact: true }),
+  ).toBeVisible();
   await page.screenshot({
     path: "../.ignore/dashboard-overview.png",
     fullPage: true,
@@ -58,11 +60,8 @@ test("creates a workspace and task and receives live assignment changes", async 
 }) => {
   const name = `Browser workspace ${Date.now()}`;
   const taskName = `Browser research ${Date.now()}`;
-  await page
-    .locator(".sidebar")
-    .getByRole("link", { name: "ワークスペース", exact: true })
-    .click();
-  await page.getByRole("button", { name: "ワークスペースを作成" }).click();
+  await page.goto("/collaboration");
+  await page.getByRole("button", { name: "準備用チャンネル" }).click();
   await page
     .getByRole("dialog")
     .getByLabel("タイトル", { exact: true })
@@ -77,10 +76,9 @@ test("creates a workspace and task and receives live assignment changes", async 
     .click();
   await expect(page.getByRole("dialog")).not.toBeVisible();
   await page
-    .locator(".sidebar")
-    .getByRole("link", { name: "タスク", exact: true })
+    .getByRole("button", { name: "タスクと成果物", exact: true })
     .click();
-  await page.getByRole("button", { name: "タスクを作成", exact: true }).click();
+  await page.getByRole("button", { name: "タスクを追加", exact: true }).click();
   await page
     .getByRole("dialog")
     .getByLabel("ワークスペース", { exact: true })
@@ -102,7 +100,7 @@ test("creates a workspace and task and receives live assignment changes", async 
     .getByRole("button", { name: "作成", exact: true })
     .click();
   await expect(page.getByRole("dialog")).not.toBeVisible();
-  await page.getByRole("button", { name: taskName, exact: true }).click();
+  await page.locator(".collab-task").filter({ hasText: taskName }).click();
   await page
     .getByRole("button", { name: "担当を割り当て", exact: true })
     .click();
@@ -131,9 +129,7 @@ test("creates a workspace and task and receives live assignment changes", async 
     .getByRole("dialog")
     .getByRole("button", { name: "担当を割り当て" })
     .click();
-  const row = page.getByRole("row").filter({
-    has: page.getByRole("button", { name: taskName, exact: true }),
-  });
+  const row = page.locator(".collab-task").filter({ hasText: taskName });
   await expect(row).toContainText("完了", { timeout: 30000 });
 });
 
@@ -141,10 +137,7 @@ test("publishes and installs a skill through the marketplace", async ({
   page,
 }) => {
   const id = `browser-skill-${Date.now()}`;
-  await page
-    .locator(".sidebar")
-    .getByRole("link", { name: "レジストリ", exact: true })
-    .click();
+  await page.goto("/settings?view=registry");
   await page
     .getByRole("button", { name: "エンティティを登録", exact: true })
     .click();
@@ -166,10 +159,7 @@ test("publishes and installs a skill through the marketplace", async ({
     .click();
   const registered = await (await registration).json();
   await expect(dialog).not.toBeVisible();
-  await page
-    .locator(".sidebar")
-    .getByRole("link", { name: "マーケットプレイス", exact: true })
-    .click();
+  await page.goto("/settings?view=marketplace");
   await page
     .getByRole("button", { name: "パッケージを公開", exact: true })
     .click();
@@ -202,10 +192,7 @@ test("publishes and installs a skill through the marketplace", async ({
 test("preserves a draft after a failed message request and clears it after success", async ({
   page,
 }) => {
-  await page
-    .locator(".sidebar")
-    .getByRole("link", { name: "会話", exact: true })
-    .click();
+  await page.goto("/collaboration");
   const input = page
     .getByRole("textbox", { name: "メッセージ", exact: true })
     .first();
@@ -258,11 +245,11 @@ test("creates task dependencies and a parent through the dashboard", async ({
     expect(response.status()).toBe(200);
     tasks.push(await response.json());
   }
+  await page.goto(`/collaboration?channel=${encodeURIComponent(workspace.id)}`);
   await page
-    .locator(".sidebar")
-    .getByRole("link", { name: "タスク", exact: true })
+    .getByRole("button", { name: "タスクと成果物", exact: true })
     .click();
-  await page.getByRole("button", { name: "タスクを作成", exact: true }).click();
+  await page.getByRole("button", { name: "タスクを追加", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await expect(
     dialog.locator(`select[name="workspace"] option[value="${workspace.id}"]`),
