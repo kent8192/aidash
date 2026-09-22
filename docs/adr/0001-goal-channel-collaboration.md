@@ -14,7 +14,11 @@ Allow a channel to exist in preparation so people can discuss its proposed goal 
 
 The channel creator explicitly selects the initial agents for ongoing participation from Registry candidates or saved configurations. Candidate suggestions do not automatically admit an unselected agent. Subsequent authorized task delegation remains distinct from selecting those initial participants.
 
-Agents eligible for use are additionally selected on an opt-in basis. Registry registration or discovery alone does not make an agent available for execution. Eligibility and initial channel participation are separate choices: an allowed helper need not be a continuing participant, and eligibility does not replace operation authorization, delegated context boundaries, or budget checks.
+Agents eligible for use are additionally selected on an opt-in basis. Use the account agent allowlist as the default available-agent selection and allow it to be changed for individual channels. Registry registration or discovery alone does not make an agent available for execution. Eligibility and initial channel participation are separate choices: an allowed helper need not be a continuing participant, and eligibility does not replace organization or operation authorization, delegated context boundaries, or budget checks.
+
+Explicit selection of an existing agent permits only its exact node, agent ID, and version. A newer version requires additional explicit selection, even when the name or agent ID is unchanged. Updates may be presented for review but must not silently expand permission. Each active run keeps its pinned version; revocation of that version must not trigger a silent switch to an unselected replacement.
+
+Allow explicit opt-in to a constrained generation policy instead of requiring a separate user selection for every task-bound agent generated under that policy. The selected policy bounds models, tools, skills, permissions, and generation limits. Generated agents and further generation remain within applicable inherited constraints and current authorization; generation must not become a path around them. Without an opted-in generation policy, automatic generation is not permitted. Generated agents do not automatically become continuing channel participants and receive only authorized task-bound context access. This eligibility rule does not bypass any approval required by the selected policy or any operation's budget and authorization checks.
 
 ## Registry storage responsibility
 
