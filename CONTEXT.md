@@ -22,9 +22,18 @@ A channel in which people can discuss a proposed goal and share material before 
 **Initial participant**:
 An agent selected by the channel creator to participate in the channel's ongoing collaboration from the start. It is distinct from an agent merely permitted to be used or engaged for a delegated task.
 
+**Account agent allowlist**:
+An account's opt-in selection of agent versions that supplies the default available-agent selection for a channel. It is distinct from the channel-specific selection and from organization-level authorization.
+
+**Channel agent allowlist**:
+The available-agent selection for a particular channel, using the account agent allowlist as its default and permitting channel-specific changes. Eligibility does not itself confer channel membership or operation authority.
+
 **Allowed agent**:
-An agent explicitly selected on an opt-in basis as eligible for use. Registry discoverability alone does not establish eligibility, and eligibility does not itself establish ongoing channel participation or grant every operation.
+An agent eligible for use through explicit selection of its exact node, ID, and version, or through an explicitly opted-in generation policy for a task-bound generated agent. Registry discoverability alone does not establish eligibility, and eligibility does not itself establish ongoing channel participation or grant every operation.
 _Avoid_: Initial participant (as a synonym for every agent eligible for use).
+
+**Opted-in generation policy**:
+An explicitly selected policy defining the permitted models, tools, skills, authority, and generation limits for task-bound agents. Agents generated within its bounds do not require individual user selection, but do not thereby become continuing channel participants.
 
 **Goal revision**:
 A distinct version of a channel's objective to which tasks, runs, and completion records relate. A later revision does not replace the objective against which earlier work was performed.
