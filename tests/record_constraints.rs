@@ -227,6 +227,20 @@ async fn registry_constraints_reject_invalid_models_without_application_validati
 			"registry_model_config",
 		);
 	}
+	for endpoint in [
+		"ftp://localhost/v1",
+		"http:///missing-host",
+		"http://user:pass@localhost/v1",
+		"https://localhost/v1?token=x",
+		"https://localhost/v1#fragment",
+	] {
+		let mut entry = good.clone();
+		entry["config"]["endpoint"] = json!(endpoint);
+		check_rejected(
+			insert_entry(&f.store.pool, &entry).await,
+			"registry_model_config",
+		);
+	}
 	let mut missing = good.clone();
 	missing["config"]
 		.as_object_mut()
@@ -317,6 +331,37 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 		)
 		.await,
 		"tasks_no_self_reference",
+	);
+	let set_task_revision = || {
+		Query::update()
+			.table(Alias::new("tasks"))
+			.value(Alias::new("revision"), Expr::cust("$1"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+			.to_string(PostgresQueryBuilder)
+	};
+	check_rejected(
+		sqlx::query(&set_task_revision())
+			.bind(i64::MAX)
+			.bind(task.id)
+			.execute(&f.store.pool)
+			.await
+			.map(|_| ()),
+		"tasks_content",
+	);
+	sqlx::query(&set_task_revision())
+		.bind(i64::MAX - 1)
+		.bind(task.id)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	check_rejected(
+		sqlx::query(&set_task_revision())
+			.bind(i64::MAX)
+			.bind(task.id)
+			.execute(&f.store.pool)
+			.await
+			.map(|_| ()),
+		"tasks_content",
 	);
 	check_rejected(
 		update(
@@ -565,7 +610,6 @@ async fn nonblank_constraints_match_rust_unicode_whitespace() {
 			entry["kind"] = json!(kind);
 			if kind == "model" {
 				entry["config"]["model_id"] = json!(content);
-				entry["config"]["endpoint"] = json!(content);
 			} else {
 				entry["config"] =
 					json!({"instructions":content, "model":{"id":"test-model", "version":"1.0.0"}});
@@ -995,6 +1039,11 @@ async fn model_and_agent_configs_reject_unusable_shapes() {
 	other_kind["kind"] = json!("tool");
 	other_kind["config"] = json!({"transport":"native","operation":"echo"});
 	insert_entry(&f.store.pool, &other_kind).await.unwrap();
+	let mut skill = serde_json::to_value(model()).unwrap();
+	skill["id"] = json!("test-skill");
+	skill["kind"] = json!("skill");
+	skill["config"] = json!({"instructions":"Help with a focused task"});
+	insert_entry(&f.store.pool, &skill).await.unwrap();
 	for invalid in [
 		Value::Null,
 		json!([]),
@@ -1051,6 +1100,72 @@ async fn model_and_agent_configs_reject_unusable_shapes() {
 	insert_entry(&f.store.pool, &integer_steps).await.unwrap();
 	let _: aidash::registry::AgentConfig = serde_json::from_value(agent["config"].clone()).unwrap();
 	insert_entry(&f.store.pool, &agent).await.unwrap();
+	let mut cluster = serde_json::to_value(model()).unwrap();
+	cluster["id"] = json!("test-cluster");
+	cluster["kind"] = json!("cluster");
+	cluster["config"] = json!({"coordinator":{"id":"agent","version":"1.0.0"}});
+	insert_entry(&f.store.pool, &cluster).await.unwrap();
+	let mut linked_agent_config = agent["config"].clone();
+	linked_agent_config["tools"] = json!([{"id":"not-a-model","version":"1.0.0"}]);
+	linked_agent_config["skills"] = json!([{"id":"test-skill","version":"1.0.0"}]);
+	linked_agent_config["cluster"] = json!({"id":"test-cluster","version":"1.0.0"});
+	update_registry_config(&f.store.pool, "agent", "1.0.0", linked_agent_config)
+		.await
+		.unwrap();
+	for (id, field, target) in [
+		(
+			"missing-tool",
+			"tools",
+			json!({"id":"absent","version":"1.0.0"}),
+		),
+		(
+			"wrong-kind-tool",
+			"tools",
+			json!({"id":"test-model","version":"1.0.0"}),
+		),
+		(
+			"wrong-kind-skill",
+			"skills",
+			json!({"id":"not-a-model","version":"1.0.0"}),
+		),
+		(
+			"missing-skill",
+			"skills",
+			json!({"id":"absent","version":"1.0.0"}),
+		),
+		(
+			"wrong-kind-cluster",
+			"cluster",
+			json!({"id":"test-skill","version":"1.0.0"}),
+		),
+		(
+			"missing-cluster",
+			"cluster",
+			json!({"id":"absent","version":"1.0.0"}),
+		),
+	] {
+		let mut invalid_reference = agent.clone();
+		invalid_reference["id"] = json!(id);
+		if field == "cluster" {
+			invalid_reference["config"][field] = target;
+		} else {
+			invalid_reference["config"][field] = json!([target]);
+		}
+		check_foreign_key_rejected(
+			insert_entry(&f.store.pool, &invalid_reference).await,
+			"registry_agent_resource_target",
+		);
+	}
+	let truncate_model_refs = sqlx::query("TRUNCATE registry_agent_model_refs")
+		.execute(&f.store.pool)
+		.await
+		.map(|_| ());
+	check_rejected(truncate_model_refs, "registry_agent_model_reference");
+	let truncate_resource_refs = sqlx::query("TRUNCATE registry_agent_resource_refs")
+		.execute(&f.store.pool)
+		.await
+		.map(|_| ());
+	check_rejected(truncate_resource_refs, "registry_agent_resource_reference");
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1077,6 +1192,8 @@ async fn tool_configs_reject_undecodable_shapes() {
 		json!({"transport":"mcp","endpoint":"http://localhost","tool_name":"call","replay":"idempotent","idempotency_argument":" \t\n\u{2003}"}),
 		json!({"transport":"agent","node_id":"bad node","agent":{"id":"agent","version":"1.0.0"}}),
 		json!({"transport":"http","endpoint":"http://localhost","replay":"read_only","unexpected":true}),
+		json!({"transport":"http","endpoint":"http://localhost","credential_env":"OPENAI_API_KEY","replay":"read_only"}),
+		json!({"transport":"mcp","endpoint":"http://localhost","credential_env":"SECRET_TOKEN","tool_name":"call","replay":"read_only"}),
 	] {
 		tool["config"] = config;
 		check_rejected(
@@ -1099,6 +1216,14 @@ async fn tool_configs_reject_undecodable_shapes() {
 		});
 		insert_entry(&f.store.pool, &tool).await.unwrap();
 	}
+	tool["id"] = json!("secret-tool");
+	tool["config"] = json!({
+		"transport":"http",
+		"endpoint":"http://localhost",
+		"credential_env":"AIDASH_SECRET_TOOL_TOKEN",
+		"replay":"read_only"
+	});
+	insert_entry(&f.store.pool, &tool).await.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1440,13 +1565,40 @@ async fn requirements_and_run_state_reject_wrong_shapes() {
 		.execute(&f.store.pool)
 		.await
 		.unwrap();
+	sqlx::query(&max_safe_revision)
+		.bind(i64::MAX - 2)
+		.bind(second_run.id)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	let third_task = f
+		.store
+		.create_task(
+			workspace.id,
+			&NewTask {
+				title: "Third task".into(),
+				description: "Work".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"human",
+			None,
+		)
+		.await
+		.unwrap();
+	let third_run = f
+		.store
+		.accept_run(&third_task, "aidash://remote", "executor", "1.0.0")
+		.await
+		.unwrap();
 	let leased = f
 		.store
 		.lease_run(uuid::Uuid::new_v4(), 30)
 		.await
 		.unwrap()
 		.unwrap();
-	assert_eq!(leased.id, second_run.id);
+	assert_eq!(leased.id, third_run.id);
 	for malformed in [
 		json!({"summary":7}),
 		json!({"history":7}),
@@ -1539,6 +1691,16 @@ async fn semantic_specs_and_sources_reject_undecodable_records() {
 	)
 	.await
 	.unwrap();
+	check_rejected(
+		update(
+			&f.store.pool,
+			"semantic_indexes",
+			"revision",
+			Expr::val(i64::MAX),
+		)
+		.await,
+		"semantic_indexes_revision",
+	);
 	let mut empty_port = spec.clone();
 	empty_port["embedding"]["endpoint"] = json!("http://localhost:");
 	let runtime: aidash::semantic::IndexSpec = serde_json::from_value(empty_port.clone()).unwrap();
@@ -2171,14 +2333,14 @@ async fn task_dependency_cycles_include_parent_edges() {
 		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&set_dependencies)
-		.bind(second.id)
 		.bind(first.id)
+		.bind(second.id)
 		.execute(&f.store.pool)
 		.await
 		.unwrap();
 	let error = sqlx::query(&set_dependencies)
-		.bind(first.id)
 		.bind(second.id)
+		.bind(first.id)
 		.execute(&f.store.pool)
 		.await
 		.unwrap_err();
@@ -2318,11 +2480,11 @@ async fn historical_task_cycles_fail_migration_through_query_validation() {
 	migration::Migrator::up(&db, None).await.unwrap();
 
 	// Parent traversal alone is acyclic here; the backfill must catch the
-	// combined parent/dependency cycle after it projects dependencies.
+	// child-to-parent dependency opposing the parent's parent-to-child edge.
 	migration::Migrator::down(&db, Some(1)).await.unwrap();
 	sqlx::query(&parent_update)
-		.bind(second.id)
 		.bind(first.id)
+		.bind(second.id)
 		.execute(&f.store.pool)
 		.await
 		.unwrap();
