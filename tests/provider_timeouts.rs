@@ -138,7 +138,10 @@ async fn infer_after(
 			delay_secs,
 		)
 		.await;
-	assert!(server.received.try_recv().is_err(), "inference must not retry");
+	assert!(
+		server.received.try_recv().is_err(),
+		"inference must not retry"
+	);
 	result
 }
 
@@ -168,14 +171,20 @@ async fn omitted_provider_timeout_allows_a_508_second_response() {
 async fn shorter_provider_timeout_is_enforced() {
 	let (response, elapsed) = infer_after(Some(30), 60).await;
 	assert!(matches!(response, Err(Error::External(_))));
-	assert!((29..=31).contains(&elapsed.as_secs()), "elapsed: {elapsed:?}");
+	assert!(
+		(29..=31).contains(&elapsed.as_secs()),
+		"elapsed: {elapsed:?}"
+	);
 }
 
 #[tokio::test]
 async fn omitted_provider_timeout_expires_at_900_seconds() {
 	let (response, elapsed) = infer_after(None, 1000).await;
 	assert!(matches!(response, Err(Error::External(_))));
-	assert!((899..=901).contains(&elapsed.as_secs()), "elapsed: {elapsed:?}");
+	assert!(
+		(899..=901).contains(&elapsed.as_secs()),
+		"elapsed: {elapsed:?}"
+	);
 }
 
 #[tokio::test]
@@ -187,7 +196,10 @@ async fn non_inference_requests_keep_the_shared_client_timeout() {
 		.send();
 	let (response, elapsed) = server.respond_after(request, 508).await;
 	assert!(response.unwrap_err().is_timeout());
-	assert!((119..=121).contains(&elapsed.as_secs()), "elapsed: {elapsed:?}");
+	assert!(
+		(119..=121).contains(&elapsed.as_secs()),
+		"elapsed: {elapsed:?}"
+	);
 }
 
 #[test]
@@ -203,7 +215,13 @@ fn registry_validates_provider_timeout_values() {
 		entry.config["request_timeout_secs"] = timeout;
 		validate(&entry).unwrap();
 	}
-	for timeout in [json!(0), json!(-1), json!(1.5), json!("900"), json!(u64::MAX)] {
+	for timeout in [
+		json!(0),
+		json!(-1),
+		json!(1.5),
+		json!("900"),
+		json!(u64::MAX),
+	] {
 		entry.config["request_timeout_secs"] = timeout.clone();
 		assert!(validate(&entry).is_err(), "accepted timeout: {timeout}");
 	}
@@ -231,5 +249,8 @@ fn provider_rejects_zero_timeout_before_sending_a_request() {
 	let mut value = model_config("http://127.0.0.1:1");
 	value["request_timeout_secs"] = json!(0);
 	let config: ModelConfig = serde_json::from_value(value).unwrap();
-	assert!(matches!(provider(shared_client(), config), Err(Error::Invalid(_))));
+	assert!(matches!(
+		provider(shared_client(), config),
+		Err(Error::Invalid(_))
+	));
 }
