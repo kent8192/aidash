@@ -117,6 +117,57 @@ async fn seed_history(f: &Federation, run: &aidash::domain::Run) {
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
+async fn generated_agent_budget_includes_the_models_full_output_limit() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (_, mut spec) = policy(&f, &app, "http://127.0.0.1:9").await;
+	let model = json!({
+		"id":"large-output-model","version":"1.0.0","kind":"model",
+		"name":{"en":"Large output model"},"description":{"en":"Budget fixture"},
+		"capabilities":[],"languages":["en"],"tags":[],"skills":[],
+		"schema":{"type":"object"},
+		"config":{"provider":"openrouter","model_id":"google/gemini-3.8-flash",
+			"endpoint":"https://openrouter.ai/api/v1","credential_env":null,
+			"context_window":1048576,"max_output_tokens":65536,
+			"modalities":["text"],"cost":{}}
+	});
+	let (status, body) = request(&app, &f.config.api_token, "POST", "/api/registry", model).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"entry":{"id":"large-output-model","version":"1.0.0"},"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	spec["template"]["config"]["model"] = json!({"id":"large-output-model","version":"1.0.0"});
+	spec["limits"]["tokens_per_agent"] = json!(1_114_111);
+	let (status, _) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/generation/acme/policies/research",
+		json!({"expected_revision":1,"spec":spec}),
+	)
+	.await;
+	assert_ne!(status, 200);
+	spec["limits"]["tokens_per_agent"] = json!(1_114_112);
+	let (status, body) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/generation/acme/policies/research",
+		json!({"expected_revision":1,"spec":spec}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
 async fn approved_compaction_is_pinned_bounded_and_accounted_before_http() {
 	let (f, url, schema) = setup().await;
 	let pool = f.store.pool.clone();

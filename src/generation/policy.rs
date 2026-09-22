@@ -322,8 +322,7 @@ pub(crate) async fn write(
 			}
 			if kind == "model" {
 				let model: ModelConfig = serde_json::from_value(entry.config)?;
-				let required = model.context_window as i64
-					+ (model.context_window / 8).clamp(256, 4096) as i64;
+				let required = model.context_window as i64 + model.output_token_limit() as i64;
 				if spec.limits.tokens_per_agent < required {
 					return Err(Error::Invalid(
 						"agent token allowance is smaller than one model reservation".into(),

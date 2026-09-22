@@ -81,6 +81,20 @@ fn request_check_reserves_completion_tokens() {
 }
 
 #[test]
+fn request_check_reserves_the_registered_model_maximum_with_input_and_framing() {
+	let budget = RequestBudget {
+		window: 1_048_576,
+		instructions: "",
+		tools: &[],
+		max_output_tokens: 65_536,
+	};
+	let request = budget.request(&Context::default(), &json!({}));
+	assert_eq!(request.max_output_tokens, 65_536);
+	assert!(crate::generation::budget::Reservation::check_request(66_000, &request).is_err());
+	assert!(crate::generation::budget::Reservation::check_request(67_000, &request).is_ok());
+}
+
+#[test]
 fn tool_event_growth_matches_the_complete_request_delta() {
 	use crate::provider::ToolSpec;
 	let tools = vec![ToolSpec {
