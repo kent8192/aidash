@@ -27,6 +27,57 @@ pub fn estimated_tokens(value: &str) -> usize {
 		.sum()
 }
 
+const REQUEST_FRAMING_RESERVE: usize = 512;
+const MIN_CONTEXT_RESERVE: usize = 2048;
+
+/// Remaining room for workspace state and conversation history after fixed
+/// request content, output allowance, and framing reserve have been deducted.
+/// Registration and execution share this calculation so accepted agents keep
+/// the same minimum execution allowance.
+pub fn request_context_budget<S: Serialize + ?Sized>(
+	window: usize,
+	instructions: &str,
+	specifications: &S,
+	private_context: &Value,
+) -> Result<usize> {
+	let cost = |text: &str| estimated_tokens(text).max(text.len());
+	let instructions = serde_json::to_string(instructions)?;
+	let specifications = serde_json::to_string(specifications)?;
+	let overhead = cost(&instructions)
+		.saturating_add(cost(&specifications))
+		.saturating_add(if private_context.is_null() {
+			0
+		} else {
+			cost(&serde_json::to_string(private_context)?)
+		});
+	let output = (window / 8).clamp(256, 4096);
+	let fixed_reserve = overhead
+		.saturating_add(output)
+		.saturating_add(REQUEST_FRAMING_RESERVE);
+	let budget = window.checked_sub(fixed_reserve).ok_or_else(|| {
+		Error::Invalid(
+			"agent instructions, skills, tools and private context cannot fit the model window with output and context reserves".into(),
+		)
+	})?;
+	if budget < MIN_CONTEXT_RESERVE {
+		return Err(Error::Invalid(
+			"agent instructions, skills, tools and private context cannot fit the model window with output and context reserves".into(),
+		));
+	}
+	Ok(budget)
+}
+
+/// Strip personal documents before sending pinned context to a compaction
+/// provider. Their request space is reserved separately by
+/// `request_context_budget`.
+pub fn compaction_snapshot(pinned: &Value) -> Value {
+	let mut snapshot = pinned.clone();
+	if let Some(object) = snapshot.as_object_mut() {
+		object.remove("reference_documents");
+	}
+	snapshot
+}
+
 pub async fn compact(
 	context: &mut Context,
 	asker: &dyn jev::JevAsker,

@@ -80,6 +80,7 @@ pub(crate) async fn create(
 		.ok_or_else(|| Error::Invalid("Idempotency-Key must be a UUID".into()))?;
 	let documents = serde_json::to_value(&input.documents)?;
 	input.entry.config["knowledge_digest"] = json!(digest(&documents));
+	let private_context = json!({"reference_documents":documents.clone()});
 	let config: AgentConfig = serde_json::from_value(input.entry.config.clone())?;
 	let mut references = vec![];
 	for reference in std::iter::once(&config.model)
@@ -88,7 +89,7 @@ pub(crate) async fn create(
 	{
 		references.push(f.registry.get(&reference.id, &reference.version).await?);
 	}
-	crate::registry::validate_agent_prompt(&config, &references, &documents.to_string())?;
+	crate::registry::validate_agent_prompt(&config, &references, &private_context)?;
 	let mut tx = f.store.pool.begin().await?;
 	crate::registry::assign_id_in(&mut tx, &mut input.entry, Some(key)).await?;
 	let inserted = crate::registry::register_in(&mut tx, &input.entry, &f.config.node_id).await?;

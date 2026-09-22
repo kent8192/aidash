@@ -282,3 +282,48 @@ fn snapshot_budget_also_bounds_wide_state_objects() {
 	assert_eq!(pinned["task"]["id"], "task-id");
 	assert_eq!(pinned["snapshot_truncated"], true);
 }
+
+#[test]
+fn registration_and_execution_share_the_context_reserve_at_its_boundary() {
+	let instructions = "Use the private reference documents.";
+	let specifications = vec![json!({"name":"workspace_read"})];
+	let window = 8192;
+	let output = (window / 8).clamp(256, 4096);
+	let fixed = estimated_tokens(&serde_json::to_string(instructions).unwrap())
+		.max(serde_json::to_string(instructions).unwrap().len())
+		+ estimated_tokens(&serde_json::to_string(&specifications).unwrap())
+			.max(serde_json::to_string(&specifications).unwrap().len())
+		+ output
+		+ REQUEST_FRAMING_RESERVE
+		+ MIN_CONTEXT_RESERVE;
+	let private_bytes = window - fixed;
+	let wrapper = r#"{"reference_documents":""}"#;
+	let documents = "x".repeat(private_bytes - wrapper.len());
+	let private_context = json!({"reference_documents":documents});
+	let registration_budget =
+		request_context_budget(window, instructions, &specifications, &private_context).unwrap();
+	let execution_budget =
+		request_context_budget(window, instructions, &specifications, &private_context).unwrap();
+	assert_eq!(registration_budget, MIN_CONTEXT_RESERVE);
+	assert_eq!(execution_budget, registration_budget);
+	assert!(
+		request_context_budget(window - 8, instructions, &specifications, &private_context,)
+			.is_err()
+	);
+}
+
+#[test]
+fn compaction_snapshot_redacts_private_documents_without_mutating_inference_context() {
+	let pinned = json!({
+		"task":{"title":"Summarize references"},
+		"reference_documents":[{"text":"PRIVATE-REFERENCE-123"}],
+	});
+	let redacted = compaction_snapshot(&pinned);
+	assert!(redacted.get("reference_documents").is_none());
+	assert!(!redacted.to_string().contains("PRIVATE-REFERENCE-123"));
+	assert_eq!(redacted["task"]["title"], "Summarize references");
+	assert_eq!(
+		pinned["reference_documents"][0]["text"],
+		"PRIVATE-REFERENCE-123"
+	);
+}

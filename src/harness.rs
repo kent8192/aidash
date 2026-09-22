@@ -326,23 +326,26 @@ impl Harness {
 					.values()
 					.map(|t| t.specification())
 					.collect::<Vec<_>>();
-				let overhead = context::estimated_tokens(&instructions)
-					+ context::estimated_tokens(&json!(specifications).to_string());
-				let output = (window / 8).clamp(256, 4096) as u32;
-				let budget = window.saturating_sub(overhead + output as usize + 512);
-				let document_cost = context::estimated_tokens(&documents.to_string());
-				if agent.knowledge_digest.is_some() && document_cost + 2048 > budget {
-					return Err(Error::Invalid(
-						"reference documents exceed the model context budget".into(),
-					));
-				}
-				context::bound_snapshot(
-					&mut pinned,
-					budget.saturating_sub(document_cost + 512) / 2,
+				let private_context = if agent.knowledge_digest.is_some() {
+					json!({"reference_documents":documents.clone()})
+				} else {
+					serde_json::Value::Null
+				};
+				let budget = context::request_context_budget(
+					window,
+					&instructions,
+					&specifications,
+					&private_context,
 				)?;
-				pinned["reference_documents"] = documents;
-				let semantic_budget =
-					budget.saturating_sub(context::estimated_tokens(&pinned.to_string()) + 512);
+				let output = (window / 8).clamp(256, 4096) as u32;
+				context::bound_snapshot(&mut pinned, budget.saturating_sub(512) / 2)?;
+				if agent.knowledge_digest.is_some() {
+					pinned["reference_documents"] = documents;
+				}
+				let compaction_pinned = context::compaction_snapshot(&pinned);
+				let semantic_budget = budget.saturating_sub(
+					context::estimated_tokens(&compaction_pinned.to_string()) + 512,
+				);
 				if let Some(guard) = guard {
 					if let Some(semantic) = guard
 						.semantic_context(
@@ -380,11 +383,12 @@ impl Harness {
 						self.federation.client.clone(),
 					)?)
 				};
+				let compaction_pinned = context::compaction_snapshot(&pinned);
 				context::compact(
 					&mut context,
 					compactor.as_ref(),
 					budget,
-					&pinned,
+					&compaction_pinned,
 					&instructions,
 				)
 				.await?;

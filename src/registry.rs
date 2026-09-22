@@ -342,7 +342,7 @@ impl Registry {
 				}
 				references.push(referenced);
 			}
-			validate_agent_prompt(&cfg, &references, "")?;
+			validate_agent_prompt(&cfg, &references, &Value::Null)?;
 		}
 		if e.kind == "tool"
 			&& let crate::tool::ToolConfig::Agent { node_id, agent } =
@@ -905,7 +905,7 @@ pub(crate) async fn register_in(
 			}
 			references.push(referenced);
 		}
-		validate_agent_prompt(&config, &references, "")?;
+		validate_agent_prompt(&config, &references, &Value::Null)?;
 	}
 	if entry.kind == "cluster" {
 		let config: ClusterConfig = serde_json::from_value(entry.config.clone())?;
@@ -984,6 +984,11 @@ fn overlay_config(target: &mut Value, overrides: &Value) -> Result<()> {
 	let object = overrides
 		.as_object()
 		.ok_or_else(|| Error::Invalid("installation config must be an object".into()))?;
+	if object.contains_key("knowledge_digest") {
+		return Err(Error::Invalid(
+			"installation config cannot override immutable knowledge_digest".into(),
+		));
+	}
 	let target = target
 		.as_object_mut()
 		.ok_or_else(|| Error::Invalid("entity config must be an object".into()))?;
@@ -1068,6 +1073,14 @@ mod tests {
 		e.config = json!({"coordinator":{"id":"research","version":"1.0.0"}});
 		validate(&e).unwrap();
 	}
+	#[test]
+	fn installation_overrides_cannot_clear_a_personal_agent_knowledge_digest() {
+		let mut config = json!({"knowledge_digest":"immutable-digest"});
+		assert!(overlay_config(&mut config, &json!({"knowledge_digest":null})).is_err());
+		assert_eq!(config["knowledge_digest"], "immutable-digest");
+		assert!(overlay_config(&mut config, &json!({"display_name":"Local name"})).is_ok());
+		assert_eq!(config["display_name"], "Local name");
+	}
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1079,7 +1092,7 @@ pub struct AgentPage {
 pub(crate) fn validate_agent_prompt(
 	config: &AgentConfig,
 	references: &[Entry],
-	reference_text: &str,
+	private_context: &Value,
 ) -> Result<()> {
 	let get = |reference: &EntityRef| {
 		references
@@ -1107,14 +1120,11 @@ pub(crate) fn validate_agent_prompt(
 			&format!("plugin_{index}"),
 		));
 	}
-	// Match both the inference token estimate and its conservative wire-byte check.
-	let cost = |text: &str| crate::context::estimated_tokens(text).max(text.len());
-	let overhead = cost(&serde_json::to_string(&instructions)?)
-		.saturating_add(cost(&serde_json::to_string(&specifications)?))
-		.saturating_add(cost(reference_text));
-	let output = (model.context_window / 8).clamp(256, 4096);
-	if overhead.saturating_add(output).saturating_add(2048) > model.context_window {
-		return Err(Error::Invalid("agent instructions, skills and tools cannot fit the model window with output and context reserves".into()));
-	}
+	crate::context::request_context_budget(
+		model.context_window,
+		&instructions,
+		&specifications,
+		private_context,
+	)?;
 	Ok(())
 }
