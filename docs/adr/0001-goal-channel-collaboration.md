@@ -2,6 +2,12 @@
 
 Aidash's primary user experience consists of a Slack-style collaboration space and Graph View. Each channel corresponds to one goal; threads organize discussion independently of executable tasks, so a discussion can produce no tasks or several tasks. Necessary configuration belongs under Settings, while everyday work and intervention remain available from the primary views.
 
+## Channel persistence
+
+Reuse the existing Workspace as the persistent identity of a channel, preserving its ID and the ownership of its tasks and shared work. Present it as a channel in the user interface rather than introducing a new Workspace-to-Channel container hierarchy. Add goal revisions, threads, and participation to that existing collaboration boundary.
+
+Keep the record revision used for optimistic concurrency separate from the goal revision that identifies the objective of a task or run. A thread remains a conversation structure rather than an executable task.
+
 ## Goal revisions and completion
 
 Updating a goal adds a new revision within the same channel instead of overwriting the objective used by previous work. Tasks, runs, and completion records identify the goal revision they concern. Earlier work and results remain available as history; a delayed completion for an earlier revision cannot complete the current revision.
@@ -32,10 +38,18 @@ Graph View supports relationship exploration and authorized operations through c
 
 The graph uses aggregation and progressive exploration: clusters and other groupings provide an overview, users expand the relevant neighborhood, and search locates individual entities. Rendering every registered agent as an individual node at once is not a requirement. Configuration relationships and runtime activity remain distinguishable; authorization boundaries and an accessible list/detail alternative apply to the graph as well.
 
+## Historical graph reconstruction
+
+Graph View must support selecting a past time and reconstructing the recorded relationships and entity states for that time, including the exact entity versions used by historical work. A current graph with an event timeline alone does not satisfy this requirement. Historical reconstruction requires retained relationship and state history, independently of the rendering library and the SSE reconnection mechanism.
+
+## Graph rendering
+
+Cytoscape.js is the selected first implementation candidate for the graph renderer. Keep the relationship projection and its tests separate from rendering so entity identity, relationship semantics, and navigation do not depend on the renderer. The selection does not establish a performance guarantee, a final layout extension, or a numeric rendering limit.
+
 ## Realtime transport
 
 Retain HTTP for submissions and control operations, and authenticated SSE for browser updates. Preserve durable event-cursor replay for reconnection instead of replacing the existing transport with a WebSocket-centered design. A conversational interface does not itself require rebuilding the transport.
 
 ## Consequences
 
-These boundaries favor goal-oriented work without treating every conversation as an executable task, and preserve agent autonomy without making channel membership blanket execution authority. Revision-specific work and completion protect the meaning of historical results. Safe-boundary transitions preserve external-effect evidence; goal-level blocking exposes inability to proceed instead of claiming success. Separate authority for execution, task exclusion, and budget increases prevents one permission from implicitly granting the others. Aggregation and contextual navigation make relationship exploration the primary graph interaction rather than requiring an unbounded all-entities canvas.
+These boundaries favor goal-oriented work without treating every conversation as an executable task, and preserve agent autonomy without making channel membership blanket execution authority. Workspace reuse avoids introducing another ownership boundary solely to match Slack terminology. Revision-specific work and completion protect the meaning of historical results. Safe-boundary transitions preserve external-effect evidence; goal-level blocking exposes inability to proceed instead of claiming success. Separate authority for execution, task exclusion, and budget increases prevents one permission from implicitly granting the others. Aggregation and contextual navigation make relationship exploration the primary graph interaction rather than requiring an unbounded all-entities canvas. Historical graph reconstruction adds a requirement to retain and query past relationships and states, not merely their current values.
