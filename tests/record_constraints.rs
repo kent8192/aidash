@@ -730,6 +730,18 @@ async fn model_and_agent_configs_reject_unusable_shapes() {
 			"registry_agent_config",
 		);
 	}
+	let mut fractional_steps = agent.clone();
+	fractional_steps["config"]["max_steps"] = json!(1.0);
+	check_rejected(
+		insert_entry(&f.store.pool, &fractional_steps).await,
+		"registry_agent_config",
+	);
+	let mut integer_steps = agent.clone();
+	integer_steps["id"] = json!("integer-agent");
+	integer_steps["config"]["max_steps"] = json!(1);
+	let _: aidash::registry::AgentConfig =
+		serde_json::from_value(integer_steps["config"].clone()).unwrap();
+	insert_entry(&f.store.pool, &integer_steps).await.unwrap();
 	let _: aidash::registry::AgentConfig = serde_json::from_value(agent["config"].clone()).unwrap();
 	insert_entry(&f.store.pool, &agent).await.unwrap();
 	insert_entry(&f.store.pool, &good).await.unwrap();
@@ -749,6 +761,7 @@ async fn tool_configs_reject_undecodable_shapes() {
 		json!({"transport":"native","operation":"echo","allowed_hosts":[7]}),
 		json!({"transport":"http","endpoint":"http://localhost","replay":"invalid"}),
 		json!({"transport":"mcp","endpoint":"http://localhost","tool_name":"call","replay":"idempotent"}),
+		json!({"transport":"mcp","endpoint":"http://localhost","tool_name":"call","replay":"idempotent","idempotency_argument":" \t\n\u{2003}"}),
 		json!({"transport":"agent","node_id":"bad node","agent":{"id":"agent","version":"1.0.0"}}),
 		json!({"transport":"http","endpoint":"http://localhost","replay":"read_only","unexpected":true}),
 	] {
@@ -765,6 +778,62 @@ async fn tool_configs_reject_undecodable_shapes() {
 		"replay":"read_only"
 	});
 	insert_entry(&f.store.pool, &tool).await.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn compactor_and_embedding_configs_reject_undecodable_shapes() {
+	let (f, url, schema) = setup().await;
+	let mut entry = serde_json::to_value(model()).unwrap();
+	entry["id"] = json!("compactor");
+	entry["kind"] = json!("compactor");
+	for invalid in [
+		json!({}),
+		json!({"provider":"wrong"}),
+		json!({"provider":"typesafe-system-one","endpoint":"http://localhost","model":"m","credential_env":"AIDASH_SECRET_X","max_request_bytes":1024,"max_questions":1,"max_response_bytes":"128"}),
+		json!({"provider":"typesafe-system-one","endpoint":"http://localhost","model":"m","credential_env":"AIDASH_SECRET_X","max_request_bytes":1024,"max_questions":1,"max_response_bytes":128,"unexpected":true}),
+	] {
+		entry["config"] = invalid;
+		check_rejected(
+			insert_entry(&f.store.pool, &entry).await,
+			"registry_compactor_config",
+		);
+	}
+	entry["config"] = json!({
+		"provider":"typesafe-system-one",
+		"endpoint":"http://localhost:9999/v1",
+		"model":"jev-latest",
+		"credential_env":"AIDASH_SECRET_JEV",
+		"max_request_bytes":65536,
+		"max_questions":8,
+		"max_response_bytes":16384
+	});
+	insert_entry(&f.store.pool, &entry).await.unwrap();
+
+	entry["id"] = json!("embedding");
+	entry["kind"] = json!("embedding");
+	for invalid in [
+		json!({}),
+		json!({"provider":"openai","endpoint":"http://localhost","credential_env":null,"model":"m","model_version":"1","dimensions":0}),
+		json!({"provider":"openai","endpoint":"http://localhost","credential_env":7,"model":"m","model_version":"1","dimensions":3}),
+		json!({"provider":"openai","endpoint":"http://localhost","credential_env":null,"model":"m","model_version":"1","dimensions":3,"unexpected":true}),
+	] {
+		entry["config"] = invalid;
+		check_rejected(
+			insert_entry(&f.store.pool, &entry).await,
+			"registry_embedding_config",
+		);
+	}
+	entry["config"] = json!({
+		"provider":"openai",
+		"endpoint":"http://localhost:9999/v1",
+		"credential_env":null,
+		"model":"embedding-model",
+		"model_version":"1",
+		"dimensions":1536
+	});
+	insert_entry(&f.store.pool, &entry).await.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -820,6 +889,28 @@ async fn requirements_and_run_state_reject_wrong_shapes() {
 			.await
 			.unwrap();
 	}
+	for malformed in [
+		json!({"retry_at":"not a timestamp"}),
+		json!({"retry_at":null}),
+		json!({"wake_at":"not a timestamp"}),
+		json!({"wake_at":[]}),
+	] {
+		check_rejected(
+			update(&f.store.pool, "runs", "pending", Expr::val(malformed)).await,
+			"runs_counters",
+		);
+	}
+	update(
+		&f.store.pool,
+		"runs",
+		"pending",
+		Expr::val(json!({
+			"retry_at":"2030-01-01T00:00:00Z",
+			"wake_at":"2030-01-01T00:00:00+00:00"
+		})),
+	)
+	.await
+	.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1274,6 +1365,74 @@ async fn task_parent_cycle_guard_rejects_direct_cycles() {
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
+async fn task_dependency_cycles_include_parent_edges() {
+	let (f, url, schema) = setup().await;
+	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
+	let input = NewTask {
+		title: "Task".into(),
+		description: "Work".into(),
+		requirements: json!({}),
+		dependencies: vec![],
+		parent_id: None,
+	};
+	let first = f
+		.store
+		.create_task(workspace.id, &input, "human", None)
+		.await
+		.unwrap();
+	let second = f
+		.store
+		.create_task(workspace.id, &input, "human", None)
+		.await
+		.unwrap();
+	let set_dependencies = Query::update()
+		.table(Alias::new("tasks"))
+		.value(Alias::new("dependencies"), Expr::cust("ARRAY[$1::uuid]"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&set_dependencies)
+		.bind(second.id)
+		.bind(first.id)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	let error = sqlx::query(&set_dependencies)
+		.bind(first.id)
+		.bind(second.id)
+		.execute(&f.store.pool)
+		.await
+		.unwrap_err();
+	let database = error.as_database_error().unwrap();
+	assert_eq!(database.code().as_deref(), Some("23514"), "{error}");
+	assert_eq!(
+		database.constraint(),
+		Some("tasks_dependency_cycle"),
+		"{error}"
+	);
+
+	let set_parent = Query::update()
+		.table(Alias::new("tasks"))
+		.value(Alias::new("parent_id"), Expr::cust("$1"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+		.to_string(PostgresQueryBuilder);
+	let error = sqlx::query(&set_parent)
+		.bind(first.id)
+		.bind(second.id)
+		.execute(&f.store.pool)
+		.await
+		.unwrap_err();
+	let database = error.as_database_error().unwrap();
+	assert_eq!(database.code().as_deref(), Some("23514"), "{error}");
+	assert_eq!(
+		database.constraint(),
+		Some("tasks_dependency_cycle"),
+		"{error}"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
 async fn concurrent_parent_cycle_checks_are_serialized() {
 	let (f, url, schema) = setup().await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
@@ -1307,15 +1466,20 @@ async fn concurrent_parent_cycle_checks_are_serialized() {
 		.execute(&mut *left)
 		.await
 		.unwrap();
-	sqlx::query(&parent_update)
-		.bind(first_task.id)
-		.bind(second_task.id)
-		.execute(&mut *right)
-		.await
-		.unwrap();
-	let (left_result, right_result) = tokio::join!(left.commit(), right.commit());
-	assert!(left_result.is_ok() ^ right_result.is_ok());
-	let error = left_result.err().or_else(|| right_result.err()).unwrap();
+	let mut right_update = Box::pin(
+		sqlx::query(&parent_update)
+			.bind(first_task.id)
+			.bind(second_task.id)
+			.execute(&mut *right),
+	);
+	assert!(
+		tokio::time::timeout(std::time::Duration::from_millis(100), &mut right_update)
+			.await
+			.is_err()
+	);
+	left.commit().await.unwrap();
+	right_update.await.unwrap();
+	let error = right.commit().await.unwrap_err();
 	let database = error.as_database_error().unwrap();
 	assert_eq!(database.code().as_deref(), Some("23514"), "{error}");
 	assert_eq!(database.constraint(), Some("tasks_parent_cycle"), "{error}");
@@ -1406,6 +1570,53 @@ async fn installation_constraints_validate_model_overrides() {
 		"installations",
 		"config",
 		Expr::val(json!({"context_window":8192})),
+	)
+	.await
+	.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn installation_constraints_validate_effective_tool_config() {
+	let (f, url, schema) = setup().await;
+	let mut tool = serde_json::to_value(model()).unwrap();
+	tool["id"] = json!("installed-tool");
+	tool["kind"] = json!("tool");
+	tool["config"] = json!({
+		"transport":"http",
+		"endpoint":"http://localhost:9999/base",
+		"credential_env":null,
+		"replay":"read_only"
+	});
+	insert_entry(&f.store.pool, &tool).await.unwrap();
+	insert_values(
+		&f.store.pool,
+		"installations",
+		&[
+			("id", Expr::val("installed-tool").into()),
+			("version", Expr::val("1.0.0").into()),
+			("digest", Expr::val("sha256:fixture").into()),
+			("config", Expr::val(json!({})).into()),
+		],
+	)
+	.await
+	.unwrap();
+	for invalid in [
+		json!({"transport":"bogus"}),
+		json!({"endpoint":7}),
+		json!({"unexpected":true}),
+	] {
+		check_rejected(
+			update(&f.store.pool, "installations", "config", Expr::val(invalid)).await,
+			"installations_config",
+		);
+	}
+	update(
+		&f.store.pool,
+		"installations",
+		"config",
+		Expr::val(json!({"endpoint":"http://localhost:8888/tool"})),
 	)
 	.await
 	.unwrap();

@@ -37,10 +37,12 @@ const CHECKS: &[(&str, &str, &str)] = &[
 	(
 		"registry",
 		"registry_agent_config",
-		"kind <> 'agent' OR (jsonb_typeof(metadata#>'{config,instructions}') = 'string' AND length(btrim(metadata#>>'{config,instructions}', {whitespace})) > 0 AND CASE WHEN NOT (metadata->'config' ? 'max_steps') THEN true WHEN jsonb_typeof(metadata#>'{config,max_steps}') = 'number' THEN (metadata#>>'{config,max_steps}')::numeric BETWEEN 1 AND 1000 AND trunc((metadata#>>'{config,max_steps}')::numeric) = (metadata#>>'{config,max_steps}')::numeric ELSE false END)",
+		"kind <> 'agent' OR (jsonb_typeof(metadata#>'{config,instructions}') = 'string' AND length(btrim(metadata#>>'{config,instructions}', {whitespace})) > 0 AND CASE WHEN NOT (metadata->'config' ? 'max_steps') THEN true WHEN jsonb_typeof(metadata#>'{config,max_steps}') = 'number' AND (metadata#>>'{config,max_steps}') ~ '^(0|[1-9][0-9]*)$' THEN (metadata#>>'{config,max_steps}')::numeric BETWEEN 1 AND 1000 ELSE false END)",
 	),
 	("registry", "registry_tool_config", "true"),
 	("registry", "registry_cluster_config", "true"),
+	("registry", "registry_compactor_config", "true"),
+	("registry", "registry_embedding_config", "true"),
 	(
 		"registry",
 		"registry_skill_config",
@@ -137,6 +139,76 @@ fn semver_value(value: &str) -> String {
 fn unsigned(value: &str) -> String {
 	format!(
 		"CASE WHEN jsonb_typeof({value}) = 'number' AND ({value})::text ~ '^(0|[1-9][0-9]*)$' THEN ({value})::text::numeric <= 18446744073709551615 ELSE false END"
+	)
+}
+fn unsigned_between(value: &str, min: u64, max: u64) -> String {
+	format!(
+		"CASE WHEN jsonb_typeof({value}) = 'number' AND ({value})::text ~ '^(0|[1-9][0-9]*)$' THEN ({value})::text::numeric BETWEEN {min} AND {max} ELSE false END"
+	)
+}
+fn tool_config_is_valid_expression(config: &str) -> String {
+	let native_hosts = format!(
+		"(NOT ({config} ? 'allowed_hosts') OR {})",
+		string_array(&format!("{config}->'allowed_hosts'"))
+	);
+	let native = [
+		object_fields(config, &["transport", "operation", "allowed_hosts"]),
+		format!(
+			"jsonb_typeof({config}->'operation') = 'string' AND {config}->>'operation' IN ('echo', 'http_get')"
+		),
+		native_hosts,
+		format!(
+			"({config}->>'operation' <> 'http_get' OR CASE WHEN jsonb_typeof(COALESCE({config}->'allowed_hosts', '[]'::jsonb)) = 'array' THEN jsonb_array_length(COALESCE({config}->'allowed_hosts', '[]'::jsonb)) > 0 ELSE false END)"
+		),
+	]
+	.join(" AND ");
+	let http = [
+		object_fields(config, &["transport", "endpoint", "credential_env", "replay"]),
+		format!(
+			"jsonb_typeof({config}->'endpoint') = 'string' AND length(btrim({config}->>'endpoint', {WHITESPACE_SQL})) > 0"
+		),
+		optional_string(&format!("{config}->'credential_env'")),
+		format!(
+			"jsonb_typeof({config}->'replay') = 'string' AND {config}->>'replay' IN ('read_only', 'idempotent', 'unsafe')"
+		),
+	]
+	.join(" AND ");
+	let mcp = [
+		object_fields(
+			config,
+			&[
+				"transport",
+				"endpoint",
+				"credential_env",
+				"tool_name",
+				"replay",
+				"idempotency_argument",
+			],
+		),
+		format!(
+			"jsonb_typeof({config}->'endpoint') = 'string' AND length(btrim({config}->>'endpoint', {WHITESPACE_SQL})) > 0"
+		),
+		optional_string(&format!("{config}->'credential_env'")),
+		format!("jsonb_typeof({config}->'tool_name') = 'string'"),
+		format!(
+			"jsonb_typeof({config}->'replay') = 'string' AND {config}->>'replay' IN ('read_only', 'idempotent', 'unsafe')"
+		),
+		optional_string(&format!("{config}->'idempotency_argument'")),
+		format!(
+			"({config}->>'replay' <> 'idempotent' OR (jsonb_typeof({config}->'idempotency_argument') = 'string' AND length(btrim({config}->>'idempotency_argument', {WHITESPACE_SQL})) > 0))"
+		),
+	]
+	.join(" AND ");
+	let agent = [
+		object_fields(config, &["transport", "node_id", "agent"]),
+		format!(
+			"jsonb_typeof({config}->'node_id') = 'string' AND {config}->>'node_id' ~ '^aidash://[A-Za-z0-9-]{{1,100}}$'"
+		),
+		bounded_entity_ref(&format!("{config}->'agent'")),
+	]
+	.join(" AND ");
+	format!(
+		"CASE {config}->>'transport' WHEN 'native' THEN ({native}) WHEN 'http' THEN ({http}) WHEN 'mcp' THEN ({mcp}) WHEN 'agent' THEN ({agent}) ELSE false END"
 	)
 }
 fn entity_ref(value: &str) -> String {
@@ -242,70 +314,8 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 			}
 			"registry_tool_config" => {
 				let config = "(metadata->'config')";
-				let native_hosts = format!(
-					"(NOT ({config} ? 'allowed_hosts') OR {})",
-					string_array(&format!("{config}->'allowed_hosts'"))
-				);
-				let native = [
-					object_fields(config, &["transport", "operation", "allowed_hosts"]),
-					format!(
-						"jsonb_typeof({config}->'operation') = 'string' AND {config}->>'operation' IN ('echo', 'http_get')"
-					),
-					native_hosts,
-					format!(
-						"({config}->>'operation' <> 'http_get' OR (jsonb_typeof(COALESCE({config}->'allowed_hosts', '[]'::jsonb)) = 'array' AND jsonb_array_length(COALESCE({config}->'allowed_hosts', '[]'::jsonb)) > 0))"
-					),
-				]
-				.join(" AND ");
-				let http = [
-					object_fields(config, &["transport", "endpoint", "credential_env", "replay"]),
-					format!(
-						"jsonb_typeof({config}->'endpoint') = 'string' AND length(btrim({config}->>'endpoint', {WHITESPACE_SQL})) > 0"
-					),
-					optional_string(&format!("{config}->'credential_env'")),
-					format!(
-						"jsonb_typeof({config}->'replay') = 'string' AND {config}->>'replay' IN ('read_only', 'idempotent', 'unsafe')"
-					),
-				]
-				.join(" AND ");
-				let mcp = [
-					object_fields(
-						config,
-						&[
-							"transport",
-							"endpoint",
-							"credential_env",
-							"tool_name",
-							"replay",
-							"idempotency_argument",
-						],
-					),
-					format!(
-						"jsonb_typeof({config}->'endpoint') = 'string' AND length(btrim({config}->>'endpoint', {WHITESPACE_SQL})) > 0"
-					),
-					optional_string(&format!("{config}->'credential_env'")),
-					format!(
-						"jsonb_typeof({config}->'tool_name') = 'string'"
-					),
-					format!(
-						"jsonb_typeof({config}->'replay') = 'string' AND {config}->>'replay' IN ('read_only', 'idempotent', 'unsafe')"
-					),
-					optional_string(&format!("{config}->'idempotency_argument'")),
-					format!(
-						"({config}->>'replay' <> 'idempotent' OR (jsonb_typeof({config}->'idempotency_argument') = 'string' AND length(btrim({config}->>'idempotency_argument', {WHITESPACE_SQL})) > 0))"
-					),
-				]
-				.join(" AND ");
-				let agent = [
-					object_fields(config, &["transport", "node_id", "agent"]),
-					format!(
-						"jsonb_typeof({config}->'node_id') = 'string' AND {config}->>'node_id' ~ '^aidash://[A-Za-z0-9-]{{1,100}}$'"
-					),
-					bounded_entity_ref(&format!("{config}->'agent'")),
-				]
-				.join(" AND ");
 				parts.push(format!(
-					"kind <> 'tool' OR CASE {config}->>'transport' WHEN 'native' THEN ({native}) WHEN 'http' THEN ({http}) WHEN 'mcp' THEN ({mcp}) WHEN 'agent' THEN ({agent}) ELSE false END"
+					"kind <> 'tool' OR aidash_tool_config_is_valid({config})"
 				));
 			}
 			"registry_identity" => {
@@ -325,6 +335,73 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 					bounded_entity_ref(&coordinator)
 				));
 			}
+			"registry_compactor_config" => {
+				let config = "(metadata->'config')";
+				let shape = [
+					object_fields(
+						config,
+						&[
+							"provider",
+							"endpoint",
+							"model",
+							"credential_env",
+							"max_request_bytes",
+							"max_questions",
+							"max_response_bytes",
+						],
+					),
+					format!(
+						"jsonb_typeof({config}->'provider') = 'string' AND {config}->>'provider' = 'typesafe-system-one'"
+					),
+					format!(
+						"jsonb_typeof({config}->'endpoint') = 'string' AND {config}->>'endpoint' ~ '^https?://[^/@?#[:space:]]+'"
+					),
+					format!(
+						"jsonb_typeof({config}->'model') = 'string' AND length(btrim({config}->>'model', {WHITESPACE_SQL})) > 0 AND octet_length({config}->>'model') <= 128"
+					),
+					format!(
+						"jsonb_typeof({config}->'credential_env') = 'string' AND {config}->>'credential_env' ~ '^AIDASH_SECRET_[A-Z0-9_]*$'"
+					),
+					unsigned_between(&format!("{config}->'max_request_bytes'"), 1024, 1_048_576),
+					unsigned_between(&format!("{config}->'max_questions'"), 1, 1024),
+					unsigned_between(&format!("{config}->'max_response_bytes'"), 128, 1_048_576),
+				];
+				parts.push(format!("kind <> 'compactor' OR ({})", shape.join(" AND ")));
+			}
+			"registry_embedding_config" => {
+				let config = "(metadata->'config')";
+				let shape = [
+					object_fields(
+						config,
+						&[
+							"provider",
+							"endpoint",
+							"credential_env",
+							"model",
+							"model_version",
+							"dimensions",
+						],
+					),
+					format!(
+						"jsonb_typeof({config}->'provider') = 'string' AND {config}->>'provider' = 'openai'"
+					),
+					format!(
+						"jsonb_typeof({config}->'endpoint') = 'string' AND {config}->>'endpoint' ~ '^https?://[^/@?#[:space:]]+'"
+					),
+					format!(
+						"{} AND (jsonb_typeof(COALESCE({config}->'credential_env', 'null'::jsonb)) <> 'string' OR {config}->>'credential_env' ~ '^AIDASH_SECRET_[A-Z0-9_]*$')",
+						optional_string(&format!("{config}->'credential_env'"))
+					),
+					format!(
+						"jsonb_typeof({config}->'model') = 'string' AND length(btrim({config}->>'model', {WHITESPACE_SQL})) > 0 AND octet_length({config}->>'model') <= 256"
+					),
+					format!(
+						"jsonb_typeof({config}->'model_version') = 'string' AND length(btrim({config}->>'model_version', {WHITESPACE_SQL})) > 0 AND octet_length({config}->>'model_version') <= 128"
+					),
+					unsigned_between(&format!("{config}->'dimensions'"), 1, 8192),
+				];
+				parts.push(format!("kind <> 'embedding' OR ({})", shape.join(" AND ")));
+			}
 			"tasks_content" => {
 				parts.push(object_fields(
 					"requirements",
@@ -340,9 +417,16 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 				));
 				parts.push("NOT jsonb_path_exists(requirements, 'strict $.* ? (@.type() != \"string\" && @.type() != \"null\")', '{}'::jsonb, true)".into());
 			}
-			"runs_counters" => parts.push(
-				"jsonb_typeof(context) = 'object' AND jsonb_typeof(pending) = 'object'".into(),
-			),
+			"runs_counters" => {
+				parts.push(
+					"jsonb_typeof(context) = 'object' AND jsonb_typeof(pending) = 'object'".into(),
+				);
+				for field in ["retry_at", "wake_at"] {
+					parts.push(format!(
+						"NOT (pending ? '{field}') OR aidash_valid_pending_timestamp(pending->'{field}')"
+					));
+				}
+			}
 			"semantic_indexes_revision" => {
 				parts.push(object_fields(
 					"spec",
@@ -505,6 +589,34 @@ fn checks() -> Vec<(&'static str, &'static str, String)> {
 	checks
 }
 
+async fn create_sql_validators(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+	let tool_config = tool_config_is_valid_expression("input_value");
+	manager
+		.get_connection()
+		.execute_unprepared(&format!(
+			"CREATE FUNCTION aidash_tool_config_is_valid(input_value jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE STRICT AS $$ SELECT ({tool_config}) $$;"
+		))
+		.await?;
+	manager
+		.get_connection()
+		.execute_unprepared(
+			r#"
+CREATE FUNCTION aidash_valid_pending_timestamp(input_value jsonb) RETURNS boolean
+LANGUAGE plpgsql STABLE AS $function$
+DECLARE parsed timestamptz;
+BEGIN
+    IF jsonb_typeof(input_value) <> 'string' THEN RETURN false; END IF;
+    parsed := (input_value #>> '{}')::timestamptz;
+    RETURN isfinite(parsed);
+EXCEPTION WHEN OTHERS THEN RETURN false;
+END
+$function$;
+"#,
+		)
+		.await?;
+	Ok(())
+}
+
 const LINKS: &[(&str, &str, &str, &str)] = &[
 	("tasks", "tasks_parent_workspace", "parent_id", "tasks"),
 	("artifacts", "artifacts_task_workspace", "task_id", "tasks"),
@@ -591,6 +703,39 @@ async fn create_dependencies(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
 		.get_connection()
 		.execute(manager.get_database_backend().build(&insert))
 		.await?;
+	manager
+		.get_connection()
+		.execute_unprepared(
+			r#"
+DO $$
+BEGIN
+    IF EXISTS (
+        WITH RECURSIVE walk(start_id, current_id, path, cycle) AS (
+            SELECT id, id, ARRAY[id], false FROM tasks
+            UNION ALL
+            SELECT w.start_id, edge.target_id, w.path || edge.target_id,
+                   edge.target_id = ANY(w.path)
+            FROM walk w
+            CROSS JOIN LATERAL (
+                SELECT t.parent_id AS target_id
+                FROM tasks t
+                WHERE t.id = w.current_id AND t.parent_id IS NOT NULL
+                UNION ALL
+                SELECT d.dependency_id AS target_id
+                FROM task_dependencies d
+                WHERE d.task_id = w.current_id
+            ) edge
+            WHERE NOT w.cycle
+        )
+        SELECT 1 FROM walk WHERE cycle
+    ) THEN
+        RAISE EXCEPTION 'task dependency graph contains a cycle'
+            USING ERRCODE = '23514', CONSTRAINT = 'tasks_dependency_cycle';
+    END IF;
+END $$;
+"#,
+		)
+		.await?;
 	// SeaQuery cannot express PostgreSQL trigger/function DDL. The derived table
 	// keeps the array API intact while real FKs protect concurrent writes/deletes.
 	manager
@@ -653,8 +798,8 @@ BEGIN
 END $$;
 CREATE FUNCTION guard_task_parent_cycle() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    -- Serialize deferred hierarchy checks so concurrent opposite edges cannot
-    -- each validate against a snapshot that predates the other transaction.
+    -- The statement trigger takes the shared lock before deferred-check
+    -- snapshots are established; keep this acquisition as a defensive guard.
     PERFORM pg_advisory_xact_lock(70721021::bigint);
     IF EXISTS (
         WITH RECURSIVE walk(current_id, parent_id, path, cycle) AS (
@@ -678,6 +823,56 @@ CREATE CONSTRAINT TRIGGER tasks_parent_cycle_guard
     AFTER INSERT OR UPDATE OF id, parent_id, workspace_id ON tasks
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION guard_task_parent_cycle();
+CREATE FUNCTION lock_task_hierarchy_before_change() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    PERFORM pg_advisory_xact_lock(70721021::bigint);
+    RETURN NULL;
+END $$;
+CREATE TRIGGER tasks_hierarchy_serialize
+    BEFORE INSERT OR UPDATE OF id, parent_id, workspace_id, dependencies ON tasks
+    FOR EACH STATEMENT EXECUTE FUNCTION lock_task_hierarchy_before_change();
+"#,
+		)
+		.await?;
+	Ok(())
+}
+
+async fn create_task_dependency_cycle_guard(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+	manager
+		.get_connection()
+		.execute_unprepared(
+			r#"
+CREATE FUNCTION guard_task_dependency_cycle() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (
+        WITH RECURSIVE walk(current_id, path, cycle) AS (
+            SELECT NEW.id, ARRAY[NEW.id], false
+            UNION ALL
+            SELECT edge.target_id, w.path || edge.target_id,
+                   edge.target_id = ANY(w.path)
+            FROM walk w
+            CROSS JOIN LATERAL (
+                SELECT t.parent_id AS target_id
+                FROM tasks t
+                WHERE t.id = w.current_id AND t.parent_id IS NOT NULL
+                UNION ALL
+                SELECT d.dependency_id AS target_id
+                FROM task_dependencies d
+                WHERE d.task_id = w.current_id
+            ) edge
+            WHERE NOT w.cycle
+        )
+        SELECT 1 FROM walk WHERE cycle
+    ) THEN
+        RAISE EXCEPTION 'task dependency graph contains a cycle'
+            USING ERRCODE = '23514', CONSTRAINT = 'tasks_dependency_cycle';
+    END IF;
+    RETURN NEW;
+END $$;
+CREATE CONSTRAINT TRIGGER zz_tasks_dependency_cycle_guard
+    AFTER INSERT OR UPDATE OF id, parent_id, dependencies ON tasks
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION guard_task_dependency_cycle();
 "#,
 		)
 		.await?;
@@ -695,8 +890,9 @@ async fn create_installation_guard(manager: &SchemaManager<'_>) -> Result<(), Db
 CREATE FUNCTION guard_installation_config() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
     target_kind text;
+    target_config jsonb;
 BEGIN
-    SELECT kind INTO target_kind
+    SELECT kind, metadata->'config' INTO target_kind, target_config
     FROM registry
     WHERE id = NEW.id AND version = NEW.version;
 
@@ -735,6 +931,13 @@ BEGIN
             USING ERRCODE = '23514', CONSTRAINT = 'installations_config';
     END IF;
 
+    IF target_kind = 'tool' AND NOT COALESCE(
+        aidash_tool_config_is_valid(target_config || NEW.config), false
+    ) THEN
+        RAISE EXCEPTION 'installation override is not a valid tool configuration'
+            USING ERRCODE = '23514', CONSTRAINT = 'installations_config';
+    END IF;
+
     RETURN NEW;
 END $$;
 CREATE TRIGGER installations_config_guard
@@ -759,6 +962,7 @@ CREATE TRIGGER installations_config_guard
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
 	async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+		create_sql_validators(manager).await?;
 		for (table, name, expression) in checks() {
 			// PostgreSQL CHECK alone accepts NULL; missing required JSON keys must fail.
 			manager
@@ -796,9 +1000,10 @@ impl MigrationTrait for Migration {
 				)
 				.await?;
 		}
-		create_parent_cycle_guard(manager).await?;
 		create_installation_guard(manager).await?;
 		create_dependencies(manager).await?;
+		create_parent_cycle_guard(manager).await?;
+		create_task_dependency_cycle_guard(manager).await?;
 		Ok(())
 	}
 
@@ -806,7 +1011,7 @@ impl MigrationTrait for Migration {
 		manager
 			.get_connection()
 			.execute_unprepared(
-				"DROP TRIGGER installations_config_guard ON installations; DROP FUNCTION guard_installation_config(); DROP TRIGGER tasks_parent_cycle_guard ON tasks; DROP FUNCTION guard_task_parent_cycle();",
+				"DROP TRIGGER installations_config_guard ON installations; DROP FUNCTION guard_installation_config(); DROP TRIGGER zz_tasks_dependency_cycle_guard ON tasks; DROP FUNCTION guard_task_dependency_cycle(); DROP TRIGGER tasks_parent_cycle_guard ON tasks; DROP FUNCTION guard_task_parent_cycle(); DROP TRIGGER tasks_hierarchy_serialize ON tasks; DROP FUNCTION lock_task_hierarchy_before_change();",
 			)
 			.await?;
 		// Matching DDL exception: SeaQuery has no trigger/function drop builders.
@@ -855,6 +1060,12 @@ impl MigrationTrait for Migration {
 				))
 				.await?;
 		}
+		manager
+			.get_connection()
+			.execute_unprepared(
+				"DROP FUNCTION aidash_valid_pending_timestamp(jsonb); DROP FUNCTION aidash_tool_config_is_valid(jsonb);",
+			)
+			.await?;
 		Ok(())
 	}
 }
