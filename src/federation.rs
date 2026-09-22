@@ -705,6 +705,57 @@ impl Home {
 			Ok(snapshot)
 		}
 	}
+	pub async fn observation(&self, offset: usize, limit: usize) -> Result<Value> {
+		if let Some(authority) = &self.authority {
+			return authority
+				.workspace_observation(self.run.workspace_id, offset, limit)
+				.await;
+		}
+		let snapshot = self.snapshot().await?;
+		Ok(crate::context::observation::project(
+			&snapshot, offset, limit,
+		))
+	}
+	pub async fn read_record(&self, kind: &str, id: &str) -> Result<Value> {
+		if let Some(authority) = &self.authority {
+			let id = id
+				.parse::<Uuid>()
+				.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
+			return authority
+				.workspace_record(self.run.workspace_id, kind, id)
+				.await;
+		}
+		if self.local() {
+			let snapshot = self
+				.federation
+				.store
+				.snapshot(self.run.workspace_id)
+				.await?;
+			return crate::context::observation::select_record(&snapshot, kind, id);
+		}
+		self.command("workspace_record", json!({"kind":kind,"id":id}))
+			.await
+	}
+	pub async fn children(&self, parent: Uuid) -> Result<Vec<Task>> {
+		if let Some(authority) = &self.authority {
+			return authority
+				.workspace_children(self.run.workspace_id, parent)
+				.await;
+		}
+		if self.local() {
+			return Ok(self
+				.federation
+				.store
+				.snapshot(self.run.workspace_id)
+				.await?
+				.tasks
+				.into_iter()
+				.filter(|task| task.parent_id == Some(parent))
+				.collect());
+		}
+		self.command("workspace_children", json!({"parent_id":parent}))
+			.await
+	}
 	async fn snapshot_collection<T: DeserializeOwned>(&self, collection: &str) -> Result<Vec<T>> {
 		let mut items = vec![];
 		let mut after: Option<Uuid> = None;
@@ -733,6 +784,13 @@ impl Home {
 		}
 	}
 	pub async fn task(&self) -> Result<Task> {
+		if self.authority.is_some() {
+			return serde_json::from_value(
+				self.read_record("task", &self.run.task_id.to_string())
+					.await?,
+			)
+			.map_err(Into::into);
+		}
 		if self.local() {
 			self.federation.store.task(self.run.task_id).await
 		} else {

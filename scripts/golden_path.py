@@ -61,6 +61,33 @@ def entity(kind, identifier, config, capability="web.search"):
     }
 
 
+def artifact_read_state(history, artifact_id):
+    chunks = [
+        (
+            event["call"].get("arguments", {}),
+            event.get("result", {}),
+        )
+        for event in history
+        if event.get("kind") == "tool"
+        and event.get("call", {}).get("name") == "workspace_read"
+        and event.get("call", {}).get("arguments", {}).get("kind") == "artifact"
+        and event.get("call", {}).get("arguments", {}).get("id") == artifact_id
+        and isinstance(event.get("result", {}).get("content"), str)
+    ]
+    chunks.sort(key=lambda item: item[0].get("offset", 0))
+    offset = 0
+    content = []
+    for arguments, result in chunks:
+        if arguments.get("offset", 0) != offset:
+            continue
+        piece = result["content"]
+        content.append(piece)
+        offset += len(piece)
+        if result.get("next_offset") is None:
+            return json.loads("".join(content))["content"], None
+    return None, offset
+
+
 class Fixture:
     def __init__(self, node_a, node_b):
         self.node_a = node_a
@@ -100,7 +127,7 @@ class Fixture:
                 call("human_request", {"kind": "APPROVAL_REQUIRED", "prompt": "Approve publication?"})
             else:
                 assert answers[-1]["response"] is False
-                assert any(message["sender"].startswith("human") and message["content"] == "Do not publish." for message in workspace["messages"])
+                assert any(message["sender"].startswith("human") and message["content_preview"] == "Do not publish." for message in workspace["messages"])
                 text = "Approval was declined. No publication was performed."
         elif current["identity"]["agent_id"] == "coordinator":
             if not any(name == "agent_discover" for name, _ in tools):
@@ -115,7 +142,17 @@ class Fixture:
             elif any(child["status"] != "COMPLETED" for child in workspace["tasks"] if child["parent_id"] == task["id"]):
                 call("workspace_wait", {"seconds": 2})
             else:
-                text = "Axum・Actix・Rocketの調査が完了しました。各エージェントの成果物を統合しました。\n\n" + "\n".join(str(a["content"]) for a in workspace["artifacts"])
+                contents = []
+                waiting_for_reads = False
+                for artifact in workspace["artifacts"]:
+                    content, offset = artifact_read_state(history, artifact["id"])
+                    if offset is not None:
+                        waiting_for_reads = True
+                        call("workspace_read", {"kind": "artifact", "id": artifact["id"], "offset": offset, "max_chars": 8000})
+                    else:
+                        contents.append(str(content))
+                if not waiting_for_reads:
+                    text = "Axum・Actix・Rocketの調査が完了しました。各エージェントの成果物を統合しました。\n\n" + "\n".join(contents)
         elif not any(name == "plugin_0" for name, _ in tools):
             call("plugin_0", {"topic": task["title"]})
         else:

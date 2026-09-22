@@ -25,6 +25,29 @@ pub fn estimated_tokens(value: &str) -> usize {
 	value.len()
 }
 
+/// Estimate how much one durable tool event adds to a complete provider
+/// request. Fixed instructions, tools, and pinned context cancel out, so this
+/// probe measures the same encoded context growth without storing that payload.
+pub(crate) fn tool_event_growth(context: &Context, event: &Value) -> usize {
+	fn estimate(context: &Context) -> usize {
+		crate::provider::ModelRequest {
+			instructions: String::new(),
+			context: json!({
+				"current": Value::Null,
+				"summary": context.summary,
+				"history": context.history,
+			}),
+			tools: vec![],
+			max_output_tokens: 0,
+		}
+		.estimated_total_tokens()
+	}
+	let before = estimate(context);
+	let mut after = context.clone();
+	after.history.push(event.clone());
+	estimate(&after).saturating_sub(before)
+}
+
 pub struct RequestBudget<'a> {
 	pub window: usize,
 	pub instructions: &'a str,

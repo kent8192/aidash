@@ -351,20 +351,29 @@ impl Tool for Builtin {
 				ctx.home.message(key, required(&input, "content")?).await?;
 				Ok(json!({"sent":true}))
 			}
-			"workspace_observe" => Ok(crate::context::observation::project(
-				&ctx.home.snapshot().await?,
-				input["offset"].as_u64().unwrap_or(0) as usize,
-				input["limit"]
-					.as_u64()
-					.unwrap_or(crate::context::observation::DEFAULT_LIMIT as u64) as usize,
-			)),
-			"workspace_read" => crate::context::observation::read(
-				&ctx.home.snapshot().await?,
-				required(&input, "kind")?,
-				required(&input, "id")?,
-				input["offset"].as_u64().unwrap_or(0) as usize,
-				input["max_chars"].as_u64().unwrap_or(8000) as usize,
-			),
+			"workspace_observe" => {
+				ctx.home
+					.observation(
+						input["offset"].as_u64().unwrap_or(0) as usize,
+						input["limit"]
+							.as_u64()
+							.unwrap_or(crate::context::observation::DEFAULT_LIMIT as u64)
+							as usize,
+					)
+					.await
+			}
+			"workspace_read" => {
+				let kind = required(&input, "kind")?;
+				let id = required(&input, "id")?;
+				let record = ctx.home.read_record(kind, id).await?;
+				crate::context::observation::chunk_record(
+					record,
+					kind,
+					id,
+					input["offset"].as_u64().unwrap_or(0) as usize,
+					input["max_chars"].as_u64().unwrap_or(8000) as usize,
+				)
+			}
 			"workspace_wait" => {
 				Ok(json!({"wait_seconds":input["seconds"].as_u64().unwrap_or(2).clamp(1,60)}))
 			}
@@ -450,8 +459,8 @@ pub fn builtins() -> BTreeMap<String, Arc<dyn Tool>> {
 		},
 		Builtin {
 			name: "workspace_read",
-			description: "Read one accessible workspace record by kind and exact ID. Returns a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. Use to read artifact content and omitted details without repeating side effects.",
-			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event"]},"id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":1,"maximum":16000}},"additionalProperties":false}),
+			description: "Read one accessible workspace record by kind and exact ID. Returns a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.",
+			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event"]},"id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_wait",

@@ -219,7 +219,7 @@ async fn retained_snapshot_revocation(events_only: bool) {
             assert!(artifact_id.is_string());
             assert!(!body.to_string().contains("private-artifact-content"));
             let sources:i64=sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("COUNT(*)")).from(sea_orm::sea_query::Alias::new("authorization_run_reads")).and_where(sea_orm::sea_query::Expr::cust("resource_kind = 'artifact'")).to_string(sea_orm::sea_query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
-            assert_eq!(sources,1,"membership must commit before provider I/O");
+            assert_eq!(sources,20,"only records exposed by the bounded observation page are tracked before provider I/O");
             Json(json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"read","type":"function","function":{"name":"workspace_read","arguments":json!({"kind":"artifact","id":artifact_id}).to_string()}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
         }
     }));
@@ -259,6 +259,26 @@ async fn retained_snapshot_revocation(events_only: bool) {
 		)
 		.await
 		.unwrap();
+	sqlx::query("UPDATE artifacts SET created_at = '2000-01-01T00:00:00Z' WHERE id = $1")
+		.bind(artifact.id)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	for index in 0..25 {
+		f.store
+			.publish_artifact(
+				task,
+				&qualified_agent(&f.config.node_id, "research", "1.0.0"),
+				&format!("unrelated-source-{index}"),
+				&ArtifactInput {
+					kind: "text".into(),
+					name: format!("Unrelated source {index}"),
+					content: json!("unrelated"),
+				},
+			)
+			.await
+			.unwrap();
+	}
 	worker.worker_once().await.unwrap();
 	worker.worker_once().await.unwrap();
 	let run = f.store.runs().await.unwrap().remove(0);

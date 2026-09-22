@@ -425,6 +425,12 @@ impl Access {
 	}
 
 	pub(crate) async fn workspace_snapshot(&mut self, id: Uuid) -> Result<WorkspaceSnapshot> {
+		let snapshot = self.workspace_snapshot_untracked(id).await?;
+		self.track_snapshot(&snapshot).await?;
+		Ok(snapshot)
+	}
+
+	async fn workspace_snapshot_untracked(&mut self, id: Uuid) -> Result<WorkspaceSnapshot> {
 		let workspace = self.workspace(id).await?;
 		self.require(&workspace, "workspace.read").await?;
 		let events = if self.decide(&workspace, "workspace.events").await? {
@@ -491,8 +497,234 @@ impl Access {
 			}
 		}
 		snapshot.messages = messages;
-		self.track_snapshot(&snapshot).await?;
 		Ok(snapshot)
+	}
+
+	pub(crate) async fn workspace_observation(
+		&mut self,
+		id: Uuid,
+		offset: usize,
+		limit: usize,
+	) -> Result<Value> {
+		let snapshot = self.workspace_snapshot_untracked(id).await?;
+		let limit = limit.clamp(1, crate::context::observation::MAX_LIMIT);
+		let dependencies = WorkspaceSnapshot {
+			workspace: snapshot.workspace.clone(),
+			tasks: snapshot
+				.tasks
+				.iter()
+				.skip(offset)
+				.take(limit)
+				.cloned()
+				.collect(),
+			artifacts: snapshot
+				.artifacts
+				.iter()
+				.skip(offset)
+				.take(limit)
+				.cloned()
+				.collect(),
+			events: snapshot
+				.events
+				.iter()
+				.rev()
+				.skip(offset)
+				.take(limit)
+				.cloned()
+				.collect(),
+			messages: snapshot
+				.messages
+				.iter()
+				.rev()
+				.skip(offset)
+				.take(limit)
+				.cloned()
+				.collect(),
+		};
+		self.track_snapshot(&dependencies).await?;
+		Ok(crate::context::observation::project(
+			&snapshot, offset, limit,
+		))
+	}
+
+	pub(crate) async fn workspace_record(
+		&mut self,
+		workspace_id: Uuid,
+		kind: &str,
+		id: Uuid,
+	) -> Result<Value> {
+		let resource = self.workspace(workspace_id).await?;
+		self.require(&resource, "workspace.read").await?;
+		let workspace: Workspace = sqlx::query_as(
+			&Query::select()
+				.column(Asterisk)
+				.from(Alias::new("workspaces"))
+				.cond_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(workspace_id)
+		.fetch_one(&mut *self.tx)
+		.await?;
+		let mut snapshot = WorkspaceSnapshot {
+			workspace,
+			tasks: vec![],
+			artifacts: vec![],
+			events: vec![],
+			messages: vec![],
+		};
+		let value = match kind {
+			"workspace" if id == workspace_id => json!(snapshot.workspace.clone()),
+			"workspace" => return Err(Error::Forbidden),
+			"task" => {
+				let task: Task = sqlx::query_as(
+					&Query::select()
+						.column(Asterisk)
+						.from(Alias::new("tasks"))
+						.cond_where(
+							Condition::all()
+								.add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+								.add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$2"))),
+						)
+						.to_string(PostgresQueryBuilder),
+				)
+				.bind(id)
+				.bind(workspace_id)
+				.fetch_optional(&mut *self.tx)
+				.await?
+				.ok_or(Error::Forbidden)?;
+				if !self.task_visible(&task).await? {
+					return Err(Error::Forbidden);
+				}
+				snapshot.tasks.push(task.clone());
+				json!(task)
+			}
+			"artifact" => {
+				let artifact: Artifact = sqlx::query_as(
+					&Query::select()
+						.column(Asterisk)
+						.from(Alias::new("artifacts"))
+						.cond_where(
+							Condition::all()
+								.add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+								.add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$2"))),
+						)
+						.to_string(PostgresQueryBuilder),
+				)
+				.bind(id)
+				.bind(workspace_id)
+				.fetch_optional(&mut *self.tx)
+				.await?
+				.ok_or(Error::Forbidden)?;
+				if !self.artifact_visible(&artifact).await? {
+					return Err(Error::Forbidden);
+				}
+				snapshot.artifacts.push(artifact.clone());
+				json!(artifact)
+			}
+			"message" => {
+				let message: Message = sqlx::query_as(
+					&Query::select()
+						.column(Asterisk)
+						.from(Alias::new("messages"))
+						.cond_where(
+							Condition::all()
+								.add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+								.add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$2"))),
+						)
+						.to_string(PostgresQueryBuilder),
+				)
+				.bind(id)
+				.bind(workspace_id)
+				.fetch_optional(&mut *self.tx)
+				.await?
+				.ok_or(Error::Forbidden)?;
+				if !self.message_visible(&message).await? {
+					return Err(Error::Forbidden);
+				}
+				snapshot.messages.push(message.clone());
+				json!(message)
+			}
+			"event" => {
+				if !self.decide(&resource, "workspace.events").await? {
+					return Err(Error::Forbidden);
+				}
+				let event: Event = sqlx::query_as(
+					&Query::select()
+						.column(Asterisk)
+						.from(Alias::new("events"))
+						.cond_where(
+							Condition::all()
+								.add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+								.add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$2"))),
+						)
+						.to_string(PostgresQueryBuilder),
+				)
+				.bind(id)
+				.bind(workspace_id)
+				.fetch_optional(&mut *self.tx)
+				.await?
+				.ok_or(Error::Forbidden)?;
+				if !self.event_visible(&event).await? {
+					return Err(Error::Forbidden);
+				}
+				snapshot.events.push(event.clone());
+				json!(event)
+			}
+			_ => return Err(Error::Invalid("unknown workspace record kind".into())),
+		};
+		self.track_snapshot(&snapshot).await?;
+		Ok(value)
+	}
+
+	pub(crate) async fn workspace_children(
+		&mut self,
+		workspace_id: Uuid,
+		parent_id: Uuid,
+	) -> Result<Vec<Task>> {
+		let resource = self.workspace(workspace_id).await?;
+		self.require(&resource, "workspace.read").await?;
+		let workspace: Workspace = sqlx::query_as(
+			&Query::select()
+				.column(Asterisk)
+				.from(Alias::new("workspaces"))
+				.cond_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(workspace_id)
+		.fetch_one(&mut *self.tx)
+		.await?;
+		let candidates: Vec<Task> = sqlx::query_as(
+			&Query::select()
+				.column(Asterisk)
+				.from(Alias::new("tasks"))
+				.cond_where(
+					Condition::all()
+						.add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+						.add(Expr::col(Alias::new("parent_id")).eq(Expr::cust("$2"))),
+				)
+				.order_by(Alias::new("created_at"), Order::Asc)
+				.order_by(Alias::new("id"), Order::Asc)
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(workspace_id)
+		.bind(parent_id)
+		.fetch_all(&mut *self.tx)
+		.await?;
+		let mut tasks = Vec::new();
+		for task in candidates {
+			if self.task_visible(&task).await? {
+				tasks.push(task);
+			}
+		}
+		self.track_snapshot(&WorkspaceSnapshot {
+			workspace,
+			tasks: tasks.clone(),
+			artifacts: vec![],
+			events: vec![],
+			messages: vec![],
+		})
+		.await?;
+		Ok(tasks)
 	}
 }
 

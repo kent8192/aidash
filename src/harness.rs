@@ -8,9 +8,18 @@ use crate::{
 	registry::{AgentConfig, ModelConfig},
 	tool::{PluginTool, Tool, ToolConfig, ToolContext, builtins},
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use uuid::Uuid;
+
+const POST_TOOL_CONTEXT_RESERVE: usize = 4096;
+const TOOL_EVENT_RESERVE: usize = 512;
+
+fn request_context_window(window: usize, minimum_request: usize) -> usize {
+	let available = window.saturating_sub(minimum_request);
+	let reserve = POST_TOOL_CONTEXT_RESERVE.min(available / 2);
+	window.saturating_sub(reserve.saturating_mul(2))
+}
 
 #[derive(Clone)]
 pub struct Harness {
@@ -129,9 +138,15 @@ impl Harness {
 		message: String,
 	) -> Result<()> {
 		let mut context: Context = serde_json::from_value(run.context.clone())?;
-		context
-			.history
-			.push(json!({"kind":"tool","call":call,"result":{"error":message}}));
+		let event = json!({"kind":"tool","call":call,"result":{"error":message}});
+		let growth = context::tool_event_growth(&context, &event);
+		context.history.push(event);
+		run.pending["request_tokens"] = json!(
+			run.pending["request_tokens"]
+				.as_u64()
+				.unwrap_or(0)
+				.saturating_add(growth as u64)
+		);
 		run.context = json!(context);
 		run.pending["cursor"] = json!(cursor + 1);
 		self.federation
@@ -248,24 +263,23 @@ impl Harness {
 			"READY" => {
 				let task = home.task().await?;
 				if !task.dependencies.is_empty() {
-					let snapshot = home.snapshot().await?;
-					if let Some(dependency) = snapshot.tasks.iter().find(|dependency| {
-						task.dependencies.contains(&dependency.id)
-							&& matches!(
-								dependency.status.as_str(),
-								"FAILED" | "CANCELLED" | "ABANDONED"
-							)
-					}) {
-						return Err(Error::Invalid(format!(
-							"dependency {} is {}",
-							dependency.id, dependency.status
-						)));
+					let mut waiting = false;
+					for id in &task.dependencies {
+						let dependency: Task = serde_json::from_value(
+							home.read_record("task", &id.to_string()).await?,
+						)?;
+						if matches!(
+							dependency.status.as_str(),
+							"FAILED" | "CANCELLED" | "ABANDONED"
+						) {
+							return Err(Error::Invalid(format!(
+								"dependency {} is {}",
+								dependency.id, dependency.status
+							)));
+						}
+						waiting |= dependency.status != "COMPLETED";
 					}
-					if task.dependencies.iter().any(|id| {
-						!snapshot.tasks.iter().any(|dependency| {
-							dependency.id == *id && dependency.status == "COMPLETED"
-						})
-					}) {
+					if waiting {
 						run.phase = "WAITING".into();
 						run.pending = json!({"wake_at":chrono::Utc::now()+chrono::Duration::seconds(2),"resume_phase":"READY"});
 						store.save_run(run, token, "run.waiting").await?;
@@ -293,12 +307,7 @@ impl Harness {
 				let window = model_cfg.context_window;
 				let model = provider(self.federation.client.clone(), model_cfg)?;
 				let tools = self.tools(&agent).await?;
-				let snapshot = home.snapshot().await?;
-				let task = snapshot
-					.tasks
-					.iter()
-					.find(|t| t.id == run.task_id)
-					.ok_or_else(|| Error::NotFound("run task".into()))?;
+				let task = home.task().await?;
 				if task.status == "COMPLETED" {
 					run.phase = "COMPLETED".into();
 					store.save_run(run, token, "run.recovered").await?;
@@ -317,18 +326,25 @@ impl Harness {
 					}
 				}
 				let mut context: Context = serde_json::from_value(run.context.clone())?;
-				let mut pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":context::observation::project(&snapshot, 0, context::observation::DEFAULT_LIMIT),"memory":store.memory(run).await?,"agent_state":{"phase":run.phase,"step":run.step}});
+				let observation = home
+					.observation(0, context::observation::DEFAULT_LIMIT)
+					.await?;
+				let mut pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":observation,"memory":store.memory(run).await?,"agent_state":{"phase":run.phase,"step":run.step}});
 				let specifications = tools
 					.values()
 					.map(|t| t.specification())
 					.collect::<Vec<_>>();
 				let output = (window / 8).clamp(256, 4096) as u32;
-				let budget = context::RequestBudget {
+				let mut budget = context::RequestBudget {
 					window,
 					instructions: &instructions,
 					tools: &specifications,
 					max_output_tokens: output,
 				};
+				let minimum_request = budget
+					.request(&Context::default(), &serde_json::Value::Null)
+					.estimated_total_tokens();
+				budget.window = request_context_window(window, minimum_request);
 				// Keep room for history and JSON message escaping. The final fitting
 				// decision below measures the complete provider input, not this quota.
 				let available = budget.remaining(&Context::default(), &serde_json::Value::Null);
@@ -377,6 +393,7 @@ impl Harness {
 				}
 				let request = budget.request(&context, &pinned);
 				crate::generation::budget::Reservation::check_request(window, &request)?;
+				let request_tokens = request.estimated_total_tokens();
 				let reservation = if let Some(guard) = guard {
 					guard
 						.reserve_inference(store, token, window, output)
@@ -390,13 +407,13 @@ impl Harness {
 				}
 				context.usage = json!({"input_tokens":result.input_tokens,"output_tokens":result.output_tokens,"context_window":window,"compactions":context.compactions});
 				run.context = json!(context);
-				run.pending = json!({"response":result,"cursor":0});
+				run.pending = json!({"response":result,"cursor":0,"window":budget.window,"request_tokens":request_tokens});
 				run.phase = "TOOL_CALL".into();
 				run.error = None;
 				store.save_run(run, token, "model.completed").await?;
 			}
 			"TOOL_CALL" => {
-				let result: ModelResponse =
+				let mut result: ModelResponse =
 					serde_json::from_value(run.pending["response"].clone())?;
 				if !result.text.is_empty() {
 					if let Some(guard) = guard {
@@ -410,17 +427,13 @@ impl Harness {
 				let cursor = run.pending["cursor"].as_u64().unwrap_or(0) as usize;
 				if cursor >= result.tool_calls.len() {
 					if result.tool_calls.is_empty() {
-						let snapshot = home.snapshot().await?;
-						if snapshot.tasks.iter().any(|t| {
-							t.parent_id == Some(run.task_id)
-								&& !matches!(t.status.as_str(), "COMPLETED" | "ABANDONED")
-						}) {
-							let failed = snapshot.tasks.iter().any(|t| {
-								t.parent_id == Some(run.task_id)
-									&& matches!(
-										t.status.as_str(),
-										"FAILED" | "BLOCKED" | "CANCELLED"
-									)
+						let children = home.children(run.task_id).await?;
+						if children
+							.iter()
+							.any(|t| !matches!(t.status.as_str(), "COMPLETED" | "ABANDONED"))
+						{
+							let failed = children.iter().any(|t| {
+								matches!(t.status.as_str(), "FAILED" | "BLOCKED" | "CANCELLED")
 							});
 							if failed {
 								if let Some(guard) = guard {
@@ -439,14 +452,7 @@ impl Harness {
 						}
 						let artifact = ArtifactInput {
 							kind: "text".into(),
-							name: result_artifact_name(
-								snapshot
-									.tasks
-									.iter()
-									.find(|t| t.id == run.task_id)
-									.map(|t| t.title.as_str())
-									.unwrap_or("Task"),
-							),
+							name: result_artifact_name(&home.task().await?.title),
 							content: json!(result.text),
 						};
 						if let Some(guard) = guard {
@@ -460,12 +466,8 @@ impl Harness {
 							.await
 						{
 							if matches!(error, Error::Conflict(_))
-								&& home.snapshot().await?.tasks.iter().any(|task| {
-									task.parent_id == Some(run.task_id)
-										&& !matches!(
-											task.status.as_str(),
-											"COMPLETED" | "ABANDONED"
-										)
+								&& home.children(run.task_id).await?.iter().any(|task| {
+									!matches!(task.status.as_str(), "COMPLETED" | "ABANDONED")
 								}) {
 								run.step += 1;
 								run.phase = "WAITING".into();
@@ -485,7 +487,26 @@ impl Harness {
 					}
 					return Ok(());
 				}
-				let call = &result.tool_calls[cursor];
+				let mut context: Context = serde_json::from_value(run.context.clone())?;
+				let mut call = result.tool_calls[cursor].clone();
+				let mut read_was_limited = false;
+				if call.name == "workspace_read" {
+					let request_tokens =
+						run.pending["request_tokens"].as_u64().unwrap_or(0) as usize;
+					let window = run.pending["window"].as_u64().unwrap_or(0) as usize;
+					(call, read_was_limited) = cap_workspace_read(
+						&home,
+						&context,
+						&call,
+						request_tokens,
+						window,
+						result.tool_calls.len().saturating_sub(cursor + 1),
+					)
+					.await?;
+					result.tool_calls[cursor] = call.clone();
+					run.pending["response"] = json!(result);
+				}
+				let call = &call;
 				let tools = self.tools(&agent).await?;
 				let Some(tool) = tools.get(&call.name) else {
 					return self
@@ -526,7 +547,7 @@ impl Harness {
 					store.save_run(run, token, "run.waiting").await?;
 					return Ok(());
 				}
-				let output = if invocation.status == "COMPLETED" {
+				let mut output = if invocation.status == "COMPLETED" {
 					invocation.result.ok_or_else(|| {
 						Error::Conflict("completed invocation has no result".into())
 					})?
@@ -541,13 +562,29 @@ impl Harness {
 						Err(Error::Invalid(message)) => json!({"error":message}),
 						Err(e) => return Err(e),
 					};
-					store.invocation_finish(run, token, &key, &output).await?;
 					output
 				};
-				let mut context: Context = serde_json::from_value(run.context.clone())?;
-				context
-					.history
-					.push(json!({"kind":"tool","call":call,"result":output}));
+				if read_was_limited {
+					output["budget_limited"] = json!(true);
+					if call.arguments["max_chars"].as_u64() == Some(0) {
+						output["deferred"] = json!(true);
+						output["message"] = json!(
+							"No request budget remains for content. Continue on a later turn; do not repeat this read now."
+						);
+					}
+				}
+				if invocation.status != "COMPLETED" {
+					store.invocation_finish(run, token, &key, &output).await?;
+				}
+				let event = json!({"kind":"tool","call":call,"result":output});
+				let growth = context::tool_event_growth(&context, &event);
+				context.history.push(event);
+				run.pending["request_tokens"] = json!(
+					run.pending["request_tokens"]
+						.as_u64()
+						.unwrap_or(0)
+						.saturating_add(growth as u64)
+				);
 				run.context = json!(context);
 				run.pending["cursor"] = json!(cursor + 1);
 				if call.name == "human_request"
@@ -629,6 +666,85 @@ impl Harness {
 	}
 }
 
+async fn cap_workspace_read(
+	home: &Home,
+	context: &Context,
+	call: &crate::provider::ToolCall,
+	request_tokens: usize,
+	window: usize,
+	remaining_calls: usize,
+) -> Result<(crate::provider::ToolCall, bool)> {
+	let requested = call.arguments["max_chars"]
+		.as_u64()
+		.unwrap_or(8000)
+		.min(16000) as usize;
+	let (Some(kind), Some(id)) = (
+		call.arguments["kind"].as_str(),
+		call.arguments["id"].as_str(),
+	) else {
+		return Ok((call.clone(), false));
+	};
+	let record = match home.read_record(kind, id).await {
+		Ok(record) => record,
+		Err(_) => return Ok((call.clone(), false)),
+	};
+	let bounded = fit_workspace_read_chars(
+		context,
+		call,
+		&record,
+		request_tokens,
+		window,
+		remaining_calls,
+	)?;
+	let mut bounded_call = call.clone();
+	bounded_call.arguments["max_chars"] = json!(bounded);
+	Ok((bounded_call, bounded < requested))
+}
+
+fn fit_workspace_read_chars(
+	context: &Context,
+	call: &crate::provider::ToolCall,
+	record: &Value,
+	request_tokens: usize,
+	window: usize,
+	remaining_calls: usize,
+) -> Result<usize> {
+	let requested = call.arguments["max_chars"]
+		.as_u64()
+		.unwrap_or(8000)
+		.min(16000) as usize;
+	let (Some(kind), Some(id)) = (
+		call.arguments["kind"].as_str(),
+		call.arguments["id"].as_str(),
+	) else {
+		return Ok(0);
+	};
+	let offset = call.arguments["offset"].as_u64().unwrap_or(0) as usize;
+	let reserve = remaining_calls.saturating_mul(TOOL_EVENT_RESERVE);
+	let maximum_request = window.saturating_sub(reserve);
+	let fits = |chars: usize| -> Result<bool> {
+		let mut bounded_call = call.clone();
+		bounded_call.arguments["max_chars"] = json!(chars);
+		let output = context::observation::chunk_record(record.clone(), kind, id, offset, chars)?;
+		let event = json!({"kind":"tool","call":bounded_call,"result":output});
+		Ok(
+			request_tokens.saturating_add(context::tool_event_growth(context, &event))
+				<= maximum_request,
+		)
+	};
+	let mut low = 0;
+	let mut high = requested;
+	while low < high {
+		let middle = low + (high - low).div_ceil(2);
+		if fits(middle)? {
+			low = middle;
+		} else {
+			high = middle - 1;
+		}
+	}
+	Ok(low)
+}
+
 async fn run_id(store: &crate::store::Store, token: Uuid) -> Result<Uuid> {
 	sqlx::query_scalar(
 		&sea_orm::sea_query::Query::select()
@@ -656,6 +772,67 @@ fn result_artifact_name(title: &str) -> String {
 }
 #[cfg(test)]
 mod review_tests {
+	#[test]
+	fn small_context_windows_keep_their_available_budget() {
+		assert!(super::request_context_window(2048, 1500) >= 1500);
+		assert!(super::request_context_window(4096, 3000) >= 3000);
+		assert!(super::request_context_window(32_000, 4000) < 32_000);
+	}
+
+	#[test]
+	fn workspace_read_chunks_fit_remaining_complete_request_budget() {
+		let call = crate::provider::ToolCall {
+			id: "read-1".into(),
+			name: "workspace_read".into(),
+			arguments: serde_json::json!({
+				"kind":"artifact",
+				"id":"00000000-0000-0000-0000-000000000001",
+				"offset":0,
+				"max_chars":16000
+			}),
+		};
+		let context = crate::context::Context::default();
+		let record = serde_json::json!({"content":"界".repeat(20000)});
+		let window = 100_000;
+		let request_limit = window - super::POST_TOOL_CONTEXT_RESERVE * 2;
+		let request_tokens = request_limit - 4000;
+		let chars = super::fit_workspace_read_chars(
+			&context,
+			&call,
+			&record,
+			request_tokens,
+			request_limit,
+			2,
+		)
+		.unwrap();
+		assert!(chars > 0 && chars < 16000);
+		let mut bounded_call = call.clone();
+		bounded_call.arguments["max_chars"] = serde_json::json!(chars);
+		let result = crate::context::observation::chunk_record(
+			record.clone(),
+			"artifact",
+			"00000000-0000-0000-0000-000000000001",
+			0,
+			chars,
+		)
+		.unwrap();
+		let event = serde_json::json!({"kind":"tool","call":bounded_call,"result":result});
+		let allowed = request_limit - 2 * super::TOOL_EVENT_RESERVE;
+		assert!(request_tokens + crate::context::tool_event_growth(&context, &event) <= allowed);
+		let mut too_large = call;
+		too_large.arguments["max_chars"] = serde_json::json!(chars + 1);
+		let result = crate::context::observation::chunk_record(
+			record,
+			"artifact",
+			"00000000-0000-0000-0000-000000000001",
+			0,
+			chars + 1,
+		)
+		.unwrap();
+		let event = serde_json::json!({"kind":"tool","call":too_large,"result":result});
+		assert!(request_tokens + crate::context::tool_event_growth(&context, &event) > allowed);
+	}
+
 	#[test]
 	fn result_names_fit_for_ascii_and_multibyte_titles() {
 		for title in ["a".repeat(64_000), "界".repeat(21_333)] {

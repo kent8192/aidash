@@ -54,8 +54,44 @@ pub(crate) fn project(snapshot: &WorkspaceSnapshot, offset: usize, limit: usize)
 
 /// Selection only happens inside the Home's authorization-filtered snapshot.
 /// A bounded character range avoids splitting UTF-8 or silently losing details.
-pub(crate) fn read(
-	snapshot: &WorkspaceSnapshot,
+pub(crate) fn select_record(snapshot: &WorkspaceSnapshot, kind: &str, id: &str) -> Result<Value> {
+	let id = id
+		.parse::<uuid::Uuid>()
+		.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
+	match kind {
+		"workspace" => (snapshot.workspace.id == id)
+			.then(|| json!(snapshot.workspace))
+			.ok_or_else(|| Error::Invalid("workspace record not available".into())),
+		"task" => snapshot
+			.tasks
+			.iter()
+			.find(|record| record.id == id)
+			.map(|record| json!(record))
+			.ok_or_else(|| Error::Invalid("workspace record not available".into())),
+		"artifact" => snapshot
+			.artifacts
+			.iter()
+			.find(|record| record.id == id)
+			.map(|record| json!(record))
+			.ok_or_else(|| Error::Invalid("workspace record not available".into())),
+		"message" => snapshot
+			.messages
+			.iter()
+			.find(|record| record.id == id)
+			.map(|record| json!(record))
+			.ok_or_else(|| Error::Invalid("workspace record not available".into())),
+		"event" => snapshot
+			.events
+			.iter()
+			.find(|record| record.id == id)
+			.map(|record| json!(record))
+			.ok_or_else(|| Error::Invalid("workspace record not available".into())),
+		_ => Err(Error::Invalid("unknown workspace record kind".into())),
+	}
+}
+
+pub(crate) fn chunk_record(
+	value: Value,
 	kind: &str,
 	id: &str,
 	offset: usize,
@@ -64,28 +100,7 @@ pub(crate) fn read(
 	let id = id
 		.parse::<uuid::Uuid>()
 		.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
-	let record = match kind {
-		"workspace" => (snapshot.workspace.id == id).then(|| json!(snapshot.workspace)),
-		"task" => snapshot.tasks.iter().find(|t| t.id == id).map(|t| json!(t)),
-		"artifact" => snapshot
-			.artifacts
-			.iter()
-			.find(|a| a.id == id)
-			.map(|a| json!(a)),
-		"message" => snapshot
-			.messages
-			.iter()
-			.find(|m| m.id == id)
-			.map(|m| json!(m)),
-		"event" => snapshot
-			.events
-			.iter()
-			.find(|e| e.id == id)
-			.map(|e| json!(e)),
-		_ => return Err(Error::Invalid("unknown workspace record kind".into())),
-	}
-	.ok_or_else(|| Error::Invalid("workspace record not available".into()))?;
-	let text = record.to_string();
+	let text = value.to_string();
 	let total = text.chars().count();
 	if offset > total {
 		return Err(Error::Invalid(
@@ -95,12 +110,14 @@ pub(crate) fn read(
 	let content: String = text
 		.chars()
 		.skip(offset)
-		.take(max_chars.clamp(1, 16000))
+		.take(max_chars.min(16000))
 		.collect();
 	let end = offset + content.chars().count();
-	Ok(
-		json!({"kind":kind,"id":id,"encoding":"json","content":content,"offset":offset,"total_chars":total,"next_offset":(end<total).then_some(end)}),
-	)
+	Ok(json!({
+		"kind":kind,"id":id,"encoding":"json","content":content,
+		"offset":offset,"total_chars":total,"next_offset":(end<total).then_some(end),
+		"budget_limited":max_chars == 0
+	}))
 }
 
 /// Upgrade replayed legacy observations in the working context only. Human

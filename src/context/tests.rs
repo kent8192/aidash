@@ -80,6 +80,39 @@ fn request_check_reserves_completion_tokens() {
 	assert!(crate::generation::budget::Reservation::check_request(2000, &request).is_err());
 }
 
+#[test]
+fn tool_event_growth_matches_the_complete_request_delta() {
+	use crate::provider::ToolSpec;
+	let tools = vec![ToolSpec {
+		name: "workspace_read".into(),
+		description: "Read a record".into(),
+		parameters: json!({"type":"object","properties":{"id":{"type":"string"}}}),
+	}];
+	let pinned = json!({"private":"日本語 \"quoted\" \\ escaped context"});
+	let context = Context {
+		summary: "summary with text".into(),
+		history: vec![tool("previous", "result")],
+		..Default::default()
+	};
+	let event = tool(
+		"read",
+		&json!({"content":"quotes \" and backslashes \\ and 日本語"}).to_string(),
+	);
+	let mut after = context.clone();
+	after.history.push(event.clone());
+	let budget = RequestBudget {
+		window: usize::MAX,
+		instructions: "instructions with newline\n",
+		tools: &tools,
+		max_output_tokens: 2048,
+	};
+	let delta = budget
+		.request(&after, &pinned)
+		.estimated_total_tokens()
+		.saturating_sub(budget.request(&context, &pinned).estimated_total_tokens());
+	assert_eq!(tool_event_growth(&context, &event), delta);
+}
+
 #[tokio::test]
 async fn fitting_and_final_checks_share_escaped_input_tools_and_output_budget() {
 	use crate::{generation::budget::Reservation, provider::ToolSpec};

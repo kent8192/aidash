@@ -491,6 +491,35 @@ impl WorkerAuthority {
 		self.access.lock().await.workspace_snapshot(workspace).await
 	}
 
+	pub async fn workspace_observation(
+		&self,
+		workspace: Uuid,
+		offset: usize,
+		limit: usize,
+	) -> Result<Value> {
+		self.access
+			.lock()
+			.await
+			.workspace_observation(workspace, offset, limit)
+			.await
+	}
+
+	pub async fn workspace_record(&self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Value> {
+		self.access
+			.lock()
+			.await
+			.workspace_record(workspace, kind, id)
+			.await
+	}
+
+	pub async fn workspace_children(&self, workspace: Uuid, parent: Uuid) -> Result<Vec<Task>> {
+		self.access
+			.lock()
+			.await
+			.workspace_children(workspace, parent)
+			.await
+	}
+
 	pub async fn delegate(
 		&self,
 		f: &Federation,

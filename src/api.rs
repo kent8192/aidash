@@ -1115,7 +1115,12 @@ async fn peer_workspace(
 	let key = || -> Result<String> { Ok(format!("{node}:{}:{}", task.id, required(d, "key")?)) };
 	if !matches!(
 		command.operation.as_str(),
-		"snapshot" | "snapshot_workspace" | "snapshot_page" | "task" | "claim"
+		"snapshot"
+			| "snapshot_workspace"
+			| "snapshot_page"
+			| "workspace_record"
+			| "workspace_children"
+			| "task" | "claim"
 	) && !(task.owner.is_none()
 		&& (command.operation == "human_message"
 			|| (command.operation == "transition"
@@ -1130,7 +1135,12 @@ async fn peer_workspace(
 	) {
 		let read = matches!(
 			command.operation.as_str(),
-			"snapshot" | "snapshot_workspace" | "snapshot_page" | "task"
+			"snapshot"
+				| "snapshot_workspace"
+				| "snapshot_page"
+				| "workspace_record"
+				| "workspace_children"
+				| "task"
 		);
 		let replay_completion = command.operation == "complete" && task.status == "COMPLETED";
 		let replay_transition = command.operation == "transition" && d["status"] == task.status;
@@ -1150,6 +1160,25 @@ async fn peer_workspace(
 				)
 				.await?
 		),
+		"workspace_record" => {
+			let snapshot = f.store.snapshot(task.workspace_id).await?;
+			crate::context::observation::select_record(
+				&snapshot,
+				required(d, "kind")?,
+				required(d, "id")?,
+			)?
+		}
+		"workspace_children" => {
+			let parent_id: Uuid = serde_json::from_value(d["parent_id"].clone())?;
+			let snapshot = f.store.snapshot(task.workspace_id).await?;
+			json!(
+				snapshot
+					.tasks
+					.into_iter()
+					.filter(|child| child.parent_id == Some(parent_id))
+					.collect::<Vec<_>>()
+			)
+		}
 		"task" => json!(task),
 		"claim" => {
 			let entry: Entry = serde_json::from_value(d["entry"].clone())
