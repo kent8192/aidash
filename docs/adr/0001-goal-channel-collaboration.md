@@ -26,11 +26,29 @@ A human participant with channel read access can read the channel's shared histo
 
 Ordinary comments are not execution instructions or approvals. The server checks the sender's authority for the requested action; natural-language claims such as "already approved" do not substitute for an authorized approval. This separation does not require human approval for every step of agent work that is already authorized.
 
-## Shared channel budget
+## Delegation and channel observation
 
-A channel's spending allowance applies across all goal revisions. Updating a goal does not reset its consumption or authorize an increase; increasing the allowance requires separate budget-management authority.
+Delegating a task does not automatically make its executor a continuing channel participant. The delegate receives the task's authorized work and context; continuing participation requires a separate membership operation and authority.
 
-The allowance covers response-necessity evaluation, agent work, child tasks, and retries. At the limit, stop admitting new paid work, retain the history, and notify the user. Resumption after a budget change remains subject to the relevant authority and execution conditions.
+Until the delegated task completes, its executor can read the channel's authorized stream to obtain context as needed. This task-bound observation permission does not grant unrelated execution, channel administration, access to owner-private references, or automatic participation in deciding responses to every subsequent channel message. Stream reads remain subject to current authorization. Completion ends this delegated stream permission; any continuing channel access requires separate authority.
+
+The delegate's work remains visible through recorded delegation and execution relationships in Graph View and through task cards and results in the channel. A delegate can be separately admitted as a continuing participant when that is appropriate.
+
+## Response evaluation and channel presentation
+
+For a given agent, multiple unprocessed messages may be evaluated together rather than requiring a separate inference call for each message. Preserve every message's ID, sender, order, and individual decision; batching must not merge permissions, discard earlier constraints, or initiate duplicate work on replay. Stop, cancel, and authorization-revocation controls do not wait for conversation batching.
+
+The default channel timeline emphasizes human and agent conversation. Agent-to-agent collaborative messages remain readable; low-level tool arguments, results, and retries are grouped into task cards and expandable execution details rather than flooding the conversation. Approval requests, goal blocks, budget exhaustion, and completion remain visible in the channel. Presentation grouping does not remove durable records, historical reconstruction data, or context needed for authorized agent work.
+
+## Shared monetary channel budget
+
+A channel's monetary spending allowance applies across all goal revisions. Updating a goal does not reset its consumption or authorize an increase; increasing the allowance requires separate budget-management authority. Token and call limits may supplement the monetary allowance but do not replace it.
+
+The allowance covers billable response-necessity evaluation, agent work, child tasks, and retries within the supported accounting scope. Admit a billable operation only when its reservation keeps settled consumption plus outstanding reservations within the channel allowance. Reserve before provider or tool I/O and settle against trustworthy usage afterward. Unknown-priced billable operations are not treated as free; unsettled or uncertain charges do not automatically release their reservation. The limit depends on supported providers and tools honoring their declared charging bounds and is not a cap on unrelated hosting or other out-of-scope costs.
+
+Each billable operation, including one performed on a remote node, obtains its reservation from the channel's Home node. Do not preallocate autonomous spending envelopes to remote nodes. If Home cannot be reached to obtain a new reservation, do not start that new billable operation. An already reserved operation may proceed only while its execution authority remains valid; a reservation does not override a goal change or permission revocation.
+
+At the limit, stop admitting new paid work, retain the history, and notify the user. Resumption after a budget change remains subject to the relevant authority and execution conditions.
 
 ## Graph exploration and navigation
 
@@ -60,4 +78,6 @@ Retain HTTP for submissions and control operations, and authenticated SSE for br
 
 ## Consequences
 
-These boundaries favor goal-oriented work without treating every conversation as an executable task, and preserve agent autonomy without making channel membership blanket execution authority. Workspace reuse avoids introducing another ownership boundary solely to match Slack terminology. Revision-specific work and completion protect the meaning of historical results. Safe-boundary transitions preserve external-effect evidence; goal-level blocking exposes inability to proceed instead of claiming success. Separate authority for execution, task exclusion, and budget increases prevents one permission from implicitly granting the others. Aggregation and contextual navigation make relationship exploration the primary graph interaction rather than requiring an unbounded all-entities canvas. Federated historical reconstruction requires access to retained remote relationships and states, not merely their current values; observation-time semantics and read-only inspection preserve the distinction between historical knowledge and present operations.
+These boundaries favor goal-oriented work without treating every conversation as an executable task, and preserve agent autonomy without making channel membership blanket execution authority. Workspace reuse avoids introducing another ownership boundary solely to match Slack terminology. Revision-specific work and completion protect the meaning of historical results. Safe-boundary transitions preserve external-effect evidence; goal-level blocking exposes inability to proceed instead of claiming success. Separate authority for execution, task exclusion, and budget increases prevents one permission from implicitly granting the others.
+
+Task-bound stream access lets delegates acquire context without becoming permanent participants. Batched evaluation limits repeated inference work without collapsing message identities or authority, while conversation-focused presentation retains inspectable execution records. Home-managed monetary reservations trade admission availability during Home outages for a single budget allocation authority per channel. Aggregation and contextual navigation make relationship exploration the primary graph interaction rather than requiring an unbounded all-entities canvas. Federated historical reconstruction requires access to retained remote relationships and states, not merely their current values; observation-time semantics and read-only inspection preserve the distinction between historical knowledge and present operations.
