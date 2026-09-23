@@ -50,7 +50,7 @@ test("failed message keeps its draft and idempotency key on retry", async ({
   expect(errors).toEqual([]);
 });
 
-test("message attachments show their names and download with the current credential", async ({
+test("message attachments show their names and download in the selected tab context", async ({
   page,
 }) => {
   const { errors } = await setup(page, { messageAttachment: true });
@@ -69,7 +69,8 @@ test("message attachments show their names and download with the current credent
     attachment.click(),
   ]);
   expect(download.suggestedFilename()).toBe("evidence.txt");
-  expect(request.headers()["authorization"]).toBe("Bearer fixture");
+  expect(request.headers()["x-aidash-context"]).toBe("operator");
+  expect(request.headers()["authorization"]).toBeUndefined();
   expect(errors).toEqual([]);
 });
 

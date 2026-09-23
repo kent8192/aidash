@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { installBearerDashboard } from "./auth-fixture";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -41,8 +42,8 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
   let releaseRefresh = () => {};
   let releaseConfigure = () => {};
   try {
+    await installBearerDashboard(page, "acceptance-access-token");
     await page.addInitScript(() => {
-      sessionStorage.setItem("aidash-token", "acceptance-access-token");
       localStorage.setItem("aidash-locale", "en-US");
     });
     await page.goto("/semantic");
@@ -84,9 +85,13 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
     await page.route(
       `**${root}/search`,
       async (searchRoute) => {
-        const response = await searchRoute.fetch();
+        const response = await searchRoute.fetch({
+          headers: { ...searchRoute.request().headers(), ...headers },
+        });
         await page.route(`**${root}/history`, async (route) => {
-          const history = await route.fetch();
+          const history = await route.fetch({
+            headers: { ...route.request().headers(), ...headers },
+          });
           await refreshGate;
           await route.fulfill({ response: history });
         });
@@ -123,11 +128,15 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
     });
     await page.route(`**${root}/index`, async (route) => {
       if (route.request().method() !== "POST" || !holdConfigure) {
-        await route.continue();
+        await route.continue({
+          headers: { ...route.request().headers(), ...headers },
+        });
         return;
       }
       configureStarted = true;
-      const response = await route.fetch();
+      const response = await route.fetch({
+        headers: { ...route.request().headers(), ...headers },
+      });
       await configureGate;
       holdConfigure = false;
       await route.fulfill({ response });

@@ -19,6 +19,8 @@ pub enum Error {
 	Unauthorized,
 	#[error("forbidden")]
 	Forbidden,
+	#[error("external identity status is unavailable")]
+	IdentityStatusUnavailable,
 	#[error("atomic transaction visibility pending; retry after recovery")]
 	TransactionPending,
 	#[error("an atomic transaction committed during inference; retrying from fresh state")]
@@ -49,6 +51,7 @@ impl IntoResponse for Error {
 			Self::NotFound(s) => (StatusCode::NOT_FOUND, s.clone()),
 			Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
 			Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden".into()),
+			Self::IdentityStatusUnavailable => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
 			Self::TransactionPending
 			| Self::SemanticUnavailable
 			| Self::OrchestrationUnavailable => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),

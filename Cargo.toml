@@ -26,11 +26,15 @@ migration = { path = "migration" }
 async-trait = "0.1.89"
 async-nats = "0.46"
 async-stream = "0.3"
+base64 = "0.22"
 axum = { version = "0.8", features = ["json", "query", "macros"] }
 chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 jsonschema = { version = "0.33", default-features = false }
+jsonwebtoken = { version = "11.1", default-features = false, features = ["aws_lc_rs"] }
+openidconnect = "4.0.1"
 reqwest = { version = "0.13", default-features = false, features = [
+  "form",
   "json",
   "rustls",
 ] }

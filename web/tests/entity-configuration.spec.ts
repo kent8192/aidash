@@ -1,8 +1,9 @@
 import { test, expect } from "@playwright/test";
+import { installBearerDashboard } from "./auth-fixture";
 
 test.beforeEach(async ({ page }) => {
+  await installBearerDashboard(page, "fixture-token");
   await page.addInitScript(() => {
-    sessionStorage.setItem("aidash-token", "fixture-token");
     localStorage.setItem("aidash-locale", "en-US");
   });
   await page.route("**/api/**", async (route) => {

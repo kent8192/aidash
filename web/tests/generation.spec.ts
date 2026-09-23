@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { installBearerDashboard } from "./auth-fixture";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { randomUUID } from "node:crypto";
@@ -139,9 +140,8 @@ test("generation dashboard manages policy, approval, completion and retained his
     };
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    const authFixture = await installBearerDashboard(page, "acceptance-access-token");
     await page.goto("/");
-    await page.getByLabel("アクセストークン").fill("acceptance-access-token");
-    await page.getByRole("button", { name: "接続", exact: true }).click();
     await expect(page.locator(".collab-app")).toBeVisible();
     const navigate = async (label: string) => {
       if (label === "タスク") {
@@ -200,10 +200,7 @@ test("generation dashboard manages policy, approval, completion and retained his
       expected_revision: 0,
       enabled: true,
     });
-    await page.evaluate(
-      (token) => sessionStorage.setItem("aidash-token", token),
-      credential.token,
-    );
+    authFixture.setToken(credential.token);
     await page.reload();
     await navigate("Agent生成");
     await page

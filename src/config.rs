@@ -12,6 +12,105 @@ pub struct Config {
 	pub api_token: String,
 	pub web_dir: String,
 	pub lease_seconds: i32,
+	pub oidc: Option<OidcConfig>,
+}
+
+#[derive(Clone)]
+pub struct OidcConfig {
+	pub issuer: String,
+	pub client_id: String,
+	pub client_secret: String,
+	pub public_origin: String,
+	pub keycloak_admin_url: String,
+	pub status_client_id: String,
+	pub status_client_secret: String,
+	pub session_absolute_seconds: i64,
+	pub session_idle_seconds: i64,
+}
+
+impl OidcConfig {
+	pub fn from_env() -> Result<Option<Self>> {
+		let keys = [
+			"AIDASH_OIDC_ISSUER",
+			"AIDASH_OIDC_CLIENT_ID",
+			"AIDASH_OIDC_CLIENT_SECRET",
+			"AIDASH_OIDC_PUBLIC_ORIGIN",
+			"AIDASH_OIDC_KEYCLOAK_ADMIN_URL",
+			"AIDASH_OIDC_STATUS_CLIENT_ID",
+			"AIDASH_OIDC_STATUS_CLIENT_SECRET",
+		];
+		let present = keys.iter().any(|key| env::var(key).is_ok());
+		if !present {
+			return Ok(None);
+		}
+		let required = |key: &str| {
+			env::var(key).map_err(|_| {
+				Error::Invalid(format!("{key} is required when dashboard OIDC is enabled"))
+			})
+		};
+		let issuer = required(keys[0])?;
+		let client_id = required(keys[1])?;
+		let client_secret = required(keys[2])?;
+		let public_origin = required(keys[3])?;
+		let keycloak_admin_url = required(keys[4])?;
+		let status_client_id = required(keys[5])?;
+		let status_client_secret = required(keys[6])?;
+		for (label, value) in [
+			("AIDASH_OIDC_ISSUER", &issuer),
+			("AIDASH_OIDC_PUBLIC_ORIGIN", &public_origin),
+			("AIDASH_OIDC_KEYCLOAK_ADMIN_URL", &keycloak_admin_url),
+		] {
+			let url = reqwest::Url::parse(value)
+				.map_err(|_| Error::Invalid(format!("invalid {label}")))?;
+			let secure = url.scheme() == "https";
+			let local =
+				url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1" | "localhost"));
+			if (!secure && !local)
+				|| url.username() != ""
+				|| url.password().is_some()
+				|| url.query().is_some()
+				|| url.fragment().is_some()
+			{
+				return Err(Error::Invalid(format!("invalid {label}")));
+			}
+		}
+		let origin_url = reqwest::Url::parse(&public_origin)
+			.map_err(|_| Error::Invalid("invalid AIDASH_OIDC_PUBLIC_ORIGIN".into()))?;
+		if origin_url.path() != "/" {
+			return Err(Error::Invalid(
+				"AIDASH_OIDC_PUBLIC_ORIGIN must not contain a path".into(),
+			));
+		}
+		let lifetime = |key: &str, default: i64| -> Result<i64> {
+			let value = env::var(key).ok().map_or(Ok(default), |value| {
+				value
+					.parse::<i64>()
+					.map_err(|_| Error::Invalid(format!("invalid {key}")))
+			})?;
+			if !(60..=604_800).contains(&value) {
+				return Err(Error::Invalid(format!("{key} must be 60..604800 seconds")));
+			}
+			Ok(value)
+		};
+		let session_absolute_seconds = lifetime("AIDASH_OIDC_SESSION_ABSOLUTE_SECONDS", 43_200)?;
+		let session_idle_seconds = lifetime("AIDASH_OIDC_SESSION_IDLE_SECONDS", 1_800)?;
+		if session_idle_seconds > session_absolute_seconds {
+			return Err(Error::Invalid(
+				"OIDC session idle time cannot exceed its absolute lifetime".into(),
+			));
+		}
+		Ok(Some(Self {
+			issuer,
+			client_id,
+			client_secret,
+			public_origin: public_origin.trim_end_matches('/').to_string(),
+			keycloak_admin_url: keycloak_admin_url.trim_end_matches('/').to_string(),
+			status_client_id,
+			status_client_secret,
+			session_absolute_seconds,
+			session_idle_seconds,
+		}))
+	}
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -51,6 +150,7 @@ impl Config {
 			api_token,
 			web_dir: env::var("AIDASH_WEB_DIR").unwrap_or_else(|_| "web/dist".into()),
 			lease_seconds: 30,
+			oidc: OidcConfig::from_env()?,
 		})
 	}
 	pub fn identity(&self, clusters: Vec<String>) -> NodeIdentity {

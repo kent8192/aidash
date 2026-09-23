@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { installBearerDashboard } from "./auth-fixture";
 import { randomUUID } from "node:crypto";
 
 test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog and credential revocation", async ({
@@ -63,8 +64,8 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
   };
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  await installBearerDashboard(page, "acceptance-access-token");
   await page.addInitScript(() => {
-    sessionStorage.setItem("aidash-token", "acceptance-access-token");
     localStorage.setItem("aidash-locale", "ja-JP");
   });
   await page.goto("/authorization");
@@ -197,10 +198,10 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
   });
   try {
     const subjectPage = await subjectContext.newPage();
-    await subjectPage.addInitScript((value) => {
-      sessionStorage.setItem("aidash-token", value);
+    await installBearerDashboard(subjectPage, token, { tenant, name: "alice" });
+    await subjectPage.addInitScript(() => {
       localStorage.setItem("aidash-locale", "en-US");
-    }, token);
+    });
     await subjectPage.goto("/authorization");
     await expect(
       subjectPage.getByText("This page is available to administrators."),
@@ -343,8 +344,8 @@ test("peer identity mappings preserve revisions, credential rotation and bilingu
   });
   const first = await api(`${base}/credentials`, { subject: "bridge" });
   const second = await api(`${base}/credentials`, { subject: "bridge" });
+  await installBearerDashboard(page, "acceptance-access-token");
   await page.addInitScript(() => {
-    sessionStorage.setItem("aidash-token", "acceptance-access-token");
     localStorage.setItem("aidash-locale", "en-US");
   });
   await page.goto("/authorization");

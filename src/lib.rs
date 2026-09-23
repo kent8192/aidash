@@ -4,6 +4,7 @@ pub mod bus;
 pub mod collaboration;
 pub mod config;
 pub mod context;
+pub mod dashboard_auth;
 pub mod domain;
 pub mod error;
 pub mod federation;

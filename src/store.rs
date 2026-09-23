@@ -1885,7 +1885,12 @@ impl Store {
 		.await?;
 		Ok(())
 	}
-	pub(crate) async fn pause_for_authorization(&self, run: &Run, worker: Uuid) -> Result<()> {
+	pub(crate) async fn pause_for_authorization(
+		&self,
+		run: &Run,
+		worker: Uuid,
+		reason: &str,
+	) -> Result<()> {
 		let mut tx = self.pool.begin().await?;
 		let changed = sqlx::query(
 			&sea_orm::sea_query::Query::update()
@@ -1898,7 +1903,7 @@ impl Store {
 				)
 				.value(
 					sea_orm::sea_query::Alias::new("error"),
-					sea_orm::sea_query::Expr::cust("'execution authority denied'"),
+					sea_orm::sea_query::Expr::cust("$3"),
 				)
 				.value(
 					sea_orm::sea_query::Alias::new("revision"),
@@ -1923,6 +1928,7 @@ impl Store {
 		)
 		.bind(run.id)
 		.bind(worker)
+		.bind(reason)
 		.execute(&mut *tx)
 		.await?
 		.rows_affected();

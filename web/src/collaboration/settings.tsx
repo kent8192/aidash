@@ -4,6 +4,7 @@ import { Badge, JsonView, Panel, useI18n } from "../ui";
 import { GenerationPage } from "../generation";
 import { SemanticPage } from "../semantic";
 import { AuthorizationPage } from "../authorization";
+import { DashboardIdentityAdministration } from "../dashboard-identity";
 import { DeploymentPage } from "../deployment";
 import { TransactionsPage } from "../transactions";
 import { collaborationCopy } from "./copy";
@@ -100,7 +101,10 @@ export function Configuration({
           {section === "generation" && <GenerationPage data={data} />}
           {section === "semantic" && <SemanticPage data={data} />}
           {section === "authorization" && operator && (
-            <AuthorizationPage entries={data.registry} />
+            <>
+              <DashboardIdentityAdministration />
+              <AuthorizationPage entries={data.registry} />
+            </>
           )}
           {section === "transactions" && operator && (
             <TransactionsPage nodeId={data.node.id} />

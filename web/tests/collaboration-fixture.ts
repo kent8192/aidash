@@ -1,4 +1,5 @@
 import type { Page } from "@playwright/test";
+import { installBearerDashboard } from "./auth-fixture";
 
 function fixture() {
   const node = {
@@ -181,8 +182,8 @@ export async function setup(
     };
   };
   page.on("pageerror", (error) => errors.push(error.message));
+  await installBearerDashboard(page, "fixture");
   await page.addInitScript(() => {
-    sessionStorage.setItem("aidash-token", "fixture");
     localStorage.setItem("aidash-locale", "en-US");
   });
   await page.route("**/api/**", async (route) => {

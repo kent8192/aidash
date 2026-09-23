@@ -21,8 +21,7 @@ worker, and frontend with Helm, and exposes the dashboard at
 <http://127.0.0.1:8080>. The frontend Service serves the dashboard and proxies
 API, federation, and health requests to the internal backend Service.
 
-Sign in with `AIDASH_API_TOKEN` from `.env`, or `local-development-token` when
-`.env` is absent. The local Kubernetes helper passes variables with the
+The dashboard requires a configured Keycloak OIDC provider. Without one it shows setup guidance; `AIDASH_API_TOKEN` remains available for the API and initial operator grant. The local Kubernetes helper passes variables with the
 `AIDASH_SECRET_` prefix and optional `AIDASH_JEV_ENDPOINT` and
 `AIDASH_JEV_MODEL` values from `.env` to the Pods. For a cluster with a
 persistent PostgreSQL volume, keep
@@ -48,7 +47,7 @@ syncs frontend source changes and rebuilds the backend when Rust code changes:
 cargo make dev
 ```
 
-Open the printed Frontend URL and enter the token from `AIDASH_API_TOKEN`.
+Open the printed Frontend URL. Configure Keycloak OIDC as described below to sign in.
 The backend defaults to <http://127.0.0.1:18080>. If either default port is
 busy, the launcher selects the next available port and prints the resulting
 URLs. Set `AIDASH_BACKEND_PORT` or `AIDASH_FRONTEND_PORT` in `.env` to choose
@@ -61,7 +60,15 @@ services while retaining their data volumes. The example
 credentials and localhost bindings are for local development. Configure
 unique credentials and an HTTPS endpoint for a deployed node.
 
-The [authorization API](docs/authorization.md) issues revocable subject tokens for tenant-scoped workspaces, approved Registry discovery, local agent execution and event streams. Workers recheck the root and delegated agents at every durable boundary. The dashboard supports subject tokens for local goals, conversations, human answers and run controls, and shows their tenant identity. Operators use **Access policies / アクセス制御** to edit role/attribute policies, simulate decisions, inspect audits, approve component versions and issue or revoke subject credentials. Scoped remote federation remains under implementation.
+The [authorization API](docs/authorization.md) issues revocable subject tokens for tenant-scoped workspaces, approved Registry discovery, local agent execution and event streams. Workers recheck the root and delegated agents at every durable boundary. The dashboard signs in with Keycloak and requires an explicit mapping to an existing user subject or a separate operator grant. Its selected authority is local to each tab. Existing API Bearer credentials remain available. Operators use **Access policies / アクセス制御** to edit role/attribute policies, simulate decisions, approve registration requests, manage mappings and operator grants, and issue or revoke subject credentials. Scoped remote federation remains under implementation.
+
+### Dashboard OIDC setup
+
+Aidash uses Authorization Code with PKCE and keeps provider tokens on the backend. Set the seven `AIDASH_OIDC_*` connection variables shown in `.env.example` on the API server. `AIDASH_OIDC_PUBLIC_ORIGIN` is the exact browser origin serving the dashboard; the registered callback URI is `<origin>/auth/callback`. The Vite proxy forwards `/auth` to the backend. In production use HTTPS for the dashboard, issuer and admin endpoint so Aidash issues Secure host-only session cookies. The browser session expires after 12 hours or 30 minutes without user activity by default.
+
+For a local Keycloak fixture, start the pinned container with `docker compose --profile oidc up -d keycloak`. It listens at `http://127.0.0.1:18099` with the local-only bootstrap account defined in `compose.yaml`. Create a realm with local users, then create a confidential `aidash-dashboard` client with Standard Flow enabled, the exact callback URI, and the dashboard origin as a Web Origin. Configure its Back-Channel Logout URL to reach the backend at `/auth/backchannel-logout`. Create a separate confidential `aidash-status` service-account client with only read access to users in that realm (for example, `realm-management` `view-users`); it needs no user-write, impersonation, or realm-admin role. Set its client ID and secret as the status integration variables. Run the Aidash backend on the host when using the loopback Keycloak issuer, so both browser and backend resolve the same issuer URL. A Keycloak service in a container needs a backend address reachable from that container for logout notifications.
+
+The first external identity has no authority. After its first sign-in, list verified identity IDs with `GET /api/dashboard/identities` using the existing operator Bearer token, then grant the selected identity operator access with `POST /api/dashboard/identities/{id}/operator-grant` and body `{"enabled":true}`. Applicants can submit an authenticated registration request; operators approve one against an existing enabled user subject in **Access policies**. Approval never creates a subject or grants operator access. To disable an external identity in Keycloak, Aidash checks its enabled status at most 15 minutes after the last successful check; a definite disablement revokes browser sessions and pauses work. Once Keycloak access is restored, an operator must explicitly call `POST /api/dashboard/identities/{id}/restore`; previously revoked sessions require a new sign-in. Current-browser and all-device Aidash logout are separate dashboard actions. API Bearer recovery remains available during IdP outages.
 
 The **Registry** screen can register models, tools, skills, clusters, agents, compactors and embedding providers. Register a model before an agent. Inference uses OpenRouter `/chat/completions`. Specify the provider's actual model ID, context window, modalities and cost metadata. Credentials are resolved only from `AIDASH_SECRET_*` environment variables. Registry records store the environment variable name, never its value. Model selection is explicit; Aidash does not select fallback models or automatically route between models.
 

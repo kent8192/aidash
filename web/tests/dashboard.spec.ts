@@ -1,9 +1,9 @@
 import { test, expect } from "@playwright/test";
+import { installBearerDashboard } from "./auth-fixture";
 
 test.beforeEach(async ({ page }) => {
+  await installBearerDashboard(page, "acceptance-access-token");
   await page.goto("/");
-  await page.getByLabel("アクセストークン").fill("acceptance-access-token");
-  await page.getByRole("button", { name: "接続", exact: true }).click();
   await expect(page.locator(".collab-app")).toBeVisible();
 });
 
@@ -116,7 +116,9 @@ test("creates a workspace and task and receives live assignment changes", async 
   const selectedLabel = await select.locator("option:checked").textContent();
   let reordered = false;
   await page.route("**/api/discover", async (route) => {
-    const response = await route.fetch();
+    const response = await route.fetch({
+      headers: { ...route.request().headers(), authorization: "Bearer acceptance-access-token" },
+    });
     const discovery = await response.json();
     discovery.agents.reverse();
     reordered = true;

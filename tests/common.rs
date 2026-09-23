@@ -99,6 +99,7 @@ pub async fn setup() -> (Federation, String, String) {
 			api_token: "operator-execution-fixture".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
+			oidc: None,
 		},
 		client: reqwest::Client::new(),
 		notify: Arc::new(tokio::sync::Notify::new()),
