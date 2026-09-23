@@ -1,6 +1,50 @@
 import { expect, test } from "@playwright/test";
 import { setup } from "./collaboration-fixture";
 
+for (const viewport of [
+  { width: 1440, height: 700 },
+  { width: 390, height: 600 },
+  { width: 900, height: 400 },
+]) {
+  test(`long registration dialog stays contained at ${viewport.width}x${viewport.height}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport);
+    const { errors } = await setup(page);
+    await page.goto("/settings?view=registry");
+    await page
+      .getByRole("button", { name: "Register entity", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByLabel("Entity type").selectOption("model");
+    const heading = dialog.getByRole("heading", { name: "Register entity" });
+    const headingBefore = await heading.boundingBox();
+    const submit = dialog.getByRole("button", {
+      name: "Register entity",
+      exact: true,
+    });
+    await submit.scrollIntoViewIfNeeded();
+    await expect(submit).toBeInViewport();
+    await expect(heading).toBeInViewport();
+    expect(await heading.boundingBox()).toEqual(headingBefore);
+    const bounds = await dialog.boundingBox();
+    const buttonBounds = await submit.boundingBox();
+    expect(bounds!.y).toBeGreaterThanOrEqual(0);
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height);
+    expect(buttonBounds!.y + buttonBounds!.height).toBeLessThan(
+      bounds!.y + bounds!.height,
+    );
+    expect(
+      await dialog.evaluate(
+        (element) => element.scrollWidth <= element.clientWidth,
+      ),
+    ).toBe(true);
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+}
+
 test("collaboration is the landing view, with two primary destinations and secondary settings", async ({
   page,
 }) => {

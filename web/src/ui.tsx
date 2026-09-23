@@ -85,7 +85,7 @@ export function Modal({
           ×
         </button>
       </div>
-      {children}
+      <div className="modal-body">{children}</div>
     </dialog>
   );
 }
