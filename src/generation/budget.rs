@@ -107,7 +107,7 @@ pub(crate) async fn reserve(
 	.bind(&access.identity.tenant)
 	.bind(&store.node_id)
 	.bind(&access.subjects)
-	.fetch_all(&mut *access.tx)
+	.fetch_all(&mut **access.tx)
 	.await?;
 	if requests.is_empty() {
 		return Ok(None);

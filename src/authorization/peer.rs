@@ -338,7 +338,7 @@ async fn access(f: &Federation, node: &str, tenant: &str, subject: &str) -> Resu
 	.bind(node)
 	.bind(tenant)
 	.bind(subject)
-	.fetch_optional(&mut *access.tx)
+	.fetch_optional(&mut **access.tx)
 	.await?;
 	if current.as_ref() != Some(&mapping) {
 		return Err(Error::Forbidden);
@@ -356,7 +356,7 @@ async fn access(f: &Federation, node: &str, tenant: &str, subject: &str) -> Resu
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(node)
-	.fetch_optional(&mut *access.tx)
+	.fetch_optional(&mut **access.tx)
 	.await?;
 	if enabled.is_none() {
 		return Err(Error::Forbidden);

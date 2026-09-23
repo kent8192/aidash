@@ -2,6 +2,7 @@ mod common;
 
 use aidash::{api, harness::Harness};
 use common::*;
+use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 use tokio::{
@@ -10,6 +11,7 @@ use tokio::{
 	task::JoinSet,
 	time::timeout,
 };
+use uuid::Uuid;
 
 struct StalledProvider {
 	endpoint: String,
@@ -186,6 +188,7 @@ async fn cancel_stalled_inference(scoped: bool, stall_body: bool) {
 	assert!(harness.worker_once().await.unwrap());
 	let run = f.store.runs().await.unwrap().remove(0);
 	assert_eq!(run.phase, "THINKING");
+
 	let mut workers = JoinSet::new();
 	let worker = harness.clone();
 	workers.spawn(async move { worker.worker_once().await });
@@ -315,6 +318,20 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result() {
 	assert!(harness.worker_once().await.unwrap());
 	let run = f.store.runs().await.unwrap().remove(0);
 	assert_eq!(run.phase, "THINKING");
+	let idle_transactions_before_inference: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(Alias::new("pg_stat_activity"))
+			.cond_where(
+				sea_orm::sea_query::Condition::all()
+					.add(Expr::col(Alias::new("datname")).eq(Expr::cust("current_database()")))
+					.add(Expr::col(Alias::new("state")).eq(Expr::val("idle in transaction"))),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&f.store.pool)
+	.await
+	.unwrap();
 	let mut workers = JoinSet::new();
 	let worker = harness.clone();
 	workers.spawn(async move { worker.worker_once().await });
@@ -322,6 +339,24 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result() {
 		.await
 		.expect("worker must reach the provider")
 		.unwrap();
+	let idle_transactions_during_inference: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(Alias::new("pg_stat_activity"))
+			.cond_where(
+				sea_orm::sea_query::Condition::all()
+					.add(Expr::col(Alias::new("datname")).eq(Expr::cust("current_database()")))
+					.add(Expr::col(Alias::new("state")).eq(Expr::val("idle in transaction"))),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&f.store.pool)
+	.await
+	.unwrap();
+	assert_eq!(
+		idle_transactions_during_inference, idle_transactions_before_inference,
+		"inference must not hold an idle authorization transaction"
+	);
 	let (status, credentials) = request(
 		&app,
 		&operator_token,
@@ -362,6 +397,149 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result() {
 			.any(|event| event.kind == "model.completed")
 	);
 	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn model_infer_policy_revocation_during_inference_blocks_result() {
+	let (mut f, url, schema) = setup().await;
+	f.config.lease_seconds = 300;
+	let mut server = ReleasableProvider::start().await;
+	let app = api::router(f.clone());
+	let (mut policy, subject_token, task_id) = bootstrap(&f, &app, &server.endpoint).await;
+	let operator_token = f.config.api_token.clone();
+	let (status, claimed) = request(
+		&app,
+		&subject_token,
+		"POST",
+		&format!("/api/tasks/{task_id}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{claimed}");
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	assert!(harness.worker_once().await.unwrap());
+	let run = f.store.runs().await.unwrap().remove(0);
+	let mut workers = JoinSet::new();
+	let worker = harness.clone();
+	workers.spawn(async move { worker.worker_once().await });
+	timeout(Duration::from_secs(10), &mut server.entered)
+		.await
+		.expect("worker must reach the provider")
+		.unwrap();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"revoke-model-infer","effect":"deny","subjects":{"any":true},
+		"actions":["model.infer"],"resources":{"kinds":["model"]}
+	}));
+	let (status, changed) = request(
+		&app,
+		&operator_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{changed}");
+	server.release.take().unwrap().send(()).unwrap();
+	assert!(
+		timeout(Duration::from_secs(5), workers.join_next())
+			.await
+			.expect("worker must finish after provider response")
+			.unwrap()
+			.unwrap()
+			.unwrap()
+	);
+	server.tasks.join_next().await.unwrap().unwrap();
+	let current = f.store.run(run.id).await.unwrap();
+	assert_eq!(current.control, "PAUSED");
+	assert_eq!(current.phase, "THINKING");
+	assert!(current.pending.get("response").is_none());
+	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
+	assert!(
+		!snapshot
+			.events
+			.iter()
+			.any(|event| event.kind == "model.completed")
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn inference_completion_waits_for_visibility_gate_reacquisition() {
+	let (mut f, url, schema) = setup().await;
+	f.config.lease_seconds = 300;
+	let mut server = ReleasableProvider::start().await;
+	let app = api::router(f.clone());
+	let (_, subject_token, task_id) = bootstrap(&f, &app, &server.endpoint).await;
+	let (status, claimed) = request(
+		&app,
+		&subject_token,
+		"POST",
+		&format!("/api/tasks/{task_id}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{claimed}");
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	assert!(harness.worker_once().await.unwrap());
+	let run = f.store.runs().await.unwrap().remove(0);
+	let mut workers = JoinSet::new();
+	let worker = harness.clone();
+	workers.spawn(async move { worker.worker_once().await });
+	timeout(Duration::from_secs(10), &mut server.entered)
+		.await
+		.expect("worker must reach the provider")
+		.unwrap();
+	let mut reservation = f.store.control_pool.begin().await.unwrap();
+	let update = Query::update()
+		.table(Alias::new("atomic_gate"))
+		.value(Alias::new("transaction_id"), Expr::cust("$1"))
+		.cond_where(Expr::col(Alias::new("singleton")).eq(true))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&update)
+		.bind(Option::<Uuid>::None)
+		.execute(&mut *reservation)
+		.await
+		.unwrap();
+	server.release.take().unwrap().send(()).unwrap();
+	let finished_while_reserved = timeout(Duration::from_millis(500), workers.join_next()).await;
+	let exited_while_reserved = finished_while_reserved.is_ok();
+	reservation.commit().await.unwrap();
+	let joined = if exited_while_reserved {
+		finished_while_reserved
+			.unwrap()
+			.expect("worker task must exist")
+	} else {
+		timeout(Duration::from_secs(10), workers.join_next())
+			.await
+			.expect("worker must retain inference output until the gate is available")
+			.expect("worker task must still exist")
+	};
+	server.tasks.join_next().await.unwrap().unwrap();
+	let worker_result = joined
+		.map_err(|error| error.to_string())
+		.and_then(|result| result.map_err(|error| error.to_string()));
+	let current = f.store.run(run.id).await.unwrap();
+	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
+	cleanup(f, &url, &schema).await;
+	assert!(
+		!exited_while_reserved,
+		"worker exited while gate reservation was active: {worker_result:?}"
+	);
+	assert_eq!(worker_result, Ok(true));
+	assert_eq!(current.phase, "TOOL_CALL");
+	assert_eq!(current.pending["response"]["text"], "Revoked output");
+	assert!(
+		snapshot
+			.events
+			.iter()
+			.any(|event| event.kind == "model.completed")
+	);
 }
 
 #[tokio::test]

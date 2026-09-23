@@ -44,7 +44,18 @@ impl ReadLease {
 
 	pub async fn resume(&mut self, store: &Store) -> Result<()> {
 		if self.transaction.is_none() {
-			*self = Self::begin(store).await?;
+			loop {
+				match Self::begin(store).await {
+					Ok(lease) => {
+						*self = lease;
+						break;
+					}
+					Err(Error::TransactionPending) => {
+						tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+					}
+					Err(error) => return Err(error),
+				}
+			}
 		}
 		Ok(())
 	}

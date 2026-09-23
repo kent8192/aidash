@@ -58,7 +58,7 @@ pub(crate) async fn discover_in(
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 		)
 		.bind(&peer.node_id)
-		.fetch_optional(&mut *access.tx)
+		.fetch_optional(&mut **access.tx)
 		.await?;
 		if current.is_some_and(|current| {
 			current.endpoint == peer.endpoint

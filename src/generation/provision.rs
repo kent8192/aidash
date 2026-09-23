@@ -59,7 +59,7 @@ async fn activate(f: &Federation, job: &Request) -> Result<()> {
 		.bind(&job.tenant)
 		.bind(&job.policy_id)
 		.bind(job.policy_revision)
-		.fetch_one(&mut *access.tx)
+		.fetch_one(&mut **access.tx)
 		.await?;
 		let spec: policy::Spec = serde_json::from_value(document)?;
 		let config = spec.validate(&access.snapshot.bundle)?;
@@ -123,7 +123,7 @@ async fn activate(f: &Federation, job: &Request) -> Result<()> {
 		.bind(&job.tenant)
 		.bind(access.snapshot.revision)
 		.bind(json!(access.snapshot.bundle))
-		.execute(&mut *access.tx)
+		.execute(&mut **access.tx)
 		.await?;
 		sqlx::query(
 			&sea_orm::sea_query::Query::insert()
@@ -146,7 +146,7 @@ async fn activate(f: &Federation, job: &Request) -> Result<()> {
 		.bind(access.snapshot.revision)
 		.bind(json!(access.snapshot.bundle))
 		.bind(&job.root_subject)
-		.execute(&mut *access.tx)
+		.execute(&mut **access.tx)
 		.await?;
 		crate::registry::register_in(&mut access.tx, &entry, &f.config.node_id).await?;
 		sqlx::query(
@@ -171,7 +171,7 @@ async fn activate(f: &Federation, job: &Request) -> Result<()> {
 		.bind(&job.tenant)
 		.bind(&entry.id)
 		.bind(&entry.version)
-		.execute(&mut *access.tx)
+		.execute(&mut **access.tx)
 		.await?;
 		sqlx::query(
 			&sea_orm::sea_query::Query::insert()
@@ -200,7 +200,7 @@ async fn activate(f: &Federation, job: &Request) -> Result<()> {
 		.bind(&entry.id)
 		.bind(&entry.version)
 		.bind(&job.root_subject)
-		.execute(&mut *access.tx)
+		.execute(&mut **access.tx)
 		.await?;
 		lifecycle::transition(
 			f,
@@ -317,7 +317,7 @@ pub(crate) async fn require_live(
 	agent: &EntityRef,
 ) -> Result<()> {
 	let jobs:Vec<Request>=sqlx::query_as(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))).from(sea_orm::sea_query::Alias::new("generation_requests")).and_where(sea_orm::sea_query::Expr::cust("(tenant = $1 AND ($2 || '/agents/' || agent_id || '@' || agent_version) = ANY($3)) OR (agent_id = $4 AND agent_version = $5)")).order_by_expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id"))), sea_orm::sea_query::Order::Asc).to_string(sea_orm::sea_query::PostgresQueryBuilder))
-        .bind(&access.identity.tenant).bind(node).bind(&access.subjects).bind(&agent.id).bind(&agent.version).fetch_all(&mut *access.tx).await?;
+        .bind(&access.identity.tenant).bind(node).bind(&access.subjects).bind(&agent.id).bind(&agent.version).fetch_all(&mut **access.tx).await?;
 	for job in jobs {
 		let enabled: bool = sqlx::query_scalar(
 			&sea_orm::sea_query::Query::select()
@@ -330,7 +330,7 @@ pub(crate) async fn require_live(
 		)
 		.bind(&job.tenant)
 		.bind(&job.policy_id)
-		.fetch_one(&mut *access.tx)
+		.fetch_one(&mut **access.tx)
 		.await?;
 		if job.tenant != access.identity.tenant
 			|| job.status != "ACTIVE"

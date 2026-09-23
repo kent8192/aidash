@@ -132,7 +132,7 @@ async fn lease(f: &Federation, source: &str, grant: Uuid) -> Result<(Access, Des
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 		)
 		.bind(description.expires_at)
-		.fetch_one(&mut *access.tx)
+		.fetch_one(&mut **access.tx)
 		.await?;
 		if !live {
 			return Err(Error::Forbidden);
@@ -162,7 +162,7 @@ pub(crate) async fn admit(
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 		)
 		.bind(format!("{source}:{}", description.task.id))
-		.execute(&mut *access.tx)
+		.execute(&mut **access.tx)
 		.await?;
 		let legacy: bool = sqlx::query_scalar(
 			&sea_orm::sea_query::Query::select()
@@ -173,7 +173,7 @@ pub(crate) async fn admit(
 		)
 		.bind(source)
 		.bind(description.task.id)
-		.fetch_one(&mut *access.tx)
+		.fetch_one(&mut **access.tx)
 		.await?;
 		if legacy {
 			return Err(Error::Conflict(
@@ -221,7 +221,7 @@ pub(crate) async fn admit(
 		.bind(access.identity.credential_id)
 		.bind(&access.subjects)
 		.bind(serde_json::to_value(&description)?)
-		.execute(&mut *access.tx)
+		.execute(&mut **access.tx)
 		.await?;
 		let record: Record = sqlx::query_as(
 			&sea_orm::sea_query::Query::select()
@@ -239,7 +239,7 @@ pub(crate) async fn admit(
 		)
 		.bind(source)
 		.bind(input.grant_id)
-		.fetch_optional(&mut *access.tx)
+		.fetch_optional(&mut **access.tx)
 		.await?
 		.ok_or_else(|| Error::Conflict("source task already has a different admission".into()))?;
 		if !record.matches(&access, &description)? {
@@ -255,7 +255,7 @@ pub(crate) async fn admit(
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 		)
 		.bind(description.expires_at)
-		.fetch_one(&mut *access.tx)
+		.fetch_one(&mut **access.tx)
 		.await?;
 		if !live {
 			return Err(Error::Forbidden);

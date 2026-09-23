@@ -65,7 +65,7 @@ impl JevAsker for ApprovedCompactor {
 		.bind(access.identity.tenant.clone())
 		.bind(&self.store.node_id)
 		.bind(access.subjects.clone())
-		.fetch_all(&mut *access.tx)
+		.fetch_all(&mut **access.tx)
 		.await?;
 		if jobs.is_empty() {
 			drop(access);

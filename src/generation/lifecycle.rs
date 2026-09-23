@@ -76,7 +76,7 @@ impl Request {
 		)
 		.bind(self.task_id)
 		.bind(self.workspace_id)
-		.fetch_optional(&mut *access.tx)
+		.fetch_optional(&mut **access.tx)
 		.await?;
 		let Some(task) = task else {
 			return Ok(false);

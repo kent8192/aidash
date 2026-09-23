@@ -35,7 +35,7 @@ impl Access {
 		)
 		.bind(run)
 		.bind(workspace)
-		.fetch_all(&mut *self.tx)
+		.fetch_all(&mut **self.tx)
 		.await?;
 		for request in requests {
 			if !self.human_visible(&request).await? {
@@ -54,7 +54,7 @@ impl Access {
 				.to_string(PostgresQueryBuilder),
 		)
 		.bind(id)
-		.fetch_optional(&mut *self.tx)
+		.fetch_optional(&mut **self.tx)
 		.await?
 		.ok_or(Error::Forbidden)?;
 		let workspace = self.workspace(run.workspace_id).await?;
@@ -144,7 +144,7 @@ pub async fn conversation(
 		.bind(format!("{}@{}", target.id, target.version))
 		.bind(target_kind)
 		.bind(&identity.subject)
-		.fetch_one(&mut *access.tx)
+		.fetch_one(&mut **access.tx)
 		.await?;
 		let conversation_resource = access.conversation_resource(&conversation).await?;
 		access
@@ -193,7 +193,7 @@ pub async fn conversation(
 				.to_string(PostgresQueryBuilder),
 		)
 		.bind(task.id)
-		.fetch_one(&mut *access.tx)
+		.fetch_one(&mut **access.tx)
 		.await?;
 		Ok(ConversationResponse {
 			conversation,
@@ -274,7 +274,7 @@ pub async fn answer(
 				.to_string(PostgresQueryBuilder),
 		)
 		.bind(id)
-		.fetch_optional(&mut *access.tx)
+		.fetch_optional(&mut **access.tx)
 		.await?
 		.ok_or(Error::Forbidden)?;
 		let run = access.run_for_interaction(request.run_id).await?;
@@ -311,7 +311,7 @@ pub async fn abandon(
 				.to_string(PostgresQueryBuilder),
 		)
 		.bind(id)
-		.fetch_optional(&mut *access.tx)
+		.fetch_optional(&mut **access.tx)
 		.await?
 		.ok_or(Error::Forbidden)?;
 		let workspace = access.workspace(task.workspace_id).await?;

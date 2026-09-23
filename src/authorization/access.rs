@@ -8,7 +8,47 @@ use crate::{Error, Result, store::Store};
 use sea_orm::sea_query::{Alias, Condition, Expr, LockType, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction};
+use std::ops::{Deref, DerefMut};
 use uuid::Uuid;
+
+pub(crate) struct AccessTransaction(Option<Transaction<'static, Postgres>>);
+
+impl AccessTransaction {
+	fn new(transaction: Transaction<'static, Postgres>) -> Self {
+		Self(Some(transaction))
+	}
+
+	fn is_active(&self) -> bool {
+		self.0.is_some()
+	}
+
+	fn install(&mut self, transaction: Transaction<'static, Postgres>) {
+		debug_assert!(self.0.is_none());
+		self.0 = Some(transaction);
+	}
+
+	fn take(&mut self) -> Option<Transaction<'static, Postgres>> {
+		self.0.take()
+	}
+}
+
+impl Deref for AccessTransaction {
+	type Target = Transaction<'static, Postgres>;
+
+	fn deref(&self) -> &Self::Target {
+		self.0
+			.as_ref()
+			.expect("authorization transaction is suspended")
+	}
+}
+
+impl DerefMut for AccessTransaction {
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		self.0
+			.as_mut()
+			.expect("authorization transaction is suspended")
+	}
+}
 
 pub(crate) struct Access {
 	pub(super) remote_read_cache: std::collections::BTreeMap<(Uuid, String), bool>,
@@ -16,7 +56,7 @@ pub(crate) struct Access {
 	pub(super) checking_reads: std::collections::BTreeSet<(Uuid, String)>,
 	pub(super) peer_client: reqwest::Client,
 	pub(super) node_id: String,
-	pub tx: Transaction<'static, Postgres>,
+	pub tx: AccessTransaction,
 	pub identity: SubjectIdentity,
 	pub snapshot: Snapshot,
 	pub subjects: Vec<String>,
@@ -63,7 +103,7 @@ impl Access {
 			checking_reads: Default::default(),
 			peer_client: store.semantic_client.clone(),
 			node_id: store.node_id.clone(),
-			tx,
+			tx: AccessTransaction::new(tx),
 			identity: identity.clone(),
 			snapshot,
 			subjects: vec![identity.subject.clone()],
@@ -92,7 +132,7 @@ impl Access {
 			checking_reads: Default::default(),
 			peer_client: lease.peer_client.clone(),
 			node_id: lease.node_id.clone(),
-			tx,
+			tx: AccessTransaction::new(tx),
 			identity: lease.identity.clone(),
 			snapshot: lease.snapshot.clone(),
 			subjects: lease.subjects.clone(),
@@ -117,15 +157,20 @@ impl Access {
 		for (input, decision) in &self.pending_decisions {
 			Authorization::record(&mut self.tx, &self.identity.tenant, input, decision).await?;
 		}
-		self.pending_decisions.clear();
-		let next = self.pool.begin().await?;
-		let previous = std::mem::replace(&mut self.tx, next);
+		let previous = self
+			.tx
+			.take()
+			.ok_or_else(|| Error::Conflict("authorization transaction is suspended".into()))?;
 		previous.commit().await?;
+		self.pending_decisions.clear();
 		Ok(())
 	}
 
 	/// Start a fresh execution authorization boundary after an external wait.
 	pub async fn refresh_execution(&mut self, run_id: Uuid) -> Result<()> {
+		if !self.tx.is_active() {
+			self.tx.install(self.pool.begin().await?);
+		}
 		self.snapshot = self.identity.lock_with_mode(&mut self.tx, false).await?;
 		self.remote_read_cache.clear();
 		self.unavailable_peers.clear();
@@ -196,7 +241,7 @@ impl Access {
 		let owner: Option<String> = sqlx::query_scalar(&query)
 			.bind(id)
 			.bind(&self.identity.tenant)
-			.fetch_optional(&mut *self.tx)
+			.fetch_optional(&mut **self.tx)
 			.await?;
 		let Some(owner) = owner else {
 			return Err(Error::Forbidden);
@@ -252,12 +297,18 @@ impl Access {
 
 	pub async fn finish<T>(mut self, result: Result<T>) -> Result<T> {
 		if result.is_ok() {
+			let mut tx = self
+				.tx
+				.take()
+				.ok_or_else(|| Error::Conflict("authorization transaction is suspended".into()))?;
 			for (input, decision) in &self.pending_decisions {
-				Authorization::record(&mut self.tx, &self.identity.tenant, input, decision).await?;
+				Authorization::record(&mut tx, &self.identity.tenant, input, decision).await?;
 			}
-			self.tx.commit().await?;
+			tx.commit().await?;
 		} else {
-			self.tx.rollback().await?;
+			if let Some(tx) = self.tx.take() {
+				tx.rollback().await?;
+			}
 			if matches!(result, Err(Error::Forbidden)) {
 				// Roll back every protected change, then retain the denial with
 				// its evaluated policy revision in a separate audit transaction.
