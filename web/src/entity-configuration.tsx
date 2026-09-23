@@ -1,4 +1,4 @@
-import { SkillImport } from "./skill-import";
+import { SkillImport, type SkillPayload } from "./skill-import";
 import { useState } from "react";
 import type { State } from "./types";
 import { Field, useI18n } from "./ui";
@@ -270,6 +270,8 @@ export function EntityConfiguration({
   const [idempotency, setIdempotency] = useState("");
   const [hosts, setHosts] = useState("");
   const [instructions, setInstructions] = useState("");
+  const [skillFiles, setSkillFiles] = useState<SkillPayload["files"]>([]);
+  const [skillSource, setSkillSource] = useState<string>();
   const [agent, setAgent] = useState("");
   const [node, setNode] = useState(data.node.id);
   const [fields, setFields] = useState<Argument[]>([]);
@@ -284,7 +286,7 @@ export function EntityConfiguration({
   const [remoteVersion, setRemoteVersion] = useState("1.0.0");
   const config =
     kind === "skill"
-      ? { instructions }
+      ? { instructions, files: skillFiles, ...(skillSource ? { source: skillSource } : {}) }
       : kind === "cluster"
         ? { coordinator: reference }
         : kind === "tool"
@@ -347,7 +349,11 @@ export function EntityConfiguration({
       <input type="hidden" name="config" value={JSON.stringify(config)} />
       {kind === "skill" && (
         <>
-          <SkillImport change={setInstructions} />
+          <SkillImport change={(payload) => {
+            setInstructions(payload.instructions);
+            setSkillFiles(payload.files);
+            setSkillSource(payload.source);
+          }} />
           <Field label={t("instructions")}>
             <textarea
               required

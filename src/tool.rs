@@ -305,6 +305,38 @@ impl Tool for Builtin {
 			.validate(&input)
 			.map_err(|e| Error::Invalid(e.to_string()))?;
 		match self.name {
+			"skill_read" => {
+				let reference: EntityRef = serde_json::from_value(input["skill"].clone())
+					.map_err(|error| Error::Invalid(error.to_string()))?;
+				let path = required(&input, "path")?;
+				let registry =
+					crate::registry::Registry::new(ctx.store.pool.clone(), &ctx.store.node_id);
+				let agent = registry
+					.get(&ctx.run.agent_id, &ctx.run.agent_version)
+					.await?;
+				let config: crate::registry::AgentConfig = serde_json::from_value(agent.config)?;
+				if !config.skills.contains(&reference) {
+					return Err(Error::Forbidden);
+				}
+				let skill = registry.get(&reference.id, &reference.version).await?;
+				let file = crate::registry::skill_files(&skill)?
+					.into_iter()
+					.find(|file| file.path == path)
+					.ok_or_else(|| Error::NotFound(path.into()))?;
+				let offset = input["offset"].as_u64().unwrap_or(0) as usize;
+				let max_chars = input["max_chars"].as_u64().unwrap_or(8000).min(16000) as usize;
+				let mut start = offset.min(file.content.len());
+				while !file.content.is_char_boundary(start) {
+					start -= 1;
+				}
+				let mut end = (start + max_chars).min(file.content.len());
+				while !file.content.is_char_boundary(end) {
+					end -= 1;
+				}
+				Ok(
+					json!({"path":path,"text":&file.content[start..end],"encoding":file.encoding.as_deref().unwrap_or("utf8"),"total_chars":file.content.len(),"next_offset":if end < file.content.len() { Some(end) } else { None }}),
+				)
+			}
 			"agent_discover" => Ok(json!(
 				ctx.home
 					.discover(&serde_json::from_value::<Search>(input)?)
@@ -424,6 +456,11 @@ pub fn builtins() -> BTreeMap<String, Arc<dyn Tool>> {
 	let string = json!({"type":"string"});
 	let entity_ref = json!({"type":"object","required":["id","version"],"properties":{"id":string,"version":string},"additionalProperties":false});
 	let entries = vec![
+		Builtin {
+			name: "skill_read",
+			description: "Read a file bundled with one of this agent's registered Skills. Use the exact Skill id/version and relative path listed in the Skill instructions; continue from next_offset when present. Binary files are returned as base64 text with an encoding field.",
+			schema: json!({"type":"object","required":["skill","path"],"properties":{"skill":entity_ref,"path":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":1,"maximum":16000}},"additionalProperties":false}),
+		},
 		Builtin {
 			name: "agent_discover",
 			description: "Find local and federated agents by capability, skill, tag, language or model. Choose an exact node_id, entity id and version from these results.",

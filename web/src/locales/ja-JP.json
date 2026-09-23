@@ -549,6 +549,12 @@
   "documentUnsupported": "PDF・.xlsx・.txt・.md・.csvを選択してください。",
   "documentReadError": "読み込めませんでした。ファイル形式やパスワード保護を確認してください。",
   "skillImport": "既存のSkillを取り込む",
-  "skillImportHelp": "公開されているSkillのSKILL.mdを選択し、内容とライセンスを確認して登録してください。この取り込みはMarkdownに対応します。同梱スクリプトや別ファイルの利用には別途ツール設定が必要で、自動では実行されません。",
-  "skillImportError": "64 KiB以下で、YAMLに正しいname・descriptionとMarkdownの手順を含むSKILL.mdを選択してください。"
+  "skillImportHelp": "公開GitHubのリポジトリ・Skillディレクトリ・SKILL.mdのページまたはRaw URL、あるいはskills.shのSkillページのURLを入力してください。関連ファイルも取り込みます。指示、同梱ファイル、ライセンスを確認して登録してください。スクリプトは保存され、自動実行されません。",
+  "skillImportBinary": "バイナリファイルはbase64で保存されます。",
+  "skillImportError": "64 KiB以下で、YAMLに正しいname・descriptionとMarkdownの手順を含むSKILL.mdを選択してください。",
+  "skillImportUrl": "Skillの取得元URL",
+  "skillImportFromUrl": "URLからSkillを探す",
+  "skillImportChoose": "リポジトリ内のSkill",
+  "skillImportSelected": "選択したSkillを取り込む",
+  "skillImportFiles": "取り込んだファイル"
 }

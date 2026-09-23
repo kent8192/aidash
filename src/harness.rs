@@ -357,15 +357,14 @@ impl Harness {
 				}
 				let mut instructions = crate::context::agent_instructions("");
 				for skill in &agent.skills {
-					let skill = self
+					let entry = self
 						.federation
 						.registry
 						.get(&skill.id, &skill.version)
 						.await?;
-					if let Some(text) = skill.config["instructions"].as_str() {
-						instructions.push('\n');
-						instructions.push_str(text);
-					}
+					instructions.push('\n');
+					instructions.push_str(&format!("Skill {}@{}:\n", skill.id, skill.version));
+					instructions.push_str(&crate::registry::skill_instructions(&entry)?);
 				}
 				instructions.push_str("\nAdditional user instructions:\n");
 				instructions.push_str(&agent.instructions);
@@ -1158,6 +1157,7 @@ fn result_artifact_name(title: &str) -> String {
 	}
 	format!("{} result", &title[..end])
 }
+
 #[cfg(test)]
 mod review_tests {
 	#[tokio::test(start_paused = true)]

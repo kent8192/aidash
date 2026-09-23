@@ -1,0 +1,822 @@
+//! Resolve public Skill packages from GitHub or skills.sh without executing
+//! repository content or forwarding user-controlled URLs to arbitrary hosts.
+use crate::{Error, Result, registry::SkillFile};
+use base64::Engine;
+use reqwest::{Client, Url};
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
+use tokio::io::AsyncReadExt;
+
+const MAX_TREE_BYTES: usize = 3_000_000;
+const MAX_FILE_BYTES: usize = 256_000;
+const MAX_FILES: usize = 64;
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ImportRequest {
+	pub url: String,
+	pub skill_path: Option<String>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ImportResult {
+	pub skills: Vec<String>,
+	pub selected: Option<ImportedSkill>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ImportedSkill {
+	pub path: String,
+	pub source: String,
+	pub instructions: String,
+	pub files: Vec<SkillFile>,
+}
+
+struct Source {
+	owner: String,
+	repo: String,
+	ref_and_path: Vec<String>,
+	explicit: bool,
+	blob: bool,
+}
+
+impl Source {
+	fn parse(value: &str) -> Result<Self> {
+		let url =
+			Url::parse(value).map_err(|_| Error::Invalid("enter a GitHub HTTPS URL".into()))?;
+		if url.scheme() != "https"
+			|| url.host_str() != Some("github.com")
+			|| url.port().is_some()
+			|| !url.username().is_empty()
+			|| url.password().is_some()
+			|| url.query().is_some()
+			|| url.fragment().is_some()
+			|| value.contains('%')
+		{
+			return Err(Error::Invalid(
+				"only public github.com HTTPS URLs are supported".into(),
+			));
+		}
+		let segments = url
+			.path_segments()
+			.ok_or_else(|| Error::Invalid("invalid GitHub URL".into()))?
+			.filter(|part| !part.is_empty())
+			.collect::<Vec<_>>();
+		if segments.len() < 2
+			|| segments[..2].iter().any(|part| {
+				!part
+					.bytes()
+					.all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+			}) {
+			return Err(Error::Invalid(
+				"GitHub URL must identify an owner and repository".into(),
+			));
+		}
+		let repo = segments[1].trim_end_matches(".git");
+		if repo.is_empty() {
+			return Err(Error::Invalid("invalid GitHub repository".into()));
+		}
+		let explicit = segments.len() > 2;
+		if explicit && (!matches!(segments[2], "tree" | "blob") || segments.len() < 5) {
+			return Err(Error::Invalid(
+				"use a repository, tree, or SKILL.md blob URL".into(),
+			));
+		}
+		Ok(Self {
+			owner: segments[0].into(),
+			repo: repo.into(),
+			ref_and_path: if explicit {
+				segments[3..].iter().map(|part| (*part).into()).collect()
+			} else {
+				vec![]
+			},
+			explicit,
+			blob: explicit && segments[2] == "blob",
+		})
+	}
+
+	fn api(&self, suffix: &str) -> String {
+		let base = format!("https://api.github.com/repos/{}/{}", self.owner, self.repo);
+		if suffix.is_empty() {
+			base
+		} else {
+			format!("{base}/{suffix}")
+		}
+	}
+}
+
+#[derive(Deserialize)]
+struct Repository {
+	default_branch: String,
+}
+#[derive(Deserialize)]
+struct Commit {
+	sha: String,
+	commit: CommitDetail,
+}
+#[derive(Deserialize)]
+struct CommitDetail {
+	tree: TreeSha,
+}
+#[derive(Deserialize)]
+struct TreeSha {
+	sha: String,
+}
+#[derive(Deserialize)]
+struct Tree {
+	tree: Vec<TreeEntry>,
+	truncated: bool,
+}
+#[derive(Deserialize)]
+struct TreeEntry {
+	path: String,
+	#[serde(rename = "type")]
+	kind: String,
+}
+
+#[derive(Deserialize)]
+struct SkillsShSnapshot {
+	files: Vec<SkillsShFile>,
+}
+
+#[derive(Deserialize)]
+struct SkillsShFile {
+	path: String,
+	contents: String,
+}
+
+fn client() -> Result<Client> {
+	Client::builder()
+		.timeout(Duration::from_secs(20))
+		.redirect(reqwest::redirect::Policy::none())
+		.user_agent("aidash-skill-import")
+		.build()
+		.map_err(|error| Error::External(error.to_string()))
+}
+
+async fn bounded_get(client: &Client, url: &str, limit: usize) -> Result<Vec<u8>> {
+	let mut response = client
+		.get(url)
+		.send()
+		.await
+		.map_err(|error| Error::External(format!("Skill source request failed: {error}")))?;
+	if !response.status().is_success() {
+		return Err(Error::Invalid(format!(
+			"Skill source returned {} for this URL",
+			response.status()
+		)));
+	}
+	let mut bytes = Vec::new();
+	while let Some(chunk) = response
+		.chunk()
+		.await
+		.map_err(|error| Error::External(error.to_string()))?
+	{
+		if bytes.len() + chunk.len() > limit {
+			return Err(Error::Invalid("Skill exceeds the import size limit".into()));
+		}
+		bytes.extend_from_slice(&chunk);
+	}
+	Ok(bytes)
+}
+
+async fn gh_api(url: &str, limit: usize) -> Result<Option<Vec<u8>>> {
+	let parsed = Url::parse(url).map_err(|error| Error::Invalid(error.to_string()))?;
+	let endpoint = format!(
+		"{}{}",
+		parsed.path().trim_start_matches('/'),
+		parsed
+			.query()
+			.map(|query| format!("?{query}"))
+			.unwrap_or_default()
+	);
+	let mut child = tokio::process::Command::new("gh")
+		.arg("api")
+		.arg(endpoint)
+		.env("GH_HOST", "github.com")
+		.stdin(std::process::Stdio::null())
+		.stdout(std::process::Stdio::piped())
+		.stderr(std::process::Stdio::null())
+		.kill_on_drop(true)
+		.spawn()
+		.map_err(|_| Error::Invalid("GitHub API rate limit reached; configure GitHub CLI authentication or GITHUB_TOKEN".into()))?;
+	let mut output = Vec::new();
+	let stdout = child
+		.stdout
+		.take()
+		.ok_or_else(|| Error::External("GitHub CLI output unavailable".into()))?;
+	let read = tokio::time::timeout(
+		Duration::from_secs(20),
+		stdout.take((limit + 1) as u64).read_to_end(&mut output),
+	)
+	.await;
+	if read.is_err() || output.len() > limit {
+		let _ = child.kill().await;
+		return Err(Error::Invalid(
+			"GitHub API response exceeds the import size limit".into(),
+		));
+	}
+	let status = child
+		.wait()
+		.await
+		.map_err(|error| Error::External(error.to_string()))?;
+	if !status.success() {
+		let body: serde_json::Value = serde_json::from_slice(&output).unwrap_or_default();
+		if matches!(body["status"].as_str(), Some("404" | "422"))
+			|| matches!(body["status"].as_u64(), Some(404 | 422))
+		{
+			return Ok(None);
+		}
+		return Err(Error::Invalid(
+			"GitHub API request failed; check the URL and GitHub CLI authentication".into(),
+		));
+	}
+	Ok(Some(output))
+}
+
+async fn api_get(client: &Client, url: &str, limit: usize) -> Result<Option<Vec<u8>>> {
+	let mut response = client
+		.get(url)
+		.header("accept", "application/vnd.github+json");
+	if let Ok(token) = std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN")) {
+		response = response.bearer_auth(token);
+	}
+	let mut response = response
+		.send()
+		.await
+		.map_err(|error| Error::External(format!("GitHub request failed: {error}")))?;
+	if matches!(
+		response.status(),
+		reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::UNPROCESSABLE_ENTITY
+	) {
+		return Ok(None);
+	}
+	if matches!(
+		response.status(),
+		reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::UNAUTHORIZED
+	) {
+		return gh_api(url, limit).await;
+	}
+	if !response.status().is_success() {
+		return Err(Error::Invalid(format!(
+			"GitHub returned {} for this Skill URL",
+			response.status()
+		)));
+	}
+	let mut bytes = Vec::new();
+	while let Some(chunk) = response
+		.chunk()
+		.await
+		.map_err(|error| Error::External(error.to_string()))?
+	{
+		if bytes.len() + chunk.len() > limit {
+			return Err(Error::Invalid(
+				"GitHub API response exceeds the import size limit".into(),
+			));
+		}
+		bytes.extend_from_slice(&chunk);
+	}
+	Ok(Some(bytes))
+}
+
+async fn commit(client: &Client, source: &Source, reference: &str) -> Result<Option<Commit>> {
+	let mut url =
+		Url::parse(&source.api("commits")).map_err(|error| Error::Invalid(error.to_string()))?;
+	url.path_segments_mut()
+		.map_err(|_| Error::Invalid("invalid GitHub reference".into()))?
+		.push(reference);
+	api_get(client, url.as_str(), 64_000)
+		.await?
+		.map(|bytes| serde_json::from_slice(&bytes).map_err(Error::from))
+		.transpose()
+}
+
+fn candidates(tree: &Tree, selected_dir: Option<&str>) -> Vec<String> {
+	let mut paths = tree
+		.tree
+		.iter()
+		.filter(|entry| {
+			entry.kind == "blob" && (entry.path == "SKILL.md" || entry.path.ends_with("/SKILL.md"))
+		})
+		.map(|entry| entry.path.clone())
+		.collect::<Vec<_>>();
+	if let Some(dir) = selected_dir {
+		if let Some(exact) = paths
+			.iter()
+			.find(|path| *path == dir || *path == &format!("{dir}/SKILL.md"))
+		{
+			return vec![exact.clone()];
+		}
+		paths.retain(|path| path.starts_with(&format!("{dir}/")));
+	} else {
+		let priority = |path: &str| {
+			let parts = path.split('/').collect::<Vec<_>>();
+			parts.len() == 1
+				|| (parts.len() <= 5
+					&& ["skills", ".agents", ".claude", ".codex"].contains(&parts[0]))
+		};
+		let preferred = paths
+			.iter()
+			.filter(|path| priority(path))
+			.cloned()
+			.collect::<Vec<_>>();
+		if !preferred.is_empty() {
+			paths = preferred;
+		}
+	}
+	paths.sort();
+	paths
+}
+
+fn resource_paths(tree: &Tree, skill_path: &str) -> Result<Vec<String>> {
+	let dir = skill_path.strip_suffix("/SKILL.md").unwrap_or("");
+	let prefix = if dir.is_empty() {
+		String::new()
+	} else {
+		format!("{dir}/")
+	};
+	let mut paths = tree
+		.tree
+		.iter()
+		.filter(|entry| entry.kind == "blob")
+		.filter_map(|entry| entry.path.strip_prefix(&prefix))
+		.filter(|relative| {
+			if *relative == "SKILL.md" {
+				return true;
+			}
+			if dir.is_empty() {
+				return ["references/", "scripts/", "assets/", "templates/"]
+					.iter()
+					.any(|prefix| relative.starts_with(prefix));
+			}
+			true
+		})
+		.filter(|relative| {
+			!relative.split('/').any(|part| {
+				part.starts_with('.') || matches!(part, "__pycache__" | "__pypackages__")
+			}) && *relative != "metadata.json"
+		})
+		.map(str::to_owned)
+		.collect::<Vec<_>>();
+	paths.sort();
+	if paths.len() > MAX_FILES {
+		return Err(Error::Invalid("Skill contains more than 64 files".into()));
+	}
+	Ok(paths)
+}
+
+fn imported_snapshot(url: &str, snapshot: SkillsShSnapshot) -> Result<ImportResult> {
+	if snapshot.files.len() > MAX_FILES {
+		return Err(Error::Invalid("Skill contains more than 64 files".into()));
+	}
+	let mut instructions = None;
+	let mut files = Vec::new();
+	let mut total = 0;
+	let mut paths = std::collections::HashSet::new();
+	for file in snapshot.files {
+		if file.path.is_empty()
+			|| file.path.len() > 240
+			|| file.path.contains('\\')
+			|| file
+				.path
+				.split('/')
+				.any(|part| part.is_empty() || part == "." || part == ".." || part.starts_with('.'))
+			|| file.path.chars().any(char::is_control)
+			|| file.contents.contains('\0')
+			|| !paths.insert(file.path.clone())
+		{
+			return Err(Error::Invalid(
+				"registry Skill has an invalid file path".into(),
+			));
+		}
+		total += file.contents.len();
+		if total > MAX_FILE_BYTES {
+			return Err(Error::Invalid(
+				"registry Skill exceeds the import size limit".into(),
+			));
+		}
+		if file.path == "SKILL.md" {
+			if instructions.replace(file.contents).is_some() {
+				return Err(Error::Invalid(
+					"registry Skill has duplicate SKILL.md files".into(),
+				));
+			}
+		} else {
+			files.push(SkillFile {
+				path: file.path,
+				content: file.contents,
+				encoding: None,
+			});
+		}
+	}
+	let instructions =
+		instructions.ok_or_else(|| Error::Invalid("registry Skill has no SKILL.md".into()))?;
+	Ok(ImportResult {
+		skills: vec!["SKILL.md".into()],
+		selected: Some(ImportedSkill {
+			path: "SKILL.md".into(),
+			source: url.into(),
+			instructions,
+			files,
+		}),
+	})
+}
+
+async fn import_skills_sh(request: ImportRequest) -> Result<ImportResult> {
+	let url =
+		Url::parse(&request.url).map_err(|_| Error::Invalid("invalid skills.sh URL".into()))?;
+	if url.scheme() != "https"
+		|| !matches!(url.host_str(), Some("skills.sh" | "www.skills.sh"))
+		|| url.port().is_some()
+		|| !url.username().is_empty()
+		|| url.password().is_some()
+		|| url.query().is_some()
+		|| url.fragment().is_some()
+		|| request.url.contains('%')
+	{
+		return Err(Error::Invalid(
+			"use a public https://skills.sh/owner/repo/skill URL".into(),
+		));
+	}
+	let parts = url
+		.path_segments()
+		.ok_or_else(|| Error::Invalid("invalid skills.sh URL".into()))?
+		.filter(|part| !part.is_empty())
+		.collect::<Vec<_>>();
+	if !matches!(parts.len(), 2 | 3)
+		|| parts.iter().any(|part| {
+			!part
+				.bytes()
+				.all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+		}) {
+		return Err(Error::Invalid(
+			"use a skills.sh Skill page URL with owner, repository, and Skill name".into(),
+		));
+	}
+	if parts.len() == 2 {
+		if parts[0] == "p" {
+			return Err(Error::Invalid(
+				"skills.sh pack URLs are not supported yet".into(),
+			));
+		}
+		return import_github(ImportRequest {
+			url: format!("https://github.com/{}/{}", parts[0], parts[1]),
+			skill_path: request.skill_path,
+		})
+		.await;
+	}
+	if request
+		.skill_path
+		.as_deref()
+		.is_some_and(|path| path != "SKILL.md")
+	{
+		return Err(Error::Invalid(
+			"selected Skill does not match this registry page".into(),
+		));
+	}
+	let download_url = format!(
+		"https://www.skills.sh/api/download/{}/{}/{}",
+		parts[0], parts[1], parts[2]
+	);
+	let data = bounded_get(&client()?, &download_url, 400_000).await?;
+	let snapshot: SkillsShSnapshot = serde_json::from_slice(&data)
+		.map_err(|_| Error::Invalid("skills.sh returned an invalid Skill snapshot".into()))?;
+	imported_snapshot(&request.url, snapshot)
+}
+
+pub async fn import(request: ImportRequest) -> Result<ImportResult> {
+	let host = Url::parse(&request.url)
+		.ok()
+		.and_then(|url| url.host_str().map(str::to_owned));
+	match host.as_deref() {
+		Some("github.com") => import_github(request).await,
+		Some("raw.githubusercontent.com") => {
+			import_github(ImportRequest {
+				url: raw_github_to_blob(&request.url)?,
+				skill_path: request.skill_path,
+			})
+			.await
+		}
+		Some("skills.sh" | "www.skills.sh") => import_skills_sh(request).await,
+		_ => Err(Error::Invalid("use a GitHub or skills.sh Skill URL".into())),
+	}
+}
+
+fn raw_github_to_blob(value: &str) -> Result<String> {
+	let url = Url::parse(value).map_err(|_| Error::Invalid("invalid GitHub raw URL".into()))?;
+	if url.scheme() != "https"
+		|| url.host_str() != Some("raw.githubusercontent.com")
+		|| url.port().is_some()
+		|| !url.username().is_empty()
+		|| url.password().is_some()
+		|| url.query().is_some()
+		|| url.fragment().is_some()
+		|| value.contains('%')
+	{
+		return Err(Error::Invalid("invalid GitHub raw URL".into()));
+	}
+	let parts = url
+		.path_segments()
+		.ok_or_else(|| Error::Invalid("invalid GitHub raw URL".into()))?
+		.collect::<Vec<_>>();
+	if parts.len() < 4 || parts.last() != Some(&"SKILL.md") {
+		return Err(Error::Invalid(
+			"GitHub raw URL must point to SKILL.md".into(),
+		));
+	}
+	let blob = format!(
+		"https://github.com/{}/{}/blob/{}",
+		parts[0],
+		parts[1],
+		parts[2..].join("/")
+	);
+	Source::parse(&blob)?;
+	Ok(blob)
+}
+
+async fn import_github(request: ImportRequest) -> Result<ImportResult> {
+	let source = Source::parse(&request.url)?;
+	let client = client()?;
+	let (commit, subpath) = if source.explicit {
+		let mut found = None;
+		for length in (1..source.ref_and_path.len()).rev() {
+			let reference = source.ref_and_path[..length].join("/");
+			if let Some(value) = commit(&client, &source, &reference).await? {
+				found = Some((value, source.ref_and_path[length..].join("/")));
+				break;
+			}
+		}
+		found.ok_or_else(|| Error::Invalid("GitHub reference was not found".into()))?
+	} else {
+		let repo: Repository = serde_json::from_slice(
+			&api_get(&client, &source.api(""), 64_000)
+				.await?
+				.ok_or_else(|| Error::Invalid("GitHub repository was not found".into()))?,
+		)?;
+		let commit = commit(&client, &source, &repo.default_branch)
+			.await?
+			.ok_or_else(|| Error::Invalid("GitHub default branch was not found".into()))?;
+		(commit, String::new())
+	};
+	let tree: Tree = serde_json::from_slice(
+		&api_get(
+			&client,
+			&source.api(&format!("git/trees/{}?recursive=1", commit.commit.tree.sha)),
+			MAX_TREE_BYTES,
+		)
+		.await?
+		.ok_or_else(|| Error::Invalid("GitHub tree was not found".into()))?,
+	)?;
+	if tree.truncated {
+		return Err(Error::Invalid(
+			"GitHub repository tree is truncated; use a smaller source".into(),
+		));
+	}
+	let explicit_path = if subpath.is_empty() {
+		None
+	} else {
+		Some(subpath.as_str())
+	};
+	if source.blob && !subpath.ends_with("SKILL.md") {
+		return Err(Error::Invalid(
+			"GitHub blob URL must point to SKILL.md".into(),
+		));
+	}
+	let skills = candidates(&tree, explicit_path);
+	if skills.is_empty() {
+		return Err(Error::Invalid(
+			"no SKILL.md found at this GitHub URL".into(),
+		));
+	}
+	let choice = request.skill_path.clone().or(if skills.len() == 1 {
+		Some(skills[0].clone())
+	} else {
+		None
+	});
+	let Some(choice) = choice else {
+		return Ok(ImportResult {
+			skills,
+			selected: None,
+		});
+	};
+	if !skills.iter().any(|path| path == &choice) {
+		return Err(Error::Invalid(
+			"selected SKILL.md is not in this source".into(),
+		));
+	}
+	let dir = choice.strip_suffix("/SKILL.md").unwrap_or("");
+	let mut instructions = None;
+	let mut files = Vec::new();
+	let mut total = 0;
+	for path in resource_paths(&tree, &choice)? {
+		let full_path = if dir.is_empty() {
+			path.clone()
+		} else {
+			format!("{dir}/{path}")
+		};
+		let mut raw_url = Url::parse("https://raw.githubusercontent.com")
+			.map_err(|error| Error::Invalid(error.to_string()))?;
+		{
+			let mut segments = raw_url
+				.path_segments_mut()
+				.map_err(|_| Error::Invalid("invalid Skill path".into()))?;
+			segments
+				.push(&source.owner)
+				.push(&source.repo)
+				.push(&commit.sha);
+			for segment in full_path.split('/') {
+				segments.push(segment);
+			}
+		}
+		let bytes = bounded_get(&client, raw_url.as_str(), MAX_FILE_BYTES - total).await?;
+		total += bytes.len();
+		if path == "SKILL.md" {
+			instructions =
+				Some(String::from_utf8(bytes).map_err(|_| {
+					Error::Invalid(format!("{full_path} is not a UTF-8 text file"))
+				})?);
+		} else {
+			let (content, encoding) = match String::from_utf8(bytes) {
+				Ok(text) if !text.contains('\0') => (text, None),
+				Ok(text) => (
+					base64::engine::general_purpose::STANDARD.encode(text.as_bytes()),
+					Some("base64".into()),
+				),
+				Err(error) => (
+					base64::engine::general_purpose::STANDARD.encode(error.into_bytes()),
+					Some("base64".into()),
+				),
+			};
+			files.push(SkillFile {
+				path,
+				content,
+				encoding,
+			});
+		}
+	}
+	let instructions =
+		instructions.ok_or_else(|| Error::Invalid("SKILL.md could not be read".into()))?;
+	let source_url = format!(
+		"https://github.com/{}/{}/blob/{}/{}",
+		source.owner, source.repo, commit.sha, choice
+	);
+	Ok(ImportResult {
+		skills,
+		selected: Some(ImportedSkill {
+			path: choice,
+			source: source_url,
+			instructions,
+			files,
+		}),
+	})
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn accepts_only_restricted_github_sources() {
+		assert!(Source::parse("https://github.com/openai/skills/tree/main/skills/foo").is_ok());
+		let source = Source::parse("https://github.com/openai/skills").unwrap();
+		assert_eq!(source.api(""), "https://api.github.com/repos/openai/skills");
+		let mut commit_url = Url::parse(&source.api("commits")).unwrap();
+		commit_url.path_segments_mut().unwrap().push("feature/docs");
+		assert_eq!(
+			commit_url.path(),
+			"/repos/openai/skills/commits/feature%2Fdocs"
+		);
+		let mut raw_url = Url::parse("https://raw.githubusercontent.com").unwrap();
+		raw_url
+			.path_segments_mut()
+			.unwrap()
+			.push("openai")
+			.push("skills");
+		assert_eq!(raw_url.path(), "/openai/skills");
+		for url in [
+			"http://github.com/openai/skills",
+			"https://github.com.evil.test/openai/skills",
+			"https://github.com/openai/skills?foo=1",
+			"https://github.com/openai/skills/tree/main/%2e%2e",
+		] {
+			assert!(Source::parse(url).is_err(), "{url}");
+		}
+		assert_eq!(
+			raw_github_to_blob(
+				"https://raw.githubusercontent.com/openai/skills/main/skills/foo/SKILL.md"
+			)
+			.unwrap(),
+			"https://github.com/openai/skills/blob/main/skills/foo/SKILL.md"
+		);
+		assert!(
+			raw_github_to_blob("https://raw.githubusercontent.com/openai/skills/main/README.md")
+				.is_err()
+		);
+	}
+
+	#[test]
+	fn converts_registry_snapshot_without_losing_reference_files() {
+		let result = imported_snapshot(
+			"https://skills.sh/example/repo/research",
+			SkillsShSnapshot {
+				files: vec![
+					SkillsShFile {
+						path: "SKILL.md".into(),
+						contents:
+							"---\nname: research\ndescription: Test\n---\nRead references/guide.md"
+								.into(),
+					},
+					SkillsShFile {
+						path: "references/guide.md".into(),
+						contents: "Guide".into(),
+					},
+				],
+			},
+		)
+		.unwrap();
+		let selected = result.selected.unwrap();
+		assert!(selected.instructions.contains("references/guide.md"));
+		assert_eq!(selected.files[0].path, "references/guide.md");
+		assert_eq!(selected.files[0].content, "Guide");
+	}
+
+	#[tokio::test]
+	#[ignore = "requires the public skills.sh registry"]
+	async fn imports_live_skills_sh_page() {
+		let result = import(ImportRequest {
+			url: "https://skills.sh/vercel-labs/skills/find-skills".into(),
+			skill_path: None,
+		})
+		.await
+		.unwrap();
+		assert!(
+			result
+				.selected
+				.unwrap()
+				.instructions
+				.contains("name: find-skills")
+		);
+	}
+
+	#[tokio::test]
+	#[ignore = "requires GitHub network access and API quota or GitHub CLI authentication"]
+	async fn imports_live_github_skill_directory() {
+		let result = import(ImportRequest {
+			url: "https://github.com/openai/skills/tree/main/skills/.curated/aspnet-core".into(),
+			skill_path: None,
+		})
+		.await
+		.unwrap();
+		let selected = result.selected.unwrap();
+		assert!(selected.instructions.contains("name: aspnet-core"));
+		assert!(
+			selected
+				.files
+				.iter()
+				.any(|file| file.path == "references/stack-selection.md")
+		);
+		assert!(
+			selected
+				.files
+				.iter()
+				.any(|file| file.encoding.as_deref() == Some("base64"))
+		);
+	}
+
+	#[test]
+	fn discovers_nested_skills_and_keeps_only_selected_directory() {
+		let tree = Tree {
+			truncated: false,
+			tree: vec![
+				TreeEntry {
+					path: "skills/one/SKILL.md".into(),
+					kind: "blob".into(),
+				},
+				TreeEntry {
+					path: "skills/one/references/guide.md".into(),
+					kind: "blob".into(),
+				},
+				TreeEntry {
+					path: "skills/two/SKILL.md".into(),
+					kind: "blob".into(),
+				},
+			],
+		};
+		assert_eq!(
+			candidates(&tree, None),
+			vec!["skills/one/SKILL.md", "skills/two/SKILL.md"]
+		);
+		assert_eq!(
+			candidates(&tree, Some("skills/one")),
+			vec!["skills/one/SKILL.md"]
+		);
+		assert_eq!(
+			candidates(&tree, Some("skills")),
+			vec!["skills/one/SKILL.md", "skills/two/SKILL.md"]
+		);
+		assert_eq!(
+			resource_paths(&tree, "skills/one/SKILL.md").unwrap(),
+			vec!["SKILL.md", "references/guide.md"]
+		);
+	}
+}

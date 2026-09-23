@@ -63,6 +63,73 @@ pub struct EntityRef {
 	pub id: String,
 	pub version: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SkillFile {
+	pub path: String,
+	pub content: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub encoding: Option<String>,
+}
+
+impl SkillFile {
+	fn byte_len(&self) -> Result<usize> {
+		if self.content.len() > 350_000 {
+			return Err(Error::Invalid(format!(
+				"{} exceeds the file size limit",
+				self.path
+			)));
+		}
+		match self.encoding.as_deref() {
+			None | Some("utf8") => Ok(self.content.len()),
+			Some("base64") => {
+				use base64::Engine;
+				base64::engine::general_purpose::STANDARD
+					.decode(&self.content)
+					.map(|bytes| bytes.len())
+					.map_err(|_| {
+						Error::Invalid(format!("{} has invalid base64 content", self.path))
+					})
+			}
+			_ => Err(Error::Invalid(format!(
+				"{} has an unsupported encoding",
+				self.path
+			))),
+		}
+	}
+}
+
+pub fn skill_files(entry: &Entry) -> Result<Vec<SkillFile>> {
+	let files: Vec<SkillFile> = serde_json::from_value(
+		entry
+			.config
+			.get("files")
+			.cloned()
+			.unwrap_or_else(|| json!([])),
+	)
+	.map_err(|error| Error::Invalid(format!("invalid skill files: {error}")))?;
+	Ok(files)
+}
+
+pub fn skill_instructions(entry: &Entry) -> Result<String> {
+	let mut instructions = entry.config["instructions"]
+		.as_str()
+		.ok_or_else(|| Error::Invalid("skill requires instructions".into()))?
+		.to_owned();
+	let files = skill_files(entry)?;
+	if !files.is_empty() {
+		instructions.push_str("\n\nRegistered Skill files are available through skill_read. Read a listed path only when needed:\n");
+		for file in files {
+			if file.encoding.as_deref() == Some("base64") {
+				instructions.push_str(&format!("- {} (binary, base64 encoded)\n", file.path));
+			} else {
+				instructions.push_str(&format!("- {}\n", file.path));
+			}
+		}
+	}
+	Ok(instructions)
+}
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
@@ -531,13 +598,45 @@ fn validate_in(e: &Entry, local: bool) -> Result<()> {
 			}
 		}
 		"tool" => crate::tool::validate_config_in(&e.config, local)?,
-		"skill"
-			if e.config
+		"skill" => {
+			let instructions = e
+				.config
 				.get("instructions")
 				.and_then(Value::as_str)
-				.is_none_or(|s| s.trim().is_empty()) =>
-		{
-			return Err(Error::Invalid("skill requires instructions".into()));
+				.ok_or_else(|| Error::Invalid("skill requires instructions".into()))?;
+			if instructions.trim().is_empty() {
+				return Err(Error::Invalid("skill requires instructions".into()));
+			}
+			if instructions.len() > 65_536 || instructions.contains('\0') {
+				return Err(Error::Invalid(
+					"skill instructions exceed 64 KiB or contain NUL".into(),
+				));
+			}
+			let files = skill_files(e)?;
+			if files.len() > 64 {
+				return Err(Error::Invalid("skill files exceed 64 files".into()));
+			}
+			let mut total_bytes = 0;
+			let mut paths = std::collections::HashSet::new();
+			for file in files {
+				total_bytes += file.byte_len()?;
+				if total_bytes > 256_000 {
+					return Err(Error::Invalid("skill files exceed 256 KB".into()));
+				}
+				if file.path.is_empty()
+					|| file.path.len() > 240
+					|| file.path.contains('\\')
+					|| file.path.split('/').any(|part| {
+						part.is_empty() || part == "." || part == ".." || part.starts_with('.')
+					}) || file.path.chars().any(char::is_control)
+					|| file.content.contains('\0')
+					|| !paths.insert(file.path)
+				{
+					return Err(Error::Invalid(
+						"skill file paths must be unique relative paths".into(),
+					));
+				}
+			}
 		}
 		_ => {}
 	}
@@ -1102,6 +1201,42 @@ mod tests {
 		);
 	}
 	#[test]
+	fn bundled_skill_files_have_bounded_safe_paths_and_are_listed_on_demand() {
+		let mut e = entry();
+		e.config = json!({"instructions":"Read the guide when relevant","files":[{"path":"references/guide.md","content":"Evidence"}]});
+		validate(&e).unwrap();
+		assert!(
+			skill_instructions(&e)
+				.unwrap()
+				.contains("references/guide.md")
+		);
+		assert!(!skill_instructions(&e).unwrap().contains("Evidence"));
+		e.config["files"] =
+			json!([{"path":"assets/logo.png","content":"AAEC","encoding":"base64"}]);
+		validate(&e).unwrap();
+		assert!(
+			skill_instructions(&e)
+				.unwrap()
+				.contains("binary, base64 encoded")
+		);
+		e.config["files"][0]["content"] = json!("not base64");
+		assert!(validate(&e).is_err());
+		e.config["files"][0]["content"] = json!("AAEC");
+		e.config["files"][0]["encoding"] = json!("unknown");
+		assert!(validate(&e).is_err());
+		e.config["files"] = json!([{"path":"references/guide.md","content":"Evidence"}]);
+		for path in [
+			"../secret",
+			"/absolute",
+			"references/../secret",
+			"references\\secret",
+			"references/.hidden",
+		] {
+			e.config["files"][0]["path"] = json!(path);
+			assert!(validate(&e).is_err(), "{path}");
+		}
+	}
+	#[test]
 	fn skills_only_agents_do_not_need_custom_prompts() {
 		let mut e = entry();
 		e.kind = "agent".into();
@@ -1172,10 +1307,9 @@ pub(crate) fn validate_agent_prompt(
 	let model: ModelConfig = serde_json::from_value(get(&config.model)?.config.clone())?;
 	let mut instructions = crate::context::agent_instructions("");
 	for skill in &config.skills {
-		if let Some(text) = get(skill)?.config["instructions"].as_str() {
-			instructions.push('\n');
-			instructions.push_str(text);
-		}
+		instructions.push('\n');
+		instructions.push_str(&format!("Skill {}@{}:\n", skill.id, skill.version));
+		instructions.push_str(&skill_instructions(get(skill)?)?);
 	}
 	instructions.push_str("\nAdditional user instructions:\n");
 	instructions.push_str(&config.instructions);
