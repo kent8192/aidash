@@ -113,7 +113,12 @@ spec:
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/component: server
   ports:
-    - { name: http, port: {{ .Values.service.port }}, targetPort: http }
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      {{- with .Values.service.nodePort }}
+      nodePort: {{ . }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: ServiceAccount
