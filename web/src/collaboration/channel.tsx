@@ -3,13 +3,14 @@ import { useQuery } from "@tanstack/react-query";
 import { workspaceGet } from "../generated/aidash";
 import type {
   Artifact,
+  Discovery,
   HumanRequest,
   Run,
   State,
   Task,
   Workspace,
 } from "../types";
-import { Badge, JsonView, useI18n } from "../ui";
+import { Badge, JsonView, useI18n, useAgentLabel } from "../ui";
 import { collaborationCopy } from "./copy";
 import { taskProgress } from "./model";
 import { entityKey } from "../agent-graph/model";
@@ -39,11 +40,13 @@ export function ArtifactList({ artifacts }: { artifacts: Artifact[] }) {
 export function Channel({
   workspace,
   data,
+  discovery,
   runs,
   requests,
   open,
   graph,
 }: {
+  discovery?: Discovery;
   workspace: Workspace;
   data: State;
   runs: { run: Run; node: string }[];
@@ -52,6 +55,7 @@ export function Channel({
   graph: (focus?: string) => void;
 }) {
   const { locale } = useI18n();
+  const agentLabel = useAgentLabel(data, discovery);
   const copy = collaborationCopy[locale];
   const [tab, setTab] = useState<"conversation" | "work" | "activity">(
     "conversation",
@@ -143,6 +147,8 @@ export function Channel({
           <ChannelConversation
             key={workspace.id}
             workspace={workspace.id}
+            data={data}
+            discovery={discovery}
             visible={tab === "conversation"}
           />
           {tab === "work" && (
@@ -186,7 +192,7 @@ export function Channel({
               {agents.map((agent) => {
                 const label = (
                   <>
-                    {agent.id} · v{agent.version}
+                    {agentLabel(agent.node, agent)}
                     <small>{agent.node}</small>
                   </>
                 );
@@ -223,7 +229,10 @@ export function Channel({
                     }
                   />
                   <span>
-                    {item.run.agent_id} · v{item.run.agent_version}
+                    {agentLabel(item.node, {
+                      id: item.run.agent_id,
+                      version: item.run.agent_version,
+                    })}
                     <small>{item.node}</small>
                   </span>
                 </button>

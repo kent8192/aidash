@@ -25,7 +25,16 @@ import type {
   Snapshot,
 } from "./generated/models";
 import { ApiError } from "./transport";
-import { Badge, Empty, Field, JsonView, Modal, Panel, useI18n } from "./ui";
+import {
+  Badge,
+  Empty,
+  Field,
+  JsonView,
+  Modal,
+  Panel,
+  useI18n,
+  useEntryLabel,
+} from "./ui";
 
 const PAGE_SIZE = 25;
 const object = (value: unknown): Record<string, unknown> =>
@@ -75,6 +84,7 @@ function TenantAuthorization({
   entries: Entry[];
 }) {
   const { t } = useI18n();
+  const entryLabel = useEntryLabel(entries);
   const client = useQueryClient();
   const path = encodeURIComponent(tenant);
   const [editor, setEditor] = useState<Snapshot | null>(null);
@@ -237,7 +247,9 @@ function TenantAuthorization({
                 <div className="auth-row" key={credential.id}>
                   <div>
                     <strong>{credential.subject}</strong>
-                    <small>{credential.id}</small>
+                    <small>
+                      {new Date(credential.created_at).toLocaleString()}
+                    </small>
                     <small>
                       {t("authExpires")}:{" "}
                       {new Date(credential.expires_at).toLocaleString()}
@@ -290,7 +302,10 @@ function TenantAuthorization({
                   >
                     <div>
                       <strong>
-                        {binding.entry_id}@{binding.entry_version}
+                        {entryLabel({
+                          id: binding.entry_id,
+                          version: binding.entry_version,
+                        })}
                       </strong>
                       <small>
                         {t("revision")}: {binding.revision}
@@ -439,7 +454,10 @@ function TenantAuthorization({
           <div className="auth-editor">
             <p>{t("authRevokeHelp")}</p>
             <p>{revoking.subject}</p>
-            <code>{revoking.id}</code>
+            <span>
+              {revoking.subject} ·{" "}
+              {new Date(revoking.created_at).toLocaleString()}
+            </span>
             {error && (
               <p role="alert" className="error">
                 {error}
@@ -769,7 +787,7 @@ function CatalogForm({
               value={JSON.stringify([entry.id, entry.version])}
               key={`${entry.id}@${entry.version}`}
             >
-              {local(entry.name)} · {entry.id}@{entry.version}
+              {local(entry.name) || t("unnamedEntity")} · {entry.version}
             </option>
           ))}
         </select>

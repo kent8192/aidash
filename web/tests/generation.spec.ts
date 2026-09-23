@@ -370,7 +370,7 @@ test("generation dashboard manages policy, approval, completion and retained his
     await expect(dialog).toHaveCount(0);
     await completed.click();
     await expect(dialog).toContainText("調査スペシャリスト");
-    await expect(dialog).toContainText(`${id}@1.0.0`);
+    await expect(dialog).toContainText("生成確認モデル · 1.0.0");
     await expect(dialog.locator(".generation-permissions")).toContainText(
       '"team": "research"',
     );
@@ -380,9 +380,9 @@ test("generation dashboard manages policy, approval, completion and retained his
     await dialog
       .getByLabel("判断の理由", { exact: true })
       .fill("定義と上限を確認済み");
-    await expect(dialog).toContainText(`${compactor}@1.0.0`);
+    await expect(dialog).toContainText("承認済み圧縮 · 1.0.0");
     await expect(dialog).toContainText("圧縮呼び出し消費数 / 上限");
-    await expect(dialog).toContainText(`${embedder}@1.0.0`);
+    await expect(dialog).toContainText("Approved embedding · 1.0.0");
     await expect(dialog).toContainText("埋め込み試行数");
     await page.screenshot({
       path: "../.ignore/dashboard-generation-approval-ja.png",

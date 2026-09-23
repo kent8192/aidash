@@ -256,7 +256,7 @@ function SemanticWorkspace({
                   <article className="semantic-result" key={match.entry_id}>
                     <p>{match.text}</p>
                     <small>
-                      {match.entry_id} · {t("revision")} {match.revision} ·{" "}
+                      {t("revision")} {match.revision} ·{" "}
                       {match.score.toFixed(3)}
                     </small>
                     <JsonView

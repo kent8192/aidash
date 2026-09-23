@@ -85,7 +85,7 @@ export function Configuration({
   packages: Package[];
   disconnect: () => void;
 }) {
-  const { t, local, locale } = useI18n();
+  const { t, local, locale, entityName } = useI18n();
   const copy = collaborationCopy[locale];
   const operator = data.access.kind === "operator";
   const restricted = !operator && operatorSections.has(section);
@@ -139,11 +139,9 @@ export function Configuration({
                       }
                     >
                       <Badge value={entry.kind} />
-                      <h3>{local(entry.name)}</h3>
+                      <h3>{entityName(entry)}</h3>
                       <p>{local(entry.description)}</p>
-                      <small>
-                        {entry.id} · v{entry.version}
-                      </small>
+                      <small>v{entry.version}</small>
                     </button>
                   ))}
               </div>

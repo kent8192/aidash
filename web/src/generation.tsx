@@ -1,7 +1,15 @@
 import { useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, ArrowUpRight } from "lucide-react";
-import { Badge, Field, JsonView, Modal, Panel, useI18n } from "./ui";
+import {
+  Badge,
+  Field,
+  JsonView,
+  Modal,
+  Panel,
+  useI18n,
+  useEntryLabel,
+} from "./ui";
 import {
   authorizationCatalog,
   generationAssign,
@@ -186,7 +194,7 @@ export function GenerationPage({ data }: { data: State }) {
                       <div>
                         <h3>{local(policy.spec.template.name)}</h3>
                         <p className="muted">
-                          {policy.id} · {t("revision")} {policy.revision}
+                          {t("revision")} {policy.revision}
                         </p>
                       </div>
                       <Badge
@@ -286,7 +294,7 @@ export function GenerationPage({ data }: { data: State }) {
                         <strong>
                           {data.tasks.find(
                             (task) => task.id === request.task_id,
-                          )?.title ?? request.task_id}
+                          )?.title || t("task")}
                         </strong>
                         <p>{request.reason}</p>
                         <small>
@@ -395,7 +403,7 @@ function RefChoices({
       .filter((r) => !available.some((entry) => key(entry) === key(r)))
       .map((r) => ({
         value: key(r),
-        label: `${key(r)} · ${t("generationReferenceUnavailable")}`,
+        label: `${t("generationReferenceUnavailable")} · ${r.version}`,
       })),
   ];
   return (
@@ -694,7 +702,7 @@ function PolicyEditor({
           {config?.cluster &&
             !entries.some((entry) => key(entry) === key(config.cluster!)) && (
               <option value={key(config.cluster)}>
-                {key(config.cluster)} · {t("generationReferenceUnavailable")}
+                {t("generationReferenceUnavailable")} · {config.cluster.version}
               </option>
             )}
         </select>
@@ -739,13 +747,13 @@ function PolicyEditor({
           <option value="">{t("generationCompactionDisabled")}</option>
           {compactors.map((entry) => (
             <option key={key(entry)} value={key(entry)}>
-              {local(entry.name)} · {key(entry)}
+              {local(entry.name) || t("unnamedEntity")} · {entry.version}
             </option>
           ))}
           {compactor &&
             !compactors.some((entry) => key(entry) === compactor) && (
               <option value={compactor}>
-                {compactor} · {t("generationReferenceUnavailable")}
+                {t("generationReferenceUnavailable")}
               </option>
             )}
         </select>
@@ -785,13 +793,13 @@ function PolicyEditor({
           <option value="">{t("generationEmbeddingDisabled")}</option>
           {embeddings.map((entry) => (
             <option key={key(entry)} value={key(entry)}>
-              {local(entry.name)} · {key(entry)}
+              {local(entry.name) || t("unnamedEntity")} · {entry.version}
             </option>
           ))}
           {embedding &&
             !embeddings.some((entry) => key(entry) === embedding) && (
               <option value={embedding}>
-                {embedding} · {t("generationReferenceUnavailable")}
+                {t("generationReferenceUnavailable")}
               </option>
             )}
         </select>
@@ -887,6 +895,7 @@ function RequestDetail({
   control: (action: GenerationAction, reason: string) => Promise<void>;
 }) {
   const { t, local, locale } = useI18n();
+  const entryLabel = useEntryLabel(data.registry);
   const history = useQuery({
     queryKey: ["generation", tenant, "history", request.id],
     queryFn: () => generationHistory(encodeURIComponent(tenant), request.id),
@@ -906,7 +915,7 @@ function RequestDetail({
     <>
       <h3>
         {data.tasks.find((task) => task.id === request.task_id)?.title ??
-          request.task_id}
+          t("task")}
       </h3>
       <Badge value={request.status} />
       <p className="generation-reason">{request.reason}</p>
@@ -916,11 +925,11 @@ function RequestDetail({
           {local(request.definition.name)} · {request.agent_version}
         </dd>
         <dt>{t("model")}</dt>
-        <dd>{config.model && key(config.model)}</dd>
+        <dd>{config.model && entryLabel(config.model)}</dd>
         <dt>{t("tools")}</dt>
-        <dd>{config.tools?.map(key).join(", ") || "—"}</dd>
+        <dd>{config.tools?.map(entryLabel).join(", ") || "—"}</dd>
         <dt>{t("generationSkills")}</dt>
-        <dd>{config.skills?.map(key).join(", ") || "—"}</dd>
+        <dd>{config.skills?.map(entryLabel).join(", ") || "—"}</dd>
         <dt>{t("capabilities")}</dt>
         <dd>{request.definition.capabilities.join(", ") || "—"}</dd>
         <dt>{t("generationPolicyId")}</dt>
@@ -979,7 +988,7 @@ function RequestDetail({
               <dt>{t("generationCompactor")}</dt>
               <dd>
                 {pinned.data.compaction
-                  ? key(pinned.data.compaction.provider)
+                  ? entryLabel(pinned.data.compaction.provider)
                   : t("generationCompactionDisabled")}
               </dd>
               {pinned.data.compaction && (
@@ -991,7 +1000,7 @@ function RequestDetail({
               <dt>{t("generationEmbedder")}</dt>
               <dd>
                 {pinned.data.embedding
-                  ? key(pinned.data.embedding.provider)
+                  ? entryLabel(pinned.data.embedding.provider)
                   : t("generationEmbeddingDisabled")}
               </dd>
               {pinned.data.embedding && (
@@ -1114,7 +1123,8 @@ export function GenerationAssignForm({
           <option value="">{t("choose")}</option>
           {choices.map((policy) => (
             <option key={policy.id} value={policy.id}>
-              {local(policy.spec.template.name)} · {policy.id}
+              {local(policy.spec.template.name) || t("unnamedEntity")} ·{" "}
+              {t("revision")} {policy.revision}
             </option>
           ))}
         </select>

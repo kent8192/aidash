@@ -329,6 +329,8 @@ test("remote channel participants are displayed without linking to the local gra
     .filter({ hasText: "aidash://peer" });
   await expect(local).toHaveCount(1);
   await expect(remote).toHaveCount(1);
+  await expect(local).toContainText("Researcher · 1.0.0");
+  await expect(remote).toContainText("Unavailable item · 1.0.0");
   await expect(local).toHaveJSProperty("tagName", "BUTTON");
   await expect(remote).toHaveJSProperty("tagName", "DIV");
   expect(errors).toEqual([]);

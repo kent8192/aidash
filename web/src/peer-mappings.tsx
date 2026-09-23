@@ -119,7 +119,10 @@ export function PeerMappings({
                 {mapping.source_tenant} / {mapping.source_subject}
               </small>
               <small>
-                {t("authMappedCredential")}: {mapping.credential_id}
+                {t("authMappedCredential")}:{" "}
+                {credentials.find(
+                  (credential) => credential.id === mapping.credential_id,
+                )?.subject || t("unavailableEntity")}
               </small>
               <small>
                 {t("revision")}: {mapping.revision}
@@ -273,7 +276,8 @@ export function PeerMappings({
                       Date.parse(credential.expires_at) <= now
                     }
                   >
-                    {credential.subject} · {credential.id}
+                    {credential.subject} ·{" "}
+                    {new Date(credential.created_at).toLocaleString()}
                   </option>
                 ))}
               </select>

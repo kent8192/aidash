@@ -509,6 +509,7 @@ function Dashboard({
                       key={workspace.id}
                       workspace={workspace}
                       data={data}
+                      discovery={discovery.data}
                       runs={runs}
                       requests={requests}
                       open={open}

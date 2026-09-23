@@ -22,7 +22,7 @@ import type {
   Task,
   Workspace,
 } from "../types";
-import { Badge, Field, JsonView, Modal, useI18n } from "../ui";
+import { Badge, Field, JsonView, Modal, useI18n, useAgentLabel } from "../ui";
 import {
   AssignForm,
   EntityForm,
@@ -73,6 +73,7 @@ export function OperationsDialog({
   visitChannel: (id: string) => void;
 }) {
   const { t, local, locale } = useI18n();
+  const agentLabel = useAgentLabel(data, discovery);
   const copy = collaborationCopy[locale];
   const d = selection;
   const taskSnapshot = useQuery({
@@ -187,6 +188,7 @@ export function OperationsDialog({
                 node={d.node ?? data.node.id}
                 data={data}
                 mesh={mesh}
+                discovery={discovery}
                 submit={submit}
                 visitChannel={visitChannel}
               />
@@ -304,7 +306,10 @@ export function OperationsDialog({
                         }
                       >
                         <Badge value={run.phase} />
-                        {run.agent_id}
+                        {agentLabel(data.node.id, {
+                          id: run.agent_id,
+                          version: run.agent_version,
+                        })}
                       </button>
                     ))}
                   {(mesh?.nodes ?? []).flatMap((node) =>
@@ -324,7 +329,11 @@ export function OperationsDialog({
                           }
                         >
                           <Badge value={run.phase} />
-                          {run.agent_id} · {node.node_id}
+                          {agentLabel(node.node_id, {
+                            id: run.agent_id,
+                            version: run.agent_version,
+                          })}{" "}
+                          · {node.node_id}
                         </button>
                       )),
                   )}
@@ -376,6 +385,7 @@ function RunPanel({
   node,
   data,
   mesh,
+  discovery,
   submit,
   visitChannel,
 }: {
@@ -383,12 +393,14 @@ function RunPanel({
   node: string;
   data: State;
   mesh?: Mesh;
+  discovery?: Discovery;
   submit: Submit;
   visitChannel: (id: string) => void;
 }) {
   const { t, locale } = useI18n();
   const copy = collaborationCopy[locale];
   const local = node === data.node.id;
+  const agentLabel = useAgentLabel(data, discovery);
   const query = useInfiniteQuery({
     queryKey: ["run", node, id],
     initialPageParam: 0,
@@ -428,7 +440,7 @@ function RunPanel({
   return (
     <>
       <h2>
-        {run.agent_id} · v{run.agent_version}
+        {agentLabel(node, { id: run.agent_id, version: run.agent_version })}
       </h2>
       <p>{node}</p>
       <Badge value={run.phase} />

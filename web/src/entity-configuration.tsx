@@ -259,7 +259,7 @@ export function EntityConfiguration({
   kind: string;
   data: State;
 }) {
-  const { t } = useI18n();
+  const { t, entityLabel } = useI18n();
   const [transport, setTransport] = useState("native");
   const [operation, setOperation] = useState("echo");
   const [endpoint, setEndpoint] = useState("");
@@ -336,7 +336,7 @@ export function EntityConfiguration({
             key={`${entry.id}@${entry.version}`}
             value={`${entry.id}@${entry.version}`}
           >
-            {entry.name.en || entry.id} · {entry.version}
+            {entityLabel(entry)}
           </option>
         ))}
       </select>

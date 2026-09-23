@@ -6,6 +6,7 @@ export default defineConfig({
     "agent-graph.spec.ts",
     "agent-skills.spec.ts",
     "entity-configuration.spec.ts",
+    "registry-labels.spec.ts",
     "openrouter.spec.ts",
     "generation-validation.spec.ts",
   ],

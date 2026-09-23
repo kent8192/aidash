@@ -1,4 +1,6 @@
 {
+  "unnamedEntity": "名称未設定の項目",
+  "unavailableEntity": "参照できない項目",
   "overview": "概要",
   "agents": "エージェント",
   "clusters": "クラスター",

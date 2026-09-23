@@ -15,6 +15,9 @@ import type {
 } from "./generated/models";
 import { Badge, Empty, Field, JsonView, Modal, Panel, useI18n } from "./ui";
 
+const transactionLabel = (manifest: TransactionManifest) =>
+  `${manifest.coordinator} · ${new Date(manifest.deadline).toLocaleString()}`;
+
 const phase = (transaction: AtomicTransaction) => {
   if (transaction.complete)
     return transaction.decision === "COMMIT" ? "COMMITTED" : "ABORTED";
@@ -135,7 +138,7 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
                   className="transaction-id"
                   onClick={() => setSelected(transaction.id)}
                 >
-                  {transaction.id}
+                  {transactionLabel(transaction.manifest)}
                 </button>
                 <small>
                   {t("transactionDeadline")}:{" "}
@@ -153,7 +156,9 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
           participants.data?.map((participant) => (
             <div className="generation-request" key={participant.id}>
               <div>
-                <strong className="transaction-id">{participant.id}</strong>
+                <strong className="transaction-id">
+                  {transactionLabel(participant.manifest)}
+                </strong>
                 <small>
                   {t("transactionCoordinator")}: {participant.coordinator}
                 </small>
@@ -221,7 +226,7 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
           {current && (
             <div className="transaction-details">
               <strong className="transaction-id">
-                {current.transaction.id}
+                {transactionLabel(current.transaction.manifest)}
               </strong>
               <Badge value={phase(current.transaction)} />
               <dl>

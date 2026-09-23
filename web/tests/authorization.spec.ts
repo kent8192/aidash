@@ -370,7 +370,8 @@ test("peer identity mappings preserve revisions, credential rotation and bilingu
     .selectOption(first.credential.id);
   await dialog.getByRole("button", { name: "Save and enable mapping" }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(panel).toContainText(first.credential.id);
+  await expect(panel).toContainText("bridge");
+  await expect(panel).not.toContainText(first.credential.id);
   expect((await api(`${base}/peer-mappings`))[0].revision).toBe(1);
   await panel.getByRole("button", { name: "Edit peer mapping" }).click();
   await expect(
@@ -397,7 +398,8 @@ test("peer identity mappings preserve revisions, credential rotation and bilingu
     .selectOption(second.credential.id);
   await dialog.getByRole("button", { name: "Save and enable mapping" }).click();
   await expect(dialog).toHaveCount(0);
-  await expect(panel).toContainText(second.credential.id);
+  await expect(panel).toContainText("bridge");
+  await expect(panel).not.toContainText(second.credential.id);
   await api(`${base}/credentials/${second.credential.id}/revoke`, {});
   await panel.getByRole("button", { name: "Disable approval" }).click();
   await expect(

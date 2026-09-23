@@ -1,6 +1,6 @@
 import { ArrowUpRight } from "lucide-react";
 import type { Entry, Run, State, Task } from "./types";
-import { Badge, JsonView, useI18n } from "./ui";
+import { Badge, JsonView, useI18n, useEntryLabel } from "./ui";
 import { AgentRelationshipGraph } from "./agent-graph";
 import { graphCopy } from "./agent-graph/copy";
 import type { GraphNode } from "./agent-graph/model";
@@ -18,7 +18,8 @@ export function EntityDetails({
   data: State;
   open: (selection: Selection) => void;
 }) {
-  const { local, t, locale } = useI18n();
+  const { local, t, locale, entityName } = useI18n();
+  const entryLabel = useEntryLabel(data.registry);
   // Re-resolve on every authorized snapshot instead of retaining the modal's old metadata.
   const current = data.registry.find(
     (value) =>
@@ -27,6 +28,28 @@ export function EntityDetails({
       value.kind === entity.kind,
   );
   if (!current) return <p role="status">{graphCopy[locale].unavailable}</p>;
+  const referenceNames = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(referenceNames);
+    if (value && typeof value === "object") {
+      const object = value as Record<string, unknown>;
+      if (
+        Object.keys(object).length === 2 &&
+        typeof object.id === "string" &&
+        typeof object.version === "string"
+      )
+        return entryLabel({ id: object.id, version: object.version });
+      return Object.fromEntries(
+        Object.entries(object).map(([key, item]) => [
+          key,
+          referenceNames(item),
+        ]),
+      );
+    }
+    return value;
+  };
+  const metadata = Object.fromEntries(
+    Object.entries(current).filter(([key]) => key !== "id"),
+  );
   const openNode = (node: GraphNode) => {
     if (!node.available) return;
     if (node.entity) {
@@ -47,7 +70,7 @@ export function EntityDetails({
   };
   return (
     <>
-      <h3>{local(current.name)}</h3>
+      <h3>{entityName(current)}</h3>
       <p>{local(current.description)}</p>
       <div className="tags">
         {current.capabilities.map((capability) => (
@@ -77,12 +100,13 @@ export function EntityDetails({
               onClick={() => open({ kind: "run", run, node: data.node.id })}
             >
               <Badge value={run.phase} />
-              {run.task_id.slice(0, 8)}
+              {data.tasks.find((task) => task.id === run.task_id)?.title ||
+                t("task")}
               <ArrowUpRight size={15} />
             </button>
           ))}
       <h4>{t("metadata")}</h4>
-      <JsonView value={current} />
+      <JsonView value={referenceNames(metadata)} />
     </>
   );
 }

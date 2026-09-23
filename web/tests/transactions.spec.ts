@@ -140,7 +140,12 @@ test("transaction dashboard survives reload during a partition, aborts safely an
     await expect(page.getByRole("alert")).toContainText(
       "atomic transaction visibility pending",
     );
-    await page.getByRole("button", { name: blocked.id, exact: true }).click();
+    const blockedLabel = await page.evaluate(
+      (manifest) =>
+        `${manifest.coordinator} · ${new Date(manifest.deadline).toLocaleString()}`,
+      blocked,
+    );
+    await page.getByRole("button", { name: blockedLabel, exact: true }).click();
     await expect(page.locator(".transaction-details")).toContainText(
       "Preparing",
     );
