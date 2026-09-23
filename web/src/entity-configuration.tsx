@@ -286,7 +286,11 @@ export function EntityConfiguration({
   const [remoteVersion, setRemoteVersion] = useState("1.0.0");
   const config =
     kind === "skill"
-      ? { instructions, files: skillFiles, ...(skillSource ? { source: skillSource } : {}) }
+      ? {
+          instructions,
+          files: skillFiles,
+          ...(skillSource ? { source: skillSource } : {}),
+        }
       : kind === "cluster"
         ? { coordinator: reference }
         : kind === "tool"
@@ -349,11 +353,13 @@ export function EntityConfiguration({
       <input type="hidden" name="config" value={JSON.stringify(config)} />
       {kind === "skill" && (
         <>
-          <SkillImport change={(payload) => {
-            setInstructions(payload.instructions);
-            setSkillFiles(payload.files);
-            setSkillSource(payload.source);
-          }} />
+          <SkillImport
+            change={(payload) => {
+              setInstructions(payload.instructions);
+              setSkillFiles(payload.files);
+              setSkillSource(payload.source);
+            }}
+          />
           <Field label={t("instructions")}>
             <textarea
               required

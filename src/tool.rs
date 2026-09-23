@@ -334,7 +334,7 @@ impl Tool for Builtin {
 					end -= 1;
 				}
 				Ok(
-					json!({"path":path,"text":&file.content[start..end],"encoding":file.encoding.as_deref().unwrap_or("utf8"),"total_chars":file.content.len(),"next_offset":if end < file.content.len() { Some(end) } else { None }}),
+					json!({"path":path,"text":&file.content[start..end],"encoding":file.encoding.as_deref().unwrap_or("utf8"),"offset":start,"total_chars":file.content.len(),"next_offset":if end < file.content.len() { Some(end) } else { None }}),
 				)
 			}
 			"agent_discover" => Ok(json!(
@@ -458,8 +458,8 @@ pub fn builtins() -> BTreeMap<String, Arc<dyn Tool>> {
 	let entries = vec![
 		Builtin {
 			name: "skill_read",
-			description: "Read a file bundled with one of this agent's registered Skills. Use the exact Skill id/version and relative path listed in the Skill instructions; continue from next_offset when present. Binary files are returned as base64 text with an encoding field.",
-			schema: json!({"type":"object","required":["skill","path"],"properties":{"skill":entity_ref,"path":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":1,"maximum":16000}},"additionalProperties":false}),
+			description: "Read a file bundled with one of this agent's registered Skills. Use the exact Skill id/version and relative path listed in the Skill instructions; continue from next_offset when present. Binary files are returned as base64 text with an encoding field. The returned chunk is capped to fit the active request budget; if deferred is true, continue on a later turn.",
+			schema: json!({"type":"object","required":["skill","path"],"properties":{"skill":entity_ref,"path":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "agent_discover",

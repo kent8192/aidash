@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { parseDocument } from "yaml";
 import { apiFetch } from "./transport";
 import { Field, useI18n } from "./ui";
@@ -35,7 +35,11 @@ function validateSkill(text: string): string {
   return `${meta.name}: ${meta.description}`;
 }
 
-export function SkillImport({ change }: { change: (payload: SkillPayload) => void }) {
+export function SkillImport({
+  change,
+}: {
+  change: (payload: SkillPayload) => void;
+}) {
   const { t } = useI18n();
   const [error, setError] = useState("");
   const [name, setName] = useState("");
@@ -45,16 +49,27 @@ export function SkillImport({ change }: { change: (payload: SkillPayload) => voi
   const [busy, setBusy] = useState(false);
   const [files, setFiles] = useState<SkillPayload["files"]>([]);
   const [source, setSource] = useState("");
+  const request = useRef(0);
+
+  const clear = () => {
+    setName("");
+    setFiles([]);
+    setSource("");
+    change({ instructions: "", files: [] });
+  };
 
   const load = async (skillPath?: string) => {
+    const current = ++request.current;
     setBusy(true);
     setError("");
+    clear();
     try {
       const result = await apiFetch<ImportResult>("/api/skills/import", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ url: url.trim(), skill_path: skillPath }),
       });
+      if (current !== request.current) return;
       setChoices(result.skills);
       if (result.selected) {
         const imported = result.selected;
@@ -62,14 +77,23 @@ export function SkillImport({ change }: { change: (payload: SkillPayload) => voi
         setChoice(imported.path);
         setFiles(imported.files);
         setSource(imported.source);
-        change({ instructions: imported.instructions, files: imported.files, source: imported.source });
+        change({
+          instructions: imported.instructions,
+          files: imported.files,
+          source: imported.source,
+        });
       } else {
         setChoice(result.skills[0] ?? "");
       }
     } catch (cause) {
-      setError(cause instanceof Error && cause.message ? cause.message : t("skillImportError"));
+      if (current !== request.current) return;
+      setError(
+        cause instanceof Error && cause.message
+          ? cause.message
+          : t("skillImportError"),
+      );
     } finally {
-      setBusy(false);
+      if (current === request.current) setBusy(false);
     }
   };
 
@@ -78,29 +102,63 @@ export function SkillImport({ change }: { change: (payload: SkillPayload) => voi
       <legend>{t("skillImport")}</legend>
       <p>{t("skillImportHelp")}</p>
       <p>
-        <a href="https://github.com/anthropics/skills" target="_blank" rel="noreferrer">Anthropic Skills</a>{" "}
+        <a
+          href="https://github.com/anthropics/skills"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Anthropic Skills
+        </a>{" "}
         ·{" "}
-        <a href="https://github.com/openai/skills" target="_blank" rel="noreferrer">OpenAI Skills</a>
+        <a
+          href="https://github.com/openai/skills"
+          target="_blank"
+          rel="noreferrer"
+        >
+          OpenAI Skills
+        </a>
       </p>
       <Field label={t("skillImportUrl")}>
         <input
           type="url"
           value={url}
           placeholder="https://skills.sh/owner/repo/skill"
-          onChange={(event) => { setUrl(event.target.value); setChoices([]); }}
+          onChange={(event) => {
+            request.current += 1;
+            setBusy(false);
+            setUrl(event.target.value);
+            setChoices([]);
+            setChoice("");
+            clear();
+          }}
         />
       </Field>
-      <button type="button" disabled={busy || !url.trim()} onClick={() => void load()}>
+      <button
+        type="button"
+        disabled={busy || !url.trim()}
+        onClick={() => void load()}
+      >
         {busy ? t("loading") : t("skillImportFromUrl")}
       </button>
       {choices.length > 1 && (
         <>
           <Field label={t("skillImportChoose")}>
-            <select value={choice} onChange={(event) => setChoice(event.target.value)}>
-              {choices.map((path) => <option key={path} value={path}>{path}</option>)}
+            <select
+              value={choice}
+              onChange={(event) => setChoice(event.target.value)}
+            >
+              {choices.map((path) => (
+                <option key={path} value={path}>
+                  {path}
+                </option>
+              ))}
             </select>
           </Field>
-          <button type="button" disabled={busy || !choice} onClick={() => void load(choice)}>
+          <button
+            type="button"
+            disabled={busy || !choice}
+            onClick={() => void load(choice)}
+          >
             {t("skillImportSelected")}
           </button>
         </>
@@ -114,29 +172,46 @@ export function SkillImport({ change }: { change: (payload: SkillPayload) => voi
             event.target.value = "";
             setError("");
             if (!file) return;
+            const current = ++request.current;
+            setBusy(false);
+            clear();
             try {
-              if (file.name !== "SKILL.md" || file.size > 65536) throw new Error();
+              if (file.name !== "SKILL.md" || file.size > 65536)
+                throw new Error();
               const text = await file.text();
+              if (current !== request.current) return;
               setName(validateSkill(text));
               setFiles([]);
               setSource("");
               setChoices([]);
               change({ instructions: text, files: [] });
             } catch {
-              setError(t("skillImportError"));
+              if (current === request.current) setError(t("skillImportError"));
             }
           }}
         />
       </Field>
       {name && <p role="status">{name}</p>}
-      {source && <p><a href={source} target="_blank" rel="noreferrer">{source}</a></p>}
+      {source && (
+        <p>
+          <a href={source} target="_blank" rel="noreferrer">
+            {source}
+          </a>
+        </p>
+      )}
       {files.length > 0 && (
         <details>
-          <summary>{t("skillImportFiles")} ({files.length})</summary>
+          <summary>
+            {t("skillImportFiles")} ({files.length})
+          </summary>
           {files.map((file) => (
             <details key={file.path}>
               <summary>{file.path}</summary>
-              {file.encoding === "base64" ? <p>{t("skillImportBinary")}</p> : <pre>{file.content}</pre>}
+              {file.encoding === "base64" ? (
+                <p>{t("skillImportBinary")}</p>
+              ) : (
+                <pre>{file.content}</pre>
+              )}
             </details>
           ))}
         </details>

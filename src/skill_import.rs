@@ -108,6 +108,7 @@ impl Source {
 #[derive(Deserialize)]
 struct Repository {
 	default_branch: String,
+	private: bool,
 }
 #[derive(Deserialize)]
 struct Commit {
@@ -132,6 +133,7 @@ struct TreeEntry {
 	path: String,
 	#[serde(rename = "type")]
 	kind: String,
+	sha: String,
 }
 
 #[derive(Deserialize)]
@@ -308,24 +310,86 @@ fn candidates(tree: &Tree, selected_dir: Option<&str>) -> Vec<String> {
 			return vec![exact.clone()];
 		}
 		paths.retain(|path| path.starts_with(&format!("{dir}/")));
+	}
+	paths.sort_by_key(|path| {
+		let parts = path.split('/').collect::<Vec<_>>();
+		let preferred = parts.len() == 1
+			|| (parts.len() <= 5 && ["skills", ".agents", ".claude", ".codex"].contains(&parts[0]));
+		(!preferred, path.clone())
+	});
+	paths
+}
+
+async fn fetch_tree(client: &Client, source: &Source, sha: &str, recursive: bool) -> Result<Tree> {
+	let suffix = if recursive { "?recursive=1" } else { "" };
+	let tree: Tree = serde_json::from_slice(
+		&api_get(
+			client,
+			&source.api(&format!("git/trees/{sha}{suffix}")),
+			MAX_TREE_BYTES,
+		)
+		.await?
+		.ok_or_else(|| Error::Invalid("GitHub tree was not found".into()))?,
+	)?;
+	if tree.truncated {
+		return Err(Error::Invalid(
+			"GitHub tree is truncated; use a smaller source".into(),
+		));
+	}
+	Ok(tree)
+}
+
+async fn skill_tree(
+	client: &Client,
+	source: &Source,
+	root_sha: &str,
+	subpath: &str,
+) -> Result<Tree> {
+	let directory = if source.blob {
+		subpath.strip_suffix("/SKILL.md").unwrap_or("")
 	} else {
-		let priority = |path: &str| {
-			let parts = path.split('/').collect::<Vec<_>>();
-			parts.len() == 1
-				|| (parts.len() <= 5
-					&& ["skills", ".agents", ".claude", ".codex"].contains(&parts[0]))
-		};
-		let preferred = paths
-			.iter()
-			.filter(|path| priority(path))
-			.cloned()
-			.collect::<Vec<_>>();
-		if !preferred.is_empty() {
-			paths = preferred;
+		subpath
+	};
+	if source.blob && directory.is_empty() {
+		let root = fetch_tree(client, source, root_sha, false).await?;
+		let mut entries = Vec::new();
+		for entry in root.tree {
+			if entry.kind == "blob" && entry.path == "SKILL.md" {
+				entries.push(entry);
+			} else if entry.kind == "tree"
+				&& ["references", "scripts", "assets", "templates"].contains(&entry.path.as_str())
+			{
+				let mut subtree = fetch_tree(client, source, &entry.sha, true).await?;
+				for file in &mut subtree.tree {
+					file.path = format!("{}/{}", entry.path, file.path);
+				}
+				entries.extend(subtree.tree);
+			}
+		}
+		return Ok(Tree {
+			tree: entries,
+			truncated: false,
+		});
+	}
+	let mut sha = root_sha.to_owned();
+	if !directory.is_empty() {
+		for segment in directory.split('/') {
+			let parent = fetch_tree(client, source, &sha, false).await?;
+			sha = parent
+				.tree
+				.into_iter()
+				.find(|entry| entry.path == segment && entry.kind == "tree")
+				.ok_or_else(|| Error::Invalid("GitHub Skill directory was not found".into()))?
+				.sha;
 		}
 	}
-	paths.sort();
-	paths
+	let mut tree = fetch_tree(client, source, &sha, true).await?;
+	if !directory.is_empty() {
+		for entry in &mut tree.tree {
+			entry.path = format!("{directory}/{}", entry.path);
+		}
+	}
+	Ok(tree)
 }
 
 fn resource_paths(tree: &Tree, skill_path: &str) -> Result<Vec<String>> {
@@ -537,6 +601,29 @@ fn raw_github_to_blob(value: &str) -> Result<String> {
 async fn import_github(request: ImportRequest) -> Result<ImportResult> {
 	let source = Source::parse(&request.url)?;
 	let client = client()?;
+	// The GitHub web page is checked without credentials because the anonymous
+	// REST API may already be rate limited. Private repositories return 404.
+	let public_url = format!("https://github.com/{}/{}", source.owner, source.repo);
+	let response = client
+		.get(&public_url)
+		.send()
+		.await
+		.map_err(|error| Error::External(format!("GitHub visibility check failed: {error}")))?;
+	if response.status() != reqwest::StatusCode::OK {
+		return Err(Error::Invalid(
+			"public GitHub repository was not found".into(),
+		));
+	}
+	let repo: Repository = serde_json::from_slice(
+		&api_get(&client, &source.api(""), 64_000)
+			.await?
+			.ok_or_else(|| Error::Invalid("public GitHub repository was not found".into()))?,
+	)?;
+	if repo.private {
+		return Err(Error::Invalid(
+			"only public GitHub repositories are supported".into(),
+		));
+	}
 	let (commit, subpath) = if source.explicit {
 		let mut found = None;
 		for length in (1..source.ref_and_path.len()).rev() {
@@ -548,30 +635,11 @@ async fn import_github(request: ImportRequest) -> Result<ImportResult> {
 		}
 		found.ok_or_else(|| Error::Invalid("GitHub reference was not found".into()))?
 	} else {
-		let repo: Repository = serde_json::from_slice(
-			&api_get(&client, &source.api(""), 64_000)
-				.await?
-				.ok_or_else(|| Error::Invalid("GitHub repository was not found".into()))?,
-		)?;
 		let commit = commit(&client, &source, &repo.default_branch)
 			.await?
 			.ok_or_else(|| Error::Invalid("GitHub default branch was not found".into()))?;
 		(commit, String::new())
 	};
-	let tree: Tree = serde_json::from_slice(
-		&api_get(
-			&client,
-			&source.api(&format!("git/trees/{}?recursive=1", commit.commit.tree.sha)),
-			MAX_TREE_BYTES,
-		)
-		.await?
-		.ok_or_else(|| Error::Invalid("GitHub tree was not found".into()))?,
-	)?;
-	if tree.truncated {
-		return Err(Error::Invalid(
-			"GitHub repository tree is truncated; use a smaller source".into(),
-		));
-	}
 	let explicit_path = if subpath.is_empty() {
 		None
 	} else {
@@ -582,6 +650,7 @@ async fn import_github(request: ImportRequest) -> Result<ImportResult> {
 			"GitHub blob URL must point to SKILL.md".into(),
 		));
 	}
+	let tree = skill_tree(&client, &source, &commit.commit.tree.sha, &subpath).await?;
 	let skills = candidates(&tree, explicit_path);
 	if skills.is_empty() {
 		return Err(Error::Invalid(
@@ -791,20 +860,32 @@ mod tests {
 				TreeEntry {
 					path: "skills/one/SKILL.md".into(),
 					kind: "blob".into(),
+					sha: "one".into(),
 				},
 				TreeEntry {
 					path: "skills/one/references/guide.md".into(),
 					kind: "blob".into(),
+					sha: "guide".into(),
 				},
 				TreeEntry {
 					path: "skills/two/SKILL.md".into(),
 					kind: "blob".into(),
+					sha: "two".into(),
+				},
+				TreeEntry {
+					path: "packages/editor/SKILL.md".into(),
+					kind: "blob".into(),
+					sha: "editor".into(),
 				},
 			],
 		};
 		assert_eq!(
 			candidates(&tree, None),
-			vec!["skills/one/SKILL.md", "skills/two/SKILL.md"]
+			vec![
+				"skills/one/SKILL.md",
+				"skills/two/SKILL.md",
+				"packages/editor/SKILL.md"
+			]
 		);
 		assert_eq!(
 			candidates(&tree, Some("skills/one")),
