@@ -29,7 +29,8 @@ spec:
             - { name: POSTGRES_DB, value: aidash_a }
             - name: POSTGRES_PASSWORD
               valueFrom:
-                secretKeyRef: { name: aidash-local-infra, key: POSTGRES_PASSWORD }
+                secretKeyRef:
+                  { name: aidash-local-infra, key: POSTGRES_PASSWORD }
           ports:
             - { containerPort: 5432 }
           readinessProbe:
