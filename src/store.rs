@@ -1837,7 +1837,7 @@ impl Store {
 					sea_orm::sea_query::Expr::cust("NULL"),
 				)
 				.and_where(sea_orm::sea_query::Expr::cust(
-					"id = $1 AND lease_owner = $2 AND lease_until > CURRENT_TIMESTAMP",
+					"id = $1 AND lease_owner = $2 AND lease_until > CURRENT_TIMESTAMP AND ($8 OR control <> 'CANCELLED')",
 				))
 				.returning_all()
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
@@ -1849,6 +1849,7 @@ impl Store {
 		.bind(&pending)
 		.bind(run.step)
 		.bind(error)
+		.bind(kind != "model.completed")
 		.fetch_optional(&mut *tx)
 		.await?
 		.ok_or_else(|| Error::Conflict("worker lease lost".into()))?;

@@ -69,7 +69,10 @@ pub struct OpenRouterProvider {
 
 pub fn provider(client: reqwest::Client, config: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
 	match config.provider.as_str() {
-		"openrouter" => Ok(Arc::new(OpenRouterProvider { client, config })),
+		"openrouter" => {
+			config.request_timeout()?;
+			Ok(Arc::new(OpenRouterProvider { client, config }))
+		}
 		_ => Err(Error::Invalid("unsupported model provider".into())),
 	}
 }
@@ -92,6 +95,9 @@ impl ModelProvider for OpenRouterProvider {
 				"{}/chat/completions",
 				self.config.endpoint.trim_end_matches('/')
 			))
+			// Override only inference, including response-body reads. Other HTTP
+			// traffic retains the shared client's timeout and connection policy.
+			.timeout(self.config.request_timeout()?)
 			.json(&body);
 		if let Some(name) = &self.config.credential_env {
 			call = call.bearer_auth(secret(name)?);

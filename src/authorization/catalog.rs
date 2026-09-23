@@ -231,7 +231,7 @@ pub(crate) async fn entry(
 		.bind(&access.identity.tenant)
 		.bind(&reference.id)
 		.bind(&reference.version)
-		.fetch_optional(&mut *access.tx)
+		.fetch_optional(&mut **access.tx)
 		.await?;
 	let entry: Entry = serde_json::from_value(document.ok_or(Error::Forbidden)?)?;
 	access.require(&resource(access, &entry), action).await?;
@@ -300,7 +300,7 @@ pub(crate) async fn list_in(access: &mut Access, search: &Search) -> Result<Vec<
 	};
 	let documents: Vec<Value> = sqlx::query_scalar(&query)
 		.bind(&access.identity.tenant)
-		.fetch_all(&mut *access.tx)
+		.fetch_all(&mut **access.tx)
 		.await?;
 	let mut entries = vec![];
 	for document in documents {

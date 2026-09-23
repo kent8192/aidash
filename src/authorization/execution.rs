@@ -91,7 +91,7 @@ async fn access_for_run(store: &Store, run: &Run, durable_audit: bool) -> Result
 			.to_string(PostgresQueryBuilder),
 	)
 	.bind(run.id)
-	.fetch_one(&mut *access.tx)
+	.fetch_one(&mut **access.tx)
 	.await?;
 	if current.credential_id != grant.credential_id || current.subject_chain != grant.subject_chain
 	{
@@ -107,6 +107,46 @@ async fn access_for_run(store: &Store, run: &Run, durable_audit: bool) -> Result
 	access.context = workspace.attributes.clone();
 	access.require(&workspace, "workspace.read").await?;
 	Ok(Some(access))
+}
+
+async fn refresh_access_for_run(access: &mut Access, store: &Store, run: &Run) -> Result<()> {
+	access.refresh_execution(run.id).await?;
+	let current: Grant = sqlx::query_as(
+		&Query::select()
+			.column(Asterisk)
+			.from(Alias::new("authorization_execution"))
+			.cond_where(Expr::col(Alias::new("run_id")).eq(Expr::cust("$1")))
+			.lock(LockType::Share)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.fetch_optional(&mut **access.tx)
+	.await?
+	.ok_or(Error::Forbidden)?;
+	if current.run_id != run.id
+		|| current.task_id != run.task_id
+		|| current.workspace_id != run.workspace_id
+		|| current.tenant != access.identity.tenant
+		|| current.root_subject != access.identity.subject
+		|| current.credential_id != access.identity.credential_id
+		|| current.subject_chain.first() != Some(&current.root_subject)
+		|| current.subject_chain.last()
+			!= Some(&qualified_agent(
+				&store.node_id,
+				&run.agent_id,
+				&run.agent_version,
+			)) {
+		return Err(Error::External(
+			"execution authority changed; retry boundary".into(),
+		));
+	}
+	access.subjects = current.subject_chain;
+	access.read_run = Some(run.id);
+	access.worker();
+	let workspace = access.workspace(run.workspace_id).await?;
+	access.context = workspace.attributes.clone();
+	access.require(&workspace, "workspace.read").await?;
+	Ok(())
 }
 
 fn require_agent(access: &Access, id: &str) -> Result<()> {
@@ -133,7 +173,7 @@ pub(crate) async fn inherit_task_origin(access: &mut Access, task: Uuid) -> Resu
 			.to_string(PostgresQueryBuilder),
 	)
 	.bind(task)
-	.fetch_optional(&mut *access.tx)
+	.fetch_optional(&mut **access.tx)
 	.await?;
 	if let Some((tenant, root, chain)) = origin {
 		if tenant != access.identity.tenant
@@ -165,7 +205,7 @@ async fn admit(
 			.to_string(PostgresQueryBuilder),
 	)
 	.bind(task_id)
-	.fetch_optional(&mut *access.tx)
+	.fetch_optional(&mut **access.tx)
 	.await?
 	.ok_or(Error::Forbidden)?;
 	inherit_task_origin(access, task_id).await?;
@@ -218,7 +258,7 @@ async fn admit(
 	)
 	.bind(&f.config.node_id)
 	.bind(task.id)
-	.fetch_one(&mut *access.tx)
+	.fetch_one(&mut **access.tx)
 	.await?;
 	sqlx::query(
 		&Query::insert()
@@ -250,7 +290,7 @@ async fn admit(
 	.bind(access.identity.credential_id)
 	.bind(&access.identity.subject)
 	.bind(&access.subjects)
-	.execute(&mut *access.tx)
+	.execute(&mut **access.tx)
 	.await?;
 	Ok(claimed)
 }
@@ -325,7 +365,7 @@ pub(crate) async fn delegate_in(
 	.bind(&f.config.node_id)
 	.bind(&agent.id)
 	.bind(&agent.version)
-	.fetch_one(&mut *access.tx)
+	.fetch_one(&mut **access.tx)
 	.await?;
 	f.store
 		.event(
@@ -374,7 +414,7 @@ impl WorkerAuthority {
 					.to_string(PostgresQueryBuilder),
 			)
 			.bind(task)
-			.fetch_optional(&mut *access.tx)
+			.fetch_optional(&mut **access.tx)
 			.await?;
 			if workspace != Some(run.workspace_id) {
 				return Err(Error::Forbidden);
@@ -455,7 +495,7 @@ impl WorkerAuthority {
 			.bind(&access.identity.tenant)
 			.bind(&access.identity.subject)
 			.bind(&access.subjects)
-			.execute(&mut *access.tx)
+			.execute(&mut **access.tx)
 			.await?;
 			let origin: (Uuid, String, String, Vec<String>) = sqlx::query_as(
 				&Query::select()
@@ -468,7 +508,7 @@ impl WorkerAuthority {
 					.to_string(PostgresQueryBuilder),
 			)
 			.bind(task.id)
-			.fetch_one(&mut *access.tx)
+			.fetch_one(&mut **access.tx)
 			.await?;
 			if origin
 				!= (
@@ -563,7 +603,7 @@ impl WorkerAuthority {
 					.to_string(PostgresQueryBuilder),
 			)
 			.bind(task)
-			.fetch_optional(&mut *access.tx)
+			.fetch_optional(&mut **access.tx)
 			.await?;
 			if workspace != Some(run.workspace_id) {
 				return Err(Error::Forbidden);
@@ -579,7 +619,7 @@ impl WorkerAuthority {
 					.to_string(PostgresQueryBuilder),
 			)
 			.bind(task)
-			.fetch_optional(&mut *access.tx)
+			.fetch_optional(&mut **access.tx)
 			.await?;
 			if let Some(existing) = existing {
 				let mut expected = access.subjects.clone();
@@ -616,76 +656,107 @@ pub(crate) struct Guard {
 	agent: AgentConfig,
 }
 
+async fn authorize_guard(f: &Federation, run: &Run, access: &mut Access) -> Result<AgentConfig> {
+	if !access.run_visible(run).await? {
+		return Err(Error::Forbidden);
+	}
+	// A cluster conversation remains bound to its approved entry even if the
+	// coordinator agent does not repeat that cluster in its own config.
+	let clusters: Vec<String> = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("target"))
+			.from(Alias::new("conversations"))
+			.cond_where(
+				Condition::all()
+					.add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+					.add(Expr::cust("target_kind='cluster'")),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(run.workspace_id)
+	.fetch_all(&mut **access.tx)
+	.await?;
+	for cluster in clusters {
+		let (id, version) = cluster.rsplit_once('@').ok_or(Error::Forbidden)?;
+		catalog::entry(
+			access,
+			&EntityRef {
+				id: id.into(),
+				version: version.into(),
+			},
+			"cluster.execute",
+		)
+		.await?;
+	}
+	let task = access.task_read(run.task_id).await?;
+	let resource = access.task_resource(&task).await?;
+	access.require(&resource, "task.execute").await?;
+	let reference = EntityRef {
+		id: run.agent_id.clone(),
+		version: run.agent_version.clone(),
+	};
+	crate::generation::provision::require_live(access, &f.config.node_id, run.task_id, &reference)
+		.await?;
+	let entry = catalog::entry(access, &reference, "agent.execute").await?;
+	require_agent(
+		access,
+		&qualified_agent(&f.config.node_id, &run.agent_id, &run.agent_version),
+	)?;
+	let agent: AgentConfig = serde_json::from_value(entry.config)?;
+	// Registry versions are immutable. Recheck every tenant approval before
+	// accepting provider output after an unlocked external wait.
+	for reference in std::iter::once(&agent.model)
+		.chain(agent.tools.iter())
+		.chain(agent.skills.iter())
+		.chain(agent.cluster.iter())
+	{
+		catalog::entry(access, reference, "registry.read").await?;
+	}
+	Ok(agent)
+}
+
 impl Guard {
 	pub async fn begin(f: &Federation, run: &Run) -> Result<Option<Self>> {
 		let Some(mut access) = access_for_run(&f.store, run, true).await? else {
 			return Ok(None);
 		};
-		if !access.run_visible(run).await? {
-			return Err(Error::Forbidden);
-		}
-		// A cluster conversation remains bound to its approved entry even if
-		// the coordinator agent does not repeat that cluster in its own config.
-		let clusters: Vec<String> = sqlx::query_scalar(
-			&Query::select()
-				.column(Alias::new("target"))
-				.from(Alias::new("conversations"))
-				.cond_where(
-					Condition::all()
-						.add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
-						.add(Expr::cust("target_kind='cluster'")),
-				)
-				.to_string(PostgresQueryBuilder),
-		)
-		.bind(run.workspace_id)
-		.fetch_all(&mut *access.tx)
-		.await?;
-		for cluster in clusters {
-			let (id, version) = cluster.rsplit_once('@').ok_or(Error::Forbidden)?;
-			catalog::entry(
-				&mut access,
-				&EntityRef {
-					id: id.into(),
-					version: version.into(),
-				},
-				"cluster.execute",
-			)
-			.await?;
-		}
-		let task = access.task_read(run.task_id).await?;
-		let resource = access.task_resource(&task).await?;
-		access.require(&resource, "task.execute").await?;
-		let reference = EntityRef {
-			id: run.agent_id.clone(),
-			version: run.agent_version.clone(),
-		};
-		crate::generation::provision::require_live(
-			&mut access,
-			&f.config.node_id,
-			run.task_id,
-			&reference,
-		)
-		.await?;
-		let entry = catalog::entry(&mut access, &reference, "agent.execute").await?;
-		require_agent(
-			&access,
-			&qualified_agent(&f.config.node_id, &run.agent_id, &run.agent_version),
-		)?;
-		let agent: AgentConfig = serde_json::from_value(entry.config)?;
-		// Registry versions are immutable. Lock each tenant's approval for the
-		// step and validate read access before loading prompts/tool definitions.
-		for reference in std::iter::once(&agent.model)
-			.chain(agent.tools.iter())
-			.chain(agent.skills.iter())
-			.chain(agent.cluster.iter())
-		{
-			catalog::entry(&mut access, reference, "registry.read").await?;
-		}
+		let agent = authorize_guard(f, run, &mut access).await?;
 		Ok(Some(Self {
 			access: Arc::new(Mutex::new(access)),
 			run: run.clone(),
 			agent,
 		}))
+	}
+	pub async fn suspend(&self) -> Result<()> {
+		self.access.lock().await.suspend().await
+	}
+	pub async fn resume(&self, f: &Federation) -> Result<()> {
+		let mut delay = std::time::Duration::from_millis(250);
+		loop {
+			let mut access = self.access.lock().await;
+			let result = async {
+				refresh_access_for_run(&mut access, &f.store, &self.run).await?;
+				authorize_guard(f, &self.run, &mut access).await?;
+				self.authorize_inference_with(&mut access).await
+			}
+			.await;
+			match result {
+				Ok(()) => return Ok(()),
+				Err(error)
+					if matches!(&error, Error::TransactionPending)
+						|| error.is_transient_database() =>
+				{
+					tracing::warn!(%error, "retrying execution-boundary reacquisition after transient database error");
+					access.discard_failed_execution_refresh().await;
+					drop(access);
+					tokio::time::sleep(delay).await;
+					delay = delay
+						.saturating_mul(2)
+						.min(std::time::Duration::from_secs(2));
+				}
+				Err(error) => return Err(error),
+			}
+		}
 	}
 
 	pub fn authority(&self) -> WorkerAuthority {
@@ -761,7 +832,7 @@ impl Guard {
 		.bind(id)
 		.bind(self.run.id)
 		.bind(self.run.workspace_id)
-		.fetch_optional(&mut *access.tx)
+		.fetch_optional(&mut **access.tx)
 		.await?
 		.ok_or(Error::Forbidden)?;
 		let resource = access.human_resource(&request).await?;
@@ -811,12 +882,16 @@ impl Guard {
 
 	pub async fn inference(&self) -> Result<()> {
 		let mut access = self.access.lock().await;
+		self.authorize_inference_with(&mut access).await
+	}
+
+	async fn authorize_inference_with(&self, access: &mut Access) -> Result<()> {
 		let node: String = access.environment["node_id"]
 			.as_str()
 			.ok_or(Error::Forbidden)?
 			.into();
 		crate::generation::provision::require_live(
-			&mut access,
+			access,
 			&node,
 			self.run.task_id,
 			&EntityRef {
@@ -825,9 +900,9 @@ impl Guard {
 			},
 		)
 		.await?;
-		catalog::entry(&mut access, &self.agent.model, "model.infer").await?;
+		catalog::entry(access, &self.agent.model, "model.infer").await?;
 		for skill in &self.agent.skills {
-			catalog::entry(&mut access, skill, "skill.use").await?;
+			catalog::entry(access, skill, "skill.use").await?;
 		}
 		let resource = access.memory_resource(&self.run).await?;
 		access.require(&resource, "memory.read").await
@@ -934,7 +1009,7 @@ pub async fn control(
 				.to_string(PostgresQueryBuilder),
 		)
 		.bind(id)
-		.fetch_optional(&mut *access.tx)
+		.fetch_optional(&mut **access.tx)
 		.await?
 		.ok_or(Error::Forbidden)?;
 		let workspace = access.workspace(run.workspace_id).await?;
@@ -957,7 +1032,7 @@ pub async fn control(
 					.to_string(PostgresQueryBuilder),
 			)
 			.bind(id)
-			.fetch_optional(&mut *access.tx)
+			.fetch_optional(&mut **access.tx)
 			.await?
 			.ok_or(Error::Forbidden)?;
 			if grant.tenant != identity.tenant || grant.root_subject != identity.subject {
@@ -972,7 +1047,7 @@ pub async fn control(
 			)
 			.bind(id)
 			.bind(identity.credential_id)
-			.execute(&mut *access.tx)
+			.execute(&mut **access.tx)
 			.await?;
 		}
 		f.store.control_in(&mut access.tx, id, action).await
@@ -1002,7 +1077,7 @@ pub async fn details_page(
 				.to_string(PostgresQueryBuilder),
 		)
 		.bind(id)
-		.fetch_optional(&mut *access.tx)
+		.fetch_optional(&mut **access.tx)
 		.await?
 		.ok_or(Error::Forbidden)?;
 		let workspace = access.workspace(run.workspace_id).await?;
@@ -1022,7 +1097,7 @@ pub async fn details_page(
 				.to_string(PostgresQueryBuilder),
 		)
 		.bind(id)
-		.fetch_all(&mut *access.tx)
+		.fetch_all(&mut **access.tx)
 		.await?;
 		let memory: Option<Value> = sqlx::query_scalar(
 			&Query::select()
@@ -1041,7 +1116,7 @@ pub async fn details_page(
 		.bind(&run.agent_version)
 		.bind(run.workspace_id)
 		.bind(f.store.memory_home(&run))
-		.fetch_optional(&mut *access.tx)
+		.fetch_optional(&mut **access.tx)
 		.await?;
 		Ok(RunDetails {
 			run,

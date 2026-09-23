@@ -27,7 +27,7 @@ impl Access {
 				.to_string(PostgresQueryBuilder),
 		)
 		.bind(id)
-		.fetch_optional(&mut *self.tx)
+		.fetch_optional(&mut **self.tx)
 		.await?
 		.ok_or(Error::Forbidden)?;
 		let resource = self.task_resource(&task).await?;
@@ -141,7 +141,7 @@ impl Access {
 		)
 		.bind(artifact.task_id)
 		.bind(artifact.workspace_id)
-		.fetch_optional(&mut *self.tx)
+		.fetch_optional(&mut **self.tx)
 		.await?;
 		match task {
 			Some(task) if self.task_visible(&task).await? => {}
@@ -171,7 +171,7 @@ impl Access {
 		.bind(workspace)
 		.bind(kind)
 		.bind(id)
-		.fetch_all(&mut *self.tx)
+		.fetch_all(&mut **self.tx)
 		.await?;
 		for producer in producers {
 			if !Box::pin(self.run_reads_visible(producer)).await? {
@@ -238,7 +238,7 @@ impl Access {
 			)
 			.bind(task_id)
 			.bind(event.workspace_id)
-			.fetch_optional(&mut *self.tx)
+			.fetch_optional(&mut **self.tx)
 			.await?;
 			let Some(task) = task else {
 				return Ok(Some(false));
@@ -281,7 +281,7 @@ impl Access {
 				)
 				.bind(message_id)
 				.bind(event.workspace_id)
-				.fetch_all(&mut *self.tx)
+				.fetch_all(&mut **self.tx)
 				.await?
 			} else {
 				// Older events contain no ID. Require every matching immutable
@@ -301,7 +301,7 @@ impl Access {
 				.bind(event.workspace_id)
 				.bind(event.data["sender"].as_str())
 				.bind(event.data["content"].as_str())
-				.fetch_all(&mut *self.tx)
+				.fetch_all(&mut **self.tx)
 				.await?
 			};
 			if messages.is_empty() {
@@ -330,7 +330,7 @@ impl Access {
 		)
 		.bind(id)
 		.bind(workspace)
-		.fetch_optional(&mut *self.tx)
+		.fetch_optional(&mut **self.tx)
 		.await?;
 		match artifact {
 			Some(artifact) => self.artifact_visible(&artifact).await,
@@ -397,7 +397,7 @@ impl Access {
 					.bind(event.workspace_id)
 					.bind(event.data["sender"].as_str())
 					.bind(event.data["content"].as_str())
-					.fetch_all(&mut *self.tx)
+					.fetch_all(&mut **self.tx)
 					.await?;
 					sources.extend(ids.into_iter().map(|id| ("message".into(), id)));
 				}
@@ -484,7 +484,7 @@ impl Access {
 				.to_string(PostgresQueryBuilder),
 		)
 		.bind(run)
-		.fetch_all(&mut *self.tx)
+		.fetch_all(&mut **self.tx)
 		.await?;
 		for (id, version) in entries {
 			match super::catalog::entry(
@@ -538,7 +538,7 @@ impl Access {
 					.to_string(PostgresQueryBuilder),
 			)
 			.bind(run)
-			.fetch_all(&mut *self.tx)
+			.fetch_all(&mut **self.tx)
 			.await?;
 			for (workspace, kind, id) in sources {
 				let allowed = self
@@ -582,7 +582,7 @@ impl Access {
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 		)
 		.bind(grant)
-		.fetch_all(&mut *self.tx)
+		.fetch_all(&mut **self.tx)
 		.await?;
 		let mut pending = vec![];
 		for (workspace, kind, id) in sources {
@@ -626,7 +626,7 @@ impl Access {
 				)
 				.bind(id)
 				.bind(workspace)
-				.fetch_optional(&mut *self.tx)
+				.fetch_optional(&mut **self.tx)
 				.await?;
 				match source {
 					Some(source) => self.task_visible(&source).await?,
@@ -648,7 +648,7 @@ impl Access {
 				)
 				.bind(id)
 				.bind(workspace)
-				.fetch_optional(&mut *self.tx)
+				.fetch_optional(&mut **self.tx)
 				.await?;
 				match source {
 					Some(source) => self.message_visible(&source).await?,
@@ -669,7 +669,7 @@ impl Access {
 				)
 				.bind(id)
 				.bind(workspace)
-				.fetch_optional(&mut *self.tx)
+				.fetch_optional(&mut **self.tx)
 				.await?;
 				match source {
 					Some(source) => {
@@ -693,7 +693,7 @@ impl Access {
 				)
 				.bind(id)
 				.bind(workspace)
-				.fetch_optional(&mut *self.tx)
+				.fetch_optional(&mut **self.tx)
 				.await?;
 				match source {
 					Some(source) => {
@@ -717,7 +717,7 @@ impl Access {
 				)
 				.bind(id)
 				.bind(workspace)
-				.fetch_optional(&mut *self.tx)
+				.fetch_optional(&mut **self.tx)
 				.await?;
 				match source {
 					Some(source) => source.visible(self).await?,

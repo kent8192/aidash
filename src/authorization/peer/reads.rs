@@ -184,7 +184,7 @@ impl Access {
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 		)
 		.bind(run)
-		.fetch_all(&mut *self.tx)
+		.fetch_all(&mut **self.tx)
 		.await?;
 		let mut nodes: BTreeMap<String, Vec<Reference>> = BTreeMap::new();
 		for (node, id, version, hash, metadata) in rows {
@@ -228,7 +228,7 @@ impl Access {
 					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 			)
 			.bind(&node)
-			.fetch_optional(&mut *self.tx)
+			.fetch_optional(&mut **self.tx)
 			.await?;
 			let Some(peer) = peer else {
 				return Ok(false);

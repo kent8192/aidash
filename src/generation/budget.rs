@@ -51,6 +51,45 @@ impl Reservation {
 			.bind(refund)
 			.execute(&mut *tx)
 			.await?;
+			if refund > 0 {
+				let released: Option<(String, String)> = sqlx::query_as(
+					&sea_orm::sea_query::Query::select()
+						.columns([
+							sea_orm::sea_query::Alias::new("tenant"),
+							sea_orm::sea_query::Alias::new("policy_id"),
+						])
+						.from(sea_orm::sea_query::Alias::new("generation_requests"))
+						.and_where(sea_orm::sea_query::Expr::cust("id = $1 AND quota_released"))
+						.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+				)
+				.bind(id)
+				.fetch_optional(&mut *tx)
+				.await?;
+				if let Some((tenant, policy_id)) = released {
+					let changed = sqlx::query(
+						&sea_orm::sea_query::Query::update()
+							.table(sea_orm::sea_query::Alias::new("generation_policies"))
+							.value(
+								sea_orm::sea_query::Alias::new("allocated_tokens"),
+								sea_orm::sea_query::Expr::cust("allocated_tokens - $3"),
+							)
+							.and_where(sea_orm::sea_query::Expr::cust(
+								"tenant = $1 AND id = $2 AND allocated_tokens >= $3",
+							))
+							.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+					)
+					.bind(tenant)
+					.bind(policy_id)
+					.bind(refund)
+					.execute(&mut *tx)
+					.await?;
+					if changed.rows_affected() != 1 {
+						return Err(Error::Conflict(
+							"generation token refund exceeds allocated quota".into(),
+						));
+					}
+				}
+			}
 			sqlx::query(
 				&sea_orm::sea_query::Query::update()
 					.table(sea_orm::sea_query::Alias::new("generation_usage"))
@@ -107,7 +146,7 @@ pub(crate) async fn reserve(
 	.bind(&access.identity.tenant)
 	.bind(&store.node_id)
 	.bind(&access.subjects)
-	.fetch_all(&mut *access.tx)
+	.fetch_all(&mut **access.tx)
 	.await?;
 	if requests.is_empty() {
 		return Ok(None);

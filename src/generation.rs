@@ -99,7 +99,7 @@ pub(crate) async fn assign_in(
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(task_id)
-	.fetch_optional(&mut *access.tx)
+	.fetch_optional(&mut **access.tx)
 	.await?
 	.ok_or(Error::Forbidden)?;
 	let workspace = access.workspace(task.workspace_id).await?;
@@ -131,7 +131,7 @@ pub(crate) async fn assign_in(
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(task_id)
-	.fetch_optional(&mut *access.tx)
+	.fetch_optional(&mut **access.tx)
 	.await?;
 	if let Some(existing) = existing {
 		if existing.tenant != access.identity.tenant
@@ -190,7 +190,7 @@ pub(crate) async fn assign_in(
 		.bind(task_id)
 		.bind(&access.identity.tenant)
 		.bind(&access.identity.subject)
-		.fetch_optional(&mut *access.tx)
+		.fetch_optional(&mut **access.tx)
 		.await?;
 		if let Some((id, version, chain)) = existing {
 			let mut expected = access.subjects.clone();
@@ -231,7 +231,7 @@ pub(crate) async fn assign_in(
 		)
 		.bind(&entry.id)
 		.bind(&entry.version)
-		.fetch_one(&mut *access.tx)
+		.fetch_one(&mut **access.tx)
 		.await?;
 		if generated {
 			continue;
@@ -309,7 +309,7 @@ pub(crate) async fn assign_in(
 	.bind(&access.identity.tenant)
 	.bind(&f.config.node_id)
 	.bind(&access.subjects)
-	.fetch_one(&mut *access.tx)
+	.fetch_one(&mut **access.tx)
 	.await?;
 	let depth = previous_depth.unwrap_or(0) + 1;
 	let limits = &policy.spec.limits;
@@ -324,7 +324,7 @@ pub(crate) async fn assign_in(
 	)
 	.bind(&access.identity.tenant)
 	.bind(policy_id)
-	.fetch_one(&mut *access.tx)
+	.fetch_one(&mut **access.tx)
 	.await?;
 	let compaction_calls = policy
 		.spec
@@ -438,7 +438,7 @@ pub(crate) async fn assign_in(
 	.bind(depth)
 	.bind(limits.tokens_per_agent)
 	.bind(limits.lifetime_seconds as f64)
-	.fetch_one(&mut *access.tx)
+	.fetch_one(&mut **access.tx)
 	.await?;
 	sqlx::query(
 		&sea_orm::sea_query::Query::update()
@@ -467,7 +467,7 @@ pub(crate) async fn assign_in(
 	.bind(limits.tokens_per_agent)
 	.bind(compaction_calls)
 	.bind(embedding_calls)
-	.execute(&mut *access.tx)
+	.execute(&mut **access.tx)
 	.await?;
 	sqlx::query(
 		&sea_orm::sea_query::Query::insert()
@@ -490,7 +490,7 @@ pub(crate) async fn assign_in(
 	.bind(limits.tokens_per_agent)
 	.bind(compaction_calls)
 	.bind(embedding_calls)
-	.execute(&mut *access.tx)
+	.execute(&mut **access.tx)
 	.await?;
 	sqlx::query(
 		&sea_orm::sea_query::Query::insert()
@@ -513,7 +513,7 @@ pub(crate) async fn assign_in(
 	.bind(status)
 	.bind(&access.identity.subject)
 	.bind(reason)
-	.execute(&mut *access.tx)
+	.execute(&mut **access.tx)
 	.await?;
 	f.store
 		.event(

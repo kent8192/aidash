@@ -53,7 +53,7 @@ pub struct Harness {
 impl Harness {
 	pub async fn worker_once(&self) -> Result<bool> {
 		let store = &self.federation.store;
-		let _visibility = crate::transactions::gate::ReadLease::begin(store).await?;
+		let mut visibility = crate::transactions::gate::ReadLease::begin(store).await?;
 		let token = Uuid::new_v4();
 		let Some(mut run) = store
 			.lease_run(token, self.federation.config.lease_seconds)
@@ -62,7 +62,7 @@ impl Harness {
 			return Ok(false);
 		};
 		let result = {
-			let work = self.advance(&mut run, token);
+			let work = self.advance(&mut run, token, &mut visibility);
 			tokio::pin!(work);
 			let mut heartbeat = tokio::time::interval(Duration::from_secs(
 				(self.federation.config.lease_seconds / 3).max(1) as u64,
@@ -72,13 +72,14 @@ impl Harness {
 				tokio::select! {
 					result=&mut work=>break result,
 					_=heartbeat.tick()=>{
-						if !store.renew_lease(run_id(store,token).await?,token,self.federation.config.lease_seconds).await?{
+						if !renew_worker_lease(store, run_id(store, token).await?, token, self.federation.config.lease_seconds).await? {
 							return Ok(true);
 						}
 					}
 				}
 			}
 		};
+		visibility.resume(store).await?;
 		if let Err(e) = result {
 			let id = match run_id(store, token).await {
 				Ok(id) => id,
@@ -88,7 +89,7 @@ impl Harness {
 			let attempts = current.pending["retry_count"].as_u64().unwrap_or(0) + 1;
 			if matches!(e, Error::Forbidden | Error::Unauthorized) {
 				store.pause_for_authorization(&current, token).await?;
-			} else if matches!(e, Error::TransactionPending) {
+			} else if matches!(e, Error::TransactionPending | Error::StaleInference) {
 				current.pending["retry_at"] =
 					json!(chrono::Utc::now() + chrono::Duration::seconds(1));
 				store.save_run(&current, token, "run.retrying").await?;
@@ -203,19 +204,32 @@ impl Harness {
 		}
 		Ok(tools)
 	}
-	async fn advance(&self, run: &mut Run, token: Uuid) -> Result<()> {
+	async fn advance(
+		&self,
+		run: &mut Run,
+		token: Uuid,
+		visibility: &mut crate::transactions::gate::ReadLease,
+	) -> Result<()> {
 		if execution::cancel_if_scoped(&self.federation.store, run, token).await? {
 			return Ok(());
 		}
 		let guard = Guard::begin(&self.federation, run).await?;
-		let result = self.advance_step(run, token, guard.as_ref()).await;
+		let result = self
+			.advance_step(run, token, guard.as_ref(), visibility)
+			.await;
 		if let Some(guard) = guard {
 			guard.finish(result).await
 		} else {
 			result
 		}
 	}
-	async fn advance_step(&self, run: &mut Run, token: Uuid, guard: Option<&Guard>) -> Result<()> {
+	async fn advance_step(
+		&self,
+		run: &mut Run,
+		token: Uuid,
+		guard: Option<&Guard>,
+		visibility: &mut crate::transactions::gate::ReadLease,
+	) -> Result<()> {
 		let store = &self.federation.store;
 		let home = Home::new(self.federation.clone(), run.clone())
 			.with_authority(guard.map(Guard::authority));
@@ -469,9 +483,31 @@ impl Harness {
 				} else {
 					None
 				};
-				let result = model.infer(request).await?;
-				if let Some(reservation) = reservation {
-					reservation.settle(&result).await?;
+				// Race only inference, not replay-unsafe tools or durable transitions.
+				// Release node-wide visibility and authorization row locks while the
+				// provider waits; both boundaries are reacquired before accepting output.
+				if let Some(guard) = guard {
+					guard.suspend().await?;
+				}
+				visibility.suspend().await?;
+				let result = tokio::select! {
+					biased;
+					cancelled = wait_for_inference_cancellation(store, run.id) => match cancelled {
+						Ok(()) => Err(Error::Conflict("run cancelled during inference".into())),
+						Err(error) => Err(error),
+					},
+					result = model.infer(request) => result,
+				};
+				let resumed = visibility.resume(store).await;
+				if let (Some(reservation), Ok(response)) = (reservation, result.as_ref()) {
+					// Provider usage is billable even when authorization changed
+					// or a transaction committed while its result was in flight.
+					reservation.settle(response).await?;
+				}
+				resumed?;
+				let result = result?;
+				if let Some(guard) = guard {
+					guard.resume(&self.federation).await?;
 				}
 				context.usage = json!({"input_tokens":result.input_tokens,"output_tokens":result.output_tokens,"context_window":window,"compactions":context.compactions});
 				run.context = json!(context);
@@ -855,6 +891,61 @@ impl Harness {
 	}
 }
 
+async fn wait_for_inference_cancellation(store: &crate::store::Store, id: Uuid) -> Result<()> {
+	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+
+	// Read committed control outside the step's authority lease. Notify is
+	// process-local, and a long worker heartbeat must not delay cancellation.
+	// Fetch only control rather than repeatedly copying the run's context.
+	let query = Query::select()
+		.column(Alias::new("control"))
+		.from(Alias::new("runs"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+		.to_string(PostgresQueryBuilder);
+	loop {
+		let control = sqlx::query_scalar::<_, String>(&query)
+			.bind(id)
+			.fetch_one(&store.pool)
+			.await;
+		match control {
+			Ok(control) if control == "CANCELLED" => return Ok(()),
+			Ok(_) => {}
+			Err(error) => {
+				// A failed observation is not cancellation. Keep the in-flight
+				// request alive; the existing heartbeat still fences the lease.
+				tracing::warn!(
+					run_id = %id,
+					error = %error,
+					"inference cancellation poll failed; retrying"
+				);
+			}
+		}
+		tokio::time::sleep(Duration::from_millis(250)).await;
+	}
+}
+
+async fn renew_worker_lease(
+	store: &crate::store::Store,
+	run_id: Uuid,
+	token: Uuid,
+	lease_seconds: i32,
+) -> Result<bool> {
+	let mut delay = Duration::from_millis(250);
+	loop {
+		match store.renew_lease(run_id, token, lease_seconds).await {
+			Ok(renewed) => return Ok(renewed),
+			Err(error)
+				if matches!(&error, Error::TransactionPending) || error.is_transient_database() =>
+			{
+				tracing::warn!(%error, run_id = %run_id, "retrying worker lease renewal after transient database error");
+				tokio::time::sleep(delay).await;
+				delay = delay.saturating_mul(2).min(Duration::from_secs(2));
+			}
+			Err(error) => return Err(error),
+		}
+	}
+}
+
 async fn cap_workspace_read(
 	home: &Home,
 	context: &Context,
@@ -1069,6 +1160,30 @@ fn result_artifact_name(title: &str) -> String {
 }
 #[cfg(test)]
 mod review_tests {
+	#[tokio::test(start_paused = true)]
+	async fn inference_cancellation_poll_errors_do_not_signal_cancellation() {
+		let pool = sqlx::postgres::PgPoolOptions::new()
+			.connect_lazy("postgres://localhost/unused")
+			.unwrap();
+		pool.close().await;
+		let store = crate::store::Store {
+			pool: pool.clone(),
+			control_pool: pool,
+			node_id: "cancellation-poll-test".into(),
+			semantic_client: reqwest::Client::new(),
+		};
+		let cancellation = super::wait_for_inference_cancellation(&store, uuid::Uuid::new_v4());
+		tokio::pin!(cancellation);
+		for _ in 0..3 {
+			assert!(
+				tokio::time::timeout(std::time::Duration::from_millis(250), &mut cancellation)
+					.await
+					.is_err(),
+				"a failed control read must not interrupt the in-flight inference"
+			);
+		}
+	}
+
 	#[test]
 	fn small_context_windows_keep_their_available_budget() {
 		assert!(super::request_context_window(2048, 1500) >= 1500);

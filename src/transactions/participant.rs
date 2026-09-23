@@ -313,6 +313,10 @@ pub async fn finish(f: &Federation, caller: &str, manifest: &Manifest) -> Result
 					sea_orm::sea_query::Alias::new("transaction_id"),
 					sea_orm::sea_query::Expr::cust("NULL"),
 				)
+				.value(
+					sea_orm::sea_query::Alias::new("commit_epoch"),
+					sea_orm::sea_query::Expr::cust("commit_epoch + 1"),
+				)
 				.and_where(sea_orm::sea_query::SimpleExpr::from(
 					sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("singleton")),
 				))

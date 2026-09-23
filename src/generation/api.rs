@@ -228,7 +228,7 @@ async fn requests(
 					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 			)
 			.bind(&tenant)
-			.fetch_all(&mut *access.tx)
+			.fetch_all(&mut **access.tx)
 			.await?;
 			let exhausted = requests.len() < 200;
 			for request in requests {
@@ -351,7 +351,7 @@ async fn history(
 				)
 				.bind(&tenant)
 				.bind(id)
-				.fetch_optional(&mut *access.tx)
+				.fetch_optional(&mut **access.tx)
 				.await?
 				.ok_or(Error::Forbidden)?;
 				if !job.visible(&mut access).await? {
@@ -360,7 +360,7 @@ async fn history(
 				Ok(sqlx::query_as(&query)
 					.bind(tenant)
 					.bind(id)
-					.fetch_all(&mut *access.tx)
+					.fetch_all(&mut **access.tx)
 					.await?)
 			}
 			.await;
@@ -471,7 +471,7 @@ async fn usage(
 				)
 				.bind(&tenant)
 				.bind(id)
-				.fetch_optional(&mut *access.tx)
+				.fetch_optional(&mut **access.tx)
 				.await?
 				.ok_or(Error::Forbidden)?;
 				if !job.visible(&mut access).await? {
@@ -480,7 +480,7 @@ async fn usage(
 				Ok(sqlx::query_as(&query)
 					.bind(tenant)
 					.bind(id)
-					.fetch_one(&mut *access.tx)
+					.fetch_one(&mut **access.tx)
 					.await?)
 			}
 			.await;
@@ -545,7 +545,7 @@ async fn spec(
 				)
 				.bind(&tenant)
 				.bind(id)
-				.fetch_optional(&mut *access.tx)
+				.fetch_optional(&mut **access.tx)
 				.await?
 				.ok_or(Error::Forbidden)?;
 				if !job.visible(&mut access).await? {
@@ -554,7 +554,7 @@ async fn spec(
 				let document: serde_json::Value = sqlx::query_scalar(&query)
 					.bind(tenant)
 					.bind(id)
-					.fetch_one(&mut *access.tx)
+					.fetch_one(&mut **access.tx)
 					.await?;
 				Ok(serde_json::from_value(document)?)
 			}

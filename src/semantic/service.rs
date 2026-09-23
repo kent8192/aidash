@@ -150,7 +150,7 @@ impl Lease<'_> {
 					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 			)
 			.bind(entry.id)
-			.fetch_optional(&mut *a.tx)
+			.fetch_optional(&mut **a.tx)
 			.await?;
 			if let Some((id, version)) = managed {
 				attributes["created_by"] = json!(entry.agent);
@@ -1353,7 +1353,7 @@ impl Access {
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 		)
 		.bind(run)
-		.fetch_all(&mut *self.tx)
+		.fetch_all(&mut **self.tx)
 		.await?;
 		let mut lease = Lease::Inherited(self);
 		for (id, revision) in dependencies {

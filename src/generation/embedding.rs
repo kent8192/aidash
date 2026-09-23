@@ -94,7 +94,7 @@ pub(crate) async fn reserve(
 	.bind(&access.identity.tenant)
 	.bind(&store.node_id)
 	.bind(&access.subjects)
-	.fetch_all(&mut *access.tx)
+	.fetch_all(&mut **access.tx)
 	.await?;
 	let Some(first) = jobs.first() else {
 		return Ok(None);
@@ -125,7 +125,7 @@ pub(crate) async fn reserve(
 		.bind(&job.tenant)
 		.bind(&job.policy_id)
 		.bind(job.policy_revision)
-		.fetch_one(&mut *access.tx)
+		.fetch_one(&mut **access.tx)
 		.await?;
 		let spec: super::policy::Spec = serde_json::from_value(spec)?;
 		let approved = spec.embedding.ok_or_else(|| {

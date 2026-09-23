@@ -10,7 +10,7 @@ use sea_orm::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Duration};
 
 mod record {
 	use sea_orm::entity::prelude::*;
@@ -97,6 +97,11 @@ pub struct ModelConfig {
 	pub model_id: String,
 	pub endpoint: String,
 	pub credential_env: Option<String>,
+	/// Total inference request timeout in seconds, including the response body.
+	/// Omitted or null values use 900 seconds; configured values must be positive.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	#[schema(minimum = 1, default = 900)]
+	pub request_timeout_secs: Option<u32>,
 	#[serde(default)]
 	pub reasoning_effort: Option<ReasoningEffort>,
 	pub context_window: usize,
@@ -110,6 +115,18 @@ pub struct ModelConfig {
 }
 
 impl ModelConfig {
+	/// Resolve the provider's inference deadline without inheriting the shared
+	/// HTTP client's shorter default. Validate at registration and before use.
+	pub fn request_timeout(&self) -> Result<Duration> {
+		let seconds = self.request_timeout_secs.unwrap_or(900);
+		if seconds == 0 {
+			return Err(Error::Invalid(
+				"model request_timeout_secs must be greater than zero".into(),
+			));
+		}
+		Ok(Duration::from_secs(u64::from(seconds)))
+	}
+
 	/// Preserve the historical output allowance for model versions registered
 	/// before their provider limit was captured in the immutable config.
 	pub fn output_token_limit(&self) -> u32 {
@@ -479,6 +496,7 @@ fn validate_in(e: &Entry, local: bool) -> Result<()> {
 						.into(),
 				));
 			}
+			m.request_timeout()?;
 			validate_endpoint(&m.endpoint)?;
 			if let Some(name) = m.credential_env {
 				crate::config::validate_secret_reference(&name)?;

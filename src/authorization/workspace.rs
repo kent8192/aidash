@@ -53,7 +53,7 @@ impl Access {
 		.bind(id)
 		.bind(&self.identity.tenant)
 		.bind(&self.identity.subject)
-		.execute(&mut *self.tx)
+		.execute(&mut **self.tx)
 		.await?;
 		Ok(workspace)
 	}
@@ -102,7 +102,7 @@ impl Access {
 		)
 		.bind(id)
 		.bind(&self.identity.tenant)
-		.fetch_optional(&mut *self.tx)
+		.fetch_optional(&mut **self.tx)
 		.await?;
 		self.workspace_decide(id, action, owner.as_deref()).await
 	}
@@ -127,7 +127,7 @@ impl Access {
 				.to_string(PostgresQueryBuilder),
 		)
 		.bind(&self.identity.tenant)
-		.fetch_all(&mut *self.tx)
+		.fetch_all(&mut **self.tx)
 		.await?;
 		let mut result = vec![];
 		for (id, owner) in rows {
@@ -166,7 +166,7 @@ impl Access {
 		)
 		.bind(run.task_id)
 		.bind(run.workspace_id)
-		.fetch_optional(&mut *self.tx)
+		.fetch_optional(&mut **self.tx)
 		.await?;
 		let task_visible = match task {
 			Some(task) => self.task_visible(&task).await?,
@@ -205,7 +205,7 @@ impl Access {
 			.bind(id)
 			.bind(&self.identity.tenant)
 			.bind(event.workspace_id)
-			.fetch_optional(&mut *self.tx)
+			.fetch_optional(&mut **self.tx)
 			.await?;
 			return match job {
 				Some(job) => job.visible(self).await,
@@ -232,7 +232,7 @@ impl Access {
 			)
 			.bind(id)
 			.bind(event.workspace_id)
-			.fetch_optional(&mut *self.tx)
+			.fetch_optional(&mut **self.tx)
 			.await?;
 			let Some(conversation) = conversation else {
 				return Ok(false);
@@ -260,7 +260,7 @@ impl Access {
 			)
 			.bind(id)
 			.bind(event.workspace_id)
-			.fetch_optional(&mut *self.tx)
+			.fetch_optional(&mut **self.tx)
 			.await?;
 			let Some(request) = request else {
 				return Ok(false);
@@ -300,7 +300,7 @@ impl Access {
 		)
 		.bind(id)
 		.bind(event.workspace_id)
-		.fetch_optional(&mut *self.tx)
+		.fetch_optional(&mut **self.tx)
 		.await?;
 		match run {
 			Some(run) => self.run_visible(&run).await,
@@ -328,7 +328,7 @@ impl Access {
 					.to_string(PostgresQueryBuilder),
 			)
 			.bind(workspaces)
-			.fetch_all(&mut *self.tx)
+			.fetch_all(&mut **self.tx)
 			.await?;
 			let exhausted = rows.len() < 500;
 			for task in rows {
@@ -368,7 +368,7 @@ impl Access {
 			)
 			.bind(workspaces)
 			.bind(cursor)
-			.fetch_all(&mut *self.tx)
+			.fetch_all(&mut **self.tx)
 			.await?;
 			let exhausted = rows.len() < 100;
 			for event in rows {
@@ -404,7 +404,7 @@ impl Access {
 					.to_string(PostgresQueryBuilder),
 			)
 			.bind(workspace)
-			.fetch_all(&mut *self.tx)
+			.fetch_all(&mut **self.tx)
 			.await?;
 			let exhausted = rows.len() < 100;
 			for message in rows {
@@ -447,7 +447,7 @@ impl Access {
 					.to_string(PostgresQueryBuilder),
 			)
 			.bind(id)
-			.fetch_one(&mut *self.tx)
+			.fetch_one(&mut **self.tx)
 			.await?,
 			tasks: sqlx::query_as(
 				&Query::select()
@@ -459,7 +459,7 @@ impl Access {
 					.to_string(PostgresQueryBuilder),
 			)
 			.bind(id)
-			.fetch_all(&mut *self.tx)
+			.fetch_all(&mut **self.tx)
 			.await?,
 			artifacts: sqlx::query_as(
 				&Query::select()
@@ -471,7 +471,7 @@ impl Access {
 					.to_string(PostgresQueryBuilder),
 			)
 			.bind(id)
-			.fetch_all(&mut *self.tx)
+			.fetch_all(&mut **self.tx)
 			.await?,
 			messages: self.latest_visible_messages(id).await?,
 			events,
@@ -581,7 +581,7 @@ impl Access {
 				.to_string(PostgresQueryBuilder),
 		)
 		.bind(workspace_id)
-		.fetch_one(&mut *self.tx)
+		.fetch_one(&mut **self.tx)
 		.await?;
 		let mut snapshot = WorkspaceSnapshot {
 			workspace,
@@ -607,7 +607,7 @@ impl Access {
 				)
 				.bind(id)
 				.bind(workspace_id)
-				.fetch_optional(&mut *self.tx)
+				.fetch_optional(&mut **self.tx)
 				.await?
 				.ok_or(Error::Forbidden)?;
 				if !self.task_visible(&task).await? {
@@ -630,7 +630,7 @@ impl Access {
 				)
 				.bind(id)
 				.bind(workspace_id)
-				.fetch_optional(&mut *self.tx)
+				.fetch_optional(&mut **self.tx)
 				.await?
 				.ok_or(Error::Forbidden)?;
 				if !self.artifact_visible(&artifact).await? {
@@ -653,7 +653,7 @@ impl Access {
 				)
 				.bind(id)
 				.bind(workspace_id)
-				.fetch_optional(&mut *self.tx)
+				.fetch_optional(&mut **self.tx)
 				.await?
 				.ok_or(Error::Forbidden)?;
 				if !self.message_visible(&message).await? {
@@ -679,7 +679,7 @@ impl Access {
 				)
 				.bind(id)
 				.bind(workspace_id)
-				.fetch_optional(&mut *self.tx)
+				.fetch_optional(&mut **self.tx)
 				.await?
 				.ok_or(Error::Forbidden)?;
 				if !self.event_visible(&event).await? {
@@ -732,7 +732,7 @@ impl Access {
 			.bind(workspace_id)
 			.bind(parent_id)
 			.bind(after)
-			.fetch_all(&mut *self.tx)
+			.fetch_all(&mut **self.tx)
 			.await?;
 			let exhausted = rows.len() < 100;
 			let mut visible_ids = Vec::with_capacity(rows.len());
@@ -906,7 +906,7 @@ impl Workspaces {
 						.to_string(PostgresQueryBuilder),
 				)
 				.bind(&visible)
-				.fetch_all(&mut *access.tx)
+				.fetch_all(&mut **access.tx)
 				.await?,
 				tasks: access.task_page(&visible, 0).await?.tasks,
 				artifacts: vec![],
@@ -929,7 +929,7 @@ impl Workspaces {
 						.to_string(PostgresQueryBuilder),
 				)
 				.bind(&visible)
-				.fetch_all(&mut *access.tx)
+				.fetch_all(&mut **access.tx)
 				.await?;
 				let exhausted = batch.len() < 500;
 				for artifact in batch {
@@ -959,7 +959,7 @@ impl Workspaces {
 						.to_string(PostgresQueryBuilder),
 				)
 				.bind(&visible)
-				.fetch_all(&mut *access.tx)
+				.fetch_all(&mut **access.tx)
 				.await?;
 				let exhausted = batch.len() < 500;
 				for run in batch {
@@ -990,7 +990,7 @@ impl Workspaces {
 						.to_string(PostgresQueryBuilder),
 				)
 				.bind(&run_ids)
-				.fetch_all(&mut *access.tx)
+				.fetch_all(&mut **access.tx)
 				.await?;
 				let exhausted = batch.len() < 500;
 				for request in batch {
@@ -1021,7 +1021,7 @@ impl Workspaces {
 						.to_string(PostgresQueryBuilder),
 				)
 				.bind(&visible)
-				.fetch_all(&mut *access.tx)
+				.fetch_all(&mut **access.tx)
 				.await?;
 				let exhausted = batch.len() < 500;
 				for conversation in batch {
@@ -1111,7 +1111,7 @@ impl Workspaces {
 				)
 				.bind(&visible)
 				.bind(cursor)
-				.fetch_all(&mut *access.tx)
+				.fetch_all(&mut **access.tx)
 				.await?;
 				let exhausted = batch.len() < 500;
 				for event in batch {
