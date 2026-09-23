@@ -39,7 +39,12 @@
       "type": "object",
       "properties": {
         "type": { "enum": ["ClusterIP", "LoadBalancer", "NodePort"] },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "nodePort": {
+          "type": ["integer", "null"],
+          "minimum": 30000,
+          "maximum": 32767
+        }
       }
     }
   },

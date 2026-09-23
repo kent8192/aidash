@@ -1,0 +1,17 @@
+[config]
+default_to_workspace = false
+
+[tasks.k8s-up]
+description = "Build and start Aidash with PostgreSQL, NATS, and Qdrant in a local kind cluster"
+command = "bash"
+args = ["scripts/local-k8s.sh", "up"]
+
+[tasks.k8s-down]
+description = "Remove the dedicated local Aidash kind cluster and its data"
+command = "bash"
+args = ["scripts/local-k8s.sh", "down"]
+
+[tasks.k8s-status]
+description = "Show the local Aidash Kubernetes workloads and access URL"
+command = "bash"
+args = ["scripts/local-k8s.sh", "status"]

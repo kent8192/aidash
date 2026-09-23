@@ -23,6 +23,8 @@ worker:
 service:
   type: ClusterIP
   port: 8080
+  # Set only when service.type is NodePort (for example, local kind access).
+  nodePort: null
 observability:
   enabled: true
 terminationGracePeriodSeconds: 30
