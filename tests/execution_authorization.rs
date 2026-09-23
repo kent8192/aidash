@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
-async fn scoped_worker_can_read_an_approved_bundled_skill_file() {
+async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_file() {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -66,7 +66,10 @@ async fn scoped_worker_can_read_an_approved_bundled_skill_file() {
 	.await;
 	assert_eq!(status, 200, "claim: {body}");
 	let run = f.store.runs().await.unwrap().remove(0);
-	let response = json!({"text":"","tool_calls":[{"id":"read-guide","name":"skill_read","arguments":{"skill":{"id":"guide","version":"1.0.0"},"path":"references/guide.md"}}],"input_tokens":0,"output_tokens":0});
+	let response = json!({"text":"","tool_calls":[
+		{"id":"read-missing","name":"skill_read","arguments":{"skill":{"id":"guide","version":"1.0.0"},"path":"references/missing.md"}},
+		{"id":"read-guide","name":"skill_read","arguments":{"skill":{"id":"guide","version":"1.0.0"},"path":"references/guide.md"}}
+	],"input_tokens":0,"output_tokens":0});
 	sqlx::query(
 		&sea_orm::sea_query::Query::update()
 			.table(sea_orm::sea_query::Alias::new("runs"))
@@ -96,7 +99,20 @@ async fn scoped_worker_can_read_an_approved_bundled_skill_file() {
 	);
 	let run = f.store.run(run.id).await.unwrap();
 	assert_eq!(
-		run.context["history"][0]["result"]["text"],
+		run.context["history"][0]["result"]["error"],
+		"Skill file not found: references/missing.md"
+	);
+	assert!(
+		Harness {
+			federation: f.clone()
+		}
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	let run = f.store.run(run.id).await.unwrap();
+	assert_eq!(
+		run.context["history"][1]["result"]["text"],
 		"Approved guide"
 	);
 	cleanup(f, &url, &schema).await;

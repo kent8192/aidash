@@ -1200,10 +1200,7 @@ fn skill_read_range(call: &crate::provider::ToolCall) -> Result<WorkspaceReadRan
 fn skill_read_result(output: &Value, bytes: usize) -> Value {
 	let mut result = output.clone();
 	let original = output["text"].as_str().unwrap_or_default();
-	let mut end = bytes.min(original.len());
-	while !original.is_char_boundary(end) {
-		end -= 1;
-	}
+	let end = crate::tool::bounded_utf8_end(original, 0, bytes);
 	let offset = output["offset"].as_u64().unwrap_or(0) as usize;
 	let total = output["total_chars"].as_u64().unwrap_or(0) as usize;
 	let next = offset.saturating_add(end);
@@ -1238,11 +1235,24 @@ fn fit_skill_read_chars(
 			.saturating_add(context::tool_event_growth(context, &event))
 			<= maximum_request
 	};
-	if !fits(0) {
+	let minimum = if budget.requested > 0 {
+		output["text"]
+			.as_str()
+			.and_then(|text| text.chars().next())
+			.map(char::len_utf8)
+			.unwrap_or(0)
+	} else {
+		0
+	};
+	let mut low = minimum;
+	let mut high = budget.requested.max(minimum);
+	if minimum > 0 {
+		if !fits(minimum) {
+			return fits(0).then_some(0);
+		}
+	} else if !fits(0) {
 		return None;
 	}
-	let mut low = 0;
-	let mut high = budget.requested;
 	while low < high {
 		let middle = low + (high - low).div_ceil(2);
 		if fits(middle) {
@@ -1435,6 +1445,50 @@ mod review_tests {
 			.is_none()
 		);
 		assert_eq!(super::skill_read_result(&output, 0)["deferred"], true);
+	}
+
+	#[test]
+	fn skill_read_can_fit_one_character_when_the_deferred_envelope_cannot_fit() {
+		let call = crate::provider::ToolCall {
+			id: "skill-1".into(),
+			name: "skill_read".into(),
+			arguments: serde_json::json!({"skill":{"id":"research","version":"1.0.0"},"path":"references/guide.md","offset":0,"max_chars":1}),
+		};
+		let context = crate::context::Context::default();
+		let output = serde_json::json!({"path":"references/guide.md","text":"界more","encoding":"utf8","offset":0,"total_chars":7,"next_offset":null});
+		let event_growth = |bytes| {
+			let mut bounded_call = call.clone();
+			bounded_call.arguments["max_chars"] = serde_json::json!(bytes);
+			let event = serde_json::json!({
+				"kind":"tool",
+				"call":bounded_call,
+				"result":super::skill_read_result(&output, bytes)
+			});
+			crate::context::tool_event_growth(&context, &event)
+		};
+		let deferred_growth = event_growth(0);
+		let one_character_growth = event_growth(3);
+		assert_eq!(super::skill_read_result(&output, 1)["text"], "界");
+		assert!(deferred_growth > one_character_growth);
+
+		let request_window = 10_000;
+		let request_tokens = request_window - one_character_growth;
+		assert!(request_tokens + deferred_growth > request_window);
+		let bytes = super::fit_skill_read_chars(
+			&context,
+			&call,
+			&output,
+			super::WorkspaceReadFitBudget {
+				requested: 1,
+				offset: 0,
+				request_tokens,
+				request_window,
+				remaining_calls: 0,
+			},
+		)
+		.unwrap();
+		assert_eq!(bytes, 3);
+		assert_eq!(super::skill_read_result(&output, bytes)["text"], "界");
 	}
 
 	#[test]

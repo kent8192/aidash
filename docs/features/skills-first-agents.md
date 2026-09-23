@@ -8,8 +8,9 @@ policy templates also accept Skills without additional instructions.
 ## Importing existing Skills
 
 In Registry, choose `skill` in the registration form. Enter a public GitHub
-repository, Skill directory (`/tree/<ref>/<path>`), `SKILL.md` blob or raw URL, or
-upload a local `SKILL.md`. A `skills.sh/<owner>/<repo>/<skill>` page URL loads
+repository, root tree (`/tree/<ref>`) or Skill directory (`/tree/<ref>/<path>`),
+`SKILL.md` blob or raw URL, or upload a local `SKILL.md`. A
+`skills.sh/<owner>/<repo>/<skill>` page URL loads
 the registry's complete snapshot; a `skills.sh/<owner>/<repo>` URL lists
 Skills from its GitHub repository. Repository URLs list discovered Skills for
 selection.
@@ -27,9 +28,10 @@ relicense their content. Register a new version when adopting an upstream update
 
 At runtime, the agent sees the Skill instructions and the paths of its bundled
 files. It can read those files on demand with `skill_read`, bound to its exact
-registered Skill version. Bundled scripts remain text and are not run. Configure
-the tools a Skill needs separately; do not infer tool permissions from
-`allowed-tools`.
+registered Skill version. Reads preserve UTF-8 character boundaries, and an
+unknown file path is returned as a recoverable tool error. Bundled scripts remain
+text and are not run. Configure the tools a Skill needs separately; do not infer
+tool permissions from `allowed-tools`.
 
 Format reference: <https://agentskills.io/specification>.
 Sources: <https://github.com/anthropics/skills>, <https://github.com/openai/skills>.

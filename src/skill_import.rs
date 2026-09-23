@@ -77,7 +77,11 @@ impl Source {
 			return Err(Error::Invalid("invalid GitHub repository".into()));
 		}
 		let explicit = segments.len() > 2;
-		if explicit && (!matches!(segments[2], "tree" | "blob") || segments.len() < 5) {
+		if explicit
+			&& (!matches!(segments[2], "tree" | "blob")
+				|| (segments[2] == "tree" && segments.len() < 4)
+				|| (segments[2] == "blob" && segments.len() < 5))
+		{
 			return Err(Error::Invalid(
 				"use a repository, tree, or SKILL.md blob URL".into(),
 			));
@@ -775,6 +779,10 @@ mod tests {
 	#[test]
 	fn accepts_only_restricted_github_sources() {
 		assert!(Source::parse("https://github.com/openai/skills/tree/main/skills/foo").is_ok());
+		let root_tree = Source::parse("https://github.com/openai/skills/tree/release").unwrap();
+		assert_eq!(root_tree.ref_and_path, vec!["release"]);
+		assert!(root_tree.explicit);
+		assert!(!root_tree.blob);
 		let source = Source::parse("https://github.com/openai/skills").unwrap();
 		assert_eq!(source.api(""), "https://api.github.com/repos/openai/skills");
 		let mut commit_url = Url::parse(&source.api("commits")).unwrap();

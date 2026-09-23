@@ -287,6 +287,18 @@ pub struct Builtin {
 	pub description: &'static str,
 	pub schema: Value,
 }
+
+pub(crate) fn bounded_utf8_end(text: &str, start: usize, max_bytes: usize) -> usize {
+	let mut end = start.saturating_add(max_bytes).min(text.len());
+	while !text.is_char_boundary(end) {
+		end -= 1;
+	}
+	if max_bytes > 0 && end == start && start < text.len() {
+		return start + text[start..].chars().next().unwrap().len_utf8();
+	}
+	end
+}
+
 #[async_trait]
 impl Tool for Builtin {
 	fn specification(&self) -> ToolSpec {
@@ -322,17 +334,14 @@ impl Tool for Builtin {
 				let file = crate::registry::skill_files(&skill)?
 					.into_iter()
 					.find(|file| file.path == path)
-					.ok_or_else(|| Error::NotFound(path.into()))?;
+					.ok_or_else(|| Error::Invalid(format!("Skill file not found: {path}")))?;
 				let offset = input["offset"].as_u64().unwrap_or(0) as usize;
 				let max_chars = input["max_chars"].as_u64().unwrap_or(8000).min(16000) as usize;
 				let mut start = offset.min(file.content.len());
 				while !file.content.is_char_boundary(start) {
 					start -= 1;
 				}
-				let mut end = (start + max_chars).min(file.content.len());
-				while !file.content.is_char_boundary(end) {
-					end -= 1;
-				}
+				let end = bounded_utf8_end(&file.content, start, max_chars);
 				Ok(
 					json!({"path":path,"text":&file.content[start..end],"encoding":file.encoding.as_deref().unwrap_or("utf8"),"offset":start,"total_chars":file.content.len(),"next_offset":if end < file.content.len() { Some(end) } else { None }}),
 				)
@@ -526,6 +535,16 @@ pub fn builtins() -> BTreeMap<String, Arc<dyn Tool>> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn positive_utf8_chunk_limits_return_at_least_one_complete_character() {
+		let text = "界x";
+		assert_eq!(bounded_utf8_end(text, 0, 0), 0);
+		let end = bounded_utf8_end(text, 0, 1);
+		assert_eq!(&text[..end], "界");
+		assert_eq!(bounded_utf8_end(text, 0, 2), 3);
+		assert_eq!(bounded_utf8_end(text, 3, 1), 4);
+	}
 
 	#[test]
 	fn idempotent_mcp_requires_a_nonblank_idempotency_argument() {
