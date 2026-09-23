@@ -287,6 +287,7 @@ async fn hidden_task_cannot_be_claimed_or_used_as_a_dependency() {
 async fn recorded_source_revocation_hides_journals_and_pauses_before_provider_io() {
 	retained_snapshot_revocation(false).await;
 }
+
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
 async fn workspace_event_revocation_hides_journals_and_pauses_before_provider_io() {
@@ -443,6 +444,199 @@ async fn retained_snapshot_revocation(events_only: bool) {
 	worker.worker_once().await.unwrap();
 	assert_eq!(f.store.run(run.id).await.unwrap().control, "PAUSED");
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
+	server.abort();
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn opened_thread_events_retain_their_root_message_read_dependency() {
+	use axum::{Json, Router, routing::post};
+	use std::sync::{
+		Arc,
+		atomic::{AtomicUsize, Ordering},
+	};
+
+	let calls = Arc::new(AtomicUsize::new(0));
+	let seen = calls.clone();
+	let server = Router::new().route(
+		"/v1/chat/completions",
+		post(move |Json(_body): Json<Value>| {
+			let seen = seen.clone();
+			async move {
+				seen.fetch_add(1, Ordering::SeqCst);
+				Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Noted the discussion."}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+			}
+		}),
+	);
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (mut bundle, token, task) = bootstrap(&f, &app, &endpoint).await;
+	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let root_content = "older thread root";
+	f.store
+		.message(workspace, "human", root_content, None)
+		.await
+		.unwrap();
+	let root: uuid::Uuid = sqlx::query_scalar(
+		&sea_orm::sea_query::Query::select()
+			.column(sea_orm::sea_query::Alias::new("id"))
+			.from(sea_orm::sea_query::Alias::new("messages"))
+			.and_where(sea_orm::sea_query::Expr::cust(
+				"workspace_id = $1 AND content = $2",
+			))
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(workspace)
+	.bind(root_content)
+	.fetch_one(&f.store.pool)
+	.await
+	.unwrap();
+	let old = chrono::DateTime::parse_from_rfc3339("2000-01-01T00:00:00Z")
+		.unwrap()
+		.with_timezone(&chrono::Utc);
+	sqlx::query(
+		&sea_orm::sea_query::Query::update()
+			.table(sea_orm::sea_query::Alias::new("messages"))
+			.value(
+				sea_orm::sea_query::Alias::new("created_at"),
+				sea_orm::sea_query::Expr::cust("$1"),
+			)
+			.and_where(
+				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id"))
+					.eq(sea_orm::sea_query::Expr::cust("$2")),
+			)
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(old)
+	.bind(root)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	for index in 0..110 {
+		f.store
+			.message(workspace, "human", &format!("newer message {index}"), None)
+			.await
+			.unwrap();
+	}
+	let (status, thread) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/threads"),
+		json!({"root_message_id":root}),
+	)
+	.await;
+	assert_eq!(status, 200, "{thread}");
+	let recent: Vec<uuid::Uuid> = sqlx::query_scalar(
+		&sea_orm::sea_query::Query::select()
+			.column(sea_orm::sea_query::Alias::new("id"))
+			.from(sea_orm::sea_query::Alias::new("messages"))
+			.and_where(
+				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("workspace_id"))
+					.eq(sea_orm::sea_query::Expr::cust("$1")),
+			)
+			.order_by(
+				sea_orm::sea_query::Alias::new("created_at"),
+				sea_orm::sea_query::Order::Desc,
+			)
+			.order_by(
+				sea_orm::sea_query::Alias::new("id"),
+				sea_orm::sea_query::Order::Desc,
+			)
+			.limit(100)
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(workspace)
+	.fetch_all(&f.store.pool)
+	.await
+	.unwrap();
+	assert!(
+		!recent.contains(&root),
+		"the root is outside the message page"
+	);
+
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/tasks/{task}/claim"),
+			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
+		)
+		.await
+		.0,
+		200
+	);
+	let worker = Harness {
+		federation: f.clone(),
+	};
+	for _ in 0..4 {
+		worker.worker_once().await.unwrap();
+		if calls.load(Ordering::SeqCst) > 0 {
+			break;
+		}
+	}
+	assert_eq!(calls.load(Ordering::SeqCst), 1);
+	let run = f
+		.store
+		.runs()
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.task_id == task)
+		.unwrap();
+	let dependency: i64 = sqlx::query_scalar(
+		&sea_orm::sea_query::Query::select()
+			.expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+			.from(sea_orm::sea_query::Alias::new("authorization_run_reads"))
+			.and_where(sea_orm::sea_query::Expr::cust(
+				"run_id = $1 AND workspace_id = $2 AND resource_kind = 'message' AND resource_id = $3",
+			))
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.bind(workspace)
+	.bind(root)
+	.fetch_one(&f.store.pool)
+	.await
+	.unwrap();
+	assert_eq!(
+		dependency, 1,
+		"thread-open events depend on their root message"
+	);
+
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-thread-root", "effect":"deny", "subjects":{"ids":["alice"]},
+		"actions":["message.read"], "resources":{"kinds":["message"],"ids":[root]}
+	}));
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":bundle})
+		)
+		.await
+		.0,
+		200
+	);
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"GET",
+			&format!("/api/runs/{}", run.id),
+			Value::Null
+		)
+		.await
+		.0,
+		403
+	);
 	server.abort();
 	cleanup(f, &url, &schema).await;
 }

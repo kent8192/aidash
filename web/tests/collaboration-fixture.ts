@@ -123,6 +123,7 @@ export async function setup(
     meshErrors?: boolean;
     runMemory?: boolean;
     latestMessageChangesOnPoll?: boolean;
+    messageAttachment?: boolean;
   } = {},
 ) {
   let data = fixture();
@@ -164,6 +165,17 @@ export async function setup(
     );
     return {
       message,
+      attachments:
+        options.messageAttachment && message.id === "message-one"
+          ? [
+              {
+                id: "attachment-one",
+                filename: "evidence.txt",
+                media_type: "text/plain",
+                size_bytes: 15,
+              },
+            ]
+          : [],
       thread_id: replies.get(message.id) ?? root?.id ?? null,
       is_thread_root: Boolean(root),
     };
@@ -275,6 +287,15 @@ export async function setup(
           messages: selected.map(envelope),
           next_before: hasOlder ? selected[0].id : null,
         },
+      });
+    }
+    if (
+      options.messageAttachment &&
+      path === "/api/workspaces/workspace-one/attachments/attachment-one"
+    ) {
+      return route.fulfill({
+        body: "Source evidence",
+        contentType: "text/plain",
       });
     }
     if (request.method() === "POST") {

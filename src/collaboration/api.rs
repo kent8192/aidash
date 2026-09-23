@@ -46,7 +46,11 @@ async fn channel_message_create(
 	Path(id): Path<Uuid>,
 	Json(input): Json<ChannelMessageInput>,
 ) -> Result<Json<ChannelMessage>> {
-	let mut lease = Lease::begin(&f.store, actor, id, "message.create").await?;
+	let mut lease = if input.thread_id.is_some() {
+		Lease::begin(&f.store, actor, id, "message.create").await?
+	} else {
+		Lease::begin_message_create(&f.store, actor, id).await?
+	};
 	let result = threads::post(&f.store, &mut lease, id, input).await;
 	lease.finish(result).await.map(Json)
 }

@@ -50,6 +50,29 @@ test("failed message keeps its draft and idempotency key on retry", async ({
   expect(errors).toEqual([]);
 });
 
+test("message attachments show their names and download with the current credential", async ({
+  page,
+}) => {
+  const { errors } = await setup(page, { messageAttachment: true });
+  await page.goto("/collaboration?channel=workspace-one");
+  const attachment = page.getByRole("button", {
+    name: "Download attachment: evidence.txt",
+  });
+  await expect(attachment).toBeVisible();
+  const [download, request] = await Promise.all([
+    page.waitForEvent("download"),
+    page.waitForRequest(
+      (request) =>
+        request.url().endsWith("/attachments/attachment-one") &&
+        request.method() === "GET",
+    ),
+    attachment.click(),
+  ]);
+  expect(download.suggestedFilename()).toBe("evidence.txt");
+  expect(request.headers()["authorization"]).toBe("Bearer fixture");
+  expect(errors).toEqual([]);
+});
+
 test("preparing a channel does not invoke agent execution", async ({
   page,
 }) => {

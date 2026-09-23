@@ -17,12 +17,32 @@ pub(crate) enum Lease {
 
 impl Lease {
 	pub async fn begin(store: &Store, actor: Actor, workspace: Uuid, action: &str) -> Result<Self> {
+		Self::begin_with_workspace_read(store, actor, workspace, action, true).await
+	}
+
+	pub async fn begin_message_create(
+		store: &Store,
+		actor: Actor,
+		workspace: Uuid,
+	) -> Result<Self> {
+		Self::begin_with_workspace_read(store, actor, workspace, "message.create", false).await
+	}
+
+	async fn begin_with_workspace_read(
+		store: &Store,
+		actor: Actor,
+		workspace: Uuid,
+		action: &str,
+		require_workspace_read: bool,
+	) -> Result<Self> {
 		match actor {
 			Actor::Subject(identity) => {
 				let mut access = Access::begin(store, &identity).await?;
 				let result = async {
 					let resource = access.workspace(workspace).await?;
-					access.require(&resource, "workspace.read").await?;
+					if require_workspace_read || action == "workspace.read" {
+						access.require(&resource, "workspace.read").await?;
+					}
 					if action != "workspace.read" {
 						access.require(&resource, action).await?;
 					}

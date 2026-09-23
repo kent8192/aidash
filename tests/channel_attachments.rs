@@ -58,6 +58,62 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 	let attachment = file["id"].as_str().unwrap();
 	let message_key = Uuid::new_v4();
 	let message_path = format!("/api/workspaces/{workspace}/thread-messages");
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"bob-post-only", "effect":"deny", "subjects":{"ids":["bob"]},
+		"actions":["workspace.read","message.read"],
+		"resources":{"kinds":["workspace","message"]}
+	}));
+	let (status, changed) = request(
+		&app,
+		&operator,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy.clone()}),
+	)
+	.await;
+	assert_eq!(status, 200, "{changed}");
+	let (status, credential) = request(
+		&app,
+		&operator,
+		"POST",
+		"/api/authorization/acme/credentials",
+		json!({"subject":"bob"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{credential}");
+	let bob = credential["token"].as_str().unwrap();
+	let (status, foreign) = request(
+		&app,
+		bob,
+		"POST",
+		&message_path,
+		json!({"content":"Borrowed upload", "idempotency_key":Uuid::new_v4(),
+			"attachment_ids":[attachment]}),
+	)
+	.await;
+	assert_eq!(status, 404, "{foreign}");
+	let (status, posted) = request(
+		&app,
+		bob,
+		"POST",
+		&message_path,
+		json!({"content":"Post-only note", "idempotency_key":Uuid::new_v4()}),
+	)
+	.await;
+	assert_eq!(status, 200, "{posted}");
+	assert_eq!(
+		request(
+			&app,
+			bob,
+			"GET",
+			&format!("/api/workspaces/{workspace}/message-history"),
+			Value::Null
+		)
+		.await
+		.0,
+		404
+	);
 	let body = json!({
 		"content":"Review this source", "thread_id":null,
 		"idempotency_key":message_key, "attachment_ids":[attachment]
@@ -69,6 +125,49 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 	let (status, replay) = request(&app, &alice, "POST", &message_path, body).await;
 	assert_eq!(status, 200, "{replay}");
 	assert_eq!(message["message"]["id"], replay["message"]["id"]);
+	let (status, thread) = request(
+		&app,
+		&alice,
+		"POST",
+		&format!("/api/workspaces/{workspace}/threads"),
+		json!({"root_message_id":message["message"]["id"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{thread}");
+	policy["policies"]
+		.as_array_mut()
+		.unwrap()
+		.iter_mut()
+		.find(|rule| rule["id"] == "bob-post-only")
+		.unwrap()["actions"] = json!(["message.read"]);
+	let (status, changed) = request(
+		&app,
+		&operator,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":2,"bundle":policy.clone()}),
+	)
+	.await;
+	assert_eq!(status, 200, "{changed}");
+	let (status, posted_without_message_read) = request(
+		&app,
+		bob,
+		"POST",
+		&message_path,
+		json!({"content":"Read-only workspace post", "idempotency_key":Uuid::new_v4()}),
+	)
+	.await;
+	assert_eq!(status, 200, "{posted_without_message_read}");
+	let (status, hidden_reply) = request(
+		&app,
+		bob,
+		"POST",
+		&message_path,
+		json!({"content":"Invisible root", "thread_id":thread["id"],
+			"idempotency_key":Uuid::new_v4()}),
+	)
+	.await;
+	assert_eq!(status, 404, "{hidden_reply}");
 	let download = format!("/api/workspaces/{workspace}/attachments/{attachment}");
 	let response = app
 		.clone()
@@ -102,7 +201,7 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 		&operator,
 		"POST",
 		"/api/authorization/acme",
-		json!({"expected_revision":1,"bundle":policy}),
+		json!({"expected_revision":3,"bundle":policy}),
 	)
 	.await;
 	assert_eq!(changed.0, 200);

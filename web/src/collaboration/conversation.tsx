@@ -4,8 +4,10 @@ import {
   channelMessageCreate,
   channelMessageHistory,
   channelThreadCreate,
+  getChannelAttachmentDownloadUrl,
 } from "../generated/aidash";
-import type { ChannelMessage } from "../generated/models";
+import type { ChannelAttachment, ChannelMessage } from "../generated/models";
+import { authenticatedFetch } from "../transport";
 import { useI18n } from "../ui";
 import { collaborationCopy } from "./copy";
 import { senderLabel } from "./model";
@@ -36,6 +38,7 @@ export function ChannelConversation({
   const inFlight = useRef(false);
   const [sending, setSending] = useState(false);
   const [opening, setOpening] = useState(false);
+  const [downloading, setDownloading] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [sent, setSent] = useState(false);
   const scroll = useRef<HTMLDivElement>(null);
@@ -140,6 +143,30 @@ export function ChannelConversation({
     }
   }
 
+  async function downloadAttachment(attachment: ChannelAttachment) {
+    setDownloading(attachment.id);
+    setError("");
+    try {
+      const response = await authenticatedFetch(
+        getChannelAttachmentDownloadUrl(workspace, attachment.id),
+      );
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = attachment.filename;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (reason) {
+      setError(
+        `${copy.downloadFailed} ${reason instanceof Error ? reason.message : String(reason)}`,
+      );
+    } finally {
+      setDownloading(null);
+    }
+  }
+
   async function loadOlder() {
     const element = scroll.current;
     if (!element || query.isFetchingNextPage) return;
@@ -224,6 +251,22 @@ export function ChannelConversation({
                     </time>
                   </div>
                   <p>{message.content}</p>
+                  {entry.attachments.length > 0 && (
+                    <ul className="collab-attachments">
+                      {entry.attachments.map((attachment) => (
+                        <li key={attachment.id}>
+                          <button
+                            type="button"
+                            aria-label={`${copy.downloadAttachment}: ${attachment.filename}`}
+                            disabled={downloading === attachment.id}
+                            onClick={() => void downloadAttachment(attachment)}
+                          >
+                            {attachment.filename}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   {!thread && (
                     <button
                       className="collab-thread-action"

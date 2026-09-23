@@ -201,6 +201,7 @@ pub(crate) async fn attach(
 	if unique.len() != ids.len() {
 		return Err(Error::Invalid("attachment ids must be unique".into()));
 	}
+	let uploader = lease.principal();
 	let mut query = Query::select();
 	query
 		.columns([
@@ -213,12 +214,14 @@ pub(crate) async fn attach(
 		.from(Alias::new("channel_attachments"))
 		.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
 		.and_where(Expr::cust("id = ANY($2)"))
+		.and_where(Expr::col(Alias::new("uploaded_by")).eq(Expr::cust("$3")))
 		.order_by(Alias::new("id"), sea_orm::sea_query::Order::Asc)
 		.lock(LockType::Update);
 	let sql = query.to_string(PostgresQueryBuilder);
 	let records: Vec<AttachmentLink> = sqlx::query_as(&sql)
 		.bind(workspace)
 		.bind(ids.to_vec())
+		.bind(&uploader)
 		.fetch_all(&mut **lease.tx())
 		.await?;
 	if records.len() != ids.len() {
@@ -239,12 +242,14 @@ pub(crate) async fn attach(
 			.value(Alias::new("message_id"), Expr::cust("$1"))
 			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$2")))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$3")))
+			.and_where(Expr::col(Alias::new("uploaded_by")).eq(Expr::cust("$4")))
 			.and_where(Expr::col(Alias::new("message_id")).is_null())
 			.to_string(PostgresQueryBuilder);
 		sqlx::query(&update)
 			.bind(message)
 			.bind(workspace)
 			.bind(id)
+			.bind(&uploader)
 			.execute(&mut **lease.tx())
 			.await?;
 	}

@@ -183,9 +183,6 @@ pub(crate) async fn post(
 	}
 	let message_attachments =
 		attachments::attach(lease, workspace, message.id, &input.attachment_ids).await?;
-	if !lease.visible(&message).await? {
-		return Err(Error::Forbidden);
-	}
 	let root_thread: Option<Uuid> = sqlx::query_scalar(
 		&Query::select()
 			.column(Alias::new("id"))
