@@ -6,6 +6,35 @@ The current implementation includes a federated mesh, scoped authorization, poli
 
 ## Run locally
 
+### One-command Kubernetes start
+
+With Docker, kind, kubectl, Helm, Python 3, curl, and cargo-make installed, run:
+
+```sh
+cargo make k8s-up
+```
+
+This creates a dedicated `aidash-local` kind cluster, builds and imports the
+Aidash and PostgreSQL images (including `pg_jsonschema`), starts persistent
+PostgreSQL, JetStream NATS and Qdrant, deploys the server and worker with Helm,
+and exposes the dashboard at <http://127.0.0.1:8080>.
+
+Sign in with `AIDASH_API_TOKEN` from `.env`, or `local-development-token` when
+`.env` is absent. The script passes variables with the `AIDASH_SECRET_` prefix
+and optional `AIDASH_JEV_ENDPOINT` and `AIDASH_JEV_MODEL` values from `.env` to
+the Pods. For a cluster with a persistent PostgreSQL volume, keep
+`AIDASH_LOCAL_POSTGRES_PASSWORD` unchanged until `k8s-down` removes it.
+
+The script keeps a private kubeconfig in `.ignore/local-k8s/` and does not
+change the current kubectl context. Select a different local port when first
+creating the cluster with `AIDASH_K8S_PORT=8082 cargo make k8s-up`.
+
+`cargo make k8s-status` shows Pods and Services. `cargo make k8s-down` removes
+the dedicated cluster and its persistent local data. Re-running `k8s-up` updates
+the images and Helm release while keeping the existing cluster data.
+
+### Local processes and Docker Compose
+
 Prerequisites: Rust 1.96, Node.js 22.18 or later, Docker Compose, and Trunk CLI. The application does not load `.env` automatically.
 
 ```sh
