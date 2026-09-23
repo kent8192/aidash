@@ -109,6 +109,46 @@ async fn access_for_run(store: &Store, run: &Run, durable_audit: bool) -> Result
 	Ok(Some(access))
 }
 
+async fn refresh_access_for_run(access: &mut Access, store: &Store, run: &Run) -> Result<()> {
+	access.refresh_execution(run.id).await?;
+	let current: Grant = sqlx::query_as(
+		&Query::select()
+			.column(Asterisk)
+			.from(Alias::new("authorization_execution"))
+			.cond_where(Expr::col(Alias::new("run_id")).eq(Expr::cust("$1")))
+			.lock(LockType::Share)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.fetch_optional(&mut *access.tx)
+	.await?
+	.ok_or(Error::Forbidden)?;
+	if current.run_id != run.id
+		|| current.task_id != run.task_id
+		|| current.workspace_id != run.workspace_id
+		|| current.tenant != access.identity.tenant
+		|| current.root_subject != access.identity.subject
+		|| current.credential_id != access.identity.credential_id
+		|| current.subject_chain.first() != Some(&current.root_subject)
+		|| current.subject_chain.last()
+			!= Some(&qualified_agent(
+				&store.node_id,
+				&run.agent_id,
+				&run.agent_version,
+			)) {
+		return Err(Error::External(
+			"execution authority changed; retry boundary".into(),
+		));
+	}
+	access.subjects = current.subject_chain;
+	access.read_run = Some(run.id);
+	access.worker();
+	let workspace = access.workspace(run.workspace_id).await?;
+	access.context = workspace.attributes.clone();
+	access.require(&workspace, "workspace.read").await?;
+	Ok(())
+}
+
 fn require_agent(access: &Access, id: &str) -> Result<()> {
 	if access
 		.snapshot
@@ -616,76 +656,85 @@ pub(crate) struct Guard {
 	agent: AgentConfig,
 }
 
+async fn authorize_guard(f: &Federation, run: &Run, access: &mut Access) -> Result<AgentConfig> {
+	if !access.run_visible(run).await? {
+		return Err(Error::Forbidden);
+	}
+	// A cluster conversation remains bound to its approved entry even if the
+	// coordinator agent does not repeat that cluster in its own config.
+	let clusters: Vec<String> = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("target"))
+			.from(Alias::new("conversations"))
+			.cond_where(
+				Condition::all()
+					.add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+					.add(Expr::cust("target_kind='cluster'")),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(run.workspace_id)
+	.fetch_all(&mut *access.tx)
+	.await?;
+	for cluster in clusters {
+		let (id, version) = cluster.rsplit_once('@').ok_or(Error::Forbidden)?;
+		catalog::entry(
+			access,
+			&EntityRef {
+				id: id.into(),
+				version: version.into(),
+			},
+			"cluster.execute",
+		)
+		.await?;
+	}
+	let task = access.task_read(run.task_id).await?;
+	let resource = access.task_resource(&task).await?;
+	access.require(&resource, "task.execute").await?;
+	let reference = EntityRef {
+		id: run.agent_id.clone(),
+		version: run.agent_version.clone(),
+	};
+	crate::generation::provision::require_live(access, &f.config.node_id, run.task_id, &reference)
+		.await?;
+	let entry = catalog::entry(access, &reference, "agent.execute").await?;
+	require_agent(
+		access,
+		&qualified_agent(&f.config.node_id, &run.agent_id, &run.agent_version),
+	)?;
+	let agent: AgentConfig = serde_json::from_value(entry.config)?;
+	// Registry versions are immutable. Recheck every tenant approval before
+	// accepting provider output after an unlocked external wait.
+	for reference in std::iter::once(&agent.model)
+		.chain(agent.tools.iter())
+		.chain(agent.skills.iter())
+		.chain(agent.cluster.iter())
+	{
+		catalog::entry(access, reference, "registry.read").await?;
+	}
+	Ok(agent)
+}
+
 impl Guard {
 	pub async fn begin(f: &Federation, run: &Run) -> Result<Option<Self>> {
 		let Some(mut access) = access_for_run(&f.store, run, true).await? else {
 			return Ok(None);
 		};
-		if !access.run_visible(run).await? {
-			return Err(Error::Forbidden);
-		}
-		// A cluster conversation remains bound to its approved entry even if
-		// the coordinator agent does not repeat that cluster in its own config.
-		let clusters: Vec<String> = sqlx::query_scalar(
-			&Query::select()
-				.column(Alias::new("target"))
-				.from(Alias::new("conversations"))
-				.cond_where(
-					Condition::all()
-						.add(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
-						.add(Expr::cust("target_kind='cluster'")),
-				)
-				.to_string(PostgresQueryBuilder),
-		)
-		.bind(run.workspace_id)
-		.fetch_all(&mut *access.tx)
-		.await?;
-		for cluster in clusters {
-			let (id, version) = cluster.rsplit_once('@').ok_or(Error::Forbidden)?;
-			catalog::entry(
-				&mut access,
-				&EntityRef {
-					id: id.into(),
-					version: version.into(),
-				},
-				"cluster.execute",
-			)
-			.await?;
-		}
-		let task = access.task_read(run.task_id).await?;
-		let resource = access.task_resource(&task).await?;
-		access.require(&resource, "task.execute").await?;
-		let reference = EntityRef {
-			id: run.agent_id.clone(),
-			version: run.agent_version.clone(),
-		};
-		crate::generation::provision::require_live(
-			&mut access,
-			&f.config.node_id,
-			run.task_id,
-			&reference,
-		)
-		.await?;
-		let entry = catalog::entry(&mut access, &reference, "agent.execute").await?;
-		require_agent(
-			&access,
-			&qualified_agent(&f.config.node_id, &run.agent_id, &run.agent_version),
-		)?;
-		let agent: AgentConfig = serde_json::from_value(entry.config)?;
-		// Registry versions are immutable. Lock each tenant's approval for the
-		// step and validate read access before loading prompts/tool definitions.
-		for reference in std::iter::once(&agent.model)
-			.chain(agent.tools.iter())
-			.chain(agent.skills.iter())
-			.chain(agent.cluster.iter())
-		{
-			catalog::entry(&mut access, reference, "registry.read").await?;
-		}
+		let agent = authorize_guard(f, run, &mut access).await?;
 		Ok(Some(Self {
 			access: Arc::new(Mutex::new(access)),
 			run: run.clone(),
 			agent,
 		}))
+	}
+	pub async fn suspend(&self) -> Result<()> {
+		self.access.lock().await.suspend().await
+	}
+	pub async fn resume(&self, f: &Federation) -> Result<()> {
+		let mut access = self.access.lock().await;
+		refresh_access_for_run(&mut access, &f.store, &self.run).await?;
+		authorize_guard(f, &self.run, &mut access).await?;
+		Ok(())
 	}
 
 	pub fn authority(&self) -> WorkerAuthority {

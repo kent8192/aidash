@@ -39,17 +39,49 @@ async fn apply(manager: &SchemaManager<'_>, enabled: bool) -> Result<(), DbErr> 
 
 	// Preserve all existing kind-specific trigger checks. Only the model key
 	// allowlist and its timeout predicate change; unexpected definitions abort.
+	let constraint_exists = Query::select()
+		.expr_as(
+			Expr::cust(
+				"EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = to_regclass('registry') AND conname = 'registry_model_config')",
+			),
+			Alias::new("exists"),
+		)
+	.to_owned();
+	let constraint_exists: bool = db
+		.query_one(backend.build(&constraint_exists))
+		.await?
+		.ok_or_else(|| DbErr::Migration("model constraint state is unavailable".into()))?
+		.try_get("", "exists")?;
 	let query = Query::select()
 		.expr_as(
-			Expr::cust("pg_get_functiondef('guard_installation_config()'::regprocedure)"),
+			Expr::cust("pg_get_functiondef(to_regprocedure('guard_installation_config()'))"),
 			Alias::new("definition"),
 		)
 		.to_owned();
-	let definition: String = db
+	let definition: Option<String> = db
 		.query_one(backend.build(&query))
 		.await?
 		.ok_or_else(|| DbErr::Migration("installation validator is missing".into()))?
 		.try_get("", "definition")?;
+	let Some(definition) = definition else {
+		if enabled {
+			return Err(DbErr::Migration("installation validator is missing".into()));
+		}
+		if !constraint_exists {
+			// A parent rollback can already have removed this migration's objects.
+			return Ok(());
+		}
+		// Keep the schema downgrade idempotent if the parent trigger was removed
+		// before this migration is replayed; the parent down migration drops this
+		// baseline constraint next.
+		db.execute_unprepared(&format!(
+			"ALTER TABLE registry DROP CONSTRAINT registry_model_config; \
+				 ALTER TABLE registry ADD CONSTRAINT registry_model_config \
+				 CHECK (COALESCE(({model_check}), false))"
+		))
+		.await?;
+		return Ok(());
+	};
 	let old_keys = format!("ARRAY[{INSTALL_KEYS}]::text[]");
 	let new_keys = format!("ARRAY[{INSTALL_KEYS},'request_timeout_secs']::text[]");
 	let new_guard = format!(

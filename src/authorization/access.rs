@@ -111,6 +111,40 @@ impl Access {
 		})
 	}
 
+	/// Commit the completed authorization checks and release their row locks
+	/// while the worker waits on an external provider.
+	pub async fn suspend(&mut self) -> Result<()> {
+		for (input, decision) in &self.pending_decisions {
+			Authorization::record(&mut self.tx, &self.identity.tenant, input, decision).await?;
+		}
+		self.pending_decisions.clear();
+		let next = self.pool.begin().await?;
+		let previous = std::mem::replace(&mut self.tx, next);
+		previous.commit().await?;
+		Ok(())
+	}
+
+	/// Start a fresh execution authorization boundary after an external wait.
+	pub async fn refresh_execution(&mut self, run_id: Uuid) -> Result<()> {
+		self.snapshot = self.identity.lock_with_mode(&mut self.tx, false).await?;
+		self.remote_read_cache.clear();
+		self.unavailable_peers.clear();
+		self.checking_reads.clear();
+		self.subjects = vec![self.identity.subject.clone()];
+		self.durable_audit = true;
+		self.audit = true;
+		self.context = json!({});
+		self.inherited_lease = false;
+		self.approved_catalog.clear();
+		self.cached_runs.clear();
+		self.cached_humans.clear();
+		self.pending_decisions.clear();
+		self.read_run = Some(run_id);
+		self.read_grant = None;
+		self.worker();
+		Ok(())
+	}
+
 	pub fn resource(&self, kind: &str, id: impl ToString, mut attributes: Value) -> Resource {
 		if let (Some(attributes), Some(context)) =
 			(attributes.as_object_mut(), self.context.as_object())

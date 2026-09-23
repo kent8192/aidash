@@ -53,7 +53,7 @@ pub struct Harness {
 impl Harness {
 	pub async fn worker_once(&self) -> Result<bool> {
 		let store = &self.federation.store;
-		let _visibility = crate::transactions::gate::ReadLease::begin(store).await?;
+		let mut visibility = crate::transactions::gate::ReadLease::begin(store).await?;
 		let token = Uuid::new_v4();
 		let Some(mut run) = store
 			.lease_run(token, self.federation.config.lease_seconds)
@@ -62,7 +62,7 @@ impl Harness {
 			return Ok(false);
 		};
 		let result = {
-			let work = self.advance(&mut run, token);
+			let work = self.advance(&mut run, token, &mut visibility);
 			tokio::pin!(work);
 			let mut heartbeat = tokio::time::interval(Duration::from_secs(
 				(self.federation.config.lease_seconds / 3).max(1) as u64,
@@ -79,6 +79,7 @@ impl Harness {
 				}
 			}
 		};
+		visibility.resume(store).await?;
 		if let Err(e) = result {
 			let id = match run_id(store, token).await {
 				Ok(id) => id,
@@ -203,19 +204,32 @@ impl Harness {
 		}
 		Ok(tools)
 	}
-	async fn advance(&self, run: &mut Run, token: Uuid) -> Result<()> {
+	async fn advance(
+		&self,
+		run: &mut Run,
+		token: Uuid,
+		visibility: &mut crate::transactions::gate::ReadLease,
+	) -> Result<()> {
 		if execution::cancel_if_scoped(&self.federation.store, run, token).await? {
 			return Ok(());
 		}
 		let guard = Guard::begin(&self.federation, run).await?;
-		let result = self.advance_step(run, token, guard.as_ref()).await;
+		let result = self
+			.advance_step(run, token, guard.as_ref(), visibility)
+			.await;
 		if let Some(guard) = guard {
 			guard.finish(result).await
 		} else {
 			result
 		}
 	}
-	async fn advance_step(&self, run: &mut Run, token: Uuid, guard: Option<&Guard>) -> Result<()> {
+	async fn advance_step(
+		&self,
+		run: &mut Run,
+		token: Uuid,
+		guard: Option<&Guard>,
+		visibility: &mut crate::transactions::gate::ReadLease,
+	) -> Result<()> {
 		let store = &self.federation.store;
 		let home = Home::new(self.federation.clone(), run.clone())
 			.with_authority(guard.map(Guard::authority));
@@ -470,15 +484,27 @@ impl Harness {
 					None
 				};
 				// Race only inference, not replay-unsafe tools or durable transitions.
-				// Dropping the losing future also stops a stalled response-body read.
+				// Release node-wide visibility and authorization row locks while the
+				// provider waits; both boundaries are reacquired before accepting output.
+				if let Some(guard) = guard {
+					guard.suspend().await?;
+				}
+				visibility.suspend().await?;
 				let result = tokio::select! {
 					biased;
-					cancelled = wait_for_inference_cancellation(store, run.id) => {
-						cancelled?;
-						return Err(Error::Conflict("run cancelled during inference".into()));
-					}
-					result = model.infer(request) => result?,
+					cancelled = wait_for_inference_cancellation(store, run.id) => match cancelled {
+						Ok(()) => Err(Error::Conflict("run cancelled during inference".into())),
+						Err(error) => Err(error),
+					},
+					result = model.infer(request) => result,
 				};
+				visibility.resume(store).await?;
+				if result.is_ok() {
+					if let Some(guard) = guard {
+						guard.resume(&self.federation).await?;
+					}
+				}
+				let result = result?;
 				if let Some(reservation) = reservation {
 					reservation.settle(&result).await?;
 				}

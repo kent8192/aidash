@@ -4,7 +4,7 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 pub struct ReadLease {
-	_transaction: Transaction<'static, Postgres>,
+	transaction: Option<Transaction<'static, Postgres>>,
 }
 impl ReadLease {
 	pub async fn begin(store: &Store) -> Result<Self> {
@@ -30,7 +30,23 @@ impl ReadLease {
 		if pending.is_some() {
 			return Err(Error::TransactionPending);
 		}
-		Ok(Self { _transaction: tx })
+		Ok(Self {
+			transaction: Some(tx),
+		})
+	}
+
+	pub async fn suspend(&mut self) -> Result<()> {
+		if let Some(transaction) = self.transaction.take() {
+			transaction.rollback().await?;
+		}
+		Ok(())
+	}
+
+	pub async fn resume(&mut self, store: &Store) -> Result<()> {
+		if self.transaction.is_none() {
+			*self = Self::begin(store).await?;
+		}
+		Ok(())
 	}
 }
 pub(crate) fn lock_error(error: sqlx::Error) -> Error {
