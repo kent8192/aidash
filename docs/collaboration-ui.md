@@ -2,7 +2,7 @@
 
 ## Available interface
 
-The dashboard opens into Collaboration. Its channel list uses authorized Workspace records: select a channel to read its shared messages, inspect tasks and artifacts, answer human requests, or open local and remote execution controls. Creating a prepared channel creates only the Workspace; the separate create-and-run action uses the existing conversation API.
+The dashboard opens into Collaboration. Its channel list uses authorized Workspace records: select a channel to read its shared messages, inspect tasks and artifacts, answer human requests, or open local and remote execution controls. Thread replies use persisted thread-aware history. Creating a prepared channel creates only the Workspace; the separate create-and-run action uses the existing conversation API.
 
 Graph View is a primary destination. Its agent relationship view uses Cytoscape.js with explicit, version-pinned relationships and an accessible relationship table. Select a recorded entity to open its details or choose an accessible related channel. The current channel is preferred among multiple related channels. Operator-only node topology and communication inspection remains available as a graph mode.
 
@@ -16,15 +16,17 @@ Messages are submitted through the generated HTTP API client. A failed submissio
 
 Authenticated SSE invalidates the affected read queries, with polling as a reconnecting fallback. A failed or unauthorized read hides the stale conversation or detail instead of retaining the last successful payload. Explicitly requested unavailable channels do not silently select another channel. Graph projection does not use unscoped discovery metadata or private reference documents.
 
+The channel API accepts bounded attachment uploads, associates them with a message, returns attachment metadata in history, and requires current message access for downloads. The browser composer does not yet expose attachment upload controls.
+
 ## Supported scope and remaining server contracts
 
-This interface is an initial vertical slice, not completion of the collaboration architecture described in `CONTEXT.md` and `docs/adr/`. It uses the existing Workspace, task, message, human-request and run endpoints. The following are not implemented by this interface change:
+This interface is an initial vertical slice, not completion of the collaboration architecture described in `CONTEXT.md` and `docs/adr/`. It adds persisted thread history and channel attachment upload/download APIs while reusing the existing Workspace, task, human-request and run endpoints. The following are not implemented by this interface change:
 
-- Independent persisted threads and channel memberships; channel/account eligibility lists and generation-policy opt-in; preparation-to-start transition for an existing channel.
+- Channel memberships; channel/account eligibility lists and generation-policy opt-in; preparation-to-start transition for an existing channel.
 - Revisioned goals, automatic message-intent routing and batched agent response evaluation, goal-level completion/block/resumption, and post-completion result discussion.
 - Monetary reservations and per-operation Home admission; delegated-history lifecycle and revocation enforcement.
 - Authorized server-side graph neighborhood paging, multi-node historical reconstruction, observation-time coverage, Registry pressure admission, and dependency-aware content erasure.
-- Channel file attachment submission, notification delivery while the browser is closed, and performance acceptance for large federated histories.
+- Channel attachment controls in the browser composer, notification delivery while the browser is closed, and performance acceptance for large federated histories.
 
 The current relationship graph explicitly identifies its node-local State snapshot coverage. It does not display a time selector or imply that current state reconstructs historical state. Task progress is not a goal-completion declaration. The existing create-and-run API is retained for compatibility and does not implement the planned monetary or eligibility contracts; this change must not be advertised as enforcing those new controls.
 

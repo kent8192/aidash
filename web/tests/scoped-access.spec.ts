@@ -201,7 +201,7 @@ test("subject dashboard completes a conversation and clears revoked access", asy
     await expect(page.getByRole("button", { name: "Peerを追加" })).toHaveCount(
       0,
     );
-    await page.getByLabel("言語").selectOption("en-US");
+    await page.getByTestId("language-selector").selectOption("en-US");
     await expect(page.getByText("Signed in as", { exact: true })).toBeVisible();
     await page.screenshot({
       path: "../.ignore/dashboard-scoped-access.png",

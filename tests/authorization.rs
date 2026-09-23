@@ -499,6 +499,80 @@ async fn subject_fixture() -> (Router, Store, String, String, Value, Value) {
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
+async fn subject_receives_thread_opened_event_for_a_visible_root_message() {
+	use futures_util::StreamExt;
+	use std::time::Duration;
+
+	let (app, store, url, schema, credential, workspace) = subject_fixture().await;
+	let token = credential["token"].as_str().unwrap();
+	let workspace_id = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
+	store
+		.message(workspace_id, "alice", "Visible root", None)
+		.await
+		.unwrap();
+	let snapshot = store.snapshot(workspace_id).await.unwrap();
+	let root_id = snapshot
+		.messages
+		.iter()
+		.find(|message| message.content == "Visible root")
+		.unwrap()
+		.id
+		.to_string();
+	let cursor = store
+		.events(0, Some(workspace_id), 100)
+		.await
+		.unwrap()
+		.last()
+		.unwrap()
+		.sequence;
+	let stream_path = format!("/api/events/stream?workspace_id={workspace_id}&after={cursor}");
+	let response = app
+		.clone()
+		.oneshot(
+			Request::get(&stream_path)
+				.header("authorization", format!("Bearer {token}"))
+				.body(Body::empty())
+				.unwrap(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(response.status(), 200);
+	let mut stream = response.into_body().into_data_stream();
+	let (status, thread) = scoped_request(
+		&app,
+		token,
+		"POST",
+		&format!("/api/workspaces/{workspace_id}/threads"),
+		json!({"root_message_id":root_id}),
+	)
+	.await;
+	assert_eq!(status, 200, "{thread}");
+	let frame = tokio::time::timeout(Duration::from_secs(2), stream.next())
+		.await
+		.unwrap()
+		.unwrap()
+		.unwrap();
+	let frame = String::from_utf8_lossy(&frame);
+	assert!(frame.contains("message.thread_opened"), "{frame}");
+	assert!(frame.contains(&root_id), "{frame}");
+	let (status, events) = scoped_request(
+		&app,
+		token,
+		"GET",
+		&format!("/api/events?workspace_id={workspace_id}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{events}");
+	assert!(events.as_array().unwrap().iter().any(|event| {
+		event["kind"] == "message.thread_opened"
+			&& event["data"]["id"].as_str() == Some(root_id.as_str())
+	}));
+	cleanup(store, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
 async fn subject_streams_recheck_buffered_frames_after_policy_and_credential_revocation() {
 	use futures_util::StreamExt;
 	use std::time::Duration;

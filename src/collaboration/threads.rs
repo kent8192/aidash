@@ -1,4 +1,4 @@
-use super::{ChannelMessage, ChannelMessageInput, ChannelThread, access::Lease};
+use super::{ChannelMessage, ChannelMessageInput, ChannelThread, access::Lease, attachments};
 use crate::{Error, Result, domain::nonempty, store::Store};
 use sea_orm::sea_query::{Alias, Asterisk, Expr, OnConflict, PostgresQueryBuilder, Query};
 use serde_json::json;
@@ -30,7 +30,9 @@ pub(crate) async fn create(
 ) -> Result<ChannelThread> {
 	lease.message(workspace, root).await?;
 	if reply_thread(lease, root).await?.is_some() {
-		return Err(Error::Conflict("a reply already belongs to a thread".into()));
+		return Err(Error::Conflict(
+			"a reply already belongs to a thread".into(),
+		));
 	}
 	let sender = lease.sender();
 	let inserted: Option<ChannelThread> = sqlx::query_as(
@@ -108,6 +110,7 @@ pub(crate) async fn post(
 	input: ChannelMessageInput,
 ) -> Result<ChannelMessage> {
 	nonempty(&input.content, "message")?;
+	let attachment_digest = attachments::digest_ids(&input.attachment_ids)?;
 	if let Some(thread) = input.thread_id {
 		get(lease, workspace, thread).await?;
 	}
@@ -129,8 +132,14 @@ pub(crate) async fn post(
 				Alias::new("message_id"),
 				Alias::new("workspace_id"),
 				Alias::new("thread_id"),
+				Alias::new("attachment_digest"),
 			])
-			.values_panic([Expr::cust("$1"), Expr::cust("$2"), Expr::cust("$3")])
+			.values_panic([
+				Expr::cust("$1"),
+				Expr::cust("$2"),
+				Expr::cust("$3"),
+				Expr::cust("$4"),
+			])
 			.on_conflict(
 				OnConflict::column(Alias::new("message_id"))
 					.do_nothing()
@@ -141,14 +150,39 @@ pub(crate) async fn post(
 	.bind(message.id)
 	.bind(workspace)
 	.bind(input.thread_id)
+	.bind(&attachment_digest)
 	.execute(&mut **lease.tx())
 	.await?;
-	let stored_thread = reply_thread(lease, message.id).await?;
+	#[derive(sqlx::FromRow)]
+	struct StoredContext {
+		thread_id: Option<Uuid>,
+		attachment_digest: String,
+	}
+	let context: StoredContext = sqlx::query_as(
+		&Query::select()
+			.columns([Alias::new("thread_id"), Alias::new("attachment_digest")])
+			.from(Alias::new("channel_message_context"))
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("message_id")).eq(Expr::cust("$2")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(workspace)
+	.bind(message.id)
+	.fetch_one(&mut **lease.tx())
+	.await?;
+	let stored_thread = context.thread_id;
 	if stored_thread != input.thread_id {
 		return Err(Error::Conflict(
 			"message idempotency key reused for a different thread".into(),
 		));
 	}
+	if context.attachment_digest != attachment_digest {
+		return Err(Error::Conflict(
+			"message idempotency key reused for different attachments".into(),
+		));
+	}
+	let message_attachments =
+		attachments::attach(lease, workspace, message.id, &input.attachment_ids).await?;
 	if !lease.visible(&message).await? {
 		return Err(Error::Forbidden);
 	}
@@ -166,5 +200,6 @@ pub(crate) async fn post(
 		message,
 		thread_id: stored_thread.or(root_thread),
 		is_thread_root: root_thread.is_some(),
+		attachments: message_attachments,
 	})
 }

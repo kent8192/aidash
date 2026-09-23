@@ -263,7 +263,10 @@ impl Access {
 					.await?,
 			));
 		}
-		if event.kind == "message.created" {
+		if event.kind == "message.created" || event.kind == "message.thread_opened" {
+			if event.kind == "message.thread_opened" && id(&event.data["id"]).is_none() {
+				return Ok(Some(false));
+			}
 			let messages: Vec<Message> = if let Some(message_id) = id(&event.data["id"]) {
 				sqlx::query_as(
 					&Query::select()

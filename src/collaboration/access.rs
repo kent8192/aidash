@@ -30,6 +30,11 @@ impl Lease {
 				}
 				.await;
 				if let Err(error) = result {
+					let error = if action == "workspace.read" && matches!(error, Error::Forbidden) {
+						Error::NotFound("channel unavailable".into())
+					} else {
+						error
+					};
 					return access.finish(Err(error)).await;
 				}
 				Ok(Self::Scoped(Box::new(access)))

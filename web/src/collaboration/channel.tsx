@@ -183,17 +183,28 @@ export function Channel({
               ))}
               <ArtifactList artifacts={query.data?.artifacts ?? []} />
               <h3>{copy.participants}</h3>
-              {agents.map((agent) => (
-                <button
-                  className="collab-agent"
-                  type="button"
-                  key={JSON.stringify(agent)}
-                  onClick={() => graph(entityKey(agent.node, "agent", agent))}
-                >
-                  {agent.id} · v{agent.version}
-                  <small>{agent.node}</small>
-                </button>
-              ))}
+              {agents.map((agent) => {
+                const label = (
+                  <>
+                    {agent.id} · v{agent.version}
+                    <small>{agent.node}</small>
+                  </>
+                );
+                return agent.node === data.node.id ? (
+                  <button
+                    className="collab-agent"
+                    type="button"
+                    key={JSON.stringify(agent)}
+                    onClick={() => graph(entityKey(agent.node, "agent", agent))}
+                  >
+                    {label}
+                  </button>
+                ) : (
+                  <div className="collab-agent" key={JSON.stringify(agent)}>
+                    {label}
+                  </div>
+                );
+              })}
             </>
           )}
           {tab === "activity" && (

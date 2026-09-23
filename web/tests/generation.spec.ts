@@ -410,7 +410,7 @@ test("generation dashboard manages policy, approval, completion and retained his
       "定義と上限を確認済み",
     );
     await dialog.getByRole("button", { name: "閉じる", exact: true }).click();
-    await page.getByLabel("言語").selectOption("en-US");
+    await page.getByTestId("language-selector").selectOption("en-US");
     await expect(page.locator(".collab-settings h1")).toHaveText("Settings");
     await expect(page.locator(".collab-settings-select select")).toHaveValue(
       "generation",
@@ -433,7 +433,7 @@ test("generation dashboard manages policy, approval, completion and retained his
       fullPage: true,
     });
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
-    await page.getByLabel("Language").selectOption("ja-JP");
+    await page.getByTestId("language-selector").selectOption("ja-JP");
     const denied = await assign("Rejected specialist");
     await denied.click();
     await dialog

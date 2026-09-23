@@ -118,6 +118,11 @@ export async function setup(
     failFirstMessage?: boolean;
     subject?: boolean;
     olderMessages?: number;
+    remoteParticipant?: boolean;
+    unpairedRemoteRequest?: boolean;
+    meshErrors?: boolean;
+    runMemory?: boolean;
+    latestMessageChangesOnPoll?: boolean;
   } = {},
 ) {
   let data = fixture();
@@ -152,6 +157,7 @@ export async function setup(
   let denyHistory = false;
   let denyThreads = false;
   let failures = options.failFirstMessage ? 1 : 0;
+  let historyRequests = 0;
   const envelope = (message: Message) => {
     const root = [...threads.values()].find(
       (thread) => thread.root_message_id === message.id,
@@ -180,7 +186,49 @@ export async function setup(
     if (path === "/api/state")
       return route.fulfill({ json: { ...data, access } });
     if (path === "/api/mesh")
-      return route.fulfill({ json: { nodes: [], errors: [] } });
+      return route.fulfill({
+        json: {
+          nodes:
+            options.remoteParticipant || options.unpairedRemoteRequest
+              ? [
+                  {
+                    node_id: "aidash://peer",
+                    runs: options.remoteParticipant
+                      ? [
+                          {
+                            ...data.runs[0],
+                            id: "remote-run",
+                            task_id: "remote-task",
+                          },
+                        ]
+                      : [],
+                    human_requests: options.unpairedRemoteRequest
+                      ? [
+                          {
+                            id: "uncached-run-request",
+                            workspace_id: "workspace-one",
+                            run_id: "run-omitted-from-snapshot",
+                            kind: "INFORMATION_REQUEST",
+                            prompt: "The run is outside the capped snapshot.",
+                            response: null,
+                            answered_by: null,
+                            created_at: "2026-09-22T10:12:00Z",
+                          },
+                        ]
+                      : [],
+                  },
+                ]
+              : [],
+          errors: options.meshErrors
+            ? [
+                {
+                  node_id: "aidash://peer-down",
+                  error: "connection refused",
+                },
+              ]
+            : [],
+        },
+      });
     if (path === "/api/discover")
       return route.fulfill({
         json: {
@@ -192,6 +240,17 @@ export async function setup(
       });
     if (/^\/api\/workspaces\/[^/]+\/message-history$/.test(path)) {
       const id = path.split("/")[3];
+      historyRequests += 1;
+      if (options.latestMessageChangesOnPoll && historyRequests === 2) {
+        const current = messages[id].at(-1);
+        if (current) {
+          messages[id][messages[id].length - 1] = {
+            ...current,
+            id: "message-updated",
+            content: "New latest message.",
+          };
+        }
+      }
       const threadId = url.searchParams.get("thread_id");
       if (denyHistory || (denyThreads && threadId))
         return route.fulfill({ status: 403, json: { error: "unavailable" } });
@@ -203,7 +262,11 @@ export async function setup(
           : !replies.has(message.id),
       );
       const before = url.searchParams.get("before");
-      if (before) selected = selected.slice(0, selected.findIndex((m) => m.id === before));
+      if (before)
+        selected = selected.slice(
+          0,
+          selected.findIndex((m) => m.id === before),
+        );
       const limit = Number(url.searchParams.get("limit") ?? 40);
       const hasOlder = selected.length > limit;
       selected = selected.slice(-limit);
@@ -248,7 +311,9 @@ export async function setup(
             json: { error: "temporarily unavailable" },
           });
         const id = path.split("/")[3];
-        let message = messages[id].find((m) => m.idempotency_key === body.idempotency_key);
+        let message = messages[id].find(
+          (m) => m.idempotency_key === body.idempotency_key,
+        );
         if (!message) {
           message = {
             id: String(body.idempotency_key),
@@ -282,7 +347,9 @@ export async function setup(
         json: {
           workspace,
           messages: messages[workspace.id],
-          tasks: data.tasks.filter((task) => task.workspace_id === workspace.id),
+          tasks: data.tasks.filter(
+            (task) => task.workspace_id === workspace.id,
+          ),
           artifacts: [],
           events: [],
         },
@@ -290,7 +357,15 @@ export async function setup(
     }
     const run = data.runs.find((value) => path === `/api/runs/${value.id}`);
     if (run)
-      return route.fulfill({ json: { run, invocations: [], memory: {} } });
+      return route.fulfill({
+        json: {
+          run,
+          invocations: [],
+          memory: options.runMemory
+            ? { evidence: "Retained execution memory." }
+            : {},
+        },
+      });
     if (path === "/api/marketplace") return route.fulfill({ json: [] });
     return route.fulfill({
       status: 404,
@@ -300,8 +375,14 @@ export async function setup(
   return {
     submissions,
     errors,
-    revokeHistory: () => { denyHistory = true; },
-    revokeThreads: () => { denyThreads = true; },
-    revokeAgents: () => { data = { ...data, registry: [] }; },
+    revokeHistory: () => {
+      denyHistory = true;
+    },
+    revokeThreads: () => {
+      denyThreads = true;
+    },
+    revokeAgents: () => {
+      data = { ...data, registry: [] };
+    },
   };
 }

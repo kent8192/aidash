@@ -192,10 +192,10 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
         return cleanup.points.pending + cleanup.collections.pending;
       })
       .toBe(0);
-    await page.getByLabel("Language", { exact: true }).selectOption("ja-JP");
+    await page.getByTestId("language-selector").selectOption("ja-JP");
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(
-      page.getByRole("heading", { name: /^セマンティックメモリ/ }),
+      page.getByRole("heading", { name: "埋め込み索引", exact: true }),
     ).toBeVisible();
     await page.screenshot({
       path: "../.ignore/dashboard-semantic-mobile.png",

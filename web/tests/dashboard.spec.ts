@@ -37,7 +37,7 @@ test("observes the two-node execution and all management screens", async ({
     await expect(page.locator(".collab-settings h1")).toHaveText("設定");
   }
   await page.goto("/collaboration");
-  await page.getByLabel("言語").selectOption("en-US");
+  await page.getByTestId("language-selector").selectOption("en-US");
   await expect(
     page
       .locator(".collab-rail nav")
@@ -197,7 +197,7 @@ test("preserves a draft after a failed message request and clears it after succe
     .getByRole("textbox", { name: "メッセージ", exact: true })
     .first();
   await input.fill("Keep this unsent draft");
-  await page.route("**/api/workspaces/*/messages", async (route) => {
+  await page.route("**/api/workspaces/*/thread-messages", async (route) => {
     await route.fulfill({
       status: 503,
       contentType: "application/json",
@@ -206,12 +206,12 @@ test("preserves a draft after a failed message request and clears it after succe
   });
   const failed = page.waitForResponse(
     (response) =>
-      response.url().includes("/messages") && response.status() === 503,
+      response.url().includes("/thread-messages") && response.status() === 503,
   );
   await page.getByRole("button", { name: "送信", exact: true }).first().click();
   await failed;
   await expect(input).toHaveValue("Keep this unsent draft");
-  await page.unroute("**/api/workspaces/*/messages");
+  await page.unroute("**/api/workspaces/*/thread-messages");
   await page.getByRole("button", { name: "送信", exact: true }).first().click();
   await expect(input).toHaveValue("");
 });

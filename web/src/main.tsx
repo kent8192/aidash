@@ -34,6 +34,11 @@ const Configuration = lazy(() =>
     default: module.Configuration,
   })),
 );
+const TransactionsPage = lazy(() =>
+  import("./transactions").then((module) => ({
+    default: module.TransactionsPage,
+  })),
+);
 import type { Selection } from "./collaboration/details";
 const OperationsDialog = lazy(() =>
   import("./collaboration/details").then((module) => ({
@@ -317,15 +322,10 @@ function Dashboard({
         })),
         ...(operator
           ? (remote?.nodes.flatMap((node) =>
-              node.human_requests
-                .filter((request) =>
-                  node.runs.some(
-                    (run) =>
-                      run.id === request.run_id &&
-                      run.home_node === data.node.id,
-                  ),
-                )
-                .map((request) => ({ request, node: node.node_id })),
+              node.human_requests.map((request) => ({
+                request,
+                node: node.node_id,
+              })),
             ) ?? [])
           : []),
       ]
@@ -378,14 +378,16 @@ function Dashboard({
       </aside>
       <div className="collab-shell">
         <header className="collab-topbar">
-          <button
-            type="button"
-            className="collab-channel-toggle"
-            aria-expanded={mobileChannels}
-            onClick={() => setMobileChannels((value) => !value)}
-          >
-            {copy.channels}
-          </button>
+          {route.section === "collaboration" && (
+            <button
+              type="button"
+              className="collab-channel-toggle"
+              aria-expanded={mobileChannels}
+              onClick={() => setMobileChannels((value) => !value)}
+            >
+              {copy.channels}
+            </button>
+          )}
           <span className={`stream-status ${streamStatus}`}>
             <span className="status-dot" />
             {copy[streamStatus]}
@@ -393,6 +395,7 @@ function Dashboard({
           <label>
             <span className="sr-only">{t("language")}</span>
             <select
+              data-testid="language-selector"
               value={locale}
               onChange={(event) => setLocale(event.target.value as Locale)}
             >
@@ -498,6 +501,15 @@ function Dashboard({
               </div>
             )}
             {!data && !state.isError && <p role="status">{copy.processing}</p>}
+            {!data &&
+              operator &&
+              session.data &&
+              route.section === "settings" &&
+              route.settings === "transactions" && (
+                <Suspense fallback={<p role="status">{copy.processing}</p>}>
+                  <TransactionsPage nodeId={session.data.node_id} />
+                </Suspense>
+              )}
             {data && (
               <>
                 {route.section === "collaboration" &&
@@ -555,11 +567,17 @@ function Dashboard({
                     />
                   </Suspense>
                 )}
-                {mesh.isError && operator && (
-                  <p className="notice" role="status">
-                    {t("remoteUnavailable")}
-                  </p>
-                )}
+                {operator &&
+                  (mesh.isError || (remote?.errors.length ?? 0) > 0) && (
+                    <p className="notice" role="status">
+                      {t("remoteUnavailable")}
+                      {remote?.errors.map((peer) => (
+                        <span key={peer.node_id}>
+                          {peer.node_id}: {peer.error}
+                        </span>
+                      ))}
+                    </p>
+                  )}
               </>
             )}
           </main>

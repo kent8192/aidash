@@ -1,0 +1,120 @@
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+	async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+		manager
+			.alter_table(
+				Table::alter()
+					.table(Alias::new("channel_message_context"))
+					.add_column(
+						ColumnDef::new(Alias::new("attachment_digest"))
+							.text()
+							.not_null()
+							.default(
+								"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+							),
+					)
+					.to_owned(),
+			)
+			.await?;
+		manager
+			.create_table(
+				Table::create()
+					.table(Alias::new("channel_attachments"))
+					.col(ColumnDef::new(Alias::new("id")).uuid().primary_key())
+					.col(ColumnDef::new(Alias::new("workspace_id")).uuid().not_null())
+					.col(ColumnDef::new(Alias::new("uploaded_by")).text().not_null())
+					.col(
+						ColumnDef::new(Alias::new("idempotency_key"))
+							.uuid()
+							.not_null(),
+					)
+					.col(ColumnDef::new(Alias::new("filename")).text().not_null())
+					.col(ColumnDef::new(Alias::new("media_type")).text().not_null())
+					.col(ColumnDef::new(Alias::new("sha256")).text().not_null())
+					.col(
+						ColumnDef::new(Alias::new("size_bytes"))
+							.big_integer()
+							.not_null(),
+					)
+					.col(ColumnDef::new(Alias::new("content")).binary().not_null())
+					.col(ColumnDef::new(Alias::new("message_id")).uuid())
+					.index(
+						Index::create()
+							.name("channel_attachment_scope_key")
+							.unique()
+							.col(Alias::new("workspace_id"))
+							.col(Alias::new("id")),
+					)
+					.index(
+						Index::create()
+							.name("channel_attachment_idempotency")
+							.unique()
+							.col(Alias::new("workspace_id"))
+							.col(Alias::new("uploaded_by"))
+							.col(Alias::new("idempotency_key")),
+					)
+					.foreign_key(
+						ForeignKey::create()
+							.from_tbl(Alias::new("channel_attachments"))
+							.from_col(Alias::new("workspace_id"))
+							.to_tbl(Alias::new("workspaces"))
+							.to_col(Alias::new("id"))
+							.on_delete(ForeignKeyAction::Cascade),
+					)
+					.foreign_key(
+						ForeignKey::create()
+							.from_tbl(Alias::new("channel_attachments"))
+							.from_col(Alias::new("workspace_id"))
+							.from_col(Alias::new("message_id"))
+							.to_tbl(Alias::new("messages"))
+							.to_col(Alias::new("workspace_id"))
+							.to_col(Alias::new("id"))
+							.on_delete(ForeignKeyAction::Cascade),
+					)
+					.to_owned(),
+			)
+			.await?;
+		manager
+			.create_index(
+				Index::create()
+					.name("channel_attachment_message_lookup")
+					.table(Alias::new("channel_attachments"))
+					.col(Alias::new("workspace_id"))
+					.col(Alias::new("message_id"))
+					.to_owned(),
+			)
+			.await?;
+		// PostgreSQL trigger DDL has no SeaQuery builder.
+		manager
+			.get_connection()
+			.execute_unprepared(
+				"CREATE TRIGGER atomic_write_guard BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON channel_attachments FOR EACH STATEMENT EXECUTE FUNCTION atomic_write_guard()",
+			)
+			.await?;
+		Ok(())
+	}
+
+	async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+		manager
+			.drop_table(
+				Table::drop()
+					.table(Alias::new("channel_attachments"))
+					.to_owned(),
+			)
+			.await?;
+		manager
+			.alter_table(
+				Table::alter()
+					.table(Alias::new("channel_message_context"))
+					.drop_column(Alias::new("attachment_digest"))
+					.to_owned(),
+			)
+			.await?;
+		Ok(())
+	}
+}

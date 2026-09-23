@@ -16,7 +16,10 @@ test("history is chronological and refreshed messages win over older pages", () 
     { messages: [message("1"), message("2", "old")] },
   ];
   assert.deepEqual(
-    mergeMessagePages(pages).map((item) => [item.message.id, item.message.content]),
+    mergeMessagePages(pages).map((item) => [
+      item.message.id,
+      item.message.content,
+    ]),
     [
       ["1", "1"],
       ["2", "new"],

@@ -1589,12 +1589,14 @@ mod schema_tests {
 				.values()
 				.map(|path| path.as_object().unwrap().len())
 				.sum::<usize>(),
-			74
+			76
 		);
 		for (path, method) in [
 			("/api/workspaces/{id}/threads", "post"),
 			("/api/workspaces/{id}/thread-messages", "post"),
 			("/api/workspaces/{id}/message-history", "get"),
+			("/api/workspaces/{id}/attachments", "post"),
+			("/api/workspaces/{id}/attachments/{attachment_id}", "get"),
 			("/api/providers/openrouter/models", "get"),
 			("/api/agents/personal", "post"),
 			("/api/tasks", "get"),

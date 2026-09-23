@@ -1,4 +1,6 @@
-use super::{ChannelHistoryQuery, ChannelMessage, ChannelMessagePage, access::Lease, threads};
+use super::{
+	ChannelHistoryQuery, ChannelMessage, ChannelMessagePage, access::Lease, attachments, threads,
+};
 use crate::{Error, Result, domain::Message};
 use chrono::{DateTime, Utc};
 use sea_orm::sea_query::{
@@ -20,7 +22,9 @@ pub(crate) async fn page(
 	input: ChannelHistoryQuery,
 ) -> Result<ChannelMessagePage> {
 	if !(1..=100).contains(&input.limit) {
-		return Err(Error::Invalid("history limit must be between 1 and 100".into()));
+		return Err(Error::Invalid(
+			"history limit must be between 1 and 100".into(),
+		));
 	}
 	let thread = match input.thread_id {
 		Some(id) => Some(threads::get(lease, workspace, id).await?),
@@ -76,11 +80,18 @@ pub(crate) async fn page(
 			.cond_where(
 				Condition::any()
 					.add(Expr::cust("$2::timestamptz IS NULL"))
-					.add(Expr::col((Alias::new("m"), Alias::new("created_at"))).lt(Expr::cust("$2")))
+					.add(
+						Expr::col((Alias::new("m"), Alias::new("created_at"))).lt(Expr::cust("$2")),
+					)
 					.add(
 						Condition::all()
-							.add(Expr::col((Alias::new("m"), Alias::new("created_at"))).eq(Expr::cust("$2")))
-							.add(Expr::col((Alias::new("m"), Alias::new("id"))).lt(Expr::cust("$3"))),
+							.add(
+								Expr::col((Alias::new("m"), Alias::new("created_at")))
+									.eq(Expr::cust("$2")),
+							)
+							.add(
+								Expr::col((Alias::new("m"), Alias::new("id"))).lt(Expr::cust("$3")),
+							),
 					),
 			)
 			.order_by((Alias::new("m"), Alias::new("created_at")), Order::Desc)
@@ -113,6 +124,7 @@ pub(crate) async fn page(
 					message: row.message,
 					thread_id: row.reply_thread_id.or(row.root_thread_id),
 					is_thread_root: row.root_thread_id.is_some(),
+					attachments: Vec::new(),
 				});
 				if result.len() > usize::from(input.limit) {
 					break;
@@ -142,6 +154,13 @@ pub(crate) async fn page(
 		None
 	};
 	result.reverse();
+	let message_ids: Vec<_> = result.iter().map(|item| item.message.id).collect();
+	let mut message_attachments = attachments::for_messages(lease, workspace, &message_ids).await?;
+	for item in &mut result {
+		item.attachments = message_attachments
+			.remove(&item.message.id)
+			.unwrap_or_default();
+	}
 	Ok(ChannelMessagePage {
 		messages: result,
 		next_before,

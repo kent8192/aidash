@@ -7,7 +7,13 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn upload(app: &Router, token: &str, workspace: &str, key: Uuid, bytes: &[u8]) -> (u16, Value) {
+async fn upload(
+	app: &Router,
+	token: &str,
+	workspace: &str,
+	key: Uuid,
+	bytes: &[u8],
+) -> (u16, Value) {
 	let path = format!(
 		"/api/workspaces/{workspace}/attachments?filename=evidence.txt&media_type=text%2Fplain&idempotency_key={key}"
 	);
@@ -23,7 +29,9 @@ async fn upload(app: &Router, token: &str, workspace: &str, key: Uuid, bytes: &[
 		.await
 		.unwrap();
 	let status = response.status().as_u16();
-	let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+	let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+		.await
+		.unwrap();
 	let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
 	(status, value)
 }
@@ -41,7 +49,12 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 	let (status, replay) = upload(&app, &alice, &workspace, key, b"Source evidence").await;
 	assert_eq!(status, 200, "{replay}");
 	assert_eq!(file["id"], replay["id"]);
-	assert_eq!(upload(&app, &alice, &workspace, key, b"Changed bytes").await.0, 409);
+	assert_eq!(
+		upload(&app, &alice, &workspace, key, b"Changed bytes")
+			.await
+			.0,
+		409
+	);
 	let attachment = file["id"].as_str().unwrap();
 	let message_key = Uuid::new_v4();
 	let message_path = format!("/api/workspaces/{workspace}/thread-messages");
@@ -57,25 +70,46 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 	assert_eq!(status, 200, "{replay}");
 	assert_eq!(message["message"]["id"], replay["message"]["id"]);
 	let download = format!("/api/workspaces/{workspace}/attachments/{attachment}");
-	let response = app.clone().oneshot(
-		Request::get(&download)
-			.header("authorization", format!("Bearer {alice}"))
-			.body(Body::empty()).unwrap()
-	).await.unwrap();
+	let response = app
+		.clone()
+		.oneshot(
+			Request::get(&download)
+				.header("authorization", format!("Bearer {alice}"))
+				.body(Body::empty())
+				.unwrap(),
+		)
+		.await
+		.unwrap();
 	assert_eq!(response.status(), 200);
 	assert_eq!(response.headers()["x-content-type-options"], "nosniff");
-	assert!(response.headers()["content-disposition"].to_str().unwrap().starts_with("attachment;"));
-	let bytes = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+	assert!(
+		response.headers()["content-disposition"]
+			.to_str()
+			.unwrap()
+			.starts_with("attachment;")
+	);
+	let bytes = axum::body::to_bytes(response.into_body(), 1024)
+		.await
+		.unwrap();
 	assert_eq!(&bytes[..], b"Source evidence");
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"hide-file-message", "effect":"deny", "subjects":{"any":true},
 		"actions":["message.read"],
 		"resources":{"kinds":["message"],"ids":[message["message"]["id"]]}
 	}));
-	let changed = request(&app, &operator, "POST", "/api/authorization/acme",
-		json!({"expected_revision":1,"bundle":policy})).await;
+	let changed = request(
+		&app,
+		&operator,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
 	assert_eq!(changed.0, 200);
-	assert_eq!(request(&app, &alice, "GET", &download, Value::Null).await.0, 404);
+	assert_eq!(
+		request(&app, &alice, "GET", &download, Value::Null).await.0,
+		404
+	);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -84,19 +118,50 @@ async fn attachments_cannot_be_rebound_or_linked_from_another_channel() {
 	let (f, url, schema) = setup().await;
 	let token = f.config.api_token.clone();
 	let app = api::router(f.clone());
-	let (_, a) = request(&app, &token, "POST", "/api/workspaces", json!({"title":"A","goal":"A"})).await;
-	let (_, b) = request(&app, &token, "POST", "/api/workspaces", json!({"title":"B","goal":"B"})).await;
+	let (_, a) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/workspaces",
+		json!({"title":"A","goal":"A"}),
+	)
+	.await;
+	let (_, b) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/workspaces",
+		json!({"title":"B","goal":"B"}),
+	)
+	.await;
 	let a = a["id"].as_str().unwrap();
 	let b = b["id"].as_str().unwrap();
 	let (status, file) = upload(&app, &token, a, Uuid::new_v4(), b"one").await;
 	assert_eq!(status, 200, "{file}");
 	let attachment = file["id"].as_str().unwrap();
 	let body = |key| json!({"content":"File", "idempotency_key":key,"attachment_ids":[attachment]});
-	let other = request(&app, &token, "POST", &format!("/api/workspaces/{b}/thread-messages"), body(Uuid::new_v4())).await;
+	let other = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{b}/thread-messages"),
+		body(Uuid::new_v4()),
+	)
+	.await;
 	assert_eq!(other.0, 404);
 	let path = format!("/api/workspaces/{a}/thread-messages");
-	assert_eq!(request(&app, &token, "POST", &path, body(Uuid::new_v4())).await.0, 200);
-	assert_eq!(request(&app, &token, "POST", &path, body(Uuid::new_v4())).await.0, 409);
+	assert_eq!(
+		request(&app, &token, "POST", &path, body(Uuid::new_v4()))
+			.await
+			.0,
+		200
+	);
+	assert_eq!(
+		request(&app, &token, "POST", &path, body(Uuid::new_v4()))
+			.await
+			.0,
+		409
+	);
 	let (status, _) = upload(&app, &token, a, Uuid::new_v4(), b"").await;
 	assert_eq!(status, 400);
 	cleanup(f, &url, &schema).await;

@@ -290,15 +290,15 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
     .getByRole("button", { name: "前のページ", exact: true })
     .click();
   await expect(history.locator(".auth-history")).toHaveCount(25);
-  await page.getByLabel("言語", { exact: true }).selectOption("en-US");
+  await page.getByTestId("language-selector").selectOption("en-US");
   await expect(
-    page.getByRole("heading", { name: "Access policies." }),
+    page.getByRole("heading", { name: "Policy bundle", exact: true }),
   ).toBeVisible();
   await page.screenshot({
     path: "../.ignore/dashboard-authorization-desktop.png",
     fullPage: true,
   });
-  await page.getByLabel("Language", { exact: true }).selectOption("ja-JP");
+  await page.getByTestId("language-selector").selectOption("ja-JP");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
     path: "../.ignore/dashboard-authorization-mobile.png",
@@ -416,7 +416,7 @@ test("peer identity mappings preserve revisions, credential rotation and bilingu
     path: "../.ignore/dashboard-peer-mappings-en.png",
     fullPage: true,
   });
-  await page.getByLabel("Language", { exact: true }).selectOption("ja-JP");
+  await page.getByTestId("language-selector").selectOption("ja-JP");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(
     page.getByRole("heading", {

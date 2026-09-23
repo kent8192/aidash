@@ -524,6 +524,12 @@ function RunPanel({
         <summary>{t("context")}</summary>
         <JsonView value={run.context} />
       </details>
+      {local && (
+        <details>
+          <summary>{t("memory")}</summary>
+          <JsonView value={query.data?.pages[0].memory ?? {}} />
+        </details>
+      )}
     </>
   );
 }

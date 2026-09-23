@@ -37,7 +37,7 @@ try {
     path: ".ignore/dashboard-deployment-cluster-desktop.png",
     fullPage: true,
   });
-  await page.getByLabel("Language", { exact: true }).selectOption("ja-JP");
+  await page.getByTestId("language-selector").selectOption("ja-JP");
   await page.setViewportSize({ width: 390, height: 844 });
   await page
     .getByRole("heading", { name: "レプリカの状態", exact: true })

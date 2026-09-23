@@ -39,7 +39,6 @@ export function ChannelConversation({
   const [error, setError] = useState("");
   const [sent, setSent] = useState(false);
   const scroll = useRef<HTMLDivElement>(null);
-  const bottom = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
   const [nearBottom, setNearBottom] = useState(true);
   const query = useInfiniteQuery({
@@ -59,10 +58,15 @@ export function ChannelConversation({
   const messages = query.isError
     ? []
     : mergeMessagePages(query.data?.pages ?? []);
+  const latestMessageId = messages.at(-1)?.message.id;
+  function scrollToLatest() {
+    const element = scroll.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }
   useEffect(() => {
-    if (visible && follow.current)
-      bottom.current?.scrollIntoView({ block: "end" });
-  }, [messages.length, thread, visible]);
+    if (visible && follow.current && scroll.current)
+      scroll.current.scrollTop = scroll.current.scrollHeight;
+  }, [latestMessageId, thread, visible]);
 
   function selectThread(id: string | null) {
     setThread(id);
@@ -233,7 +237,6 @@ export function ChannelConversation({
                 </article>
               );
             })}
-            <div ref={bottom} />
           </div>
           {!nearBottom && (
             <button
@@ -242,7 +245,7 @@ export function ChannelConversation({
               onClick={() => {
                 follow.current = true;
                 setNearBottom(true);
-                bottom.current?.scrollIntoView({ block: "end" });
+                scrollToLatest();
               }}
             >
               {copy.newMessages}
@@ -286,7 +289,9 @@ export function ChannelConversation({
               <small>Ctrl / ⌘ + Enter</small>
               <button
                 className="primary"
-                disabled={sending || opening || query.isPending || !draft.trim()}
+                disabled={
+                  sending || opening || query.isPending || !draft.trim()
+                }
               >
                 {sending ? copy.sending : copy.send}
               </button>
