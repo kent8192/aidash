@@ -34,9 +34,9 @@ const Configuration = lazy(() =>
     default: module.Configuration,
   })),
 );
-const TransactionsPage = lazy(() =>
-  import("./transactions").then((module) => ({
-    default: module.TransactionsPage,
+const TransactionSettings = lazy(() =>
+  import("./collaboration/settings").then((module) => ({
+    default: module.TransactionSettings,
   })),
 );
 import type { Selection } from "./collaboration/details";
@@ -501,15 +501,6 @@ function Dashboard({
               </div>
             )}
             {!data && !state.isError && <p role="status">{copy.processing}</p>}
-            {!data &&
-              operator &&
-              session.data &&
-              route.section === "settings" &&
-              route.settings === "transactions" && (
-                <Suspense fallback={<p role="status">{copy.processing}</p>}>
-                  <TransactionsPage nodeId={session.data.node_id} />
-                </Suspense>
-              )}
             {data && (
               <>
                 {route.section === "collaboration" &&
@@ -555,18 +546,19 @@ function Dashboard({
                     open={open}
                   />
                 )}
-                {route.section === "settings" && (
-                  <Suspense fallback={<p role="status">{copy.processing}</p>}>
-                    <Configuration
-                      data={data}
-                      section={route.settings}
-                      select={(settings) => go("settings", { settings })}
-                      open={open}
-                      packages={packages.isError ? [] : (packages.data ?? [])}
-                      disconnect={disconnect}
-                    />
-                  </Suspense>
-                )}
+                {route.section === "settings" &&
+                  (route.settings !== "transactions" || !operator) && (
+                    <Suspense fallback={<p role="status">{copy.processing}</p>}>
+                      <Configuration
+                        data={data}
+                        section={route.settings}
+                        select={(settings) => go("settings", { settings })}
+                        open={open}
+                        packages={packages.isError ? [] : (packages.data ?? [])}
+                        disconnect={disconnect}
+                      />
+                    </Suspense>
+                  )}
                 {operator &&
                   (mesh.isError || (remote?.errors.length ?? 0) > 0) && (
                     <p className="notice" role="status">
@@ -580,6 +572,17 @@ function Dashboard({
                   )}
               </>
             )}
+            {operator &&
+              session.data &&
+              route.section === "settings" &&
+              route.settings === "transactions" && (
+                <Suspense fallback={<p role="status">{copy.processing}</p>}>
+                  <TransactionSettings
+                    nodeId={session.data.node_id}
+                    select={(settings) => go("settings", { settings })}
+                  />
+                </Suspense>
+              )}
           </main>
         </div>
       </div>

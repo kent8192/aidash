@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { Package, State } from "../types";
 import { Badge, JsonView, Panel, useI18n } from "../ui";
 import { GenerationPage } from "../generation";
@@ -15,25 +16,20 @@ const operatorSections = new Set<SettingsSection>([
   "deployment",
   "marketplace",
 ]);
-export function Configuration({
-  data,
+
+function SettingsFrame({
   section,
   select,
-  open,
-  packages,
-  disconnect,
+  operator,
+  children,
 }: {
-  data: State;
   section: SettingsSection;
   select: (section: SettingsSection) => void;
-  open: (selection: Selection) => void;
-  packages: Package[];
-  disconnect: () => void;
+  operator: boolean;
+  children: ReactNode;
 }) {
-  const { t, local, locale } = useI18n();
+  const { t, locale } = useI18n();
   const copy = collaborationCopy[locale];
-  const operator = data.access.kind === "operator";
-  const restricted = !operator && operatorSections.has(section);
   return (
     <section className="collab-settings">
       <header>
@@ -55,6 +51,46 @@ export function Configuration({
             ))}
         </select>
       </label>
+      {children}
+    </section>
+  );
+}
+
+export function TransactionSettings({
+  nodeId,
+  select,
+}: {
+  nodeId: string;
+  select: (section: SettingsSection) => void;
+}) {
+  return (
+    <SettingsFrame section="transactions" select={select} operator>
+      <TransactionsPage nodeId={nodeId} />
+    </SettingsFrame>
+  );
+}
+
+export function Configuration({
+  data,
+  section,
+  select,
+  open,
+  packages,
+  disconnect,
+}: {
+  data: State;
+  section: SettingsSection;
+  select: (section: SettingsSection) => void;
+  open: (selection: Selection) => void;
+  packages: Package[];
+  disconnect: () => void;
+}) {
+  const { t, local, locale } = useI18n();
+  const copy = collaborationCopy[locale];
+  const operator = data.access.kind === "operator";
+  const restricted = !operator && operatorSections.has(section);
+  return (
+    <SettingsFrame section={section} select={select} operator={operator}>
       {restricted ? (
         <p className="notice" role="status">
           {t("administratorsOnly")}
@@ -203,6 +239,6 @@ export function Configuration({
           )}
         </>
       )}
-    </section>
+    </SettingsFrame>
   );
 }
