@@ -55,11 +55,7 @@ export function AgentRelationshipGraph({
   const selected =
     graph.nodes.find((node) => node.id === selectedId) ?? graph.nodes[0];
   const label = (node: GraphNode) => {
-    const name =
-      local(node.name) ||
-      node.entity?.id ||
-      node.resourceId ||
-      copy.types[node.kind];
+    const name = local(node.name) || copy.types[node.kind];
     return node.entity ? `${name} · v${node.entity.version}` : name;
   };
   const expand = (node: GraphNode) => {

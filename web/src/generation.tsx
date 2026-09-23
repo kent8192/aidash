@@ -1,7 +1,18 @@
+import { RecordView } from "./record-view";
+import { disambiguateLabels } from "./display-labels";
 import { useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, ArrowUpRight } from "lucide-react";
-import { Badge, Field, JsonView, Modal, Panel, useI18n } from "./ui";
+import {
+  Badge,
+  Field,
+  JsonView,
+  Modal,
+  Panel,
+  useI18n,
+  useEntryLabel,
+  useEntityLabel,
+} from "./ui";
 import {
   authorizationCatalog,
   generationAssign,
@@ -45,6 +56,21 @@ const split = (value: string) =>
     .filter(Boolean);
 const active = (status: string) =>
   ["PENDING_APPROVAL", "QUEUED", "ACTIVE"].includes(status);
+function usePolicyPresentation(policies: readonly GenerationPolicy[]) {
+  const { t, local } = useI18n();
+  const name = (policy: GenerationPolicy) =>
+    local(policy.spec.template.name) || t("unnamedEntity");
+  const base = (policy: GenerationPolicy) =>
+    `${name(policy)} · ${t("revision")} ${policy.revision}`;
+  const labels = disambiguateLabels(policies, (policy) => policy.id, base);
+  const label = (policy: GenerationPolicy) =>
+    labels.get(policy.id) ?? base(policy);
+  return {
+    label,
+    name: (policy: GenerationPolicy) =>
+      `${name(policy)}${label(policy).slice(base(policy).length)}`,
+  };
+}
 type AgentFields = {
   model?: EntityRef;
   tools?: EntityRef[];
@@ -55,7 +81,7 @@ type AgentFields = {
 };
 
 export function GenerationPage({ data }: { data: State }) {
-  const { t, local } = useI18n();
+  const { t } = useI18n();
   const client = useQueryClient();
   const subjectTenant =
     data.access.kind === "subject" ? data.access.tenant : null;
@@ -71,6 +97,9 @@ export function GenerationPage({ data }: { data: State }) {
     enabled: !!tenant,
     refetchInterval: 5000,
   });
+  const policyPresentation = usePolicyPresentation(
+    policies.isError ? [] : (policies.data ?? []),
+  );
   const requests = useQuery({
     queryKey: ["generation", tenant, "requests"],
     queryFn: () => generationRequests(encodeURIComponent(tenant)),
@@ -184,9 +213,9 @@ export function GenerationPage({ data }: { data: State }) {
                   {policies.data?.map((policy) => (
                     <article className="generation-policy" key={policy.id}>
                       <div>
-                        <h3>{local(policy.spec.template.name)}</h3>
+                        <h3>{policyPresentation.name(policy)}</h3>
                         <p className="muted">
-                          {policy.id} · {t("revision")} {policy.revision}
+                          {t("revision")} {policy.revision}
                         </p>
                       </div>
                       <Badge
@@ -286,12 +315,18 @@ export function GenerationPage({ data }: { data: State }) {
                         <strong>
                           {data.tasks.find(
                             (task) => task.id === request.task_id,
-                          )?.title ?? request.task_id}
+                          )?.title || t("task")}
                         </strong>
                         <p>{request.reason}</p>
                         <small>
-                          {request.policy_id} · {t("revision")}{" "}
-                          {request.policy_revision}
+                          {(() => {
+                            const policy = policies.data?.find(
+                              (item) => item.id === request.policy_id,
+                            );
+                            return policy
+                              ? policyPresentation.label(policy)
+                              : `${t("unavailableEntity")} · ${t("revision")} ${request.policy_revision}`;
+                          })()}
                         </small>
                       </div>
                       <Badge value={request.status} />
@@ -384,18 +419,19 @@ function RefChoices({
   kind: string;
   selected?: EntityRef[];
 }) {
-  const { local, t } = useI18n();
+  const { t } = useI18n();
+  const entityLabel = useEntityLabel(entries);
   const available = entries.filter((entry) => entry.kind === kind);
   const choices = [
     ...available.map((entry) => ({
       value: key(entry),
-      label: `${local(entry.name)} · ${entry.version}`,
+      label: entityLabel(entry),
     })),
     ...selected
       .filter((r) => !available.some((entry) => key(entry) === key(r)))
       .map((r) => ({
         value: key(r),
-        label: `${key(r)} · ${t("generationReferenceUnavailable")}`,
+        label: `${t("generationReferenceUnavailable")} · ${r.version}`,
       })),
   ];
   return (
@@ -425,7 +461,9 @@ function PolicyEditor({
   policy?: GenerationPolicy;
   save: (id: string, spec: GenerationSpec) => Promise<void>;
 }) {
-  const { t, local } = useI18n();
+  const { t } = useI18n();
+  const entityLabel = useEntityLabel(entries);
+  const [policyId] = useState(() => policy?.id ?? crypto.randomUUID());
   const initial = policy?.spec;
   const config = initial?.template.config as AgentFields | undefined;
   const [model, setModel] = useState(config?.model ? key(config.model) : "");
@@ -469,7 +507,7 @@ function PolicyEditor({
         Array.isArray(attributes)
       )
         throw new Error(t("jsonHint"));
-      const id = text("id");
+      const id = policyId;
       const template: Entry = {
         id: initial?.template.id ?? `template-${id}`,
         version: text("version"),
@@ -538,16 +576,6 @@ function PolicyEditor({
   return (
     <form onSubmit={submit} className="generation-editor">
       <div className="two-columns">
-        <Field label={t("generationPolicyId")}>
-          <input
-            name="id"
-            required
-            readOnly={!!policy}
-            defaultValue={policy?.id}
-            maxLength={policy ? 256 : 80}
-            pattern="[a-zA-Z0-9][a-zA-Z0-9._-]*"
-          />
-        </Field>
         <Field label={t("version")}>
           <input
             name="version"
@@ -638,13 +666,11 @@ function PolicyEditor({
           <option value="">{t("choose")}</option>
           {models.map((entry) => (
             <option key={key(entry)} value={key(entry)}>
-              {local(entry.name)} · {entry.version}
+              {entityLabel(entry)}
             </option>
           ))}
           {model && !modelEntry && (
-            <option value={model}>
-              {model} · {t("generationReferenceUnavailable")}
-            </option>
+            <option value={model}>{t("generationReferenceUnavailable")}</option>
           )}
         </select>
       </Field>
@@ -688,13 +714,13 @@ function PolicyEditor({
             .filter((entry) => entry.kind === "cluster")
             .map((entry) => (
               <option key={key(entry)} value={key(entry)}>
-                {local(entry.name)} · {entry.version}
+                {entityLabel(entry)}
               </option>
             ))}
           {config?.cluster &&
             !entries.some((entry) => key(entry) === key(config.cluster!)) && (
               <option value={key(config.cluster)}>
-                {key(config.cluster)} · {t("generationReferenceUnavailable")}
+                {t("generationReferenceUnavailable")} · {config.cluster.version}
               </option>
             )}
         </select>
@@ -739,13 +765,13 @@ function PolicyEditor({
           <option value="">{t("generationCompactionDisabled")}</option>
           {compactors.map((entry) => (
             <option key={key(entry)} value={key(entry)}>
-              {local(entry.name)} · {key(entry)}
+              {entityLabel(entry)}
             </option>
           ))}
           {compactor &&
             !compactors.some((entry) => key(entry) === compactor) && (
               <option value={compactor}>
-                {compactor} · {t("generationReferenceUnavailable")}
+                {t("generationReferenceUnavailable")}
               </option>
             )}
         </select>
@@ -785,13 +811,13 @@ function PolicyEditor({
           <option value="">{t("generationEmbeddingDisabled")}</option>
           {embeddings.map((entry) => (
             <option key={key(entry)} value={key(entry)}>
-              {local(entry.name)} · {key(entry)}
+              {entityLabel(entry)}
             </option>
           ))}
           {embedding &&
             !embeddings.some((entry) => key(entry) === embedding) && (
               <option value={embedding}>
-                {embedding} · {t("generationReferenceUnavailable")}
+                {t("generationReferenceUnavailable")}
               </option>
             )}
         </select>
@@ -887,6 +913,7 @@ function RequestDetail({
   control: (action: GenerationAction, reason: string) => Promise<void>;
 }) {
   const { t, local, locale } = useI18n();
+  const entryLabel = useEntryLabel(data.registry);
   const history = useQuery({
     queryKey: ["generation", tenant, "history", request.id],
     queryFn: () => generationHistory(encodeURIComponent(tenant), request.id),
@@ -906,7 +933,7 @@ function RequestDetail({
     <>
       <h3>
         {data.tasks.find((task) => task.id === request.task_id)?.title ??
-          request.task_id}
+          t("task")}
       </h3>
       <Badge value={request.status} />
       <p className="generation-reason">{request.reason}</p>
@@ -916,16 +943,17 @@ function RequestDetail({
           {local(request.definition.name)} · {request.agent_version}
         </dd>
         <dt>{t("model")}</dt>
-        <dd>{config.model && key(config.model)}</dd>
+        <dd>{config.model && entryLabel(config.model)}</dd>
         <dt>{t("tools")}</dt>
-        <dd>{config.tools?.map(key).join(", ") || "—"}</dd>
+        <dd>{config.tools?.map(entryLabel).join(", ") || "—"}</dd>
         <dt>{t("generationSkills")}</dt>
-        <dd>{config.skills?.map(key).join(", ") || "—"}</dd>
+        <dd>{config.skills?.map(entryLabel).join(", ") || "—"}</dd>
         <dt>{t("capabilities")}</dt>
         <dd>{request.definition.capabilities.join(", ") || "—"}</dd>
-        <dt>{t("generationPolicyId")}</dt>
+        <dt>{t("generationPolicy")}</dt>
         <dd>
-          {request.policy_id} · {t("revision")} {request.policy_revision}
+          {local(pinned.data?.template.name ?? {}) || t("unavailableEntity")} ·{" "}
+          {t("revision")} {request.policy_revision}
         </dd>
         <dt>{t("generationOrigin")}</dt>
         <dd>{request.subject_chain.join(" → ")}</dd>
@@ -979,7 +1007,7 @@ function RequestDetail({
               <dt>{t("generationCompactor")}</dt>
               <dd>
                 {pinned.data.compaction
-                  ? key(pinned.data.compaction.provider)
+                  ? entryLabel(pinned.data.compaction.provider)
                   : t("generationCompactionDisabled")}
               </dd>
               {pinned.data.compaction && (
@@ -991,7 +1019,7 @@ function RequestDetail({
               <dt>{t("generationEmbedder")}</dt>
               <dd>
                 {pinned.data.embedding
-                  ? key(pinned.data.embedding.provider)
+                  ? entryLabel(pinned.data.embedding.provider)
                   : t("generationEmbeddingDisabled")}
               </dd>
               {pinned.data.embedding && (
@@ -1007,7 +1035,7 @@ function RequestDetail({
       )}
       <details>
         <summary>{t("generationDefinition")}</summary>
-        <JsonView value={request.definition} />
+        <RecordView value={request.definition} />
       </details>
       {request.status !== "DELETED" && (
         <form
@@ -1081,7 +1109,7 @@ export function GenerationAssignForm({
   task: Task;
   submit: Submit;
 }) {
-  const { t, local } = useI18n();
+  const { t } = useI18n();
   const policies = useQuery({
     queryKey: ["generation", tenant, "policies"],
     queryFn: () => generationPolicies(encodeURIComponent(tenant)),
@@ -1089,6 +1117,9 @@ export function GenerationAssignForm({
   const choices = policies.isError
     ? []
     : (policies.data?.filter((policy) => policy.spec.enabled) ?? []);
+  const policyPresentation = usePolicyPresentation(
+    policies.isError ? [] : (policies.data ?? []),
+  );
   return (
     <form
       onSubmit={(event) => {
@@ -1109,12 +1140,12 @@ export function GenerationAssignForm({
           {policies.error.message}
         </p>
       )}
-      <Field label={t("generationPolicyId")}>
+      <Field label={t("generationPolicy")}>
         <select name="policy" required defaultValue="">
           <option value="">{t("choose")}</option>
           {choices.map((policy) => (
             <option key={policy.id} value={policy.id}>
-              {local(policy.spec.template.name)} · {policy.id}
+              {policyPresentation.label(policy)}
             </option>
           ))}
         </select>

@@ -1,3 +1,4 @@
+import { ReferenceName } from "../record-view";
 import type { Discovery, Run, State } from "../types";
 import { useI18n } from "../ui";
 
@@ -141,7 +142,7 @@ export function MeshView({
                 fontSize="13"
                 fontWeight="600"
               >
-                {node.replace("aidash://", "")}
+                <ReferenceName id={node} />
               </text>
               <text
                 x={i * 300 + 64}
@@ -200,7 +201,11 @@ export function MeshView({
                       fill="#74867a"
                       fontSize="9"
                     >
-                      {cluster ?? a.entity.languages.join(" / ")}
+                      {cluster ? (
+                        <ReferenceName id={cluster} />
+                      ) : (
+                        a.entity.languages.join(" / ")
+                      )}
                     </text>
                   </g>
                 );

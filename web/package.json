@@ -11,7 +11,7 @@
     "generate:api": "orval --config orval.config.ts",
     "predev": "../scripts/generate-api.sh",
     "prebuild": "../scripts/generate-api.sh",
-    "test:collaboration": "node --experimental-strip-types --test unit/collaboration.test.mjs unit/cytoscape-projection.test.mjs unit/thread-messages.test.mjs",
+    "test:collaboration": "node --experimental-strip-types --test unit/collaboration.test.mjs unit/cytoscape-projection.test.mjs unit/display-labels.test.mjs unit/thread-messages.test.mjs",
     "test:ui": "playwright test --config playwright.ui.config.ts"
   },
   "dependencies": {
