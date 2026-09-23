@@ -42,11 +42,14 @@ helm upgrade --install node-b deploy/helm/aidash --namespace aidash \
   --set frontend.image.tag=0.1.0 --wait
 ```
 
-Register reciprocal peers using `http://node-a-aidash.aidash.svc:8080` and
-`http://node-b-aidash.aidash.svc:8080`. For independent clusters, configure a
+Register reciprocal peers using `http://node-a-backend.aidash.svc:8080` and
+`http://node-b-backend.aidash.svc:8080`. For independent clusters, configure a
 reachable TLS endpoint in `node.endpoint` and your ingress/load balancer. An
-external endpoint must stay stable across Pod replacements. The default Service
-is cluster-local; probes on port 8081 are not exposed through that Service.
+external endpoint must stay stable across Pod replacements. The `<release>-aidash`
+Service fronts the dashboard and keeps the configured `service.type`; it is
+cluster-local by default. The backend uses a separate cluster-local
+`<release>-backend` Service for API and peer traffic. Probes on port 8081 are not
+exposed through either Service.
 
 ## State and dependencies
 

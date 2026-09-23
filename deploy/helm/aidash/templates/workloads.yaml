@@ -1,6 +1,7 @@
 {{- $name := printf "%s-aidash" .Release.Name -}}
+{{- $backend := printf "%s-backend" .Release.Name -}}
 {{- $frontend := printf "%s-frontend" .Release.Name -}}
-{{- $nginxConfig := $.Files.Get "files/default.conf" | replace "http://aidash-aidash:8080" (printf "http://%s:8080" $name) -}}
+{{- $nginxConfig := $.Files.Get "files/default.conf" | replace "http://aidash-backend:8080" (printf "http://%s:8080" $backend) -}}
 {{- $id := required "node.id must be a stable aidash:// identity" .Values.node.id -}}
 {{- $secret := required "existingSecret is required" .Values.existingSecret -}}
 {{- if gt (len .Release.Name) 49 -}}
@@ -76,7 +77,7 @@ spec:
           env:
             - { name: AIDASH_NODE_ID, value: {{ $id | quote }} }
             - name: AIDASH_ENDPOINT
-              value: {{ $.Values.node.endpoint | default (printf "http://%s.%s.svc:8080" $name $.Release.Namespace) | quote }}
+              value: {{ $.Values.node.endpoint | default (printf "http://%s.%s.svc:8080" $backend $.Release.Namespace) | quote }}
             - { name: AIDASH_LISTEN, value: "0.0.0.0:8080" }
             - { name: AIDASH_PROBE_LISTEN, value: "0.0.0.0:8081" }
             {{- if and $.Values.observability.enabled (eq $role "server") }}
@@ -108,7 +109,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ $name }}
+  name: {{ $backend }}
 spec:
   type: ClusterIP
   selector:
@@ -211,7 +212,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ $frontend }}
+  name: {{ $name }}
 spec:
   type: {{ .Values.service.type }}
   selector:

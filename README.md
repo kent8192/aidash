@@ -8,7 +8,7 @@ The current implementation includes a federated mesh, scoped authorization, poli
 
 ### One-command Kubernetes start
 
-With Docker, kind, kubectl, Helm, Python 3, curl, and cargo-make installed, run:
+With Docker, kind, kubectl, Helm, Python 3, and cargo-make installed, run:
 
 ```sh
 cargo make k8s-up
@@ -22,12 +22,13 @@ worker, and frontend with Helm, and exposes the dashboard at
 API, federation, and health requests to the internal backend Service.
 
 Sign in with `AIDASH_API_TOKEN` from `.env`, or `local-development-token` when
-`.env` is absent. The script passes variables with the `AIDASH_SECRET_` prefix
-and optional `AIDASH_JEV_ENDPOINT` and `AIDASH_JEV_MODEL` values from `.env` to
-the Pods. For a cluster with a persistent PostgreSQL volume, keep
+`.env` is absent. The local Kubernetes helper passes variables with the
+`AIDASH_SECRET_` prefix and optional `AIDASH_JEV_ENDPOINT` and
+`AIDASH_JEV_MODEL` values from `.env` to the Pods. For a cluster with a
+persistent PostgreSQL volume, keep
 `AIDASH_LOCAL_POSTGRES_PASSWORD` unchanged until `k8s-down` removes it.
 
-The script keeps a private kubeconfig in `.ignore/local-k8s/` and does not
+The task keeps a private kubeconfig in `.ignore/local-k8s/` and does not
 change the current kubectl context. Select a different local port when first
 creating the cluster with `AIDASH_K8S_PORT=8082 cargo make k8s-up`.
 
@@ -35,23 +36,28 @@ creating the cluster with `AIDASH_K8S_PORT=8082 cargo make k8s-up`.
 the dedicated cluster and its persistent local data. Re-running `k8s-up` updates
 the images and Helm release while keeping the existing cluster data.
 
-### Local processes and Docker Compose
+### Docker Compose development
 
-Prerequisites: Rust 1.96, Node.js 22.18 or later, and Docker Compose. The task
-starts PostgreSQL, NATS, and Qdrant with Compose, then runs the backend and
-Vite frontend together:
+Prerequisites: `cargo-make`, Python 3.9+, Docker Compose v2.24 or later, and
+`curl` for the local health checks. Rust 1.96 and Node.js 22 run inside the
+development images. The `dev` profile runs PostgreSQL, NATS, Qdrant, the
+backend, and Vite in containers. Compose Watch
+syncs frontend source changes and rebuilds the backend when Rust code changes:
 
 ```sh
 cargo make dev
 ```
 
-Open <http://127.0.0.1:5173> and enter the token from `AIDASH_API_TOKEN`.
-The backend listens at <http://127.0.0.1:18080> by default; set
-`AIDASH_LISTEN`, `AIDASH_ENDPOINT`, and `AIDASH_BACKEND` in `.env` to change
-that address. The task reads `.env` when present and installs `web`
-dependencies if needed.
-Press Ctrl-C to stop the application processes; `cargo make dev-down` stops
-the Compose services while retaining their data volumes. The example
+Open the printed Frontend URL and enter the token from `AIDASH_API_TOKEN`.
+The backend defaults to <http://127.0.0.1:18080>. If either default port is
+busy, the launcher selects the next available port and prints the resulting
+URLs. Set `AIDASH_BACKEND_PORT` or `AIDASH_FRONTEND_PORT` in `.env` to choose
+host ports. Compose loads `AIDASH_SECRET_*`
+credentials from `.env` into the backend container. The local preflight reads
+extension metadata through SeaQuery; its single raw `CREATE EXTENSION` statement
+is documented because SeaQuery has no builder for that PostgreSQL DDL. Press
+Ctrl-C to stop the attached task; `cargo make dev-down` also stops the Compose
+services while retaining their data volumes. The example
 credentials and localhost bindings are for local development. Configure
 unique credentials and an HTTPS endpoint for a deployed node.
 
@@ -71,8 +77,9 @@ Model registration uses an editable `modelprovider-modelname-reasoningeffort` na
 
 Direct OpenAI and Anthropic inference configurations are no longer supported. Register a new OpenRouter model version using the catalog, then register agent versions referencing that model. Existing model versions without `max_output_tokens` retain their legacy output allowance; register a new version from the catalog to use the model's advertised maximum. Set `AIDASH_SECRET_OPENROUTER` on each server and worker. Existing OpenRouter entries keep their credential references and gain enforced ZDR automatically. Omitting `reasoning_effort` preserves the model default; non-ZDR fallback is not available.
 
-The Vite server proxies API requests to `AIDASH_BACKEND` (default
-`http://127.0.0.1:18080`). Override it when using a different local node.
+The Compose Vite service proxies API requests to the backend container. When
+running Vite directly on the host, set `AIDASH_BACKEND` to the node's URL; Vite
+defaults to `http://127.0.0.1:8080` outside Compose.
 
 ## Two nodes
 
