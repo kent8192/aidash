@@ -19,21 +19,56 @@ case "${1:-up}" in
     export DATABASE_URL=${DATABASE_URL:-postgres://aidash:aidash-local@127.0.0.1:${AIDASH_POSTGRES_PORT}/aidash_a}
     export NATS_URL=${NATS_URL:-nats://127.0.0.1:${AIDASH_NATS_PORT}}
     export AIDASH_NODE_ID=${AIDASH_NODE_ID:-aidash://node-a}
-    export AIDASH_ENDPOINT=${AIDASH_ENDPOINT:-http://127.0.0.1:8080}
-    export AIDASH_LISTEN=${AIDASH_LISTEN:-127.0.0.1:8080}
+    export AIDASH_ENDPOINT=${AIDASH_ENDPOINT:-http://127.0.0.1:18080}
+    export AIDASH_LISTEN=${AIDASH_LISTEN:-127.0.0.1:18080}
     export AIDASH_API_TOKEN=${AIDASH_API_TOKEN:-local-development-token}
-    export AIDASH_BACKEND=${AIDASH_BACKEND:-http://127.0.0.1:8080}
+    export AIDASH_BACKEND=${AIDASH_BACKEND:-http://127.0.0.1:18080}
     export AIDASH_FRONTEND_PORT=${AIDASH_FRONTEND_PORT:-5173}
+
+    backend_health_host=${AIDASH_LISTEN%:*}
+    backend_listen_port=${AIDASH_LISTEN##*:}
+    case "$backend_health_host" in
+      0.0.0.0|\*|localhost|'') backend_health_host=127.0.0.1 ;;
+    esac
+    backend_health_url="http://$backend_health_host:$backend_listen_port/health"
 
     command -v docker >/dev/null || { echo "Missing required tool: docker" >&2; exit 1; }
     command -v cargo >/dev/null || { echo "Missing required tool: cargo" >&2; exit 1; }
     command -v npm >/dev/null || { echo "Missing required tool: npm" >&2; exit 1; }
+    command -v curl >/dev/null || { echo "Missing required tool: curl" >&2; exit 1; }
     docker compose version >/dev/null
 
-    if [[ ! -x web/node_modules/.bin/vite ]]; then
+    port_is_in_use() {
+      local host="$1" port="$2"
+      (exec 3<>"/dev/tcp/$host/$port") >/dev/null 2>&1
+    }
+    if port_is_in_use "$backend_health_host" "$backend_listen_port"; then
+      echo "Backend address $AIDASH_LISTEN is already in use; choose another AIDASH_LISTEN and AIDASH_BACKEND." >&2
+      exit 1
+    fi
+    if port_is_in_use 127.0.0.1 "$AIDASH_FRONTEND_PORT"; then
+      echo "Frontend address 127.0.0.1:$AIDASH_FRONTEND_PORT is already in use; choose another AIDASH_FRONTEND_PORT." >&2
+      exit 1
+    fi
+
+    if ! npm ls --prefix web --depth=0 >/dev/null 2>&1; then
+      echo "Installing web dependencies from web/package-lock.json."
       npm ci --prefix web
     fi
-    docker compose up --detach --wait postgres nats qdrant
+    docker compose up --build --detach --wait postgres nats qdrant
+
+    # Compose initialization scripts only run for a new data volume. Ensure
+    # retained local databases also have the extension required by migrations.
+    for database in aidash_a aidash_b aidash_test; do
+      docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U aidash -d "$database" \
+        -c 'CREATE EXTENSION IF NOT EXISTS pg_jsonschema WITH SCHEMA public'
+      extension=$(docker compose exec -T postgres psql -U aidash -d "$database" -Atc \
+        "SELECT n.nspname || ':' || e.extversion FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE e.extname='pg_jsonschema'")
+      if [[ "$extension" != "public:0.3.4" ]]; then
+        echo "Expected pg_jsonschema 0.3.4 in public for database $database; found ${extension:-not installed}." >&2
+        exit 1
+      fi
+    done
 
     backend_pid=
     frontend_pid=
@@ -56,8 +91,34 @@ case "${1:-up}" in
 
     cargo run --locked --bin aidash -- serve &
     backend_pid=$!
-    npm run dev --prefix web -- --host 127.0.0.1 --port "$AIDASH_FRONTEND_PORT" --strictPort &
+    npm run dev --prefix web -- --port "$AIDASH_FRONTEND_PORT" --strictPort &
     frontend_pid=$!
+
+    wait_for_url() {
+      local label="$1" url="$2" pid="$3" probe_url="${4:-}"
+      for _ in {1..120}; do
+        if ! jobs -pr | grep -Fxq "$pid"; then
+          echo "$label stopped before becoming ready." >&2
+          return 1
+        fi
+        if curl -fsS --max-time 1 "$url" >/dev/null 2>&1; then
+          if [[ -z "$probe_url" ]] || curl -fsS --max-time 1 "$probe_url" >/dev/null 2>&1; then
+            if jobs -pr | grep -Fxq "$pid"; then
+              return 0
+            fi
+            echo "$label process stopped before becoming ready." >&2
+            return 1
+          fi
+        fi
+        sleep 1
+      done
+      echo "$label did not become ready at $url." >&2
+      return 1
+    }
+
+    wait_for_url "Aidash backend" "$backend_health_url" "$backend_pid"
+    wait_for_url "Vite frontend" "http://127.0.0.1:$AIDASH_FRONTEND_PORT/" "$frontend_pid" \
+      "http://127.0.0.1:$AIDASH_FRONTEND_PORT/src/main.tsx"
 
     echo "Frontend: http://127.0.0.1:$AIDASH_FRONTEND_PORT"
     echo "Backend:  $AIDASH_BACKEND"

@@ -46,7 +46,10 @@ cargo make dev
 ```
 
 Open <http://127.0.0.1:5173> and enter the token from `AIDASH_API_TOKEN`.
-The task reads `.env` when present and installs `web` dependencies if needed.
+The backend listens at <http://127.0.0.1:18080> by default; set
+`AIDASH_LISTEN`, `AIDASH_ENDPOINT`, and `AIDASH_BACKEND` in `.env` to change
+that address. The task reads `.env` when present and installs `web`
+dependencies if needed.
 Press Ctrl-C to stop the application processes; `cargo make dev-down` stops
 the Compose services while retaining their data volumes. The example
 credentials and localhost bindings are for local development. Configure
@@ -68,8 +71,8 @@ Model registration uses an editable `modelprovider-modelname-reasoningeffort` na
 
 Direct OpenAI and Anthropic inference configurations are no longer supported. Register a new OpenRouter model version using the catalog, then register agent versions referencing that model. Existing model versions without `max_output_tokens` retain their legacy output allowance; register a new version from the catalog to use the model's advertised maximum. Set `AIDASH_SECRET_OPENROUTER` on each server and worker. Existing OpenRouter entries keep their credential references and gain enforced ZDR automatically. Omitting `reasoning_effort` preserves the model default; non-ZDR fallback is not available.
 
-The Vite server proxies API requests to port 8080. Override `AIDASH_BACKEND`
-when using a different local node.
+The Vite server proxies API requests to `AIDASH_BACKEND` (default
+`http://127.0.0.1:18080`). Override it when using a different local node.
 
 ## Two nodes
 
