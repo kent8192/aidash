@@ -1,0 +1,39 @@
+name: Collaboration verification inputs
+on:
+  push:
+    branches: [feat/issue-14-collaboration-space]
+    paths: [.github/workflows/collaboration-verification-inputs.yml]
+permissions:
+  contents: read
+jobs:
+  inputs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Package checked-out source
+        run: |
+          mkdir -p /tmp/collaboration-inputs
+          git bundle create /tmp/collaboration-inputs/source.bundle HEAD
+          git rev-parse HEAD > /tmp/collaboration-inputs/source-sha.txt
+      - name: Package disposable PostgreSQL runtime
+        run: |
+          set -eu
+          PG_BIN=$(find /usr/lib/postgresql -path '*/bin/postgres' | sort -V | tail -1)
+          PG_VERSION=$(basename "$(dirname "$(dirname "$PG_BIN")")")
+          mkdir -p /tmp/pg-runtime/lib
+          for bin in "$PG_BIN" "$(dirname "$PG_BIN")/initdb" "$(dirname "$PG_BIN")/pg_ctl" "$(dirname "$PG_BIN")/psql"; do
+            ldd "$bin" | awk '/=> \/ && $3 !~ /libc\.so|libm\.so|libpthread|libdl\.so|librt\.so/ {print $3}' | while read -r lib; do cp -L "$lib" /tmp/pg-runtime/lib/; done
+          done
+          tar -czf /tmp/collaboration-inputs/postgres.tar.gz -C / "usr/lib/postgresql/$PG_VERSION" "usr/share/postgresql/$PG_VERSION"
+          tar -czf /tmp/collaboration-inputs/postgres-libs.tar.gz -C /tmp/pg-runtime lib
+          printf '%s\n' "$PG_VERSION" > /tmp/collaboration-inputs/postgres-version.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: collaboration-backend-inputs
+          path: /tmp/collaboration-inputs/
+          retention-days: 1
+          if-no-files-found: error
