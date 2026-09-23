@@ -499,10 +499,10 @@ impl Harness {
 					result = model.infer(request) => result,
 				};
 				visibility.resume(store).await?;
-				if result.is_ok() {
-					if let Some(guard) = guard {
-						guard.resume(&self.federation).await?;
-					}
+				if result.is_ok()
+					&& let Some(guard) = guard
+				{
+					guard.resume(&self.federation).await?;
 				}
 				let result = result?;
 				if let Some(reservation) = reservation {
