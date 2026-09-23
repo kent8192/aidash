@@ -1033,7 +1033,7 @@ async fn expiration_cancels_generated_run_before_any_provider_call() {
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
-async fn stop_waits_for_inflight_inference_and_blocks_the_following_boundary() {
+async fn stop_commits_during_inflight_inference_and_discards_its_result() {
 	use axum::{Json, Router, routing::post};
 	use std::sync::Arc;
 	use tokio::sync::Notify;
@@ -1111,14 +1111,16 @@ async fn stop_waits_for_inflight_inference_and_blocks_the_following_boundary() {
 		)
 		.await
 	});
-	tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-	assert!(
-		!stop.is_finished(),
-		"stop must wait for in-flight authority lease"
-	);
+	let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), stop)
+		.await
+		.expect("stop should not wait for the provider response")
+		.unwrap();
+	assert_eq!(stopped.0, 200, "{:#?}", stopped.1);
 	release.notify_one();
 	running.await.unwrap();
-	assert_eq!(stop.await.unwrap().0, 200);
+	let pending = f.store.runs().await.unwrap().remove(0);
+	assert_eq!(pending.control, "CANCELLED");
+	assert!(pending.pending.get("response").is_none());
 	let worker = aidash::harness::Harness {
 		federation: f.clone(),
 	};

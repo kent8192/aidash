@@ -1,6 +1,7 @@
 //! Lifecycle mutations take the tenant policy lock exclusively before any job
-//! lock. Worker boundaries hold its shared lease, so stop/disable linearizes
-//! after in-flight effects and before the next model or tool call.
+//! lock. Workers hold a shared lease while making protected decisions, release
+//! it during external provider waits, then reacquire it and recheck authority
+//! before accepting output or starting another effect.
 use super::Request;
 use crate::{Error, Result, authorization::access::Access, federation::Federation};
 use chrono::{DateTime, Utc};

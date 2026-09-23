@@ -499,14 +499,14 @@ impl Harness {
 					result = model.infer(request) => result,
 				};
 				visibility.resume(store).await?;
-				if result.is_ok()
-					&& let Some(guard) = guard
-				{
-					guard.resume(&self.federation).await?;
-				}
 				let result = result?;
 				if let Some(reservation) = reservation {
+					// Provider usage is billable even when authorization changed
+					// during the wait and the generated result must be discarded.
 					reservation.settle(&result).await?;
+				}
+				if let Some(guard) = guard {
+					guard.resume(&self.federation).await?;
 				}
 				context.usage = json!({"input_tokens":result.input_tokens,"output_tokens":result.output_tokens,"context_window":window,"compactions":context.compactions});
 				run.context = json!(context);
