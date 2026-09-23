@@ -1,0 +1,24 @@
+name: Collaboration source workspace
+on:
+  push:
+    branches: [feat/issue-14-collaboration-space]
+    paths: [.github/workflows/collaboration-source-workspace.yml]
+permissions:
+  contents: read
+jobs:
+  extension:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Retrieve the exact baseline extension
+        run: |
+          curl -fsSL https://github.com/supabase/pg_jsonschema/releases/download/v0.3.4/pg_jsonschema-v0.3.4-pg16-amd64-linux-gnu.deb -o /tmp/pg_jsonschema.deb
+          echo '0135e1df71032880ff52a5e51a787a08cf724e5c3a4b455bba9a22ecd368fb68  /tmp/pg_jsonschema.deb' | sha256sum -c
+          mkdir -p /tmp/extension
+          dpkg-deb -x /tmp/pg_jsonschema.deb /tmp/extension
+          tar -czf /tmp/extension.tar.gz -C /tmp extension
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: collaboration-jsonschema16
+          path: /tmp/extension.tar.gz
+          retention-days: 1

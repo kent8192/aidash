@@ -53,6 +53,7 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
     queryFn: () => transactionDetails(selected!),
     enabled: !!selected,
     refetchInterval: 1000,
+    refetchIntervalInBackground: true,
   });
   const mutate = async (action: () => Promise<unknown>) => {
     if (busy) return;

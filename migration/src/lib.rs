@@ -25,6 +25,8 @@ mod m20260921_071045_record_constraints;
 mod m20260921_230000_agent_knowledge;
 mod m20260922_080000_personal_agent_constraints;
 mod m20260922_134000_inference_timeout_constraints;
+mod m20260923_010000_channel_threads;
+mod m20260923_020000_channel_attachments;
 mod m20260923_120000_atomic_gate_commit_epoch;
 
 pub struct Migrator;
@@ -57,6 +59,8 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260921_230000_agent_knowledge::Migration),
 			Box::new(m20260922_080000_personal_agent_constraints::Migration),
 			Box::new(m20260922_134000_inference_timeout_constraints::Migration),
+			Box::new(m20260923_010000_channel_threads::Migration),
+			Box::new(m20260923_020000_channel_attachments::Migration),
 			Box::new(m20260923_120000_atomic_gate_commit_epoch::Migration),
 		]
 	}
