@@ -1,6 +1,16 @@
 [config]
 default_to_workspace = false
 
+[tasks.dev]
+description = "Start local infrastructure, the Aidash backend, and the Vite frontend"
+command = "bash"
+args = ["scripts/local-dev.sh", "up"]
+
+[tasks.dev-down]
+description = "Stop local Aidash infrastructure while keeping its data volumes"
+command = "bash"
+args = ["scripts/local-dev.sh", "down"]
+
 [tasks.k8s-up]
 description = "Build and start Aidash with PostgreSQL, NATS, and Qdrant in a local kind cluster"
 command = "bash"

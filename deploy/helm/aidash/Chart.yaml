@@ -1,6 +1,6 @@
 apiVersion: v2
 name: aidash
-description: One persistent Aidash node with independently scalable servers and workers
+description: One Aidash node with a separate frontend and independently scalable servers and workers
 type: application
 version: 0.1.0
 appVersion: 0.1.0

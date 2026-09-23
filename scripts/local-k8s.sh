@@ -8,6 +8,7 @@ cluster=aidash-local
 namespace=aidash-local
 release=aidash
 app_image=aidash:local
+frontend_image=aidash-frontend:local
 postgres_image=aidash-postgres:17-pg-jsonschema-0.3.4
 export KUBECONFIG="$state/kubeconfig"
 
@@ -106,7 +107,8 @@ if base64.b64decode(stored) != os.environ["AIDASH_LOCAL_POSTGRES_PASSWORD"].enco
     fi
     docker build -f deploy/postgres/Dockerfile -t "$postgres_image" .
     docker build -t "$app_image" .
-    kind load docker-image "$postgres_image" "$app_image" --name "$cluster"
+    docker build --target frontend -t "$frontend_image" .
+    kind load docker-image "$postgres_image" "$app_image" "$frontend_image" --name "$cluster"
     kubectl create namespace "$namespace" --dry-run=client -o yaml | kubectl apply -f -
     python3 - "$namespace" <<'PY'
 import base64
@@ -159,6 +161,8 @@ PY
       --set-string existingSecret=aidash-local-app \
       --set-string image.repository=aidash \
       --set-string image.tag=local \
+      --set-string frontend.image.repository=aidash-frontend \
+      --set-string frontend.image.tag=local \
       --set service.type=NodePort \
       --set service.nodePort=30080 \
       --wait --timeout 10m
@@ -168,6 +172,8 @@ PY
       kubectl -n "$namespace" rollout restart "deployment/$release-aidash-$role"
       kubectl -n "$namespace" rollout status "deployment/$release-aidash-$role" --timeout=300s
     done
+    kubectl -n "$namespace" rollout restart "deployment/$release-frontend"
+    kubectl -n "$namespace" rollout status "deployment/$release-frontend" --timeout=300s
     for _ in {1..30}; do
       if curl -fsS "http://127.0.0.1:$port/health" >/dev/null 2>&1; then
         echo "Aidash: http://127.0.0.1:$port"

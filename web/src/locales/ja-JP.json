@@ -363,6 +363,7 @@
   "deploymentReplicas": "レプリカの状態",
   "deploymentWorker": "ワーカー",
   "deploymentServer": "サーバー",
+  "deploymentFrontend": "フロントエンド",
   "deploymentDesired": "指定数",
   "deploymentReady": "準備完了",
   "deploymentUpdated": "更新済み",

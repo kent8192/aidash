@@ -22,6 +22,11 @@ COPY web ./
 COPY --from=rust /out/aidash.json /build/openapi/aidash.json
 RUN npm run generate:api && npx tsc -b && npx vite build
 
+FROM nginxinc/nginx-unprivileged:1.31-alpine3.24 AS frontend
+COPY --from=web /build/web/dist /usr/share/nginx/html
+COPY deploy/helm/aidash/files/default.conf /etc/nginx/conf.d/default.conf
+EXPOSE 8080
+
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*

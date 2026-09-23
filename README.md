@@ -15,9 +15,11 @@ cargo make k8s-up
 ```
 
 This creates a dedicated `aidash-local` kind cluster, builds and imports the
-Aidash and PostgreSQL images (including `pg_jsonschema`), starts persistent
-PostgreSQL, JetStream NATS and Qdrant, deploys the server and worker with Helm,
-and exposes the dashboard at <http://127.0.0.1:8080>.
+Aidash backend, frontend, and PostgreSQL images (including `pg_jsonschema`),
+starts persistent PostgreSQL, JetStream NATS and Qdrant, deploys the server,
+worker, and frontend with Helm, and exposes the dashboard at
+<http://127.0.0.1:8080>. The frontend Service serves the dashboard and proxies
+API, federation, and health requests to the internal backend Service.
 
 Sign in with `AIDASH_API_TOKEN` from `.env`, or `local-development-token` when
 `.env` is absent. The script passes variables with the `AIDASH_SECRET_` prefix
@@ -35,21 +37,20 @@ the images and Helm release while keeping the existing cluster data.
 
 ### Local processes and Docker Compose
 
-Prerequisites: Rust 1.96, Node.js 22.18 or later, Docker Compose, and Trunk CLI. The application does not load `.env` automatically.
+Prerequisites: Rust 1.96, Node.js 22.18 or later, and Docker Compose. The task
+starts PostgreSQL, NATS, and Qdrant with Compose, then runs the backend and
+Vite frontend together:
 
 ```sh
-docker compose up -d --wait
-npm ci --prefix web
-npm run build --prefix web
-cargo build --locked
-cp .env.example .env
-set -a
-source .env
-set +a
-cargo run --locked -- serve
+cargo make dev
 ```
 
-Open <http://127.0.0.1:8080> and enter the token from `AIDASH_API_TOKEN`. The example credentials and localhost bindings are for local development. Configure unique credentials and an HTTPS endpoint for a deployed node.
+Open <http://127.0.0.1:5173> and enter the token from `AIDASH_API_TOKEN`.
+The task reads `.env` when present and installs `web` dependencies if needed.
+Press Ctrl-C to stop the application processes; `cargo make dev-down` stops
+the Compose services while retaining their data volumes. The example
+credentials and localhost bindings are for local development. Configure
+unique credentials and an HTTPS endpoint for a deployed node.
 
 The [authorization API](docs/authorization.md) issues revocable subject tokens for tenant-scoped workspaces, approved Registry discovery, local agent execution and event streams. Workers recheck the root and delegated agents at every durable boundary. The dashboard supports subject tokens for local goals, conversations, human answers and run controls, and shows their tenant identity. Operators use **Access policies / アクセス制御** to edit role/attribute policies, simulate decisions, inspect audits, approve component versions and issue or revoke subject credentials. Scoped remote federation remains under implementation.
 
@@ -67,13 +68,8 @@ Model registration uses an editable `modelprovider-modelname-reasoningeffort` na
 
 Direct OpenAI and Anthropic inference configurations are no longer supported. Register a new OpenRouter model version using the catalog, then register agent versions referencing that model. Existing model versions without `max_output_tokens` retain their legacy output allowance; register a new version from the catalog to use the model's advertised maximum. Set `AIDASH_SECRET_OPENROUTER` on each server and worker. Existing OpenRouter entries keep their credential references and gain enforced ZDR automatically. Omitting `reasoning_effort` preserves the model default; non-ZDR fallback is not available.
 
-For a development frontend with hot reload:
-
-```sh
-npm run dev --prefix web
-```
-
-The Vite server proxies API requests to port 8080. Override `AIDASH_BACKEND` when using a different local node.
+The Vite server proxies API requests to port 8080. Override `AIDASH_BACKEND`
+when using a different local node.
 
 ## Two nodes
 

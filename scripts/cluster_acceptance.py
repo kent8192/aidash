@@ -20,6 +20,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--kubeconfig", required=True)
     parser.add_argument("--image", default="aidash:orchestration-local")
+    parser.add_argument("--frontend-image", default="aidash-frontend:orchestration-local")
     parser.add_argument("--postgres-image", default="aidash-postgres:17-pg-jsonschema-0.3.4")
     parser.add_argument("--distribution", choices=["kubernetes", "k3s"], required=True)
     parser.add_argument("--keep", action="store_true")
@@ -74,12 +75,13 @@ def main():
         for node in ["a", "b"]:
             apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": f"aidash-{node}"}, "stringData": {"DATABASE_URL": f"postgres://aidash:acceptance-local-password@postgres:5432/aidash_{node}", "NATS_URL": "nats://nats:4222", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN}})
             repo, tag = args.image.rsplit(":", 1)
-            subprocess.run(["helm", "upgrade", "--install", f"ops-{node}", str(ROOT / "deploy/helm/aidash"), "--namespace", namespace, "--set", f"node.id=aidash://ops-{node}", "--set", f"existingSecret=aidash-{node}", "--set", f"image.repository={repo}", "--set", f"image.tag={tag}", "--wait", "--timeout", "5m"], check=True, env=env, stdout=subprocess.DEVNULL)
+            frontend_repo, frontend_tag = args.frontend_image.rsplit(":", 1)
+            subprocess.run(["helm", "upgrade", "--install", f"ops-{node}", str(ROOT / "deploy/helm/aidash"), "--namespace", namespace, "--set", f"node.id=aidash://ops-{node}", "--set", f"existingSecret=aidash-{node}", "--set", f"image.repository={repo}", "--set", f"image.tag={tag}", "--set", f"frontend.image.repository={frontend_repo}", "--set", f"frontend.image.tag={frontend_tag}", "--wait", "--timeout", "5m"], check=True, env=env, stdout=subprocess.DEVNULL)
         for service_name in ["nats", "qdrant"]:
             kube("rollout", "status", f"statefulset/{service_name}", "--timeout=180s")
         rollout("fixture")
         fixture_url = forward("fixture", 8000)
-        bases = [forward(f"ops-{node}-aidash", 8080) for node in ["a", "b"]]
+        bases = [forward(f"ops-{node}-frontend", 8080) for node in ["a", "b"]]
         for base in bases:
             wait_for(lambda base=base: api_request(base, "/health"), label="cluster server")
         base_a, base_b = bases
@@ -121,8 +123,7 @@ def main():
                 name = f"ops-{node}-aidash-{role}"
                 kube("rollout", "restart", f"deployment/{name}")
                 rollout(name)
-        # Port forwarding attaches to a Pod, not the Service's changing endpoints.
-        bases = [forward(f"ops-{node}-aidash", 8080) for node in ["a", "b"]]
+        # The frontend port-forward stays stable as its backend server Pods roll.
         for node, base in zip(["a", "b"], bases):
             identity = wait_for(lambda base=base: api_request(base, "/health"), label="rolled server")
             assert identity["node_id"] == f"aidash://ops-{node}"
@@ -140,7 +141,7 @@ def main():
         kube("scale", "deployment/ops-b-aidash-worker", "--replicas=1")
         rollout("ops-b-aidash-worker")
         assert len(api_request(fixture_url, "/status")["effects"]) == 3
-        report = {"distribution": args.distribution, "kubernetes": json.loads(kube("version", "-o", "json"))["serverVersion"]["gitVersion"], "namespace": namespace, "image": args.image, "workspace": workspace, "recovered_run": recovered["id"], "tasks": 4, "artifacts": 4, "external_effects": 3, "worker_sigkill": "passed", "worker_scale_up_down": "passed", "server_scale_up": "passed", "rolling_updates": "passed", "stable_identity": "passed", "deployment_observation": observation, "base_a": bases[0], "base_b": bases[1]}
+        report = {"distribution": args.distribution, "kubernetes": json.loads(kube("version", "-o", "json"))["serverVersion"]["gitVersion"], "namespace": namespace, "image": args.image, "frontend_image": args.frontend_image, "workspace": workspace, "recovered_run": recovered["id"], "tasks": 4, "artifacts": 4, "external_effects": 3, "worker_sigkill": "passed", "worker_scale_up_down": "passed", "server_scale_up": "passed", "rolling_updates": "passed", "stable_identity": "passed", "deployment_observation": observation, "base_a": bases[0], "base_b": bases[1]}
         (report_dir / "report.json").write_text(json.dumps(report, indent=2))
         print(f"Cluster acceptance passed: {report_dir / 'report.json'}", flush=True)
         if args.keep:
@@ -153,8 +154,8 @@ def main():
                 (report_dir / "pods.json").write_text(kube("get", "pods", "-o", "json"))
                 (report_dir / "events.json").write_text(kube("get", "events", "-o", "json"))
                 for node in ["a", "b"]:
-                    for role in ["server", "worker"]:
-                        (report_dir / f"{node}-{role}.log").write_text(kube("logs", f"deployment/ops-{node}-aidash-{role}", "--all-pods=true", "--tail=100"))
+                    for role, workload in [("server", f"ops-{node}-aidash-server"), ("worker", f"ops-{node}-aidash-worker"), ("frontend", f"ops-{node}-frontend")]:
+                        (report_dir / f"{node}-{role}.log").write_text(kube("logs", f"deployment/{workload}", "--all-pods=true", "--tail=100"))
             except subprocess.CalledProcessError:
                 pass
         for process in forwards:
