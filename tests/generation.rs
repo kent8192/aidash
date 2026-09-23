@@ -1150,6 +1150,134 @@ async fn stop_commits_during_inflight_inference_and_discards_its_result() {
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
+async fn atomic_commit_discards_generated_output_but_settles_its_usage() {
+	use axum::{Json, Router, routing::post};
+	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+	use std::sync::{
+		Arc,
+		atomic::{AtomicUsize, Ordering},
+	};
+	use tokio::sync::Notify;
+
+	let entered = Arc::new(Notify::new());
+	let release = Arc::new(Notify::new());
+	let calls = Arc::new(AtomicUsize::new(0));
+	let provider = Router::new().route(
+		"/v1/chat/completions",
+		post({
+			let entered = entered.clone();
+			let release = release.clone();
+			let calls = calls.clone();
+			move || {
+				let entered = entered.clone();
+				let release = release.clone();
+				let calls = calls.clone();
+				async move {
+					if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+						entered.notify_one();
+						release.notified().await;
+					}
+					Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Generated result"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}}))
+				}
+			}
+		}),
+	);
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let server = tokio::spawn(async move { axum::serve(listener, provider).await.unwrap() });
+	let (mut f, url, schema) = setup().await;
+	f.config.lease_seconds = 300;
+	let app = api::router(f.clone());
+	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
+	let mut spec = definition(&app, &f.config.api_token).await;
+	spec["approval_required"] = json!(false);
+	let (status, response) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/generation/acme/policies/research",
+		json!({"expected_revision":0,"spec":spec}),
+	)
+	.await;
+	assert_eq!(status, 200, "{response}");
+	let task = missing_task(&app, &token).await;
+	let (status, assignment) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/generation/acme/tasks/{task}/assign"),
+		json!({"policy_id":"research","reason":"atomic inference"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{assignment}");
+	aidash::generation::provision::reconcile(&f).await.unwrap();
+	let worker = aidash::harness::Harness {
+		federation: f.clone(),
+	};
+	assert!(worker.worker_once().await.unwrap());
+	let run = f.store.runs().await.unwrap().remove(0);
+	let waiting = tokio::spawn({
+		let worker = worker.clone();
+		async move { worker.worker_once().await }
+	});
+	tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+		.await
+		.expect("provider must receive the first request");
+	let mut transaction = f.store.control_pool.begin().await.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("atomic_gate"))
+			.value(Alias::new("commit_epoch"), Expr::cust("commit_epoch + 1"))
+			.cond_where(Expr::col(Alias::new("singleton")).eq(true))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *transaction)
+	.await
+	.unwrap();
+	transaction.commit().await.unwrap();
+	release.notify_one();
+	assert!(
+		tokio::time::timeout(std::time::Duration::from_secs(10), waiting)
+			.await
+			.expect("stale inference must finish")
+			.unwrap()
+			.unwrap()
+	);
+	let current = f.store.run(run.id).await.unwrap();
+	assert_eq!(current.phase, "THINKING");
+	assert!(current.pending.get("retry_at").is_some());
+	assert!(current.pending.get("response").is_none());
+	let (reserved, reported): (i64, Option<i64>) = sqlx::query_as(
+		&Query::select()
+			.columns(["reserved_tokens", "reported_tokens"].map(Alias::new))
+			.from(Alias::new("generation_usage"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&f.store.pool)
+	.await
+	.unwrap();
+	assert_eq!(reserved, 132096);
+	assert_eq!(reported, Some(12));
+	let used: i64 = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("used_tokens"))
+			.from(Alias::new("generation_budgets"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&f.store.pool)
+	.await
+	.unwrap();
+	assert_eq!(used, 12, "stale output must refund unused reserved tokens");
+	tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+	assert!(worker.worker_once().await.unwrap());
+	assert_eq!(calls.load(Ordering::SeqCst), 2);
+	assert_eq!(f.store.run(run.id).await.unwrap().phase, "TOOL_CALL");
+	server.abort();
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
 async fn matching_ordinary_agent_is_reused_without_generation_or_quota() {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());

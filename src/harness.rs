@@ -498,13 +498,14 @@ impl Harness {
 					},
 					result = model.infer(request) => result,
 				};
-				visibility.resume(store).await?;
-				let result = result?;
-				if let Some(reservation) = reservation {
+				let resumed = visibility.resume(store).await;
+				if let (Some(reservation), Ok(response)) = (reservation, result.as_ref()) {
 					// Provider usage is billable even when authorization changed
-					// during the wait and the generated result must be discarded.
-					reservation.settle(&result).await?;
+					// or a transaction committed while its result was in flight.
+					reservation.settle(response).await?;
 				}
+				resumed?;
+				let result = result?;
 				if let Some(guard) = guard {
 					guard.resume(&self.federation).await?;
 				}

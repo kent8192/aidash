@@ -173,11 +173,14 @@ async fn database_validates_registered_and_overridden_timeouts() {
 async fn timeout_migration_upgrades_existing_models_and_preserves_rollback_safety() {
 	let (f, url, schema) = setup().await;
 	let migrations = Migrator::migrations();
-	assert_eq!(
-		migrations.last().unwrap().name(),
-		"m20260922_134000_inference_timeout_constraints"
-	);
-	Migrator::down(&f.registry.db, Some(1)).await.unwrap();
+	let timeout_index = migrations
+		.iter()
+		.position(|migration| migration.name() == "m20260922_134000_inference_timeout_constraints")
+		.expect("timeout migration must exist");
+	let rollback_steps = (migrations.len() - timeout_index) as u32;
+	Migrator::down(&f.registry.db, Some(rollback_steps))
+		.await
+		.unwrap();
 	let legacy = model("timeout-model");
 	f.registry.register(legacy.clone()).await.unwrap();
 	install(&f.store.pool, &json!({})).await.unwrap();
@@ -195,13 +198,20 @@ async fn timeout_migration_upgrades_existing_models_and_preserves_rollback_safet
 	let stored = f.registry.get("timeout-model", "1.0.0").await.unwrap();
 	assert_eq!(stored.config, legacy.config);
 	// Downgrade and re-upgrade without new fields must preserve existing rows.
-	Migrator::down(&f.registry.db, Some(1)).await.unwrap();
+	Migrator::down(&f.registry.db, Some(rollback_steps))
+		.await
+		.unwrap();
 	Migrator::up(&f.registry.db, None).await.unwrap();
 	install(&f.store.pool, &json!({"request_timeout_secs":1200}))
 		.await
 		.unwrap();
 	// Never silently discard a timeout during downgrade.
-	assert!(Migrator::down(&f.registry.db, Some(1)).await.is_err());
+	assert!(
+		Migrator::down(&f.registry.db, Some(rollback_steps))
+			.await
+			.is_err()
+	);
+	Migrator::up(&f.registry.db, None).await.unwrap();
 	let stored = f.registry.get("timeout-model", "1.0.0").await.unwrap();
 	assert_eq!(stored.config["request_timeout_secs"], 1200);
 	install(&f.store.pool, &json!({"request_timeout_secs":900}))
