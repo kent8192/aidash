@@ -731,11 +731,32 @@ impl Guard {
 		self.access.lock().await.suspend().await
 	}
 	pub async fn resume(&self, f: &Federation) -> Result<()> {
-		let mut access = self.access.lock().await;
-		refresh_access_for_run(&mut access, &f.store, &self.run).await?;
-		authorize_guard(f, &self.run, &mut access).await?;
-		self.authorize_inference_with(&mut access).await?;
-		Ok(())
+		let mut delay = std::time::Duration::from_millis(250);
+		loop {
+			let mut access = self.access.lock().await;
+			let result = async {
+				refresh_access_for_run(&mut access, &f.store, &self.run).await?;
+				authorize_guard(f, &self.run, &mut access).await?;
+				self.authorize_inference_with(&mut access).await
+			}
+			.await;
+			match result {
+				Ok(()) => return Ok(()),
+				Err(error)
+					if matches!(&error, Error::TransactionPending)
+						|| error.is_transient_database() =>
+				{
+					tracing::warn!(%error, "retrying execution-boundary reacquisition after transient database error");
+					access.discard_failed_execution_refresh().await;
+					drop(access);
+					tokio::time::sleep(delay).await;
+					delay = delay
+						.saturating_mul(2)
+						.min(std::time::Duration::from_secs(2));
+				}
+				Err(error) => return Err(error),
+			}
+		}
 	}
 
 	pub fn authority(&self) -> WorkerAuthority {

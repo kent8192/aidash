@@ -190,6 +190,15 @@ impl Access {
 		Ok(())
 	}
 
+	pub(super) async fn discard_failed_execution_refresh(&mut self) {
+		if let Some(transaction) = self.tx.take()
+			&& let Err(error) = transaction.rollback().await
+		{
+			tracing::debug!(%error, "failed execution-refresh transaction rollback");
+		}
+		self.pending_decisions.clear();
+	}
+
 	pub fn resource(&self, kind: &str, id: impl ToString, mut attributes: Value) -> Resource {
 		if let (Some(attributes), Some(context)) =
 			(attributes.as_object_mut(), self.context.as_object())

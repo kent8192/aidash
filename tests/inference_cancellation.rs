@@ -544,6 +544,69 @@ async fn inference_completion_waits_for_visibility_gate_reacquisition() {
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
+async fn inference_result_is_retried_after_atomic_commit_during_provider_wait() {
+	let (mut f, url, schema) = setup().await;
+	f.config.lease_seconds = 300;
+	let mut server = ReleasableProvider::start().await;
+	let app = api::router(f.clone());
+	let (_, subject_token, task_id) = bootstrap(&f, &app, &server.endpoint).await;
+	let (status, claimed) = request(
+		&app,
+		&subject_token,
+		"POST",
+		&format!("/api/tasks/{task_id}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{claimed}");
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	assert!(harness.worker_once().await.unwrap());
+	let run = f.store.runs().await.unwrap().remove(0);
+	let mut workers = JoinSet::new();
+	let worker = harness.clone();
+	workers.spawn(async move { worker.worker_once().await });
+	timeout(Duration::from_secs(10), &mut server.entered)
+		.await
+		.expect("worker must reach the provider")
+		.unwrap();
+	let mut transaction = f.store.control_pool.begin().await.unwrap();
+	let update = Query::update()
+		.table(Alias::new("atomic_gate"))
+		.value(Alias::new("commit_epoch"), Expr::cust("commit_epoch + 1"))
+		.cond_where(Expr::col(Alias::new("singleton")).eq(true))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&update)
+		.execute(&mut *transaction)
+		.await
+		.unwrap();
+	transaction.commit().await.unwrap();
+	server.release.take().unwrap().send(()).unwrap();
+	let worker_result = timeout(Duration::from_secs(10), workers.join_next())
+		.await
+		.expect("worker must discard the stale response and schedule a retry")
+		.expect("worker task must still exist")
+		.map_err(|error| error.to_string())
+		.and_then(|result| result.map_err(|error| error.to_string()));
+	server.tasks.join_next().await.unwrap().unwrap();
+	let current = f.store.run(run.id).await.unwrap();
+	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
+	cleanup(f, &url, &schema).await;
+	assert_eq!(worker_result, Ok(true));
+	assert_eq!(current.phase, "THINKING");
+	assert!(current.pending.get("retry_at").is_some());
+	assert!(current.pending.get("response").is_none());
+	assert!(
+		!snapshot
+			.events
+			.iter()
+			.any(|event| event.kind == "model.completed")
+	);
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
 async fn scoped_cancellation_aborts_inference_before_response_headers() {
 	cancel_stalled_inference(true, false).await;
 }

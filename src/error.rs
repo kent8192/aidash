@@ -21,6 +21,8 @@ pub enum Error {
 	Forbidden,
 	#[error("atomic transaction visibility pending; retry after recovery")]
 	TransactionPending,
+	#[error("an atomic transaction committed during inference; retrying from fresh state")]
+	StaleInference,
 	#[error("semantic backend unavailable or invalid; inspect index status and retry")]
 	SemanticUnavailable,
 	#[error("Kubernetes observations unavailable; check service account and API connectivity")]
@@ -50,6 +52,7 @@ impl IntoResponse for Error {
 			Self::TransactionPending
 			| Self::SemanticUnavailable
 			| Self::OrchestrationUnavailable => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
+			Self::StaleInference => (StatusCode::CONFLICT, self.to_string()),
 			Self::Database(error)
 				if error
 					.as_database_error()
@@ -82,6 +85,30 @@ impl IntoResponse for Error {
 			);
 		}
 		response
+	}
+}
+
+impl Error {
+	pub(crate) fn is_transient_database(&self) -> bool {
+		match self {
+			Self::Database(
+				sqlx::Error::PoolTimedOut
+				| sqlx::Error::Io(_)
+				| sqlx::Error::Tls(_)
+				| sqlx::Error::Protocol(_),
+			) => true,
+			Self::Database(sqlx::Error::Database(error)) => {
+				let code = error.code().map(|code| code.into_owned());
+				code.as_deref().is_some_and(|code| {
+					code.starts_with("08")
+						|| matches!(
+							code,
+							"40001" | "40P01" | "53300" | "55P03" | "57P01" | "57P02" | "57P03"
+						)
+				})
+			}
+			_ => false,
+		}
 	}
 }
 

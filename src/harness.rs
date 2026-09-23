@@ -72,7 +72,7 @@ impl Harness {
 				tokio::select! {
 					result=&mut work=>break result,
 					_=heartbeat.tick()=>{
-						if !store.renew_lease(run_id(store,token).await?,token,self.federation.config.lease_seconds).await?{
+						if !renew_worker_lease(store, run_id(store, token).await?, token, self.federation.config.lease_seconds).await? {
 							return Ok(true);
 						}
 					}
@@ -89,7 +89,7 @@ impl Harness {
 			let attempts = current.pending["retry_count"].as_u64().unwrap_or(0) + 1;
 			if matches!(e, Error::Forbidden | Error::Unauthorized) {
 				store.pause_for_authorization(&current, token).await?;
-			} else if matches!(e, Error::TransactionPending) {
+			} else if matches!(e, Error::TransactionPending | Error::StaleInference) {
 				current.pending["retry_at"] =
 					json!(chrono::Utc::now() + chrono::Duration::seconds(1));
 				store.save_run(&current, token, "run.retrying").await?;
@@ -920,6 +920,28 @@ async fn wait_for_inference_cancellation(store: &crate::store::Store, id: Uuid) 
 			}
 		}
 		tokio::time::sleep(Duration::from_millis(250)).await;
+	}
+}
+
+async fn renew_worker_lease(
+	store: &crate::store::Store,
+	run_id: Uuid,
+	token: Uuid,
+	lease_seconds: i32,
+) -> Result<bool> {
+	let mut delay = Duration::from_millis(250);
+	loop {
+		match store.renew_lease(run_id, token, lease_seconds).await {
+			Ok(renewed) => return Ok(renewed),
+			Err(error)
+				if matches!(&error, Error::TransactionPending) || error.is_transient_database() =>
+			{
+				tracing::warn!(%error, run_id = %run_id, "retrying worker lease renewal after transient database error");
+				tokio::time::sleep(delay).await;
+				delay = delay.saturating_mul(2).min(Duration::from_secs(2));
+			}
+			Err(error) => return Err(error),
+		}
 	}
 }
 
