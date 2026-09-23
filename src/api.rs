@@ -44,6 +44,7 @@ fn ordinary_routes() -> OpenApiRouter<Federation> {
 		.route_layer(middleware::from_fn(operator_only));
 	OpenApiRouter::new()
 		.merge(administration)
+		.merge(crate::collaboration::api::routes())
 		.merge(crate::generation::api::routes())
 		.merge(crate::semantic::api::routes())
 		.merge(crate::authorization::remote::routes())
@@ -630,7 +631,7 @@ async fn task_delegate(
 ) -> Result<Json<Delegation>> {
 	if let Actor::Subject(identity) = actor {
 		return Ok(Json(
-			execution::delegate(&f, &identity, id, &input.node_id, &input.agent).await?,
+			execution::delegate(&f, &identity, id, input.node_id.as_str(), &input.agent).await?,
 		));
 	}
 	Ok(Json(f.delegate(id, &input.node_id, &input.agent).await?))
@@ -1588,9 +1589,12 @@ mod schema_tests {
 				.values()
 				.map(|path| path.as_object().unwrap().len())
 				.sum::<usize>(),
-			71
+			74
 		);
 		for (path, method) in [
+			("/api/workspaces/{id}/threads", "post"),
+			("/api/workspaces/{id}/thread-messages", "post"),
+			("/api/workspaces/{id}/message-history", "get"),
 			("/api/providers/openrouter/models", "get"),
 			("/api/agents/personal", "post"),
 			("/api/tasks", "get"),

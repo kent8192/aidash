@@ -24,6 +24,7 @@ mod m20260921_071045_record_constraints;
 
 mod m20260921_230000_agent_knowledge;
 mod m20260922_080000_personal_agent_constraints;
+mod m20260923_010000_channel_threads;
 
 pub struct Migrator;
 #[async_trait::async_trait]
@@ -54,6 +55,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260921_071045_record_constraints::Migration),
 			Box::new(m20260921_230000_agent_knowledge::Migration),
 			Box::new(m20260922_080000_personal_agent_constraints::Migration),
+			Box::new(m20260923_010000_channel_threads::Migration),
 		]
 	}
 }
