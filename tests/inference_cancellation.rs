@@ -318,17 +318,27 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result() {
 	assert!(harness.worker_once().await.unwrap());
 	let run = f.store.runs().await.unwrap().remove(0);
 	assert_eq!(run.phase, "THINKING");
+	let control_application_name: String = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("current_setting('application_name')"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&f.store.control_pool)
+	.await
+	.unwrap();
+	assert_eq!(control_application_name, schema);
 	let idle_transactions_before_inference: i64 = sqlx::query_scalar(
 		&Query::select()
 			.expr(Expr::cust("COUNT(*)"))
 			.from(Alias::new("pg_stat_activity"))
 			.cond_where(
 				sea_orm::sea_query::Condition::all()
-					.add(Expr::col(Alias::new("datname")).eq(Expr::cust("current_database()")))
+					.add(Expr::col(Alias::new("application_name")).eq(Expr::cust("$1")))
 					.add(Expr::col(Alias::new("state")).eq(Expr::val("idle in transaction"))),
 			)
 			.to_string(PostgresQueryBuilder),
 	)
+	.bind(&schema)
 	.fetch_one(&f.store.pool)
 	.await
 	.unwrap();
@@ -345,11 +355,12 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result() {
 			.from(Alias::new("pg_stat_activity"))
 			.cond_where(
 				sea_orm::sea_query::Condition::all()
-					.add(Expr::col(Alias::new("datname")).eq(Expr::cust("current_database()")))
+					.add(Expr::col(Alias::new("application_name")).eq(Expr::cust("$1")))
 					.add(Expr::col(Alias::new("state")).eq(Expr::val("idle in transaction"))),
 			)
 			.to_string(PostgresQueryBuilder),
 	)
+	.bind(&schema)
 	.fetch_one(&f.store.pool)
 	.await
 	.unwrap();
