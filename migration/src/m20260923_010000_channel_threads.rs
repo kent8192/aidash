@@ -71,7 +71,11 @@ impl MigrationTrait for Migration {
 			.create_table(
 				Table::create()
 					.table(Alias::new("channel_message_context"))
-					.col(ColumnDef::new(Alias::new("message_id")).uuid().primary_key())
+					.col(
+						ColumnDef::new(Alias::new("message_id"))
+							.uuid()
+							.primary_key(),
+					)
 					.col(ColumnDef::new(Alias::new("workspace_id")).uuid().not_null())
 					.col(ColumnDef::new(Alias::new("thread_id")).uuid())
 					.foreign_key(

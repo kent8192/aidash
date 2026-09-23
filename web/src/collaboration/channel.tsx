@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { messageCreate, workspaceGet } from "../generated/aidash";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { workspaceGet } from "../generated/aidash";
 import type {
   Artifact,
   HumanRequest,
@@ -11,9 +11,10 @@ import type {
 } from "../types";
 import { Badge, JsonView, useI18n } from "../ui";
 import { collaborationCopy } from "./copy";
-import { senderLabel, taskProgress } from "./model";
+import { taskProgress } from "./model";
 import { entityKey } from "../agent-graph/model";
 import type { Selection } from "./details";
+import { ChannelConversation } from "./conversation";
 
 export function ArtifactList({ artifacts }: { artifacts: Artifact[] }) {
   const { locale } = useI18n();
@@ -52,31 +53,15 @@ export function Channel({
 }) {
   const { locale } = useI18n();
   const copy = collaborationCopy[locale];
-  const client = useQueryClient();
   const [tab, setTab] = useState<"conversation" | "work" | "activity">(
     "conversation",
   );
-  const [draft, setDraft] = useState("");
-  const [error, setError] = useState("");
-  const [sent, setSent] = useState(false);
-  const [sending, setSending] = useState(false);
-  const submission = useRef<{ content: string; key: string } | null>(null);
-  const inFlight = useRef(false);
-  const bottom = useRef<HTMLDivElement>(null);
-  const scroll = useRef<HTMLDivElement>(null);
-  const follow = useRef(true);
-  const [nearBottom, setNearBottom] = useState(true);
   const query = useQuery({
     queryKey: ["workspace", workspace.id],
     queryFn: () => workspaceGet(workspace.id),
     refetchInterval: 2000,
     retry: false,
   });
-  const messages = query.isError ? [] : (query.data?.messages ?? []);
-  useEffect(() => {
-    if (follow.current && tab === "conversation")
-      bottom.current?.scrollIntoView({ block: "end" });
-  }, [messages.length, tab]);
   const tasks: Task[] = query.isError
     ? []
     : (query.data?.tasks ??
@@ -98,34 +83,6 @@ export function Channel({
       ]),
     ).values(),
   );
-  async function send() {
-    const content = draft.trim();
-    if (!content || inFlight.current || query.isError) return;
-    inFlight.current = true;
-    setSending(true);
-    setError("");
-    setSent(false);
-    if (submission.current?.content !== content)
-      submission.current = { content, key: crypto.randomUUID() };
-    try {
-      await messageCreate(workspace.id, {
-        content,
-        idempotency_key: submission.current.key,
-      });
-      setDraft("");
-      submission.current = null;
-      setSent(true);
-      follow.current = true;
-      await client.invalidateQueries({ queryKey: ["workspace", workspace.id] });
-    } catch (reason) {
-      setError(
-        `${copy.failed} ${reason instanceof Error ? reason.message : String(reason)}`,
-      );
-    } finally {
-      inFlight.current = false;
-      setSending(false);
-    }
-  }
   return (
     <section className="collab-channel" aria-label={workspace.title}>
       <header className="collab-channel-heading">
@@ -183,116 +140,11 @@ export function Channel({
               ))}
             </section>
           )}
-          {tab === "conversation" && (
-            <>
-              <div
-                ref={scroll}
-                className="collab-messages"
-                aria-label={copy.conversation}
-                onScroll={() => {
-                  const element = scroll.current;
-                  if (element) {
-                    follow.current =
-                      element.scrollHeight -
-                        element.scrollTop -
-                        element.clientHeight <
-                      80;
-                    setNearBottom(follow.current);
-                  }
-                }}
-              >
-                {query.isPending && <p role="status">{copy.processing}</p>}
-                {!query.isPending && messages.length === 0 && (
-                  <p className="collab-empty">{copy.noMessages}</p>
-                )}
-                {messages.map((message) => {
-                  const sender = senderLabel(message.sender);
-                  return (
-                    <article
-                      className={`collab-message ${sender.kind}`}
-                      key={message.id}
-                      id={`message-${message.id}`}
-                    >
-                      <div className="collab-sender">
-                        <strong>{sender.name}</strong>
-                        <span>{copy[sender.kind]}</span>
-                        <time dateTime={message.created_at}>
-                          {new Date(message.created_at).toLocaleString(locale)}
-                        </time>
-                      </div>
-                      <p>{message.content}</p>
-                    </article>
-                  );
-                })}
-                <div ref={bottom} />
-              </div>
-              {!nearBottom && (
-                <button
-                  className="collab-latest"
-                  type="button"
-                  onClick={() => {
-                    follow.current = true;
-                    setNearBottom(true);
-                    bottom.current?.scrollIntoView({ block: "end" });
-                  }}
-                >
-                  {copy.newMessages}
-                </button>
-              )}
-              <form
-                className="collab-composer"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void send();
-                }}
-              >
-                <label className="sr-only" htmlFor="channel-message">
-                  {copy.message}
-                </label>
-                <textarea
-                  id="channel-message"
-                  value={draft}
-                  maxLength={64000}
-                  rows={3}
-                  placeholder={copy.placeholder}
-                  disabled={sending}
-                  onChange={(event) => {
-                    setDraft(event.target.value);
-                    setSent(false);
-                  }}
-                  onKeyDown={(event) => {
-                    if (
-                      (event.ctrlKey || event.metaKey) &&
-                      event.key === "Enter" &&
-                      !event.nativeEvent.isComposing
-                    ) {
-                      event.preventDefault();
-                      void send();
-                    }
-                  }}
-                />
-                <div className="collab-composer-bottom">
-                  <small>Ctrl / ⌘ + Enter</small>
-                  <button
-                    className="primary"
-                    disabled={sending || !draft.trim()}
-                  >
-                    {sending ? copy.sending : copy.send}
-                  </button>
-                </div>
-                {error && (
-                  <p className="error" role="alert">
-                    {error}
-                  </p>
-                )}
-                {sent && (
-                  <p className="muted" role="status">
-                    {copy.sent}
-                  </p>
-                )}
-              </form>
-            </>
-          )}
+          <ChannelConversation
+            key={workspace.id}
+            workspace={workspace.id}
+            visible={tab === "conversation"}
+          />
           {tab === "work" && (
             <>
               <div className="collab-progress" aria-label={copy.taskProgress}>

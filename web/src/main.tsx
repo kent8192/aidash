@@ -79,7 +79,7 @@ function Dashboard({
   const copy = collaborationCopy[locale];
   const location = useLocation();
   const navigate = useNavigate();
-  const route = resolveLocation(location.pathname, window.location.search);
+  const route = resolveLocation(location.pathname, location.searchStr);
   const client = useQueryClient();
   const [token, setToken] = useState(
     () => sessionStorage.getItem("aidash-token") ?? "",
@@ -185,6 +185,7 @@ function Dashboard({
           for (const key of [
             "state",
             "workspace",
+            "channel-history",
             "run",
             "mesh",
             "packages",
