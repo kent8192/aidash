@@ -8,7 +8,7 @@ The current implementation includes a federated mesh, scoped authorization, poli
 
 ### One-command Kubernetes start
 
-With Docker, kind, kubectl, Helm, Python 3, and cargo-make installed, run:
+With Docker, kind, kubectl, Helm, curl, and cargo-make installed, run:
 
 ```sh
 cargo make k8s-up
@@ -21,20 +21,29 @@ worker, and frontend with Helm, and exposes the dashboard at
 <http://127.0.0.1:8080>. The frontend Service serves the dashboard and proxies
 API, federation, and health requests to the internal backend Service.
 
-Sign in with `AIDASH_API_TOKEN` from `.env`, or `local-development-token` when
-`.env` is absent. The local Kubernetes helper passes variables with the
-`AIDASH_SECRET_` prefix and optional `AIDASH_JEV_ENDPOINT` and
-`AIDASH_JEV_MODEL` values from `.env` to the Pods. For a cluster with a
-persistent PostgreSQL volume, keep
-`AIDASH_LOCAL_POSTGRES_PASSWORD` unchanged until `k8s-down` removes it.
+Sign in with `local-development-token`. The kind configuration and local
+example Secrets live in `deploy/local-k8s/`. Kubernetes startup uses these
+manifests directly and does not load `.env`. To add provider credentials, edit
+`aidash-local-app` using kubectl, then re-run `cargo make k8s-up` to restart the
+Pods with the updated Secret:
 
-The task keeps a private kubeconfig in `.ignore/local-k8s/` and does not
-change the current kubectl context. Select a different local port when first
-creating the cluster with `AIDASH_K8S_PORT=8082 cargo make k8s-up`.
+```sh
+kubectl --kubeconfig .ignore/local-k8s/kubeconfig -n aidash-local edit secret aidash-local-app
+```
+
+The task keeps a dedicated kubeconfig in `.ignore/local-k8s/` and does not
+change the current kubectl context. The local host port is fixed at `8080` in
+`deploy/local-k8s/kind.yaml`.
 
 `cargo make k8s-status` shows Pods and Services. `cargo make k8s-down` removes
 the dedicated cluster and its persistent local data. Re-running `k8s-up` updates
-the images and Helm release while keeping the existing cluster data.
+the images and Helm release while keeping the existing cluster data. Startup
+reapplies the example credentials from `deploy/local-k8s/secrets.yaml`; extra
+provider keys added to the app Secret are retained.
+
+If a cluster created with the previous Python helper uses a different port or
+PostgreSQL password, recreate it with `cargo make k8s-down` followed by
+`cargo make k8s-up`. This deletes its local database and other persistent data.
 
 ### Docker Compose development
 
