@@ -175,9 +175,9 @@ test("shows typed version-pinned relationships and opens existing details", asyn
   ).toHaveCount(0);
   const missing = list
     .getByRole("row")
-    .filter({ has: page.getByRole("rowheader", { name: /missing · v1.0.0/ }) });
+    .filter({ has: page.getByRole("rowheader", { name: /Tool · v1.0.0/ }) });
   await expect(
-    missing.getByRole("button", { name: "Open details: missing · v1.0.0" }),
+    missing.getByRole("button", { name: "Open details: Tool · v1.0.0" }),
   ).toBeDisabled();
   const model = list.getByRole("row").filter({
     has: page.getByRole("rowheader", {

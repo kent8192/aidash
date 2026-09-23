@@ -60,7 +60,31 @@ test.beforeEach(async ({ page }) => {
     if (path === "/api/mesh")
       return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/discover")
-      return route.fulfill({ json: { agents: [], errors: [] } });
+      return route.fulfill({
+        json: {
+          agents: [
+            {
+              node_id: "aidash://remote",
+              entity: {
+                id: "executor",
+                version: "1.0.0",
+                kind: "agent",
+                name: { en: "Remote executor" },
+              },
+            },
+            {
+              node_id: "aidash://remote",
+              entity: {
+                id: "researcher",
+                version: "3.0.0",
+                kind: "agent",
+                name: { en: "Remote researcher" },
+              },
+            },
+          ],
+          errors: [],
+        },
+      });
     return route.fulfill({ json: [] });
   });
   await page.goto("/registry");
@@ -203,8 +227,8 @@ for (const remote of [false, true]) {
         .getByLabel("Node", { exact: true })
         .selectOption("aidash://remote");
       await dialog
-        .getByLabel("Remote agent ID", { exact: true })
-        .fill("executor");
+        .getByLabel("Remote agent", { exact: true })
+        .selectOption({ label: "Remote executor · 1.0.0" });
     } else {
       await dialog
         .getByLabel("Executor agent")
@@ -474,11 +498,8 @@ test("remote agent tools identify the peer and exact executor", async ({
     .getByLabel("Node", { exact: true })
     .selectOption("aidash://remote");
   await dialog
-    .getByLabel("Remote agent ID", { exact: true })
-    .fill("researcher");
-  await dialog
-    .getByLabel("Remote agent version", { exact: true })
-    .fill("3.0.0");
+    .getByLabel("Remote agent", { exact: true })
+    .selectOption({ label: "Remote researcher · 3.0.0" });
   const posted = page.waitForRequest(
     (request) =>
       request.url().endsWith("/api/registry") && request.method() === "POST",
@@ -490,5 +511,41 @@ test("remote agent tools identify the peer and exact executor", async ({
     transport: "agent",
     node_id: "aidash://remote",
     agent: { id: "researcher", version: "3.0.0" },
+  });
+});
+
+test("peer discovery errors allow an explicit remote reference", async ({
+  page,
+}) => {
+  await page.route("**/api/discover", (route) =>
+    route.fulfill({
+      json: {
+        agents: [],
+        errors: [{ node_id: "aidash://remote", error: "peer unavailable" }],
+      },
+    }),
+  );
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("tool");
+  await dialog.getByLabel("Connection type").selectOption("agent");
+  await dialog
+    .getByLabel("Node", { exact: true })
+    .selectOption("aidash://remote");
+  await expect(dialog.getByRole("alert")).toContainText("peer unavailable");
+  await dialog
+    .getByRole("button", { name: "Enter a remote agent reference" })
+    .click();
+  await dialog.getByLabel("Remote agent reference").fill("researcher");
+  await dialog.getByLabel("Remote agent version").fill("3.0.0");
+  const posted = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  expect((await posted).postDataJSON().config.agent).toEqual({
+    id: "researcher",
+    version: "3.0.0",
   });
 });

@@ -2,19 +2,20 @@
 default_to_workspace = false
 
 [tasks.dev]
-description = "Start the local Aidash stack with Compose and watch source changes"
-command = "python3"
-args = ["scripts/local_dev.py", "up"]
+description = "Build and start the local Aidash stack in detached mode"
+command = "docker"
+args = ["compose", "--profile", "dev", "up", "--build", "-d"]
 
 [tasks.dev-down]
 description = "Stop local Aidash infrastructure while keeping its data volumes"
-command = "python3"
-args = ["scripts/local_dev.py", "down"]
+command = "docker"
+args = ["compose", "--profile", "dev", "down"]
 
 [tasks.k8s-up]
 description = "Build and start Aidash with PostgreSQL, NATS, and Qdrant in a local kind cluster"
 dependencies = [
   "k8s-prepare",
+  "k8s-apply-config",
   "k8s-build-postgres",
   "k8s-build-backend",
   "k8s-build-frontend",
@@ -37,8 +38,31 @@ dependencies = [
 
 [tasks.k8s-prepare]
 private = true
-command = "python3"
-args = ["scripts/local_k8s.py", "prepare"]
+script_runner = "sh"
+script = '''
+set -eu
+umask 077
+mkdir -p .ignore/local-k8s
+clusters=$(kind get clusters)
+if printf '%s\n' "$clusters" | grep -qx aidash-local; then
+  kind export kubeconfig --name aidash-local --kubeconfig .ignore/local-k8s/kubeconfig
+else
+  kind create cluster --name aidash-local --kubeconfig .ignore/local-k8s/kubeconfig --config deploy/local-k8s/kind.yaml --wait 180s
+fi
+'''
+
+[tasks.k8s-apply-config]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  ".ignore/local-k8s/kubeconfig",
+  "apply",
+  "-f",
+  "deploy/local-k8s/namespace.yaml",
+  "-f",
+  "deploy/local-k8s/secrets.yaml",
+]
 
 [tasks.k8s-build-postgres]
 private = true
@@ -272,15 +296,36 @@ args = [
 
 [tasks.k8s-health]
 private = true
-command = "python3"
-args = ["scripts/local_k8s.py", "health"]
+command = "curl"
+args = [
+  "--fail",
+  "--silent",
+  "--show-error",
+  "--retry",
+  "30",
+  "--retry-connrefused",
+  "--retry-delay",
+  "1",
+  "--max-time",
+  "2",
+  "--retry-max-time",
+  "60",
+  "http://127.0.0.1:8080/health",
+]
 
 [tasks.k8s-down]
 description = "Remove the dedicated local Aidash kind cluster and its data"
-command = "python3"
-args = ["scripts/local_k8s.py", "down"]
+command = "kind"
+args = ["delete", "cluster", "--name", "aidash-local"]
 
 [tasks.k8s-status]
-description = "Show the local Aidash Kubernetes workloads and access URL"
-command = "python3"
-args = ["scripts/local_k8s.py", "status"]
+description = "Show the local Aidash Kubernetes workloads"
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  ".ignore/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "get",
+  "pods,services",
+]

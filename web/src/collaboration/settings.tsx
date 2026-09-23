@@ -1,6 +1,8 @@
+import { ReferenceName } from "../record-view";
+import { RecordView } from "../record-view";
 import type { ReactNode } from "react";
 import type { Package, State } from "../types";
-import { Badge, JsonView, Panel, useI18n } from "../ui";
+import { Badge, Panel, useEntityName, useI18n } from "../ui";
 import { GenerationPage } from "../generation";
 import { SemanticPage } from "../semantic";
 import { AuthorizationPage } from "../authorization";
@@ -86,6 +88,7 @@ export function Configuration({
   disconnect: () => void;
 }) {
   const { t, local, locale } = useI18n();
+  const entityName = useEntityName(data.registry);
   const copy = collaborationCopy[locale];
   const operator = data.access.kind === "operator";
   const restricted = !operator && operatorSections.has(section);
@@ -139,11 +142,9 @@ export function Configuration({
                       }
                     >
                       <Badge value={entry.kind} />
-                      <h3>{local(entry.name)}</h3>
+                      <h3>{entityName(entry)}</h3>
                       <p>{local(entry.description)}</p>
-                      <small>
-                        {entry.id} · v{entry.version}
-                      </small>
+                      <small>v{entry.version}</small>
                     </button>
                   ))}
               </div>
@@ -187,8 +188,10 @@ export function Configuration({
             <>
               <Panel title={copy.node}>
                 <dl>
-                  <dt>{t("entityId")}</dt>
-                  <dd>{data.node.id}</dd>
+                  <dt>{copy.node}</dt>
+                  <dd>
+                    <ReferenceName id={data.node.id} />
+                  </dd>
                   <dt>{t("endpoint")}</dt>
                   <dd>{data.node.endpoint}</dd>
                   <dt>{t("protocol")}</dt>
@@ -221,7 +224,9 @@ export function Configuration({
                 >
                   {data.peers.map((peer) => (
                     <div className="peer-row" key={peer.node_id}>
-                      <strong>{peer.node_id}</strong>
+                      <strong>
+                        <ReferenceName id={peer.node_id} />
+                      </strong>
                       <p>{peer.endpoint}</p>
                       <Badge value={peer.enabled ? "ACTIVE" : "PAUSED"} />
                     </div>
@@ -230,7 +235,7 @@ export function Configuration({
               )}
               <details>
                 <summary>{t("metadata")}</summary>
-                <JsonView value={data.node} />
+                <RecordView value={data.node} />
               </details>
               <button type="button" onClick={disconnect}>
                 {copy.disconnect}

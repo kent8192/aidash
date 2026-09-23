@@ -113,10 +113,6 @@ struct Repository {
 #[derive(Deserialize)]
 struct Commit {
 	sha: String,
-	commit: CommitDetail,
-}
-#[derive(Deserialize)]
-struct CommitDetail {
 	tree: TreeSha,
 }
 #[derive(Deserialize)]
@@ -182,7 +178,7 @@ async fn bounded_get(client: &Client, url: &str, limit: usize) -> Result<Vec<u8>
 	Ok(bytes)
 }
 
-async fn gh_api(url: &str, limit: usize) -> Result<Option<Vec<u8>>> {
+async fn gh_api(url: &str, limit: usize, accept: &str) -> Result<Option<Vec<u8>>> {
 	let parsed = Url::parse(url).map_err(|error| Error::Invalid(error.to_string()))?;
 	let endpoint = format!(
 		"{}{}",
@@ -195,6 +191,8 @@ async fn gh_api(url: &str, limit: usize) -> Result<Option<Vec<u8>>> {
 	let mut child = tokio::process::Command::new("gh")
 		.arg("api")
 		.arg(endpoint)
+		.arg("-H")
+		.arg(format!("Accept: {accept}"))
 		.env("GH_HOST", "github.com")
 		.stdin(std::process::Stdio::null())
 		.stdout(std::process::Stdio::piped())
@@ -207,12 +205,17 @@ async fn gh_api(url: &str, limit: usize) -> Result<Option<Vec<u8>>> {
 		.stdout
 		.take()
 		.ok_or_else(|| Error::External("GitHub CLI output unavailable".into()))?;
+	// Failed ref probes include a small JSON error body even when the successful
+	// SHA response is limited to 128 bytes.
+	let read_limit = limit.max(512);
 	let read = tokio::time::timeout(
 		Duration::from_secs(20),
-		stdout.take((limit + 1) as u64).read_to_end(&mut output),
+		stdout
+			.take((read_limit + 1) as u64)
+			.read_to_end(&mut output),
 	)
 	.await;
-	if read.is_err() || output.len() > limit {
+	if read.is_err() || output.len() > read_limit {
 		let _ = child.kill().await;
 		return Err(Error::Invalid(
 			"GitHub API response exceeds the import size limit".into(),
@@ -233,13 +236,25 @@ async fn gh_api(url: &str, limit: usize) -> Result<Option<Vec<u8>>> {
 			"GitHub API request failed; check the URL and GitHub CLI authentication".into(),
 		));
 	}
+	if output.len() > limit {
+		return Err(Error::Invalid(
+			"GitHub API response exceeds the import size limit".into(),
+		));
+	}
 	Ok(Some(output))
 }
 
 async fn api_get(client: &Client, url: &str, limit: usize) -> Result<Option<Vec<u8>>> {
-	let mut response = client
-		.get(url)
-		.header("accept", "application/vnd.github+json");
+	api_get_with_accept(client, url, limit, "application/vnd.github+json").await
+}
+
+async fn api_get_with_accept(
+	client: &Client,
+	url: &str,
+	limit: usize,
+	accept: &str,
+) -> Result<Option<Vec<u8>>> {
+	let mut response = client.get(url).header("accept", accept);
 	if let Ok(token) = std::env::var("GITHUB_TOKEN").or_else(|_| std::env::var("GH_TOKEN")) {
 		response = response.bearer_auth(token);
 	}
@@ -257,7 +272,7 @@ async fn api_get(client: &Client, url: &str, limit: usize) -> Result<Option<Vec<
 		response.status(),
 		reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::UNAUTHORIZED
 	) {
-		return gh_api(url, limit).await;
+		return gh_api(url, limit, accept).await;
 	}
 	if !response.status().is_success() {
 		return Err(Error::Invalid(format!(
@@ -287,7 +302,20 @@ async fn commit(client: &Client, source: &Source, reference: &str) -> Result<Opt
 	url.path_segments_mut()
 		.map_err(|_| Error::Invalid("invalid GitHub reference".into()))?
 		.push(reference);
-	api_get(client, url.as_str(), 64_000)
+	// The normal commit response includes every changed file and can dwarf the
+	// selected Skill. GitHub's SHA media type resolves branches and tags without
+	// that expanded payload; the Git database endpoint then returns the tree.
+	let Some(bytes) =
+		api_get_with_accept(client, url.as_str(), 128, "application/vnd.github.sha").await?
+	else {
+		return Ok(None);
+	};
+	let sha = std::str::from_utf8(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+	let sha = sha.trim();
+	if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+		return Err(Error::Invalid("invalid GitHub commit SHA response".into()));
+	}
+	api_get(client, &source.api(&format!("git/commits/{sha}")), 64_000)
 		.await?
 		.map(|bytes| serde_json::from_slice(&bytes).map_err(Error::from))
 		.transpose()
@@ -650,7 +678,7 @@ async fn import_github(request: ImportRequest) -> Result<ImportResult> {
 			"GitHub blob URL must point to SKILL.md".into(),
 		));
 	}
-	let tree = skill_tree(&client, &source, &commit.commit.tree.sha, &subpath).await?;
+	let tree = skill_tree(&client, &source, &commit.tree.sha, &subpath).await?;
 	let skills = candidates(&tree, explicit_path);
 	if skills.is_empty() {
 		return Err(Error::Invalid(

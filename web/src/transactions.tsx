@@ -1,4 +1,12 @@
-import { useState } from "react";
+import { TransactionComposer } from "./transaction-composer";
+import { disambiguateLabels } from "./display-labels";
+import {
+  RecordView,
+  ReferenceName,
+  useNodeLabel,
+  DisplayState,
+} from "./record-view";
+import { useContext, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   transactions,
@@ -13,7 +21,7 @@ import type {
   AtomicTransaction,
   TransactionManifest,
 } from "./generated/models";
-import { Badge, Empty, Field, JsonView, Modal, Panel, useI18n } from "./ui";
+import { Badge, Empty, Field, Modal, Panel, useI18n } from "./ui";
 
 const phase = (transaction: AtomicTransaction) => {
   if (transaction.complete)
@@ -26,9 +34,13 @@ const phase = (transaction: AtomicTransaction) => {
 
 export function TransactionsPage({ nodeId }: { nodeId: string }) {
   const { t } = useI18n();
+  const nodeLabel = useNodeLabel();
+  const displayData = useContext(DisplayState);
+  const transactionLabel = (manifest: TransactionManifest) =>
+    `${nodeLabel(manifest.coordinator)} · ${new Date(manifest.deadline).toLocaleString()}`;
   const client = useQueryClient();
   const [selected, setSelected] = useState<string | null>(null);
-  const [draft, setDraft] = useState<string | null>(null);
+  const [draft, setDraft] = useState<TransactionManifest | null>(null);
   const [review, setReview] = useState<TransactionManifest | null>(null);
   const [peer, setPeer] = useState("");
   const [error, setError] = useState("");
@@ -38,6 +50,11 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
     queryFn: () => transactions(),
     refetchInterval: 1000,
   });
+  const transactionLabels = disambiguateLabels(
+    list.isError ? [] : (list.data ?? []),
+    (transaction) => transaction.id,
+    (transaction) => transactionLabel(transaction.manifest),
+  );
   const participants = useQuery({
     queryKey: ["transactions", "local"],
     queryFn: () => transactionParticipants(),
@@ -78,31 +95,25 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
   const create = () => {
     setError("");
     setReview(null);
-    setDraft(
-      JSON.stringify(
+    setDraft({
+      id: crypto.randomUUID(),
+      coordinator: nodeId,
+      isolation: "serializable",
+      deadline: new Date(Date.now() + 300000).toISOString(),
+      participants: [
         {
-          id: crypto.randomUUID(),
-          coordinator: nodeId,
-          isolation: "serializable",
-          deadline: new Date(Date.now() + 300000).toISOString(),
-          participants: [
+          node_id: nodeId,
+          mutations: [
             {
-              node_id: nodeId,
-              mutations: [
-                {
-                  kind: "workspace_state",
-                  workspace_id: "",
-                  expected_revision: 0,
-                  state: {},
-                },
-              ],
+              kind: "workspace_state",
+              workspace_id: "",
+              expected_revision: 0,
+              state: {},
             },
           ],
         },
-        null,
-        2,
-      ),
-    );
+      ],
+    });
   };
   return (
     <div className="generation-page transaction-page">
@@ -135,7 +146,7 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
                   className="transaction-id"
                   onClick={() => setSelected(transaction.id)}
                 >
-                  {transaction.id}
+                  {transactionLabels.get(transaction.id)}
                 </button>
                 <small>
                   {t("transactionDeadline")}:{" "}
@@ -153,9 +164,13 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
           participants.data?.map((participant) => (
             <div className="generation-request" key={participant.id}>
               <div>
-                <strong className="transaction-id">{participant.id}</strong>
+                <strong className="transaction-id">
+                  {transactionLabels.get(participant.id) ??
+                    transactionLabel(participant.manifest)}
+                </strong>
                 <small>
-                  {t("transactionCoordinator")}: {participant.coordinator}
+                  {t("transactionCoordinator")}:{" "}
+                  <ReferenceName id={participant.coordinator} />
                 </small>
               </div>
               <Badge value={participant.phase} />
@@ -175,12 +190,18 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
             }}
           >
             <Field label={t("transactionPeer")}>
-              <input
+              <select
                 required
                 value={peer}
-                placeholder="aidash://peer"
                 onChange={(event) => setPeer(event.target.value)}
-              />
+              >
+                <option value="">{t("choose")}</option>
+                {displayData?.peers.map((peer) => (
+                  <option key={peer.node_id} value={peer.node_id}>
+                    <ReferenceName id={peer.node_id} />
+                  </option>
+                ))}
+              </select>
             </Field>
             <button disabled={busy}>{t("transactionGrant")}</button>
           </form>
@@ -189,7 +210,9 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
           trust.data?.map((grant) => (
             <div className="generation-request" key={grant.node_id}>
               <div>
-                <strong>{grant.node_id}</strong>
+                <strong>
+                  <ReferenceName id={grant.node_id} />
+                </strong>
                 <Badge value={grant.enabled ? "ENABLED" : "DISABLED"} />
               </div>
               <button
@@ -221,12 +244,17 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
           {current && (
             <div className="transaction-details">
               <strong className="transaction-id">
-                {current.transaction.id}
+                {transactionLabels.get(current.transaction.id) ??
+                  transactionLabel(current.transaction.manifest)}
               </strong>
               <Badge value={phase(current.transaction)} />
               <dl>
                 <dt>{t("transactionCoordinator")}</dt>
-                <dd>{current.transaction.manifest.coordinator}</dd>
+                <dd>
+                  <ReferenceName
+                    id={current.transaction.manifest.coordinator}
+                  />
+                </dd>
                 <dt>{t("transactionDeadline")}</dt>
                 <dd>
                   {new Date(
@@ -262,7 +290,9 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
               <h3>{t("transactionParticipantVotes")}</h3>
               {current.participants.map((vote) => (
                 <div className="generation-request" key={vote.node_id}>
-                  <strong>{vote.node_id}</strong>
+                  <strong>
+                    <ReferenceName id={vote.node_id} />
+                  </strong>
                   <Badge value={vote.phase} />
                 </div>
               ))}
@@ -278,7 +308,7 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
               </ol>
               <details>
                 <summary>{t("transactionManifest")}</summary>
-                <JsonView value={current.transaction.manifest} />
+                <RecordView value={current.transaction.manifest} />
               </details>
             </div>
           )}
@@ -303,19 +333,13 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
                   setSelected(admitted.id);
                 });
               } else {
-                try {
-                  const parsed: unknown = JSON.parse(draft);
-                  if (
-                    !parsed ||
-                    typeof parsed !== "object" ||
-                    !Array.isArray((parsed as TransactionManifest).participants)
-                  )
-                    throw new Error(t("transactionInvalid"));
-                  setReview(parsed as TransactionManifest);
-                  setError("");
-                } catch {
-                  setError(t("transactionInvalid"));
-                }
+                setReview({
+                  ...draft,
+                  participants: [...draft.participants].sort((a, b) =>
+                    a.node_id < b.node_id ? -1 : a.node_id > b.node_id ? 1 : 0,
+                  ),
+                });
+                setError("");
               }
             }}
           >
@@ -328,21 +352,13 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
             {review ? (
               <>
                 <p className="notice">{t("transactionReviewHelp")}</p>
-                <JsonView value={review} />
+                <RecordView value={review} />
                 <button type="button" onClick={() => setReview(null)}>
                   {t("edit")}
                 </button>
               </>
             ) : (
-              <Field label={t("transactionManifest")}>
-                <textarea
-                  rows={18}
-                  required
-                  spellCheck={false}
-                  value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
-                />
-              </Field>
+              <TransactionComposer value={draft} change={setDraft} />
             )}
             <button className="primary" disabled={busy}>
               {t(review ? "transactionSubmit" : "transactionReview")}

@@ -12,6 +12,98 @@ use uuid::Uuid;
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
+async fn scoped_worker_can_read_an_approved_bundled_skill_file() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let operator = &f.config.api_token;
+	let agent_subject = qualified_agent(&f.config.node_id, "skilled", "1.0.0");
+	policy["subjects"][&agent_subject] = json!({"kind":"agent"});
+	assert_eq!(
+		request(
+			&app,
+			operator,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	for (kind, id, config) in [
+		(
+			"skill",
+			"guide",
+			json!({"instructions":"Read references/guide.md","files":[{"path":"references/guide.md","content":"Approved guide"}]}),
+		),
+		(
+			"agent",
+			"skilled",
+			json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Read the guide","tools":[],"skills":[{"id":"guide","version":"1.0.0"}]}),
+		),
+	] {
+		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});
+		let (status, body) = request(&app, operator, "POST", "/api/registry", entry).await;
+		assert_eq!(status, 200, "registry: {body}");
+		let (status, body) = request(
+			&app,
+			operator,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}),
+		)
+		.await;
+		assert_eq!(status, 200, "catalog: {body}");
+	}
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task_id}/claim"),
+		json!({"revision":0,"agent":{"id":"skilled","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "claim: {body}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	let response = json!({"text":"","tool_calls":[{"id":"read-guide","name":"skill_read","arguments":{"skill":{"id":"guide","version":"1.0.0"},"path":"references/guide.md"}}],"input_tokens":0,"output_tokens":0});
+	sqlx::query(
+		&sea_orm::sea_query::Query::update()
+			.table(sea_orm::sea_query::Alias::new("runs"))
+			.value(
+				sea_orm::sea_query::Alias::new("phase"),
+				sea_orm::sea_query::Expr::cust("'TOOL_CALL'"),
+			)
+			.value(
+				sea_orm::sea_query::Alias::new("pending"),
+				sea_orm::sea_query::Expr::cust("$2"),
+			)
+			.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.bind(json!({"response":response,"cursor":0,"request_window":120000,"request_tokens":0}))
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	assert!(
+		Harness {
+			federation: f.clone()
+		}
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	let run = f.store.run(run.id).await.unwrap();
+	assert_eq!(
+		run.context["history"][0]["result"]["text"],
+		"Approved guide"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
 async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with_intersected_authority()
  {
 	let (f, url, schema) = setup().await;
