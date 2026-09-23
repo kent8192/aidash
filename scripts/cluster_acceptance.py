@@ -135,9 +135,8 @@ def main():
         assert next(d for d in observation["deployments"] if d["role"] == "worker")["ready"] == 3
         assert all(p["name"].startswith("ops-b-") for p in observation["pods"])
         if args.dashboard:
-            frontend_url = forward("ops-b-frontend", 8080)
-            wait_for(lambda: api_request(frontend_url, "/health"), label="frontend proxy")
-            subprocess.run(["node", "web/scripts/inspect-deployment.mjs"], cwd=ROOT, env={**env, "AIDASH_E2E_URL": frontend_url}, check=True)
+            # The Helm public Service selects frontend Pods; its port-forward is already in bases.
+            subprocess.run(["node", "web/scripts/inspect-deployment.mjs"], cwd=ROOT, env={**env, "AIDASH_E2E_URL": bases[1]}, check=True)
         kube("scale", "deployment/ops-b-aidash-worker", "--replicas=0")
         wait_for(lambda: not json.loads(kube("get", "pods", "-l", "app.kubernetes.io/instance=ops-b,app.kubernetes.io/component=worker", "-o", "json"))["items"], timeout=60, label="graceful stop")
         kube("scale", "deployment/ops-b-aidash-worker", "--replicas=1")
