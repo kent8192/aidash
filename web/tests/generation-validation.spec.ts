@@ -110,9 +110,6 @@ test("generation policy requires instructions unless a Skill is selected", async
     .click();
 
   const dialog = page.getByRole("dialog");
-  await dialog
-    .getByLabel("生成ポリシーID", { exact: true })
-    .fill("skill-validation");
   await dialog.getByLabel("名前 · English").fill("Validation policy");
   await dialog
     .getByLabel("説明 · English")

@@ -8,7 +8,8 @@ import {
 } from "../generated/aidash";
 import type { ChannelAttachment, ChannelMessage } from "../generated/models";
 import { authenticatedFetch } from "../transport";
-import { useI18n } from "../ui";
+import type { State, Discovery } from "../types";
+import { useI18n, useAgentLabel } from "../ui";
 import { collaborationCopy } from "./copy";
 import { senderLabel } from "./model";
 import { threadCopy } from "./thread-copy";
@@ -22,11 +23,16 @@ import "./threads.css";
 export function ChannelConversation({
   workspace,
   visible,
+  data,
+  discovery,
 }: {
+  data: State;
+  discovery?: Discovery;
   workspace: string;
   visible: boolean;
 }) {
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
+  const agentLabel = useAgentLabel(data, discovery);
   const copy = collaborationCopy[locale];
   const threads = threadCopy[locale];
   const client = useQueryClient();
@@ -237,6 +243,23 @@ export function ChannelConversation({
             {messages.map((entry) => {
               const message = entry.message;
               const sender = senderLabel(message.sender);
+              if (sender.kind === "agent") {
+                const separator = sender.name.lastIndexOf("@");
+                const reference = {
+                  id: sender.name.slice(0, separator),
+                  version: sender.name.slice(separator + 1),
+                };
+                sender.name =
+                  separator < 0
+                    ? t("unavailableEntity")
+                    : agentLabel(
+                        message.sender.slice(
+                          0,
+                          message.sender.indexOf("/agents/"),
+                        ),
+                        reference,
+                      );
+              }
               return (
                 <article
                   className={`collab-message ${sender.kind}`}

@@ -829,11 +829,22 @@ dialog {
   border-radius: 13px;
   width: min(720px, 94vw);
   max-height: 90vh;
-  overflow: auto;
+  max-height: 90dvh;
+  overflow: hidden;
   padding: 28px;
   color: inherit;
   background: #fcfdfa;
   box-shadow: 0 20px 100px #122b2630;
+}
+dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.modal-body {
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 dialog::backdrop {
   background: #142c2452;
@@ -841,6 +852,7 @@ dialog::backdrop {
 }
 .modal-heading {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 22px;

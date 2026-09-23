@@ -1,3 +1,6 @@
+import { ReferenceName, PeerSelect } from "./record-view";
+import { disambiguateLabels } from "./display-labels";
+import { RecordView } from "./record-view";
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -11,7 +14,7 @@ import type {
   PeerMappingInput,
 } from "./generated/models";
 import { ApiError } from "./transport";
-import { Badge, Field, JsonView, Modal, Panel, useI18n } from "./ui";
+import { Badge, Field, Modal, Panel, useI18n } from "./ui";
 
 const PAGE_SIZE = 25;
 export function PeerMappings({
@@ -22,6 +25,12 @@ export function PeerMappings({
   credentials: Credential[];
 }) {
   const { t } = useI18n();
+  const credentialLabels = disambiguateLabels(
+    credentials,
+    (credential) => credential.id,
+    (credential) =>
+      `${credential.subject} · ${new Date(credential.created_at).toLocaleString()}`,
+  );
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -114,12 +123,17 @@ export function PeerMappings({
             ])}
           >
             <div>
-              <strong>{mapping.source_node}</strong>
+              <strong>
+                <ReferenceName id={mapping.source_node} />
+              </strong>
               <small>
                 {mapping.source_tenant} / {mapping.source_subject}
               </small>
               <small>
-                {t("authMappedCredential")}: {mapping.credential_id}
+                {t("authMappedCredential")}:{" "}
+                {credentials.find(
+                  (credential) => credential.id === mapping.credential_id,
+                )?.subject || t("unavailableEntity")}
               </small>
               <small>
                 {t("revision")}: {mapping.revision}
@@ -183,11 +197,21 @@ export function PeerMappings({
         {revisions?.map((revision) => (
           <details className="auth-history" key={revision.sequence}>
             <summary>
-              #{revision.sequence} · {revision.source_node} ·{" "}
+              <ReferenceName id={revision.source_node} /> ·{" "}
               {revision.source_tenant} / {revision.source_subject}
               <time>{revision.updated_at}</time>
             </summary>
-            <JsonView value={revision} />
+            <RecordView
+              value={revision}
+              labels={
+                new Map(
+                  credentials.map((credential) => [
+                    credential.id,
+                    credentialLabels.get(credential.id) ?? credential.subject,
+                  ]),
+                )
+              }
+            />
           </details>
         ))}
         <div className="auth-pagination">
@@ -240,9 +264,22 @@ export function PeerMappings({
               });
             }}
           >
+            <Field label={t("authSourceNode")}>
+              <PeerSelect
+                name="source_node"
+                initial={editing === "new" ? "" : editing.source_node}
+                disabled={editing !== "new"}
+              />
+            </Field>
+            {editing !== "new" && (
+              <input
+                type="hidden"
+                name="source_node"
+                value={editing.source_node}
+              />
+            )}
             {(
               [
-                ["source_node", "authSourceNode"],
                 ["source_tenant", "authSourceTenant"],
                 ["source_subject", "authSourceSubject"],
               ] as const
@@ -273,7 +310,7 @@ export function PeerMappings({
                       Date.parse(credential.expires_at) <= now
                     }
                   >
-                    {credential.subject} · {credential.id}
+                    {credentialLabels.get(credential.id)}
                   </option>
                 ))}
               </select>

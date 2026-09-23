@@ -1,10 +1,11 @@
+import { ReferenceName } from "./record-view";
 import { AgentDocuments } from "./agent-documents";
 import type { ReferenceDocument } from "./generated/models";
 import { Fragment, useRef, useState } from "react";
 import { EntityConfiguration } from "./entity-configuration";
 import { OpenRouterModelPicker } from "./openrouter-model-picker";
 import { useForm } from "@tanstack/react-form";
-import { Field, useI18n } from "./ui";
+import { Field, useAgentLabel, useEntityLabel, useI18n } from "./ui";
 import type { State, EntityRef, Discovery, Task } from "./types";
 import {
   conversationCreate,
@@ -28,6 +29,7 @@ const ref = (s: string): EntityRef => {
 };
 export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
   const { t } = useI18n();
+  const entityLabel = useEntityLabel(data.registry);
   const targets = data.registry.filter((e) =>
     ["agent", "cluster"].includes(e.kind),
   );
@@ -93,7 +95,7 @@ export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
                   key={`${e.id}@${e.version}`}
                   value={`${e.id}@${e.version}`}
                 >
-                  {e.id} · {e.version} ({t(e.kind)})
+                  {entityLabel(e)} ({t(e.kind)})
                 </option>
               ))}
             </select>
@@ -258,7 +260,8 @@ export function EntityForm({
   submit: Submit;
   initial?: string;
 }) {
-  const { t, local } = useI18n();
+  const { t } = useI18n();
+  const entityLabel = useEntityLabel(data.registry);
   const [kind, setKind] = useState(initial);
   const registration = useRef<{ body: string; key: string } | null>(null);
   const [modelName, setModelName] = useState("");
@@ -463,7 +466,7 @@ export function EntityForm({
                     key={`${e.id}@${e.version}`}
                     value={`${e.id}@${e.version}`}
                   >
-                    {e.id} · {e.version}
+                    {entityLabel(e)}
                   </option>
                 ))}
               </select>
@@ -482,7 +485,7 @@ export function EntityForm({
                     name="skills"
                     value={`${e.id}@${e.version}`}
                   />
-                  {local(e.name) || e.id} · {e.version}
+                  {entityLabel(e)}
                 </label>
               ))}
             </fieldset>
@@ -508,7 +511,7 @@ export function EntityForm({
                       key={`${e.id}@${e.version}`}
                       value={`${e.id}@${e.version}`}
                     >
-                      {e.id} · {e.version}
+                      {entityLabel(e)}
                     </option>
                   ))}
               </select>
@@ -522,7 +525,7 @@ export function EntityForm({
                     name="tools"
                     value={`${e.id}@${e.version}`}
                   />
-                  {e.id} · {e.version}
+                  {entityLabel(e)}
                 </label>
               ))}
             </fieldset>
@@ -680,7 +683,8 @@ export function AssignForm({
   data: State;
   submit: Submit;
 }) {
-  const { t, local } = useI18n();
+  const { t } = useI18n();
+  const agentLabel = useAgentLabel(data, discovery);
   const agents = discovery.agents.filter(
     (a) => data.access.kind === "operator" || a.node_id === data.node.id,
   );
@@ -714,7 +718,8 @@ export function AssignForm({
               value={JSON.stringify([a.node_id, a.entity.id, a.entity.version])}
               key={`${a.node_id}/${a.entity.id}@${a.entity.version}`}
             >
-              {local(a.entity.name)} · {a.node_id} · {a.entity.version}
+              {agentLabel(a.node_id, a.entity)} ·{" "}
+              <ReferenceName id={a.node_id} />
             </option>
           ))}
         </select>
@@ -725,6 +730,7 @@ export function AssignForm({
 }
 export function PublishForm({ data, submit }: { data: State; submit: Submit }) {
   const { t } = useI18n();
+  const entityLabel = useEntityLabel(data.registry);
   return (
     <form
       onSubmit={(e) => {
@@ -757,8 +763,11 @@ export function PublishForm({ data, submit }: { data: State; submit: Submit }) {
           {data.registry
             .filter((e) => ["agent", "tool", "skill"].includes(e.kind))
             .map((e) => (
-              <option key={`${e.id}@${e.version}`}>
-                {e.id}@{e.version}
+              <option
+                key={`${e.id}@${e.version}`}
+                value={`${e.id}@${e.version}`}
+              >
+                {entityLabel(e)}
               </option>
             ))}
         </select>
@@ -770,7 +779,7 @@ export function PublishForm({ data, submit }: { data: State; submit: Submit }) {
               key={`${entry.id}@${entry.version}`}
               value={JSON.stringify([entry.id, entry.version])}
             >
-              {entry.id}@{entry.version}
+              {entityLabel(entry)}
             </option>
           ))}
         </select>

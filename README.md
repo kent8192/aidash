@@ -8,7 +8,7 @@ The current implementation includes a federated mesh, scoped authorization, poli
 
 ### One-command Kubernetes start
 
-With Docker, kind, kubectl, Helm, Python 3, and cargo-make installed, run:
+With Docker, kind, kubectl, Helm, curl, and cargo-make installed, run:
 
 ```sh
 cargo make k8s-up
@@ -21,42 +21,44 @@ worker, and frontend with Helm, and exposes the dashboard at
 <http://127.0.0.1:8080>. The frontend Service serves the dashboard and proxies
 API, authentication, federation, and health requests to the internal backend Service.
 
-The dashboard requires a configured Keycloak OIDC provider. Without one it shows setup guidance; `AIDASH_API_TOKEN` remains available for the API and initial operator grant. The local Kubernetes helper passes `AIDASH_OIDC_*`, `AIDASH_SECRET_*`, and optional Jev settings from `.env` to the Pods. When OIDC is configured, it sets `AIDASH_OIDC_PUBLIC_ORIGIN` to the selected local frontend port (by default `http://127.0.0.1:8080`); register that origin's `/auth/callback` in Keycloak. The issuer and admin URLs must be reachable from the backend Pod. For a cluster with a
-persistent PostgreSQL volume, keep
-`AIDASH_LOCAL_POSTGRES_PASSWORD` unchanged until `k8s-down` removes it.
+The dashboard requires a configured Keycloak OIDC provider. Without one it shows setup guidance; `AIDASH_API_TOKEN` remains available for the API and initial operator grant. Kubernetes startup uses the example Secrets in `deploy/local-k8s/` and does not load `.env`. Add the seven `AIDASH_OIDC_*` connection values to the `aidash-local-app` Secret, including `AIDASH_OIDC_PUBLIC_ORIGIN=http://127.0.0.1:8080`, then re-run `cargo make k8s-up` to restart the Pods. Register `http://127.0.0.1:8080/auth/callback` in Keycloak. The issuer and admin URLs must be reachable from the backend Pod. Add provider credentials to this Secret as needed:
 
-The task keeps a private kubeconfig in `.ignore/local-k8s/` and does not
-change the current kubectl context. Select a different local port when first
-creating the cluster with `AIDASH_K8S_PORT=8082 cargo make k8s-up`.
+```sh
+kubectl --kubeconfig .ignore/local-k8s/kubeconfig -n aidash-local edit secret aidash-local-app
+```
+
+The task keeps a dedicated kubeconfig in `.ignore/local-k8s/` and does not
+change the current kubectl context. The local host port is fixed at `8080` in
+`deploy/local-k8s/kind.yaml`.
 
 `cargo make k8s-status` shows Pods and Services. `cargo make k8s-down` removes
 the dedicated cluster and its persistent local data. Re-running `k8s-up` updates
-the images and Helm release while keeping the existing cluster data.
+the images and Helm release while keeping the existing cluster data. Startup
+reapplies the example credentials from `deploy/local-k8s/secrets.yaml`; extra
+provider keys added to the app Secret are retained.
+
+If a cluster created with the previous Python helper uses a different port or
+PostgreSQL password, recreate it with `cargo make k8s-down` followed by
+`cargo make k8s-up`. This deletes its local database and other persistent data.
 
 ### Docker Compose development
 
-Prerequisites: `cargo-make`, Python 3.9+, Docker Compose v2.24 or later, and
-`curl` for the local health checks. Rust 1.96 and Node.js 22 run inside the
-development images. The `dev` profile runs PostgreSQL, NATS, Qdrant, the
-backend, and Vite in containers. Compose Watch
-syncs frontend source changes and rebuilds the backend when Rust code changes:
+Prerequisites: `cargo-make` and Docker Compose v2.24 or later. Rust 1.96
+and Node.js 22 run inside the development images. Start PostgreSQL, NATS,
+Qdrant, the backend, and Vite in detached mode:
 
 ```sh
 cargo make dev
 ```
 
-Open the printed Frontend URL. Configure Keycloak OIDC as described below to sign in.
-The backend defaults to <http://127.0.0.1:18080>. If either default port is
-busy, the launcher selects the next available port and prints the resulting
-URLs. Set `AIDASH_BACKEND_PORT` or `AIDASH_FRONTEND_PORT` in `.env` to choose
-host ports. Compose loads `AIDASH_SECRET_*`
-credentials from `.env` into the backend container. The local preflight reads
-extension metadata through SeaQuery; its single raw `CREATE EXTENSION` statement
-is documented because SeaQuery has no builder for that PostgreSQL DDL. Press
-Ctrl-C to stop the attached task; `cargo make dev-down` also stops the Compose
-services while retaining their data volumes. The example
-credentials and localhost bindings are for local development. Configure
-unique credentials and an HTTPS endpoint for a deployed node.
+Open <http://127.0.0.1:5173> and configure Keycloak OIDC as described below to sign in.
+The backend defaults to <http://127.0.0.1:18080>. Compose reads `.env`
+directly; set `AIDASH_BACKEND_PORT` or `AIDASH_FRONTEND_PORT` there to change
+host ports. Run `docker compose --profile dev logs -f` to follow logs and
+`cargo make dev-down` to stop the services while retaining their data volumes.
+Re-run `cargo make dev` to rebuild after source changes. The example credentials
+and localhost bindings are for local development. Configure unique credentials
+and an HTTPS endpoint for a deployed node.
 
 The [authorization API](docs/authorization.md) issues revocable subject tokens for tenant-scoped workspaces, approved Registry discovery, local agent execution and event streams. Workers recheck the root and delegated agents at every durable boundary. The dashboard signs in with Keycloak and requires an explicit mapping to an existing user subject or a separate operator grant. Its selected authority is local to each tab. Existing API Bearer credentials remain available. Operators use **Access policies / アクセス制御** to edit role/attribute policies, simulate decisions, approve registration requests, manage mappings and operator grants, and issue or revoke subject credentials. Scoped remote federation remains under implementation.
 

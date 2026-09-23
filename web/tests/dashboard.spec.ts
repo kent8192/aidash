@@ -228,7 +228,7 @@ test("publishes and installs a skill through the marketplace", async ({
     .click();
   await dialog
     .getByLabel("ローカルのエンティティ")
-    .selectOption({ label: `${registered.id}@1.0.0` });
+    .selectOption(`${registered.id}@1.0.0`);
   await dialog.getByLabel("作成者").fill("Acceptance fixture");
   await dialog
     .getByRole("button", { name: "パッケージを公開", exact: true })

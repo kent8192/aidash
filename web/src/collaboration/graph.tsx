@@ -1,6 +1,7 @@
+import { ReferenceName } from "../record-view";
 import { lazy, Suspense, useState } from "react";
 import type { State, Discovery, Run } from "../types";
-import { Badge, useI18n } from "../ui";
+import { Badge, useI18n, useAgentLabel } from "../ui";
 import {
   buildAgentGraph,
   entityKey,
@@ -40,6 +41,7 @@ export function Graph({
   open: (selection: Selection) => void;
 }) {
   const { local, locale } = useI18n();
+  const agentLabel = useAgentLabel(data, discovery);
   const copy = collaborationCopy[locale];
   const graphText = graphCopy[locale];
   const [mode, setMode] = useState<"relationships" | "topology">(
@@ -96,8 +98,7 @@ export function Graph({
       )
     : [];
   const label = (node: GraphNode) => {
-    const name =
-      local(node.name) || node.entity?.id || node.resourceId || node.kind;
+    const name = local(node.name) || graphText.types[node.kind];
     return node.entity ? `${name} · v${node.entity.version}` : name;
   };
   const inspect = (node: GraphNode) => {
@@ -162,8 +163,13 @@ export function Graph({
                     item.run.control === "PAUSED" ? "PAUSED" : item.run.phase
                   }
                 />
-                {item.run.agent_id}
-                <small>{item.node}</small>
+                {agentLabel(item.node, {
+                  id: item.run.agent_id,
+                  version: item.run.agent_version,
+                })}
+                <small>
+                  <ReferenceName id={item.node} />
+                </small>
               </button>
             ))}
           </div>

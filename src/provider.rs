@@ -129,8 +129,13 @@ pub fn parse_openai(value: Value) -> Result<ModelResponse> {
 	if !message["refusal"].is_null() {
 		return Err(Error::External("provider refused the request".into()));
 	}
+	let content = message["content"].as_str().unwrap_or_default();
 	let mut result = ModelResponse {
-		text: message["content"].as_str().unwrap_or_default().into(),
+		text: if content.trim().is_empty() {
+			String::new()
+		} else {
+			content.to_owned()
+		},
 		usage_complete: value
 			.pointer("/usage/prompt_tokens")
 			.and_then(Value::as_u64)
@@ -202,6 +207,18 @@ mod tests {
 	fn parses_openrouter_tool_calls() {
 		let result = parse_openai(json!({"choices":[{"finish_reason":"tool_calls","message":{"tool_calls":[{"id":"one","function":{"name":"search","arguments":"{\"q\":\"Rust\"}"}}]}}]})).unwrap();
 		assert_eq!(result.tool_calls[0].arguments, json!({"q":"Rust"}));
+	}
+	#[test]
+	fn whitespace_only_tool_call_content_is_not_a_workspace_message() {
+		let result = parse_openai(json!({"choices":[{"finish_reason":"tool_calls","message":{"content":" \n\t ","tool_calls":[{"id":"one","function":{"name":"search","arguments":"{}"}}]}}]})).unwrap();
+		assert!(result.text.is_empty());
+		assert_eq!(result.tool_calls.len(), 1);
+		assert!(
+			parse_openai(
+				json!({"choices":[{"finish_reason":"stop","message":{"content":" \n\t "}}]})
+			)
+			.is_err()
+		);
 	}
 	#[test]
 	fn truncation_cannot_complete_a_task() {

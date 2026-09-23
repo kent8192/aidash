@@ -1,6 +1,7 @@
 import { ArrowUpRight } from "lucide-react";
 import type { Entry, Run, State, Task } from "./types";
-import { Badge, JsonView, useI18n } from "./ui";
+import { Badge, useI18n } from "./ui";
+import { RecordView } from "./record-view";
 import { AgentRelationshipGraph } from "./agent-graph";
 import { graphCopy } from "./agent-graph/copy";
 import type { GraphNode } from "./agent-graph/model";
@@ -18,7 +19,7 @@ export function EntityDetails({
   data: State;
   open: (selection: Selection) => void;
 }) {
-  const { local, t, locale } = useI18n();
+  const { local, t, locale, entityName } = useI18n();
   // Re-resolve on every authorized snapshot instead of retaining the modal's old metadata.
   const current = data.registry.find(
     (value) =>
@@ -47,7 +48,7 @@ export function EntityDetails({
   };
   return (
     <>
-      <h3>{local(current.name)}</h3>
+      <h3>{entityName(current)}</h3>
       <p>{local(current.description)}</p>
       <div className="tags">
         {current.capabilities.map((capability) => (
@@ -77,12 +78,13 @@ export function EntityDetails({
               onClick={() => open({ kind: "run", run, node: data.node.id })}
             >
               <Badge value={run.phase} />
-              {run.task_id.slice(0, 8)}
+              {data.tasks.find((task) => task.id === run.task_id)?.title ||
+                t("task")}
               <ArrowUpRight size={15} />
             </button>
           ))}
       <h4>{t("metadata")}</h4>
-      <JsonView value={current} />
+      <RecordView value={current} />
     </>
   );
 }
