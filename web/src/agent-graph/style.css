@@ -1,0 +1,201 @@
+dialog:has(.agent-graph) {
+  width: min(1120px, calc(100vw - 2rem));
+  max-width: calc(100vw - 2rem);
+}
+.agent-graph {
+  margin: 1.25rem 0;
+  border-top: 1px solid #d8e2db;
+  padding-top: 0.5rem;
+}
+.agent-graph-controls,
+.agent-graph-legend,
+.agent-graph-selection {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+.agent-graph-controls button[aria-pressed="true"] {
+  background: #184e41;
+  color: white;
+}
+.agent-graph-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1rem;
+  margin: 1rem 0;
+}
+.agent-graph-filters label,
+.agent-graph-legend label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.agent-graph-filters input,
+.agent-graph-legend input {
+  width: auto;
+}
+.agent-graph-configuration::before {
+  content: "";
+  display: inline-block;
+  width: 2rem;
+  border-top: 2px solid #468a70;
+  margin-right: 0.4rem;
+  vertical-align: middle;
+}
+.agent-graph-legend label::before {
+  content: "";
+  display: inline-block;
+  width: 2rem;
+  border-top: 2px dashed #5269a4;
+  margin-right: 0.1rem;
+}
+.agent-graph-selection {
+  padding: 0.75rem;
+  background: #f1f6f3;
+  border-radius: 0.5rem;
+}
+.agent-graph-selection strong {
+  overflow-wrap: anywhere;
+}
+.agent-graph-canvas svg {
+  display: block;
+  width: 100%;
+  max-height: 65vh;
+  min-height: 260px;
+  background: #f7faf8;
+  border: 1px solid #d8e2db;
+  border-radius: 0.6rem;
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+}
+.agent-graph-canvas svg:active {
+  cursor: grabbing;
+}
+.agent-graph-edge path {
+  stroke: #468a70;
+  stroke-width: 1.6;
+}
+.agent-graph-edge[data-layer="runtime"] path {
+  stroke: #5269a4;
+  stroke-dasharray: 6 4;
+}
+.agent-graph-edge text {
+  font-size: 10px;
+  fill: #42594e;
+  paint-order: stroke;
+  stroke: #f7faf8;
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+.agent-graph-node {
+  cursor: pointer;
+}
+.agent-graph-node circle {
+  fill: #e6f1ea;
+  stroke: #648574;
+  stroke-width: 1.7;
+}
+.agent-graph-node[data-kind="agent"] circle {
+  fill: #184e41;
+}
+.agent-graph-node[data-kind="run"] circle,
+.agent-graph-node[data-kind="task"] circle {
+  fill: #e8edf9;
+  stroke: #5269a4;
+}
+.agent-graph-node[data-selected="true"] circle {
+  stroke: #15251d;
+  stroke-width: 3.5;
+}
+.agent-graph-node[data-unavailable="true"] circle {
+  fill: #f3f3f3;
+  stroke: #767e78;
+  stroke-dasharray: 4 3;
+}
+.agent-graph-node .agent-graph-glyph {
+  font-size: 13px;
+  font-weight: 700;
+  fill: #234536;
+}
+.agent-graph-node[data-kind="agent"] .agent-graph-glyph {
+  fill: #fff;
+}
+.agent-graph-name {
+  font-size: 12px;
+  font-weight: 600;
+  fill: #234536;
+}
+.agent-graph-kind {
+  font-size: 10px;
+  fill: #56685d;
+}
+.agent-graph-node[data-muted="true"],
+.agent-graph-edge[data-muted="true"] {
+  opacity: 0.5;
+}
+.agent-graph-table {
+  max-height: 34rem;
+  overflow: auto;
+  border: 1px solid #d8e2db;
+  border-radius: 0.5rem;
+}
+.agent-graph-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.agent-graph-table th,
+.agent-graph-table td {
+  padding: 0.7rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid #d8e2db;
+  overflow-wrap: anywhere;
+}
+.agent-graph-table th[scope="row"] {
+  min-width: 10rem;
+}
+.agent-graph-table small {
+  display: block;
+  font-weight: 400;
+}
+.agent-graph-table ul {
+  margin: 0;
+  padding-left: 1rem;
+  min-width: 13rem;
+}
+.agent-graph-table li + li {
+  margin-top: 0.5rem;
+}
+.agent-graph-layer-runtime {
+  border-bottom: 1px dashed #5269a4;
+}
+.agent-graph-layer-configuration {
+  border-bottom: 1px solid #468a70;
+}
+.agent-graph-row-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.3rem;
+  min-width: 7rem;
+}
+.agent-graph button:focus-visible,
+.agent-graph input:focus-visible {
+  outline: 3px solid #5269a4;
+  outline-offset: 3px;
+}
+@media (max-width: 600px) {
+  .agent-graph-controls button {
+    padding: 0.5rem;
+  }
+  .agent-graph-selection {
+    align-items: flex-start;
+  }
+  .agent-graph-selection strong {
+    flex-basis: 100%;
+  }
+}
