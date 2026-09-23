@@ -2,6 +2,7 @@
 - Keep verification proportional to the change; expand it only for new changes, failures, or unresolved concerns.
 - Report the outcome, verification evidence, and remaining blockers concisely.
 - `main` tracks the stable release; `develop/x.y.z` tracks version `x.y.z` under development.
+- Name branches `<semantic-prefix>/issue-<issue-number>-<semantic-name>` (for example, `feat/issue-14-shared-workspace`), using prefixes such as `feat`, `fix`, `hotfix`, or `docs`; omit the `issue-<issue-number>-` segment when no Issue applies (for example, `docs/worktree-branch-policy`).
 - Before repository work, create a new task branch and dedicated Git worktree from the intended base, then do the task's inspection, edits, and verification there rather than in the invoking checkout. Use the configured `wtp` tool when available, and verify the worktree root, branch, and status before editing; leave unrelated changes in their original worktree.
 - Use Rust 2024 conventions and `module.rs` with a sibling `module/` directory instead of `module/mod.rs`.
 - Use SeaORM or SeaQuery for all database queries and migrations. Raw SQL is allowed only for DDL that SeaQuery cannot express; document each such exception.
