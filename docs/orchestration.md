@@ -8,11 +8,19 @@ Pod names and replica counts never become node identities.
 
 ## Build and deploy
 
-Build `docker build -t your-registry/aidash:0.1.0 .` and publish that image using
-your registry workflow. The multi-stage image generates OpenAPI and the browser
-client from its Rust source, builds the dashboard, and runs as UID 10001 with no
-runtime build tools. Both ARM64 and AMD64 builds use their native Rust target.
-Use an immutable image tag for each rollout; the chart does not publish images.
+Build and publish both chart images using your registry workflow. The server and
+worker use the default runtime target; the dashboard uses the separate `frontend`
+target, which packages the built dashboard in an unprivileged NGINX image. The
+runtime image includes the dashboard assets and runs as UID 10001 without build
+tools. Both ARM64 and AMD64 builds use their native Rust target. Use immutable
+image tags for each rollout; the chart does not publish images.
+
+```sh
+docker build -t your-registry/aidash:0.1.0 .
+docker push your-registry/aidash:0.1.0
+docker build --target frontend -t your-registry/aidash-frontend:0.1.0 .
+docker push your-registry/aidash-frontend:0.1.0
+```
 
 Provision a namespace and an existing Secret for each node. The Secret supplies
 `DATABASE_URL`, `NATS_URL`, `AIDASH_API_TOKEN`, and each required `AIDASH_SECRET_*`
@@ -24,10 +32,14 @@ ServiceAccount token is used only by the server's optional Kubernetes observer.
 ```sh
 helm upgrade --install node-a deploy/helm/aidash --namespace aidash \
   --set node.id=aidash://node-a --set existingSecret=node-a-secrets \
-  --set image.repository=your-registry/aidash --set image.tag=0.1.0 --wait
+  --set image.repository=your-registry/aidash --set image.tag=0.1.0 \
+  --set frontend.image.repository=your-registry/aidash-frontend \
+  --set frontend.image.tag=0.1.0 --wait
 helm upgrade --install node-b deploy/helm/aidash --namespace aidash \
   --set node.id=aidash://node-b --set existingSecret=node-b-secrets \
-  --set image.repository=your-registry/aidash --set image.tag=0.1.0 --wait
+  --set image.repository=your-registry/aidash --set image.tag=0.1.0 \
+  --set frontend.image.repository=your-registry/aidash-frontend \
+  --set frontend.image.tag=0.1.0 --wait
 ```
 
 Register reciprocal peers using `http://node-a-aidash.aidash.svc:8080` and

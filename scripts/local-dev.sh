@@ -19,22 +19,24 @@ case "${1:-up}" in
     export DATABASE_URL=${DATABASE_URL:-postgres://aidash:aidash-local@127.0.0.1:${AIDASH_POSTGRES_PORT}/aidash_a}
     export NATS_URL=${NATS_URL:-nats://127.0.0.1:${AIDASH_NATS_PORT}}
     export AIDASH_NODE_ID=${AIDASH_NODE_ID:-aidash://node-a}
-    export AIDASH_ENDPOINT=${AIDASH_ENDPOINT:-http://127.0.0.1:18080}
     export AIDASH_LISTEN=${AIDASH_LISTEN:-127.0.0.1:18080}
-    export AIDASH_API_TOKEN=${AIDASH_API_TOKEN:-local-development-token}
-    export AIDASH_BACKEND=${AIDASH_BACKEND:-http://127.0.0.1:18080}
-    export AIDASH_FRONTEND_PORT=${AIDASH_FRONTEND_PORT:-5173}
-
     backend_health_host=${AIDASH_LISTEN%:*}
     backend_listen_port=${AIDASH_LISTEN##*:}
     case "$backend_health_host" in
       0.0.0.0|\*|localhost|'') backend_health_host=127.0.0.1 ;;
     esac
+    backend_url="http://$backend_health_host:$backend_listen_port"
+    export AIDASH_ENDPOINT=${AIDASH_ENDPOINT:-$backend_url}
+    export AIDASH_API_TOKEN=${AIDASH_API_TOKEN:-local-development-token}
+    export AIDASH_BACKEND=${AIDASH_BACKEND:-$backend_url}
+    export AIDASH_FRONTEND_PORT=${AIDASH_FRONTEND_PORT:-5173}
+    export AIDASH_SECRET_TEST_QDRANT=${AIDASH_SECRET_TEST_QDRANT:-local-semantic-vector-fixture-key-0123456789}
     backend_health_url="http://$backend_health_host:$backend_listen_port/health"
 
     command -v docker >/dev/null || { echo "Missing required tool: docker" >&2; exit 1; }
     command -v cargo >/dev/null || { echo "Missing required tool: cargo" >&2; exit 1; }
     command -v npm >/dev/null || { echo "Missing required tool: npm" >&2; exit 1; }
+    command -v node >/dev/null || { echo "Missing required tool: node" >&2; exit 1; }
     command -v curl >/dev/null || { echo "Missing required tool: curl" >&2; exit 1; }
     docker compose version >/dev/null
 
@@ -89,9 +91,9 @@ case "${1:-up}" in
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
-    cargo run --locked --bin aidash -- serve &
+    node scripts/run-process-tree.mjs cargo run --locked --bin aidash -- serve &
     backend_pid=$!
-    npm run dev --prefix web -- --port "$AIDASH_FRONTEND_PORT" --strictPort &
+    node scripts/run-process-tree.mjs npm run dev --prefix web -- --port "$AIDASH_FRONTEND_PORT" --strictPort &
     frontend_pid=$!
 
     wait_for_url() {
