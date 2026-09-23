@@ -1,4 +1,5 @@
 import { ReferenceName, PeerSelect } from "./record-view";
+import { disambiguateLabels } from "./display-labels";
 import { RecordView } from "./record-view";
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -24,6 +25,12 @@ export function PeerMappings({
   credentials: Credential[];
 }) {
   const { t } = useI18n();
+  const credentialLabels = disambiguateLabels(
+    credentials,
+    (credential) => credential.id,
+    (credential) =>
+      `${credential.subject} · ${new Date(credential.created_at).toLocaleString()}`,
+  );
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -200,7 +207,7 @@ export function PeerMappings({
                 new Map(
                   credentials.map((credential) => [
                     credential.id,
-                    `${credential.subject} · ${new Date(credential.created_at).toLocaleString()}`,
+                    credentialLabels.get(credential.id) ?? credential.subject,
                   ]),
                 )
               }
@@ -303,8 +310,7 @@ export function PeerMappings({
                       Date.parse(credential.expires_at) <= now
                     }
                   >
-                    {credential.subject} ·{" "}
-                    {new Date(credential.created_at).toLocaleString()}
+                    {credentialLabels.get(credential.id)}
                   </option>
                 ))}
               </select>

@@ -564,5 +564,10 @@
   "skillImportHelp": "公開されているSkillのSKILL.mdを選択し、内容とライセンスを確認して登録してください。この取り込みはMarkdownに対応します。同梱スクリプトや別ファイルの利用には別途ツール設定が必要で、自動では実行されません。",
   "skillImportError": "64 KiB以下で、YAMLに正しいname・descriptionとMarkdownの手順を含むSKILL.mdを選択してください。",
   "semanticSource": "ソース",
-  "transactionRegistryHelp": "登録済みのエンティティを選択して参加ノードに登録します。新しいエンティティはレジストリで作成してください。"
+  "transactionRegistryHelp": "登録済みのエンティティを選択して参加ノードに登録します。新しいエンティティはレジストリで作成してください。",
+  "transactionRemoteReferenceHelp": "ピア上の対象はこのノードの一覧にありません。ピアで確認した参照値とリビジョンを入力してください。",
+  "semanticOlderMessages": "古いメッセージを読み込む",
+  "toolManualRemoteAgent": "リモートAgentの参照値を入力",
+  "toolChooseRemoteAgent": "検出されたAgentから選択",
+  "toolRemoteAgentReference": "リモートAgentの参照値"
 }

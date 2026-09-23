@@ -564,5 +564,10 @@
   "skillImportHelp": "Choose SKILL.md from a published Skill. Review its instructions and license before registering. This importer loads the Markdown only; bundled scripts and files require separately configured tools and are not executed automatically.",
   "skillImportError": "Use a SKILL.md under 64 KiB with valid name and description YAML fields and Markdown instructions.",
   "semanticSource": "Source",
-  "transactionRegistryHelp": "Choose a registered entity to register on the participant node. Create new entities in the registry first."
+  "transactionRegistryHelp": "Choose a registered entity to register on the participant node. Create new entities in the registry first.",
+  "transactionRemoteReferenceHelp": "Peer resources are not in this node's snapshot. Enter their references and revisions from that peer.",
+  "semanticOlderMessages": "Load older messages",
+  "toolManualRemoteAgent": "Enter a remote agent reference",
+  "toolChooseRemoteAgent": "Choose a discovered agent",
+  "toolRemoteAgentReference": "Remote agent reference"
 }

@@ -5,7 +5,21 @@ import type {
   TransactionParticipant,
 } from "./generated/models";
 import { DisplayState, ReferenceName } from "./record-view";
+import { disambiguateLabels } from "./display-labels";
 import { Field, useEntityLabel, useI18n } from "./ui";
+
+function clearResource(mutation: TransactionMutation): TransactionMutation {
+  switch (mutation.kind) {
+    case "workspace_state":
+      return { ...mutation, workspace_id: "", expected_revision: 0 };
+    case "complete_task":
+      return { ...mutation, task_id: "", expected_revision: 0 };
+    case "finish_run":
+      return { ...mutation, run_id: "", task_id: "", expected_revision: 0 };
+    case "registry_register":
+      return mutation;
+  }
+}
 
 export function TransactionComposer({
   value,
@@ -17,6 +31,23 @@ export function TransactionComposer({
   const data = useContext(DisplayState);
   const { t } = useI18n();
   const entityLabel = useEntityLabel(data?.registry ?? []);
+  const workspaceLabels = disambiguateLabels(
+    data?.workspaces ?? [],
+    (workspace) => workspace.id,
+    (workspace) => workspace.title,
+  );
+  const taskLabels = disambiguateLabels(
+    data?.tasks ?? [],
+    (task) => task.id,
+    (task) =>
+      `${workspaceLabels.get(task.workspace_id) ?? t("unavailableEntity")} / ${task.title}`,
+  );
+  const runLabels = disambiguateLabels(
+    data?.runs ?? [],
+    (run) => run.id,
+    (run) =>
+      `${taskLabels.get(run.task_id) ?? t("unavailableEntity")} · ${t(run.phase)}`,
+  );
   const update = (index: number, participant: TransactionParticipant) =>
     change({
       ...value,
@@ -61,9 +92,14 @@ export function TransactionComposer({
           <Field label={t("node")}>
             <select
               required
+              disabled={participant.node_id === value.coordinator}
               value={participant.node_id}
               onChange={(event) =>
-                update(index, { ...participant, node_id: event.target.value })
+                update(index, {
+                  ...participant,
+                  node_id: event.target.value,
+                  mutations: participant.mutations.map(clearResource),
+                })
               }
             >
               <option value="">{t("choose")}</option>
@@ -80,6 +116,9 @@ export function TransactionComposer({
                 ))}
             </select>
           </Field>
+          {participant.node_id !== data?.node.id && (
+            <p className="muted">{t("transactionRemoteReferenceHelp")}</p>
+          )}
           {participant.mutations.map((mutation, mutationIndex) => {
             const setMutation = (next: TransactionMutation) =>
               update(index, {
@@ -153,28 +192,42 @@ export function TransactionComposer({
                 {mutation.kind === "workspace_state" && (
                   <>
                     <Field label={t("workspace")}>
-                      <select
-                        required
-                        value={mutation.workspace_id}
-                        onChange={(event) =>
-                          setMutation({
-                            ...mutation,
-                            workspace_id: event.target.value,
-                            expected_revision:
-                              data?.workspaces.find(
-                                (workspace) =>
-                                  workspace.id === event.target.value,
-                              )?.revision ?? 0,
-                          })
-                        }
-                      >
-                        <option value="">{t("choose")}</option>
-                        {data?.workspaces.map((workspace) => (
-                          <option key={workspace.id} value={workspace.id}>
-                            {workspace.title}
-                          </option>
-                        ))}
-                      </select>
+                      {participant.node_id === data?.node.id ? (
+                        <select
+                          required
+                          value={mutation.workspace_id}
+                          onChange={(event) =>
+                            setMutation({
+                              ...mutation,
+                              workspace_id: event.target.value,
+                              expected_revision:
+                                data?.workspaces.find(
+                                  (workspace) =>
+                                    workspace.id === event.target.value,
+                                )?.revision ?? 0,
+                            })
+                          }
+                        >
+                          <option value="">{t("choose")}</option>
+                          {data?.workspaces.map((workspace) => (
+                            <option key={workspace.id} value={workspace.id}>
+                              {workspaceLabels.get(workspace.id)}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          required
+                          value={mutation.workspace_id}
+                          onChange={(event) =>
+                            setMutation({
+                              ...mutation,
+                              workspace_id: event.target.value,
+                              expected_revision: 0,
+                            })
+                          }
+                        />
+                      )}
                     </Field>
                     <JsonInput
                       objectOnly
@@ -187,27 +240,41 @@ export function TransactionComposer({
                 {mutation.kind === "complete_task" && (
                   <>
                     <Field label={t("task")}>
-                      <select
-                        required
-                        value={mutation.task_id}
-                        onChange={(event) =>
-                          setMutation({
-                            ...mutation,
-                            task_id: event.target.value,
-                            expected_revision:
-                              data?.tasks.find(
-                                (task) => task.id === event.target.value,
-                              )?.revision ?? 0,
-                          })
-                        }
-                      >
-                        <option value="">{t("choose")}</option>
-                        {data?.tasks.map((task) => (
-                          <option key={task.id} value={task.id}>
-                            {task.title}
-                          </option>
-                        ))}
-                      </select>
+                      {participant.node_id === data?.node.id ? (
+                        <select
+                          required
+                          value={mutation.task_id}
+                          onChange={(event) =>
+                            setMutation({
+                              ...mutation,
+                              task_id: event.target.value,
+                              expected_revision:
+                                data?.tasks.find(
+                                  (task) => task.id === event.target.value,
+                                )?.revision ?? 0,
+                            })
+                          }
+                        >
+                          <option value="">{t("choose")}</option>
+                          {data?.tasks.map((task) => (
+                            <option key={task.id} value={task.id}>
+                              {taskLabels.get(task.id)}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          required
+                          value={mutation.task_id}
+                          onChange={(event) =>
+                            setMutation({
+                              ...mutation,
+                              task_id: event.target.value,
+                              expected_revision: 0,
+                            })
+                          }
+                        />
+                      )}
                     </Field>
                     <Field label={t("name")}>
                       <input
@@ -252,31 +319,62 @@ export function TransactionComposer({
                   </>
                 )}
                 {mutation.kind === "finish_run" && (
-                  <Field label={t("execution")}>
-                    <select
-                      required
-                      value={mutation.run_id}
-                      onChange={(event) => {
-                        const run = data?.runs.find(
-                          (run) => run.id === event.target.value,
-                        );
-                        if (run)
-                          setMutation({
-                            ...mutation,
-                            run_id: run.id,
-                            task_id: run.task_id,
-                            expected_revision: run.revision,
-                          });
-                      }}
-                    >
-                      <option value="">{t("choose")}</option>
-                      {data?.runs.map((run) => (
-                        <option key={run.id} value={run.id}>
-                          <ReferenceName id={run.id} />
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
+                  <>
+                    <Field label={t("execution")}>
+                      {participant.node_id === data?.node.id ? (
+                        <select
+                          required
+                          value={mutation.run_id}
+                          onChange={(event) => {
+                            const run = data?.runs.find(
+                              (run) => run.id === event.target.value,
+                            );
+                            if (run)
+                              setMutation({
+                                ...mutation,
+                                run_id: run.id,
+                                task_id: run.task_id,
+                                expected_revision: run.revision,
+                              });
+                          }}
+                        >
+                          <option value="">{t("choose")}</option>
+                          {data?.runs.map((run) => (
+                            <option key={run.id} value={run.id}>
+                              {runLabels.get(run.id)}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          required
+                          value={mutation.run_id}
+                          onChange={(event) =>
+                            setMutation({
+                              ...mutation,
+                              run_id: event.target.value,
+                              expected_revision: 0,
+                            })
+                          }
+                        />
+                      )}
+                    </Field>
+                    {participant.node_id !== data?.node.id && (
+                      <Field label={t("task")}>
+                        <input
+                          required
+                          value={mutation.task_id}
+                          onChange={(event) =>
+                            setMutation({
+                              ...mutation,
+                              task_id: event.target.value,
+                              expected_revision: 0,
+                            })
+                          }
+                        />
+                      </Field>
+                    )}
+                  </>
                 )}
                 {mutation.kind === "registry_register" && (
                   <>
@@ -368,7 +466,10 @@ export function TransactionComposer({
           </button>
           <button
             type="button"
-            disabled={value.participants.length === 1}
+            disabled={
+              value.participants.length === 1 ||
+              participant.node_id === value.coordinator
+            }
             onClick={() =>
               change({
                 ...value,

@@ -286,6 +286,7 @@ export function EntityConfiguration({
     : { id: "", version: "1.0.0" };
   const [remoteId, setRemoteId] = useState("");
   const [remoteVersion, setRemoteVersion] = useState("1.0.0");
+  const [manualRemote, setManualRemote] = useState(false);
   const discovery = useQuery({
     queryKey: ["discovery", "tool-picker"],
     queryFn: () => discover({}),
@@ -295,6 +296,12 @@ export function EntityConfiguration({
   const remoteAgents = discovery.isError
     ? []
     : (discovery.data?.agents.filter((agent) => agent.node_id === node) ?? []);
+  const peerError = discovery.data?.errors.find(
+    (error) => error.node_id === node,
+  );
+  const remoteError = discovery.isError
+    ? discovery.error.message
+    : peerError?.error;
   const remoteLabel = useEntityLabel(remoteAgents.map((agent) => agent.entity));
 
   const config =
@@ -480,6 +487,7 @@ export function EntityConfiguration({
                     setNode(event.target.value);
                     setRemoteId("");
                     setRemoteVersion("1.0.0");
+                    setManualRemote(false);
                   }}
                 >
                   <option value={data.node.id}>
@@ -500,39 +508,88 @@ export function EntityConfiguration({
                 agentSelect
               ) : (
                 <>
-                  <Field label={t("toolRemoteAgentId")}>
-                    <select
-                      required
-                      value={
-                        remoteAgents.some(
-                          ({ entity }) =>
-                            entity.id === remoteId &&
-                            entity.version === remoteVersion,
-                        )
-                          ? JSON.stringify([remoteId, remoteVersion])
-                          : ""
-                      }
-                      onChange={(event) => {
-                        const [id, version] = event.target.value
-                          ? (JSON.parse(event.target.value) as [string, string])
-                          : ["", "1.0.0"];
-                        setRemoteId(id);
-                        setRemoteVersion(version);
+                  {remoteError && <p role="alert">{remoteError}</p>}
+                  {remoteError && (
+                    <button
+                      type="button"
+                      onClick={() => void discovery.refetch()}
+                    >
+                      {t("retry")}
+                    </button>
+                  )}
+                  {(manualRemote ||
+                    remoteError ||
+                    (!discovery.isPending && remoteAgents.length === 0)) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setManualRemote(!manualRemote);
+                        setRemoteId("");
+                        setRemoteVersion("1.0.0");
                       }}
                     >
-                      <option value="">{t("choose")}</option>
-                      {remoteAgents.map(({ entity }) => (
-                        <option
-                          key={`${entity.id}@${entity.version}`}
-                          value={JSON.stringify([entity.id, entity.version])}
-                        >
-                          {remoteLabel(entity)}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  {discovery.isError && (
-                    <p role="alert">{t("unavailableEntity")}</p>
+                      {t(
+                        manualRemote
+                          ? "toolChooseRemoteAgent"
+                          : "toolManualRemoteAgent",
+                      )}
+                    </button>
+                  )}
+                  {manualRemote ? (
+                    <>
+                      <Field label={t("toolRemoteAgentReference")}>
+                        <input
+                          required
+                          pattern="[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}"
+                          value={remoteId}
+                          onChange={(event) => setRemoteId(event.target.value)}
+                        />
+                      </Field>
+                      <Field label={t("toolRemoteAgentVersion")}>
+                        <input
+                          required
+                          value={remoteVersion}
+                          onChange={(event) =>
+                            setRemoteVersion(event.target.value)
+                          }
+                        />
+                      </Field>
+                    </>
+                  ) : (
+                    <Field label={t("toolRemoteAgentId")}>
+                      <select
+                        required
+                        value={
+                          remoteAgents.some(
+                            ({ entity }) =>
+                              entity.id === remoteId &&
+                              entity.version === remoteVersion,
+                          )
+                            ? JSON.stringify([remoteId, remoteVersion])
+                            : ""
+                        }
+                        onChange={(event) => {
+                          const [id, version] = event.target.value
+                            ? (JSON.parse(event.target.value) as [
+                                string,
+                                string,
+                              ])
+                            : ["", "1.0.0"];
+                          setRemoteId(id);
+                          setRemoteVersion(version);
+                        }}
+                      >
+                        <option value="">{t("choose")}</option>
+                        {remoteAgents.map(({ entity }) => (
+                          <option
+                            key={`${entity.id}@${entity.version}`}
+                            value={JSON.stringify([entity.id, entity.version])}
+                          >
+                            {remoteLabel(entity)}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
                   )}
                 </>
               )}

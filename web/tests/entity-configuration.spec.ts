@@ -513,3 +513,39 @@ test("remote agent tools identify the peer and exact executor", async ({
     agent: { id: "researcher", version: "3.0.0" },
   });
 });
+
+test("peer discovery errors allow an explicit remote reference", async ({
+  page,
+}) => {
+  await page.route("**/api/discover", (route) =>
+    route.fulfill({
+      json: {
+        agents: [],
+        errors: [{ node_id: "aidash://remote", error: "peer unavailable" }],
+      },
+    }),
+  );
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("tool");
+  await dialog.getByLabel("Connection type").selectOption("agent");
+  await dialog
+    .getByLabel("Node", { exact: true })
+    .selectOption("aidash://remote");
+  await expect(dialog.getByRole("alert")).toContainText("peer unavailable");
+  await dialog
+    .getByRole("button", { name: "Enter a remote agent reference" })
+    .click();
+  await dialog.getByLabel("Remote agent reference").fill("researcher");
+  await dialog.getByLabel("Remote agent version").fill("3.0.0");
+  const posted = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  expect((await posted).postDataJSON().config.agent).toEqual({
+    id: "researcher",
+    version: "3.0.0",
+  });
+});
