@@ -138,6 +138,24 @@ impl MigrationTrait for Migration {
 			)
 			.await?;
 		manager
+			.create_index(
+				Index::create()
+					.name("dashboard_login_expiry")
+					.table(Alias::new("dashboard_login_transactions"))
+					.col(Alias::new("expires_at"))
+					.to_owned(),
+			)
+			.await?;
+		manager
+			.create_index(
+				Index::create()
+					.name("dashboard_login_browser")
+					.table(Alias::new("dashboard_login_transactions"))
+					.col(Alias::new("browser_hash"))
+					.to_owned(),
+			)
+			.await?;
+		manager
 			.create_table(
 				table("dashboard_sessions")
 					.col(ColumnDef::new(Alias::new("id")).uuid().primary_key())

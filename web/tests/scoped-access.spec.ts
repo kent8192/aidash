@@ -139,7 +139,10 @@ test("subject dashboard completes a conversation and clears revoked access", asy
       if (/\/api\/(mesh|marketplace)(?:\?|$)/.test(req.url()))
         administrativeRequests.push(req.url());
     });
-    await installBearerDashboard(page, credential.token, { tenant, name: "alice" });
+    await installBearerDashboard(page, credential.token, {
+      tenant,
+      name: "alice",
+    });
     await page.goto("/");
     await expect(page.locator(".collab-app")).toBeVisible();
     await page.goto("/settings");
@@ -211,7 +214,9 @@ test("subject dashboard completes a conversation and clears revoked access", asy
       `/api/authorization/${tenant}/credentials/${credential.credential.id}/revoke`,
       {},
     );
-    await expect(page.getByRole("button", { name: "Sign in with Keycloak" })).toBeVisible({
+    await expect(
+      page.getByRole("button", { name: "Sign in with Keycloak" }),
+    ).toBeVisible({
       timeout: 15000,
     });
     await expect(page.getByRole("alert")).toContainText("expired or revoked");

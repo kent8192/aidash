@@ -39,6 +39,8 @@ const LOGIN_COOKIE: &str = "__Host-aidash-login";
 const CSRF_COOKIE: &str = "aidash-csrf";
 const STATUS_FRESH_SECONDS: i64 = 300;
 const STATUS_LIMIT_SECONDS: i64 = 900;
+const MAX_PENDING_LOGIN_TRANSACTIONS: i64 = 10_000;
+type IdentityValidity = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 
 fn table(name: &str) -> Alias {
 	Alias::new(name)
@@ -216,6 +218,35 @@ async fn login(
 	let browser = cookie_value(&headers, &cookie_name(LOGIN_COOKIE, config))
 		.map(str::to_owned)
 		.unwrap_or_else(random_secret);
+	// Admission cleans up callbacks that were never completed. The expiry index
+	// keeps cleanup efficient; the global cap also bounds burst storage use.
+	let cleanup = Query::delete()
+		.from_table(table("dashboard_login_transactions"))
+		.and_where(Expr::col(table("expires_at")).lte(Expr::cust("clock_timestamp()")))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&cleanup).execute(&f.store.pool).await?;
+	let total_query = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(table("dashboard_login_transactions"))
+		.to_string(PostgresQueryBuilder);
+	let total: i64 = sqlx::query_scalar(&total_query)
+		.fetch_one(&f.store.pool)
+		.await?;
+	if total >= MAX_PENDING_LOGIN_TRANSACTIONS {
+		return Err(Error::Conflict("too many pending sign-ins".into()));
+	}
+	let outstanding = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(table("dashboard_login_transactions"))
+		.and_where(Expr::col(table("browser_hash")).eq(Expr::cust("$1")))
+		.to_string(PostgresQueryBuilder);
+	let count: i64 = sqlx::query_scalar(&outstanding)
+		.bind(digest(&browser))
+		.fetch_one(&f.store.pool)
+		.await?;
+	if count >= 8 {
+		return Err(Error::Conflict("too many pending sign-ins".into()));
+	}
 	let query = Query::insert()
 		.into_table(table("dashboard_login_transactions"))
 		.columns([
@@ -463,7 +494,7 @@ async fn resume_status_waiting(f: &Federation, identity_id: Uuid) -> Result<()> 
 		.from(table("dashboard_identities"))
 		.and_where(Expr::col(table("id")).eq(Expr::cust("$1")))
 		.to_string(PostgresQueryBuilder);
-	let validity: Option<(Option<DateTime<Utc>>, Option<DateTime<Utc>>)> = sqlx::query_as(&query)
+	let validity: Option<IdentityValidity> = sqlx::query_as(&query)
 		.bind(identity_id)
 		.fetch_optional(&f.store.pool)
 		.await?;
@@ -1008,6 +1039,15 @@ struct Registration {
 	decided_at: Option<DateTime<Utc>>,
 }
 
+impl Registration {
+	fn with_effective_status(mut self) -> Self {
+		if self.status == "pending" && self.expires_at <= Utc::now() {
+			self.status = "expired".into();
+		}
+		self
+	}
+}
+
 fn registration_columns() -> [Alias; 6] {
 	[
 		"id",
@@ -1039,7 +1079,11 @@ async fn registration_status(
 	headers: HeaderMap,
 ) -> Result<Json<Option<Registration>>> {
 	let session = session_from_headers(&f, &headers).await?;
-	Ok(Json(latest_registration(&f, session.identity_id).await?))
+	Ok(Json(
+		latest_registration(&f, session.identity_id)
+			.await?
+			.map(Registration::with_effective_status),
+	))
 }
 
 async fn registration_create(
@@ -1104,7 +1148,19 @@ async fn registration_create(
 			));
 		}
 		if previous.status == "approved" {
-			return Err(Error::Conflict("registration was already approved".into()));
+			let active = Query::select()
+				.expr(Expr::cust("count(*)"))
+				.from(table("dashboard_mappings"))
+				.and_where(Expr::col(table("identity_id")).eq(Expr::cust("$1")))
+				.and_where(Expr::col(table("enabled")).eq(true))
+				.to_string(PostgresQueryBuilder);
+			let count: i64 = sqlx::query_scalar(&active)
+				.bind(session.identity_id)
+				.fetch_one(&mut *tx)
+				.await?;
+			if count > 0 {
+				return Err(Error::Conflict("registration was already approved".into()));
+			}
 		}
 	}
 	let insert = Query::insert()
@@ -1141,7 +1197,13 @@ async fn admin_registrations(State(f): State<Federation>) -> Result<Json<Vec<Reg
 		.order_by(table("created_at"), Order::Desc)
 		.limit(200)
 		.to_string(PostgresQueryBuilder);
-	Ok(Json(sqlx::query_as(&query).fetch_all(&f.store.pool).await?))
+	let registrations: Vec<Registration> = sqlx::query_as(&query).fetch_all(&f.store.pool).await?;
+	Ok(Json(
+		registrations
+			.into_iter()
+			.map(Registration::with_effective_status)
+			.collect(),
+	))
 }
 
 #[derive(Serialize, FromRow)]
@@ -1341,37 +1403,71 @@ async fn admin_approve(
 		.bind(Utc::now() + Duration::days(3650))
 		.execute(&mut *tx)
 		.await?;
-	let mapping_id = Uuid::new_v4();
-	let insert = Query::insert()
-		.into_table(table("dashboard_mappings"))
-		.columns([
-			table("id"),
-			table("identity_id"),
-			table("tenant"),
-			table("subject"),
-			table("credential_id"),
-		])
-		.values_panic([
-			Expr::cust("$1"),
-			Expr::cust("$2"),
-			Expr::cust("$3"),
-			Expr::cust("$4"),
-			Expr::cust("$5"),
-		])
-		.on_conflict(OnConflict::new().do_nothing().to_owned())
+	let previous = Query::select()
+		.columns([table("id"), table("enabled")])
+		.from(table("dashboard_mappings"))
+		.and_where(Expr::col(table("identity_id")).eq(Expr::cust("$1")))
+		.and_where(Expr::col(table("tenant")).eq(Expr::cust("$2")))
+		.and_where(Expr::col(table("subject")).eq(Expr::cust("$3")))
+		.lock(LockType::Update)
 		.to_string(PostgresQueryBuilder);
-	let inserted = sqlx::query(&insert)
-		.bind(mapping_id)
+	let existing: Option<(Uuid, bool)> = sqlx::query_as(&previous)
 		.bind(registration.identity_id)
 		.bind(&input.tenant)
 		.bind(&input.subject)
-		.bind(credential_id)
-		.execute(&mut *tx)
-		.await?
-		.rows_affected();
-	if inserted != 1 {
-		return Err(Error::Conflict("identity already has this mapping".into()));
-	}
+		.fetch_optional(&mut *tx)
+		.await?;
+	let mapping_id = if let Some((id, enabled)) = existing {
+		if enabled {
+			return Err(Error::Conflict("identity already has this mapping".into()));
+		}
+		let update = Query::update()
+			.table(table("dashboard_mappings"))
+			.value(table("credential_id"), Expr::cust("$2"))
+			.value(table("enabled"), true)
+			.value(table("revision"), Expr::cust("revision+1"))
+			.and_where(Expr::col(table("id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&update)
+			.bind(id)
+			.bind(credential_id)
+			.execute(&mut *tx)
+			.await?;
+		id
+	} else {
+		let id = Uuid::new_v4();
+		let insert = Query::insert()
+			.into_table(table("dashboard_mappings"))
+			.columns([
+				table("id"),
+				table("identity_id"),
+				table("tenant"),
+				table("subject"),
+				table("credential_id"),
+			])
+			.values_panic([
+				Expr::cust("$1"),
+				Expr::cust("$2"),
+				Expr::cust("$3"),
+				Expr::cust("$4"),
+				Expr::cust("$5"),
+			])
+			.on_conflict(OnConflict::new().do_nothing().to_owned())
+			.to_string(PostgresQueryBuilder);
+		let inserted = sqlx::query(&insert)
+			.bind(id)
+			.bind(registration.identity_id)
+			.bind(&input.tenant)
+			.bind(&input.subject)
+			.bind(credential_id)
+			.execute(&mut *tx)
+			.await?
+			.rows_affected();
+		if inserted != 1 {
+			return Err(Error::Conflict("identity already has this mapping".into()));
+		}
+		id
+	};
 	let decision_actor = actor.map_or_else(
 		|| "operator-bearer".to_string(),
 		|origin| format!("oidc:{}", origin.identity_id),
@@ -1429,13 +1525,14 @@ async fn admin_reject(
 #[serde(deny_unknown_fields)]
 struct OperatorGrantInput {
 	enabled: bool,
+	expected_revision: i64,
 }
 
 async fn admin_operator_grant(
 	State(f): State<Federation>,
 	Path(id): Path<Uuid>,
 	Json(input): Json<OperatorGrantInput>,
-) -> Result<axum::http::StatusCode> {
+) -> Result<Json<AdminOperatorGrant>> {
 	let mut tx = f.store.pool.begin().await?;
 	let identity_query = Query::select()
 		.column(table("disabled_at"))
@@ -1452,23 +1549,40 @@ async fn admin_operator_grant(
 		return Err(Error::Forbidden);
 	}
 	let existing = Query::select()
-		.column(table("identity_id"))
+		.column(table("revision"))
 		.from(table("dashboard_operator_grants"))
 		.and_where(Expr::col(table("identity_id")).eq(Expr::cust("$1")))
 		.to_string(PostgresQueryBuilder);
-	let grant: Option<Uuid> = sqlx::query_scalar(&existing)
+	let grant: Option<i64> = sqlx::query_scalar(&existing)
 		.bind(id)
 		.fetch_optional(&mut *tx)
 		.await?;
-	if grant.is_some() {
+	let revision = if let Some(revision) = grant {
+		if input.expected_revision != revision {
+			return Err(Error::Conflict("operator grant revision changed".into()));
+		}
 		let update = Query::update()
 			.table(table("dashboard_operator_grants"))
-			.value(table("enabled"), input.enabled)
+			.value(table("enabled"), Expr::cust("$2"))
 			.value(table("revision"), Expr::cust("revision+1"))
 			.and_where(Expr::col(table("identity_id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(table("revision")).eq(Expr::cust("$3")))
 			.to_string(PostgresQueryBuilder);
-		sqlx::query(&update).bind(id).execute(&mut *tx).await?;
+		let changed = sqlx::query(&update)
+			.bind(id)
+			.bind(input.enabled)
+			.bind(revision)
+			.execute(&mut *tx)
+			.await?
+			.rows_affected();
+		if changed != 1 {
+			return Err(Error::Conflict("operator grant revision changed".into()));
+		}
+		revision + 1
 	} else {
+		if input.expected_revision != 0 {
+			return Err(Error::Conflict("operator grant revision changed".into()));
+		}
 		let insert = Query::insert()
 			.into_table(table("dashboard_operator_grants"))
 			.columns([table("identity_id"), table("enabled")])
@@ -1479,22 +1593,28 @@ async fn admin_operator_grant(
 			.bind(input.enabled)
 			.execute(&mut *tx)
 			.await?;
-	}
+		1
+	};
 	tx.commit().await?;
-	Ok(axum::http::StatusCode::NO_CONTENT)
+	Ok(Json(AdminOperatorGrant {
+		identity_id: id,
+		enabled: input.enabled,
+		revision,
+	}))
 }
 
 #[derive(Serialize, FromRow)]
 struct AdminOperatorGrant {
 	identity_id: Uuid,
 	enabled: bool,
+	revision: i64,
 }
 
 async fn admin_operator_grants(
 	State(f): State<Federation>,
 ) -> Result<Json<Vec<AdminOperatorGrant>>> {
 	let query = Query::select()
-		.columns([table("identity_id"), table("enabled")])
+		.columns([table("identity_id"), table("enabled"), table("revision")])
 		.from(table("dashboard_operator_grants"))
 		.to_string(PostgresQueryBuilder);
 	Ok(Json(sqlx::query_as(&query).fetch_all(&f.store.pool).await?))

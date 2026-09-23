@@ -220,6 +220,9 @@ async fn api_auth(
 			.await?
 		}
 	} else {
+		if f.config.oidc.is_none() {
+			return Err(Error::Unauthorized);
+		}
 		let (actor, origin) =
 			crate::dashboard_auth::actor_from_headers(&f, request.headers(), request.method())
 				.await?;
@@ -257,7 +260,12 @@ fn browser_operator_allowed(method: &Method, path: &str) -> bool {
 	path.starts_with("/dashboard/")
 		|| path.starts_with("/authorization/")
 		|| path.starts_with("/registry/")
-		|| matches!(path, "/registry" | "/peers")
+		|| path.starts_with("/marketplace/")
+		|| path.starts_with("/transactions/")
+		|| matches!(
+			path,
+			"/registry" | "/peers" | "/marketplace" | "/transactions"
+		)
 }
 pub(crate) async fn operator_only(request: Request, next: Next) -> Result<Response> {
 	if !matches!(request.extensions().get::<Actor>(), Some(Actor::Operator)) {

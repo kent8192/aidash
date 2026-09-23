@@ -7,6 +7,64 @@ test.beforeEach(async ({ page }) => {
   await expect(page.locator(".collab-app")).toBeVisible();
 });
 
+test("restarts the event stream when the tab selects another authority", async ({
+  page,
+}) => {
+  const contexts: string[] = [];
+  await page.route("**/auth/session", (route) =>
+    route.fulfill({
+      json: {
+        id: "fixture-browser-session",
+        operator: true,
+        mappings: [{ id: "fixture-mapping", tenant: "acme", subject: "alice" }],
+      },
+    }),
+  );
+  await page.route("**/api/events/stream", (route) => {
+    contexts.push(route.request().headers()["x-aidash-context"] ?? "");
+    return route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: "id: 1\n\n",
+    });
+  });
+  await page.reload();
+  const selector = page.locator(".collab-topbar select").first();
+  await expect(selector).toHaveValue("operator");
+  await expect.poll(() => contexts.includes("operator")).toBeTruthy();
+  await selector.selectOption("mapping:fixture-mapping");
+  await expect
+    .poll(() => contexts.includes("mapping:fixture-mapping"))
+    .toBeTruthy();
+});
+
+test("reinitializes an open tab after its shared session is replaced", async ({
+  page,
+}) => {
+  let sessionId = "fixture-browser-session";
+  await page.route("**/auth/session", (route) =>
+    route.fulfill({
+      json: { id: sessionId, operator: true, mappings: [] },
+    }),
+  );
+  await page.clock.install();
+  await page.reload();
+  await expect(page.locator(".collab-app")).toBeVisible();
+  sessionId = "replacement-browser-session";
+  await page.clock.fastForward(60_000);
+  await expect(
+    page.getByRole("heading", { name: "このタブで使う権限を選択してください" }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() => sessionStorage.getItem("aidash-session-id")),
+    )
+    .toBe("replacement-browser-session");
+  await expect
+    .poll(() => page.evaluate(() => sessionStorage.getItem("aidash-context")))
+    .toBeNull();
+});
+
 test("observes the two-node execution and all management screens", async ({
   page,
 }) => {
@@ -117,7 +175,10 @@ test("creates a workspace and task and receives live assignment changes", async 
   let reordered = false;
   await page.route("**/api/discover", async (route) => {
     const response = await route.fetch({
-      headers: { ...route.request().headers(), authorization: "Bearer acceptance-access-token" },
+      headers: {
+        ...route.request().headers(),
+        authorization: "Bearer acceptance-access-token",
+      },
     });
     const discovery = await response.json();
     discovery.agents.reverse();

@@ -7,6 +7,8 @@ use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
+type IdentityValidity = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+
 /// Constructed only after authenticating a bearer token. Never deserialize this
 /// from a request body, query parameter or peer-provided identity claim.
 #[derive(Clone)]
@@ -267,7 +269,7 @@ impl SubjectIdentity {
 			if !mapping_enabled {
 				return Err(Error::Forbidden);
 			}
-			let validity: Option<(Option<DateTime<Utc>>, Option<DateTime<Utc>>)> = sqlx::query_as(
+			let validity: Option<IdentityValidity> = sqlx::query_as(
 				&Query::select()
 					.columns([Alias::new("last_valid_at"), Alias::new("disabled_at")])
 					.from(Alias::new("dashboard_identities"))

@@ -15,11 +15,13 @@ export function selectDashboardContext(value: string | null): void {
 }
 
 export function csrfToken(): string | null {
-  return document.cookie
-    .split(";")
-    .map((part) => part.trim())
-    .find((part) => part.startsWith("aidash-csrf="))
-    ?.slice("aidash-csrf=".length) ?? null;
+  return (
+    document.cookie
+      .split(";")
+      .map((part) => part.trim())
+      .find((part) => part.startsWith("aidash-csrf="))
+      ?.slice("aidash-csrf=".length) ?? null
+  );
 }
 
 export class ApiError extends Error {
@@ -39,11 +41,19 @@ export async function authenticatedFetch(
   const context = dashboardContext();
   const generation = contextGeneration;
   if (context) headers.set("x-aidash-context", context);
-  if (!["GET", "HEAD", "OPTIONS"].includes((options.method ?? "GET").toUpperCase())) {
+  if (
+    !["GET", "HEAD", "OPTIONS"].includes(
+      (options.method ?? "GET").toUpperCase(),
+    )
+  ) {
     const csrf = csrfToken();
     if (csrf) headers.set("x-aidash-csrf", csrf);
   }
-  const response = await fetch(url, { ...options, headers, credentials: "same-origin" });
+  const response = await fetch(url, {
+    ...options,
+    headers,
+    credentials: "same-origin",
+  });
   // A response from a tab's previous authority must never populate its new cache.
   if (generation !== contextGeneration || context !== dashboardContext()) {
     throw new ApiError("Authority context changed", 409);

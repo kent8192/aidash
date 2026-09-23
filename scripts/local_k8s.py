@@ -96,6 +96,26 @@ def apply_secret(name: str, values: dict[str, str]) -> None:
             input=json.dumps(secret))
 
 
+def application_values(values: dict[str, str], password: str, token: str,
+                       qdrant_key: str, port: int) -> dict[str, str]:
+    app_values = {
+        "DATABASE_URL": f"postgres://aidash:{quote(password, safe='')}@postgres:5432/aidash_a",
+        "NATS_URL": "nats://nats:4222",
+        "AIDASH_API_TOKEN": token,
+    }
+    app_values.update({key: value for key, value in values.items()
+                       if key.startswith("AIDASH_SECRET_")})
+    app_values.update({key: values[key] for key in ("AIDASH_JEV_ENDPOINT", "AIDASH_JEV_MODEL")
+                       if key in values})
+    app_values.update({key: value for key, value in values.items()
+                       if key.startswith("AIDASH_OIDC_") and value})
+    if any(key in app_values for key in (
+            "AIDASH_OIDC_ISSUER", "AIDASH_OIDC_CLIENT_ID", "AIDASH_OIDC_CLIENT_SECRET")):
+        app_values["AIDASH_OIDC_PUBLIC_ORIGIN"] = f"http://127.0.0.1:{port}"
+    app_values["AIDASH_SECRET_TEST_QDRANT"] = qdrant_key
+    return app_values
+
+
 def prepare() -> None:
     for tool in ("kind", "kubectl", "docker"):
         if shutil.which(tool) is None:
@@ -153,16 +173,7 @@ def prepare() -> None:
             fail("PostgreSQL password differs from the persisted database; restore the original "
                  "AIDASH_LOCAL_POSTGRES_PASSWORD or run k8s-down to discard local data")
 
-    app_values = {
-        "DATABASE_URL": f"postgres://aidash:{quote(password, safe='')}@postgres:5432/aidash_a",
-        "NATS_URL": "nats://nats:4222",
-        "AIDASH_API_TOKEN": token,
-    }
-    app_values.update({key: value for key, value in values.items()
-                       if key.startswith("AIDASH_SECRET_")})
-    app_values.update({key: values[key] for key in ("AIDASH_JEV_ENDPOINT", "AIDASH_JEV_MODEL")
-                       if key in values})
-    app_values["AIDASH_SECRET_TEST_QDRANT"] = qdrant_key
+    app_values = application_values(values, password, token, qdrant_key, port)
     apply_secret("aidash-local-infra", {"POSTGRES_PASSWORD": password,
                                         "QDRANT_API_KEY": qdrant_key})
     apply_secret("aidash-local-app", app_values)
@@ -176,7 +187,7 @@ def health() -> None:
             with urlopen(url, timeout=2) as response:
                 if response.status == 200:
                     print(f"Aidash: http://127.0.0.1:{port}")
-                    print("Sign in with AIDASH_API_TOKEN from .env, or local-development-token when .env is absent.")
+                    print("Configure Keycloak OIDC to sign in to the dashboard; AIDASH_API_TOKEN remains available for API recovery.")
                     return
         except (OSError, URLError):
             pass

@@ -8,14 +8,25 @@ try {
     sessionStorage.setItem("aidash-session-id", "acceptance-browser-session");
     sessionStorage.setItem("aidash-context", "operator");
   });
-  await page.route("**/auth/config", (route) => route.fulfill({ json: { enabled: true } }));
-  await page.route("**/auth/session", (route) => route.fulfill({
-    json: { id: "acceptance-browser-session", operator: true, mappings: [] },
-  }));
-  await page.route("**/auth/activity", (route) => route.fulfill({ status: 204 }));
-  await page.route("**/api/**", (route) => route.continue({
-    headers: { ...route.request().headers(), authorization: "Bearer acceptance-access-token" },
-  }));
+  await page.route("**/auth/config", (route) =>
+    route.fulfill({ json: { enabled: true } }),
+  );
+  await page.route("**/auth/session", (route) =>
+    route.fulfill({
+      json: { id: "acceptance-browser-session", operator: true, mappings: [] },
+    }),
+  );
+  await page.route("**/auth/activity", (route) =>
+    route.fulfill({ status: 204 }),
+  );
+  await page.route("**/api/**", (route) =>
+    route.continue({
+      headers: {
+        ...route.request().headers(),
+        authorization: "Bearer acceptance-access-token",
+      },
+    }),
+  );
   await page.goto(process.env.AIDASH_E2E_URL ?? "http://127.0.0.1:18080");
   await page
     .getByRole("button", { name: "ゴールを作成して実行", exact: true })

@@ -140,7 +140,10 @@ test("generation dashboard manages policy, approval, completion and retained his
     };
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const authFixture = await installBearerDashboard(page, "acceptance-access-token");
+    const authFixture = await installBearerDashboard(
+      page,
+      "acceptance-access-token",
+    );
     await page.goto("/");
     await expect(page.locator(".collab-app")).toBeVisible();
     const navigate = async (label: string) => {
