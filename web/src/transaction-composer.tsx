@@ -5,7 +5,7 @@ import type {
   TransactionParticipant,
 } from "./generated/models";
 import { DisplayState, ReferenceName } from "./record-view";
-import { Field, useI18n } from "./ui";
+import { Field, useEntityLabel, useI18n } from "./ui";
 
 export function TransactionComposer({
   value,
@@ -15,7 +15,8 @@ export function TransactionComposer({
   change: (value: TransactionManifest) => void;
 }) {
   const data = useContext(DisplayState);
-  const { t, entityLabel } = useI18n();
+  const { t } = useI18n();
+  const entityLabel = useEntityLabel(data?.registry ?? []);
   const update = (index: number, participant: TransactionParticipant) =>
     change({
       ...value,

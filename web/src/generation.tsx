@@ -1,4 +1,5 @@
 import { RecordView } from "./record-view";
+import { disambiguateLabels } from "./display-labels";
 import { useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, ArrowUpRight } from "lucide-react";
@@ -10,6 +11,7 @@ import {
   Panel,
   useI18n,
   useEntryLabel,
+  useEntityLabel,
 } from "./ui";
 import {
   authorizationCatalog,
@@ -54,6 +56,21 @@ const split = (value: string) =>
     .filter(Boolean);
 const active = (status: string) =>
   ["PENDING_APPROVAL", "QUEUED", "ACTIVE"].includes(status);
+function usePolicyPresentation(policies: readonly GenerationPolicy[]) {
+  const { t, local } = useI18n();
+  const name = (policy: GenerationPolicy) =>
+    local(policy.spec.template.name) || t("unnamedEntity");
+  const base = (policy: GenerationPolicy) =>
+    `${name(policy)} · ${t("revision")} ${policy.revision}`;
+  const labels = disambiguateLabels(policies, (policy) => policy.id, base);
+  const label = (policy: GenerationPolicy) =>
+    labels.get(policy.id) ?? base(policy);
+  return {
+    label,
+    name: (policy: GenerationPolicy) =>
+      `${name(policy)}${label(policy).slice(base(policy).length)}`,
+  };
+}
 type AgentFields = {
   model?: EntityRef;
   tools?: EntityRef[];
@@ -64,7 +81,7 @@ type AgentFields = {
 };
 
 export function GenerationPage({ data }: { data: State }) {
-  const { t, local } = useI18n();
+  const { t } = useI18n();
   const client = useQueryClient();
   const subjectTenant =
     data.access.kind === "subject" ? data.access.tenant : null;
@@ -80,6 +97,9 @@ export function GenerationPage({ data }: { data: State }) {
     enabled: !!tenant,
     refetchInterval: 5000,
   });
+  const policyPresentation = usePolicyPresentation(
+    policies.isError ? [] : (policies.data ?? []),
+  );
   const requests = useQuery({
     queryKey: ["generation", tenant, "requests"],
     queryFn: () => generationRequests(encodeURIComponent(tenant)),
@@ -193,7 +213,7 @@ export function GenerationPage({ data }: { data: State }) {
                   {policies.data?.map((policy) => (
                     <article className="generation-policy" key={policy.id}>
                       <div>
-                        <h3>{local(policy.spec.template.name)}</h3>
+                        <h3>{policyPresentation.name(policy)}</h3>
                         <p className="muted">
                           {t("revision")} {policy.revision}
                         </p>
@@ -299,12 +319,14 @@ export function GenerationPage({ data }: { data: State }) {
                         </strong>
                         <p>{request.reason}</p>
                         <small>
-                          {local(
-                            policies.data?.find(
-                              (policy) => policy.id === request.policy_id,
-                            )?.spec.template.name ?? {},
-                          ) || t("unavailableEntity")}{" "}
-                          · {t("revision")} {request.policy_revision}
+                          {(() => {
+                            const policy = policies.data?.find(
+                              (item) => item.id === request.policy_id,
+                            );
+                            return policy
+                              ? policyPresentation.label(policy)
+                              : `${t("unavailableEntity")} · ${t("revision")} ${request.policy_revision}`;
+                          })()}
                         </small>
                       </div>
                       <Badge value={request.status} />
@@ -397,12 +419,13 @@ function RefChoices({
   kind: string;
   selected?: EntityRef[];
 }) {
-  const { local, t } = useI18n();
+  const { t } = useI18n();
+  const entityLabel = useEntityLabel(entries);
   const available = entries.filter((entry) => entry.kind === kind);
   const choices = [
     ...available.map((entry) => ({
       value: key(entry),
-      label: `${local(entry.name)} · ${entry.version}`,
+      label: entityLabel(entry),
     })),
     ...selected
       .filter((r) => !available.some((entry) => key(entry) === key(r)))
@@ -438,7 +461,8 @@ function PolicyEditor({
   policy?: GenerationPolicy;
   save: (id: string, spec: GenerationSpec) => Promise<void>;
 }) {
-  const { t, local } = useI18n();
+  const { t } = useI18n();
+  const entityLabel = useEntityLabel(entries);
   const [policyId] = useState(() => policy?.id ?? crypto.randomUUID());
   const initial = policy?.spec;
   const config = initial?.template.config as AgentFields | undefined;
@@ -642,13 +666,11 @@ function PolicyEditor({
           <option value="">{t("choose")}</option>
           {models.map((entry) => (
             <option key={key(entry)} value={key(entry)}>
-              {local(entry.name)} · {entry.version}
+              {entityLabel(entry)}
             </option>
           ))}
           {model && !modelEntry && (
-            <option value={model}>
-              {model} · {t("generationReferenceUnavailable")}
-            </option>
+            <option value={model}>{t("generationReferenceUnavailable")}</option>
           )}
         </select>
       </Field>
@@ -692,7 +714,7 @@ function PolicyEditor({
             .filter((entry) => entry.kind === "cluster")
             .map((entry) => (
               <option key={key(entry)} value={key(entry)}>
-                {local(entry.name)} · {entry.version}
+                {entityLabel(entry)}
               </option>
             ))}
           {config?.cluster &&
@@ -743,7 +765,7 @@ function PolicyEditor({
           <option value="">{t("generationCompactionDisabled")}</option>
           {compactors.map((entry) => (
             <option key={key(entry)} value={key(entry)}>
-              {local(entry.name) || t("unnamedEntity")} · {entry.version}
+              {entityLabel(entry)}
             </option>
           ))}
           {compactor &&
@@ -789,7 +811,7 @@ function PolicyEditor({
           <option value="">{t("generationEmbeddingDisabled")}</option>
           {embeddings.map((entry) => (
             <option key={key(entry)} value={key(entry)}>
-              {local(entry.name) || t("unnamedEntity")} · {entry.version}
+              {entityLabel(entry)}
             </option>
           ))}
           {embedding &&
@@ -1087,7 +1109,7 @@ export function GenerationAssignForm({
   task: Task;
   submit: Submit;
 }) {
-  const { t, local } = useI18n();
+  const { t } = useI18n();
   const policies = useQuery({
     queryKey: ["generation", tenant, "policies"],
     queryFn: () => generationPolicies(encodeURIComponent(tenant)),
@@ -1095,6 +1117,9 @@ export function GenerationAssignForm({
   const choices = policies.isError
     ? []
     : (policies.data?.filter((policy) => policy.spec.enabled) ?? []);
+  const policyPresentation = usePolicyPresentation(
+    policies.isError ? [] : (policies.data ?? []),
+  );
   return (
     <form
       onSubmit={(event) => {
@@ -1120,8 +1145,7 @@ export function GenerationAssignForm({
           <option value="">{t("choose")}</option>
           {choices.map((policy) => (
             <option key={policy.id} value={policy.id}>
-              {local(policy.spec.template.name) || t("unnamedEntity")} ·{" "}
-              {t("revision")} {policy.revision}
+              {policyPresentation.label(policy)}
             </option>
           ))}
         </select>

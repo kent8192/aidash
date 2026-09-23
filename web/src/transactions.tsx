@@ -1,4 +1,5 @@
 import { TransactionComposer } from "./transaction-composer";
+import { disambiguateLabels } from "./display-labels";
 import {
   RecordView,
   ReferenceName,
@@ -49,6 +50,11 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
     queryFn: () => transactions(),
     refetchInterval: 1000,
   });
+  const transactionLabels = disambiguateLabels(
+    list.isError ? [] : (list.data ?? []),
+    (transaction) => transaction.id,
+    (transaction) => transactionLabel(transaction.manifest),
+  );
   const participants = useQuery({
     queryKey: ["transactions", "local"],
     queryFn: () => transactionParticipants(),
@@ -140,7 +146,7 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
                   className="transaction-id"
                   onClick={() => setSelected(transaction.id)}
                 >
-                  {transactionLabel(transaction.manifest)}
+                  {transactionLabels.get(transaction.id)}
                 </button>
                 <small>
                   {t("transactionDeadline")}:{" "}
@@ -159,7 +165,8 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
             <div className="generation-request" key={participant.id}>
               <div>
                 <strong className="transaction-id">
-                  {transactionLabel(participant.manifest)}
+                  {transactionLabels.get(participant.id) ??
+                    transactionLabel(participant.manifest)}
                 </strong>
                 <small>
                   {t("transactionCoordinator")}:{" "}
@@ -237,7 +244,8 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
           {current && (
             <div className="transaction-details">
               <strong className="transaction-id">
-                {transactionLabel(current.transaction.manifest)}
+                {transactionLabels.get(current.transaction.id) ??
+                  transactionLabel(current.transaction.manifest)}
               </strong>
               <Badge value={phase(current.transaction)} />
               <dl>

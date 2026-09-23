@@ -21,7 +21,15 @@ import type {
 } from "./generated/models";
 import type { State } from "./types";
 import { ApiError } from "./transport";
-import { Badge, Empty, Field, Modal, Panel, useI18n } from "./ui";
+import {
+  Badge,
+  Empty,
+  Field,
+  Modal,
+  Panel,
+  useEntityLabel,
+  useI18n,
+} from "./ui";
 
 const semanticMessages: Record<string, string> = {
   "semantic backend unavailable or invalid; inspect index status and retry":
@@ -713,7 +721,8 @@ function AgentScope({
   initial?: string;
   id?: string;
 }) {
-  const { t, entityLabel } = useI18n();
+  const { t } = useI18n();
+  const entityLabel = useEntityLabel(data.registry);
   const agents = data.registry.filter((entry) => entry.kind === "agent");
   const reference = (entry: (typeof agents)[number]) =>
     `${data.node.id}/agents/${entry.id}@${entry.version}`;

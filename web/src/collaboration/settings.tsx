@@ -2,7 +2,7 @@ import { ReferenceName } from "../record-view";
 import { RecordView } from "../record-view";
 import type { ReactNode } from "react";
 import type { Package, State } from "../types";
-import { Badge, Panel, useI18n } from "../ui";
+import { Badge, Panel, useEntityName, useI18n } from "../ui";
 import { GenerationPage } from "../generation";
 import { SemanticPage } from "../semantic";
 import { AuthorizationPage } from "../authorization";
@@ -87,7 +87,8 @@ export function Configuration({
   packages: Package[];
   disconnect: () => void;
 }) {
-  const { t, local, locale, entityName } = useI18n();
+  const { t, local, locale } = useI18n();
+  const entityName = useEntityName(data.registry);
   const copy = collaborationCopy[locale];
   const operator = data.access.kind === "operator";
   const restricted = !operator && operatorSections.has(section);

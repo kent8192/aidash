@@ -5,7 +5,7 @@ import { Fragment, useRef, useState } from "react";
 import { EntityConfiguration } from "./entity-configuration";
 import { OpenRouterModelPicker } from "./openrouter-model-picker";
 import { useForm } from "@tanstack/react-form";
-import { Field, useI18n } from "./ui";
+import { Field, useAgentLabel, useEntityLabel, useI18n } from "./ui";
 import type { State, EntityRef, Discovery, Task } from "./types";
 import {
   conversationCreate,
@@ -28,7 +28,8 @@ const ref = (s: string): EntityRef => {
   return { id: s.slice(0, index), version: s.slice(index + 1) };
 };
 export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
-  const { t, entityLabel } = useI18n();
+  const { t } = useI18n();
+  const entityLabel = useEntityLabel(data.registry);
   const targets = data.registry.filter((e) =>
     ["agent", "cluster"].includes(e.kind),
   );
@@ -259,7 +260,8 @@ export function EntityForm({
   submit: Submit;
   initial?: string;
 }) {
-  const { t, entityLabel } = useI18n();
+  const { t } = useI18n();
+  const entityLabel = useEntityLabel(data.registry);
   const [kind, setKind] = useState(initial);
   const registration = useRef<{ body: string; key: string } | null>(null);
   const [modelName, setModelName] = useState("");
@@ -681,7 +683,8 @@ export function AssignForm({
   data: State;
   submit: Submit;
 }) {
-  const { t, entityLabel } = useI18n();
+  const { t } = useI18n();
+  const agentLabel = useAgentLabel(data, discovery);
   const agents = discovery.agents.filter(
     (a) => data.access.kind === "operator" || a.node_id === data.node.id,
   );
@@ -715,7 +718,8 @@ export function AssignForm({
               value={JSON.stringify([a.node_id, a.entity.id, a.entity.version])}
               key={`${a.node_id}/${a.entity.id}@${a.entity.version}`}
             >
-              {entityLabel(a.entity)} · <ReferenceName id={a.node_id} />
+              {agentLabel(a.node_id, a.entity)} ·{" "}
+              <ReferenceName id={a.node_id} />
             </option>
           ))}
         </select>
@@ -725,7 +729,8 @@ export function AssignForm({
   );
 }
 export function PublishForm({ data, submit }: { data: State; submit: Submit }) {
-  const { t, entityLabel } = useI18n();
+  const { t } = useI18n();
+  const entityLabel = useEntityLabel(data.registry);
   return (
     <form
       onSubmit={(e) => {

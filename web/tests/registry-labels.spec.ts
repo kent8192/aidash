@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { setup } from "./collaboration-fixture";
 
 const ids = Array.from(
-  { length: 7 },
+  { length: 8 },
   (_, index) =>
     `019a0000-0000-7000-8000-${String(index + 1).padStart(12, "0")}`,
 );
@@ -40,6 +40,7 @@ const registry = [
   },
   entry(5, "model", "Fallback model", ""),
   entry(6, "model", "", ""),
+  entry(7, "model", "Research model", "調査モデル"),
 ];
 
 for (const locale of ["en-US", "ja-JP"]) {
@@ -90,11 +91,21 @@ for (const locale of ["en-US", "ja-JP"]) {
     const model = dialog.locator('select[name="model"]');
     await expect(model.locator("option")).toHaveText([
       japanese ? "選択してください…" : "Choose…",
-      `${japanese ? "調査モデル" : "Research model"} · 1.0.0`,
+      `${japanese ? "調査モデル" : "Research model"} · 1.0.0 (#1)`,
       `${japanese ? "調査モデル" : "Research model"} · 2.0.0`,
       "Fallback model · 1.0.0",
       `${japanese ? "名称未設定の項目" : "Unnamed item"} · 1.0.0`,
+      `${japanese ? "調査モデル" : "Research model"} · 1.0.0 (#2)`,
     ]);
+    await model.selectOption({
+      label: `${japanese ? "調査モデル" : "Research model"} · 1.0.0 (#2)`,
+    });
+    await expect(model).toHaveValue(`${ids[7]}@1.0.0`);
+    await expect(
+      page.locator(".entity-card h3").filter({
+        hasText: `${japanese ? "調査モデル" : "Research model"} (#1)`,
+      }),
+    ).toHaveCount(1);
     await model.selectOption({
       label: `${japanese ? "調査モデル" : "Research model"} · 2.0.0`,
     });

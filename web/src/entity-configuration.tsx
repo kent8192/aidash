@@ -4,7 +4,7 @@ import { ReferenceName } from "./record-view";
 import { SkillImport } from "./skill-import";
 import { useState } from "react";
 import type { State } from "./types";
-import { Field, useI18n } from "./ui";
+import { Field, useEntityLabel, useI18n } from "./ui";
 
 type Argument = {
   key: string;
@@ -262,7 +262,8 @@ export function EntityConfiguration({
   kind: string;
   data: State;
 }) {
-  const { t, entityLabel } = useI18n();
+  const { t } = useI18n();
+  const entityLabel = useEntityLabel(data.registry);
   const [transport, setTransport] = useState("native");
   const [operation, setOperation] = useState("echo");
   const [endpoint, setEndpoint] = useState("");
@@ -294,6 +295,7 @@ export function EntityConfiguration({
   const remoteAgents = discovery.isError
     ? []
     : (discovery.data?.agents.filter((agent) => agent.node_id === node) ?? []);
+  const remoteLabel = useEntityLabel(remoteAgents.map((agent) => agent.entity));
 
   const config =
     kind === "skill"
@@ -524,7 +526,7 @@ export function EntityConfiguration({
                           key={`${entity.id}@${entity.version}`}
                           value={JSON.stringify([entity.id, entity.version])}
                         >
-                          {entityLabel(entity)}
+                          {remoteLabel(entity)}
                         </option>
                       ))}
                     </select>

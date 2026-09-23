@@ -10,6 +10,7 @@ const payloadFields = new Set([
   "instructions",
   "description",
   "schema",
+  "config",
   "permissions",
   "context",
   "memory",
@@ -47,7 +48,41 @@ export function presentRecord(
 ): unknown {
   const label = (id: string, version?: unknown) =>
     labels.get(typeof version === "string" ? `${id}@${version}` : id) ??
-    unavailable;
+    `${unavailable}${typeof version === "string" ? ` · ${version}` : ""}`;
+  const reference = (value: unknown): unknown => {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return value;
+    const record = value as Record<string, unknown>;
+    return typeof record.id === "string" &&
+      typeof record.version === "string" &&
+      Object.keys(record).every((key) => key === "id" || key === "version")
+      ? label(record.id, record.version)
+      : value;
+  };
+  const registryConfig = (kind: string, value: unknown): unknown => {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return value;
+    const config = value as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(config).flatMap(([key, item]) => {
+        if (kind === "agent") {
+          if (key === "knowledge_digest") return [];
+          if (key === "model" || key === "cluster")
+            return [[key, reference(item)]];
+          if ((key === "tools" || key === "skills") && Array.isArray(item))
+            return [[key, item.map(reference)]];
+        }
+        if (kind === "cluster" && key === "coordinator")
+          return [[key, reference(item)]];
+        if (kind === "tool" && config.transport === "agent") {
+          if (key === "agent") return [[key, reference(item)]];
+          if (key === "node_id" && typeof item === "string")
+            return [["node", label(item)]];
+        }
+        return [[key, item]];
+      }),
+    );
+  };
   const visit = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(visit);
     if (typeof value === "string") {
@@ -70,6 +105,8 @@ export function presentRecord(
     return Object.fromEntries(
       Object.entries(record).flatMap(([key, item]) => {
         if (primaryKeys.has(key)) return [];
+        if (key === "config" && typeof record.kind === "string")
+          return [[key, registryConfig(record.kind, item)]];
         if (payloadFields.has(key)) return [[key, item]];
         if (references.has(key) && typeof item === "string") {
           const prefix = key.replace(/_id$/, "");

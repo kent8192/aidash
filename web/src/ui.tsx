@@ -11,6 +11,7 @@ import {
 import type { Entry, EntityRef, State, Discovery } from "./types";
 import en from "./locales/en-US.json";
 import ja from "./locales/ja-JP.json";
+import { disambiguateLabels } from "./display-labels";
 export type Locale = "en-US" | "ja-JP";
 export const LocaleContext = createContext<Locale>("ja-JP");
 export function useI18n() {
@@ -33,21 +34,48 @@ export function useI18n() {
   return { locale, t, local, entityName, entityLabel };
 }
 export function useEntryLabel(entries: readonly Entry[]) {
-  const { entityLabel, t } = useI18n();
+  const label = useEntityLabel(entries);
+  const { t } = useI18n();
   return (reference: EntityRef) => {
     const entry = entries.find(
       (entry) =>
         entry.id === reference.id && entry.version === reference.version,
     );
     return entry
-      ? entityLabel(entry)
+      ? label(entry)
       : `${t("unavailableEntity")} · ${reference.version}`;
   };
+}
+
+export function useEntityLabel(entries: readonly Entry[]) {
+  const { entityLabel } = useI18n();
+  const labels = disambiguateLabels(
+    entries,
+    (entry) => `${entry.id}@${entry.version}`,
+    entityLabel,
+  );
+  return (entry: Entry) =>
+    labels.get(`${entry.id}@${entry.version}`) ?? entityLabel(entry);
+}
+
+export function useEntityName(entries: readonly Entry[]) {
+  const { entityName, entityLabel } = useI18n();
+  const label = useEntityLabel(entries);
+  return (entry: Entry) =>
+    `${entityName(entry)}${label(entry).slice(entityLabel(entry).length)}`;
 }
 
 export function useAgentLabel(data: State, discovery?: Discovery) {
   const localLabel = useEntryLabel(data.registry);
   const { entityLabel, t } = useI18n();
+  const agents = discovery?.agents ?? [];
+  const remoteLabels = disambiguateLabels(
+    agents,
+    (agent) =>
+      `${agent.node_id}/agents/${agent.entity.id}@${agent.entity.version}`,
+    (agent) => entityLabel(agent.entity),
+    (agent) => agent.node_id,
+  );
   return (node: string, reference: EntityRef) => {
     if (node === data.node.id) return localLabel(reference);
     const agent = discovery?.agents.find(
@@ -57,7 +85,9 @@ export function useAgentLabel(data: State, discovery?: Discovery) {
         agent.entity.version === reference.version,
     );
     return agent
-      ? entityLabel(agent.entity)
+      ? (remoteLabels.get(
+          `${node}/agents/${reference.id}@${reference.version}`,
+        ) ?? entityLabel(agent.entity))
       : `${t("unavailableEntity")} · ${reference.version}`;
   };
 }
