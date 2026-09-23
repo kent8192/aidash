@@ -14,10 +14,25 @@ services:
     volumes:
       - postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U aidash -d aidash_a"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U aidash -d aidash_a"]
       interval: 2s
       timeout: 5s
       retries: 30
+  postgres-extensions:
+    profiles: [dev]
+    build:
+      context: .
+      target: dev-backend
+      args:
+        CARGO_PROFILE: dev
+    entrypoint: ["local-dev-db"]
+    command:
+      - postgres://aidash:aidash-local@postgres:5432/aidash_a
+      - postgres://aidash:aidash-local@postgres:5432/aidash_b
+      - postgres://aidash:aidash-local@postgres:5432/aidash_test
+    depends_on:
+      postgres:
+        condition: service_healthy
   qdrant:
     image: qdrant/qdrant:v1.19.1
     environment:
@@ -33,6 +48,94 @@ services:
       - "127.0.0.1:${AIDASH_NATS_PORT:-42270}:4222"
     volumes:
       - nats:/data
+  backend:
+    profiles: [dev]
+    build:
+      context: .
+      target: dev-backend
+      args:
+        CARGO_PROFILE: dev
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgres://aidash:aidash-local@postgres:5432/aidash_a
+      NATS_URL: nats://nats:4222
+      AIDASH_NODE_ID: ${AIDASH_NODE_ID:-aidash://node-a}
+      AIDASH_ENDPOINT: ${AIDASH_ENDPOINT:-http://127.0.0.1:${AIDASH_BACKEND_PORT:-18080}}
+      AIDASH_LISTEN: 0.0.0.0:8080
+      AIDASH_API_TOKEN: ${AIDASH_API_TOKEN:-local-development-token}
+      AIDASH_SECRET_TEST_QDRANT: ${AIDASH_SECRET_TEST_QDRANT:-local-semantic-vector-fixture-key-0123456789}
+    ports:
+      - "127.0.0.1:${AIDASH_BACKEND_PORT:-18080}:8080"
+    depends_on:
+      postgres-extensions:
+        condition: service_completed_successfully
+      nats:
+        condition: service_started
+      qdrant:
+        condition: service_started
+    healthcheck:
+      test:
+        ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health"]
+      interval: 2s
+      timeout: 5s
+      retries: 120
+    develop:
+      watch:
+        - action: rebuild
+          path: ./src
+        - action: rebuild
+          path: ./migration
+        - action: rebuild
+          path: ./Cargo.toml
+        - action: rebuild
+          path: ./Cargo.lock
+  frontend-dev:
+    profiles: [dev]
+    build:
+      context: .
+      target: dev-web
+      args:
+        CARGO_PROFILE: dev
+    command:
+      ["npx", "vite", "--host", "0.0.0.0", "--port", "5173", "--strictPort"]
+    environment:
+      AIDASH_BACKEND: http://backend:8080
+    ports:
+      - "127.0.0.1:${AIDASH_FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5173/src/main.tsx').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    develop:
+      watch:
+        - action: sync
+          path: ./web/src
+          target: /build/web/src
+          ignore:
+            - generated/
+        - action: sync
+          path: ./web/index.html
+          target: /build/web/index.html
+        - action: rebuild
+          path: ./web/package.json
+        - action: rebuild
+          path: ./web/package-lock.json
+        - action: rebuild
+          path: ./web/vite.config.ts
+        - action: rebuild
+          path: ./src
 volumes:
   postgres:
   nats:

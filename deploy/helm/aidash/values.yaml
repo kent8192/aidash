@@ -5,7 +5,7 @@ image:
   pullSecrets: []
 node:
   id: ""
-  # Stable reachable URL; defaults to this release's in-cluster Service.
+  # Stable federation URL; defaults to the internal backend Service.
   endpoint: ""
 # Provision separately: DATABASE_URL, NATS_URL, AIDASH_API_TOKEN and provider/
 # pair-specific AIDASH_SECRET_* variables. No secret values belong in Helm values.
@@ -20,6 +20,15 @@ worker:
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { cpu: "2", memory: 1Gi }
+frontend:
+  replicas: 1
+  image:
+    repository: aidash-frontend
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: "1", memory: 256Mi }
 service:
   type: ClusterIP
   port: 8080

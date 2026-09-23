@@ -1,17 +1,286 @@
 [config]
 default_to_workspace = false
 
+[tasks.dev]
+description = "Start the local Aidash stack with Compose and watch source changes"
+command = "python3"
+args = ["scripts/local_dev.py", "up"]
+
+[tasks.dev-down]
+description = "Stop local Aidash infrastructure while keeping its data volumes"
+command = "python3"
+args = ["scripts/local_dev.py", "down"]
+
 [tasks.k8s-up]
 description = "Build and start Aidash with PostgreSQL, NATS, and Qdrant in a local kind cluster"
-command = "bash"
-args = ["scripts/local-k8s.sh", "up"]
+dependencies = [
+  "k8s-prepare",
+  "k8s-build-postgres",
+  "k8s-build-backend",
+  "k8s-build-frontend",
+  "k8s-load",
+  "k8s-apply-infra",
+  "k8s-restart-postgres",
+  "k8s-restart-qdrant",
+  "k8s-wait-postgres",
+  "k8s-wait-nats",
+  "k8s-wait-qdrant",
+  "k8s-helm",
+  "k8s-restart-server",
+  "k8s-restart-worker",
+  "k8s-restart-frontend",
+  "k8s-wait-server",
+  "k8s-wait-worker",
+  "k8s-wait-frontend",
+  "k8s-health",
+]
+
+[tasks.k8s-prepare]
+private = true
+command = "python3"
+args = ["scripts/local_k8s.py", "prepare"]
+
+[tasks.k8s-build-postgres]
+private = true
+command = "docker"
+args = [
+  "build",
+  "-f",
+  "deploy/postgres/Dockerfile",
+  "-t",
+  "aidash-postgres:17-pg-jsonschema-0.3.4",
+  ".",
+]
+
+[tasks.k8s-build-backend]
+private = true
+command = "docker"
+args = ["build", "-t", "aidash:local", "."]
+
+[tasks.k8s-build-frontend]
+private = true
+command = "docker"
+args = ["build", "--target", "frontend", "-t", "aidash-frontend:local", "."]
+
+[tasks.k8s-load]
+private = true
+command = "kind"
+args = [
+  "load",
+  "docker-image",
+  "aidash-postgres:17-pg-jsonschema-0.3.4",
+  "aidash:local",
+  "aidash-frontend:local",
+  "--name",
+  "aidash-local",
+]
+
+[tasks.k8s-apply-infra]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  ".ignore/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "apply",
+  "-f",
+  "deploy/local-k8s/infra.yaml",
+]
+
+[tasks.k8s-restart-postgres]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  ".ignore/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "restart",
+  "statefulset/postgres",
+]
+
+[tasks.k8s-restart-qdrant]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  ".ignore/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "restart",
+  "statefulset/qdrant",
+]
+
+[tasks.k8s-wait-postgres]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  ".ignore/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "status",
+  "statefulset/postgres",
+  "--timeout=300s",
+]
+
+[tasks.k8s-wait-nats]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  ".ignore/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "status",
+  "statefulset/nats",
+  "--timeout=300s",
+]
+
+[tasks.k8s-wait-qdrant]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  ".ignore/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "status",
+  "statefulset/qdrant",
+  "--timeout=300s",
+]
+
+[tasks.k8s-helm]
+private = true
+command = "helm"
+args = [
+  "--kubeconfig",
+  ".ignore/local-k8s/kubeconfig",
+  "upgrade",
+  "--install",
+  "aidash",
+  "deploy/helm/aidash",
+  "--namespace",
+  "aidash-local",
+  "--set-string",
+  "node.id=aidash://node-a",
+  "--set-string",
+  "existingSecret=aidash-local-app",
+  "--set-string",
+  "image.repository=aidash",
+  "--set-string",
+  "image.tag=local",
+  "--set-string",
+  "frontend.image.repository=aidash-frontend",
+  "--set-string",
+  "frontend.image.tag=local",
+  "--set",
+  "service.type=NodePort",
+  "--set",
+  "service.nodePort=30080",
+  "--wait",
+  "--timeout",
+  "10m",
+]
+
+[tasks.k8s-restart-server]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  ".ignore/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "restart",
+  "deployment/aidash-aidash-server",
+]
+
+[tasks.k8s-restart-worker]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  ".ignore/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "restart",
+  "deployment/aidash-aidash-worker",
+]
+
+[tasks.k8s-restart-frontend]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  ".ignore/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "restart",
+  "deployment/aidash-frontend",
+]
+
+[tasks.k8s-wait-server]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  ".ignore/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "status",
+  "deployment/aidash-aidash-server",
+  "--timeout=300s",
+]
+
+[tasks.k8s-wait-worker]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  ".ignore/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "status",
+  "deployment/aidash-aidash-worker",
+  "--timeout=300s",
+]
+
+[tasks.k8s-wait-frontend]
+private = true
+command = "kubectl"
+args = [
+  "--kubeconfig",
+  ".ignore/local-k8s/kubeconfig",
+  "-n",
+  "aidash-local",
+  "rollout",
+  "status",
+  "deployment/aidash-frontend",
+  "--timeout=300s",
+]
+
+[tasks.k8s-health]
+private = true
+command = "python3"
+args = ["scripts/local_k8s.py", "health"]
 
 [tasks.k8s-down]
 description = "Remove the dedicated local Aidash kind cluster and its data"
-command = "bash"
-args = ["scripts/local-k8s.sh", "down"]
+command = "python3"
+args = ["scripts/local_k8s.py", "down"]
 
 [tasks.k8s-status]
 description = "Show the local Aidash Kubernetes workloads and access URL"
-command = "bash"
-args = ["scripts/local-k8s.sh", "status"]
+command = "python3"
+args = ["scripts/local_k8s.py", "status"]

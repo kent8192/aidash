@@ -31,7 +31,13 @@ export function DeploymentPage() {
           <article className="deployment-card" key={d.name}>
             <h3>{d.name}</h3>
             <p>
-              {t(d.role === "worker" ? "deploymentWorker" : "deploymentServer")}
+              {t(
+                d.role === "worker"
+                  ? "deploymentWorker"
+                  : d.role === "frontend"
+                    ? "deploymentFrontend"
+                    : "deploymentServer",
+              )}
             </p>
             <dl>
               <dt>{t("deploymentDesired")}</dt>

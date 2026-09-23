@@ -363,6 +363,7 @@
   "deploymentReplicas": "Replica status",
   "deploymentWorker": "Worker",
   "deploymentServer": "Server",
+  "deploymentFrontend": "Frontend",
   "deploymentDesired": "Desired",
   "deploymentReady": "Ready",
   "deploymentUpdated": "Updated",

@@ -1,4 +1,7 @@
 {{- $name := printf "%s-aidash" .Release.Name -}}
+{{- $backend := printf "%s-backend" .Release.Name -}}
+{{- $frontend := printf "%s-frontend" .Release.Name -}}
+{{- $nginxConfig := $.Files.Get "files/default.conf" | replace "http://aidash-backend:8080" (printf "http://%s:8080" $backend) -}}
 {{- $id := required "node.id must be a stable aidash:// identity" .Values.node.id -}}
 {{- $secret := required "existingSecret is required" .Values.existingSecret -}}
 {{- if gt (len .Release.Name) 49 -}}
@@ -74,7 +77,7 @@ spec:
           env:
             - { name: AIDASH_NODE_ID, value: {{ $id | quote }} }
             - name: AIDASH_ENDPOINT
-              value: {{ $.Values.node.endpoint | default (printf "http://%s.%s.svc:%v" $name $.Release.Namespace $.Values.service.port) | quote }}
+              value: {{ $.Values.node.endpoint | default (printf "http://%s.%s.svc:8080" $backend $.Release.Namespace) | quote }}
             - { name: AIDASH_LISTEN, value: "0.0.0.0:8080" }
             - { name: AIDASH_PROBE_LISTEN, value: "0.0.0.0:8081" }
             {{- if and $.Values.observability.enabled (eq $role "server") }}
@@ -106,12 +109,115 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
+  name: {{ $backend }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $frontend }}-conf
+data:
+  default.conf: |-
+{{ $nginxConfig | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $frontend }}
+  labels:
+    app.kubernetes.io/name: aidash
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: frontend
+spec:
+  replicas: {{ .Values.frontend.replicas }}
+  revisionHistoryLimit: 3
+  minReadySeconds: 2
+  progressDeadlineSeconds: 300
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      annotations:
+        checksum/nginx-config: {{ $nginxConfig | sha256sum }}
+      labels:
+        app.kubernetes.io/name: aidash
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: frontend
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: frontend
+          image: {{ printf "%s:%s" .Values.frontend.image.repository .Values.frontend.image.tag | quote }}
+          imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          ports:
+            - { name: http, containerPort: 8080 }
+          startupProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 2
+            failureThreshold: 150
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 3
+            timeoutSeconds: 3
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 2
+          resources: {{ toYaml .Values.frontend.resources | nindent 12 }}
+          volumeMounts:
+            - { name: nginx-config, mountPath: /etc/nginx/conf.d/default.conf, subPath: default.conf, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: nginx-config
+          configMap: { name: {{ $frontend }}-conf }
+        - name: tmp
+          emptyDir: { sizeLimit: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
   name: {{ $name }}
 spec:
   type: {{ .Values.service.type }}
   selector:
     app.kubernetes.io/instance: {{ .Release.Name }}
-    app.kubernetes.io/component: server
+    app.kubernetes.io/component: frontend
   ports:
     - name: http
       port: {{ .Values.service.port }}
