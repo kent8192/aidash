@@ -40,6 +40,8 @@ case "${1:-}" in
       source .env
       set +a
     fi
+    # Do not let a project dotenv redirect Kubernetes operations to another cluster.
+    export KUBECONFIG="$state/kubeconfig"
     export AIDASH_API_TOKEN=${AIDASH_API_TOKEN:-local-development-token}
     export AIDASH_LOCAL_POSTGRES_PASSWORD=${AIDASH_LOCAL_POSTGRES_PASSWORD:-aidash-local}
     export AIDASH_SECRET_TEST_QDRANT=${AIDASH_SECRET_TEST_QDRANT:-local-semantic-vector-fixture-key-0123456789}
@@ -98,6 +100,10 @@ if base64.b64decode(stored) != os.environ["AIDASH_LOCAL_POSTGRES_PASSWORD"].enco
     if kubectl -n "$namespace" get statefulset qdrant >/dev/null 2>&1; then
       qdrant_exists=true
     fi
+    postgres_exists=false
+    if kubectl -n "$namespace" get statefulset postgres >/dev/null 2>&1; then
+      postgres_exists=true
+    fi
     docker build -f deploy/postgres/Dockerfile -t "$postgres_image" .
     docker build -t "$app_image" .
     kind load docker-image "$postgres_image" "$app_image" --name "$cluster"
@@ -136,14 +142,17 @@ for name, data in (
     subprocess.run(["kubectl", "-n", sys.argv[1], action, "-f", "-"], input=json.dumps(secret), check=True, text=True)
 PY
     kubectl -n "$namespace" apply -f deploy/local-k8s/infra.yaml
-    for service in postgres nats qdrant; do
-      kubectl -n "$namespace" rollout status "statefulset/$service" --timeout=300s
-    done
+    if "$postgres_exists"; then
+      # Reuse the PVC, but start PostgreSQL with the newly loaded local image.
+      kubectl -n "$namespace" rollout restart statefulset/postgres
+    fi
     if "$qdrant_exists"; then
       # A Secret update does not refresh environment variables in an existing Pod.
       kubectl -n "$namespace" rollout restart statefulset/qdrant
-      kubectl -n "$namespace" rollout status statefulset/qdrant --timeout=300s
     fi
+    for service in postgres nats qdrant; do
+      kubectl -n "$namespace" rollout status "statefulset/$service" --timeout=300s
+    done
     helm upgrade --install "$release" deploy/helm/aidash \
       --namespace "$namespace" \
       --set-string node.id=aidash://node-a \
@@ -182,7 +191,7 @@ PY
   down)
     require_tools kind
     if cluster_exists; then
-      kind delete cluster --name "$cluster" --kubeconfig "$KUBECONFIG"
+      kind delete cluster --name "$cluster"
     fi
     rm -f "$KUBECONFIG"
     rm -f "$state/port" "$state/kind.yaml" "$state/forward.pid" "$state/forward.port" "$state/forward.log"

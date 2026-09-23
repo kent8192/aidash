@@ -24,6 +24,7 @@ spec:
         - name: postgres
           image: aidash-postgres:17-pg-jsonschema-0.3.4
           imagePullPolicy: IfNotPresent
+          args: [-c, max_connections=400]
           env:
             - { name: POSTGRES_USER, value: aidash }
             - { name: POSTGRES_DB, value: aidash_a }
