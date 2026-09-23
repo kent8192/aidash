@@ -160,3 +160,20 @@ for (const locale of ["en-US", "ja-JP"]) {
     expect(errors).toEqual([]);
   });
 }
+
+test("package selection uses the exact entity value with a readable label", async ({
+  page,
+}) => {
+  const { errors } = await setup(page);
+  await page.goto("/settings?view=marketplace");
+  await page
+    .getByRole("button", { name: "Publish package", exact: true })
+    .click();
+  const entity = page.getByRole("dialog").getByLabel("Local entity");
+  await expect(entity.locator('option[value="researcher@1.0.0"]')).toHaveText(
+    "Researcher · 1.0.0",
+  );
+  await entity.selectOption("researcher@1.0.0");
+  await expect(entity).toHaveValue("researcher@1.0.0");
+  expect(errors).toEqual([]);
+});
