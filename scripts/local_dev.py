@@ -5,16 +5,21 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import shlex
+import signal
 import shutil
 import socket
 import subprocess
 import sys
+import time
 from urllib.parse import urlsplit, urlunsplit
 
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BACKEND_PORT = 18080
 DEFAULT_FRONTEND_PORT = 5173
+WATCH_STATE_DIR = ROOT / ".ignore" / "local-dev"
+WATCH_PID_PATH = WATCH_STATE_DIR / "watch.pid"
+WATCH_LOG_PATH = WATCH_STATE_DIR / "watch.log"
 
 
 def dotenv_values() -> dict[str, str]:
@@ -99,6 +104,80 @@ def run(*args: str, env: dict[str, str] | None = None) -> None:
     subprocess.run(args, cwd=ROOT, env=env, check=True)
 
 
+def watch_process_command(pid: int) -> str | None:
+    result = subprocess.run(
+        ("ps", "-p", str(pid), "-o", "command="),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    command = result.stdout.strip()
+    return command or None
+
+
+def is_watch_process(pid: int) -> bool:
+    command = watch_process_command(pid)
+    if command is None:
+        return False
+    return command.endswith(f"{Path(__file__).resolve()} watch")
+
+
+def stop_watch() -> None:
+    if not WATCH_PID_PATH.is_file():
+        return
+
+    try:
+        pid = int(WATCH_PID_PATH.read_text().strip())
+    except (OSError, ValueError):
+        WATCH_PID_PATH.unlink(missing_ok=True)
+        return
+
+    if not is_watch_process(pid):
+        WATCH_PID_PATH.unlink(missing_ok=True)
+        return
+
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        WATCH_PID_PATH.unlink(missing_ok=True)
+        return
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and is_watch_process(pid):
+        time.sleep(0.1)
+
+    if is_watch_process(pid):
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    WATCH_PID_PATH.unlink(missing_ok=True)
+
+
+def start_watch(environment: dict[str, str]) -> None:
+    stop_watch()
+    WATCH_STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+    with WATCH_LOG_PATH.open("wb") as log_file:
+        process = subprocess.Popen(
+            (sys.executable, str(Path(__file__).resolve()), "watch"),
+            cwd=ROOT,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+    time.sleep(0.2)
+    if process.poll() is not None:
+        raise SystemExit(
+            f"Compose Watch failed to start; see {WATCH_LOG_PATH}"
+        )
+
+    WATCH_PID_PATH.write_text(f"{process.pid}\n")
+
+
 def start() -> None:
     inherited = dict(os.environ)
     dotenv = dotenv_values()
@@ -138,18 +217,27 @@ def start() -> None:
         "--output", os.devnull,
         f"http://127.0.0.1:{frontend_port}/src/main.tsx", env=environment,
     )
+    start_watch(environment)
     print(f"Frontend: http://127.0.0.1:{frontend_port}", flush=True)
     print(f"Backend:  http://127.0.0.1:{backend_port}", flush=True)
-    os.execvpe("docker", [*compose, "up", "--watch"], environment)
+    print("Container logs: cargo make dev-logs", flush=True)
+    print(f"Compose Watch output: tail -f {WATCH_LOG_PATH}", flush=True)
+
+
+def watch() -> None:
+    run("docker", "compose", "--profile", "dev", "watch", "--no-up")
 
 
 def main() -> None:
-    if len(sys.argv) != 2 or sys.argv[1] not in {"up", "down"}:
-        raise SystemExit("Usage: local_dev.py up|down")
+    if len(sys.argv) != 2 or sys.argv[1] not in {"up", "down", "watch"}:
+        raise SystemExit("Usage: local_dev.py up|down|watch")
     if sys.argv[1] == "down":
+        stop_watch()
         if shutil.which("docker") is None:
             raise SystemExit("Missing required tool: docker")
         run("docker", "compose", "--profile", "dev", "down")
+    elif sys.argv[1] == "watch":
+        watch()
     else:
         start()
 

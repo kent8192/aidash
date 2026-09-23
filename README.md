@@ -51,13 +51,16 @@ cargo make dev
 Open the printed Frontend URL and enter the token from `AIDASH_API_TOKEN`.
 The backend defaults to <http://127.0.0.1:18080>. If either default port is
 busy, the launcher selects the next available port and prints the resulting
-URLs. Set `AIDASH_BACKEND_PORT` or `AIDASH_FRONTEND_PORT` in `.env` to choose
+URLs. `cargo make dev` returns after starting the stack and Compose Watch in
+the background. Run `cargo make dev-logs` to follow container logs; Compose
+Watch output is saved to `.ignore/local-dev/watch.log`. Set `AIDASH_BACKEND_PORT`
+or `AIDASH_FRONTEND_PORT` in `.env` to choose
 host ports. Compose loads `AIDASH_SECRET_*`
 credentials from `.env` into the backend container. The local preflight reads
 extension metadata through SeaQuery; its single raw `CREATE EXTENSION` statement
-is documented because SeaQuery has no builder for that PostgreSQL DDL. Press
-Ctrl-C to stop the attached task; `cargo make dev-down` also stops the Compose
-services while retaining their data volumes. The example
+is documented because SeaQuery has no builder for that PostgreSQL DDL.
+`cargo make dev-down` stops the watcher and Compose services while retaining
+their data volumes. The example
 credentials and localhost bindings are for local development. Configure
 unique credentials and an HTTPS endpoint for a deployed node.
 

@@ -2,14 +2,19 @@
 default_to_workspace = false
 
 [tasks.dev]
-description = "Start the local Aidash stack with Compose and watch source changes"
+description = "Start the local Aidash stack in the background and watch source changes"
 command = "python3"
 args = ["scripts/local_dev.py", "up"]
 
 [tasks.dev-down]
-description = "Stop local Aidash infrastructure while keeping its data volumes"
+description = "Stop local Aidash watchers and infrastructure while keeping data volumes"
 command = "python3"
 args = ["scripts/local_dev.py", "down"]
+
+[tasks.dev-logs]
+description = "Follow local Aidash Compose service logs"
+command = "docker"
+args = ["compose", "--profile", "dev", "logs", "--follow"]
 
 [tasks.k8s-up]
 description = "Build and start Aidash with PostgreSQL, NATS, and Qdrant in a local kind cluster"
