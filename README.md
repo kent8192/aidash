@@ -38,31 +38,24 @@ the images and Helm release while keeping the existing cluster data.
 
 ### Docker Compose development
 
-Prerequisites: `cargo-make`, Python 3.9+, Docker Compose v2.24 or later, and
-`curl` for the local health checks. Rust 1.96 and Node.js 22 run inside the
-development images. The `dev` profile runs PostgreSQL, NATS, Qdrant, the
-backend, and Vite in containers. Compose Watch
-syncs frontend source changes and rebuilds the backend when Rust code changes:
+Prerequisites: `cargo-make` and Docker Compose v2.24 or later. Rust 1.96
+and Node.js 22 run inside the development images. Start PostgreSQL, NATS,
+Qdrant, the backend, and Vite in detached mode:
 
 ```sh
 cargo make dev
 ```
 
-Open the printed Frontend URL and enter the token from `AIDASH_API_TOKEN`.
-The backend defaults to <http://127.0.0.1:18080>. If either default port is
-busy, the launcher selects the next available port and prints the resulting
-URLs. `cargo make dev` returns after starting the stack and Compose Watch in
-the background. Run `cargo make dev-logs` to follow container logs; Compose
-Watch output is saved to `.ignore/local-dev/watch.log`. Set `AIDASH_BACKEND_PORT`
-or `AIDASH_FRONTEND_PORT` in `.env` to choose
-host ports. Compose loads `AIDASH_SECRET_*`
-credentials from `.env` into the backend container. The local preflight reads
-extension metadata through SeaQuery; its single raw `CREATE EXTENSION` statement
-is documented because SeaQuery has no builder for that PostgreSQL DDL.
-`cargo make dev-down` stops the watcher and Compose services while retaining
-their data volumes. The example
-credentials and localhost bindings are for local development. Configure
-unique credentials and an HTTPS endpoint for a deployed node.
+Open <http://127.0.0.1:5173> and enter the token from `AIDASH_API_TOKEN`
+(`local-development-token` by default). The backend is available at
+<http://127.0.0.1:18080>. Compose reads `.env` directly; set
+`AIDASH_BACKEND_PORT` or `AIDASH_FRONTEND_PORT` there to change host ports.
+Run `docker compose --profile dev logs -f` to follow logs and
+`cargo make dev-down` to stop the services while retaining their data volumes.
+Re-run `cargo make dev` to rebuild after source changes.
+
+The example credentials and localhost bindings are for local development.
+Configure unique credentials and an HTTPS endpoint for a deployed node.
 
 The [authorization API](docs/authorization.md) issues revocable subject tokens for tenant-scoped workspaces, approved Registry discovery, local agent execution and event streams. Workers recheck the root and delegated agents at every durable boundary. The dashboard supports subject tokens for local goals, conversations, human answers and run controls, and shows their tenant identity. Operators use **Access policies / アクセス制御** to edit role/attribute policies, simulate decisions, inspect audits, approve component versions and issue or revoke subject credentials. Scoped remote federation remains under implementation.
 
