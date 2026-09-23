@@ -76,7 +76,8 @@ services:
       qdrant:
         condition: service_started
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health"]
+      test:
+        ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health"]
       interval: 2s
       timeout: 5s
       retries: 120
@@ -97,7 +98,8 @@ services:
       target: dev-web
       args:
         CARGO_PROFILE: dev
-    command: ["npx", "vite", "--host", "0.0.0.0", "--port", "5173", "--strictPort"]
+    command:
+      ["npx", "vite", "--host", "0.0.0.0", "--port", "5173", "--strictPort"]
     environment:
       AIDASH_BACKEND: http://backend:8080
     ports:
@@ -106,7 +108,13 @@ services:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5173/src/main.tsx').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5173/src/main.tsx').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
       interval: 2s
       timeout: 5s
       retries: 30
