@@ -1,3 +1,5 @@
+import { ReferenceName } from "../record-view";
+import { RecordView } from "../record-view";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { workspaceGet } from "../generated/aidash";
@@ -193,7 +195,9 @@ export function Channel({
                 const label = (
                   <>
                     {agentLabel(agent.node, agent)}
-                    <small>{agent.node}</small>
+                    <small>
+                      <ReferenceName id={agent.node} />
+                    </small>
                   </>
                 );
                 return agent.node === data.node.id ? (
@@ -233,7 +237,9 @@ export function Channel({
                       id: item.run.agent_id,
                       version: item.run.agent_version,
                     })}
-                    <small>{item.node}</small>
+                    <small>
+                      <ReferenceName id={item.node} />
+                    </small>
                   </span>
                 </button>
               ))}
@@ -243,7 +249,7 @@ export function Channel({
                     {event.kind} ·{" "}
                     {new Date(event.created_at).toLocaleString(locale)}
                   </summary>
-                  <JsonView value={event.data} />
+                  <RecordView value={event.data} />
                 </details>
               ))}
             </>

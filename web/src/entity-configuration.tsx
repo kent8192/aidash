@@ -1,3 +1,6 @@
+import { useQuery } from "@tanstack/react-query";
+import { discover } from "./generated/aidash";
+import { ReferenceName } from "./record-view";
 import { SkillImport } from "./skill-import";
 import { useState } from "react";
 import type { State } from "./types";
@@ -282,6 +285,16 @@ export function EntityConfiguration({
     : { id: "", version: "1.0.0" };
   const [remoteId, setRemoteId] = useState("");
   const [remoteVersion, setRemoteVersion] = useState("1.0.0");
+  const discovery = useQuery({
+    queryKey: ["discovery", "tool-picker"],
+    queryFn: () => discover({}),
+    enabled: kind === "tool" && transport === "agent" && node !== data.node.id,
+    retry: false,
+  });
+  const remoteAgents = discovery.isError
+    ? []
+    : (discovery.data?.agents.filter((agent) => agent.node_id === node) ?? []);
+
   const config =
     kind === "skill"
       ? { instructions }
@@ -461,16 +474,22 @@ export function EntityConfiguration({
               <Field label={t("node")}>
                 <select
                   value={node}
-                  onChange={(event) => setNode(event.target.value)}
+                  onChange={(event) => {
+                    setNode(event.target.value);
+                    setRemoteId("");
+                    setRemoteVersion("1.0.0");
+                  }}
                 >
-                  <option value={data.node.id}>{data.node.id}</option>
+                  <option value={data.node.id}>
+                    <ReferenceName id={data.node.id} />
+                  </option>
                   {data.peers
                     .filter(
                       (peer) => peer.enabled && peer.node_id !== data.node.id,
                     )
                     .map((peer) => (
                       <option key={peer.node_id} value={peer.node_id}>
-                        {peer.node_id}
+                        <ReferenceName id={peer.node_id} />
                       </option>
                     ))}
                 </select>
@@ -480,20 +499,39 @@ export function EntityConfiguration({
               ) : (
                 <>
                   <Field label={t("toolRemoteAgentId")}>
-                    <input
+                    <select
                       required
-                      pattern="[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}"
-                      value={remoteId}
-                      onChange={(event) => setRemoteId(event.target.value)}
-                    />
+                      value={
+                        remoteAgents.some(
+                          ({ entity }) =>
+                            entity.id === remoteId &&
+                            entity.version === remoteVersion,
+                        )
+                          ? JSON.stringify([remoteId, remoteVersion])
+                          : ""
+                      }
+                      onChange={(event) => {
+                        const [id, version] = event.target.value
+                          ? (JSON.parse(event.target.value) as [string, string])
+                          : ["", "1.0.0"];
+                        setRemoteId(id);
+                        setRemoteVersion(version);
+                      }}
+                    >
+                      <option value="">{t("choose")}</option>
+                      {remoteAgents.map(({ entity }) => (
+                        <option
+                          key={`${entity.id}@${entity.version}`}
+                          value={JSON.stringify([entity.id, entity.version])}
+                        >
+                          {entityLabel(entity)}
+                        </option>
+                      ))}
+                    </select>
                   </Field>
-                  <Field label={t("toolRemoteAgentVersion")}>
-                    <input
-                      required
-                      value={remoteVersion}
-                      onChange={(event) => setRemoteVersion(event.target.value)}
-                    />
-                  </Field>
+                  {discovery.isError && (
+                    <p role="alert">{t("unavailableEntity")}</p>
+                  )}
                 </>
               )}
             </>

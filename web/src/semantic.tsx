@@ -1,3 +1,4 @@
+import { RecordView, useRecordLabels } from "./record-view";
 import { useRef, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -5,6 +6,7 @@ import {
   semanticIndex,
   semanticEntries,
   semanticPut,
+  workspaceGet,
   semanticDelete,
   semanticReindex,
   semanticSearch,
@@ -19,7 +21,7 @@ import type {
 } from "./generated/models";
 import type { State } from "./types";
 import { ApiError } from "./transport";
-import { Badge, Empty, Field, JsonView, Modal, Panel, useI18n } from "./ui";
+import { Badge, Empty, Field, Modal, Panel, useI18n } from "./ui";
 
 const semanticMessages: Record<string, string> = {
   "semantic backend unavailable or invalid; inspect index status and retry":
@@ -70,6 +72,7 @@ export function SemanticPage({ data }: { data: State }) {
         <SemanticWorkspace
           key={workspace}
           workspace={workspace}
+          data={data}
           operator={data.access.kind === "operator"}
         />
       ) : (
@@ -79,13 +82,37 @@ export function SemanticPage({ data }: { data: State }) {
   );
 }
 function SemanticWorkspace({
+  data,
   workspace,
   operator,
 }: {
+  data: State;
   workspace: string;
   operator: boolean;
 }) {
   const { t } = useI18n();
+  const labels = useRecordLabels();
+  const snapshot = useQuery({
+    queryKey: ["workspace", workspace],
+    queryFn: () => workspaceGet(workspace),
+    retry: false,
+    refetchInterval: 5000,
+  });
+  const available = snapshot.isError ? undefined : snapshot.data;
+  const artifacts = available?.artifacts ?? [];
+  const messages = available?.messages ?? [];
+  for (const artifact of artifacts)
+    labels.set(artifact.id, artifact.name || t("artifact"));
+  for (const message of messages)
+    labels.set(message.id, message.content.slice(0, 100) || t("message"));
+  const scopeLabel = (agent: string | null | undefined) =>
+    agent
+      ? (labels.get(agent) ?? t("unavailableEntity"))
+      : t("semanticWorkspaceScope");
+  const entryName = (entry: SemanticEntry) =>
+    entry.key.startsWith("agent-memory:")
+      ? `${scopeLabel(entry.agent)} · ${t("semanticMemoryText")}`
+      : entry.key;
   const describe = (message: string) => t(semanticMessages[message] ?? message);
   const client = useQueryClient();
   const [error, setError] = useState("");
@@ -235,7 +262,7 @@ function SemanticWorkspace({
                 <input name="query" required />
               </Field>
               <Field label={t("semanticAgent")}>
-                <input name="agent" placeholder="aidash://node/agent@version" />
+                <AgentScope data={data} />
               </Field>
               <Field label={t("semanticFilters")}>
                 <input name="metadata" defaultValue="{}" />
@@ -259,11 +286,12 @@ function SemanticWorkspace({
                       {t("revision")} {match.revision} ·{" "}
                       {match.score.toFixed(3)}
                     </small>
-                    <JsonView
+                    <RecordView
+                      labels={labels}
                       value={{
                         source: match.source,
                         metadata: match.metadata,
-                        agent: match.agent,
+                        agent: scopeLabel(match.agent),
                       }}
                     />
                   </article>
@@ -283,7 +311,7 @@ function SemanticWorkspace({
               entries.data?.map((entry) => (
                 <article className="semantic-entry" key={entry.id}>
                   <div>
-                    <strong>{entry.key}</strong>
+                    <strong>{entryName(entry)}</strong>
                     <Badge value={entry.state} />
                     <small>
                       {t("revision")} {entry.revision} · {entry.attempts}{" "}
@@ -293,9 +321,7 @@ function SemanticWorkspace({
                   {entry.last_error && (
                     <p className="error">{describe(entry.last_error)}</p>
                   )}
-                  <p className="muted">
-                    {entry.agent || t("semanticWorkspaceScope")}
-                  </p>
+                  <p className="muted">{scopeLabel(entry.agent)}</p>
                   <div className="actions">
                     <button disabled={busy} onClick={() => openEditing(entry)}>
                       {t("edit")}
@@ -378,6 +404,8 @@ function SemanticWorkspace({
       {editing && (
         <Modal title={t("semanticAdd")} close={closeDialogs}>
           <EntryForm
+            data={data}
+            sources={{ artifacts, messages }}
             entry={editing === "new" ? null : editing}
             busy={busy}
             submit={(draft) => mutate(() => semanticPut(workspace, draft))}
@@ -393,7 +421,7 @@ function SemanticWorkspace({
         <Modal title={t("semanticDelete")} close={closeDialogs}>
           <p>{t("semanticDeleteHelp")}</p>
           <p>
-            <strong>{deleting.key}</strong>
+            <strong>{entryName(deleting)}</strong>
           </p>
           <button
             className="primary"
@@ -537,10 +565,17 @@ function IndexForm({
   );
 }
 function EntryForm({
+  data,
+  sources,
   entry,
   busy,
   submit,
 }: {
+  data: State;
+  sources: {
+    artifacts: State["artifacts"];
+    messages: { id: string; content: string; created_at: string }[];
+  };
   entry: SemanticEntry | null;
   busy: boolean;
   submit: (draft: Parameters<typeof semanticPut>[1]) => Promise<void>;
@@ -575,14 +610,18 @@ function EntryForm({
         });
       }}
     >
-      <Field label={t("semanticKey")}>
-        <input
-          name="key"
-          required
-          readOnly={!!entry}
-          defaultValue={entry?.key ?? ""}
-        />
-      </Field>
+      {entry?.key.startsWith("agent-memory:") ? (
+        <input type="hidden" name="key" value={entry.key} />
+      ) : (
+        <Field label={t("semanticKey")}>
+          <input
+            name="key"
+            required
+            readOnly={!!entry}
+            defaultValue={entry?.key ?? ""}
+          />
+        </Field>
+      )}
       <Field label={t("semanticSourceKind")}>
         <select
           value={kind}
@@ -604,17 +643,47 @@ function EntryForm({
           />
         </Field>
       ) : (
-        <Field label={t("semanticSourceId")}>
-          <input
+        <Field label={t("semanticSource")}>
+          <select
             name="sourceId"
             required
-            readOnly={!!entry}
             defaultValue={source && source.kind !== "memory" ? source.id : ""}
-          />
+          >
+            <option value="">{t("choose")}</option>
+            {(kind === "artifact"
+              ? sources.artifacts.map((artifact) => ({
+                  id: artifact.id,
+                  label: artifact.name,
+                }))
+              : sources.messages.map((message) => ({
+                  id: message.id,
+                  label: `${message.content.slice(0, 100)} · ${new Date(message.created_at).toLocaleString()}`,
+                }))
+            )
+              .filter(
+                (option) =>
+                  !entry ||
+                  (source &&
+                    source.kind !== "memory" &&
+                    option.id === source.id),
+              )
+              .map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            {source &&
+              source.kind !== "memory" &&
+              !(
+                kind === "artifact" ? sources.artifacts : sources.messages
+              ).some((option) => option.id === source.id) && (
+                <option value={source.id}>{t("unavailableEntity")}</option>
+              )}
+          </select>
         </Field>
       )}
       <Field label={t("semanticAgent")}>
-        <input name="agent" defaultValue={entry?.agent ?? ""} />
+        <AgentScope data={data} initial={entry?.agent ?? ""} />
       </Field>
       <Field label={t("semanticFilters")}>
         <textarea
@@ -632,5 +701,33 @@ function EntryForm({
         {t("save")}
       </button>
     </form>
+  );
+}
+
+function AgentScope({
+  data,
+  initial = "",
+  id,
+}: {
+  data: State;
+  initial?: string;
+  id?: string;
+}) {
+  const { t, entityLabel } = useI18n();
+  const agents = data.registry.filter((entry) => entry.kind === "agent");
+  const reference = (entry: (typeof agents)[number]) =>
+    `${data.node.id}/agents/${entry.id}@${entry.version}`;
+  return (
+    <select id={id} name="agent" defaultValue={initial}>
+      <option value="">{t("semanticWorkspaceScope")}</option>
+      {agents.map((entry) => (
+        <option key={reference(entry)} value={reference(entry)}>
+          {entityLabel(entry)}
+        </option>
+      ))}
+      {initial && !agents.some((entry) => reference(entry) === initial) && (
+        <option value={initial}>{t("unavailableEntity")}</option>
+      )}
+    </select>
   );
 }

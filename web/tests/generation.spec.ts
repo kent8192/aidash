@@ -210,9 +210,6 @@ test("generation dashboard manages policy, approval, completion and retained his
       .getByRole("button", { name: "生成ポリシーを作成", exact: true })
       .click();
     const dialog = page.getByRole("dialog");
-    await dialog
-      .getByLabel("生成ポリシーID", { exact: true })
-      .fill("specialist");
     await dialog.getByLabel("名前 · English").fill("Research specialist");
     await dialog.getByLabel("名前 · 日本語").fill("調査スペシャリスト");
     await dialog
@@ -343,8 +340,8 @@ test("generation dashboard manages policy, approval, completion and retained his
         .getByRole("button", { name: "ポリシーで割り当て", exact: true })
         .click();
       await dialog
-        .getByLabel("生成ポリシーID", { exact: true })
-        .selectOption("specialist");
+        .getByLabel("生成ポリシー", { exact: true })
+        .selectOption({ index: 1 });
       await dialog
         .getByLabel("生成する理由", { exact: true })
         .fill(`Missing specialist: ${title}`);

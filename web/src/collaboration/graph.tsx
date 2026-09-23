@@ -1,3 +1,4 @@
+import { ReferenceName } from "../record-view";
 import { lazy, Suspense, useState } from "react";
 import type { State, Discovery, Run } from "../types";
 import { Badge, useI18n, useAgentLabel } from "../ui";
@@ -166,7 +167,9 @@ export function Graph({
                   id: item.run.agent_id,
                   version: item.run.agent_version,
                 })}
-                <small>{item.node}</small>
+                <small>
+                  <ReferenceName id={item.node} />
+                </small>
               </button>
             ))}
           </div>

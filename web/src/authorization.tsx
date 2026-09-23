@@ -1,3 +1,4 @@
+import { RecordView } from "./record-view";
 import { useState } from "react";
 import { PeerMappings } from "./peer-mappings";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -845,10 +846,10 @@ function HistoryPanel({
             <summary>
               {kind === "revisions"
                 ? `${t("revision")} ${record.revision} · ${record.actor}`
-                : `#${record.sequence} · ${record.subject} · ${record.action} · ${t(object(record.decision).allowed ? "authAllowed" : "authDenied")}`}
+                : `${record.subject} · ${record.action} · ${t(object(record.decision).allowed ? "authAllowed" : "authDenied")}`}
               <time>{String(record.created_at ?? "")}</time>
             </summary>
-            <JsonView value={value} />
+            <RecordView value={value} />
           </details>
         );
       })}

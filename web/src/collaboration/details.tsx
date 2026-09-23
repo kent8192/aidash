@@ -1,3 +1,5 @@
+import { ReferenceName } from "../record-view";
+import { RecordView } from "../record-view";
 import { useRef, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import {
@@ -333,7 +335,7 @@ export function OperationsDialog({
                             id: run.agent_id,
                             version: run.agent_version,
                           })}{" "}
-                          · {node.node_id}
+                          · <ReferenceName id={node.node_id} />
                         </button>
                       )),
                   )}
@@ -356,7 +358,7 @@ export function OperationsDialog({
               <>
                 <h2>{local(d.package.manifest.entity.name)}</h2>
                 <p>{local(d.package.manifest.entity.description)}</p>
-                <JsonView value={d.package.manifest} />
+                <RecordView value={d.package.manifest} />
                 <button
                   type="button"
                   className="primary"
@@ -442,7 +444,9 @@ function RunPanel({
       <h2>
         {agentLabel(node, { id: run.agent_id, version: run.agent_version })}
       </h2>
-      <p>{node}</p>
+      <p>
+        <ReferenceName id={node} />
+      </p>
       <Badge value={run.phase} />
       <Badge value={run.control} />
       {run.home_node === data.node.id && (

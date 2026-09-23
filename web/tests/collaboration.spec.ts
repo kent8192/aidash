@@ -321,12 +321,8 @@ test("remote channel participants are displayed without linking to the local gra
   await page
     .getByRole("button", { name: "Tasks and results", exact: true })
     .click();
-  const local = page
-    .locator(".collab-agent")
-    .filter({ hasText: "aidash://home" });
-  const remote = page
-    .locator(".collab-agent")
-    .filter({ hasText: "aidash://peer" });
+  const local = page.locator("button.collab-agent");
+  const remote = page.locator("div.collab-agent");
   await expect(local).toHaveCount(1);
   await expect(remote).toHaveCount(1);
   await expect(local).toContainText("Researcher · 1.0.0");
@@ -342,7 +338,7 @@ test("partial mesh responses tell operators which peer was omitted", async ({
   const { errors } = await setup(page, { meshErrors: true });
   await page.goto("/graph");
   await expect(
-    page.getByRole("status").filter({ hasText: "aidash://peer-down" }),
+    page.getByRole("status").filter({ hasText: "Unavailable item" }),
   ).toContainText("connection refused");
   expect(errors).toEqual([]);
 });

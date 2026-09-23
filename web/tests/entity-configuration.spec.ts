@@ -60,7 +60,31 @@ test.beforeEach(async ({ page }) => {
     if (path === "/api/mesh")
       return route.fulfill({ json: { nodes: [], errors: [] } });
     if (path === "/api/discover")
-      return route.fulfill({ json: { agents: [], errors: [] } });
+      return route.fulfill({
+        json: {
+          agents: [
+            {
+              node_id: "aidash://remote",
+              entity: {
+                id: "executor",
+                version: "1.0.0",
+                kind: "agent",
+                name: { en: "Remote executor" },
+              },
+            },
+            {
+              node_id: "aidash://remote",
+              entity: {
+                id: "researcher",
+                version: "3.0.0",
+                kind: "agent",
+                name: { en: "Remote researcher" },
+              },
+            },
+          ],
+          errors: [],
+        },
+      });
     return route.fulfill({ json: [] });
   });
   await page.goto("/registry");
@@ -203,8 +227,8 @@ for (const remote of [false, true]) {
         .getByLabel("Node", { exact: true })
         .selectOption("aidash://remote");
       await dialog
-        .getByLabel("Remote agent ID", { exact: true })
-        .fill("executor");
+        .getByLabel("Remote agent", { exact: true })
+        .selectOption({ label: "Remote executor · 1.0.0" });
     } else {
       await dialog
         .getByLabel("Executor agent")
@@ -474,11 +498,8 @@ test("remote agent tools identify the peer and exact executor", async ({
     .getByLabel("Node", { exact: true })
     .selectOption("aidash://remote");
   await dialog
-    .getByLabel("Remote agent ID", { exact: true })
-    .fill("researcher");
-  await dialog
-    .getByLabel("Remote agent version", { exact: true })
-    .fill("3.0.0");
+    .getByLabel("Remote agent", { exact: true })
+    .selectOption({ label: "Remote researcher · 3.0.0" });
   const posted = page.waitForRequest(
     (request) =>
       request.url().endsWith("/api/registry") && request.method() === "POST",

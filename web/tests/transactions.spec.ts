@@ -75,7 +75,7 @@ test("transaction dashboard survives reload during a partition, aborts safely an
       localStorage.setItem("aidash-locale", "en-US");
     });
     await page.goto("/transactions");
-    await page.getByLabel("Peer node ID", { exact: true }).fill(peerId);
+    await page.getByLabel("Peer node", { exact: true }).selectOption(peerId);
     await page
       .getByRole("button", { name: "Grant trust", exact: true })
       .click();
@@ -106,17 +106,44 @@ test("transaction dashboard survives reload during a partition, aborts safely an
       await page
         .getByRole("button", { name: "Create transaction", exact: true })
         .click();
-      await page
-        .getByLabel("Transaction manifest", { exact: true })
-        .fill(JSON.stringify(value, null, 2));
-      await page
+      const dialog = page.getByRole("dialog");
+      const mutation = value.participants.find(
+        (p) => p.node_id === session.node_id,
+      )!.mutations[0];
+      await dialog
+        .getByLabel("Workspace", { exact: true })
+        .selectOption(workspace.id);
+      await dialog
+        .getByLabel("Workspace state", { exact: true })
+        .fill(JSON.stringify(mutation.state));
+      await dialog
+        .getByLabel("Revision", { exact: true })
+        .fill(String(mutation.expected_revision));
+      if (value.participants.length > 1) {
+        await dialog
+          .getByRole("button", { name: "Add participant", exact: true })
+          .click();
+        await dialog
+          .getByLabel("Node", { exact: true })
+          .nth(1)
+          .selectOption(peerId);
+      }
+      await dialog
         .getByRole("button", { name: "Review changes", exact: true })
         .click();
-      await expect(page.getByRole("dialog")).toContainText(value.id);
-      await page
+      await expect(dialog).toContainText("Atomic dashboard");
+      const posted = page.waitForRequest(
+        (request) =>
+          request.url().endsWith("/api/transactions") &&
+          request.method() === "POST",
+      );
+      await dialog
         .getByRole("button", { name: "Submit transaction", exact: true })
         .click();
-      await expect(page.locator(".transaction-details")).toContainText(
+      Object.assign(value, (await posted).postDataJSON());
+      pending = value.id;
+      await expect(page.locator(".transaction-details")).toBeVisible();
+      await expect(page.locator(".transaction-details")).not.toContainText(
         value.id,
       );
     };
@@ -140,12 +167,11 @@ test("transaction dashboard survives reload during a partition, aborts safely an
     await expect(page.getByRole("alert")).toContainText(
       "atomic transaction visibility pending",
     );
-    const blockedLabel = await page.evaluate(
-      (manifest) =>
-        `${manifest.coordinator} · ${new Date(manifest.deadline).toLocaleString()}`,
-      blocked,
+    const blockedDeadline = await page.evaluate(
+      (deadline) => new Date(deadline).toLocaleString(),
+      blocked.deadline,
     );
-    await page.getByRole("button", { name: blockedLabel, exact: true }).click();
+    await page.getByRole("button").filter({ hasText: blockedDeadline }).click();
     await expect(page.locator(".transaction-details")).toContainText(
       "Preparing",
     );

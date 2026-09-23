@@ -1,6 +1,7 @@
 import { ArrowUpRight } from "lucide-react";
 import type { Entry, Run, State, Task } from "./types";
-import { Badge, JsonView, useI18n, useEntryLabel } from "./ui";
+import { Badge, useI18n } from "./ui";
+import { RecordView } from "./record-view";
 import { AgentRelationshipGraph } from "./agent-graph";
 import { graphCopy } from "./agent-graph/copy";
 import type { GraphNode } from "./agent-graph/model";
@@ -19,7 +20,6 @@ export function EntityDetails({
   open: (selection: Selection) => void;
 }) {
   const { local, t, locale, entityName } = useI18n();
-  const entryLabel = useEntryLabel(data.registry);
   // Re-resolve on every authorized snapshot instead of retaining the modal's old metadata.
   const current = data.registry.find(
     (value) =>
@@ -28,28 +28,6 @@ export function EntityDetails({
       value.kind === entity.kind,
   );
   if (!current) return <p role="status">{graphCopy[locale].unavailable}</p>;
-  const referenceNames = (value: unknown): unknown => {
-    if (Array.isArray(value)) return value.map(referenceNames);
-    if (value && typeof value === "object") {
-      const object = value as Record<string, unknown>;
-      if (
-        Object.keys(object).length === 2 &&
-        typeof object.id === "string" &&
-        typeof object.version === "string"
-      )
-        return entryLabel({ id: object.id, version: object.version });
-      return Object.fromEntries(
-        Object.entries(object).map(([key, item]) => [
-          key,
-          referenceNames(item),
-        ]),
-      );
-    }
-    return value;
-  };
-  const metadata = Object.fromEntries(
-    Object.entries(current).filter(([key]) => key !== "id"),
-  );
   const openNode = (node: GraphNode) => {
     if (!node.available) return;
     if (node.entity) {
@@ -106,7 +84,7 @@ export function EntityDetails({
             </button>
           ))}
       <h4>{t("metadata")}</h4>
-      <JsonView value={referenceNames(metadata)} />
+      <RecordView value={current} />
     </>
   );
 }

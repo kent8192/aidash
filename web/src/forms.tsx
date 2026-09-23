@@ -1,3 +1,4 @@
+import { ReferenceName } from "./record-view";
 import { AgentDocuments } from "./agent-documents";
 import type { ReferenceDocument } from "./generated/models";
 import { Fragment, useRef, useState } from "react";
@@ -714,7 +715,7 @@ export function AssignForm({
               value={JSON.stringify([a.node_id, a.entity.id, a.entity.version])}
               key={`${a.node_id}/${a.entity.id}@${a.entity.version}`}
             >
-              {entityLabel(a.entity)} · {a.node_id}
+              {entityLabel(a.entity)} · <ReferenceName id={a.node_id} />
             </option>
           ))}
         </select>

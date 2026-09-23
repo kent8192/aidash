@@ -1,3 +1,4 @@
+import { RecordView } from "./record-view";
 import { useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, ArrowUpRight } from "lucide-react";
@@ -298,8 +299,12 @@ export function GenerationPage({ data }: { data: State }) {
                         </strong>
                         <p>{request.reason}</p>
                         <small>
-                          {request.policy_id} · {t("revision")}{" "}
-                          {request.policy_revision}
+                          {local(
+                            policies.data?.find(
+                              (policy) => policy.id === request.policy_id,
+                            )?.spec.template.name ?? {},
+                          ) || t("unavailableEntity")}{" "}
+                          · {t("revision")} {request.policy_revision}
                         </small>
                       </div>
                       <Badge value={request.status} />
@@ -434,6 +439,7 @@ function PolicyEditor({
   save: (id: string, spec: GenerationSpec) => Promise<void>;
 }) {
   const { t, local } = useI18n();
+  const [policyId] = useState(() => policy?.id ?? crypto.randomUUID());
   const initial = policy?.spec;
   const config = initial?.template.config as AgentFields | undefined;
   const [model, setModel] = useState(config?.model ? key(config.model) : "");
@@ -477,7 +483,7 @@ function PolicyEditor({
         Array.isArray(attributes)
       )
         throw new Error(t("jsonHint"));
-      const id = text("id");
+      const id = policyId;
       const template: Entry = {
         id: initial?.template.id ?? `template-${id}`,
         version: text("version"),
@@ -546,16 +552,6 @@ function PolicyEditor({
   return (
     <form onSubmit={submit} className="generation-editor">
       <div className="two-columns">
-        <Field label={t("generationPolicyId")}>
-          <input
-            name="id"
-            required
-            readOnly={!!policy}
-            defaultValue={policy?.id}
-            maxLength={policy ? 256 : 80}
-            pattern="[a-zA-Z0-9][a-zA-Z0-9._-]*"
-          />
-        </Field>
         <Field label={t("version")}>
           <input
             name="version"
@@ -932,9 +928,10 @@ function RequestDetail({
         <dd>{config.skills?.map(entryLabel).join(", ") || "—"}</dd>
         <dt>{t("capabilities")}</dt>
         <dd>{request.definition.capabilities.join(", ") || "—"}</dd>
-        <dt>{t("generationPolicyId")}</dt>
+        <dt>{t("generationPolicy")}</dt>
         <dd>
-          {request.policy_id} · {t("revision")} {request.policy_revision}
+          {local(pinned.data?.template.name ?? {}) || t("unavailableEntity")} ·{" "}
+          {t("revision")} {request.policy_revision}
         </dd>
         <dt>{t("generationOrigin")}</dt>
         <dd>{request.subject_chain.join(" → ")}</dd>
@@ -1016,7 +1013,7 @@ function RequestDetail({
       )}
       <details>
         <summary>{t("generationDefinition")}</summary>
-        <JsonView value={request.definition} />
+        <RecordView value={request.definition} />
       </details>
       {request.status !== "DELETED" && (
         <form
@@ -1118,7 +1115,7 @@ export function GenerationAssignForm({
           {policies.error.message}
         </p>
       )}
-      <Field label={t("generationPolicyId")}>
+      <Field label={t("generationPolicy")}>
         <select name="policy" required defaultValue="">
           <option value="">{t("choose")}</option>
           {choices.map((policy) => (

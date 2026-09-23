@@ -1,6 +1,8 @@
+import { ReferenceName } from "../record-view";
+import { RecordView } from "../record-view";
 import type { ReactNode } from "react";
 import type { Package, State } from "../types";
-import { Badge, JsonView, Panel, useI18n } from "../ui";
+import { Badge, Panel, useI18n } from "../ui";
 import { GenerationPage } from "../generation";
 import { SemanticPage } from "../semantic";
 import { AuthorizationPage } from "../authorization";
@@ -185,8 +187,10 @@ export function Configuration({
             <>
               <Panel title={copy.node}>
                 <dl>
-                  <dt>{t("entityId")}</dt>
-                  <dd>{data.node.id}</dd>
+                  <dt>{copy.node}</dt>
+                  <dd>
+                    <ReferenceName id={data.node.id} />
+                  </dd>
                   <dt>{t("endpoint")}</dt>
                   <dd>{data.node.endpoint}</dd>
                   <dt>{t("protocol")}</dt>
@@ -219,7 +223,9 @@ export function Configuration({
                 >
                   {data.peers.map((peer) => (
                     <div className="peer-row" key={peer.node_id}>
-                      <strong>{peer.node_id}</strong>
+                      <strong>
+                        <ReferenceName id={peer.node_id} />
+                      </strong>
                       <p>{peer.endpoint}</p>
                       <Badge value={peer.enabled ? "ACTIVE" : "PAUSED"} />
                     </div>
@@ -228,7 +234,7 @@ export function Configuration({
               )}
               <details>
                 <summary>{t("metadata")}</summary>
-                <JsonView value={data.node} />
+                <RecordView value={data.node} />
               </details>
               <button type="button" onClick={disconnect}>
                 {copy.disconnect}
