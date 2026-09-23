@@ -20,7 +20,7 @@ The channel API accepts bounded attachment uploads, associates them with a messa
 
 ## Supported scope and remaining server contracts
 
-This interface is an initial vertical slice, not completion of the collaboration architecture described in `CONTEXT.md` and `docs/adr/`. It adds persisted thread history and channel attachment upload/download APIs while reusing the existing Workspace, task, human-request and run endpoints. The following are not implemented by this interface change:
+This interface is an initial vertical slice and does not complete the broader collaboration architecture described in the architecture decision records under `docs/adr/`. It adds persisted thread history and channel attachment upload/download APIs while reusing the existing Workspace, task, human-request and run endpoints. The following are not implemented by this interface change:
 
 - Channel memberships; channel/account eligibility lists and generation-policy opt-in; preparation-to-start transition for an existing channel.
 - Revisioned goals, automatic message-intent routing and batched agent response evaluation, goal-level completion/block/resumption, and post-completion result discussion.
