@@ -132,18 +132,54 @@ test("transaction dashboard survives reload during a partition, aborts safely an
       .toBe(503);
     await page.reload();
     await expect(
-      page.getByRole("heading", { name: "Waiting for transaction recovery" }),
+      page.getByRole("heading", { name: "Transactions", exact: true }),
     ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Create transaction", exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole("alert")).toContainText(
+      "atomic transaction visibility pending",
+    );
     await page.getByRole("button", { name: blocked.id, exact: true }).click();
     await expect(page.locator(".transaction-details")).toContainText(
       "Preparing",
     );
+    const detailResponses: Array<{
+      status: number;
+      complete?: boolean;
+      decision?: string;
+    }> = [];
+    page.on("response", async (response) => {
+      if (
+        new URL(response.url()).pathname !== `/api/transactions/${blocked.id}`
+      )
+        return;
+      const body = await response.json().catch(() => undefined);
+      detailResponses.push({
+        status: response.status(),
+        complete: body?.transaction?.complete,
+        decision: body?.transaction?.decision,
+      });
+    });
     await page
       .getByRole("button", { name: "Abort undecided transaction", exact: true })
       .click();
-    await expect(page.locator(".transaction-details > .badge")).toHaveText(
-      "Aborted",
-    );
+    await expect
+      .poll(
+        async () =>
+          (await api(`/api/transactions/${blocked.id}`)).transaction.complete,
+        { timeout: 30000 },
+      )
+      .toBe(true);
+    try {
+      await expect(page.locator(".transaction-details > .badge")).toHaveText(
+        "Aborted",
+      );
+    } catch (error) {
+      throw new Error(
+        `${String(error)}; browser detail responses: ${JSON.stringify(detailResponses)}`,
+      );
+    }
     expect(
       (await api(`/api/workspaces/${workspace.id}`)).workspace.state,
     ).toEqual({});
@@ -183,7 +219,7 @@ test("transaction dashboard survives reload during a partition, aborts safely an
       (await api(`/api/workspaces/${workspace.id}`)).workspace.revision,
     ).toBe(1);
     await page.getByRole("button", { name: "Close", exact: true }).click();
-    await page.getByLabel("Language", { exact: true }).selectOption("ja-JP");
+    await page.getByTestId("language-selector").selectOption("ja-JP");
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(
       page.getByRole("heading", { name: "分散トランザクション", exact: true }),

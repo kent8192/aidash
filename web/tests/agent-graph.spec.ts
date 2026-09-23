@@ -69,6 +69,8 @@ function fixture() {
     runs: [
       {
         id: "run-1",
+        workspace_id: "workspace-1",
+        home_node: "aidash://test",
         agent_id: "researcher",
         agent_version: "1.0.0",
         task_id: "task-1",
@@ -79,7 +81,16 @@ function fixture() {
         error: null,
       },
     ],
-    workspaces: [],
+    workspaces: [
+      {
+        id: "workspace-1",
+        title: "Research",
+        goal: "Collect evidence",
+        state: {},
+        revision: 1,
+        created_at: "2026-09-22T10:00:00Z",
+      },
+    ],
     artifacts: [],
     events: [],
     conversations: [],
@@ -111,8 +122,16 @@ async function setup(page: Page, locale = "en-US") {
             : path === "/api/discover"
               ? { agents: [], errors: [] }
               : path.startsWith("/api/runs/")
-                ? { invocations: [], memory: [] }
-                : [];
+                ? { run: data.runs[0], invocations: [], memory: [] }
+                : path === "/api/workspaces/workspace-1"
+                  ? {
+                      workspace: data.workspaces[0],
+                      tasks: data.tasks,
+                      artifacts: [],
+                      messages: [],
+                      events: [],
+                    }
+                  : [];
     await route.fulfill({ json });
   });
   await page.goto("/agents");
