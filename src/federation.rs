@@ -62,6 +62,17 @@ impl Federation {
 		limit: usize,
 	) -> Result<()> {
 		let home = Home::new(self.clone(), run.clone());
+		let existing = self
+			.store
+			.run_inputs(run.id)
+			.await?
+			.into_iter()
+			.find(|input| input.idempotency_key == key);
+		let history = if existing.is_none() && !home.local() {
+			self.historical_run_message_batch(run).await?
+		} else {
+			Vec::new()
+		};
 		let reserved_at_home = if home.local() {
 			false
 		} else if home.reserve_run_message(key, content).await? {
@@ -71,13 +82,7 @@ impl Federation {
 				"remote home cannot atomically reserve run messages".into(),
 			));
 		};
-		if let Some(input) = self
-			.store
-			.run_inputs(run.id)
-			.await?
-			.into_iter()
-			.find(|input| input.idempotency_key == key)
-		{
+		if let Some(input) = existing {
 			if input.content != content {
 				return Err(Error::Conflict("run message idempotency key reused".into()));
 			}
@@ -86,10 +91,17 @@ impl Federation {
 			}
 			return Ok(());
 		}
-		let admission = self
-			.store
-			.accept_run_message(run.id, sender, content, key, limit)
-			.await;
+		let admission = if reserved_at_home {
+			self.store
+				.import_remote_run_messages_and_accept(
+					run.id, &history, sender, content, key, limit,
+				)
+				.await
+		} else {
+			self.store
+				.accept_run_message(run.id, sender, content, key, limit)
+				.await
+		};
 		if let Err(error) = admission {
 			if matches!(error, Error::Conflict(_))
 				&& self
@@ -233,9 +245,16 @@ impl Federation {
 		if run.home_node == self.config.node_id {
 			return Ok(());
 		}
+		let limit = self.run_message_limit(run).await?;
+		let batch = self.historical_run_message_batch(run).await?;
+		self.store
+			.import_remote_run_messages(run.id, &batch, limit)
+			.await
+	}
+
+	async fn historical_run_message_batch(&self, run: &Run) -> Result<Vec<(String, Message)>> {
 		let home = Home::new(self.clone(), run.clone());
 		let prefix = format!("{}:{}:", self.config.node_id, run.task_id);
-		let limit = self.run_message_limit(run).await?;
 		let mut batch = Vec::new();
 		for message in home.historical_run_messages().await? {
 			let key = message
@@ -251,9 +270,7 @@ impl Federation {
 			batch.push((key.to_owned(), message));
 		}
 		batch.sort_by_key(|(_, message)| (message.created_at, message.id));
-		self.store
-			.import_remote_run_messages(run.id, &batch, limit)
-			.await
+		Ok(batch)
 	}
 	pub async fn recover_historical_run_message(
 		&self,

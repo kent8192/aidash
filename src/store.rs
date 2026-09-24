@@ -2360,6 +2360,46 @@ impl Store {
 		tx.commit().await?;
 		Ok(())
 	}
+	/// Import the remote home's existing message history before admitting a new
+	/// input, under one run-row lock and transaction so a new sequence cannot
+	/// overtake a pre-ledger correction.
+	pub async fn import_remote_run_messages_and_accept(
+		&self,
+		run_id: Uuid,
+		messages: &[(String, Message)],
+		sender: &str,
+		content: &str,
+		key: &str,
+		max_input_tokens: usize,
+	) -> Result<()> {
+		let mut tx = self.pool.begin().await?;
+		let current: Run = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
+				.from(sea_orm::sea_query::Alias::new("runs"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.fetch_one(&mut *tx)
+		.await?;
+		for (message_key, message) in messages {
+			self.import_remote_run_message_in(
+				&mut tx,
+				run_id,
+				&current,
+				message_key,
+				message,
+				max_input_tokens,
+			)
+			.await?;
+		}
+		self.accept_run_message_in(&mut tx, run_id, sender, content, key, max_input_tokens)
+			.await?;
+		tx.commit().await?;
+		Ok(())
+	}
 	async fn import_remote_run_message_in(
 		&self,
 		tx: &mut Transaction<'_, Postgres>,

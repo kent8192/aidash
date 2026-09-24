@@ -128,6 +128,135 @@ async fn old_peer_workspace_compat(
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL and peer fixture credential"]
+async fn remote_admission_imports_legacy_history_before_new_input() {
+	let (mut home, home_url, home_schema) = setup().await;
+	let (mut executor, executor_url, executor_schema) = setup().await;
+	executor.config.node_id = "aidash://ordered-run-message-executor".into();
+	executor.store.node_id = executor.config.node_id.clone();
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	home.config.endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let mode = Arc::new(PeerMode {
+		old_peer: AtomicBool::new(false),
+		delivery_outage: AtomicBool::new(false),
+	});
+	let home_app = api::router(home.clone()).layer(axum::middleware::from_fn_with_state(
+		mode,
+		old_peer_workspace_compat,
+	));
+	let executor_app = api::router(executor.clone());
+	bootstrap(&home, &home_app, "http://127.0.0.1:9").await;
+	bootstrap(&executor, &executor_app, "http://127.0.0.1:9").await;
+	add_peer(&home, &executor.config.node_id, "http://127.0.0.1:9").await;
+	add_peer(&executor, &home.config.node_id, &home.config.endpoint).await;
+	let server = tokio::spawn(async move { axum::serve(listener, home_app).await.unwrap() });
+	let workspace = home
+		.store
+		.create_workspace("Legacy run history", "Preserve correction order")
+		.await
+		.unwrap();
+	let task = home
+		.store
+		.create_task(
+			workspace.id,
+			&NewTask {
+				title: "Apply corrections".into(),
+				description: "Respond to the latest instruction".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"human",
+			None,
+		)
+		.await
+		.unwrap();
+	let agent = home.registry.get("research", "1.0.0").await.unwrap();
+	let owner = qualified_agent(&executor.config.node_id, &agent.id, &agent.version);
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("delegations"))
+			.columns([
+				Alias::new("task_id"),
+				Alias::new("node_id"),
+				Alias::new("agent_id"),
+				Alias::new("agent_version"),
+			])
+			.values_panic([
+				Expr::cust("$1"),
+				Expr::cust("$2"),
+				Expr::cust("$3"),
+				Expr::cust("$4"),
+			])
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(task.id)
+	.bind(&executor.config.node_id)
+	.bind(&agent.id)
+	.bind(&agent.version)
+	.execute(&home.store.pool)
+	.await
+	.unwrap();
+	let task = home
+		.store
+		.claim(task.id, task.revision, &owner, &agent)
+		.await
+		.unwrap();
+	let task = home
+		.store
+		.transition(task.id, task.revision, &owner, "RUNNING")
+		.await
+		.unwrap();
+	let run = executor
+		.store
+		.accept_run(&task, &home.config.node_id, &agent.id, &agent.version)
+		.await
+		.unwrap();
+	let home_db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(home.store.pool.clone());
+	Migrator::down(&home_db, Some(3)).await.unwrap();
+	let old_key = Uuid::new_v4();
+	home.store
+		.message(
+			workspace.id,
+			&format!("human@{}", executor.config.node_id),
+			"older correction from before the ledger",
+			Some(&format!(
+				"{}:{}:human:{}:{old_key}",
+				executor.config.node_id, task.id, run.id
+			)),
+		)
+		.await
+		.unwrap();
+	Migrator::up(&home_db, None).await.unwrap();
+	let new_key = format!("human:{}:{}", run.id, Uuid::new_v4());
+	executor
+		.admit_run_message(
+			&run,
+			"human",
+			"newer correction",
+			&new_key,
+			executor.run_message_limit(&run).await.unwrap(),
+		)
+		.await
+		.unwrap();
+	let inputs = executor.store.run_inputs(run.id).await.unwrap();
+	let old_seq = inputs
+		.iter()
+		.find(|input| input.content == "older correction from before the ledger")
+		.unwrap()
+		.seq;
+	let new_seq = inputs
+		.iter()
+		.find(|input| input.content == "newer correction")
+		.unwrap()
+		.seq;
+	assert!(old_seq < new_seq);
+	server.abort();
+	cleanup(home, &home_url, &home_schema).await;
+	cleanup(executor, &executor_url, &executor_schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
 async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 	let (mut home, home_url, home_schema) = setup().await;
 	let (mut executor, executor_url, executor_schema) = setup().await;

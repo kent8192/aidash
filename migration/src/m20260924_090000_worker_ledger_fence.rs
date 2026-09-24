@@ -65,11 +65,25 @@ CREATE FUNCTION gate_legacy_run_output() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
     uuid_pattern CONSTANT text := '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}';
     target_run uuid;
+    target_task uuid;
+    peer_key_parts text[];
 BEGIN
     IF NEW.idempotency_key ~ ('^' || uuid_pattern || ':[0-9]+:output$') THEN
         target_run := split_part(NEW.idempotency_key, ':', 1)::uuid;
+    ELSIF NEW.idempotency_key ~ ('^.*:' || uuid_pattern || ':' || uuid_pattern || ':[0-9]+:output$') THEN
+        peer_key_parts := regexp_match(
+            NEW.idempotency_key,
+            '^.*:(' || uuid_pattern || '):(' || uuid_pattern || '):[0-9]+:output$'
+        );
+        target_task := peer_key_parts[1]::uuid;
+        target_run := peer_key_parts[2]::uuid;
+    END IF;
+
+    IF target_run IS NOT NULL THEN
         PERFORM id FROM runs
-        WHERE id = target_run AND workspace_id = NEW.workspace_id
+        WHERE id = target_run
+          AND workspace_id = NEW.workspace_id
+          AND (target_task IS NULL OR task_id = target_task)
         FOR UPDATE;
         IF FOUND
             AND current_setting('aidash.input_ledger_worker', true) IS DISTINCT FROM 'true'

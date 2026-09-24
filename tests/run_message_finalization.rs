@@ -1,6 +1,11 @@
 mod common;
 
-use aidash::{api, domain::qualified_agent, federation::Home, harness::Harness};
+use aidash::{
+	api,
+	domain::{ArtifactInput, qualified_agent},
+	federation::Home,
+	harness::Harness,
+};
 use axum::{Json, Router, routing::post};
 use common::{bootstrap, cleanup, request, setup};
 use serde_json::{Value, json};
@@ -91,6 +96,22 @@ async fn old_worker_cannot_lease_after_input_ledger_admission() {
 			.await
 			.is_err()
 	);
+	let peer_output_key = format!(
+		"{}:{}:{}:{}:output",
+		f.store.node_id, run.task_id, run.id, run.step
+	);
+	assert!(
+		f.store
+			.message_record(
+				run.workspace_id,
+				"agent",
+				"stale peer-prefixed response",
+				Some(&peer_output_key),
+			)
+			.await
+			.is_err(),
+		"peer-prefixed legacy output must be fenced too"
+	);
 	Home::new(f.clone(), leased.clone())
 		.response_message(
 			upgraded_worker,
@@ -163,6 +184,40 @@ async fn old_worker_cannot_lease_after_input_ledger_admission() {
 		.await
 		.unwrap_err();
 	assert!(error.to_string().contains("requires an upgraded worker"));
+	let task = f.store.task(run.task_id).await.unwrap();
+	let task = if task.status == "CLAIMED" {
+		f.store
+			.transition(
+				task.id,
+				task.revision,
+				task.owner.as_deref().unwrap(),
+				"RUNNING",
+			)
+			.await
+			.unwrap()
+	} else {
+		task
+	};
+	let artifact = ArtifactInput {
+		kind: "text".into(),
+		name: "stale response".into(),
+		content: json!("stale response"),
+	};
+	let error = f
+		.store
+		.complete(
+			task.id,
+			task.owner.as_deref().unwrap(),
+			"legacy-completion",
+			&artifact,
+		)
+		.await
+		.unwrap_err();
+	assert!(
+		error.to_string().contains("run messages await inference"),
+		"legacy completion must be rejected by the unobserved input fence, got: {error}"
+	);
+	assert_eq!(f.store.task(task.id).await.unwrap().status, "RUNNING");
 	f.store.release_lease(run.id, stale_worker).await.unwrap();
 	cleanup(f, &url, &schema).await;
 }

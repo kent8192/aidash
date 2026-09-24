@@ -65,10 +65,7 @@ impl IntoResponse for Error {
 					.as_database_error()
 					.is_some_and(|e| e.code().as_deref() == Some("A3301")) =>
 			{
-				(
-					StatusCode::CONFLICT,
-					"remote run messages await inference".into(),
-				)
+				(StatusCode::CONFLICT, "run messages await inference".into())
 			}
 			Self::Database(error)
 				if error
