@@ -1,6 +1,9 @@
 //! Resolve public Skill packages from GitHub or skills.sh without executing
 //! repository content or forwarding user-controlled URLs to arbitrary hosts.
-use crate::{Error, Result, registry::SkillFile};
+use crate::{
+	Error, Result,
+	registry::{SkillFile, valid_skill_file_path},
+};
 use base64::Engine;
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
@@ -454,6 +457,11 @@ fn resource_paths(tree: &Tree, skill_path: &str) -> Result<Vec<String>> {
 		})
 		.map(str::to_owned)
 		.collect::<Vec<_>>();
+	if paths.iter().any(|path| !valid_skill_file_path(path)) {
+		return Err(Error::Invalid(
+			"GitHub Skill contains a file path the registry cannot store".into(),
+		));
+	}
 	paths.sort();
 	if paths.len() > MAX_FILES {
 		return Err(Error::Invalid("Skill contains more than 64 files".into()));
@@ -470,14 +478,7 @@ fn imported_snapshot(url: &str, snapshot: SkillsShSnapshot) -> Result<ImportResu
 	let mut total = 0;
 	let mut paths = std::collections::HashSet::new();
 	for file in snapshot.files {
-		if file.path.is_empty()
-			|| file.path.len() > 240
-			|| file.path.contains('\\')
-			|| file
-				.path
-				.split('/')
-				.any(|part| part.is_empty() || part == "." || part == ".." || part.starts_with('.'))
-			|| file.path.chars().any(char::is_control)
+		if !valid_skill_file_path(&file.path)
 			|| file.contents.contains('\0')
 			|| !paths.insert(file.path.clone())
 		{
@@ -935,5 +936,39 @@ mod tests {
 			resource_paths(&tree, "skills/one/SKILL.md").unwrap(),
 			vec!["SKILL.md", "references/guide.md"]
 		);
+	}
+
+	#[test]
+	fn rejects_github_resource_paths_that_registry_cannot_store() {
+		let tree_with = |path: String| Tree {
+			truncated: false,
+			tree: vec![
+				TreeEntry {
+					path: "skills/example/SKILL.md".into(),
+					kind: "blob".into(),
+					sha: "skill".into(),
+				},
+				TreeEntry {
+					path: format!("skills/example/{path}"),
+					kind: "blob".into(),
+					sha: "resource".into(),
+				},
+			],
+		};
+		let prefix = "references/";
+		let longest = format!("{prefix}{}", "界".repeat(76)) + "x";
+		assert_eq!(longest.len(), 240);
+		assert!(resource_paths(&tree_with(longest), "skills/example/SKILL.md").is_ok());
+		for path in [
+			format!("{prefix}{}", "界".repeat(76)) + "xx",
+			"references/bad\\name.md".into(),
+			"references/bad\nname.md".into(),
+			"references//guide.md".into(),
+		] {
+			assert!(
+				resource_paths(&tree_with(path.clone()), "skills/example/SKILL.md").is_err(),
+				"{path:?}"
+			);
+		}
 	}
 }

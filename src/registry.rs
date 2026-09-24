@@ -112,6 +112,16 @@ pub fn skill_files(entry: &Entry) -> Result<Vec<SkillFile>> {
 	Ok(files)
 }
 
+pub(crate) fn valid_skill_file_path(path: &str) -> bool {
+	!path.is_empty()
+		&& path.len() <= 240
+		&& !path.contains('\\')
+		&& !path
+			.split('/')
+			.any(|part| part.is_empty() || part == "." || part == ".." || part.starts_with('.'))
+		&& !path.chars().any(char::is_control)
+}
+
 pub fn skill_instructions(entry: &Entry) -> Result<String> {
 	let mut instructions = entry.config["instructions"]
 		.as_str()
@@ -623,12 +633,7 @@ fn validate_in(e: &Entry, local: bool) -> Result<()> {
 				if total_bytes > 256_000 {
 					return Err(Error::Invalid("skill files exceed 256 KB".into()));
 				}
-				if file.path.is_empty()
-					|| file.path.len() > 240
-					|| file.path.contains('\\')
-					|| file.path.split('/').any(|part| {
-						part.is_empty() || part == "." || part == ".." || part.starts_with('.')
-					}) || file.path.chars().any(char::is_control)
+				if !valid_skill_file_path(&file.path)
 					|| file.content.contains('\0')
 					|| !paths.insert(file.path)
 				{
