@@ -54,7 +54,9 @@ const OperationsDialog = lazy(() =>
 import { collaborationCopy } from "./collaboration/copy";
 import {
   chooseChannel,
+  parseQuery,
   resolveLocation,
+  stringifyQuery,
   type Destination,
   type SettingsSection,
 } from "./collaboration/model";
@@ -945,6 +947,8 @@ const sectionRoute = createRoute({
 });
 const router = createRouter({
   routeTree: rootRoute.addChildren([indexRoute, sectionRoute]),
+  parseSearch: parseQuery,
+  stringifySearch: stringifyQuery,
 });
 declare module "@tanstack/react-router" {
   interface Register {
