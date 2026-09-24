@@ -330,12 +330,22 @@ async fn visible_messages_and_events_survive_a_denied_burst() {
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	f.store
-		.message(workspace, "allowed", "older-visible", None)
+		.message(
+			workspace,
+			"allowed",
+			"older-visible",
+			Some("visible-message-old"),
+		)
 		.await
 		.unwrap();
-	for _ in 0..110 {
+	for index in 0..110 {
 		f.store
-			.message(workspace, "denied", "private", None)
+			.message(
+				workspace,
+				"denied",
+				"private",
+				Some(&format!("denied-message-{index}")),
+			)
 			.await
 			.unwrap();
 	}
