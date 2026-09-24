@@ -1241,6 +1241,19 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 		.unwrap()
 		.seq;
 	executor.acknowledge_run_messages(&observed).await.unwrap();
+	// Migration also backfills the historical message for the other run.
+	// Acknowledging this run cannot consume that separate run's correction.
+	assert!(
+		home.store
+			.transition(task.id, current_task.revision, &owner, "CANCELLED")
+			.await
+			.is_err(),
+		"backfilled corrections for another run must still fence termination"
+	);
+	terminal_history_home
+		.acknowledge_run_messages(std::slice::from_ref(&terminal_history_key))
+		.await
+		.unwrap();
 	home.store
 		.transition(task.id, current_task.revision, &owner, "CANCELLED")
 		.await
