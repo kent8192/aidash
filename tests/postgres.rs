@@ -1213,6 +1213,71 @@ async fn child_creation_and_parent_completion_are_serialized() {
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
+async fn skill_reads_fit_the_pending_request_budget_before_recording() {
+	let (store, url, schema) = setup().await;
+	let f = federation_for(&store);
+	f.registry
+		.register(entry(
+			"skill",
+			"bundled-skill",
+			json!({"instructions":"Read references/guide.md","files":[{"path":"references/guide.md","content":"界".repeat(3000)}]}),
+		))
+		.await
+		.unwrap();
+	let mut agent = seed(&f.registry).await;
+	agent.id = "skilled-agent".into();
+	agent.config["skills"] = json!([{"id":"bundled-skill","version":"1.0.0"}]);
+	f.registry.register(agent.clone()).await.unwrap();
+	let workspace = store
+		.create_workspace("Skill read", "Read a bundled guide")
+		.await
+		.unwrap();
+	let task = running_task(&store, &agent, workspace.id, None).await;
+	let response = aidash::provider::ModelResponse {
+		tool_calls: vec![aidash::provider::ToolCall {
+			id: "read-guide".into(),
+			name: "skill_read".into(),
+			arguments: json!({"skill":{"id":"bundled-skill","version":"1.0.0"},"path":"references/guide.md","offset":0,"max_chars":8000}),
+		}],
+		..Default::default()
+	};
+	sqlx::query(
+		&sea_orm::sea_query::Query::update()
+			.table(sea_orm::sea_query::Alias::new("runs"))
+			.value(
+				sea_orm::sea_query::Alias::new("phase"),
+				sea_orm::sea_query::Expr::cust("'TOOL_CALL'"),
+			)
+			.value(
+				sea_orm::sea_query::Alias::new("pending"),
+				sea_orm::sea_query::Expr::cust("$2"),
+			)
+			.and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(task.id)
+	.bind(json!({"response":response,"cursor":0,"request_tokens":7500,"request_window":10000}))
+	.execute(&store.pool)
+	.await
+	.unwrap();
+	aidash::harness::Harness {
+		federation: f.clone(),
+	}
+	.worker_once()
+	.await
+	.unwrap();
+	let run = store.runs().await.unwrap().remove(0);
+	let result = &run.context["history"][0]["result"];
+	let text = result["text"].as_str().unwrap();
+	assert!(!text.is_empty() && text.len() < 8000);
+	assert_eq!(result["budget_limited"], true);
+	assert_eq!(result["next_offset"], text.len());
+	assert!(run.pending["request_tokens"].as_u64().unwrap() <= 10000);
+	cleanup(store, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
 async fn unavailable_tools_are_results_and_child_gating_advances_step() {
 	let (store, url, schema) = setup().await;
 	let f = federation_for(&store);

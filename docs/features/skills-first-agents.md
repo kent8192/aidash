@@ -7,17 +7,31 @@ policy templates also accept Skills without additional instructions.
 
 ## Importing existing Skills
 
-In Registry, choose `skill` in the registration form and import `SKILL.md`.
-The importer validates YAML `name` and `description` fields, preserves the complete
-Markdown (including license metadata), and lets the operator review it before saving.
+In Registry, choose `skill` in the registration form. Enter a public GitHub
+repository, root tree (`/tree/<ref>`) or Skill directory (`/tree/<ref>/<path>`),
+`SKILL.md` blob or raw URL, or upload a local `SKILL.md`. A
+`skills.sh/<owner>/<repo>/<skill>` page URL loads
+the registry's complete snapshot; a `skills.sh/<owner>/<repo>` URL lists
+Skills from its GitHub repository. Repository URLs list discovered Skills for
+selection.
+The GitHub importer pins the source to a commit and copies files from the
+selected Skill directory (up to 64 files and 256 KB total). Binary assets are
+stored as base64 and oversized packages are rejected. Root-level Skills load
+`SKILL.md` and common `references/`, `scripts/`, `assets/`, and `templates/`
+directories. The importer
+validates YAML `name` and `description` fields, preserves the complete Markdown
+(including license metadata), and lets the operator review all imported text
+before saving. Private repositories, arbitrary hosts, packs, and archive URLs
+are not supported by this importer.
 The UI links to the Anthropic and OpenAI Skills repositories; it does not bundle or
 relicense their content. Register a new version when adopting an upstream update.
 
-This is an instruction-file importer, not a complete execution environment for
-arbitrary Skill packages. Scripts, referenced files, and assets are not imported or
-run. Configure the tools a Skill needs separately. A Skill that requires a shell,
-Python, or missing companion resources will need those capabilities before its
-workflow can be followed. Do not infer tool permissions from `allowed-tools`.
+At runtime, the agent sees the Skill instructions and the paths of its bundled
+files. It can read those files on demand with `skill_read`, bound to its exact
+registered Skill version. Reads preserve UTF-8 character boundaries, and an
+unknown file path is returned as a recoverable tool error. Bundled scripts remain
+text and are not run. Configure the tools a Skill needs separately; do not infer
+tool permissions from `allowed-tools`.
 
 Format reference: <https://agentskills.io/specification>.
 Sources: <https://github.com/anthropics/skills>, <https://github.com/openai/skills>.

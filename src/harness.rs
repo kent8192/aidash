@@ -357,15 +357,14 @@ impl Harness {
 				}
 				let mut instructions = crate::context::agent_instructions("");
 				for skill in &agent.skills {
-					let skill = self
+					let entry = self
 						.federation
 						.registry
 						.get(&skill.id, &skill.version)
 						.await?;
-					if let Some(text) = skill.config["instructions"].as_str() {
-						instructions.push('\n');
-						instructions.push_str(text);
-					}
+					instructions.push('\n');
+					instructions.push_str(&format!("Skill {}@{}:\n", skill.id, skill.version));
+					instructions.push_str(&crate::registry::skill_instructions(&entry)?);
 				}
 				instructions.push_str("\nAdditional user instructions:\n");
 				instructions.push_str(&agent.instructions);
@@ -378,6 +377,9 @@ impl Harness {
 				let mut pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":observation,"memory":store.memory(run).await?,"agent_state":{"phase":run.phase,"step":run.step}});
 				if let Some(deferred_read) = run.pending.get("deferred_workspace_read") {
 					pinned["deferred_workspace_read"] = deferred_read.clone();
+				}
+				if let Some(deferred_read) = run.pending.get("deferred_skill_read") {
+					pinned["deferred_skill_read"] = deferred_read.clone();
 				}
 				if let Some(deferred_observation) =
 					run.pending.get("deferred_workspace_observation")
@@ -589,10 +591,12 @@ impl Harness {
 							.as_bool()
 							.unwrap_or(false);
 						let deferred_read = run.pending.get("deferred_workspace_read").cloned();
+						let deferred_skill_read = run.pending.get("deferred_skill_read").cloned();
 						run.pending = if force_read_compaction {
 							json!({
-								"force_workspace_read_compaction":true,
-								"deferred_workspace_read":deferred_read
+									"force_workspace_read_compaction":true,
+									"deferred_workspace_read":deferred_read,
+									"deferred_skill_read":deferred_skill_read
 							})
 						} else {
 							json!({})
@@ -664,6 +668,74 @@ impl Harness {
 							}
 							Err(error) => return Err(error),
 						}
+					}
+				}
+				if call.name == "skill_read" {
+					let range = match skill_read_range(&call) {
+						Ok(range) => range,
+						Err(Error::Invalid(message)) => {
+							return self.tool_error(run, token, &call, cursor, message).await;
+						}
+						Err(error) => return Err(error),
+					};
+					let saved_plan = &run.pending["skill_read_plan"];
+					let saved_output = (saved_plan["step"].as_i64() == Some(run.step as i64)
+						&& saved_plan["cursor"].as_u64() == Some(cursor as u64)
+						&& saved_plan["call"] == json!(call))
+					.then(|| saved_plan.get("result").cloned())
+					.flatten();
+					if let Some(output) = saved_output {
+						prepared_result = Some(output);
+					} else {
+						let ctx = ToolContext {
+							home: home.clone(),
+							store: store.clone(),
+							run: run.clone(),
+						};
+						let output = match builtins()
+							.get("skill_read")
+							.expect("skill_read builtin")
+							.invoke(&ctx, call.arguments.clone(), "")
+							.await
+						{
+							Ok(output) => output,
+							Err(Error::Invalid(message)) => {
+								return self.tool_error(run, token, &call, cursor, message).await;
+							}
+							Err(error) => return Err(error),
+						};
+						let request_tokens =
+							run.pending["request_tokens"].as_u64().unwrap_or(0) as usize;
+						let request_window =
+							run.pending["request_window"].as_u64().unwrap_or(0) as usize;
+						let budget = WorkspaceReadFitBudget {
+							requested: range.requested,
+							offset: range.offset,
+							request_tokens,
+							request_window,
+							remaining_calls: result.tool_calls.len().saturating_sub(cursor + 1),
+						};
+						let Some(chars) = fit_skill_read_chars(&context, &call, &output, budget)
+						else {
+							run.phase = "THINKING".into();
+							run.step += 1;
+							run.pending = json!({
+								"force_workspace_read_compaction":true,
+								"deferred_skill_read":deferred_skill_read(&call)
+							});
+							store
+								.save_run(run, token, "run.skill_read_deferred")
+								.await?;
+							return Ok(());
+						};
+						call.arguments["max_chars"] = json!(chars);
+						result.tool_calls[cursor] = call.clone();
+						run.pending["response"] = json!(result);
+						let bounded = skill_read_result(&output, chars);
+						run.pending["skill_read_plan"] = json!({
+							"step":run.step,"cursor":cursor,"call":call,"result":bounded
+						});
+						prepared_result = Some(bounded);
 					}
 				}
 				if call.name == "workspace_observe" {
@@ -802,6 +874,12 @@ impl Harness {
 					&& let Some(object) = run.pending.as_object_mut()
 				{
 					object.remove("workspace_read_plan");
+				}
+				if run.pending["skill_read_plan"]["step"].as_i64() == Some(run.step as i64)
+					&& run.pending["skill_read_plan"]["cursor"].as_u64() == Some(cursor as u64)
+					&& let Some(object) = run.pending.as_object_mut()
+				{
+					object.remove("skill_read_plan");
 				}
 				if run.pending["workspace_observation_plan"]["step"].as_i64()
 					== Some(run.step as i64)
@@ -1096,6 +1174,96 @@ fn workspace_read_result(output: &Value, requested: usize, offset: usize, chars:
 	result
 }
 
+fn skill_read_range(call: &crate::provider::ToolCall) -> Result<WorkspaceReadRange> {
+	let offset = match call.arguments.get("offset") {
+		None => 0,
+		Some(value) => usize::try_from(value.as_u64().ok_or_else(|| {
+			Error::Invalid("Skill read offset must be a nonnegative integer".into())
+		})?)
+		.map_err(|_| Error::Invalid("Skill read offset is too large".into()))?,
+	};
+	let requested = match call.arguments.get("max_chars") {
+		None => 8000,
+		Some(value) => usize::try_from(value.as_u64().ok_or_else(|| {
+			Error::Invalid("Skill read max_chars must be a nonnegative integer".into())
+		})?)
+		.map_err(|_| Error::Invalid("Skill read max_chars is too large".into()))?,
+	};
+	if requested > 16_000 {
+		return Err(Error::Invalid(
+			"Skill read max_chars must not exceed 16000".into(),
+		));
+	}
+	Ok(WorkspaceReadRange { offset, requested })
+}
+
+fn skill_read_result(output: &Value, bytes: usize) -> Value {
+	let mut result = output.clone();
+	let original = output["text"].as_str().unwrap_or_default();
+	let end = crate::tool::bounded_utf8_end(original, 0, bytes);
+	let offset = output["offset"].as_u64().unwrap_or(0) as usize;
+	let total = output["total_chars"].as_u64().unwrap_or(0) as usize;
+	let next = offset.saturating_add(end);
+	result["text"] = json!(&original[..end]);
+	result["next_offset"] = (next < total).then_some(json!(next)).unwrap_or(Value::Null);
+	result["budget_limited"] = json!(end < original.len());
+	if end == 0 && !original.is_empty() {
+		result["deferred"] = json!(true);
+		result["message"] = json!(
+			"No request budget remains for this Skill file. Continue on a later turn; do not repeat this read now."
+		);
+	}
+	result
+}
+
+fn fit_skill_read_chars(
+	context: &Context,
+	call: &crate::provider::ToolCall,
+	output: &Value,
+	budget: WorkspaceReadFitBudget,
+) -> Option<usize> {
+	let maximum_request = budget
+		.request_window
+		.saturating_sub(budget.remaining_calls.saturating_mul(TOOL_EVENT_RESERVE));
+	let fits = |bytes: usize| {
+		let mut bounded_call = call.clone();
+		bounded_call.arguments["max_chars"] = json!(bytes);
+		let event =
+			json!({"kind":"tool","call":bounded_call,"result":skill_read_result(output, bytes)});
+		budget
+			.request_tokens
+			.saturating_add(context::tool_event_growth(context, &event))
+			<= maximum_request
+	};
+	let minimum = if budget.requested > 0 {
+		output["text"]
+			.as_str()
+			.and_then(|text| text.chars().next())
+			.map(char::len_utf8)
+			.unwrap_or(0)
+	} else {
+		0
+	};
+	let mut low = minimum;
+	let mut high = budget.requested.max(minimum);
+	if minimum > 0 {
+		if !fits(minimum) {
+			return fits(0).then_some(0);
+		}
+	} else if !fits(0) {
+		return None;
+	}
+	while low < high {
+		let middle = low + (high - low).div_ceil(2);
+		if fits(middle) {
+			low = middle;
+		} else {
+			high = middle - 1;
+		}
+	}
+	Some(low)
+}
+
 fn force_workspace_read_compaction_window(window: usize, minimum_request: usize) -> usize {
 	window
 		.saturating_sub(POST_TOOL_CONTEXT_RESERVE)
@@ -1105,6 +1273,13 @@ fn force_workspace_read_compaction_window(window: usize, minimum_request: usize)
 fn deferred_workspace_read(call: &crate::provider::ToolCall) -> Value {
 	json!({
 		"message":"Retry this workspace_read after reducing the retained context; its result envelope did not fit.",
+		"call":call
+	})
+}
+
+fn deferred_skill_read(call: &crate::provider::ToolCall) -> Value {
+	json!({
+		"message":"Retry this skill_read after reducing the retained context; its result envelope did not fit.",
 		"call":call
 	})
 }
@@ -1158,6 +1333,7 @@ fn result_artifact_name(title: &str) -> String {
 	}
 	format!("{} result", &title[..end])
 }
+
 #[cfg(test)]
 mod review_tests {
 	#[tokio::test(start_paused = true)]
@@ -1218,6 +1394,101 @@ mod review_tests {
 				"00000000-0000-0000-0000-000000000002"
 			);
 		}
+	}
+
+	#[test]
+	fn skill_read_fits_utf8_chunks_to_the_remaining_request_budget() {
+		let call = crate::provider::ToolCall {
+			id: "skill-1".into(),
+			name: "skill_read".into(),
+			arguments: serde_json::json!({"skill":{"id":"research","version":"1.0.0"},"path":"references/guide.md","offset":0,"max_chars":16000}),
+		};
+		let context = crate::context::Context::default();
+		let output = serde_json::json!({"path":"references/guide.md","text":"界".repeat(5000),"encoding":"utf8","offset":0,"total_chars":15000,"next_offset":null});
+		let full_event = serde_json::json!({"kind":"tool","call":call,"result":super::skill_read_result(&output, 16000)});
+		let full_growth = crate::context::tool_event_growth(&context, &full_event);
+		let minimum_event = serde_json::json!({"kind":"tool","call":call,"result":super::skill_read_result(&output, 0)});
+		let minimum_growth = crate::context::tool_event_growth(&context, &minimum_event);
+		assert!(full_growth > minimum_growth);
+		let request_window = 100_000;
+		let request_tokens = request_window - (full_growth + minimum_growth) / 2;
+		let budget = super::WorkspaceReadFitBudget {
+			requested: 16000,
+			offset: 0,
+			request_tokens,
+			request_window,
+			remaining_calls: 0,
+		};
+		let bytes = super::fit_skill_read_chars(&context, &call, &output, budget).unwrap();
+		assert!(bytes > 0 && bytes < 15000);
+		let result = super::skill_read_result(&output, bytes);
+		let end = result["next_offset"].as_u64().unwrap() as usize;
+		assert_eq!(end, result["text"].as_str().unwrap().len());
+		assert_eq!(end % 3, 0);
+		assert_eq!(result["budget_limited"], true);
+		let mut bounded_call = call.clone();
+		bounded_call.arguments["max_chars"] = serde_json::json!(bytes);
+		let event = serde_json::json!({"kind":"tool","call":bounded_call,"result":result});
+		assert!(
+			request_tokens + crate::context::tool_event_growth(&context, &event) <= request_window
+		);
+		assert!(
+			super::fit_skill_read_chars(
+				&context,
+				&call,
+				&output,
+				super::WorkspaceReadFitBudget {
+					request_tokens: request_window,
+					..budget
+				}
+			)
+			.is_none()
+		);
+		assert_eq!(super::skill_read_result(&output, 0)["deferred"], true);
+	}
+
+	#[test]
+	fn skill_read_can_fit_one_character_when_the_deferred_envelope_cannot_fit() {
+		let call = crate::provider::ToolCall {
+			id: "skill-1".into(),
+			name: "skill_read".into(),
+			arguments: serde_json::json!({"skill":{"id":"research","version":"1.0.0"},"path":"references/guide.md","offset":0,"max_chars":1}),
+		};
+		let context = crate::context::Context::default();
+		let output = serde_json::json!({"path":"references/guide.md","text":"界more","encoding":"utf8","offset":0,"total_chars":7,"next_offset":null});
+		let event_growth = |bytes| {
+			let mut bounded_call = call.clone();
+			bounded_call.arguments["max_chars"] = serde_json::json!(bytes);
+			let event = serde_json::json!({
+				"kind":"tool",
+				"call":bounded_call,
+				"result":super::skill_read_result(&output, bytes)
+			});
+			crate::context::tool_event_growth(&context, &event)
+		};
+		let deferred_growth = event_growth(0);
+		let one_character_growth = event_growth(3);
+		assert_eq!(super::skill_read_result(&output, 1)["text"], "界");
+		assert!(deferred_growth > one_character_growth);
+
+		let request_window = 10_000;
+		let request_tokens = request_window - one_character_growth;
+		assert!(request_tokens + deferred_growth > request_window);
+		let bytes = super::fit_skill_read_chars(
+			&context,
+			&call,
+			&output,
+			super::WorkspaceReadFitBudget {
+				requested: 1,
+				offset: 0,
+				request_tokens,
+				request_window,
+				remaining_calls: 0,
+			},
+		)
+		.unwrap();
+		assert_eq!(bytes, 3);
+		assert_eq!(super::skill_read_result(&output, bytes)["text"], "界");
 	}
 
 	#[test]

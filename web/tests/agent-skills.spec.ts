@@ -216,3 +216,171 @@ test("imports a published SKILL.md and rejects malformed frontmatter", async ({
   await expect(dialog.getByLabel("指示", { exact: true })).toHaveValue(skill);
   await expect(dialog.getByRole("alert")).toHaveCount(0);
 });
+
+test("imports a GitHub Skill directory with reference files", async ({
+  page,
+}) => {
+  const errors = await setup(page);
+  const skill =
+    "---\nname: research\ndescription: Research primary sources\n---\nRead references/method.md when needed.\n";
+  await page.route("**/api/skills/import", async (route) => {
+    const request = route.request().postDataJSON();
+    expect(request.url).toBe("https://github.com/example/skills");
+    await route.fulfill({
+      json: {
+        skills: ["skills/research/SKILL.md", "skills/write/SKILL.md"],
+        selected: request.skill_path
+          ? {
+              path: "skills/research/SKILL.md",
+              source:
+                "https://github.com/example/skills/blob/abc123/skills/research/SKILL.md",
+              instructions: skill,
+              files: [
+                {
+                  path: "references/method.md",
+                  content: "Compare primary sources.",
+                },
+                {
+                  path: "assets/chart.png",
+                  content: "AAEC",
+                  encoding: "base64",
+                },
+              ],
+            }
+          : null,
+      },
+    });
+  });
+  await page.goto("/registry");
+  await page
+    .getByRole("button", { name: "エンティティを登録", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("エンティティの種類").selectOption("skill");
+  await dialog
+    .getByLabel("Skillの取得元URL")
+    .fill("https://github.com/example/skills");
+  await dialog.getByRole("button", { name: "URLからSkillを探す" }).click();
+  await dialog
+    .getByLabel("リポジトリ内のSkill")
+    .selectOption("skills/research/SKILL.md");
+  await dialog.getByRole("button", { name: "選択したSkillを取り込む" }).click();
+  await expect(dialog.getByLabel("指示", { exact: true })).toHaveValue(skill);
+  await dialog.getByText("取り込んだファイル (2)").click();
+  await dialog.getByText("references/method.md", { exact: true }).click();
+  await expect(dialog.getByText("Compare primary sources.")).toBeVisible();
+  await dialog.getByText("assets/chart.png", { exact: true }).click();
+  await expect(
+    dialog.getByText("バイナリファイルはbase64で保存されます。"),
+  ).toBeVisible();
+  await dialog.getByLabel("名前").fill("Research");
+  await dialog.getByLabel("説明").fill("Research primary sources");
+  const submitted = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/registry" &&
+      request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "エンティティを登録", exact: true })
+    .click();
+  expect((await submitted).postDataJSON().config).toMatchObject({
+    instructions: skill,
+    files: [
+      { path: "references/method.md", content: "Compare primary sources." },
+      { path: "assets/chart.png", content: "AAEC", encoding: "base64" },
+    ],
+    source:
+      "https://github.com/example/skills/blob/abc123/skills/research/SKILL.md",
+  });
+  expect(errors).toEqual([]);
+});
+
+test("clears an imported Skill while choosing from another repository", async ({
+  page,
+}) => {
+  const errors = await setup(page);
+  const skill =
+    "---\nname: research\ndescription: Research sources\n---\nRead references/method.md.\n";
+  await page.route("**/api/skills/import", async (route) => {
+    const { url } = route.request().postDataJSON();
+    await route.fulfill({
+      json: url.endsWith("/first")
+        ? {
+            skills: ["SKILL.md"],
+            selected: {
+              path: "SKILL.md",
+              source: `${url}/blob/abc123/SKILL.md`,
+              instructions: skill,
+              files: [
+                { path: "references/method.md", content: "First repository." },
+              ],
+            },
+          }
+        : {
+            skills: ["skills/one/SKILL.md", "skills/two/SKILL.md"],
+            selected: null,
+          },
+    });
+  });
+  await page.goto("/registry");
+  await page
+    .getByRole("button", { name: "エンティティを登録", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("エンティティの種類").selectOption("skill");
+  await dialog
+    .getByLabel("Skillの取得元URL")
+    .fill("https://github.com/example/first");
+  await dialog.getByRole("button", { name: "URLからSkillを探す" }).click();
+  await expect(dialog.getByLabel("指示", { exact: true })).toHaveValue(skill);
+  await dialog
+    .getByLabel("Skillの取得元URL")
+    .fill("https://github.com/example/second");
+  await expect(dialog.getByLabel("指示", { exact: true })).toHaveValue("");
+  await expect(dialog.getByText("取り込んだファイル (1)")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "URLからSkillを探す" }).click();
+  await expect(dialog.getByLabel("リポジトリ内のSkill")).toBeVisible();
+  await expect(dialog.getByLabel("指示", { exact: true })).toHaveValue("");
+  expect(errors).toEqual([]);
+});
+
+test("imports a skills.sh registry page and its supporting files", async ({
+  page,
+}) => {
+  const errors = await setup(page);
+  const skill =
+    "---\nname: editor\ndescription: Edit copy\n---\nRead references/style.md.\n";
+  await page.route("**/api/skills/import", async (route) => {
+    expect(route.request().postDataJSON().url).toBe(
+      "https://skills.sh/example/skills/editor",
+    );
+    await route.fulfill({
+      json: {
+        skills: ["SKILL.md"],
+        selected: {
+          path: "SKILL.md",
+          source: "https://skills.sh/example/skills/editor",
+          instructions: skill,
+          files: [
+            { path: "references/style.md", content: "Use clear language." },
+          ],
+        },
+      },
+    });
+  });
+  await page.goto("/registry");
+  await page
+    .getByRole("button", { name: "エンティティを登録", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("エンティティの種類").selectOption("skill");
+  await dialog
+    .getByLabel("Skillの取得元URL")
+    .fill("https://skills.sh/example/skills/editor");
+  await dialog.getByRole("button", { name: "URLからSkillを探す" }).click();
+  await expect(dialog.getByLabel("指示", { exact: true })).toHaveValue(skill);
+  await dialog.getByText("取り込んだファイル (1)").click();
+  await dialog.getByText("references/style.md", { exact: true }).click();
+  await expect(dialog.getByText("Use clear language.")).toBeVisible();
+  expect(errors).toEqual([]);
+});

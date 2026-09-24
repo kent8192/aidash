@@ -287,6 +287,18 @@ pub struct Builtin {
 	pub description: &'static str,
 	pub schema: Value,
 }
+
+pub(crate) fn bounded_utf8_end(text: &str, start: usize, max_bytes: usize) -> usize {
+	let mut end = start.saturating_add(max_bytes).min(text.len());
+	while !text.is_char_boundary(end) {
+		end -= 1;
+	}
+	if max_bytes > 0 && end == start && start < text.len() {
+		return start + text[start..].chars().next().unwrap().len_utf8();
+	}
+	end
+}
+
 #[async_trait]
 impl Tool for Builtin {
 	fn specification(&self) -> ToolSpec {
@@ -305,6 +317,35 @@ impl Tool for Builtin {
 			.validate(&input)
 			.map_err(|e| Error::Invalid(e.to_string()))?;
 		match self.name {
+			"skill_read" => {
+				let reference: EntityRef = serde_json::from_value(input["skill"].clone())
+					.map_err(|error| Error::Invalid(error.to_string()))?;
+				let path = required(&input, "path")?;
+				let registry =
+					crate::registry::Registry::new(ctx.store.pool.clone(), &ctx.store.node_id);
+				let agent = registry
+					.get(&ctx.run.agent_id, &ctx.run.agent_version)
+					.await?;
+				let config: crate::registry::AgentConfig = serde_json::from_value(agent.config)?;
+				if !config.skills.contains(&reference) {
+					return Err(Error::Forbidden);
+				}
+				let skill = registry.get(&reference.id, &reference.version).await?;
+				let file = crate::registry::skill_files(&skill)?
+					.into_iter()
+					.find(|file| file.path == path)
+					.ok_or_else(|| Error::Invalid(format!("Skill file not found: {path}")))?;
+				let offset = input["offset"].as_u64().unwrap_or(0) as usize;
+				let max_chars = input["max_chars"].as_u64().unwrap_or(8000).min(16000) as usize;
+				let mut start = offset.min(file.content.len());
+				while !file.content.is_char_boundary(start) {
+					start -= 1;
+				}
+				let end = bounded_utf8_end(&file.content, start, max_chars);
+				Ok(
+					json!({"path":path,"text":&file.content[start..end],"encoding":file.encoding.as_deref().unwrap_or("utf8"),"offset":start,"total_chars":file.content.len(),"next_offset":if end < file.content.len() { Some(end) } else { None }}),
+				)
+			}
 			"agent_discover" => Ok(json!(
 				ctx.home
 					.discover(&serde_json::from_value::<Search>(input)?)
@@ -425,6 +466,11 @@ pub fn builtins() -> BTreeMap<String, Arc<dyn Tool>> {
 	let entity_ref = json!({"type":"object","required":["id","version"],"properties":{"id":string,"version":string},"additionalProperties":false});
 	let entries = vec![
 		Builtin {
+			name: "skill_read",
+			description: "Read a file bundled with one of this agent's registered Skills. Use the exact Skill id/version and relative path listed in the Skill instructions; continue from next_offset when present. Binary files are returned as base64 text with an encoding field. The returned chunk is capped to fit the active request budget; if deferred is true, continue on a later turn.",
+			schema: json!({"type":"object","required":["skill","path"],"properties":{"skill":entity_ref,"path":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false}),
+		},
+		Builtin {
 			name: "agent_discover",
 			description: "Find local and federated agents by capability, skill, tag, language or model. Choose an exact node_id, entity id and version from these results.",
 			schema: json!({"type":"object","properties":{"capability":string,"language":string,"skill":string,"tag":string,"model":string,"query":string},"additionalProperties":false}),
@@ -489,6 +535,16 @@ pub fn builtins() -> BTreeMap<String, Arc<dyn Tool>> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn positive_utf8_chunk_limits_return_at_least_one_complete_character() {
+		let text = "界x";
+		assert_eq!(bounded_utf8_end(text, 0, 0), 0);
+		let end = bounded_utf8_end(text, 0, 1);
+		assert_eq!(&text[..end], "界");
+		assert_eq!(bounded_utf8_end(text, 0, 2), 3);
+		assert_eq!(bounded_utf8_end(text, 3, 1), 4);
+	}
 
 	#[test]
 	fn idempotent_mcp_requires_a_nonblank_idempotency_argument() {
