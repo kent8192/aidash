@@ -1255,6 +1255,7 @@ async fn peer_workspace(
 			| "run_message_history"
 			| "run_message_delivery_capability"
 			| "run_message_reserve"
+			| "run_message_commit"
 			| "run_message_release"
 			| "run_message_ack"
 			| "task" | "claim"
@@ -1265,6 +1266,7 @@ async fn peer_workspace(
 				| "run_message_output"
 				| "run_message_delivery"
 				| "run_message_reserve"
+				| "run_message_commit"
 				| "run_message_release"
 				| "run_message_ack"
 		) || (command.operation == "transition"
@@ -1298,6 +1300,7 @@ async fn peer_workspace(
 				command.operation.as_str(),
 				"run_message_delivery"
 					| "run_message_reserve"
+					| "run_message_commit"
 					| "run_message_release"
 					| "run_message_ack"
 			) {
@@ -1524,6 +1527,20 @@ async fn peer_workspace(
 				)
 				.await?;
 			json!({"reserved":true})
+		}
+		"run_message_commit" => {
+			f.store.require_legacy_execution(task.workspace_id).await?;
+			let run_id: Uuid = required(d, "run_id")?
+				.parse()
+				.map_err(|_| Error::Invalid("invalid run ID".into()))?;
+			let input_key = required(d, "key")?;
+			if !run_message_key_matches_run(input_key, run_id) {
+				return Err(Error::Invalid("invalid run message key".into()));
+			}
+			f.store
+				.commit_remote_run_message(task.id, run_id, input_key, required(d, "content")?)
+				.await?;
+			json!({"committed":true})
 		}
 		"run_message_release" => {
 			f.store.require_legacy_execution(task.workspace_id).await?;

@@ -104,6 +104,7 @@ async fn old_peer_workspace_compat(
 				| "run_message_delivery"
 				| "run_message_delivery_capability"
 				| "run_message_reserve"
+				| "run_message_commit"
 				| "run_message_release"
 				| "run_message_ack"
 		) {
@@ -861,6 +862,23 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.iter()
 			.any(|input| input.content == "queued delivery" && input.message_id.is_none())
 	);
+	let admitted_fence_is_durable: bool = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust(
+				"EXISTS(SELECT 1 FROM remote_run_message_fences WHERE task_id = $1 AND run_id = $2 AND idempotency_key = $3 AND expires_at IS NULL AND NOT consumed)",
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(task.id)
+	.bind(run.id)
+	.bind(format!("human:{}:{pending_key}", run.id))
+	.fetch_one(&home.store.pool)
+	.await
+	.unwrap();
+	assert!(
+		admitted_fence_is_durable,
+		"successful admission stores a non-expiring fence even while delivery is unavailable"
+	);
 	assert!(
 		!home
 			.store
@@ -1108,6 +1126,18 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 	.execute(&home.store.pool)
 	.await
 	.unwrap();
+	assert!(
+		home.store
+			.commit_remote_run_message(
+				expiry_task.id,
+				expired_run,
+				&expired_key,
+				"stale reservation"
+			)
+			.await
+			.is_err(),
+		"an expired orphan reservation cannot be promoted to an admitted input"
+	);
 	let cancelled = home
 		.store
 		.transition(expiry_task.id, expiry_task.revision, "human", "CANCELLED")

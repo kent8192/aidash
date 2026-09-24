@@ -61,6 +61,16 @@ impl Federation {
 		key: &str,
 		limit: usize,
 	) -> Result<()> {
+		let home = Home::new(self.clone(), run.clone());
+		let reserved_at_home = if home.local() {
+			false
+		} else if home.reserve_run_message(key, content).await? {
+			true
+		} else {
+			return Err(Error::Conflict(
+				"remote home cannot atomically reserve run messages".into(),
+			));
+		};
 		if let Some(input) = self
 			.store
 			.run_inputs(run.id)
@@ -68,17 +78,13 @@ impl Federation {
 			.into_iter()
 			.find(|input| input.idempotency_key == key)
 		{
-			return if input.content == content {
-				Ok(())
-			} else {
-				Err(Error::Conflict("run message idempotency key reused".into()))
-			};
-		}
-		let home = Home::new(self.clone(), run.clone());
-		if !home.local() && !home.reserve_run_message(key, content).await? {
-			return Err(Error::Conflict(
-				"remote home cannot atomically reserve run messages".into(),
-			));
+			if input.content != content {
+				return Err(Error::Conflict("run message idempotency key reused".into()));
+			}
+			if reserved_at_home {
+				home.commit_run_message(key, content).await?;
+			}
+			return Ok(());
 		}
 		let admission = self
 			.store
@@ -92,12 +98,18 @@ impl Federation {
 			{
 				// Keep the fence: the recovered historical input is now in the
 				// durable ledger and must reach inference before task termination.
+				if reserved_at_home {
+					home.commit_run_message(key, content).await?;
+				}
 				return Ok(());
 			}
 			if !home.local() {
 				home.release_run_messages(&[key.to_owned()]).await?;
 			}
 			return Err(error);
+		}
+		if reserved_at_home {
+			home.commit_run_message(key, content).await?;
 		}
 		Ok(())
 	}
@@ -186,10 +198,13 @@ impl Federation {
 			if input.message_id.is_some() && input.seq <= run.observed_input_seq {
 				continue;
 			}
-			if !home
+			let reserved = home
 				.reserve_run_message(&input.idempotency_key, &input.content)
-				.await?
-			{
+				.await?;
+			if reserved {
+				home.commit_run_message(&input.idempotency_key, &input.content)
+					.await?;
+			} else {
 				tracing::debug!(run_id=%run.id, "older home does not support remote message reservations");
 			}
 			let message = home
@@ -1298,6 +1313,24 @@ impl Home {
 			)
 			.await?
 			.is_some())
+	}
+	pub async fn commit_run_message(&self, key: &str, content: &str) -> Result<()> {
+		if self.local() {
+			return Ok(());
+		}
+		if self
+			.optional_command::<Value>(
+				"run_message_commit",
+				json!({"run_id":self.run.id,"key":key,"content":content}),
+			)
+			.await?
+			.is_none()
+		{
+			return Err(Error::Conflict(
+				"remote home cannot persist run message admission".into(),
+			));
+		}
+		Ok(())
 	}
 	pub async fn release_run_messages(&self, keys: &[String]) -> Result<()> {
 		if self.local() || keys.is_empty() {

@@ -1830,6 +1830,91 @@ impl Store {
 		tx.commit().await?;
 		Ok(())
 	}
+	/// Promote a temporary reservation after the executor has durably
+	/// admitted the matching input. Committed fences do not expire before the
+	/// executor acknowledges observing the input.
+	pub async fn commit_remote_run_message(
+		&self,
+		task_id: Uuid,
+		run_id: Uuid,
+		key: &str,
+		content: &str,
+	) -> Result<()> {
+		let mut tx = self.pool.begin().await?;
+		let task: Task = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
+				.from(sea_orm::sea_query::Alias::new("tasks"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task_id)
+		.fetch_one(&mut *tx)
+		.await?;
+		let reservation: Option<(String, bool, bool)> = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.column(sea_orm::sea_query::Alias::new("content"))
+				.expr(sea_orm::sea_query::Expr::cust("expires_at IS NULL"))
+				.expr(sea_orm::sea_query::Expr::cust(
+					"expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP",
+				))
+				.from(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
+				))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task_id)
+		.bind(run_id)
+		.bind(key)
+		.fetch_optional(&mut *tx)
+		.await?;
+		let Some((reserved_content, committed, active)) = reservation else {
+			return Err(Error::Conflict(
+				"remote run message was not reserved at home".into(),
+			));
+		};
+		if reserved_content != content {
+			return Err(Error::Conflict(
+				"remote run message reservation changed".into(),
+			));
+		}
+		if committed {
+			tx.commit().await?;
+			return Ok(());
+		}
+		if !active
+			|| matches!(
+				task.status.as_str(),
+				"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+			) {
+			return Err(Error::Conflict(
+				"remote run message reservation expired before admission was committed".into(),
+			));
+		}
+		sqlx::query(
+			&sea_orm::sea_query::Query::update()
+				.table(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+				.value(
+					sea_orm::sea_query::Alias::new("expires_at"),
+					sea_orm::sea_query::Expr::cust("NULL"),
+				)
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"task_id = $1 AND run_id = $2 AND idempotency_key = $3 AND content = $4",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task_id)
+		.bind(run_id)
+		.bind(key)
+		.bind(content)
+		.execute(&mut *tx)
+		.await?;
+		tx.commit().await?;
+		Ok(())
+	}
 	pub async fn release_remote_run_message(
 		&self,
 		task_id: Uuid,
