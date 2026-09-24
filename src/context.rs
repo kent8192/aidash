@@ -28,6 +28,10 @@ pub struct Context {
 	// compaction, which may remove the tool events that established it.
 	#[serde(default)]
 	pub message_read_coverage: BTreeMap<String, MessageReadCoverage>,
+	// A tool read is proof only after its content survived compaction and was
+	// sent in a provider request. Keep that separate from completed tool reads.
+	#[serde(default)]
+	pub message_inference_coverage: BTreeMap<String, MessageReadCoverage>,
 }
 
 // Conservative upper bound for mixed-language text, not a provider tokenizer.

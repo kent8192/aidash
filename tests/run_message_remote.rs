@@ -374,6 +374,32 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 	);
 	mode.old_peer.store(false, Ordering::SeqCst);
 	Migrator::up(&home_db, None).await.unwrap();
+	// The rollout gate allows a previously committed old-peer message to be
+	// retried exactly, while it continues to reject new legacy admissions.
+	let old_home_message_key = format!(
+		"{}:{}:human:{}:{old_home_key}",
+		executor.config.node_id, task.id, run.id
+	);
+	home.store
+		.message(
+			workspace.id,
+			&format!("human@{}", executor.config.node_id),
+			"old-home historical correction",
+			Some(&old_home_message_key),
+		)
+		.await
+		.unwrap();
+	assert!(
+		home.store
+			.message(
+				workspace.id,
+				&format!("human@{}", executor.config.node_id),
+				"changed historical correction",
+				Some(&old_home_message_key),
+			)
+			.await
+			.is_err()
+	);
 	mode.delivery_outage.store(true, Ordering::SeqCst);
 	let pending_key = Uuid::new_v4();
 	assert_eq!(
@@ -413,6 +439,29 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 		.transition(task.id, current_task.revision, &owner, "CANCELLED")
 		.await
 		.unwrap();
+	let rejected_after_home_terminal = Uuid::new_v4();
+	assert_eq!(
+		peer_control(
+			&executor_app,
+			&home.config.node_id,
+			json!({
+				"run_id":run.id,"action":"message","content":"after home cancellation","idempotency_key":rejected_after_home_terminal
+			})
+		)
+		.await
+		.0,
+		409,
+		"the executor must consult the home task before admitting a new message"
+	);
+	assert!(
+		!executor
+			.store
+			.run_inputs(run.id)
+			.await
+			.unwrap()
+			.iter()
+			.any(|input| input.content == "after home cancellation")
+	);
 	sqlx::query(
 		&Query::update()
 			.table(Alias::new("runs"))

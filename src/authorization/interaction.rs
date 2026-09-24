@@ -234,6 +234,17 @@ pub async fn message_keyed(
 	let admission = async {
 		let run = f.store.run(id).await?;
 		f.require_terminal_safe_delivery(&run).await?;
+		if run.home_node != f.config.node_id {
+			let home_task = crate::federation::Home::new(f.clone(), run.clone())
+				.task()
+				.await?;
+			if matches!(
+				home_task.status.as_str(),
+				"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+			) {
+				return Err(Error::Conflict("home task is terminal".into()));
+			}
+		}
 		f.run_message_limit(&run).await
 	}
 	.await;

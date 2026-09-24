@@ -259,6 +259,59 @@ async fn included_reference_can_reach_tool_calls_without_becoming_finalizable() 
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
+async fn a_new_input_discards_pending_tool_calls_before_their_effects() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
+		"title":"Stale tool response","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
+	})).await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	assert!(harness.worker_once().await.unwrap());
+	let worker = Uuid::new_v4();
+	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
+	leased.phase = "TOOL_CALL".into();
+	leased.pending = json!({
+		"included_input_seq":0,
+		"response":{"text":"stale tool output","tool_calls":[{"id":"stale-call","name":"workspace_observe","arguments":{}}],"input_tokens":1,"output_tokens":1,"usage_complete":true},
+		"cursor":0
+	});
+	f.store
+		.save_run(&leased, worker, "model.completed")
+		.await
+		.unwrap();
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/runs/{}/message", run.id),
+		json!({"content":"new correction"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	assert!(harness.worker_once().await.unwrap());
+	let current = f.store.run(run.id).await.unwrap();
+	assert_eq!(current.phase, "THINKING");
+	assert_eq!(current.step, leased.step);
+	assert!(current.pending.get("response").is_none());
+	assert!(
+		!f.store
+			.snapshot(run.workspace_id)
+			.await
+			.unwrap()
+			.messages
+			.iter()
+			.any(|message| message.content == "stale tool output")
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
 async fn run_message_limit_rejects_oversized_input_before_recording_it() {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());

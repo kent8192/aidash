@@ -18,7 +18,13 @@ BEGIN
     IF NEW.idempotency_key ~ ('^.+:' || uuid_pattern || ':human:' || uuid_pattern || ':' || uuid_pattern || '$')
         OR NEW.idempotency_key ~ ('^.+:' || uuid_pattern || ':subject-human:.+:' || uuid_pattern || ':' || uuid_pattern || '$') THEN
         IF current_setting('aidash.run_message_delivery', true) IS DISTINCT FROM 'true' THEN
-            RAISE EXCEPTION 'federated run messages require upgraded ledger delivery';
+            IF NOT EXISTS (SELECT 1 FROM messages AS existing
+                WHERE existing.idempotency_key = NEW.idempotency_key
+                    AND existing.workspace_id = NEW.workspace_id
+                    AND existing.sender = NEW.sender
+                    AND existing.content = NEW.content) THEN
+                RAISE EXCEPTION 'federated run messages require upgraded ledger delivery';
+            END IF;
         END IF;
     END IF;
     RETURN NEW;

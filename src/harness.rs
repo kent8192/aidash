@@ -67,11 +67,14 @@ fn message_read_range(event: &Value) -> Option<(String, usize, usize, usize)> {
 	(end <= total && end > start && next.unwrap_or(total) == end).then_some((id, start, end, total))
 }
 
-fn record_message_read(context: &mut Context, event: &Value) {
+fn record_message_read_in(
+	coverage_by_id: &mut BTreeMap<String, context::MessageReadCoverage>,
+	event: &Value,
+) {
 	let Some((id, start, end, total)) = message_read_range(event) else {
 		return;
 	};
-	let coverage = context.message_read_coverage.entry(id).or_default();
+	let coverage = coverage_by_id.entry(id).or_default();
 	if coverage.total_chars != total {
 		coverage.total_chars = total;
 		coverage.ranges.clear();
@@ -91,21 +94,39 @@ fn record_message_read(context: &mut Context, event: &Value) {
 	coverage.ranges = merged;
 }
 
+fn record_message_read(context: &mut Context, event: &Value) {
+	record_message_read_in(&mut context.message_read_coverage, event);
+}
+
 fn capture_message_read_coverage(context: &mut Context) {
 	for event in context.history.clone() {
 		record_message_read(context, &event);
 	}
 }
 
+fn capture_message_inference_coverage(context: &mut Context) {
+	for event in context.history.clone() {
+		record_message_read_in(&mut context.message_inference_coverage, &event);
+	}
+}
+
+fn coverage_complete(
+	coverage_by_id: &BTreeMap<String, context::MessageReadCoverage>,
+	id: Uuid,
+) -> bool {
+	coverage_by_id.get(&id.to_string()).is_some_and(|coverage| {
+		coverage.total_chars > 0
+			&& coverage.ranges.len() == 1
+			&& coverage.ranges[0] == [0, coverage.total_chars]
+	})
+}
+
 fn referenced_message_read(context: &Context, id: Uuid) -> bool {
-	context
-		.message_read_coverage
-		.get(&id.to_string())
-		.is_some_and(|coverage| {
-			coverage.total_chars > 0
-				&& coverage.ranges.len() == 1
-				&& coverage.ranges[0] == [0, coverage.total_chars]
-		})
+	coverage_complete(&context.message_read_coverage, id)
+}
+
+fn referenced_message_inferred(context: &Context, id: Uuid) -> bool {
+	coverage_complete(&context.message_inference_coverage, id)
 }
 
 #[derive(Clone)]
@@ -673,11 +694,14 @@ impl Harness {
 				if let Some(guard) = guard {
 					guard.resume(&self.federation).await?;
 				}
+				// Count only tool content that survived compaction and was present
+				// in a successful provider request, not every completed read.
+				capture_message_inference_coverage(&mut context);
 				context.usage = json!({"input_tokens":result.input_tokens,"output_tokens":result.output_tokens,"context_window":window,"compactions":context.compactions});
 				run.context = json!(context);
 				let references_read_at_inference = required_run_message_reads
 					.iter()
-					.all(|id| referenced_message_read(&context, *id));
+					.all(|id| referenced_message_inferred(&context, *id));
 				if references_read_at_inference {
 					run.observed_input_seq = input_seq;
 				}
@@ -706,6 +730,22 @@ impl Harness {
 				// A preceding binary could have left a remote correction only on
 				// the home node while this run was already awaiting finalization.
 				self.federation.reconcile_run_messages(run).await?;
+				let included_input_seq = run.pending["included_input_seq"]
+					.as_i64()
+					.unwrap_or(run.observed_input_seq);
+				if store
+					.run_inputs(run.id)
+					.await?
+					.last()
+					.is_some_and(|input| input.seq > included_input_seq)
+				{
+					// This response predates an accepted correction. Discard its
+					// text and calls before any effect crosses the tool boundary.
+					run.phase = "THINKING".into();
+					run.pending = json!({});
+					store.save_run(run, token, "run.message_received").await?;
+					return Ok(());
+				}
 				let mut result: ModelResponse =
 					serde_json::from_value(run.pending["response"].clone())?;
 				let required_reads: Vec<Uuid> =
@@ -717,8 +757,13 @@ impl Harness {
 				let references_read = required_reads
 					.iter()
 					.all(|id| referenced_message_read(&context, *id));
+				let references_inferred = required_reads
+					.iter()
+					.all(|id| referenced_message_inferred(&context, *id));
 				let informed_response = required_reads.is_empty()
-					|| (references_read && run.pending["references_read_at_inference"] == true);
+					|| (references_read
+						&& references_inferred
+						&& run.pending["references_read_at_inference"] == true);
 				if !result.tool_calls.is_empty() && informed_response {
 					self.publish_model_text(&home, guard, run, &result.text)
 						.await?;
@@ -1982,6 +2027,19 @@ mod review_tests {
 		assert!(super::referenced_message_read(&context, id));
 		context.history.clear();
 		assert!(super::referenced_message_read(&context, id));
+		// Completed reads alone are not evidence that compaction left their
+		// content in a provider request.
+		super::capture_message_inference_coverage(&mut context);
+		assert!(!super::referenced_message_inferred(&context, id));
+		context.history.push(event(0, "abc", Some(3)));
+		super::capture_message_inference_coverage(&mut context);
+		assert!(!super::referenced_message_inferred(&context, id));
+		context.history.clear();
+		context.history.push(event(3, "def", None));
+		super::capture_message_inference_coverage(&mut context);
+		assert!(super::referenced_message_inferred(&context, id));
+		context.history.clear();
+		assert!(super::referenced_message_inferred(&context, id));
 	}
 
 	#[test]

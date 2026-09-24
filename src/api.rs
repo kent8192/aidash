@@ -6,7 +6,7 @@ use crate::{
 	},
 	config::{PROTOCOL_VERSION, same_secret},
 	domain::*,
-	federation::{Delegation, Discovery, Federation, Offer, Peer},
+	federation::{Delegation, Discovery, Federation, Home, Offer, Peer},
 	registry::{EntityRef, Entry, Package, PackageRecord, Search},
 	store::Invocation,
 	tool::required,
@@ -1721,11 +1721,18 @@ async fn peer_control(
 			);
 			let limit = f.run_message_limit(&run).await?;
 			f.require_terminal_safe_delivery(&run).await?;
-			match f
-				.store
-				.accept_run_message(run.id, "human", &content, &key, limit)
-				.await
-			{
+			let home_task = Home::new(f.clone(), run.clone()).task().await?;
+			let admission = if matches!(
+				home_task.status.as_str(),
+				"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+			) {
+				Err(Error::Conflict("home task is terminal".into()))
+			} else {
+				f.store
+					.accept_run_message(run.id, "human", &content, &key, limit)
+					.await
+			};
+			match admission {
 				Ok(()) => {}
 				Err(error @ Error::Conflict(_)) => {
 					if !f
