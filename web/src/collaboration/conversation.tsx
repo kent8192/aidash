@@ -1,53 +1,146 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AtSign,
+  Bold,
+  Code2,
+  FileText,
+  Italic,
+  MessageSquare,
+  Paperclip,
+  Send,
+  X,
+} from "lucide-react";
+import {
+  channelAttachmentUpload,
   channelMessageCreate,
   channelMessageHistory,
   channelThreadCreate,
-  getChannelAttachmentDownloadUrl,
 } from "../generated/aidash";
 import type { ChannelAttachment, ChannelMessage } from "../generated/models";
-import { authenticatedFetch } from "../transport";
+import { AttachmentCard } from "./attachments";
 import type { State, Discovery } from "../types";
 import { useI18n, useAgentLabel } from "../ui";
 import { collaborationCopy } from "./copy";
+import { workspaceCopy } from "./workspace-copy";
 import { senderLabel } from "./model";
 import { threadCopy } from "./thread-copy";
 import {
   mergeMessagePages,
   submissionFor,
+  validAttachments,
   type MessageSubmission,
 } from "./conversation-model";
+import { Avatar } from "./avatar";
 import "./threads.css";
 
-export function ChannelConversation({
-  workspace,
-  visible,
-  data,
-  discovery,
-}: {
+type DraftFile = { key: string; file: File; uploaded?: ChannelAttachment };
+type Draft = { text: string; files: DraftFile[] };
+type Drafts = Record<string, Draft>;
+const emptyDraft: Draft = { text: "", files: [] };
+
+/** Only inline composer syntax is interpreted. React escapes all other content. */
+export function MessageText({ text }: { text: string }) {
+  return (
+    <>
+      {text
+        .split(/(\*\*[^*\n]+\*\*|_[^_\n]+_|`[^`\n]+`|@[\p{L}\p{N}_-]+)/gu)
+        .map((part, i) =>
+          part.startsWith("**") && part.endsWith("**") ? (
+            <strong key={i}>{part.slice(2, -2)}</strong>
+          ) : part.startsWith("_") && part.endsWith("_") ? (
+            <em key={i}>{part.slice(1, -1)}</em>
+          ) : part.startsWith("`") && part.endsWith("`") ? (
+            <code key={i}>{part.slice(1, -1)}</code>
+          ) : part.startsWith("@") ? (
+            <span className="workspace-mention" key={i}>
+              {part}
+            </span>
+          ) : (
+            part
+          ),
+        )}
+    </>
+  );
+}
+
+type ConversationProps = {
   data: State;
   discovery?: Discovery;
   workspace: string;
+  title: string;
   visible: boolean;
+  threadList?: boolean;
+  requests?: ReactNode;
+  thread: string | null;
+  selectThread: (id: string | null) => void;
+};
+export function ChannelConversation({
+  threadContainer,
+  ...props
+}: ConversationProps & { threadContainer: HTMLDivElement | null }) {
+  const [drafts, setDrafts] = useState<Drafts>({});
+  const [pending] = useState(() => new Map<string, MessageSubmission>());
+  const shared = { ...props, drafts, setDrafts, pending };
+  return (
+    <>
+      <ConversationFeed {...shared} thread={null} />
+      {props.thread &&
+        threadContainer &&
+        createPortal(
+          <ConversationFeed
+            key={props.thread}
+            {...shared}
+            requests={undefined}
+            threadList={false}
+          />,
+          threadContainer,
+        )}
+    </>
+  );
+}
+
+function ConversationFeed({
+  workspace,
+  title,
+  visible,
+  data,
+  discovery,
+  threadList = false,
+  requests,
+  thread,
+  selectThread,
+  drafts,
+  setDrafts,
+  pending,
+}: ConversationProps & {
+  drafts: Drafts;
+  setDrafts: React.Dispatch<React.SetStateAction<Drafts>>;
+  pending: Map<string, MessageSubmission>;
 }) {
   const { locale, t } = useI18n();
   const agentLabel = useAgentLabel(data, discovery);
-  const copy = collaborationCopy[locale];
-  const threads = threadCopy[locale];
+  const copy = collaborationCopy[locale],
+    words = workspaceCopy[locale],
+    threads = threadCopy[locale];
   const client = useQueryClient();
-  const [thread, setThread] = useState<string | null>(null);
-  const target = thread ?? "channel";
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const draft = drafts[target] ?? "";
-  const pending = useRef(new Map<string, MessageSubmission>());
+  const target = thread ?? "channel",
+    draft = drafts[target] ?? emptyDraft;
+  const updateDraft = (update: (draft: Draft) => Draft) =>
+    setDrafts((current) => ({
+      ...current,
+      [target]: update(current[target] ?? emptyDraft),
+    }));
   const inFlight = useRef(false);
-  const [sending, setSending] = useState(false);
-  const [opening, setOpening] = useState(false);
-  const [downloading, setDownloading] = useState<string | null>(null);
-  const [error, setError] = useState("");
-  const [sent, setSent] = useState(false);
-  const scroll = useRef<HTMLDivElement>(null);
+  const [sending, setSending] = useState(false),
+    [opening, setOpening] = useState(false),
+    [uploading, setUploading] = useState(false);
+  const [error, setError] = useState(""),
+    [sent, setSent] = useState(false);
+  const scroll = useRef<HTMLDivElement>(null),
+    textarea = useRef<HTMLTextAreaElement>(null),
+    fileInput = useRef<HTMLInputElement>(null);
   const follow = useRef(true);
   const [nearBottom, setNearBottom] = useState(true);
   const query = useInfiniteQuery({
@@ -63,10 +156,13 @@ export function ChannelConversation({
     refetchInterval: 2000,
     retry: false,
   });
-  // Failed authorization refreshes hide every page, including cached history.
-  const messages = query.isError
+  const allMessages = query.isError
     ? []
     : mergeMessagePages(query.data?.pages ?? []);
+  const messages =
+    threadList && !thread
+      ? allMessages.filter((message) => message.thread_id !== null)
+      : allMessages;
   const latestMessageId = messages.at(-1)?.message.id;
   function scrollToLatest() {
     const element = scroll.current;
@@ -76,14 +172,6 @@ export function ChannelConversation({
     if (visible && follow.current && scroll.current)
       scroll.current.scrollTop = scroll.current.scrollHeight;
   }, [latestMessageId, thread, visible]);
-
-  function selectThread(id: string | null) {
-    setThread(id);
-    setError("");
-    setSent(false);
-    follow.current = true;
-    setNearBottom(true);
-  }
 
   async function openThread(message: ChannelMessage) {
     if (inFlight.current) return;
@@ -109,36 +197,62 @@ export function ChannelConversation({
       inFlight.current = false;
     }
   }
-
   async function send() {
-    if (!draft.trim() || inFlight.current || query.isError || query.isPending)
+    if (
+      !draft.text.trim() ||
+      inFlight.current ||
+      query.isError ||
+      query.isPending
+    )
       return;
-    const submission = submissionFor(
-      pending.current.get(target) ?? null,
-      workspace,
-      thread,
-      draft,
-      () => crypto.randomUUID(),
-    );
-    pending.current.set(target, submission);
     inFlight.current = true;
     setSending(true);
     setError("");
     setSent(false);
     try {
+      const attachmentIds: string[] = [];
+      for (const entry of draft.files) {
+        let uploaded = entry.uploaded;
+        if (!uploaded) {
+          setUploading(true);
+          uploaded = await channelAttachmentUpload(workspace, entry.file, {
+            filename: entry.file.name,
+            media_type: entry.file.type || "application/octet-stream",
+            idempotency_key: entry.key,
+          });
+          updateDraft((current) => ({
+            ...current,
+            files: current.files.map((file) =>
+              file.key === entry.key ? { ...file, uploaded } : file,
+            ),
+          }));
+        }
+        attachmentIds.push(uploaded.id);
+      }
+      setUploading(false);
+      const submission = submissionFor(
+        pending.get(target) ?? null,
+        workspace,
+        thread,
+        draft.text,
+        () => crypto.randomUUID(),
+        attachmentIds,
+      );
+      pending.set(target, submission);
       await channelMessageCreate(workspace, {
         content: submission.content,
         thread_id: submission.thread,
         idempotency_key: submission.key,
+        attachment_ids: submission.attachments,
       });
-      setDrafts((current) => ({ ...current, [target]: "" }));
-      pending.current.delete(target);
+      updateDraft(() => ({ text: "", files: [] }));
+      pending.delete(target);
       setSent(true);
       follow.current = true;
-      await client.invalidateQueries({
-        queryKey: ["channel-history", workspace],
-      });
-      await client.invalidateQueries({ queryKey: ["workspace", workspace] });
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["channel-history", workspace] }),
+        client.invalidateQueries({ queryKey: ["workspace", workspace] }),
+      ]);
     } catch (reason) {
       setError(
         `${copy.failed} ${reason instanceof Error ? reason.message : String(reason)}`,
@@ -146,60 +260,80 @@ export function ChannelConversation({
     } finally {
       inFlight.current = false;
       setSending(false);
+      setUploading(false);
     }
   }
-
-  async function downloadAttachment(attachment: ChannelAttachment) {
-    setDownloading(attachment.id);
-    setError("");
-    try {
-      const response = await authenticatedFetch(
-        getChannelAttachmentDownloadUrl(workspace, attachment.id),
-      );
-      const url = URL.createObjectURL(await response.blob());
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = attachment.filename;
-      document.body.append(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    } catch (reason) {
-      setError(
-        `${copy.downloadFailed} ${reason instanceof Error ? reason.message : String(reason)}`,
-      );
-    } finally {
-      setDownloading(null);
-    }
-  }
-
   async function loadOlder() {
     const element = scroll.current;
     if (!element || query.isFetchingNextPage) return;
     follow.current = false;
     setNearBottom(false);
-    const previousHeight = element.scrollHeight;
-    const previousTop = element.scrollTop;
+    const previousHeight = element.scrollHeight,
+      previousTop = element.scrollTop;
     await query.fetchNextPage();
     requestAnimationFrame(() => {
       if (scroll.current === element)
         element.scrollTop = previousTop + element.scrollHeight - previousHeight;
     });
   }
-
+  function addFiles(files: FileList | null) {
+    if (!files) return;
+    const next = [
+      ...draft.files,
+      ...Array.from(files, (file) => ({ file, key: crypto.randomUUID() })),
+    ];
+    if (!validAttachments(next.map((entry) => entry.file))) {
+      setError(words.invalidAttachment);
+      return;
+    }
+    updateDraft((current) => ({ ...current, files: next }));
+    setError("");
+    setSent(false);
+  }
+  function insert(prefix: string, suffix = "") {
+    const input = textarea.current;
+    if (!input) return;
+    const start = input.selectionStart,
+      end = input.selectionEnd;
+    updateDraft((current) => ({
+      ...current,
+      text:
+        current.text.slice(0, start) +
+        prefix +
+        current.text.slice(start, end) +
+        suffix +
+        current.text.slice(end),
+    }));
+    requestAnimationFrame(() => {
+      input.focus();
+      input.setSelectionRange(start + prefix.length, end + prefix.length);
+    });
+  }
+  const busy = sending || opening || query.isPending;
   return (
-    <div hidden={!visible} className="collab-conversation-view">
-      {thread && (
+    <div
+      hidden={!visible}
+      className={`collab-conversation-view ${thread ? "is-thread" : ""}`}
+    >
+      {thread ? (
         <div className="collab-thread-heading">
+          <div>
+            <h3>{threads.thread}</h3>
+            <small># {title}</small>
+          </div>
           <button
             type="button"
             disabled={sending || opening}
+            aria-label={threads.back}
             onClick={() => selectThread(null)}
           >
-            {threads.back}
+            <X size={18} />
           </button>
-          <h3>{threads.thread}</h3>
         </div>
+      ) : (
+        threadList && (
+          <h3 className="workspace-thread-list-title">{words.threads}</h3>
+        )
       )}
       {query.isError ? (
         <div className="error" role="alert">
@@ -238,17 +372,15 @@ export function ChannelConversation({
             )}
             {query.isPending && <p role="status">{copy.processing}</p>}
             {!query.isPending && messages.length === 0 && (
-              <p className="collab-empty">{copy.noMessages}</p>
+              <p className="collab-empty">
+                {threadList ? words.noThreads : copy.noMessages}
+              </p>
             )}
-            {messages.map((entry) => {
-              const message = entry.message;
-              const sender = senderLabel(message.sender);
+            {messages.map((entry, index) => {
+              const message = entry.message,
+                sender = senderLabel(message.sender);
               if (sender.kind === "agent") {
                 const separator = sender.name.lastIndexOf("@");
-                const reference = {
-                  id: sender.name.slice(0, separator),
-                  version: sender.name.slice(separator + 1),
-                };
                 sender.name =
                   separator < 0
                     ? t("unavailableEntity")
@@ -257,52 +389,97 @@ export function ChannelConversation({
                           0,
                           message.sender.indexOf("/agents/"),
                         ),
-                        reference,
+                        {
+                          id: sender.name.slice(0, separator),
+                          version: sender.name.slice(separator + 1),
+                        },
                       );
               }
+              const date = new Date(message.created_at).toLocaleDateString(
+                locale,
+                { month: "long", day: "numeric" },
+              );
+              const previousDate =
+                index > 0
+                  ? new Date(
+                      messages[index - 1].message.created_at,
+                    ).toLocaleDateString(locale, {
+                      month: "long",
+                      day: "numeric",
+                    })
+                  : "";
               return (
-                <article
-                  className={`collab-message ${sender.kind}`}
-                  key={message.id}
-                  id={`message-${message.id}`}
-                >
-                  <div className="collab-sender">
-                    <strong>{sender.name}</strong>
-                    <span>{copy[sender.kind]}</span>
-                    <time dateTime={message.created_at}>
-                      {new Date(message.created_at).toLocaleString(locale)}
-                    </time>
-                  </div>
-                  <p>{message.content}</p>
-                  {entry.attachments.length > 0 && (
-                    <ul className="collab-attachments">
-                      {entry.attachments.map((attachment) => (
-                        <li key={attachment.id}>
-                          <button
-                            type="button"
-                            aria-label={`${copy.downloadAttachment}: ${attachment.filename}`}
-                            disabled={downloading === attachment.id}
-                            onClick={() => void downloadAttachment(attachment)}
-                          >
-                            {attachment.filename}
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
+                <Fragment key={message.id}>
+                  {date !== previousDate && (
+                    <div className="workspace-date-divider">
+                      <span>{date}</span>
+                    </div>
                   )}
-                  {!thread && (
-                    <button
-                      className="collab-thread-action"
-                      type="button"
-                      disabled={sending || opening}
-                      onClick={() => void openThread(entry)}
-                    >
-                      {entry.thread_id ? threads.open : threads.reply}
-                    </button>
-                  )}
-                </article>
+                  <article
+                    className={`collab-message ${sender.kind}`}
+                    id={`${thread ? "thread-" : ""}message-${message.id}`}
+                  >
+                    <Avatar
+                      name={sender.name}
+                      human={sender.kind === "human"}
+                    />
+                    <div className="workspace-message-body">
+                      <div className="collab-sender">
+                        <strong>{sender.name}</strong>
+                        <span>
+                          {sender.kind === "agent" ? "AGENT" : copy.human}
+                        </span>
+                        {sender.kind === "agent" && (
+                          <small>
+                            {message.sender.startsWith(`${data.node.id}/`)
+                              ? words.local
+                              : words.peer}
+                          </small>
+                        )}
+                        <time
+                          dateTime={message.created_at}
+                          title={new Date(message.created_at).toLocaleString(
+                            locale,
+                          )}
+                        >
+                          {new Date(message.created_at).toLocaleTimeString(
+                            locale,
+                            { hour: "2-digit", minute: "2-digit" },
+                          )}
+                        </time>
+                      </div>
+                      <p>
+                        <MessageText text={message.content} />
+                      </p>
+                      {entry.attachments.length > 0 && (
+                        <ul className="collab-attachments">
+                          {entry.attachments.map((attachment) => (
+                            <li key={attachment.id}>
+                              <AttachmentCard
+                                workspace={workspace}
+                                attachment={attachment}
+                              />
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {!thread && (
+                        <button
+                          className="collab-thread-action"
+                          type="button"
+                          disabled={sending || opening}
+                          onClick={() => void openThread(entry)}
+                        >
+                          <MessageSquare size={12} />
+                          {entry.thread_id ? threads.open : threads.reply}
+                        </button>
+                      )}
+                    </div>
+                  </article>
+                </Fragment>
               );
             })}
+            {!thread && !threadList && requests}
           </div>
           {!nearBottom && (
             <button
@@ -318,62 +495,172 @@ export function ChannelConversation({
             </button>
           )}
           {opening && <p role="status">{threads.opening}</p>}
-          <form
-            className="collab-composer"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void send();
-            }}
-          >
-            <label className="sr-only" htmlFor="channel-message">
-              {copy.message}
-            </label>
-            <textarea
-              id="channel-message"
-              value={draft}
-              maxLength={64000}
-              rows={3}
-              placeholder={copy.placeholder}
-              disabled={sending || opening || query.isPending}
-              onChange={(event) => {
-                const value = event.currentTarget.value;
-                setDrafts((current) => ({ ...current, [target]: value }));
-                setSent(false);
+          {(!threadList || thread) && (
+            <form
+              className="collab-composer"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void send();
               }}
-              onKeyDown={(event) => {
-                if (
-                  (event.ctrlKey || event.metaKey) &&
-                  event.key === "Enter" &&
-                  !event.nativeEvent.isComposing
-                ) {
-                  event.preventDefault();
-                  void send();
+            >
+              <label className="sr-only" htmlFor={`channel-message-${target}`}>
+                {thread ? threads.replyMessage : copy.message}
+              </label>
+              <textarea
+                ref={textarea}
+                id={`channel-message-${target}`}
+                value={draft.text}
+                maxLength={64000}
+                rows={2}
+                placeholder={
+                  thread
+                    ? threads.replyMessage
+                    : `# ${title} — ${copy.placeholder}`
                 }
-              }}
-            />
-            <div className="collab-composer-bottom">
-              <small>Ctrl / ⌘ + Enter</small>
-              <button
-                className="primary"
-                disabled={
-                  sending || opening || query.isPending || !draft.trim()
-                }
-              >
-                {sending ? copy.sending : copy.send}
-              </button>
-            </div>
-            {error && (
-              <p className="error" role="alert">
-                {error}
-              </p>
-            )}
-            {sent && (
-              <p className="muted" role="status">
-                {copy.sent}
-              </p>
-            )}
-          </form>
+                disabled={busy}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  updateDraft((current) => ({ ...current, text: value }));
+                  setSent(false);
+                }}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === "Enter" &&
+                    !event.shiftKey &&
+                    !event.nativeEvent.isComposing &&
+                    event.keyCode !== 229
+                  ) {
+                    event.preventDefault();
+                    void send();
+                  }
+                }}
+              />
+              {draft.files.length > 0 && (
+                <ul className="workspace-draft-files">
+                  {draft.files.map((entry) => (
+                    <li key={entry.key}>
+                      <FileText size={14} />
+                      <span>{entry.file.name}</span>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        aria-label={`${words.removeAttachment}: ${entry.file.name}`}
+                        onClick={() =>
+                          updateDraft((current) => ({
+                            ...current,
+                            files: current.files.filter(
+                              (file) => file.key !== entry.key,
+                            ),
+                          }))
+                        }
+                      >
+                        <X size={12} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="collab-composer-bottom">
+                <div className="workspace-formatting">
+                  <input
+                    ref={fileInput}
+                    type="file"
+                    multiple
+                    className="sr-only"
+                    aria-label={words.attach}
+                    disabled={busy}
+                    onChange={(event) => {
+                      addFiles(event.target.files);
+                      event.target.value = "";
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={busy}
+                    aria-label={words.attach}
+                    title={words.attachmentLimit}
+                    onClick={() => fileInput.current?.click()}
+                  >
+                    <Paperclip size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    aria-label={words.bold}
+                    onClick={() => insert("**", "**")}
+                  >
+                    <Bold size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    aria-label={words.italic}
+                    onClick={() => insert("_", "_")}
+                  >
+                    <Italic size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    aria-label={words.code}
+                    onClick={() => insert("`", "`")}
+                  >
+                    <Code2 size={15} />
+                  </button>
+                  <details className="workspace-mention-picker">
+                    <summary aria-label={words.mention}>
+                      <AtSign size={15} />
+                    </summary>
+                    <div>
+                      <small>{words.mentionHelp}</small>
+                      {data.registry
+                        .filter((entry) => entry.kind === "agent")
+                        .map((entry) => (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            key={`${entry.id}@${entry.version}`}
+                            onClick={(event) => {
+                              insert(`@${entry.id} `);
+                              event.currentTarget
+                                .closest("details")
+                                ?.removeAttribute("open");
+                            }}
+                          >
+                            {agentLabel(data.node.id, entry)}
+                          </button>
+                        ))}
+                    </div>
+                  </details>
+                </div>
+                <button
+                  className="primary"
+                  aria-label={thread ? threads.sendReply : copy.send}
+                  disabled={busy || !draft.text.trim()}
+                >
+                  <Send size={15} />
+                  {sending && (
+                    <span>{uploading ? words.uploading : copy.sending}</span>
+                  )}
+                </button>
+              </div>
+            </form>
+          )}
+          <div className="workspace-composer-hint">
+            <span>{words.scope}</span>
+            <span>{words.enterHint}</span>
+          </div>
         </>
+      )}
+      {error && (
+        <p className="error workspace-message-error" role="alert">
+          {error}
+        </p>
+      )}
+      {sent && (
+        <span className="sr-only" role="status">
+          {copy.sent}
+        </span>
       )}
     </div>
   );

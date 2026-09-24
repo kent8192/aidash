@@ -1,7 +1,8 @@
+import type { Artifact } from "../src/generated/models";
 import type { Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 
-function fixture() {
+function fixture(reference = false) {
   const node = {
     id: "aidash://home",
     endpoint: "http://localhost",
@@ -49,7 +50,7 @@ function fixture() {
     owner: "aidash://home/agents/researcher@1.0.0",
     created_by: "human",
     requirements: {},
-    dependencies: [],
+    dependencies: [] as string[],
     parent_id: null,
     revision: 2,
     created_at: workspace.created_at,
@@ -72,7 +73,7 @@ function fixture() {
     lease_until: null,
     updated_at: task.created_at,
   }));
-  return {
+  const data = {
     access: { kind: "operator" },
     node,
     workspaces,
@@ -87,7 +88,7 @@ function fixture() {
     conversations: [],
     events: [],
     peers: [],
-    artifacts: [],
+    artifacts: [] as Artifact[],
     installations: [],
     human_requests: [
       {
@@ -102,6 +103,94 @@ function fixture() {
       },
     ],
   };
+  if (reference) {
+    data.workspaces = [
+      {
+        ...workspaces[0],
+        title: "v0.1-release",
+        goal: "異なるノードのエージェントで、登録・協調・実行・復旧を一周させる。",
+      },
+      {
+        ...workspaces[1],
+        title: "docs-improvement",
+        goal: "ドキュメントを改善する",
+      },
+      {
+        ...workspaces[1],
+        id: "workspace-three",
+        title: "performance-test",
+        goal: "性能を検証する",
+      },
+      {
+        ...workspaces[1],
+        id: "workspace-four",
+        title: "website-launch",
+        goal: "ウェブサイトを公開する",
+      },
+    ];
+    const agents = ["researcher", "coder", "verifier", "publisher"];
+    const names = ["Researcher", "Coder", "Verifier", "Publisher"];
+    data.registry = [
+      ...agents.map((id, index) =>
+        component(id, "agent", names[index], {
+          model: { id: "model", version: "1.0.0" },
+        }),
+      ),
+      component("model", "model", "Evidence model"),
+    ];
+    data.tasks = [
+      "仕様・変更差分の確認",
+      "リリースチェックリスト",
+      "ドキュメントの確認",
+      "Federation 接続処理の修正",
+      "ノード障害・復旧テスト",
+      "パッケージの公開",
+    ].map((title, index) => ({
+      ...tasks[0],
+      id: `task-${index}`,
+      title,
+      description: "v0.1 のリリースに向けた検証と準備",
+      status: index < 4 ? "COMPLETED" : index === 4 ? "RUNNING" : "BLOCKED",
+      dependencies: index === 4 ? ["task-3"] : index === 5 ? ["task-4"] : [],
+      owner: `aidash://home/agents/${agents[Math.min(3, Math.max(0, index - 2))]}@1.0.0`,
+    }));
+    data.runs = agents.map((id, index) => ({
+      ...runs[0],
+      id: `run-${index}`,
+      task_id: `task-${index + 2}`,
+      agent_id: id,
+      phase: index < 2 ? "COMPLETED" : index === 2 ? "THINKING" : "WAITING",
+      updated_at: `2026-09-24T01:3${index}:00Z`,
+    }));
+    data.human_requests = [
+      {
+        ...data.human_requests[0],
+        run_id: "run-3",
+        kind: "APPROVAL_REQUIRED",
+        prompt: "パッケージの公開を承認しますか？",
+      },
+    ];
+    data.artifacts = [
+      {
+        id: "artifact-one",
+        workspace_id: "workspace-one",
+        task_id: "task-1",
+        name: "release-checklist.md",
+        kind: "document",
+        content: {
+          checklist: [
+            "接続処理を確認",
+            "復旧テストを実行",
+            "人間の承認後に公開",
+          ],
+        },
+        created_by: "researcher",
+        idempotency_key: "artifact-key",
+        created_at: "2026-09-24T01:34:00Z",
+      },
+    ];
+  }
+  return data;
 }
 
 type Message = {
@@ -126,9 +215,13 @@ export async function setup(
     latestMessageChangesOnPoll?: boolean;
     messageAttachment?: boolean;
     extraGraphAgent?: boolean;
+    referenceLayout?: boolean;
+    locale?: "ja-JP" | "en-US";
+    approval?: boolean;
+    failFirstUpload?: boolean;
   } = {},
 ) {
-  let data = fixture();
+  let data = fixture(options.referenceLayout);
   if (options.extraGraphAgent) {
     data.registry.push({
       id: 'review/"[special]:/agent',
@@ -144,6 +237,7 @@ export async function setup(
       config: { model: { id: "model", version: "1.0.0" } },
     });
   }
+  if (options.approval) data.human_requests[0].kind = "APPROVAL_REQUIRED";
   const messages: Record<string, Message[]> = {
     "workspace-one": [
       ...Array.from({ length: options.olderMessages ?? 0 }, (_, index) => ({
@@ -165,6 +259,39 @@ export async function setup(
     ],
     "workspace-two": [],
   };
+  if (options.referenceLayout) {
+    messages["workspace-one"] = [
+      [
+        "南 健人",
+        "v0.1 のリリース準備を進めてください。差分の調査・実装・テストを分担し、\nパッケージを公開する前に、私の承認をお願いします。",
+      ],
+      [
+        "aidash://home/agents/researcher@1.0.0",
+        "仕様と変更差分の調査が完了しました。検証する項目を共有します。\n@coder 接続処理の修正をお願いします。復旧テストは並行して進められます。",
+      ],
+      [
+        "aidash://home/agents/coder@1.0.0",
+        "接続処理の修正を完了しました。@verifier が復旧テストを実行中です。",
+      ],
+      [
+        "aidash://home/agents/publisher@1.0.0",
+        "配布パッケージを用意しました。公開操作の承認をお願いします。",
+      ],
+    ].map(([sender, content], index) => ({
+      id: index === 1 ? "message-one" : `reference-message-${index}`,
+      workspace_id: "workspace-one",
+      sender,
+      content,
+      idempotency_key: null,
+      created_at: `2026-09-24T01:${32 + index * 2}:00Z`,
+    }));
+  }
+  const uploads = new Map<
+    string,
+    { id: string; filename: string; media_type: string; size_bytes: number }
+  >();
+  const messageFiles = new Map<string, string[]>();
+  let uploadFailures = options.failFirstUpload ? 1 : 0;
   const threads = new Map<
     string,
     { id: string; workspace_id: string; root_message_id: string }
@@ -183,25 +310,31 @@ export async function setup(
     return {
       message,
       attachments:
-        options.messageAttachment && message.id === "message-one"
+        (options.messageAttachment || options.referenceLayout) &&
+        message.id === "message-one"
           ? [
               {
                 id: "attachment-one",
-                filename: "evidence.txt",
+                filename: options.referenceLayout
+                  ? "release-checklist.md"
+                  : "evidence.txt",
                 media_type: "text/plain",
                 size_bytes: 15,
               },
             ]
-          : [],
+          : (messageFiles.get(message.id) ?? []).flatMap((id) => {
+              const file = [...uploads.values()].find((file) => file.id === id);
+              return file ? [file] : [];
+            }),
       thread_id: replies.get(message.id) ?? root?.id ?? null,
       is_thread_root: Boolean(root),
     };
   };
   page.on("pageerror", (error) => errors.push(error.message));
   await installBearerDashboard(page, "fixture");
-  await page.addInitScript(() => {
-    localStorage.setItem("aidash-locale", "en-US");
-  });
+  await page.addInitScript((locale) => {
+    localStorage.setItem("aidash-locale", locale);
+  }, options.locale ?? "en-US");
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -307,13 +440,39 @@ export async function setup(
       });
     }
     if (
-      options.messageAttachment &&
+      (options.messageAttachment || options.referenceLayout) &&
       path === "/api/workspaces/workspace-one/attachments/attachment-one"
     ) {
       return route.fulfill({
         body: "Source evidence",
         contentType: "text/plain",
       });
+    }
+    if (
+      /^\/api\/workspaces\/[^/]+\/attachments$/.test(path) &&
+      request.method() === "POST"
+    ) {
+      submissions.push({
+        path,
+        body: {
+          ...Object.fromEntries(url.searchParams),
+          size: request.postDataBuffer()?.byteLength,
+        },
+      });
+      if (uploadFailures-- > 0)
+        return route.fulfill({
+          status: 503,
+          json: { error: "upload unavailable" },
+        });
+      const key = url.searchParams.get("idempotency_key")!;
+      const attachment = uploads.get(key) ?? {
+        id: `upload-${key}`,
+        filename: url.searchParams.get("filename")!,
+        media_type: url.searchParams.get("media_type")!,
+        size_bytes: request.postDataBuffer()?.byteLength ?? 0,
+      };
+      uploads.set(key, attachment);
+      return route.fulfill({ json: attachment });
     }
     if (request.method() === "POST") {
       const body = request.postDataJSON();
@@ -362,13 +521,17 @@ export async function setup(
             created_at: "2026-09-22T12:00:00Z",
           };
           messages[id].push(message);
+          messageFiles.set(message.id, body.attachment_ids ?? []);
           if (body.thread_id) replies.set(message.id, body.thread_id);
         }
         return route.fulfill({ json: envelope(message) });
       }
-      if (path === "/api/runs/run-0/control") {
-        data.runs[0].control = body.action === "pause" ? "PAUSED" : "ACTIVE";
-        return route.fulfill({ json: data.runs[0] });
+      const controlled = data.runs.find(
+        (run) => path === `/api/runs/${run.id}/control`,
+      );
+      if (controlled) {
+        controlled.control = body.action === "pause" ? "PAUSED" : "ACTIVE";
+        return route.fulfill({ json: controlled });
       }
       if (path === "/api/human-requests/question-one/answer") {
         data.human_requests[0].response = body;
@@ -388,7 +551,9 @@ export async function setup(
           tasks: data.tasks.filter(
             (task) => task.workspace_id === workspace.id,
           ),
-          artifacts: [],
+          artifacts: data.artifacts.filter(
+            (artifact) => artifact.workspace_id === workspace.id,
+          ),
           events: [],
         },
       });

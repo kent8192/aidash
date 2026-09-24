@@ -1,6 +1,8 @@
 export const threadCopy = {
   "en-US": {
     thread: "Thread",
+    replyMessage: "Reply",
+    sendReply: "Send reply",
     open: "Open thread",
     reply: "Reply in thread",
     back: "Back to channel",
@@ -9,6 +11,8 @@ export const threadCopy = {
   },
   "ja-JP": {
     thread: "スレッド",
+    replyMessage: "返信",
+    sendReply: "返信を送信",
     open: "スレッドを開く",
     reply: "スレッドで返信",
     back: "チャンネルに戻る",

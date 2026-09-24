@@ -18,6 +18,7 @@ export type MessageSubmission = {
   thread: string | null;
   content: string;
   key: string;
+  attachments: string[];
 };
 
 /** Retries retain identity only while channel, thread and payload agree. */
@@ -27,14 +28,41 @@ export function submissionFor(
   thread: string | null,
   draft: string,
   newKey: () => string,
+  attachments: readonly string[] = [],
 ): MessageSubmission {
   const content = draft.trim();
+  const canonical = [...attachments].sort();
   if (
     previous?.workspace === workspace &&
     previous.thread === thread &&
-    previous.content === content
+    previous.content === content &&
+    JSON.stringify(previous.attachments) === JSON.stringify(canonical)
   ) {
     return previous;
   }
-  return { workspace, thread, content, key: newKey() };
+  return { workspace, thread, content, key: newKey(), attachments: canonical };
+}
+
+export const MAX_ATTACHMENT_BYTES = 1024 * 1024;
+export const MAX_ATTACHMENTS = 8;
+export function validAttachments(
+  files: readonly { name: string; size: number }[],
+): boolean {
+  return (
+    files.length <= MAX_ATTACHMENTS &&
+    files.every(
+      (file) =>
+        file.name.length > 0 &&
+        file.size > 0 &&
+        file.size <= MAX_ATTACHMENT_BYTES &&
+        new TextEncoder().encode(file.name).length <= 255 &&
+        file.name !== "." &&
+        file.name !== ".." &&
+        !/[\\/]/.test(file.name) &&
+        !Array.from(file.name).some(
+          (character) =>
+            character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+        ),
+    )
+  );
 }
