@@ -229,62 +229,100 @@ pub async fn message_keyed(
 		identity.subject,
 		key.unwrap_or_else(Uuid::new_v4)
 	);
-	// Resolve registry and peer capabilities before Access holds a pool
-	// connection. Admission and the authorization decision remain in one tx.
-	let run = f.store.run(id).await?;
-	let admission = async {
+	// Authorize and inspect the idempotency key before peer calls or registry
+	// reads. Both operations use the same access transaction and hide foreign IDs.
+	let preflight = {
+		let mut access = Access::begin(&f.store, identity).await?;
+		let result = async {
+			let run = access.run_for_interaction(id).await?;
+			access
+				.require(&access.resource("run", id, json!({})), "run.message")
+				.await?;
+			access
+				.require(
+					&access.resource("workspace", run.workspace_id, json!({})),
+					"message.create",
+				)
+				.await?;
+			let previous: Option<(String, Option<Uuid>)> = sqlx::query_as(
+				&Query::select()
+					.columns([Alias::new("content"), Alias::new("message_id")])
+					.from(Alias::new("run_inputs"))
+					.cond_where(
+						Condition::all()
+							.add(Expr::col(Alias::new("run_id")).eq(Expr::cust("$1")))
+							.add(Expr::col(Alias::new("idempotency_key")).eq(Expr::cust("$2"))),
+					)
+					.to_string(PostgresQueryBuilder),
+			)
+			.bind(id)
+			.bind(&key)
+			.fetch_optional(&mut **access.tx)
+			.await?;
+			if previous
+				.as_ref()
+				.is_some_and(|(previous_content, _)| previous_content != content)
+			{
+				return Err(Error::Conflict("run message idempotency key reused".into()));
+			}
+			Ok((run, previous.map(|(_, message_id)| message_id)))
+		}
+		.await;
+		access.finish(result).await?
+	};
+	let (run, existing_message) = preflight;
+	let home = crate::federation::Home::new(f.clone(), run.clone());
+	if existing_message.is_some() {
+		if let Err(error) = f.deliver_run_messages(&run).await {
+			tracing::warn!(run_id=%id, %error, "accepted scoped run message awaits home delivery");
+		}
+		f.notify.notify_waiters();
+		return Ok(());
+	}
+	let limit = async {
 		f.require_terminal_safe_delivery(&run).await?;
 		f.run_message_limit(&run).await
 	}
+	.await?;
+	if !home.local() && !home.reserve_run_message(&key, content).await? {
+		return Err(Error::Conflict(
+			"remote home cannot reserve run messages during task termination".into(),
+		));
+	}
+	let outcome = async {
+		let mut access = Access::begin(&f.store, identity).await?;
+		let result = async {
+			let current = access.run_for_interaction(id).await?;
+			access
+				.require(&access.resource("run", id, json!({})), "run.message")
+				.await?;
+			access
+				.require(
+					&access.resource("workspace", current.workspace_id, json!({})),
+					"message.create",
+				)
+				.await?;
+			f.store
+				.accept_run_message_in(&mut access.tx, id, &identity.subject, content, &key, limit)
+				.await
+		}
+		.await;
+		access.finish(result).await
+	}
 	.await;
-	let home = crate::federation::Home::new(f.clone(), run.clone());
-	let mut reserved = false;
-	let mut access = Access::begin(&f.store, identity).await?;
-	let result = async {
-		let run = access.run_for_interaction(id).await?;
-		access
-			.require(&access.resource("run", id, json!({})), "run.message")
-			.await?;
-		access
-			.require(
-				&access.resource("workspace", run.workspace_id, json!({})),
-				"message.create",
-			)
-			.await?;
-		let limit = admission?;
-		if !home.local()
-			&& !f
-				.store
-				.run_inputs(id)
+	if let Err(error) = outcome {
+		if matches!(error, Error::Conflict(_))
+			&& f.recover_historical_run_message(&run, &key, content)
 				.await?
-				.iter()
-				.any(|input| input.idempotency_key == key && input.content == content)
 		{
-			home.reserve_run_message(&key, content).await?;
-			reserved = true;
-		}
-		f.store
-			.accept_run_message_in(&mut access.tx, id, &identity.subject, content, &key, limit)
-			.await
-	}
-	.await;
-	let outcome = access.finish(result).await;
-	if outcome.is_err() && reserved {
-		home.release_run_messages(std::slice::from_ref(&key))
-			.await?;
-	}
-	let run = f.store.run(id).await?;
-	match outcome {
-		Ok(()) => {}
-		Err(error @ Error::Conflict(_)) => {
-			if !f
-				.recover_historical_run_message(&run, &key, content)
-				.await?
-			{
-				return Err(error);
+			// Historical recovery is an accepted input, so keep its home fence.
+		} else {
+			if !home.local() {
+				home.release_run_messages(std::slice::from_ref(&key))
+					.await?;
 			}
+			return Err(error);
 		}
-		Err(error) => return Err(error),
 	}
 	if let Err(error) = f.deliver_run_messages(&run).await {
 		tracing::warn!(run_id=%id, %error, "accepted scoped run message awaits home delivery");

@@ -75,23 +75,28 @@ impl Federation {
 			};
 		}
 		let home = Home::new(self.clone(), run.clone());
-		if !home.local() {
-			home.reserve_run_message(key, content).await?;
+		if !home.local() && !home.reserve_run_message(key, content).await? {
+			return Err(Error::Conflict(
+				"remote home cannot atomically reserve run messages".into(),
+			));
 		}
 		let admission = self
 			.store
 			.accept_run_message(run.id, sender, content, key, limit)
 			.await;
 		if let Err(error) = admission {
-			if !home.local() {
-				home.release_run_messages(&[key.to_owned()]).await?;
-			}
-			if matches!(error, Error::Conflict(_))
-				&& self
+			if matches!(error, Error::Conflict(_)) {
+				if self
 					.recover_historical_run_message(run, key, content)
 					.await?
-			{
-				return Ok(());
+				{
+					// Keep the fence: the recovered historical input is now in the
+					// durable ledger and must reach inference before task termination.
+					return Ok(());
+				}
+			}
+			if !home.local() {
+				home.release_run_messages(&[key.to_owned()]).await?;
 			}
 			return Err(error);
 		}
@@ -111,7 +116,7 @@ impl Federation {
 			.collect();
 		let home = Home::new(self.clone(), run.clone());
 		for chunk in keys.chunks(100) {
-			home.release_run_messages(chunk).await?;
+			home.acknowledge_run_messages(chunk).await?;
 		}
 		Ok(())
 	}
@@ -130,7 +135,7 @@ impl Federation {
 			.collect();
 		let home = Home::new(self.clone(), run.clone());
 		for chunk in keys.chunks(100) {
-			home.release_run_messages(chunk).await?;
+			home.acknowledge_run_messages(chunk).await?;
 		}
 		Ok(())
 	}
@@ -179,13 +184,26 @@ impl Federation {
 		}
 		let home = Home::new(self.clone(), run.clone());
 		for input in self.store.run_inputs(run.id).await? {
-			if input.message_id.is_some() {
+			if input.message_id.is_some() && input.seq <= run.observed_input_seq {
 				continue;
+			}
+			if !home
+				.reserve_run_message(&input.idempotency_key, &input.content)
+				.await?
+			{
+				tracing::debug!(run_id=%run.id, "older home does not support remote message reservations");
 			}
 			let message = home
 				.human_message_record(&input.idempotency_key, &input.content)
 				.await?;
-			if message.workspace_id != run.workspace_id || message.content != input.content {
+			let expected_key = format!(
+				"{}:{}:{}",
+				self.config.node_id, run.task_id, input.idempotency_key
+			);
+			if message.workspace_id != run.workspace_id
+				|| message.content != input.content
+				|| message.idempotency_key.as_deref() != Some(expected_key.as_str())
+			{
 				return Err(Error::Conflict(
 					"remote run message delivery changed".into(),
 				));
@@ -204,6 +222,7 @@ impl Federation {
 		let home = Home::new(self.clone(), run.clone());
 		let prefix = format!("{}:{}:", self.config.node_id, run.task_id);
 		let limit = self.run_message_limit(run).await?;
+		let mut batch = Vec::new();
 		for message in home.historical_run_messages().await? {
 			let key = message
 				.idempotency_key
@@ -215,11 +234,12 @@ impl Federation {
 					"historical run message workspace changed".into(),
 				));
 			}
-			self.store
-				.import_remote_run_message(run.id, key, &message, limit)
-				.await?;
+			batch.push((key.to_owned(), message));
 		}
-		Ok(())
+		batch.sort_by_key(|(_, message)| (message.created_at, message.id));
+		self.store
+			.import_remote_run_messages(run.id, &batch, limit)
+			.await
 	}
 	pub async fn recover_historical_run_message(
 		&self,
@@ -1220,6 +1240,42 @@ impl Home {
 			Ok(())
 		}
 	}
+	pub async fn response_message(
+		&self,
+		worker: Uuid,
+		included_input_seq: i64,
+		key: &str,
+		content: &str,
+	) -> Result<()> {
+		if self.authority.is_some() || self.local() {
+			self.federation
+				.store
+				.response_message_in_run(
+					&self.run,
+					worker,
+					included_input_seq,
+					&self.owner(),
+					content,
+					key,
+					self.authority.is_some(),
+				)
+				.await
+		} else {
+			self.federation
+				.store
+				.with_run_response_fence(
+					self.run.id,
+					worker,
+					included_input_seq,
+					self.command::<Value>(
+						"run_message_output",
+						json!({"run_id":self.run.id,"key":key,"content":content}),
+					),
+				)
+				.await?;
+			Ok(())
+		}
+	}
 	pub async fn human_message(&self, key: &str, content: &str) -> Result<()> {
 		if self.local() {
 			self.federation
@@ -1232,23 +1288,17 @@ impl Home {
 			Ok(())
 		}
 	}
-	pub async fn reserve_run_message(&self, key: &str, content: &str) -> Result<()> {
+	pub async fn reserve_run_message(&self, key: &str, content: &str) -> Result<bool> {
 		if self.local() {
-			return Ok(());
+			return Ok(true);
 		}
-		if self
+		Ok(self
 			.optional_command::<Value>(
 				"run_message_reserve",
 				json!({"run_id":self.run.id,"key":key,"content":content}),
 			)
 			.await?
-			.is_none()
-		{
-			return Err(Error::Conflict(
-				"remote home cannot reserve run messages during task termination".into(),
-			));
-		}
-		Ok(())
+			.is_some())
 	}
 	pub async fn release_run_messages(&self, keys: &[String]) -> Result<()> {
 		if self.local() || keys.is_empty() {
@@ -1256,6 +1306,17 @@ impl Home {
 		}
 		self.optional_command::<Value>(
 			"run_message_release",
+			json!({"run_id":self.run.id,"keys":keys}),
+		)
+		.await?;
+		Ok(())
+	}
+	pub async fn acknowledge_run_messages(&self, keys: &[String]) -> Result<()> {
+		if self.local() || keys.is_empty() {
+			return Ok(());
+		}
+		self.optional_command::<Value>(
+			"run_message_ack",
 			json!({"run_id":self.run.id,"keys":keys}),
 		)
 		.await?;

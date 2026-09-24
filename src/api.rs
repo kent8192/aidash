@@ -1256,14 +1256,17 @@ async fn peer_workspace(
 			| "run_message_delivery_capability"
 			| "run_message_reserve"
 			| "run_message_release"
+			| "run_message_ack"
 			| "task" | "claim"
 	) && !(task.owner.is_none()
 		&& (matches!(
 			command.operation.as_str(),
 			"human_message"
+				| "run_message_output"
 				| "run_message_delivery"
 				| "run_message_reserve"
 				| "run_message_release"
+				| "run_message_ack"
 		) || (command.operation == "transition"
 			&& (d["status"] == "CANCELLED" || d["status"] == "FAILED"))))
 		&& task.owner.as_deref() != Some(&owner)
@@ -1293,7 +1296,10 @@ async fn peer_workspace(
 			&& !replay_transition
 			&& !matches!(
 				command.operation.as_str(),
-				"run_message_delivery" | "run_message_reserve" | "run_message_release"
+				"run_message_delivery"
+					| "run_message_reserve"
+					| "run_message_release"
+					| "run_message_ack"
 			) {
 			return Err(Error::Unauthorized);
 		}
@@ -1454,6 +1460,27 @@ async fn peer_workspace(
 				json!({"sent":true})
 			}
 		}
+		"run_message_output" => {
+			f.store.require_legacy_execution(task.workspace_id).await?;
+			let run_id: Uuid = required(d, "run_id")?
+				.parse()
+				.map_err(|_| Error::Invalid("invalid run ID".into()))?;
+			let input_key = required(d, "key")?;
+			if !input_key.starts_with(&format!("{run_id}:")) {
+				return Err(Error::Invalid("invalid run response key".into()));
+			}
+			f.store
+				.run_message_output_record(
+					task.workspace_id,
+					task.id,
+					run_id,
+					&owner,
+					required(d, "content")?,
+					&key()?,
+				)
+				.await?;
+			json!({"sent":true})
+		}
 		"run_message_delivery" => {
 			f.store.require_legacy_execution(task.workspace_id).await?;
 			let run_id: Uuid = required(d, "run_id")?
@@ -1463,12 +1490,16 @@ async fn peer_workspace(
 			if !run_message_key_matches_run(input_key, run_id) {
 				return Err(Error::Invalid("invalid run message delivery key".into()));
 			}
+			let content = required(d, "content")?;
 			json!(
 				f.store
 					.run_message_delivery_record(
 						task.workspace_id,
+						task.id,
+						run_id,
 						&format!("human@{node}"),
-						required(d, "content")?,
+						content,
+						input_key,
 						&key()?
 					)
 					.await?
@@ -1484,7 +1515,13 @@ async fn peer_workspace(
 				return Err(Error::Invalid("invalid run message key".into()));
 			}
 			f.store
-				.reserve_remote_run_message(task.id, run_id, input_key, required(d, "content")?)
+				.reserve_remote_run_message(
+					task.id,
+					run_id,
+					node,
+					input_key,
+					required(d, "content")?,
+				)
 				.await?;
 			json!({"reserved":true})
 		}
@@ -1505,6 +1542,24 @@ async fn peer_workspace(
 				.release_remote_run_message(task.id, run_id, &keys)
 				.await?;
 			json!({"released":true})
+		}
+		"run_message_ack" => {
+			f.store.require_legacy_execution(task.workspace_id).await?;
+			let run_id: Uuid = required(d, "run_id")?
+				.parse()
+				.map_err(|_| Error::Invalid("invalid run ID".into()))?;
+			let keys: Vec<String> = serde_json::from_value(d["keys"].clone())?;
+			if keys.len() > 1024
+				|| keys
+					.iter()
+					.any(|key| !run_message_key_matches_run(key, run_id))
+			{
+				return Err(Error::Invalid("invalid run message keys".into()));
+			}
+			f.store
+				.acknowledge_remote_run_messages(task.id, run_id, &keys)
+				.await?;
+			json!({"acknowledged":true})
 		}
 		"run_message_history" => {
 			f.store.require_legacy_execution(task.workspace_id).await?;

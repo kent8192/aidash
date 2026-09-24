@@ -129,6 +129,37 @@ fn referenced_message_inferred(context: &Context, id: Uuid) -> bool {
 	coverage_complete(&context.message_inference_coverage, id)
 }
 
+fn is_required_message_read(
+	call: &crate::provider::ToolCall,
+	required_reads: &[Uuid],
+	context: &Context,
+) -> bool {
+	if call.name != "workspace_read" || call.arguments["kind"] != "message" {
+		return false;
+	}
+	let Some(id) = call.arguments["id"]
+		.as_str()
+		.and_then(|id| id.parse::<Uuid>().ok())
+	else {
+		return false;
+	};
+	if !required_reads.contains(&id) || referenced_message_read(context, id) {
+		return false;
+	}
+	let next_offset = context
+		.message_read_coverage
+		.get(&id.to_string())
+		.and_then(|coverage| {
+			coverage
+				.ranges
+				.iter()
+				.find(|range| range[0] == 0)
+				.map(|range| range[1])
+		})
+		.unwrap_or(0);
+	call.arguments["offset"].as_u64().unwrap_or(0) as usize == next_offset
+}
+
 #[derive(Clone)]
 pub struct Harness {
 	pub federation: Federation,
@@ -313,6 +344,7 @@ impl Harness {
 		home: &Home,
 		guard: Option<&Guard>,
 		run: &Run,
+		worker: Uuid,
 		text: &str,
 	) -> Result<()> {
 		if text.is_empty() {
@@ -323,8 +355,15 @@ impl Harness {
 				.action("message.create", "workspace", run.workspace_id)
 				.await?;
 		}
-		home.message(&format!("{}:{}:output", run.id, run.step), text)
-			.await
+		home.response_message(
+			worker,
+			run.pending["included_input_seq"]
+				.as_i64()
+				.unwrap_or(run.observed_input_seq),
+			&format!("{}:{}:output", run.id, run.step),
+			text,
+		)
+		.await
 	}
 	async fn advance(
 		&self,
@@ -770,11 +809,27 @@ impl Harness {
 					|| (references_read
 						&& references_inferred
 						&& run.pending["references_read_at_inference"] == true);
+				let cursor = run.pending["cursor"].as_u64().unwrap_or(0) as usize;
+				if !informed_response
+					&& let Some(call) = result.tool_calls.get(cursor)
+					&& !is_required_message_read(call, &required_reads, &context)
+				{
+					context.history.push(
+						json!({"kind":"run_message_read_required","message_ids":required_reads}),
+					);
+					run.context = json!(context);
+					run.phase = "THINKING".into();
+					run.step += 1;
+					run.pending = json!({});
+					store
+						.save_run(run, token, "run.message_read_required")
+						.await?;
+					return Ok(());
+				}
 				if !result.tool_calls.is_empty() && informed_response {
-					self.publish_model_text(&home, guard, run, &result.text)
+					self.publish_model_text(&home, guard, run, token, &result.text)
 						.await?;
 				}
-				let cursor = run.pending["cursor"].as_u64().unwrap_or(0) as usize;
 				if cursor >= result.tool_calls.len() {
 					if result.tool_calls.is_empty() {
 						if !informed_response {
@@ -793,7 +848,7 @@ impl Harness {
 						}
 						let children = home.child_summary(run.task_id).await?;
 						if children.has_pending {
-							self.publish_model_text(&home, guard, run, &result.text)
+							self.publish_model_text(&home, guard, run, token, &result.text)
 								.await?;
 							let failed = children.has_failed;
 							if failed {
@@ -828,7 +883,7 @@ impl Harness {
 							store.save_run(run, token, "run.message_received").await?;
 							return Ok(());
 						}
-						self.publish_model_text(&home, guard, run, &result.text)
+						self.publish_model_text(&home, guard, run, token, &result.text)
 							.await?;
 						if let Err(error) = home
 							.complete(&format!("{}:complete", run.id), &artifact)
@@ -1602,6 +1657,9 @@ fn result_artifact_name(title: &str) -> String {
 
 #[cfg(test)]
 mod review_tests {
+	use serde_json::json;
+	use uuid::Uuid;
+
 	#[tokio::test(start_paused = true)]
 	async fn inference_cancellation_poll_errors_do_not_signal_cancellation() {
 		let pool = sqlx::postgres::PgPoolOptions::new()
@@ -1631,6 +1689,72 @@ mod review_tests {
 		assert!(super::request_context_window(2048, 1500) >= 1500);
 		assert!(super::request_context_window(4096, 3000) >= 3000);
 		assert!(super::request_context_window(32_000, 4000) < 32_000);
+	}
+
+	#[test]
+	fn uninformed_responses_may_only_read_required_unread_messages() {
+		let id = Uuid::new_v4();
+		let unrelated_id = Uuid::new_v4();
+		let required = [id];
+		let context = crate::context::Context::default();
+		let read_required = crate::provider::ToolCall {
+			id: "required-read".into(),
+			name: "workspace_read".into(),
+			arguments: json!({"kind":"message","id":id}),
+		};
+		assert!(super::is_required_message_read(
+			&read_required,
+			&required,
+			&context
+		));
+		let unrelated_read = crate::provider::ToolCall {
+			arguments: json!({"kind":"message","id":unrelated_id}),
+			..read_required.clone()
+		};
+		assert!(!super::is_required_message_read(
+			&unrelated_read,
+			&required,
+			&context
+		));
+		let mutation = crate::provider::ToolCall {
+			name: "workspace_message".into(),
+			arguments: json!({"content":"change the workspace"}),
+			..read_required.clone()
+		};
+		assert!(!super::is_required_message_read(
+			&mutation, &required, &context
+		));
+		let mut read_context = context;
+		read_context.message_read_coverage.insert(
+			id.to_string(),
+			crate::context::MessageReadCoverage {
+				total_chars: 10,
+				ranges: vec![[0, 4]],
+			},
+		);
+		assert!(!super::is_required_message_read(
+			&read_required,
+			&required,
+			&read_context
+		));
+		let next_chunk = crate::provider::ToolCall {
+			arguments: json!({"kind":"message","id":id,"offset":4}),
+			..read_required.clone()
+		};
+		assert!(super::is_required_message_read(
+			&next_chunk,
+			&required,
+			&read_context
+		));
+		let redundant_chunk = crate::provider::ToolCall {
+			arguments: json!({"kind":"message","id":id,"offset":0}),
+			..read_required
+		};
+		assert!(!super::is_required_message_read(
+			&redundant_chunk,
+			&required,
+			&read_context
+		));
 	}
 
 	#[test]

@@ -18,6 +18,17 @@ impl MigrationTrait for Migration {
 							.not_null(),
 					)
 					.col(ColumnDef::new(Alias::new("content")).text().not_null())
+					.col(
+						ColumnDef::new(Alias::new("expires_at"))
+							.timestamp_with_time_zone()
+							.null(),
+					)
+					.col(
+						ColumnDef::new(Alias::new("consumed"))
+							.boolean()
+							.not_null()
+							.default(false),
+					)
 					.primary_key(
 						Index::create()
 							.col(Alias::new("task_id"))
@@ -45,7 +56,12 @@ CREATE FUNCTION gate_remote_task_terminal() RETURNS trigger LANGUAGE plpgsql AS 
 BEGIN
     IF NEW.status IN ('COMPLETED', 'FAILED', 'CANCELLED', 'ABANDONED')
         AND NEW.status IS DISTINCT FROM OLD.status
-        AND EXISTS (SELECT 1 FROM remote_run_message_fences WHERE task_id = OLD.id) THEN
+        AND EXISTS (
+            SELECT 1 FROM remote_run_message_fences
+            WHERE task_id = OLD.id
+              AND NOT consumed
+              AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+        ) THEN
         RAISE EXCEPTION USING ERRCODE = 'A3301',
             MESSAGE = 'remote run messages await inference';
     END IF;

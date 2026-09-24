@@ -33,6 +33,7 @@ BEGIN
     -- commit an answer against inputs that were accepted beforehand.
     IF OLD.lease_owner IS NOT NULL AND NOT OLD.ledger_worker_ready
         AND EXISTS (SELECT 1 FROM run_inputs WHERE run_id = OLD.id)
+        AND current_setting('aidash.input_ledger_worker', true) IS DISTINCT FROM 'true'
         AND (NEW.phase IS DISTINCT FROM OLD.phase
             OR NEW.pending IS DISTINCT FROM OLD.pending
             OR NEW.context IS DISTINCT FROM OLD.context

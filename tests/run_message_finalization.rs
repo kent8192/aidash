@@ -148,6 +148,72 @@ async fn old_worker_cannot_lease_after_input_ledger_admission() {
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
+async fn upgraded_worker_reclaims_an_expired_legacy_lease_after_input_backfill() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Reclaim a legacy lease","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	assert!(!run.ledger_worker_ready);
+	let old_worker = Uuid::new_v4();
+	sqlx::query(
+		"UPDATE runs SET lease_owner = $2, lease_until = CURRENT_TIMESTAMP + INTERVAL '30 seconds' WHERE id = $1",
+	)
+	.bind(run.id)
+	.bind(old_worker)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let mut tx = f.store.pool.begin().await.unwrap();
+	sqlx::query_scalar::<_, String>(
+		"SELECT set_config('aidash.input_ledger_worker', 'true', true)",
+	)
+	.fetch_one(&mut *tx)
+	.await
+	.unwrap();
+	sqlx::query(
+		"INSERT INTO run_inputs (run_id, sender, content, idempotency_key) VALUES ($1, 'human', 'backfilled correction', $2)",
+	)
+	.bind(run.id)
+	.bind(format!("human:{}:{}", run.id, Uuid::new_v4()))
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	sqlx::query(
+		"UPDATE runs SET lease_until = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE id = $1",
+	)
+	.bind(run.id)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let upgraded_worker = Uuid::new_v4();
+	let reclaimed = f
+		.store
+		.lease_run(upgraded_worker, 30)
+		.await
+		.expect("an upgraded worker can reclaim the expired legacy lease")
+		.expect("the run remains available");
+	assert_eq!(reclaimed.id, run.id);
+	assert!(reclaimed.ledger_worker_ready);
+	assert_eq!(reclaimed.pending["lease_recovered"], true);
+	f.store
+		.release_lease(run.id, upgraded_worker)
+		.await
+		.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
 async fn messages_accepted_during_and_after_inference_are_seen_before_completion() {
 	let entered = Arc::new(Notify::new());
 	let release = Arc::new(Notify::new());
@@ -442,6 +508,205 @@ async fn a_new_input_discards_pending_tool_calls_before_their_effects() {
 			.iter()
 			.any(|message| message.content == "stale tool output")
 	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn reference_only_inputs_suppress_uninformed_tool_calls() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Referenced correction","goal":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	let key = format!("human:{}:{}", run.id, Uuid::new_v4());
+	f.store
+		.accept_run_message(
+			run.id,
+			"human",
+			"large correction to inspect",
+			&key,
+			f.run_message_limit(&run).await.unwrap(),
+		)
+		.await
+		.unwrap();
+	let input = f.store.run_inputs(run.id).await.unwrap().remove(0);
+	let mut tx = f.store.pool.begin().await.unwrap();
+	sqlx::query_scalar::<_, String>(
+		"SELECT set_config('aidash.input_ledger_worker', 'true', true)",
+	)
+	.fetch_one(&mut *tx)
+	.await
+	.unwrap();
+	sqlx::query("UPDATE run_inputs SET reference_only = TRUE WHERE run_id = $1")
+		.bind(run.id)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
+	let worker = Uuid::new_v4();
+	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
+	leased.phase = "TOOL_CALL".into();
+	leased.pending = json!({
+		"included_input_seq":input.seq,
+		"required_run_message_reads":[input.message_id.unwrap()],
+		"references_read_at_inference":false,
+		"response":{"text":"uninformed text","tool_calls":[{"id":"mutating-call","name":"workspace_message","arguments":{"content":"uninformed side effect"}}],"input_tokens":1,"output_tokens":1,"usage_complete":true},
+		"cursor":0
+	});
+	f.store
+		.save_run(&leased, worker, "model.completed")
+		.await
+		.unwrap();
+	f.store.release_lease(run.id, worker).await.unwrap();
+	assert!(
+		(Harness {
+			federation: f.clone()
+		})
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	let current = f.store.run(run.id).await.unwrap();
+	assert_eq!(current.phase, "THINKING");
+	assert!(current.pending.get("response").is_none());
+	assert_eq!(current.step, leased.step + 1);
+	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
+	assert!(
+		!snapshot
+			.messages
+			.iter()
+			.any(|message| message.content == "uninformed side effect")
+	);
+	let invocations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM invocations WHERE run_id = $1")
+		.bind(run.id)
+		.fetch_one(&f.store.pool)
+		.await
+		.unwrap();
+	assert_eq!(invocations, 0);
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn effects_recheck_input_sequence_under_the_run_lock() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Effect fence","goal":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	let previously_observed = f
+		.store
+		.run_inputs(run.id)
+		.await
+		.unwrap()
+		.last()
+		.map_or(0, |input| input.seq);
+	let key = format!("human:{}:{}", run.id, Uuid::new_v4());
+	f.store
+		.accept_run_message(
+			run.id,
+			"human",
+			"correction admitted after the provider response",
+			&key,
+			f.run_message_limit(&run).await.unwrap(),
+		)
+		.await
+		.unwrap();
+	let worker = Uuid::new_v4();
+	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
+	leased.pending = json!({"included_input_seq":previously_observed});
+	assert!(matches!(
+		aidash::federation::Home::new(f.clone(), run.clone())
+			.response_message(
+				Uuid::new_v4(),
+				previously_observed,
+				&format!("{}:lost-lease-output", run.id),
+				"output after lease loss",
+			)
+			.await,
+		Err(aidash::error::Error::Conflict(_))
+	));
+	assert!(matches!(
+		f.store
+			.invocation_start(
+				&leased,
+				worker,
+				"stale-invocation",
+				"workspace_message",
+				&json!({"content":"stale tool effect"}),
+				false,
+			)
+			.await,
+		Err(aidash::error::Error::StaleInference)
+	));
+	assert!(matches!(
+		aidash::federation::Home::new(f.clone(), run.clone())
+			.response_message(
+				worker,
+				previously_observed,
+				&format!("{}:stale-output", run.id),
+				"stale model text",
+			)
+			.await,
+		Err(aidash::error::Error::StaleInference)
+	));
+	let stale_invocation_count: i64 = sqlx::query_scalar(
+		"SELECT COUNT(*) FROM invocations WHERE idempotency_key = 'stale-invocation'",
+	)
+	.fetch_one(&f.store.pool)
+	.await
+	.unwrap();
+	assert_eq!(stale_invocation_count, 0);
+	let messages = f.store.snapshot(run.workspace_id).await.unwrap().messages;
+	assert!(
+		!messages
+			.iter()
+			.any(|message| message.content == "stale model text")
+	);
+	let included_now = f
+		.store
+		.run_inputs(run.id)
+		.await
+		.unwrap()
+		.last()
+		.unwrap()
+		.seq;
+	aidash::federation::Home::new(f.clone(), run.clone())
+		.response_message(
+			worker,
+			included_now,
+			&format!("{}:fresh-output", run.id),
+			"fresh response text",
+		)
+		.await
+		.unwrap();
+	assert!(
+		f.store
+			.snapshot(run.workspace_id)
+			.await
+			.unwrap()
+			.messages
+			.iter()
+			.any(|message| message.content == "fresh response text")
+	);
+	f.store.release_lease(run.id, worker).await.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 

@@ -99,11 +99,13 @@ async fn old_peer_workspace_compat(
 	if mode.old_peer.load(Ordering::SeqCst)
 		&& matches!(
 			operation,
-			"run_message_history"
+			"run_message_output"
+				| "run_message_history"
 				| "run_message_delivery"
 				| "run_message_delivery_capability"
 				| "run_message_reserve"
 				| "run_message_release"
+				| "run_message_ack"
 		) {
 		return (
 			axum::http::StatusCode::BAD_REQUEST,
@@ -208,6 +210,52 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 		.accept_run(&task, &home.config.node_id, &agent.id, &agent.version)
 		.await
 		.unwrap();
+	let home_db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(home.store.pool.clone());
+	// Seed a pre-ledger correction, then make the executor admission hit the
+	// old-worker lease fence. Historical recovery must keep the home reservation.
+	Migrator::down(&home_db, Some(3)).await.unwrap();
+	let first_key = Uuid::new_v4();
+	home.store
+		.message(
+			workspace.id,
+			&format!("human@{}", executor.config.node_id),
+			"remote correction",
+			Some(&format!(
+				"{}:{}:human:{}:{first_key}",
+				executor.config.node_id, task.id, run.id
+			)),
+		)
+		.await
+		.unwrap();
+	Migrator::up(&home_db, None).await.unwrap();
+	let mut old_lease = executor.store.pool.begin().await.unwrap();
+	sqlx::query_scalar::<_, String>(
+		&Query::select()
+			.expr(Expr::cust(
+				"set_config('aidash.input_ledger_worker', 'true', true)",
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *old_lease)
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("runs"))
+			.value(Alias::new("lease_owner"), Expr::cust("$2"))
+			.value(
+				Alias::new("lease_until"),
+				Expr::cust("CURRENT_TIMESTAMP + INTERVAL '10 minutes'"),
+			)
+			.and_where(Expr::cust("id = $1"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.bind(Uuid::new_v4())
+	.execute(&mut *old_lease)
+	.await
+	.unwrap();
+	old_lease.commit().await.unwrap();
 	let observation = executor_app
 		.clone()
 		.oneshot(
@@ -231,7 +279,6 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 		200,
 		"peer observations must decode the full Run"
 	);
-	let first_key = Uuid::new_v4();
 	let (status, body) = peer_control(
 		&executor_app,
 		&home.config.node_id,
@@ -244,13 +291,271 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 	let inputs = executor.store.run_inputs(run.id).await.unwrap();
 	assert_eq!(inputs.len(), 1);
 	assert!(inputs[0].message_id.is_some());
-	let current_task = home.store.task(task.id).await.unwrap();
+	let first_input_key = format!("human:{}:{first_key}", run.id);
+	let remote_home = Home::new(executor.clone(), run.clone());
 	assert!(
-		home.store
-			.transition(task.id, current_task.revision, &owner, "CANCELLED")
+		remote_home
+			.reserve_run_message(&first_input_key, "changed correction")
 			.await
 			.is_err(),
-		"home termination must wait until the correction reaches inference"
+		"a reservation cannot be reused with different content"
+	);
+	assert!(
+		remote_home
+			.human_message_record(&first_input_key, "changed correction")
+			.await
+			.is_err(),
+		"delivery must match the reserved content"
+	);
+	let mut local_run = run.clone();
+	local_run.home_node = executor.config.node_id.clone();
+	let local_home = Home::new(executor.clone(), local_run);
+	assert!(
+		local_home
+			.reserve_run_message(&first_input_key, "local reservation")
+			.await
+			.unwrap()
+	);
+	local_home.release_run_messages(&[]).await.unwrap();
+	local_home.acknowledge_run_messages(&[]).await.unwrap();
+	let lease_key = format!("human:{}:{}", run.id, Uuid::new_v4());
+	home.store
+		.reserve_remote_run_message(
+			task.id,
+			run.id,
+			&executor.config.node_id,
+			&lease_key,
+			"lease renewal",
+		)
+		.await
+		.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("remote_run_message_fences"))
+			.value(
+				Alias::new("expires_at"),
+				Expr::cust("CURRENT_TIMESTAMP - INTERVAL '1 second'"),
+			)
+			.and_where(Expr::cust(
+				"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(task.id)
+	.bind(run.id)
+	.bind(&lease_key)
+	.execute(&home.store.pool)
+	.await
+	.unwrap();
+	assert!(
+		remote_home
+			.human_message_record(&lease_key, "lease renewal")
+			.await
+			.is_err(),
+		"delivery cannot revive an expired reservation by itself"
+	);
+	assert!(
+		remote_home
+			.reserve_run_message(&lease_key, "lease renewal")
+			.await
+			.unwrap()
+	);
+	assert_eq!(
+		remote_home
+			.human_message_record(&lease_key, "lease renewal")
+			.await
+			.unwrap()
+			.content,
+		"lease renewal"
+	);
+	remote_home
+		.acknowledge_run_messages(std::slice::from_ref(&lease_key))
+		.await
+		.unwrap();
+	home.store
+		.acknowledge_remote_run_messages(task.id, run.id, &[])
+		.await
+		.unwrap();
+	remote_home
+		.release_run_messages(std::slice::from_ref(&lease_key))
+		.await
+		.unwrap();
+	let retained_consumed_fence: Option<bool> = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("consumed"))
+			.from(Alias::new("remote_run_message_fences"))
+			.and_where(Expr::cust(
+				"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(task.id)
+	.bind(run.id)
+	.bind(&lease_key)
+	.fetch_optional(&home.store.pool)
+	.await
+	.unwrap();
+	assert_eq!(retained_consumed_fence, Some(true));
+	assert!(
+		home.store
+			.reserve_remote_run_message(
+				task.id,
+				Uuid::new_v4(),
+				&executor.config.node_id,
+				&first_input_key,
+				"remote correction",
+			)
+			.await
+			.is_err(),
+		"an idempotency key cannot be reused by another run"
+	);
+	let released_key = format!("human:{}:{}", run.id, Uuid::new_v4());
+	remote_home
+		.reserve_run_message(&released_key, "rejected admission")
+		.await
+		.unwrap();
+	remote_home
+		.release_run_messages(std::slice::from_ref(&released_key))
+		.await
+		.unwrap();
+	let released_count: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(Alias::new("remote_run_message_fences"))
+			.and_where(Expr::cust(
+				"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(task.id)
+	.bind(run.id)
+	.bind(&released_key)
+	.fetch_one(&home.store.pool)
+	.await
+	.unwrap();
+	assert_eq!(released_count, 0);
+	let mut terminal_history_run = run.clone();
+	terminal_history_run.id = Uuid::new_v4();
+	let terminal_history_key = format!("human:{}:{}", terminal_history_run.id, Uuid::new_v4());
+	let terminal_history_content = "terminal historical correction";
+	home.store
+		.reserve_remote_run_message(
+			task.id,
+			terminal_history_run.id,
+			&executor.config.node_id,
+			&terminal_history_key,
+			terminal_history_content,
+		)
+		.await
+		.unwrap();
+	let terminal_history_home = Home::new(executor.clone(), terminal_history_run.clone());
+	terminal_history_home
+		.human_message_record(&terminal_history_key, terminal_history_content)
+		.await
+		.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("remote_run_message_fences"))
+			.value(
+				Alias::new("expires_at"),
+				Expr::cust("CURRENT_TIMESTAMP - INTERVAL '1 second'"),
+			)
+			.and_where(Expr::cust(
+				"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(task.id)
+	.bind(terminal_history_run.id)
+	.bind(&terminal_history_key)
+	.execute(&home.store.pool)
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("runs"))
+			.value(Alias::new("lease_owner"), Expr::cust("NULL"))
+			.value(Alias::new("lease_until"), Expr::cust("NULL"))
+			.and_where(Expr::cust("id = $1"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.execute(&executor.store.pool)
+	.await
+	.unwrap();
+	let unreserved_key = format!("human:{}:{}", run.id, Uuid::new_v4());
+	assert!(
+		Home::new(executor.clone(), run.clone())
+			.human_message_record(&unreserved_key, "unreserved injection")
+			.await
+			.is_err(),
+		"terminal-safe delivery requires a matching reservation"
+	);
+	let response_worker = Uuid::new_v4();
+	let response_run = executor
+		.store
+		.lease_run(response_worker, 30)
+		.await
+		.unwrap()
+		.unwrap();
+	let included_input_seq = executor
+		.store
+		.run_inputs(run.id)
+		.await
+		.unwrap()
+		.last()
+		.unwrap()
+		.seq;
+	assert!(matches!(
+		Home::new(executor.clone(), response_run)
+			.response_message(
+				response_worker,
+				included_input_seq,
+				&format!("{}:response-output", run.id),
+				"response must wait until the correction is observed",
+			)
+			.await,
+		Err(aidash::error::Error::TransactionPending)
+	));
+	assert!(
+		!home
+			.store
+			.snapshot(workspace.id)
+			.await
+			.unwrap()
+			.messages
+			.iter()
+			.any(|message| message.content == "response must wait until the correction is observed")
+	);
+	executor
+		.store
+		.release_lease(run.id, response_worker)
+		.await
+		.unwrap();
+	assert!(
+		!home
+			.store
+			.snapshot(workspace.id)
+			.await
+			.unwrap()
+			.messages
+			.iter()
+			.any(|message| message.content == "unreserved injection")
+	);
+	let current_task = home.store.task(task.id).await.unwrap();
+	let error = home
+		.store
+		.transition(task.id, current_task.revision, &owner, "CANCELLED")
+		.await
+		.expect_err("home termination must wait until the correction reaches inference");
+	let response = error.into_response();
+	assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+	assert_eq!(
+		response
+			.headers()
+			.get("x-aidash-run-message-pending")
+			.and_then(|value| value.to_str().ok()),
+		Some("1")
 	);
 	assert!(matches!(
 		Home::new(executor.clone(), run.clone())
@@ -267,7 +572,48 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.iter()
 			.any(|message| message.content == "remote correction")
 	);
-	let home_db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(home.store.pool.clone());
+	remote_home
+		.acknowledge_run_messages(std::slice::from_ref(&first_input_key))
+		.await
+		.unwrap();
+	let response_worker = Uuid::new_v4();
+	let response_run = executor
+		.store
+		.lease_run(response_worker, 30)
+		.await
+		.unwrap()
+		.unwrap();
+	let included_input_seq = executor
+		.store
+		.run_inputs(run.id)
+		.await
+		.unwrap()
+		.last()
+		.unwrap()
+		.seq;
+	Home::new(executor.clone(), response_run)
+		.response_message(
+			response_worker,
+			included_input_seq,
+			&format!("{}:observed-response-output", run.id),
+			"response output after correction observation",
+		)
+		.await
+		.unwrap();
+	assert!(
+		home.store
+			.snapshot(workspace.id)
+			.await
+			.unwrap()
+			.messages
+			.iter()
+			.any(|message| message.content == "response output after correction observation")
+	);
+	executor
+		.store
+		.release_lease(run.id, response_worker)
+		.await
+		.unwrap();
 	// Historical writes were possible before the new home database gate.
 	Migrator::down(&home_db, Some(3)).await.unwrap();
 	let legacy_key = Uuid::new_v4();
@@ -293,6 +639,31 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.iter()
 			.any(|input| input.content == "before upgrade")
 	);
+	let legacy_message_key = format!(
+		"{}:{}:human:{}:{legacy_key}",
+		executor.config.node_id, task.id, run.id
+	);
+	let legacy_message = home
+		.store
+		.snapshot(workspace.id)
+		.await
+		.unwrap()
+		.messages
+		.into_iter()
+		.find(|message| message.idempotency_key.as_deref() == Some(legacy_message_key.as_str()))
+		.unwrap();
+	let legacy_input_key = format!("human:{}:{legacy_key}", run.id);
+	let input_limit = executor.run_message_limit(&run).await.unwrap();
+	executor
+		.store
+		.import_remote_run_message(run.id, &legacy_input_key, &legacy_message, input_limit)
+		.await
+		.unwrap();
+	executor
+		.store
+		.import_remote_run_messages(run.id, &[], input_limit)
+		.await
+		.unwrap();
 	let large_key = Uuid::new_v4();
 	let large_content = "historic correction ".repeat(1500);
 	home.store
@@ -343,6 +714,19 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 				.any(|input| input.content == format!("paged historical correction {index}"))
 		);
 	}
+	let ordered_sequences: Vec<i64> = (0..5)
+		.map(|index| {
+			inputs
+				.iter()
+				.find(|input| input.content == format!("paged historical correction {index}"))
+				.unwrap()
+				.seq
+		})
+		.collect();
+	assert!(
+		ordered_sequences.windows(2).all(|pair| pair[0] < pair[1]),
+		"one history batch retains the home's message order"
+	);
 	mode.old_peer.store(true, Ordering::SeqCst);
 	let old_home_key = Uuid::new_v4();
 	home.store
@@ -681,6 +1065,229 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 		.await
 		.0,
 		200
+	);
+	let expiry_task = home
+		.store
+		.create_task(
+			workspace.id,
+			&NewTask {
+				title: "Expired reservation".into(),
+				description: "A stale API reservation must not block cancellation".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"human",
+			None,
+		)
+		.await
+		.unwrap();
+	let expired_run = Uuid::new_v4();
+	let expired_key = format!("human:{expired_run}:{}", Uuid::new_v4());
+	home.store
+		.reserve_remote_run_message(
+			expiry_task.id,
+			expired_run,
+			&executor.config.node_id,
+			&expired_key,
+			"stale reservation",
+		)
+		.await
+		.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("remote_run_message_fences"))
+			.value(
+				Alias::new("expires_at"),
+				Expr::cust("CURRENT_TIMESTAMP - INTERVAL '1 second'"),
+			)
+			.and_where(Expr::cust("task_id = $1"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(expiry_task.id)
+	.execute(&home.store.pool)
+	.await
+	.unwrap();
+	let cancelled = home
+		.store
+		.transition(expiry_task.id, expiry_task.revision, "human", "CANCELLED")
+		.await
+		.unwrap();
+	assert_eq!(cancelled.status, "CANCELLED");
+	home.store
+		.reserve_remote_run_message(
+			task.id,
+			terminal_history_run.id,
+			&executor.config.node_id,
+			&terminal_history_key,
+			terminal_history_content,
+		)
+		.await
+		.unwrap();
+	let historical_reservation_committed: bool = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust(
+				"EXISTS(SELECT 1 FROM remote_run_message_fences WHERE task_id = $1 AND run_id = $2 AND idempotency_key = $3 AND expires_at IS NULL)",
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(task.id)
+	.bind(terminal_history_run.id)
+	.bind(&terminal_history_key)
+	.fetch_one(&home.store.pool)
+	.await
+	.unwrap();
+	assert!(historical_reservation_committed);
+	assert_eq!(
+		terminal_history_home
+			.human_message_record(&terminal_history_key, terminal_history_content)
+			.await
+			.unwrap()
+			.content,
+		terminal_history_content
+	);
+	let absent_terminal_key = format!("human:{}:{}", terminal_history_run.id, Uuid::new_v4());
+	assert!(
+		home.store
+			.reserve_remote_run_message(
+				task.id,
+				terminal_history_run.id,
+				&executor.config.node_id,
+				&absent_terminal_key,
+				"not in home history",
+			)
+			.await
+			.is_err(),
+		"terminal tasks accept only exact historical message keys"
+	);
+	terminal_history_home
+		.acknowledge_run_messages(std::slice::from_ref(&terminal_history_key))
+		.await
+		.unwrap();
+	terminal_history_home
+		.release_run_messages(std::slice::from_ref(&terminal_history_key))
+		.await
+		.unwrap();
+	let consumed_terminal_reservation: bool = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("consumed"))
+			.from(Alias::new("remote_run_message_fences"))
+			.and_where(Expr::cust(
+				"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(task.id)
+	.bind(terminal_history_run.id)
+	.bind(&terminal_history_key)
+	.fetch_one(&home.store.pool)
+	.await
+	.unwrap();
+	assert!(consumed_terminal_reservation);
+	let mut invalid_terminal_run = run.clone();
+	invalid_terminal_run.id = Uuid::new_v4();
+	let invalid_terminal_key = format!("human:{}:{}", invalid_terminal_run.id, Uuid::new_v4());
+	sqlx::query("ALTER TABLE tasks DISABLE TRIGGER gate_remote_task_terminal")
+		.execute(&home.store.pool)
+		.await
+		.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("tasks"))
+			.value(Alias::new("status"), Expr::cust("'RUNNING'"))
+			.and_where(Expr::cust("id = $1"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(task.id)
+	.execute(&home.store.pool)
+	.await
+	.unwrap();
+	sqlx::query("ALTER TABLE tasks ENABLE TRIGGER gate_remote_task_terminal")
+		.execute(&home.store.pool)
+		.await
+		.unwrap();
+	home.store
+		.reserve_remote_run_message(
+			task.id,
+			invalid_terminal_run.id,
+			&executor.config.node_id,
+			&invalid_terminal_key,
+			"uncommitted terminal delivery",
+		)
+		.await
+		.unwrap();
+	sqlx::query("ALTER TABLE tasks DISABLE TRIGGER gate_remote_task_terminal")
+		.execute(&home.store.pool)
+		.await
+		.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("tasks"))
+			.value(Alias::new("status"), Expr::cust("'CANCELLED'"))
+			.and_where(Expr::cust("id = $1"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(task.id)
+	.execute(&home.store.pool)
+	.await
+	.unwrap();
+	sqlx::query("ALTER TABLE tasks ENABLE TRIGGER gate_remote_task_terminal")
+		.execute(&home.store.pool)
+		.await
+		.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("remote_run_message_fences"))
+			.value(Alias::new("consumed"), Expr::cust("FALSE"))
+			.value(
+				Alias::new("expires_at"),
+				Expr::cust("CURRENT_TIMESTAMP - INTERVAL '1 second'"),
+			)
+			.and_where(Expr::cust(
+				"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(task.id)
+	.bind(terminal_history_run.id)
+	.bind(&terminal_history_key)
+	.execute(&home.store.pool)
+	.await
+	.unwrap();
+	home.store
+		.reserve_remote_run_message(
+			task.id,
+			terminal_history_run.id,
+			&executor.config.node_id,
+			&terminal_history_key,
+			terminal_history_content,
+		)
+		.await
+		.unwrap();
+	let recovered_terminal_reservation: bool = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust(
+				"EXISTS(SELECT 1 FROM remote_run_message_fences WHERE task_id = $1 AND run_id = $2 AND idempotency_key = $3 AND expires_at IS NULL AND NOT consumed)",
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(task.id)
+	.bind(terminal_history_run.id)
+	.bind(&terminal_history_key)
+	.fetch_one(&home.store.pool)
+	.await
+	.unwrap();
+	assert!(recovered_terminal_reservation);
+	terminal_history_home
+		.human_message_record(&terminal_history_key, terminal_history_content)
+		.await
+		.unwrap();
+	assert!(
+		Home::new(executor.clone(), invalid_terminal_run)
+			.human_message_record(&invalid_terminal_key, "uncommitted terminal delivery")
+			.await
+			.is_err(),
+		"terminal delivery cannot commit an unconsumed reservation"
 	);
 	server.abort();
 	cleanup(home, &home_url, &home_schema).await;
