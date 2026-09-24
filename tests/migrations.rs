@@ -43,7 +43,7 @@ async fn run_input_migration_preserves_keyed_message_retries() {
 	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());
 	// Remove the run-input migrations to simulate a message written before
 	// the ledger existed, then apply the backfill and delivery extensions.
-	Migrator::down(&db, Some(4)).await.unwrap();
+	Migrator::down(&db, Some(5)).await.unwrap();
 	let retry_key = Uuid::new_v4();
 	let key = format!("subject-human:acme:alice:{}:{retry_key}", run.id);
 	f.store
@@ -100,6 +100,23 @@ async fn run_input_migration_preserves_keyed_message_retries() {
 				"human",
 				"old replica lacks admission",
 				Some(&old_replica_key)
+			)
+			.await
+			.is_err()
+	);
+	let old_executor_key = format!(
+		"aidash://old-executor:{}:human:{}:{}",
+		run.task_id,
+		run.id,
+		Uuid::new_v4()
+	);
+	assert!(
+		f.store
+			.message(
+				run.workspace_id,
+				"human@aidash://old-executor",
+				"old executor lacks ledger admission",
+				Some(&old_executor_key)
 			)
 			.await
 			.is_err()

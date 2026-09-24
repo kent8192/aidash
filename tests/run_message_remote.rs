@@ -8,6 +8,7 @@ use aidash::{
 };
 use axum::{Router, body::Body, http::Request, middleware::Next, response::IntoResponse};
 use common::{bootstrap, cleanup, setup};
+use migration::{Migrator, MigratorTrait};
 use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 use std::sync::{
@@ -225,6 +226,9 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.iter()
 			.any(|message| message.content == "remote correction")
 	);
+	let home_db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(home.store.pool.clone());
+	// Historical writes were possible before the new home database gate.
+	Migrator::down(&home_db, Some(1)).await.unwrap();
 	let legacy_key = Uuid::new_v4();
 	home.store
 		.message(
@@ -369,6 +373,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.any(|input| input.content == "old peer correction" && input.message_id.is_some())
 	);
 	mode.old_peer.store(false, Ordering::SeqCst);
+	Migrator::up(&home_db, None).await.unwrap();
 	mode.delivery_outage.store(true, Ordering::SeqCst);
 	let pending_key = Uuid::new_v4();
 	assert_eq!(
@@ -451,18 +456,20 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 	.await
 	.unwrap();
 	let late_historical_key = Uuid::new_v4();
-	home.store
-		.message(
-			workspace.id,
-			&format!("human@{}", executor.config.node_id),
-			"legacy message after finalization",
-			Some(&format!(
-				"{}:{}:human:{}:{late_historical_key}",
-				executor.config.node_id, task.id, run.id
-			)),
-		)
-		.await
-		.unwrap();
+	assert!(
+		home.store
+			.message(
+				workspace.id,
+				&format!("human@{}", executor.config.node_id),
+				"legacy message after finalization",
+				Some(&format!(
+					"{}:{}:human:{}:{late_historical_key}",
+					executor.config.node_id, task.id, run.id
+				)),
+			)
+			.await
+			.is_err()
+	);
 	assert_eq!(
 		peer_control(
 			&executor_app,

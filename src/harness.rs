@@ -684,6 +684,7 @@ impl Harness {
 				run.pending = json!({
 					"response":result,
 					"cursor":0,
+					"included_input_seq":input_seq,
 					"request_window":budget.window,
 					"request_tokens":request_tokens,
 					"required_run_message_reads":required_run_message_reads,
@@ -694,6 +695,14 @@ impl Harness {
 				store.save_run(run, token, "model.completed").await?;
 			}
 			"TOOL_CALL" => {
+				// An old home replica can still accept a correction directly from
+				// an old executor. Wait for its upgraded database gate before any
+				// model output or final completion crosses this boundary.
+				match self.federation.require_terminal_safe_delivery(run).await {
+					Ok(()) => {}
+					Err(Error::Conflict(_)) => return Err(Error::TransactionPending),
+					Err(error) => return Err(error),
+				}
 				// A preceding binary could have left a remote correction only on
 				// the home node while this run was already awaiting finalization.
 				self.federation.reconcile_run_messages(run).await?;

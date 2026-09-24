@@ -198,6 +198,67 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
+async fn included_reference_can_reach_tool_calls_without_becoming_finalizable() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Read reference","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	assert!(
+		Harness {
+			federation: f.clone()
+		}
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	let key = format!("human:{}:{}", run.id, Uuid::new_v4());
+	f.store
+		.accept_run_message(
+			run.id,
+			"human",
+			"reference to read",
+			&key,
+			f.run_message_limit(&run).await.unwrap(),
+		)
+		.await
+		.unwrap();
+	let input_seq = f.store.run_inputs(run.id).await.unwrap()[0].seq;
+	let worker = Uuid::new_v4();
+	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
+	assert_eq!(leased.observed_input_seq, 0);
+	leased.phase = "TOOL_CALL".into();
+	leased.pending = json!({
+		"included_input_seq":input_seq,
+		"response":{"text":"","tool_calls":[],"input_tokens":1,"output_tokens":1,"usage_complete":true},
+		"cursor":0
+	});
+	f.store
+		.save_run(&leased, worker, "model.completed")
+		.await
+		.expect("the provider request included the reference");
+	let leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
+	assert!(
+		!f.store
+			.begin_final_completion(&leased, worker)
+			.await
+			.unwrap(),
+		"the reference has not been read yet"
+	);
+	f.store.release_lease(run.id, worker).await.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
 async fn run_message_limit_rejects_oversized_input_before_recording_it() {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());

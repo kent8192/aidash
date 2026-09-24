@@ -1459,6 +1459,31 @@ impl Store {
 		tx.commit().await?;
 		Ok(message)
 	}
+	pub(crate) async fn run_message_delivery_record(
+		&self,
+		workspace: Uuid,
+		sender: &str,
+		content: &str,
+		key: &str,
+	) -> Result<Message> {
+		let mut tx = self.pool.begin().await?;
+		// The database gate rejects the old home-write path during rolling
+		// upgrades. Only the ledger-backed delivery endpoint sets this marker.
+		sqlx::query_scalar::<_, String>(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::cust(
+					"set_config('aidash.run_message_delivery', 'true', true)",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.fetch_one(&mut *tx)
+		.await?;
+		let message = self
+			.message_in(&mut tx, workspace, sender, content, Some(key))
+			.await?;
+		tx.commit().await?;
+		Ok(message)
+	}
 	pub async fn accept_run_message(
 		&self,
 		run_id: Uuid,
@@ -2293,7 +2318,11 @@ impl Store {
 					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 			)
 			.bind(run.id)
-			.bind(run.observed_input_seq)
+			.bind(
+				pending["included_input_seq"]
+					.as_i64()
+					.unwrap_or(run.observed_input_seq),
+			)
 			.fetch_one(&mut *tx)
 			.await?;
 			if stale {

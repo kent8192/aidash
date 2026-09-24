@@ -229,6 +229,14 @@ pub async fn message_keyed(
 		identity.subject,
 		key.unwrap_or_else(Uuid::new_v4)
 	);
+	// Resolve registry and peer capabilities before Access holds a pool
+	// connection. Admission and the authorization decision remain in one tx.
+	let admission = async {
+		let run = f.store.run(id).await?;
+		f.require_terminal_safe_delivery(&run).await?;
+		f.run_message_limit(&run).await
+	}
+	.await;
 	let mut access = Access::begin(&f.store, identity).await?;
 	let result = async {
 		let run = access.run_for_interaction(id).await?;
@@ -241,8 +249,7 @@ pub async fn message_keyed(
 				"message.create",
 			)
 			.await?;
-		f.require_terminal_safe_delivery(&run).await?;
-		let limit = f.run_message_limit(&run).await?;
+		let limit = admission?;
 		f.store
 			.accept_run_message_in(&mut access.tx, id, &identity.subject, content, &key, limit)
 			.await

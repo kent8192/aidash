@@ -1470,11 +1470,11 @@ async fn peer_workspace(
 			}
 			json!(
 				f.store
-					.message_record(
+					.run_message_delivery_record(
 						task.workspace_id,
 						&format!("human@{node}"),
 						required(d, "content")?,
-						Some(&key()?)
+						&key()?
 					)
 					.await?
 			)

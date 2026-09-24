@@ -35,6 +35,7 @@ mod m20260924_040000_run_inputs;
 mod m20260924_050000_run_input_delivery_refs;
 mod m20260924_060000_legacy_run_input_bridge;
 mod m20260924_070000_legacy_run_input_gate;
+mod m20260924_080000_legacy_federated_input_gate;
 
 pub struct Migrator;
 #[async_trait::async_trait]
@@ -76,6 +77,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260924_050000_run_input_delivery_refs::Migration),
 			Box::new(m20260924_060000_legacy_run_input_bridge::Migration),
 			Box::new(m20260924_070000_legacy_run_input_gate::Migration),
+			Box::new(m20260924_080000_legacy_federated_input_gate::Migration),
 		]
 	}
 }
