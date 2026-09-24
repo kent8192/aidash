@@ -7,7 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
     "test": "npm run test:graph && npm run test:collaboration && playwright test",
-    "test:graph": "node --experimental-strip-types --test unit/agent-graph.test.mjs",
+    "test:graph": "node --experimental-strip-types --test unit/agent-graph.test.mjs unit/mesh-graph.test.mjs",
     "generate:api": "orval --config orval.config.ts",
     "predev": "../scripts/generate-api.sh",
     "prebuild": "../scripts/generate-api.sh",

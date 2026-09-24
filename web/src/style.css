@@ -140,6 +140,21 @@ code {
   font-size: 23px;
   letter-spacing: -1px;
 }
+.brand-lockup {
+  display: block;
+  width: 146px;
+  height: auto;
+  margin: -10px -7px;
+}
+.brand-compact {
+  display: none;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+.login-brand .brand-lockup {
+  width: 200px;
+}
 .brand-symbol {
   background: var(--green);
   color: #dcf5c8;
