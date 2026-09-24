@@ -358,6 +358,10 @@ impl Harness {
 		// Accepted remote inputs remain deliverable even when the home task has
 		// already reached a terminal state. Drain them before terminal recovery.
 		self.federation.deliver_run_messages(run).await?;
+		// The executor advances observed_input_seq only after a model request
+		// containing these inputs succeeds. Release the home-side termination
+		// fence before asking the home task to complete.
+		self.federation.acknowledge_run_messages(run).await?;
 		let task = home.task().await?;
 		if matches!(
 			task.status.as_str(),

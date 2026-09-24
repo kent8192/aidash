@@ -1484,6 +1484,118 @@ impl Store {
 		tx.commit().await?;
 		Ok(message)
 	}
+	/// Reserve home-task lifetime before the executor admits a remote input.
+	/// The task lock orders this operation with every terminal transition.
+	pub async fn reserve_remote_run_message(
+		&self,
+		task_id: Uuid,
+		run_id: Uuid,
+		key: &str,
+		content: &str,
+	) -> Result<()> {
+		let mut tx = self.pool.begin().await?;
+		let status: String = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.column(sea_orm::sea_query::Alias::new("status"))
+				.from(sea_orm::sea_query::Alias::new("tasks"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task_id)
+		.fetch_one(&mut *tx)
+		.await?;
+		if matches!(
+			status.as_str(),
+			"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+		) {
+			return Err(Error::Conflict("home task is terminal".into()));
+		}
+		let previous: Option<(Uuid, String)> = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.columns([
+					sea_orm::sea_query::Alias::new("run_id"),
+					sea_orm::sea_query::Alias::new("content"),
+				])
+				.from(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"task_id = $1 AND idempotency_key = $2",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task_id)
+		.bind(key)
+		.fetch_optional(&mut *tx)
+		.await?;
+		if let Some((previous_run, previous_content)) = previous {
+			if previous_run != run_id || previous_content != content {
+				return Err(Error::Conflict("run message idempotency key reused".into()));
+			}
+		} else {
+			sqlx::query(
+				&sea_orm::sea_query::Query::insert()
+					.into_table(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+					.columns([
+						sea_orm::sea_query::Alias::new("task_id"),
+						sea_orm::sea_query::Alias::new("run_id"),
+						sea_orm::sea_query::Alias::new("idempotency_key"),
+						sea_orm::sea_query::Alias::new("content"),
+					])
+					.values_panic([
+						sea_orm::sea_query::Expr::cust("$1"),
+						sea_orm::sea_query::Expr::cust("$2"),
+						sea_orm::sea_query::Expr::cust("$3"),
+						sea_orm::sea_query::Expr::cust("$4"),
+					])
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(task_id)
+			.bind(run_id)
+			.bind(key)
+			.bind(content)
+			.execute(&mut *tx)
+			.await?;
+		}
+		tx.commit().await?;
+		Ok(())
+	}
+	pub async fn release_remote_run_message(
+		&self,
+		task_id: Uuid,
+		run_id: Uuid,
+		keys: &[String],
+	) -> Result<()> {
+		let mut tx = self.pool.begin().await?;
+		// Deletion and task termination must use the same lock order.
+		sqlx::query(
+			&sea_orm::sea_query::Query::select()
+				.column(sea_orm::sea_query::Alias::new("id"))
+				.from(sea_orm::sea_query::Alias::new("tasks"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task_id)
+		.fetch_one(&mut *tx)
+		.await?;
+		for key in keys {
+			sqlx::query(
+				&sea_orm::sea_query::Query::delete()
+					.from_table(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+					.and_where(sea_orm::sea_query::Expr::cust(
+						"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
+					))
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(task_id)
+			.bind(run_id)
+			.bind(key)
+			.execute(&mut *tx)
+			.await?;
+		}
+		tx.commit().await?;
+		Ok(())
+	}
 	pub async fn accept_run_message(
 		&self,
 		run_id: Uuid,

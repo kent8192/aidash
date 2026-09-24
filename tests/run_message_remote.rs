@@ -204,6 +204,29 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 		.accept_run(&task, &home.config.node_id, &agent.id, &agent.version)
 		.await
 		.unwrap();
+	let observation = executor_app
+		.clone()
+		.oneshot(
+			Request::get("/federation/v0.1/observe")
+				.header(
+					"authorization",
+					format!(
+						"Bearer {}",
+						std::env::var("AIDASH_SECRET_TEST_PEER").unwrap()
+					),
+				)
+				.header("x-aidash-node", &home.config.node_id)
+				.header("x-aidash-protocol", "0.1")
+				.body(Body::empty())
+				.unwrap(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		observation.status(),
+		200,
+		"peer observations must decode the full Run"
+	);
 	let first_key = Uuid::new_v4();
 	let (status, body) = peer_control(
 		&executor_app,
@@ -217,6 +240,14 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 	let inputs = executor.store.run_inputs(run.id).await.unwrap();
 	assert_eq!(inputs.len(), 1);
 	assert!(inputs[0].message_id.is_some());
+	let current_task = home.store.task(task.id).await.unwrap();
+	assert!(
+		home.store
+			.transition(task.id, current_task.revision, &owner, "CANCELLED")
+			.await
+			.is_err(),
+		"home termination must wait until the correction reaches inference"
+	);
 	assert!(
 		home.store
 			.snapshot(workspace.id)
@@ -228,7 +259,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 	);
 	let home_db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(home.store.pool.clone());
 	// Historical writes were possible before the new home database gate.
-	Migrator::down(&home_db, Some(2)).await.unwrap();
+	Migrator::down(&home_db, Some(3)).await.unwrap();
 	let legacy_key = Uuid::new_v4();
 	home.store
 		.message(
@@ -435,6 +466,24 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 	);
 	mode.delivery_outage.store(false, Ordering::SeqCst);
 	let current_task = home.store.task(task.id).await.unwrap();
+	assert!(
+		home.store
+			.transition(task.id, current_task.revision, &owner, "CANCELLED")
+			.await
+			.is_err(),
+		"admitted input must fence cancellation even during delivery outage"
+	);
+	// Model the successful inference acknowledgment that precedes task exit.
+	let mut observed = executor.store.run(run.id).await.unwrap();
+	observed.observed_input_seq = executor
+		.store
+		.run_inputs(run.id)
+		.await
+		.unwrap()
+		.last()
+		.unwrap()
+		.seq;
+	executor.acknowledge_run_messages(&observed).await.unwrap();
 	home.store
 		.transition(task.id, current_task.revision, &owner, "CANCELLED")
 		.await

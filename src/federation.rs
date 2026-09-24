@@ -53,6 +53,68 @@ pub struct Federation {
 	pub notify: std::sync::Arc<tokio::sync::Notify>,
 }
 impl Federation {
+	pub async fn admit_run_message(
+		&self,
+		run: &Run,
+		sender: &str,
+		content: &str,
+		key: &str,
+		limit: usize,
+	) -> Result<()> {
+		if let Some(input) = self
+			.store
+			.run_inputs(run.id)
+			.await?
+			.into_iter()
+			.find(|input| input.idempotency_key == key)
+		{
+			return if input.content == content {
+				Ok(())
+			} else {
+				Err(Error::Conflict("run message idempotency key reused".into()))
+			};
+		}
+		let home = Home::new(self.clone(), run.clone());
+		if !home.local() {
+			home.reserve_run_message(key, content).await?;
+		}
+		let admission = self
+			.store
+			.accept_run_message(run.id, sender, content, key, limit)
+			.await;
+		if let Err(error) = admission {
+			if !home.local() {
+				home.release_run_messages(&[key.to_owned()]).await?;
+			}
+			if matches!(error, Error::Conflict(_))
+				&& self
+					.recover_historical_run_message(run, key, content)
+					.await?
+			{
+				return Ok(());
+			}
+			return Err(error);
+		}
+		Ok(())
+	}
+	pub async fn acknowledge_run_messages(&self, run: &Run) -> Result<()> {
+		if run.home_node == self.config.node_id || run.observed_input_seq == 0 {
+			return Ok(());
+		}
+		let keys: Vec<String> = self
+			.store
+			.run_inputs(run.id)
+			.await?
+			.into_iter()
+			.filter(|input| input.seq <= run.observed_input_seq)
+			.map(|input| input.idempotency_key)
+			.collect();
+		let home = Home::new(self.clone(), run.clone());
+		for chunk in keys.chunks(100) {
+			home.release_run_messages(chunk).await?;
+		}
+		Ok(())
+	}
 	pub async fn require_terminal_safe_delivery(&self, run: &Run) -> Result<()> {
 		if run.home_node == self.config.node_id {
 			return Ok(());
@@ -1142,6 +1204,28 @@ impl Home {
 				.await?;
 			Ok(())
 		}
+	}
+	pub async fn reserve_run_message(&self, key: &str, content: &str) -> Result<()> {
+		if self.local() {
+			return Ok(());
+		}
+		self.command::<Value>(
+			"run_message_reserve",
+			json!({"run_id":self.run.id,"key":key,"content":content}),
+		)
+		.await?;
+		Ok(())
+	}
+	pub async fn release_run_messages(&self, keys: &[String]) -> Result<()> {
+		if self.local() || keys.is_empty() {
+			return Ok(());
+		}
+		self.command::<Value>(
+			"run_message_release",
+			json!({"run_id":self.run.id,"keys":keys}),
+		)
+		.await?;
+		Ok(())
 	}
 	pub async fn human_message_record(&self, key: &str, content: &str) -> Result<Message> {
 		if self.local() {

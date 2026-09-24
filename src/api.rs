@@ -6,7 +6,7 @@ use crate::{
 	},
 	config::{PROTOCOL_VERSION, same_secret},
 	domain::*,
-	federation::{Delegation, Discovery, Federation, Home, Offer, Peer},
+	federation::{Delegation, Discovery, Federation, Offer, Peer},
 	registry::{EntityRef, Entry, Package, PackageRecord, Search},
 	store::Invocation,
 	tool::required,
@@ -959,33 +959,8 @@ async fn run_message(
 	);
 	f.require_terminal_safe_delivery(&run).await?;
 	let limit = f.run_message_limit(&run).await?;
-	let admission = if run.home_node != f.config.node_id
-		&& matches!(
-			Home::new(f.clone(), run.clone())
-				.task()
-				.await?
-				.status
-				.as_str(),
-			"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
-		) {
-		Err(Error::Conflict("home task is terminal".into()))
-	} else {
-		f.store
-			.accept_run_message(id, "human", &input.content, &key, limit)
-			.await
-	};
-	match admission {
-		Ok(()) => {}
-		Err(error @ Error::Conflict(_)) => {
-			if !f
-				.recover_historical_run_message(&run, &key, &input.content)
-				.await?
-			{
-				return Err(error);
-			}
-		}
-		Err(error) => return Err(error),
-	}
+	f.admit_run_message(&run, "human", &input.content, &key, limit)
+		.await?;
 	if let Err(error) = f.deliver_run_messages(&run).await {
 		tracing::warn!(run_id=%id, %error, "accepted run message awaits home delivery");
 	}
@@ -1251,6 +1226,12 @@ struct WorkspaceCommand {
 	operation: String,
 	data: Value,
 }
+fn run_message_key_matches_run(key: &str, run_id: Uuid) -> bool {
+	let run_id_text = run_id.to_string();
+	key.starts_with(&format!("human:{run_id}:"))
+		|| (key.starts_with("subject-human:")
+			&& key.rsplit(':').nth(1) == Some(run_id_text.as_str()))
+}
 async fn peer_workspace(
 	State(f): State<Federation>,
 	headers: HeaderMap,
@@ -1273,11 +1254,16 @@ async fn peer_workspace(
 			| "workspace_children"
 			| "run_message_history"
 			| "run_message_delivery_capability"
+			| "run_message_reserve"
+			| "run_message_release"
 			| "task" | "claim"
 	) && !(task.owner.is_none()
 		&& (matches!(
 			command.operation.as_str(),
-			"human_message" | "run_message_delivery"
+			"human_message"
+				| "run_message_delivery"
+				| "run_message_reserve"
+				| "run_message_release"
 		) || (command.operation == "transition"
 			&& (d["status"] == "CANCELLED" || d["status"] == "FAILED"))))
 		&& task.owner.as_deref() != Some(&owner)
@@ -1305,8 +1291,10 @@ async fn peer_workspace(
 		if !read
 			&& !replay_completion
 			&& !replay_transition
-			&& command.operation != "run_message_delivery"
-		{
+			&& !matches!(
+				command.operation.as_str(),
+				"run_message_delivery" | "run_message_reserve" | "run_message_release"
+			) {
 			return Err(Error::Unauthorized);
 		}
 	}
@@ -1472,11 +1460,7 @@ async fn peer_workspace(
 				.parse()
 				.map_err(|_| Error::Invalid("invalid run ID".into()))?;
 			let input_key = required(d, "key")?;
-			let run_id_text = run_id.to_string();
-			let key_matches_run = input_key.starts_with(&format!("human:{run_id}:"))
-				|| (input_key.starts_with("subject-human:")
-					&& input_key.rsplit(':').nth(1) == Some(run_id_text.as_str()));
-			if !key_matches_run {
+			if !run_message_key_matches_run(input_key, run_id) {
 				return Err(Error::Invalid("invalid run message delivery key".into()));
 			}
 			json!(
@@ -1489,6 +1473,38 @@ async fn peer_workspace(
 					)
 					.await?
 			)
+		}
+		"run_message_reserve" => {
+			f.store.require_legacy_execution(task.workspace_id).await?;
+			let run_id: Uuid = required(d, "run_id")?
+				.parse()
+				.map_err(|_| Error::Invalid("invalid run ID".into()))?;
+			let input_key = required(d, "key")?;
+			if !run_message_key_matches_run(input_key, run_id) {
+				return Err(Error::Invalid("invalid run message key".into()));
+			}
+			f.store
+				.reserve_remote_run_message(task.id, run_id, input_key, required(d, "content")?)
+				.await?;
+			json!({"reserved":true})
+		}
+		"run_message_release" => {
+			f.store.require_legacy_execution(task.workspace_id).await?;
+			let run_id: Uuid = required(d, "run_id")?
+				.parse()
+				.map_err(|_| Error::Invalid("invalid run ID".into()))?;
+			let keys: Vec<String> = serde_json::from_value(d["keys"].clone())?;
+			if keys.len() > 1024
+				|| keys
+					.iter()
+					.any(|key| !run_message_key_matches_run(key, run_id))
+			{
+				return Err(Error::Invalid("invalid run message keys".into()));
+			}
+			f.store
+				.release_remote_run_message(task.id, run_id, &keys)
+				.await?;
+			json!({"released":true})
 		}
 		"run_message_history" => {
 			f.store.require_legacy_execution(task.workspace_id).await?;
@@ -1584,6 +1600,7 @@ async fn peer_observe(State(f): State<Federation>, headers: HeaderMap) -> Result
 				sea_orm::sea_query::Alias::new("step"),
 				sea_orm::sea_query::Alias::new("revision"),
 				sea_orm::sea_query::Alias::new("observed_input_seq"),
+				sea_orm::sea_query::Alias::new("ledger_worker_ready"),
 				sea_orm::sea_query::Alias::new("lease_owner"),
 				sea_orm::sea_query::Alias::new("lease_until"),
 				sea_orm::sea_query::Alias::new("updated_at"),
@@ -1732,29 +1749,8 @@ async fn peer_control(
 			);
 			let limit = f.run_message_limit(&run).await?;
 			f.require_terminal_safe_delivery(&run).await?;
-			let home_task = Home::new(f.clone(), run.clone()).task().await?;
-			let admission = if matches!(
-				home_task.status.as_str(),
-				"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
-			) {
-				Err(Error::Conflict("home task is terminal".into()))
-			} else {
-				f.store
-					.accept_run_message(run.id, "human", &content, &key, limit)
-					.await
-			};
-			match admission {
-				Ok(()) => {}
-				Err(error @ Error::Conflict(_)) => {
-					if !f
-						.recover_historical_run_message(&run, &key, &content)
-						.await?
-					{
-						return Err(error);
-					}
-				}
-				Err(error) => return Err(error),
-			}
+			f.admit_run_message(&run, "human", &content, &key, limit)
+				.await?;
 			if let Err(error) = f.deliver_run_messages(&run).await {
 				tracing::warn!(run_id=%run.id, %error, "accepted remote-control message awaits home delivery");
 			}

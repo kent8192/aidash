@@ -62,6 +62,16 @@ impl IntoResponse for Error {
 			Self::Database(error)
 				if error
 					.as_database_error()
+					.is_some_and(|e| e.code().as_deref() == Some("A3301")) =>
+			{
+				(
+					StatusCode::CONFLICT,
+					"remote run messages await inference".into(),
+				)
+			}
+			Self::Database(error)
+				if error
+					.as_database_error()
 					.is_some_and(|e| e.code().as_deref() == Some("55P03")) =>
 			{
 				(
@@ -109,7 +119,10 @@ impl Error {
 					code.starts_with("08")
 						|| matches!(
 							code,
-							"40001" | "40P01" | "53300" | "55P03" | "57P01" | "57P02" | "57P03"
+							"40001"
+								| "40P01" | "53300" | "55P03"
+								| "57P01" | "57P02" | "57P03"
+								| "A3301"
 						)
 				})
 			}

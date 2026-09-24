@@ -42,7 +42,7 @@ BEGIN
     END IF;
     IF NEW.lease_owner IS NOT NULL
         AND (NEW.lease_owner IS DISTINCT FROM OLD.lease_owner
-            OR NEW.lease_until IS DISTINCT FROM OLD.lease_until)
+            OR NEW.lease_until > OLD.lease_until)
         AND (OLD.ledger_worker_ready OR EXISTS
             (SELECT 1 FROM run_inputs WHERE run_id = OLD.id))
         AND current_setting('aidash.input_ledger_worker', true) IS DISTINCT FROM 'true' THEN

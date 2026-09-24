@@ -231,23 +231,14 @@ pub async fn message_keyed(
 	);
 	// Resolve registry and peer capabilities before Access holds a pool
 	// connection. Admission and the authorization decision remain in one tx.
+	let run = f.store.run(id).await?;
 	let admission = async {
-		let run = f.store.run(id).await?;
 		f.require_terminal_safe_delivery(&run).await?;
-		if run.home_node != f.config.node_id {
-			let home_task = crate::federation::Home::new(f.clone(), run.clone())
-				.task()
-				.await?;
-			if matches!(
-				home_task.status.as_str(),
-				"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
-			) {
-				return Err(Error::Conflict("home task is terminal".into()));
-			}
-		}
 		f.run_message_limit(&run).await
 	}
 	.await;
+	let home = crate::federation::Home::new(f.clone(), run.clone());
+	let mut reserved = false;
 	let mut access = Access::begin(&f.store, identity).await?;
 	let result = async {
 		let run = access.run_for_interaction(id).await?;
@@ -261,16 +252,27 @@ pub async fn message_keyed(
 			)
 			.await?;
 		let limit = admission?;
+		if !home.local()
+			&& !f
+				.store
+				.run_inputs(id)
+				.await?
+				.iter()
+				.any(|input| input.idempotency_key == key && input.content == content)
+		{
+			home.reserve_run_message(&key, content).await?;
+			reserved = true;
+		}
 		f.store
 			.accept_run_message_in(&mut access.tx, id, &identity.subject, content, &key, limit)
 			.await
 	}
 	.await;
-	let outcome = match access.finish(result).await {
-		Ok(()) => Ok(()),
-		Err(error @ Error::Conflict(_)) => Err(error),
-		Err(error) => return Err(error),
-	};
+	let outcome = access.finish(result).await;
+	if outcome.is_err() && reserved {
+		home.release_run_messages(std::slice::from_ref(&key))
+			.await?;
+	}
 	let run = f.store.run(id).await?;
 	match outcome {
 		Ok(()) => {}
