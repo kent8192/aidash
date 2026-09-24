@@ -1499,7 +1499,8 @@ async fn peer_workspace(
 			json!({"sent":true})
 		}
 		"run_message_delivery" => {
-			f.store.require_legacy_execution(task.workspace_id).await?;
+			// authorize_task above validates this peer's delegation; the run ID
+			// and idempotency key below fence delivery to the delegated task.
 			let run_id: Uuid = required(d, "run_id")?
 				.parse()
 				.map_err(|_| Error::Invalid("invalid run ID".into()))?;
@@ -1523,7 +1524,8 @@ async fn peer_workspace(
 			)
 		}
 		"run_message_reserve" => {
-			f.store.require_legacy_execution(task.workspace_id).await?;
+			// The peer task grant above supplies scoped execution authority; this
+			// run-bound key preserves the durable admission fence.
 			let run_id: Uuid = required(d, "run_id")?
 				.parse()
 				.map_err(|_| Error::Invalid("invalid run ID".into()))?;
@@ -1543,7 +1545,8 @@ async fn peer_workspace(
 			json!({"reserved":true})
 		}
 		"run_message_commit" => {
-			f.store.require_legacy_execution(task.workspace_id).await?;
+			// Commit is limited to a previously delegated task and its run-bound
+			// admission key.
 			let run_id: Uuid = required(d, "run_id")?
 				.parse()
 				.map_err(|_| Error::Invalid("invalid run ID".into()))?;
@@ -1557,7 +1560,7 @@ async fn peer_workspace(
 			json!({"committed":true})
 		}
 		"run_message_release" => {
-			f.store.require_legacy_execution(task.workspace_id).await?;
+			// Only this peer's delegated task can release run-bound reservations.
 			let run_id: Uuid = required(d, "run_id")?
 				.parse()
 				.map_err(|_| Error::Invalid("invalid run ID".into()))?;
@@ -1575,7 +1578,7 @@ async fn peer_workspace(
 			json!({"released":true})
 		}
 		"run_message_ack" => {
-			f.store.require_legacy_execution(task.workspace_id).await?;
+			// Only this peer's delegated task can acknowledge run-bound inputs.
 			let run_id: Uuid = required(d, "run_id")?
 				.parse()
 				.map_err(|_| Error::Invalid("invalid run ID".into()))?;
@@ -1593,7 +1596,8 @@ async fn peer_workspace(
 			json!({"acknowledged":true})
 		}
 		"run_message_history" => {
-			f.store.require_legacy_execution(task.workspace_id).await?;
+			// authorize_task above scopes history reads to the delegated task;
+			// query predicates below also bind records to that task and run.
 			let run_id: Uuid = required(d, "run_id")?
 				.parse()
 				.map_err(|_| Error::Invalid("invalid run ID".into()))?;
@@ -1616,7 +1620,7 @@ async fn peer_workspace(
 			json!(messages)
 		}
 		"run_message_delivery_capability" => {
-			f.store.require_legacy_execution(task.workspace_id).await?;
+			// This is a capability read for the already authorized delegated task.
 			json!(true)
 		}
 		"event" => {

@@ -324,6 +324,12 @@ pub async fn message_keyed(
 			return Err(error);
 		}
 	}
+	// The scoped path commits the executor ledger directly instead of going
+	// through Federation::admit_run_message, so promote the home fence before
+	// treating later delivery as best effort.
+	if !home.local() {
+		home.commit_run_message(&key, content).await?;
+	}
 	if let Err(error) = f.deliver_run_messages(&run).await {
 		tracing::warn!(run_id=%id, %error, "accepted scoped run message awaits home delivery");
 	}

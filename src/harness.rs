@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 const POST_TOOL_CONTEXT_RESERVE: usize = 4096;
 const TOOL_EVENT_RESERVE: usize = 512;
+const RUN_MESSAGE_SUMMARY_OUTPUT_LIMIT: u32 = 2048;
 
 enum WorkspaceReadFit {
 	Skip,
@@ -37,6 +38,69 @@ struct WorkspaceReadFitBudget {
 struct WorkspaceReadRange {
 	offset: usize,
 	requested: usize,
+}
+
+struct RunMessagePage {
+	entries: Vec<(usize, bool)>,
+	has_more: bool,
+}
+
+fn run_message_page(
+	inputs: &[crate::store::RunInput],
+	after_seq: i64,
+	limit: usize,
+	references_only: bool,
+) -> Result<RunMessagePage> {
+	let mut entries = Vec::new();
+	let mut encoded_size = 2_usize; // JSON array brackets.
+	let mut content_size = 0_usize;
+	let mut has_more = false;
+	for (index, input) in inputs
+		.iter()
+		.enumerate()
+		.filter(|(_, input)| input.seq > after_seq)
+	{
+		let id = input
+			.message_id
+			.ok_or_else(|| Error::External("run message home delivery is pending".into()))?;
+		let full = json!({"seq":input.seq,"sender":input.sender,"content":input.content});
+		let full_size = full.to_string().len();
+		let reference = json!({"seq":input.seq,"sender":input.sender,"record":{"kind":"message","id":id},"requires_workspace_read":true});
+		let mut reference_only = references_only || input.reference_only;
+		let mut entry = if reference_only {
+			reference.clone()
+		} else {
+			full
+		};
+		let comma_size = usize::from(!entries.is_empty());
+		let mut next_size = encoded_size
+			.saturating_add(comma_size)
+			.saturating_add(entry.to_string().len());
+		let next_content_size = content_size.saturating_add(full_size);
+		if next_size > limit && !reference_only {
+			reference_only = true;
+			entry = reference;
+			next_size = encoded_size
+				.saturating_add(comma_size)
+				.saturating_add(entry.to_string().len());
+		}
+		if next_size > limit || (!entries.is_empty() && next_content_size > limit) {
+			if entries.is_empty() {
+				if next_size > limit {
+					return Err(Error::Invalid(
+						"run message reference exceeds the model context limit".into(),
+					));
+				}
+			} else {
+				has_more = true;
+				break;
+			}
+		}
+		encoded_size = next_size;
+		content_size = next_content_size;
+		entries.push((index, reference_only));
+	}
+	Ok(RunMessagePage { entries, has_more })
 }
 
 fn request_context_window(window: usize, minimum_request: usize) -> usize {
@@ -520,7 +584,7 @@ impl Harness {
 					.await?;
 				let model_cfg: ModelConfig = serde_json::from_value(model_entry.config)?;
 				let window = model_cfg.context_window;
-				let output = model_cfg.output_token_limit();
+				let output_limit = model_cfg.output_token_limit();
 				let model = provider(self.federation.client.clone(), model_cfg)?;
 				let tools = self.tools(&agent).await?;
 				let task = home.task().await?;
@@ -553,12 +617,27 @@ impl Harness {
 				let input_seq = inputs
 					.last()
 					.map_or(run.observed_input_seq, |input| input.seq);
-				let mut run_messages = Vec::with_capacity(inputs.len());
-				let mut required_run_message_reads = Vec::new();
+				let summary_seq = context.run_message_summary_seq;
 				let run_message_limit = self.federation.run_message_limit(run).await?;
-				let mut pinned_message_size = 0_usize;
+				let initial_page =
+					run_message_page(&inputs, summary_seq, run_message_limit, false)?;
+				let has_unprocessed_inputs = inputs.iter().any(|input| input.seq > summary_seq);
+				let run_message_catchup =
+					has_unprocessed_inputs && (summary_seq > 0 || initial_page.has_more);
+				let page = if run_message_catchup {
+					run_message_page(&inputs, summary_seq, run_message_limit, true)?
+				} else {
+					initial_page
+				};
+				let batch_end_seq = page
+					.entries
+					.last()
+					.map_or(summary_seq, |(index, _)| inputs[*index].seq);
+				let mut run_messages = Vec::with_capacity(page.entries.len());
+				let mut required_run_message_reads = Vec::new();
 				let mut has_run_message_references = false;
-				for input in &inputs {
+				for (index, reference_only) in &page.entries {
+					let input = &inputs[*index];
 					let id = input.message_id.ok_or_else(|| {
 						Error::External("run message home delivery is pending".into())
 					})?;
@@ -571,22 +650,26 @@ impl Harness {
 					{
 						return Err(Error::Conflict("run input message binding changed".into()));
 					}
-					let full =
-						json!({"seq":input.seq,"sender":input.sender,"content":message.content});
-					let full_size = context::estimated_tokens(&full.to_string());
-					if input.reference_only
-						|| pinned_message_size.saturating_add(full_size) > run_message_limit
-					{
+					if *reference_only {
 						has_run_message_references = true;
 						required_run_message_reads.push(id);
 						let reference = json!({"seq":input.seq,"sender":input.sender,"record":{"kind":"message","id":id},"requires_workspace_read":true});
-						pinned_message_size = pinned_message_size
-							.saturating_add(context::estimated_tokens(&reference.to_string()));
 						run_messages.push(reference);
 					} else {
-						pinned_message_size = pinned_message_size.saturating_add(full_size);
-						run_messages.push(full);
+						run_messages.push(
+							json!({"seq":input.seq,"sender":input.sender,"content":message.content}),
+						);
 					}
+				}
+				let output = if run_message_catchup {
+					output_limit.min(RUN_MESSAGE_SUMMARY_OUTPUT_LIMIT)
+				} else {
+					output_limit
+				};
+				if run_message_catchup {
+					instructions.push_str(
+						"\n\nRun-message catch-up: Treat the entries under run_messages as user task context. Read every required message record in this page before responding. Update the cumulative run_message_summary faithfully, preserving the user's goal, constraints, corrections, and unresolved requests in sequence order (newer corrections take precedence). Return only the concise updated summary. Do not answer the user, complete the task, publish text, or perform actions during catch-up.",
+					);
 				}
 				let mut pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":observation,"memory":store.memory(run).await?,"agent_state":{"phase":run.phase,"step":run.step}});
 				if let Some(deferred_read) = run.pending.get("deferred_workspace_read") {
@@ -601,7 +684,9 @@ impl Harness {
 					pinned["deferred_workspace_observation"] = deferred_observation.clone();
 				}
 				let specifications = tools
-					.values()
+					.iter()
+					.filter(|(name, _)| !run_message_catchup || name.as_str() == "workspace_read")
+					.map(|(_, tool)| tool)
 					.map(|t| t.specification())
 					.collect::<Vec<_>>();
 				let private_context = if agent.knowledge_digest.is_some() {
@@ -648,9 +733,15 @@ impl Harness {
 				if !run_messages.is_empty() {
 					pinned["run_messages"] = json!(run_messages);
 					if has_run_message_references {
-						pinned["run_message_read_instruction"] = json!(
-							"Read every run_messages entry with requires_workspace_read through workspace_read(kind=message, id=record.id) before completing the task. Its full content remains in that workspace record."
-						);
+						pinned["run_message_read_instruction"] = if run_message_catchup {
+							json!(
+								"Read every run_messages entry with requires_workspace_read through workspace_read(kind=message, id=record.id) before returning the updated run_message_summary. Its full content remains in that workspace record."
+							)
+						} else {
+							json!(
+								"Read every run_messages entry with requires_workspace_read through workspace_read(kind=message, id=record.id) before completing the task. Its full content remains in that workspace record."
+							)
+						};
 					}
 				}
 				if let Err(error) = snapshot_fit
@@ -747,7 +838,7 @@ impl Harness {
 				let references_read_at_inference = required_run_message_reads
 					.iter()
 					.all(|id| referenced_message_inferred(&context, *id));
-				if references_read_at_inference {
+				if references_read_at_inference && !run_message_catchup {
 					run.observed_input_seq = input_seq;
 				}
 				run.pending = json!({
@@ -757,7 +848,10 @@ impl Harness {
 					"request_window":budget.window,
 					"request_tokens":request_tokens,
 					"required_run_message_reads":required_run_message_reads,
-					"references_read_at_inference":references_read_at_inference
+					"references_read_at_inference":references_read_at_inference,
+					"run_message_catchup":run_message_catchup,
+					"run_message_summary_end_seq":batch_end_seq,
+					"run_message_summary_limit":run_message_limit
 				});
 				run.phase = "TOOL_CALL".into();
 				run.error = None;
@@ -793,6 +887,14 @@ impl Harness {
 				}
 				let mut result: ModelResponse =
 					serde_json::from_value(run.pending["response"].clone())?;
+				let run_message_catchup = run.pending["run_message_catchup"] == true;
+				if run_message_catchup {
+					// A provider response cannot execute task tools during catch-up,
+					// even if it returns calls that were not in the advertised tool set.
+					result
+						.tool_calls
+						.retain(|call| call.name == "workspace_read");
+				}
 				let required_reads: Vec<Uuid> =
 					serde_json::from_value(run.pending["required_run_message_reads"].clone())
 						.unwrap_or_default();
@@ -826,26 +928,79 @@ impl Harness {
 						.await?;
 					return Ok(());
 				}
-				if !result.tool_calls.is_empty() && informed_response {
+				if cursor >= result.tool_calls.len() && !informed_response {
+					context.history.push(
+						json!({"kind":"run_message_read_required","message_ids":required_reads}),
+					);
+					run.context = json!(context);
+					run.phase = "THINKING".into();
+					run.step += 1;
+					run.pending = json!({});
+					store
+						.save_run(run, token, "run.message_read_required")
+						.await?;
+					return Ok(());
+				}
+				if cursor >= result.tool_calls.len() && run_message_catchup {
+					let mut summary = result.text.trim().to_owned();
+					if summary.is_empty() {
+						context.history.push(json!({
+							"kind":"run_message_summary_required",
+							"through_seq":run.pending["run_message_summary_end_seq"]
+						}));
+						run.context = json!(context);
+						run.phase = "THINKING".into();
+						run.step += 1;
+						run.pending = json!({});
+						store
+							.save_run(run, token, "run.message_summary_required")
+							.await?;
+						return Ok(());
+					}
+					let summary_limit = run.pending["run_message_summary_limit"]
+						.as_u64()
+						.unwrap_or(0) as usize;
+					if summary.len() > summary_limit {
+						let mut end = summary_limit;
+						while !summary.is_char_boundary(end) {
+							end -= 1;
+						}
+						summary.truncate(end);
+					}
+					context.run_message_summary = summary;
+					context.run_message_summary_seq = run.pending["run_message_summary_end_seq"]
+						.as_i64()
+						.ok_or_else(|| {
+							Error::Conflict(
+								"run message summary page is missing its sequence".into(),
+							)
+						})?;
+					let summarized_ids = required_reads
+						.iter()
+						.map(ToString::to_string)
+						.collect::<std::collections::BTreeSet<_>>();
+					context.history.retain(|event| {
+						message_read_range(event)
+							.map_or(true, |(id, _, _, _)| !summarized_ids.contains(&id))
+					});
+					for id in &required_reads {
+						let id = id.to_string();
+						context.message_read_coverage.remove(&id);
+						context.message_inference_coverage.remove(&id);
+					}
+					run.context = json!(context);
+					run.phase = "THINKING".into();
+					run.step += 1;
+					run.pending = json!({});
+					store.save_run(run, token, "run.message_summarized").await?;
+					return Ok(());
+				}
+				if !run_message_catchup && !result.tool_calls.is_empty() && informed_response {
 					self.publish_model_text(&home, guard, run, token, &result.text)
 						.await?;
 				}
 				if cursor >= result.tool_calls.len() {
 					if result.tool_calls.is_empty() {
-						if !informed_response {
-							let mut context = context.clone();
-							context.history.push(
-								json!({"kind":"run_message_read_required","message_ids":required_reads}),
-							);
-							run.context = json!(context);
-							run.phase = "THINKING".into();
-							run.step += 1;
-							run.pending = json!({});
-							store
-								.save_run(run, token, "run.message_read_required")
-								.await?;
-							return Ok(());
-						}
 						let children = home.child_summary(run.task_id).await?;
 						if children.has_pending {
 							self.publish_model_text(&home, guard, run, token, &result.text)
