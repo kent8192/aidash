@@ -197,25 +197,7 @@ impl Tool for PluginTool {
 						));
 					}
 					let response = self.client.get(url.clone()).send().await?;
-					if response.status().is_client_error() {
-						// A rejected public source is evidence the agent can work around.
-						// Do not turn its body into an observation or retry the call.
-						let status = response.status();
-						let url = &url.as_str()[..bounded_utf8_end(url.as_str(), 0, 2048)];
-						return Ok(
-							json!({"ok":false,"error":{"kind":"http_status","url":url,"status":status.as_u16()}}),
-						);
-					}
-					let response = response.error_for_status()?;
-					let mut body = response;
-					let mut bytes = Vec::new();
-					while let Some(chunk) = body.chunk().await? {
-						if bytes.len() + chunk.len() > 256_000 {
-							return Err(Error::Invalid("tool response exceeds 256 KB".into()));
-						}
-						bytes.extend_from_slice(&chunk);
-					}
-					Ok(json!({"text":String::from_utf8_lossy(&bytes)}))
+					web_fetch_response(response, &url).await
 				}
 				_ => Err(Error::Invalid("unknown native tool".into())),
 			},
@@ -290,6 +272,30 @@ impl Tool for PluginTool {
 			}
 		}
 	}
+}
+
+async fn web_fetch_response(mut response: reqwest::Response, url: &reqwest::Url) -> Result<Value> {
+	let status = response.status();
+	if matches!(
+		status,
+		reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::NOT_FOUND
+	) {
+		// These terminal source rejections are evidence the agent can work around.
+		// Other errors, including transient 408/429 responses, retain worker retries.
+		let url = &url.as_str()[..bounded_utf8_end(url.as_str(), 0, 2048)];
+		return Ok(
+			json!({"ok":false,"error":{"kind":"http_status","url":url,"status":status.as_u16()}}),
+		);
+	}
+	response.error_for_status_ref()?;
+	let mut bytes = Vec::new();
+	while let Some(chunk) = response.chunk().await? {
+		if bytes.len() + chunk.len() > 256_000 {
+			return Err(Error::Invalid("tool response exceeds 256 KB".into()));
+		}
+		bytes.extend_from_slice(&chunk);
+	}
+	Ok(json!({"text":String::from_utf8_lossy(&bytes)}))
 }
 
 pub struct Builtin {
@@ -545,6 +551,55 @@ pub fn builtins() -> BTreeMap<String, Arc<dyn Tool>> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[tokio::test]
+	async fn web_fetch_retries_transient_statuses_and_reports_terminal_source_rejections() {
+		use axum::{Router, extract::Path, http::StatusCode, routing::get};
+
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let endpoint = format!("http://{}", listener.local_addr().unwrap());
+		let server = tokio::spawn(async move {
+			axum::serve(
+				listener,
+				Router::new().route(
+					"/{status}",
+					get(|Path(status): Path<u16>| async move {
+						(StatusCode::from_u16(status).unwrap(), "source body")
+					}),
+				),
+			)
+			.await
+			.unwrap();
+		});
+		let client = reqwest::Client::new();
+		for status in [403, 404] {
+			let url = reqwest::Url::parse(&format!("{endpoint}/{status}")).unwrap();
+			let response = client.get(url.clone()).send().await.unwrap();
+			assert_eq!(
+				web_fetch_response(response, &url).await.unwrap(),
+				json!({"ok":false,"error":{"kind":"http_status","url":url,"status":status}})
+			);
+		}
+		for status in [408, 429, 500] {
+			let url = reqwest::Url::parse(&format!("{endpoint}/{status}")).unwrap();
+			let response = client.get(url.clone()).send().await.unwrap();
+			assert!(
+				matches!(
+					web_fetch_response(response, &url).await,
+					Err(Error::External(_))
+				),
+				"HTTP {status} must remain on the worker retry path"
+			);
+		}
+		let url = reqwest::Url::parse(&format!("{endpoint}/200")).unwrap();
+		let response = client.get(url.clone()).send().await.unwrap();
+		assert_eq!(
+			web_fetch_response(response, &url).await.unwrap(),
+			json!({"text":"source body"})
+		);
+		server.abort();
+		let _ = server.await;
+	}
 
 	#[test]
 	fn positive_utf8_chunk_limits_return_at_least_one_complete_character() {
