@@ -163,6 +163,69 @@ test("graph renders with Cytoscape and offers current related channel first", as
   expect(errors).toEqual([]);
 });
 
+test("graph focus survives selection, links, reload, and history", async ({
+  page,
+}) => {
+  const { errors } = await setup(page, { extraGraphAgent: true });
+  await page.goto("/collaboration?channel=workspace-one");
+  await page.getByRole("button", { name: "Tasks and results" }).click();
+  await page
+    .locator(".collab-channel .collab-agent")
+    .filter({ hasText: "Researcher" })
+    .click();
+  const selector = page.getByLabel("Focus agent");
+  const original = JSON.stringify([
+    "entity",
+    "aidash://home",
+    "agent",
+    "researcher",
+    "1.0.0",
+  ]);
+  const focused = JSON.stringify([
+    "entity",
+    "aidash://home",
+    "agent",
+    'review/"[special]:/agent',
+    "1.0.0",
+  ]);
+  await expect(selector).toHaveValue(original);
+  expect(new URL(page.url()).searchParams.get("focus")).toBe(original);
+
+  await selector.selectOption(focused);
+  await expect(selector).toHaveValue(focused);
+  await expect(page.locator(".collab-cytoscape canvas").first()).toBeVisible();
+  expect(new URL(page.url()).searchParams.get("focus")).toBe(focused);
+  const graphLink = await page
+    .getByRole("link", { name: "Graph View", exact: true })
+    .getAttribute("href");
+  expect(new URL(graphLink!, page.url()).searchParams.get("focus")).toBe(
+    focused,
+  );
+
+  await page.reload();
+  await expect(selector).toHaveValue(focused);
+  await page.goBack();
+  await expect(selector).toHaveValue(original);
+  await page.goForward();
+  await expect(selector).toHaveValue(focused);
+
+  const unavailable = JSON.stringify([
+    "entity",
+    "aidash://home",
+    "agent",
+    "unavailable",
+    "1.0.0",
+  ]);
+  await page.goto(`/graph?focus=${encodeURIComponent(unavailable)}`);
+  await expect(selector).toHaveValue("");
+  await expect(
+    page.getByRole("status").filter({
+      hasText: "This resource is unavailable under your current access.",
+    }),
+  ).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test("channel intervention answers a human request without settings navigation", async ({
   page,
 }) => {
