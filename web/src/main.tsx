@@ -23,11 +23,14 @@ import {
   Settings,
   Plus,
   Search,
+  FolderKanban,
+  Bot,
+  Boxes,
+  Store,
   Bell,
   ChevronDown,
   MessagesSquare,
   ArrowUpRight,
-  Bot,
   PanelLeft,
   History,
   Moon,
@@ -55,6 +58,7 @@ import {
 import { LocaleContext, useI18n, type Locale } from "./ui";
 import { Channel } from "./collaboration/channel";
 import { Graph } from "./collaboration/graph";
+import { meshCopy } from "./collaboration/mesh-copy";
 const Configuration = lazy(() =>
   import("./collaboration/settings").then((module) => ({
     default: module.Configuration,
@@ -83,6 +87,7 @@ import {
 import "./style.css";
 import "./collaboration/style.css";
 import "./collaboration/workspace.css";
+import "./collaboration/mesh.css";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 1000 } },
@@ -163,6 +168,7 @@ function Dashboard({
     "reconnecting",
   );
   const [filter, setFilter] = useState("");
+  const [graphSearch, setGraphSearch] = useState("");
   const [theme, setTheme] = useState(() =>
     localStorage.getItem("aidash-theme") === "dark" ? "dark" : "light",
   );
@@ -662,7 +668,10 @@ function Dashboard({
     : [];
   return (
     <DisplayProvider data={data}>
-      <div className="collab-app" data-theme={theme}>
+      <div
+        className={`collab-app ${route.section === "graph" ? "graph-shell" : ""}`}
+        data-theme={theme}
+      >
         <header className="collab-topbar">
           <div className="workspace-brand">
             <picture>
@@ -687,22 +696,37 @@ function Dashboard({
               <PanelLeft size={18} />
             </button>
           )}
-          <label className="workspace-search">
-            <Search size={15} />
-            <span className="sr-only">{copy.search}</span>
-            <input
-              ref={searchInput}
-              type="search"
-              value={filter}
-              onChange={(event) => {
-                setFilter(event.target.value);
-                if (route.section === "collaboration") setMobileChannels(true);
-              }}
-              placeholder={words.search}
-            />
-            <kbd>⌘ K</kbd>
-          </label>
-          {filter && route.section !== "collaboration" && (
+          {route.section === "graph" ? (
+            <label className="graph-search">
+              <Search size={15} />
+              <span className="sr-only">{meshCopy[locale].search}</span>
+              <input
+                ref={searchInput}
+                type="search"
+                value={graphSearch}
+                onChange={(event) => setGraphSearch(event.target.value)}
+                placeholder={meshCopy[locale].search}
+              />
+            </label>
+          ) : (
+            <label className="workspace-search">
+              <Search size={15} />
+              <span className="sr-only">{copy.search}</span>
+              <input
+                ref={searchInput}
+                type="search"
+                value={filter}
+                onChange={(event) => {
+                  setFilter(event.target.value);
+                  if (route.section === "collaboration")
+                    setMobileChannels(true);
+                }}
+                placeholder={words.search}
+              />
+              <kbd>⌘ K</kbd>
+            </label>
+          )}
+          {filter && route.section === "settings" && (
             <div className="workspace-search-results">
               {data?.workspaces
                 .filter((value) =>
@@ -821,6 +845,36 @@ function Dashboard({
           <div className="brand" title="Aidash">
             <img src={aidashAppIcon} alt="Aidash" width={36} height={36} />
           </div>
+          {route.section === "graph" && data && (
+            <label className="graph-workspace-picker">
+              <FolderKanban size={22} />
+              <div>
+                <span className="sr-only">
+                  {meshCopy[locale].kinds.workspace}
+                </span>
+                <select
+                  value={currentChannel}
+                  onChange={(event) =>
+                    go("graph", { channel: event.target.value, focus: "" })
+                  }
+                >
+                  {!workspace && (
+                    <option value={currentChannel}>{copy.noChannel}</option>
+                  )}
+                  {data.workspaces.map((value) => (
+                    <option key={value.id} value={value.id}>
+                      {value.title}
+                    </option>
+                  ))}
+                </select>
+                <small>
+                  {locale === "ja-JP"
+                    ? "人とエージェントの協働"
+                    : "Human × Agent collaboration"}
+                </small>
+              </div>
+            </label>
+          )}
           <nav aria-label={copy.collaboration}>
             {(
               [
@@ -838,6 +892,7 @@ function Dashboard({
                     name === "graph" ? route.focus || undefined : undefined,
                 }}
                 aria-current={route.section === name ? "page" : undefined}
+                aria-label={copy[name]}
                 className={`collab-nav ${route.section === name ? "selected" : ""}`}
               >
                 <Icon size={20} />
@@ -845,6 +900,30 @@ function Dashboard({
               </Link>
             ))}
           </nav>
+          {route.section === "graph" && (
+            <nav className="collab-graph-links" aria-label={copy.settings}>
+              {(
+                [
+                  ["agents", Bot],
+                  ["registry", Boxes],
+                  ["clusters", Network],
+                  ["marketplace", Store],
+                ] as const
+              ).map(([view, Icon]) => (
+                <Link
+                  key={view}
+                  to="/$section"
+                  params={{ section: "settings" }}
+                  search={{ view, channel: currentChannel || undefined }}
+                  className="collab-nav"
+                  title={t(view)}
+                >
+                  <Icon size={18} />
+                  <span className="rail-label">{t(view)}</span>
+                </Link>
+              ))}
+            </nav>
+          )}
           <nav className="collab-secondary" aria-label={copy.settings}>
             <Link
               to="/$section"
@@ -1116,7 +1195,10 @@ function Dashboard({
                     ))}
                   {route.section === "graph" && (
                     <Graph
+                      key={`${context}:${currentChannel}`}
                       data={data}
+                      search={graphSearch}
+                      setSearch={setGraphSearch}
                       discovery={discovery.isError ? undefined : discovery.data}
                       runs={runs}
                       channel={currentChannel}
