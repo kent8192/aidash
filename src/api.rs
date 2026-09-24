@@ -1278,6 +1278,8 @@ async fn peer_workspace(
 				| "run_message_commit"
 				| "run_message_release"
 				| "run_message_ack"
+				| "run_message_history"
+				| "run_message_delivery_capability"
 		) || (command.operation == "transition"
 			&& (d["status"] == "CANCELLED" || d["status"] == "FAILED"))))
 		&& task.owner.as_deref() != Some(&owner)
