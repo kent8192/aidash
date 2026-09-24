@@ -150,6 +150,33 @@ test("search, type and relation filters, neighborhood focus, list view and reset
   await expect(table).not.toContainText("→ executes →");
   expect(errors).toEqual([]);
 });
+test("connected local node opens topology and relationship controls only show active options", async ({
+  page,
+}) => {
+  const { errors } = await setup(page);
+  await page.getByLabel("Graph perspective").selectOption("topology");
+  await page
+    .locator(".mesh-inspector .mesh-connected-node")
+    .filter({ hasText: "aidash://product-lab" })
+    .click();
+  await expect(page.getByLabel("Graph perspective")).toHaveValue("topology");
+  await expect(page.locator(".mesh-inspector h2")).toHaveText(
+    "aidash://product-lab",
+  );
+  await page.getByLabel("Graph perspective").selectOption("neighborhood");
+  await expect(page.getByRole("searchbox")).toHaveCount(0);
+  await expect(page.getByLabel("Activity window")).toHaveCount(0);
+  await expect(page.getByLabel("Layout", { exact: true })).toHaveCount(0);
+  await page
+    .getByRole("button", {
+      name: "Node topology and communication",
+      exact: true,
+    })
+    .click();
+  await expect(page.locator(".mesh-canvas svg > g")).toHaveCount(2);
+  await expect(page.locator(".collab-run-grid button")).not.toHaveCount(0);
+  expect(errors).toEqual([]);
+});
 test("all perspectives and layout engines render and execution events select tasks", async ({
   page,
 }) => {

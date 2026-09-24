@@ -76,6 +76,9 @@ test("observes the two-node execution and all management screens", async ({
   ).toHaveCount(2);
   await page.goto("/graph");
   await page
+    .getByLabel("グラフの視点", { exact: true })
+    .selectOption("neighborhood");
+  await page
     .getByRole("button", { name: "ノード構成と通信", exact: true })
     .click();
   await expect(page.locator(".mesh-canvas svg > g")).toHaveCount(2);

@@ -322,8 +322,20 @@ export function buildMeshGraph(
     edge(resourceKey(nodeId, "workspace", c.workspace_id), id, "contains");
     const author = principal(c.created_by);
     if (author) edge(author, id, "participates", "activity");
-    const target = qualified.get(c.target);
-    if (target) edge(target, id, "participates", "activity");
+    const at = c.target.lastIndexOf("@");
+    const target =
+      c.target_kind === "agent" && qualified.has(c.target)
+        ? qualified.get(c.target)
+        : (c.target_kind === "agent" || c.target_kind === "cluster") &&
+            at > 0 &&
+            at < c.target.length - 1
+          ? entityKey(nodeId, c.target_kind, {
+              id: c.target.slice(0, at),
+              version: c.target.slice(at + 1),
+            })
+          : undefined;
+    if (target && nodes.get(target)?.available)
+      edge(target, id, "participates", "activity");
   }
   return {
     nodes: [...nodes.values()],
@@ -343,6 +355,7 @@ export const modeKinds: Record<MeshMode, readonly MeshKind[]> = {
     "goal",
     "conversation",
     "agent",
+    "cluster",
     "task",
     "artifact",
   ],
@@ -352,6 +365,7 @@ export const modeKinds: Record<MeshMode, readonly MeshKind[]> = {
     "conversation",
     "task",
     "agent",
+    "cluster",
     "artifact",
     "tool",
     "model",
@@ -418,12 +432,46 @@ export function filterMeshGraph(
     for (const id of visible) if (!adjacent.has(id)) visible.delete(id);
   }
   const candidates = eligible.filter((n) => visible.has(n.id));
-  // Keep the explicit focus/selected node before applying the rendering budget.
-  if (options.focus)
-    candidates.sort(
-      (a, b) => Number(b.id === options.focus) - Number(a.id === options.focus),
-    );
-  const nodes = candidates.slice(0, options.maxNodes ?? 180);
+  const candidateCount = candidates.length;
+  const maxNodes = options.maxNodes ?? 180;
+  // Share a crowded canvas across kinds so registry entries cannot exhaust the
+  // budget before any workspace or recorded activity becomes visible.
+  if (candidates.length > maxNodes) {
+    const focused = candidates.find((n) => n.id === options.focus);
+    const groups = new Map<MeshKind, MeshNode[]>();
+    for (const candidate of candidates) {
+      if (candidate === focused) continue;
+      const group = groups.get(candidate.kind) ?? [];
+      group.push(candidate);
+      groups.set(candidate.kind, group);
+    }
+    const ordered = focused ? [focused] : [];
+    const kinds: MeshKind[] = [
+      "workspace",
+      "agent",
+      "task",
+      "artifact",
+      "conversation",
+      "goal",
+      "human",
+      "cluster",
+      "remote",
+      "tool",
+      "model",
+      "skill",
+    ];
+    while (ordered.length < maxNodes && groups.size) {
+      for (const kind of kinds) {
+        const group = groups.get(kind);
+        if (!group) continue;
+        ordered.push(group.shift()!);
+        if (!group.length) groups.delete(kind);
+        if (ordered.length === maxNodes) break;
+      }
+    }
+    candidates.splice(0, candidates.length, ...ordered);
+  }
+  const nodes = candidates.slice(0, maxNodes);
   const ids = new Set(nodes.map((n) => n.id));
   edges = edges.filter((e) => ids.has(e.source) && ids.has(e.target));
   const keptEdges = edges.slice(0, options.maxEdges ?? 600);
@@ -433,7 +481,7 @@ export function filterMeshGraph(
       parent: n.parent && ids.has(n.parent) ? n.parent : undefined,
     })),
     edges: keptEdges,
-    omitted: candidates.length - nodes.length,
+    omitted: candidateCount - nodes.length,
     omittedEdges: edges.length - keptEdges.length,
   };
 }
@@ -719,6 +767,7 @@ export function nodeEvents(
   data: State,
   hours: number,
   now: number,
+  channel = "",
 ): MeshEvent[] {
   const tasks = new Set(
     graph.edges
@@ -738,6 +787,7 @@ export function nodeEvents(
         (r) =>
           node.nodeId === data.node.id &&
           (!r.home_node || r.home_node === data.node.id) &&
+          (!channel || r.workspace_id === channel) &&
           (tasks.has(r.task_id) ||
             (node.kind === "agent" &&
               r.agent_id === node.entity?.id &&
@@ -747,7 +797,11 @@ export function nodeEvents(
   );
   return data.events
     .filter((e) => {
-      if (!inWindow(e.created_at, hours, now) || e.node_id !== node.nodeId)
+      if (
+        !inWindow(e.created_at, hours, now) ||
+        e.node_id !== node.nodeId ||
+        (channel && e.workspace_id !== channel)
+      )
         return false;
       if (node.kind === "workspace" || node.kind === "goal")
         return e.workspace_id === node.workspaceId;

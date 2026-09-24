@@ -156,7 +156,8 @@ export function Graph({
   };
   const selectConnected = (id: string) => {
     if (!graph.nodes.some((n) => n.id === id)) {
-      setMode("mesh");
+      const target = full.nodes.find((n) => n.id === id);
+      setMode(target?.kind === "remote" ? "topology" : "mesh");
       setKinds([...meshKinds]);
       setSearch("");
       setFocused("");
@@ -281,33 +282,37 @@ export function Graph({
                 <option value="neighborhood">{copy.fullDetails}</option>
               </select>
             </label>
-            <label className="mesh-select" title={copy.windowHelp}>
-              <Clock3 size={14} />
-              <span className="sr-only">{copy.time}</span>
-              <select
-                aria-label={copy.time}
-                value={hours}
-                onChange={(e) => setHours(Number(e.target.value))}
-              >
-                <option value={1}>{copy.hour}</option>
-                <option value={24}>{copy.day}</option>
-                <option value={168}>{copy.week}</option>
-                <option value={720}>{copy.month}</option>
-                <option value={0}>{copy.allTime}</option>
-              </select>
-            </label>
-            <label className="mesh-select">
-              <span className="sr-only">{copy.layout}</span>
-              <select
-                aria-label={copy.layout}
-                value={layout}
-                onChange={(e) => setLayout(e.target.value as MeshLayout)}
-              >
-                <option value="structured">{copy.mesh}</option>
-                <option value="force">{copy.force}</option>
-                <option value="circle">{copy.radial}</option>
-              </select>
-            </label>
+            {mode !== "neighborhood" && (
+              <label className="mesh-select" title={copy.windowHelp}>
+                <Clock3 size={14} />
+                <span className="sr-only">{copy.time}</span>
+                <select
+                  aria-label={copy.time}
+                  value={hours}
+                  onChange={(e) => setHours(Number(e.target.value))}
+                >
+                  <option value={1}>{copy.hour}</option>
+                  <option value={24}>{copy.day}</option>
+                  <option value={168}>{copy.week}</option>
+                  <option value={720}>{copy.month}</option>
+                  <option value={0}>{copy.allTime}</option>
+                </select>
+              </label>
+            )}
+            {mode !== "neighborhood" && (
+              <label className="mesh-select">
+                <span className="sr-only">{copy.layout}</span>
+                <select
+                  aria-label={copy.layout}
+                  value={layout}
+                  onChange={(e) => setLayout(e.target.value as MeshLayout)}
+                >
+                  <option value="structured">{copy.mesh}</option>
+                  <option value="force">{copy.force}</option>
+                  <option value="circle">{copy.radial}</option>
+                </select>
+              </label>
+            )}
           </div>
         </header>
         {mode === "neighborhood" ? (

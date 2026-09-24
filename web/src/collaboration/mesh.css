@@ -92,6 +92,9 @@
   background: #123128;
   padding: 4px 9px;
 }
+.graph-shell:has(.mesh-neighborhood) .graph-search {
+  display: none;
+}
 .graph-search input {
   min-width: 0;
   width: 100%;

@@ -64,6 +64,59 @@ test("projects explicit workspace, task hierarchy, dependencies, tools, artifact
     ),
   );
 });
+test("resolves stored agent and cluster conversation targets in both related perspectives", () => {
+  const s = scene();
+  const conversation = s.data.conversations[0];
+  for (const [kind, target] of [
+    ["agent", "planner@1.0.0"],
+    ["cluster", "local-cluster@1.0.0"],
+  ]) {
+    conversation.target_kind = kind;
+    conversation.target = target;
+    const graph = project(s);
+    const targetNode = graph.nodes.find(
+      (n) => n.kind === kind && n.entity?.id === target.split("@")[0],
+    );
+    const conversationNode = node(graph, conversation.id);
+    assert.ok(targetNode);
+    assert.ok(
+      graph.edges.some(
+        (e) =>
+          e.source === targetNode.id &&
+          e.target === conversationNode.id &&
+          e.relation === "participates",
+      ),
+    );
+    for (const mode of ["collaboration", "knowledge"]) {
+      const filtered = visible(graph, { mode });
+      assert.ok(
+        filtered.nodes.some((n) => n.id === targetNode.id),
+        mode,
+      );
+      assert.ok(
+        filtered.edges.some(
+          (e) => e.source === targetNode.id && e.target === conversationNode.id,
+        ),
+        mode,
+      );
+    }
+  }
+});
+test("node budget keeps workspace activity alongside a large registry", () => {
+  const s = scene();
+  const tool = s.data.registry.find((e) => e.kind === "tool");
+  for (let i = 0; i < 200; i++)
+    s.data.registry.push({ ...tool, id: `tool-${i}` });
+  const graph = visible(project(s));
+  assert.equal(graph.nodes.length, 180);
+  assert.ok(graph.omitted > 0);
+  for (const kind of ["workspace", "task", "artifact", "agent", "tool"])
+    assert.ok(
+      graph.nodes.some((n) => n.kind === kind),
+      kind,
+    );
+  assert.ok(graph.edges.some((e) => e.relation === "contains"));
+});
 test("uses exact versions, preserves remote identities, and does not invent health", () => {
   const s = scene();
   s.data.registry[0].config.tools.push({ id: "not-found", version: "1.0.0" });
@@ -200,6 +253,33 @@ test("time windows filter completed activity, retain active execution and match 
   assert.equal(inWindow("invalid", 1, now), false);
   assert.equal(inWindow(new Date(now + 1000).toISOString(), 1, now), false);
   assert.equal(inWindow("2020-01-01", 0, now), true);
+});
+test("inspector events stay within the selected workspace for agents and the local node", () => {
+  const s = scene();
+  s.data.runs.push({
+    ...s.data.runs[0],
+    id: "other-run",
+    workspace_id: "other-workspace",
+    task_id: "other-task",
+  });
+  s.data.events.push({
+    ...s.data.events[0],
+    id: "other-event",
+    workspace_id: "other-workspace",
+    data: { run_id: "other-run" },
+  });
+  const graph = project(s);
+  for (const selected of [
+    node(graph, "planner"),
+    graph.nodes.find((n) => n.kind === "remote" && !n.remote),
+  ]) {
+    assert.ok(selected);
+    assert.ok(
+      !nodeEvents(selected, graph, s.data, 24, now, "product-lab").some(
+        (e) => e.id === "other-event",
+      ),
+    );
+  }
 });
 test("revoked entities and disabled peers remove cached names and remote status", () => {
   const s = scene();

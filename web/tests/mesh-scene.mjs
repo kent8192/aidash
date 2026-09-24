@@ -161,7 +161,7 @@ export function meshScene(now = Date.now()) {
     {
       id: "conversation-strategy",
       workspace_id: "product-lab",
-      target: principal("planner"),
+      target: "planner@1.0.0",
       target_kind: "agent",
       created_by: "Ryota",
       created_at: time(90),

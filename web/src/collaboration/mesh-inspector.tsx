@@ -81,7 +81,7 @@ export function MeshInspector({
           (n) => n.kind === "task" && n.workspaceId === node.workspaceId,
         )
       : neighbors.filter((n) => n.kind === "task");
-  const events = nodeEvents(node, graph, data, hours, now);
+  const events = nodeEvents(node, graph, data, hours, now, channel);
   const related = workspace
     ? [workspace]
     : node.nodeId === data.node.id
