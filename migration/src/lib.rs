@@ -33,6 +33,7 @@ mod m20260924_020000_dashboard_oidc_indexes;
 mod m20260924_030000_dashboard_session_revocation_indexes;
 mod m20260924_040000_run_inputs;
 mod m20260924_050000_run_input_delivery_refs;
+mod m20260924_060000_legacy_run_input_bridge;
 
 pub struct Migrator;
 #[async_trait::async_trait]
@@ -72,6 +73,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260924_030000_dashboard_session_revocation_indexes::Migration),
 			Box::new(m20260924_040000_run_inputs::Migration),
 			Box::new(m20260924_050000_run_input_delivery_refs::Migration),
+			Box::new(m20260924_060000_legacy_run_input_bridge::Migration),
 		]
 	}
 }

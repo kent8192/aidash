@@ -46,6 +46,50 @@ fn request_context_window(window: usize, minimum_request: usize) -> usize {
 	window.saturating_sub(reserve.saturating_mul(2))
 }
 
+fn referenced_message_read(context: &Context, id: Uuid) -> bool {
+	let id_text = id.to_string();
+	let mut ranges = context
+		.history
+		.iter()
+		.filter_map(|event| {
+			let call = &event["call"];
+			let output = &event["result"];
+			if event["kind"] != "tool"
+				|| call["name"] != "workspace_read"
+				|| call["arguments"]["kind"] != "message"
+				|| call["arguments"]["id"] != id_text
+				|| output["kind"] != "message"
+				|| output["id"] != id_text
+				|| output["encoding"] != "json"
+			{
+				return None;
+			}
+			let start = output["offset"].as_u64()? as usize;
+			let total = output["total_chars"].as_u64()? as usize;
+			let content = output["content"].as_str()?;
+			let end = start.checked_add(content.chars().count())?;
+			let next = output["next_offset"].as_u64().map(|value| value as usize);
+			(end <= total && end > start && next.unwrap_or(total) == end)
+				.then_some((start, end, total))
+		})
+		.collect::<Vec<_>>();
+	ranges.sort_unstable_by_key(|range| range.0);
+	let Some(total) = ranges.first().map(|range| range.2) else {
+		return false;
+	};
+	let mut covered = 0;
+	for (start, end, range_total) in ranges {
+		if range_total != total || start > covered {
+			return false;
+		}
+		covered = covered.max(end);
+		if covered == total {
+			return true;
+		}
+	}
+	false
+}
+
 #[derive(Clone)]
 pub struct Harness {
 	pub federation: Federation,
@@ -425,6 +469,7 @@ impl Harness {
 					.last()
 					.map_or(run.observed_input_seq, |input| input.seq);
 				let mut run_messages = Vec::with_capacity(inputs.len());
+				let mut required_run_message_reads = Vec::new();
 				let run_message_limit = self.federation.run_message_limit(run).await?;
 				let mut pinned_message_size = 0_usize;
 				let mut has_run_message_references = false;
@@ -448,6 +493,7 @@ impl Harness {
 						|| pinned_message_size.saturating_add(full_size) > run_message_limit
 					{
 						has_run_message_references = true;
+						required_run_message_reads.push(id);
 						let reference = json!({"seq":input.seq,"sender":input.sender,"record":{"kind":"message","id":id},"requires_workspace_read":true});
 						pinned_message_size = pinned_message_size
 							.saturating_add(context::estimated_tokens(&reference.to_string()));
@@ -610,27 +656,60 @@ impl Harness {
 				}
 				context.usage = json!({"input_tokens":result.input_tokens,"output_tokens":result.output_tokens,"context_window":window,"compactions":context.compactions});
 				run.context = json!(context);
-				run.observed_input_seq = input_seq;
+				let references_read_at_inference = required_run_message_reads
+					.iter()
+					.all(|id| referenced_message_read(&context, *id));
+				if references_read_at_inference {
+					run.observed_input_seq = input_seq;
+				}
 				run.pending = json!({
 					"response":result,
 					"cursor":0,
 					"request_window":budget.window,
-					"request_tokens":request_tokens
+					"request_tokens":request_tokens,
+					"required_run_message_reads":required_run_message_reads,
+					"references_read_at_inference":references_read_at_inference
 				});
 				run.phase = "TOOL_CALL".into();
 				run.error = None;
 				store.save_run(run, token, "model.completed").await?;
 			}
 			"TOOL_CALL" => {
+				// A preceding binary could have left a remote correction only on
+				// the home node while this run was already awaiting finalization.
+				self.federation.reconcile_run_messages(run).await?;
 				let mut result: ModelResponse =
 					serde_json::from_value(run.pending["response"].clone())?;
-				if !result.tool_calls.is_empty() {
+				let required_reads: Vec<Uuid> =
+					serde_json::from_value(run.pending["required_run_message_reads"].clone())
+						.unwrap_or_default();
+				let context: Context = serde_json::from_value(run.context.clone())?;
+				let references_read = required_reads
+					.iter()
+					.all(|id| referenced_message_read(&context, *id));
+				let informed_response = required_reads.is_empty()
+					|| (references_read && run.pending["references_read_at_inference"] == true);
+				if !result.tool_calls.is_empty() && informed_response {
 					self.publish_model_text(&home, guard, run, &result.text)
 						.await?;
 				}
 				let cursor = run.pending["cursor"].as_u64().unwrap_or(0) as usize;
 				if cursor >= result.tool_calls.len() {
 					if result.tool_calls.is_empty() {
+						if !informed_response {
+							let mut context = context.clone();
+							context.history.push(
+								json!({"kind":"run_message_read_required","message_ids":required_reads}),
+							);
+							run.context = json!(context);
+							run.phase = "THINKING".into();
+							run.step += 1;
+							run.pending = json!({});
+							store
+								.save_run(run, token, "run.message_read_required")
+								.await?;
+							return Ok(());
+						}
 						let children = home.child_summary(run.task_id).await?;
 						if children.has_pending {
 							self.publish_model_text(&home, guard, run, &result.text)
@@ -1847,6 +1926,25 @@ mod review_tests {
 		let deferred = super::deferred_workspace_read(&call);
 		assert_eq!(deferred["call"]["arguments"]["offset"], 0);
 		assert_eq!(deferred["call"]["arguments"]["id"], call.arguments["id"]);
+	}
+
+	#[test]
+	fn referenced_run_message_requires_every_record_chunk() {
+		let id = uuid::Uuid::new_v4();
+		let event = |offset: usize, content: &str, next: Option<usize>| {
+			serde_json::json!({
+				"kind":"tool",
+				"call":{"name":"workspace_read","arguments":{"kind":"message","id":id}},
+				"result":{"kind":"message","id":id,"encoding":"json","offset":offset,"total_chars":6,"content":content,"next_offset":next}
+			})
+		};
+		let mut context = crate::context::Context::default();
+		context.history.push(event(0, "abc", Some(3)));
+		assert!(!super::referenced_message_read(&context, id));
+		context.history.push(event(4, "ef", None));
+		assert!(!super::referenced_message_read(&context, id));
+		context.history.push(event(3, "def", None));
+		assert!(super::referenced_message_read(&context, id));
 	}
 
 	#[test]

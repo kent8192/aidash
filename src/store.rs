@@ -1535,12 +1535,9 @@ impl Store {
 				"run message was not accepted because the run is completing or terminal".into(),
 			));
 		}
-		let used = self
-			.run_inputs_in(tx, run_id)
-			.await?
-			.iter()
-			.map(run_input_context_size)
-			.sum::<usize>();
+		let (_, used) = self
+			.run_inputs_with_budget_in(tx, run_id, max_input_tokens)
+			.await?;
 		if used.saturating_add(run_input_size(sender, content)) > max_input_tokens {
 			return Err(Error::Invalid(
 				"run messages exceed the selected model's input limit".into(),
@@ -1605,6 +1602,46 @@ impl Store {
 		.fetch_all(&mut **tx)
 		.await?)
 	}
+	async fn run_inputs_with_budget_in(
+		&self,
+		tx: &mut Transaction<'_, Postgres>,
+		run_id: Uuid,
+		max_input_tokens: usize,
+	) -> Result<(Vec<RunInput>, usize)> {
+		let mut inputs = self.run_inputs_in(tx, run_id).await?;
+		let mut used = 0_usize;
+		for input in &mut inputs {
+			let full_size = run_input_size(&input.sender, &input.content);
+			if !input.reference_only
+				&& used.saturating_add(full_size) > max_input_tokens
+				&& let Some(message_id) = input.message_id
+			{
+				// The first run-input migration could have backfilled content
+				// before the selected model's limit was available. Reclassify under
+				// the same run lock as admission instead of charging its full size.
+				sqlx::query(
+					&sea_orm::sea_query::Query::update()
+						.table(sea_orm::sea_query::Alias::new("run_inputs"))
+						.value(
+							sea_orm::sea_query::Alias::new("reference_only"),
+							sea_orm::sea_query::Expr::cust("TRUE"),
+						)
+						.and_where(sea_orm::sea_query::Expr::cust(
+							"run_id = $1 AND idempotency_key = $2 AND message_id = $3",
+						))
+						.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+				)
+				.bind(run_id)
+				.bind(&input.idempotency_key)
+				.bind(message_id)
+				.execute(&mut **tx)
+				.await?;
+				input.reference_only = true;
+			}
+			used = used.saturating_add(run_input_context_size(input));
+		}
+		Ok((inputs, used))
+	}
 	pub async fn run_inputs(&self, run_id: Uuid) -> Result<Vec<RunInput>> {
 		let mut tx = self.pool.begin().await?;
 		let inputs = self.run_inputs_in(&mut tx, run_id).await?;
@@ -1668,9 +1705,9 @@ impl Store {
 		// Serialize capacity decisions with new admissions on the run row. Old
 		// messages exceeding the current model budget remain addressable through
 		// their message IDs instead of being pinned in full.
-		let _: Uuid = sqlx::query_scalar(
+		let current: Run = sqlx::query_as(
 			&sea_orm::sea_query::Query::select()
-				.column(sea_orm::sea_query::Alias::new("id"))
+				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
 				.from(sea_orm::sea_query::Alias::new("runs"))
 				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
 				.lock(sea_orm::sea_query::LockType::Update)
@@ -1679,15 +1716,25 @@ impl Store {
 		.bind(run_id)
 		.fetch_one(&mut *tx)
 		.await?;
-		let used = self
-			.run_inputs_in(&mut tx, run_id)
-			.await?
-			.iter()
-			.map(run_input_context_size)
-			.sum::<usize>();
-		let reference_only = used.saturating_add(run_input_size(&message.sender, &message.content))
-			> max_input_tokens;
-		if reference_only
+		let (inputs, used) = self
+			.run_inputs_with_budget_in(&mut tx, run_id, max_input_tokens)
+			.await?;
+		let previous = inputs.iter().find(|input| input.idempotency_key == key);
+		if previous.is_none()
+			&& (current.pending["finalizing"] == true
+				|| current.pending["terminal_transition"].as_str().is_some()
+				|| current.control == "CANCELLED"
+				|| matches!(current.phase.as_str(), "COMPLETED" | "FAILED" | "CANCELLED"))
+		{
+			return Err(Error::Conflict(
+				"historical run message arrived after finalization".into(),
+			));
+		}
+		let reference_only = previous.is_none()
+			&& used.saturating_add(run_input_size(&message.sender, &message.content))
+				> max_input_tokens;
+		if previous.is_none()
+			&& reference_only
 			&& used.saturating_add(run_input_reference_size(&message.sender, message.id))
 				> max_input_tokens
 		{

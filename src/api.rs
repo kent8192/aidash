@@ -956,6 +956,7 @@ async fn run_message(
 		"human:{id}:{}",
 		input.idempotency_key.unwrap_or_else(Uuid::new_v4)
 	);
+	f.require_terminal_safe_delivery(&run).await?;
 	let limit = f.run_message_limit(&run).await?;
 	match f
 		.store
@@ -1259,6 +1260,7 @@ async fn peer_workspace(
 			| "workspace_record_chunk"
 			| "workspace_children"
 			| "run_message_history"
+			| "run_message_delivery_capability"
 			| "task" | "claim"
 	) && !(task.owner.is_none()
 		&& (matches!(
@@ -1283,6 +1285,7 @@ async fn peer_workspace(
 				| "workspace_record_chunk"
 				| "workspace_children"
 				| "run_message_history"
+				| "run_message_delivery_capability"
 				| "task"
 		);
 		let replay_completion = command.operation == "complete" && task.status == "COMPLETED";
@@ -1490,11 +1493,17 @@ async fn peer_workspace(
 				.and_where(sea_orm::sea_query::Expr::cust("workspace_id = $1 AND LEFT(idempotency_key, LENGTH($2)) = $2 AND (SUBSTRING(idempotency_key FROM LENGTH($2) + 1) LIKE 'human:' || $3 || ':%' OR (SUBSTRING(idempotency_key FROM LENGTH($2) + 1) LIKE 'subject-human:%' AND RIGHT(idempotency_key, 74) LIKE ':' || $3 || ':%'))"))
 				.order_by(sea_orm::sea_query::Alias::new("created_at"), sea_orm::sea_query::Order::Asc)
 				.order_by(sea_orm::sea_query::Alias::new("id"), sea_orm::sea_query::Order::Asc)
-				.limit(50).offset(offset)
+				// A message is limited to 64 KiB before JSON escaping. Four
+				// records fit the 4 MiB peer response cap even with escape growth.
+				.limit(4).offset(offset)
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder))
 				.bind(task.workspace_id).bind(prefix).bind(run_id.to_string())
 				.fetch_all(&f.store.pool).await?;
 			json!(messages)
+		}
+		"run_message_delivery_capability" => {
+			f.store.require_legacy_execution(task.workspace_id).await?;
+			json!(true)
 		}
 		"event" => {
 			let event_id =
@@ -1710,6 +1719,7 @@ async fn peer_control(
 				input.idempotency_key.unwrap_or_else(Uuid::new_v4)
 			);
 			let limit = f.run_message_limit(&run).await?;
+			f.require_terminal_safe_delivery(&run).await?;
 			match f
 				.store
 				.accept_run_message(run.id, "human", &content, &key, limit)

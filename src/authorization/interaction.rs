@@ -241,6 +241,7 @@ pub async fn message_keyed(
 				"message.create",
 			)
 			.await?;
+		f.require_terminal_safe_delivery(&run).await?;
 		let limit = f.run_message_limit(&run).await?;
 		f.store
 			.accept_run_message_in(&mut access.tx, id, &identity.subject, content, &key, limit)

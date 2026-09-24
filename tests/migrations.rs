@@ -41,9 +41,9 @@ async fn run_input_migration_preserves_keyed_message_retries() {
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs().await.unwrap().remove(0);
 	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());
-	// Remove both run-input migrations to simulate a message written before
+	// Remove the run-input migrations to simulate a message written before
 	// the ledger existed, then apply the backfill and delivery extensions.
-	Migrator::down(&db, Some(2)).await.unwrap();
+	Migrator::down(&db, Some(3)).await.unwrap();
 	let retry_key = Uuid::new_v4();
 	let key = format!("subject-human:acme:alice:{}:{retry_key}", run.id);
 	f.store
@@ -55,11 +55,61 @@ async fn run_input_migration_preserves_keyed_message_retries() {
 		)
 		.await
 		.unwrap();
+	let large_key = format!("human:{}:{}", run.id, Uuid::new_v4());
+	f.store
+		.message(
+			run.workspace_id,
+			"human",
+			&"historical correction ".repeat(1500),
+			Some(&large_key),
+		)
+		.await
+		.unwrap();
 	Migrator::up(&db, None).await.unwrap();
 	let inputs = f.store.run_inputs(run.id).await.unwrap();
-	assert_eq!(inputs.len(), 1);
-	assert_eq!(inputs[0].idempotency_key, key);
-	assert!(inputs[0].message_id.is_some());
+	assert_eq!(inputs.len(), 2);
+	assert!(
+		inputs
+			.iter()
+			.any(|input| input.idempotency_key == key && input.message_id.is_some())
+	);
+	let admitted_key = format!("human:{}:{}", run.id, Uuid::new_v4());
+	f.store
+		.accept_run_message(
+			run.id,
+			"human",
+			"valid after upgrade",
+			&admitted_key,
+			f.run_message_limit(&run).await.unwrap(),
+		)
+		.await
+		.unwrap();
+	assert!(
+		f.store
+			.run_inputs(run.id)
+			.await
+			.unwrap()
+			.iter()
+			.any(|input| input.idempotency_key == large_key && input.reference_only)
+	);
+	let old_replica_key = format!("human:{}:{}", run.id, Uuid::new_v4());
+	f.store
+		.message(
+			run.workspace_id,
+			"human",
+			"accepted by an old replica",
+			Some(&old_replica_key),
+		)
+		.await
+		.unwrap();
+	assert!(
+		f.store
+			.run_inputs(run.id)
+			.await
+			.unwrap()
+			.iter()
+			.any(|input| input.idempotency_key == old_replica_key && input.message_id.is_some())
+	);
 	sqlx::query(
 		&sea_orm::sea_query::Query::update()
 			.table(sea_orm::sea_query::Alias::new("runs"))
@@ -74,6 +124,27 @@ async fn run_input_migration_preserves_keyed_message_retries() {
 	.execute(&f.store.pool)
 	.await
 	.unwrap();
+	let rejected_key = format!("human:{}:{}", run.id, Uuid::new_v4());
+	assert!(
+		f.store
+			.message(
+				run.workspace_id,
+				"human",
+				"rejected by the bridge",
+				Some(&rejected_key)
+			)
+			.await
+			.is_err()
+	);
+	assert!(
+		!f.store
+			.snapshot(run.workspace_id)
+			.await
+			.unwrap()
+			.messages
+			.iter()
+			.any(|message| message.idempotency_key.as_deref() == Some(&rejected_key))
+	);
 	let path = format!("/api/runs/{}/message", run.id);
 	assert_eq!(
 		common::request(

@@ -69,34 +69,37 @@ async fn add_peer(f: &Federation, node: &str, endpoint: &str) {
 	.unwrap();
 }
 
-async fn set_peer_endpoint(f: &Federation, node: &str, endpoint: &str) {
-	sqlx::query(
-		&Query::update()
-			.table(Alias::new("peers"))
-			.value(Alias::new("endpoint"), Expr::cust("$2"))
-			.and_where(Expr::cust("node_id = $1"))
-			.to_string(PostgresQueryBuilder),
-	)
-	.bind(node)
-	.bind(endpoint)
-	.execute(&f.store.pool)
-	.await
-	.unwrap();
+struct PeerMode {
+	old_peer: AtomicBool,
+	delivery_outage: AtomicBool,
 }
 
 async fn old_peer_workspace_compat(
-	axum::extract::State(old_peer): axum::extract::State<Arc<AtomicBool>>,
+	axum::extract::State(mode): axum::extract::State<Arc<PeerMode>>,
 	request: Request<Body>,
 	next: Next,
 ) -> axum::response::Response {
-	if !old_peer.load(Ordering::SeqCst) || !request.uri().path().ends_with("/workspace") {
+	if !request.uri().path().ends_with("/workspace")
+		|| (!mode.old_peer.load(Ordering::SeqCst) && !mode.delivery_outage.load(Ordering::SeqCst))
+	{
 		return next.run(request).await;
 	}
 	let (parts, body) = request.into_parts();
 	let bytes = axum::body::to_bytes(body, 1_048_576).await.unwrap();
 	let command: Value = serde_json::from_slice(&bytes).unwrap();
 	let operation = command["operation"].as_str().unwrap();
-	if matches!(operation, "run_message_history" | "run_message_delivery") {
+	if mode.delivery_outage.load(Ordering::SeqCst) && operation == "run_message_delivery" {
+		return (
+			axum::http::StatusCode::SERVICE_UNAVAILABLE,
+			axum::Json(json!({"error":"simulated delivery outage"})),
+		)
+			.into_response();
+	}
+	if mode.old_peer.load(Ordering::SeqCst)
+		&& matches!(
+			operation,
+			"run_message_history" | "run_message_delivery" | "run_message_delivery_capability"
+		) {
 		return (
 			axum::http::StatusCode::BAD_REQUEST,
 			axum::Json(json!({"error":"unknown federation operation"})),
@@ -106,7 +109,10 @@ async fn old_peer_workspace_compat(
 	let response = next
 		.run(Request::from_parts(parts, Body::from(bytes)))
 		.await;
-	if operation == "human_message" && response.status().is_success() {
+	if mode.old_peer.load(Ordering::SeqCst)
+		&& operation == "human_message"
+		&& response.status().is_success()
+	{
 		return axum::Json(json!({"sent":true})).into_response();
 	}
 	response
@@ -121,9 +127,12 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 	executor.store.node_id = executor.config.node_id.clone();
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	home.config.endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let old_peer = Arc::new(AtomicBool::new(false));
+	let mode = Arc::new(PeerMode {
+		old_peer: AtomicBool::new(false),
+		delivery_outage: AtomicBool::new(false),
+	});
 	let home_app = api::router(home.clone()).layer(axum::middleware::from_fn_with_state(
-		old_peer.clone(),
+		mode.clone(),
 		old_peer_workspace_compat,
 	));
 	let executor_app = api::router(executor.clone());
@@ -263,7 +272,33 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.iter()
 			.any(|input| input.content == large_content && input.reference_only)
 	);
-	old_peer.store(true, Ordering::SeqCst);
+	for index in 0..5 {
+		home.store
+			.message(
+				workspace.id,
+				&format!("human@{}", executor.config.node_id),
+				&format!("paged historical correction {index}"),
+				Some(&format!(
+					"{}:{}:human:{}:{}",
+					executor.config.node_id,
+					task.id,
+					run.id,
+					Uuid::new_v4()
+				)),
+			)
+			.await
+			.unwrap();
+	}
+	executor.reconcile_run_messages(&run).await.unwrap();
+	let inputs = executor.store.run_inputs(run.id).await.unwrap();
+	for index in 0..5 {
+		assert!(
+			inputs
+				.iter()
+				.any(|input| input.content == format!("paged historical correction {index}"))
+		);
+	}
+	mode.old_peer.store(true, Ordering::SeqCst);
 	executor.reconcile_run_messages(&run).await.unwrap();
 	let compatibility_key = Uuid::new_v4();
 	assert_eq!(
@@ -276,8 +311,32 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 		)
 		.await
 		.0,
-		200
+		409
 	);
+	assert!(
+		!home
+			.store
+			.snapshot(workspace.id)
+			.await
+			.unwrap()
+			.messages
+			.iter()
+			.any(|message| message.content == "old peer correction")
+	);
+	// Inputs accepted before capability gating still use the legacy active-task
+	// delivery fallback while that peer remains on the preceding release.
+	executor
+		.store
+		.accept_run_message(
+			run.id,
+			"human",
+			"old peer correction",
+			&format!("human:{}:{compatibility_key}", run.id),
+			executor.run_message_limit(&run).await.unwrap(),
+		)
+		.await
+		.unwrap();
+	executor.deliver_run_messages(&run).await.unwrap();
 	assert!(
 		executor
 			.store
@@ -287,8 +346,8 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.iter()
 			.any(|input| input.content == "old peer correction" && input.message_id.is_some())
 	);
-	old_peer.store(false, Ordering::SeqCst);
-	set_peer_endpoint(&executor, &home.config.node_id, "http://127.0.0.1:9").await;
+	mode.old_peer.store(false, Ordering::SeqCst);
+	mode.delivery_outage.store(true, Ordering::SeqCst);
 	let pending_key = Uuid::new_v4();
 	assert_eq!(
 		peer_control(
@@ -321,7 +380,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.iter()
 			.any(|message| message.content == "queued delivery")
 	);
-	set_peer_endpoint(&executor, &home.config.node_id, &home.config.endpoint).await;
+	mode.delivery_outage.store(false, Ordering::SeqCst);
 	let current_task = home.store.task(task.id).await.unwrap();
 	home.store
 		.transition(task.id, current_task.revision, &owner, "CANCELLED")
@@ -369,6 +428,40 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 	.execute(&executor.store.pool)
 	.await
 	.unwrap();
+	let late_historical_key = Uuid::new_v4();
+	home.store
+		.message(
+			workspace.id,
+			&format!("human@{}", executor.config.node_id),
+			"legacy message after finalization",
+			Some(&format!(
+				"{}:{}:human:{}:{late_historical_key}",
+				executor.config.node_id, task.id, run.id
+			)),
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		peer_control(
+			&executor_app,
+			&home.config.node_id,
+			json!({
+				"run_id":run.id,"action":"message","content":"legacy message after finalization","idempotency_key":late_historical_key
+			})
+		)
+		.await
+		.0,
+		409
+	);
+	assert!(
+		!executor
+			.store
+			.run_inputs(run.id)
+			.await
+			.unwrap()
+			.iter()
+			.any(|input| input.content == "legacy message after finalization")
+	);
 	let (status, body) = peer_control(
 		&executor_app,
 		&home.config.node_id,

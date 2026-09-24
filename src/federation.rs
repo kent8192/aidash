@@ -53,6 +53,21 @@ pub struct Federation {
 	pub notify: std::sync::Arc<tokio::sync::Notify>,
 }
 impl Federation {
+	pub async fn require_terminal_safe_delivery(&self, run: &Run) -> Result<()> {
+		if run.home_node == self.config.node_id {
+			return Ok(());
+		}
+		let home = Home::new(self.clone(), run.clone());
+		match home
+			.optional_command::<bool>("run_message_delivery_capability", json!({}))
+			.await?
+		{
+			Some(true) => Ok(()),
+			_ => Err(Error::Conflict(
+				"remote home cannot durably deliver run messages after task termination".into(),
+			)),
+		}
+	}
 	pub async fn run_message_limit(&self, run: &Run) -> Result<usize> {
 		let agent_entry = self.registry.get(&run.agent_id, &run.agent_version).await?;
 		let agent: AgentConfig = serde_json::from_value(agent_entry.config.clone())?;
@@ -1182,7 +1197,7 @@ impl Home {
 			};
 			let count = page.len();
 			messages.extend(page);
-			if count < 50 {
+			if count < 4 {
 				break;
 			}
 		}
