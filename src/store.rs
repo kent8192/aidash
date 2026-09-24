@@ -144,6 +144,15 @@ impl Store {
 		let mut tx = self.pool.begin().await?;
 		self.ensure_run_response_current_in(&mut tx, run.id, worker, included_input_seq)
 			.await?;
+		sqlx::query_scalar::<_, String>(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::cust(
+					"set_config('aidash.input_ledger_worker', 'true', true)",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.fetch_one(&mut *tx)
+		.await?;
 		let message = self
 			.message_in(&mut tx, run.workspace_id, sender, content, Some(key))
 			.await?;

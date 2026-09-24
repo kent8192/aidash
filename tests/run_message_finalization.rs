@@ -1,6 +1,6 @@
 mod common;
 
-use aidash::{api, domain::qualified_agent, harness::Harness};
+use aidash::{api, domain::qualified_agent, federation::Home, harness::Harness};
 use axum::{Json, Router, routing::post};
 use common::{bootstrap, cleanup, request, setup};
 use serde_json::{Value, json};
@@ -79,6 +79,27 @@ async fn old_worker_cannot_lease_after_input_ledger_admission() {
 		.unwrap();
 	assert_eq!(leased.id, run.id);
 	assert!(leased.ledger_worker_ready);
+	let output_key = format!("{}:{}:output", run.id, run.step);
+	assert!(
+		f.store
+			.message_record(
+				run.workspace_id,
+				"agent",
+				"stale legacy response",
+				Some(&output_key),
+			)
+			.await
+			.is_err()
+	);
+	Home::new(f.clone(), leased.clone())
+		.response_message(
+			upgraded_worker,
+			f.store.run_inputs(run.id).await.unwrap()[0].seq,
+			&output_key,
+			"response after observing the correction",
+		)
+		.await
+		.unwrap();
 	assert!(
 		f.store
 			.renew_lease(run.id, upgraded_worker, 30)

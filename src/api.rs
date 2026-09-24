@@ -1232,6 +1232,15 @@ fn run_message_key_matches_run(key: &str, run_id: Uuid) -> bool {
 		|| (key.starts_with("subject-human:")
 			&& key.rsplit(':').nth(1) == Some(run_id_text.as_str()))
 }
+fn is_legacy_run_output_key(key: &str) -> bool {
+	let mut parts = key.split(':');
+	let (Some(run_id), Some(step), Some("output"), None) =
+		(parts.next(), parts.next(), parts.next(), parts.next())
+	else {
+		return false;
+	};
+	Uuid::parse_str(run_id).is_ok() && step.parse::<u64>().is_ok()
+}
 async fn peer_workspace(
 	State(f): State<Federation>,
 	headers: HeaderMap,
@@ -1443,6 +1452,11 @@ async fn peer_workspace(
 			)
 		}
 		"message" | "human_message" => {
+			if command.operation == "message" && is_legacy_run_output_key(required(d, "key")?) {
+				return Err(Error::Conflict(
+					"run outputs require fenced response publication".into(),
+				));
+			}
 			let sender = if command.operation == "human_message" {
 				format!("human@{node}")
 			} else {

@@ -54,6 +54,33 @@ END;
 $$;
 CREATE TRIGGER gate_legacy_run_worker BEFORE UPDATE ON runs
 FOR EACH ROW EXECUTE FUNCTION gate_legacy_run_worker();
+
+-- Legacy workers publish model output through messages before saving the run.
+-- Serialize that effect with run-input admission, then reject output if an
+-- admitted correction is already present. Fenced upgraded publication sets
+-- the transaction-local marker only after checking the worker lease and input
+-- sequence.
+CREATE FUNCTION gate_legacy_run_output() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    uuid_pattern CONSTANT text := '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}';
+    target_run uuid;
+BEGIN
+    IF NEW.idempotency_key ~ ('^' || uuid_pattern || ':[0-9]+:output$') THEN
+        target_run := split_part(NEW.idempotency_key, ':', 1)::uuid;
+        PERFORM id FROM runs
+        WHERE id = target_run AND workspace_id = NEW.workspace_id
+        FOR UPDATE;
+        IF FOUND
+            AND current_setting('aidash.input_ledger_worker', true) IS DISTINCT FROM 'true'
+            AND EXISTS (SELECT 1 FROM run_inputs WHERE run_id = target_run) THEN
+            RAISE EXCEPTION 'run input ledger requires fenced response publication';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER gate_legacy_run_output BEFORE INSERT ON messages
+FOR EACH ROW EXECUTE FUNCTION gate_legacy_run_output();
 "#,
 			)
 			.await?;
@@ -64,7 +91,7 @@ FOR EACH ROW EXECUTE FUNCTION gate_legacy_run_worker();
 		manager
 			.get_connection()
 			.execute_unprepared(
-				"DROP TRIGGER gate_legacy_run_worker ON runs; DROP FUNCTION gate_legacy_run_worker()",
+				"DROP TRIGGER gate_legacy_run_output ON messages; DROP FUNCTION gate_legacy_run_output(); DROP TRIGGER gate_legacy_run_worker ON runs; DROP FUNCTION gate_legacy_run_worker()",
 			)
 			.await?;
 		manager

@@ -294,6 +294,22 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 	assert!(inputs[0].message_id.is_some());
 	let first_input_key = format!("human:{}:{first_key}", run.id);
 	let remote_home = Home::new(executor.clone(), run.clone());
+	let legacy_output_key = format!("{}:{}:output", run.id, run.step);
+	assert!(
+		remote_home
+			.message(&legacy_output_key, "stale legacy remote response")
+			.await
+			.is_err()
+	);
+	assert!(
+		home.store
+			.snapshot(workspace.id)
+			.await
+			.unwrap()
+			.messages
+			.iter()
+			.all(|message| message.content != "stale legacy remote response")
+	);
 	assert!(
 		remote_home
 			.reserve_run_message(&first_input_key, "changed correction")
