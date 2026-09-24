@@ -1,5 +1,15 @@
 import type { Page } from "@playwright/test";
 
+export async function selectDashboardLanguage(
+  page: Page,
+  locale: "ja-JP" | "en-US",
+) {
+  const accountMenu = page.locator(".account-popover");
+  await accountMenu.locator("summary").click();
+  await page.getByTestId("language-selector").selectOption(locale);
+  await accountMenu.locator("summary").click();
+}
+
 /** Keep legacy Bearer API fixtures while exercising the OIDC dashboard UI. */
 export async function installBearerDashboard(
   page: Page,

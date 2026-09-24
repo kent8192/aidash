@@ -1,5 +1,8 @@
 import { test, expect } from "@playwright/test";
-import { installBearerDashboard } from "./auth-fixture";
+import {
+  installBearerDashboard,
+  selectDashboardLanguage,
+} from "./auth-fixture";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -201,7 +204,7 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
         return cleanup.points.pending + cleanup.collections.pending;
       })
       .toBe(0);
-    await page.getByTestId("language-selector").selectOption("ja-JP");
+    await selectDashboardLanguage(page, "ja-JP");
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(
       page.getByRole("heading", { name: "埋め込み索引", exact: true }),
