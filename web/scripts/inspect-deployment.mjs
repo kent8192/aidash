@@ -62,7 +62,10 @@ try {
     path: ".ignore/dashboard-deployment-cluster-desktop.png",
     fullPage: true,
   });
+  const accountMenu = page.locator(".account-popover > summary");
+  await accountMenu.click();
   await page.getByTestId("language-selector").selectOption("ja-JP");
+  await accountMenu.click();
   await page.setViewportSize({ width: 390, height: 844 });
   await page
     .getByRole("heading", { name: "レプリカの状態", exact: true })

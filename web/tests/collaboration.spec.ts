@@ -327,9 +327,11 @@ test("thread replies persist separately and channel drafts survive thread naviga
   await expect(
     page.getByRole("heading", { name: "Thread", exact: true }),
   ).toBeVisible();
-  await expect(composer).toHaveValue("");
-  await composer.fill("Here is the supporting source.");
-  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(composer).toHaveValue("Unsent channel note");
+  const reply = page.getByRole("textbox", { name: "Reply", exact: true });
+  await expect(reply).toHaveValue("");
+  await reply.fill("Here is the supporting source.");
+  await page.getByRole("button", { name: "Send reply", exact: true }).click();
   await expect(
     page.getByText("Here is the supporting source.", { exact: true }),
   ).toBeVisible();
@@ -486,13 +488,294 @@ test("revoking a thread read hides cached replies without exposing another conve
   await page
     .getByRole("button", { name: "Reply in thread", exact: true })
     .click();
+  const threadPanel = page.locator(".workspace-thread-panel");
   await expect(
-    page.getByText("Evidence is ready to review.", { exact: true }),
+    threadPanel.getByText("Evidence is ready to review.", { exact: true }),
   ).toBeVisible();
   revokeThreads();
   await expect(page.getByRole("alert")).toContainText("unavailable");
-  await expect(page.locator(".collab-message")).toHaveCount(0);
+  await expect(threadPanel.locator(".collab-message")).toHaveCount(0);
+  await expect(
+    threadPanel.getByRole("textbox", { name: "Reply", exact: true }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("textbox", { name: "Message", exact: true }),
+  ).toBeVisible();
+});
+
+test("attachment retries preserve uploads, files and message identity", async ({
+  page,
+}) => {
+  const { submissions, errors } = await setup(page, { failFirstMessage: true });
+  await page.goto("/");
+  await page
+    .getByRole("textbox", { name: "Message", exact: true })
+    .fill("Please review the source.");
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "source.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("evidence"),
+  });
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "Your text has been kept",
+  );
+  await expect(
+    page.getByRole("button", { name: "Remove attachment: source.txt" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Download attachment: source.txt" }),
+  ).toBeVisible();
+  await expect(page.locator(".workspace-draft-files")).toHaveCount(0);
+  const uploads = submissions.filter((item) =>
+    item.path.endsWith("/attachments"),
+  );
+  const messages = submissions.filter((item) =>
+    item.path.endsWith("/thread-messages"),
+  );
+  expect(uploads).toHaveLength(1);
+  expect(uploads[0].body.size).toBe(8);
+  expect(messages).toHaveLength(2);
+  expect(messages[0].body).toEqual(messages[1].body);
+  expect(messages[0].body.attachment_ids).toHaveLength(1);
+  expect(errors).toEqual([]);
+});
+
+test("upload failures retain their key and file limits apply before network use", async ({
+  page,
+}) => {
+  const { submissions, errors } = await setup(page, { failFirstUpload: true });
+  await page.goto("/");
+  const files = page.locator('input[type="file"]');
+  await files.setInputFiles({
+    name: "large.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.alloc(1024 * 1024 + 1),
+  });
+  await expect(page.getByRole("alert")).toContainText("1 MiB");
+  expect(submissions).toHaveLength(0);
+  await files.setInputFiles({
+    name: "source.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("evidence"),
+  });
+  await page
+    .getByRole("textbox", { name: "Message", exact: true })
+    .fill("Source");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("upload unavailable");
+  expect(
+    submissions.filter((item) => item.path.endsWith("/thread-messages")),
+  ).toHaveLength(0);
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Download attachment: source.txt" }),
+  ).toBeVisible();
+  const uploads = submissions.filter((item) =>
+    item.path.endsWith("/attachments"),
+  );
+  expect(uploads).toHaveLength(2);
+  expect(uploads[0].body.idempotency_key).toBe(uploads[1].body.idempotency_key);
+  expect(errors).toEqual([]);
+});
+
+test("channel controls scope run changes and persist approval responses", async ({
+  page,
+}) => {
+  const { submissions, errors } = await setup(page, { approval: true });
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "Pause runs in this channel", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Resume runs in this channel" }),
+  ).toBeEnabled();
+  expect(
+    submissions
+      .filter((item) => item.path.endsWith("/control"))
+      .map((item) => item.path),
+  ).toEqual(["/api/runs/run-0/control"]);
+  await page
+    .getByRole("button", { name: "Resume runs in this channel" })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Pause runs in this channel" }),
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "Approve", exact: true }).click();
+  await expect(page.locator(".workspace-approval")).toHaveCount(0);
+  expect(
+    submissions.find((item) => item.path.endsWith("/answer"))?.body,
+  ).toEqual({ approved: true });
+  expect(errors).toEqual([]);
+});
+
+test("search, notifications, thread navigation and persisted theme work", async ({
+  page,
+}) => {
+  const { errors } = await setup(page);
+  await page.goto("/");
+  await page
+    .getByRole("searchbox", { name: "Search channels" })
+    .fill("next release");
+  await expect(
+    page
+      .locator(".collab-channel-sidebar")
+      .getByRole("link", { name: "# Research" }),
   ).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "# Planning" })).toBeVisible();
+  await page.getByRole("searchbox", { name: "Search channels" }).fill("");
+  await page
+    .getByLabel("Requests awaiting your input", { exact: true })
+    .click();
+  await page
+    .locator(".workspace-popover-body")
+    .getByRole("button", { name: "Which market should I examine?" })
+    .click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.getByLabel("Account settings", { exact: true }).click();
+  await page.getByRole("button", { name: "Dark theme", exact: true }).click();
+  await expect(page.locator(".collab-app")).toHaveAttribute(
+    "data-theme",
+    "dark",
+  );
+  await page.reload();
+  await expect(page.locator(".collab-app")).toHaveAttribute(
+    "data-theme",
+    "dark",
+  );
+  await page
+    .getByRole("button", { name: "Threads in this channel", exact: true })
+    .click();
+  await expect(
+    page.getByText("No threads in the loaded history."),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Tasks and results", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Add task", exact: true }),
+  ).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("composer preserves IME input and safely renders inline formatting", async ({
+  page,
+}) => {
+  const { submissions, errors } = await setup(page);
+  await page.goto("/");
+  const composer = page.getByRole("textbox", { name: "Message", exact: true });
+  await composer.fill("draft");
+  await composer.press("Shift+Enter");
+  await expect(composer).toHaveValue("draft\n");
+  await composer.dispatchEvent("keydown", {
+    key: "Enter",
+    code: "Enter",
+    isComposing: true,
+  });
+  expect(submissions).toHaveLength(0);
+  await composer.fill("**Important** <script>alert('xss')</script>");
+  await composer.press("Enter");
+  await expect(composer).toHaveValue("");
+  await expect(page.locator(".workspace-message-body p strong")).toHaveText(
+    "Important",
+  );
+  await expect(page.locator(".workspace-message-body p").last()).toContainText(
+    "<script>",
+  );
+  expect(errors).toEqual([]);
+});
+
+for (const viewport of [
+  { width: 390, height: 844 },
+  { width: 900, height: 400 },
+]) {
+  test(`composer and status remain in view at ${viewport.width}x${viewport.height}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport);
+    const { errors } = await setup(page, { olderMessages: 45 });
+    await page.goto("/");
+    await expect(
+      page.getByRole("textbox", { name: "Message", exact: true }),
+    ).toBeInViewport();
+    await expect(
+      page.getByRole("button", { name: "Send", exact: true }),
+    ).toBeInViewport();
+    await page.getByRole("button", { name: "Show channel status" }).click();
+    await expect(
+      page.getByRole("button", { name: "Pause runs in this channel" }),
+    ).toBeInViewport();
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(
+      page.getByRole("textbox", { name: "Message", exact: true }),
+    ).toBeInViewport();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    expect(errors).toEqual([]);
+  });
+}
+
+test("workspace reference renders light, dark and thread layouts", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const { errors } = await setup(page, {
+    referenceLayout: true,
+    locale: "ja-JP",
+  });
+  await page.goto("/");
+  await expect(page.locator(".workspace-approval")).toBeVisible();
+  await expect(
+    page.locator(".workspace-mini-graph canvas").first(),
+  ).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("workspace-light.png") });
+  await page.locator(".workspace-status").screenshot({
+    path: testInfo.outputPath("workspace-status.png"),
+  });
+  await page.locator(".collab-composer").screenshot({
+    path: testInfo.outputPath("workspace-composer.png"),
+  });
+  await page.getByLabel("アカウント設定", { exact: true }).click();
+  await page.getByRole("button", { name: "ダークテーマ", exact: true }).click();
+  await page.getByLabel("アカウント設定", { exact: true }).click();
+  await page.screenshot({ path: testInfo.outputPath("workspace-dark.png") });
+  await page
+    .locator("#message-message-one")
+    .getByRole("button", { name: "スレッドで返信" })
+    .click();
+  await expect(
+    page.getByRole("textbox", { name: "返信", exact: true }),
+  ).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("workspace-thread.png") });
+  await page.setViewportSize({ width: 1280, height: 960 });
+  await page.screenshot({
+    path: testInfo.outputPath("workspace-thread-tall.png"),
+  });
+  expect(errors).toEqual([]);
+});
+
+test("shared files can be inspected without leaving the workspace", async ({
+  page,
+}) => {
+  const { errors } = await setup(page, { messageAttachment: true });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Artifacts", exact: true }).click();
+  const files = page.locator(".workspace-file-gallery");
+  await expect(
+    files.getByRole("button", { name: "Download attachment: evidence.txt" }),
+  ).toBeVisible();
+  await files.getByRole("button", { name: "Preview: evidence.txt" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByRole("heading", { name: "evidence.txt" }),
+  ).toBeVisible();
+  await expect(dialog.locator("pre")).toHaveText("Source evidence");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  expect(errors).toEqual([]);
 });

@@ -17,7 +17,27 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { MessageSquare, Network, Settings, Plus } from "lucide-react";
+import {
+  MessageSquare,
+  Network,
+  Settings,
+  Plus,
+  Search,
+  Bell,
+  ChevronDown,
+  MessagesSquare,
+  ArrowUpRight,
+  Bot,
+  PanelLeft,
+  History,
+  Moon,
+  Sun,
+} from "lucide-react";
+import aidashLogo from "./assets/brand/aidash-logo.svg?no-inline";
+import aidashLogoOnDark from "./assets/brand/aidash-logo-on-dark.svg?no-inline";
+import aidashAppIcon from "./assets/brand/aidash-app-icon.svg?no-inline";
+import { workspaceCopy } from "./collaboration/workspace-copy";
+import { Avatar } from "./collaboration/avatar";
 import {
   state as getState,
   session as getSession,
@@ -62,6 +82,7 @@ import {
 } from "./collaboration/model";
 import "./style.css";
 import "./collaboration/style.css";
+import "./collaboration/workspace.css";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 1000 } },
@@ -124,6 +145,8 @@ function Dashboard({
 }) {
   const { t } = useI18n();
   const copy = collaborationCopy[locale];
+  const words = workspaceCopy[locale];
+  const searchInput = useRef<HTMLInputElement>(null);
   const location = useLocation();
   const navigate = useNavigate();
   const route = resolveLocation(location.pathname, location.searchStr);
@@ -140,11 +163,27 @@ function Dashboard({
     "reconnecting",
   );
   const [filter, setFilter] = useState("");
+  const [theme, setTheme] = useState(() =>
+    localStorage.getItem("aidash-theme") === "dark" ? "dark" : "light",
+  );
+  useEffect(() => {
+    localStorage.setItem("aidash-theme", theme);
+  }, [theme]);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [mobileChannels, setMobileChannels] = useState(false);
+  useEffect(() => {
+    const search = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        searchInput.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", search);
+    return () => window.removeEventListener("keydown", search);
+  }, []);
   const registration = useQuery({
     queryKey: ["registration", browserSession?.id],
     queryFn: async (): Promise<Registration> => {
@@ -475,8 +514,7 @@ function Dashboard({
     return (
       <main className="login">
         <div className="login-brand">
-          <span className="brand-symbol">a</span>
-          <strong>Aidash</strong>
+          <img src={aidashLogo} alt="Aidash" width={172} height={64} />
           <span>0.1</span>
         </div>
         <div className="login-card">
@@ -624,11 +662,164 @@ function Dashboard({
     : [];
   return (
     <DisplayProvider data={data}>
-      <div className="collab-app">
+      <div className="collab-app" data-theme={theme}>
+        <header className="collab-topbar">
+          <div className="workspace-brand">
+            <picture>
+              <source media="(max-width: 760px)" srcSet={aidashAppIcon} />
+              <img
+                src={aidashLogoOnDark}
+                alt="Aidash"
+                width={120}
+                height={40}
+              />
+            </picture>
+            <span>LAB</span>
+          </div>
+          {route.section === "collaboration" && (
+            <button
+              type="button"
+              className="collab-channel-toggle"
+              aria-label={copy.channels}
+              aria-expanded={mobileChannels}
+              onClick={() => setMobileChannels((value) => !value)}
+            >
+              <PanelLeft size={18} />
+            </button>
+          )}
+          <label className="workspace-search">
+            <Search size={15} />
+            <span className="sr-only">{copy.search}</span>
+            <input
+              ref={searchInput}
+              type="search"
+              value={filter}
+              onChange={(event) => {
+                setFilter(event.target.value);
+                if (route.section === "collaboration") setMobileChannels(true);
+              }}
+              placeholder={words.search}
+            />
+            <kbd>⌘ K</kbd>
+          </label>
+          {filter && route.section !== "collaboration" && (
+            <div className="workspace-search-results">
+              {data?.workspaces
+                .filter((value) =>
+                  `${value.title} ${value.goal}`
+                    .toLocaleLowerCase()
+                    .includes(filter.toLocaleLowerCase()),
+                )
+                .map((value) => (
+                  <button
+                    type="button"
+                    key={value.id}
+                    onClick={() => {
+                      setFilter("");
+                      go("collaboration", { channel: value.id });
+                    }}
+                  >
+                    # {value.title}
+                  </button>
+                ))}
+            </div>
+          )}
+          <span className={`stream-status ${streamStatus}`}>
+            <span className="status-dot" />
+            {copy[streamStatus]}
+          </span>
+          <details className="workspace-popover">
+            <summary aria-label={words.notifications}>
+              <Bell size={17} />
+              {requests.some((item) => item.request.response === null) && (
+                <span className="notification-dot" />
+              )}
+            </summary>
+            <div className="workspace-popover-body">
+              <h3>{words.notifications}</h3>
+              {requests.filter((item) => item.request.response === null)
+                .length === 0 && <p>{words.noNotifications}</p>}
+              {requests
+                .filter((item) => item.request.response === null)
+                .map((item) => (
+                  <button
+                    type="button"
+                    key={`${item.node}:${item.request.id}`}
+                    onClick={(event) => {
+                      event.currentTarget
+                        .closest("details")
+                        ?.removeAttribute("open");
+                      open({ kind: "human", ...item });
+                    }}
+                  >
+                    {item.request.prompt}
+                  </button>
+                ))}
+            </div>
+          </details>
+          <details className="workspace-popover account-popover">
+            <summary aria-label={words.account}>
+              <Avatar name="account" human small />
+              <ChevronDown size={12} />
+            </summary>
+            <div className="workspace-popover-body">
+              <label>
+                <span className="sr-only">{auth.choose}</span>
+                <select
+                  value={context ?? ""}
+                  onChange={(event) => chooseContext(event.target.value)}
+                >
+                  {browserSession?.mappings.map((mapping) => (
+                    <option key={mapping.id} value={`mapping:${mapping.id}`}>
+                      {mapping.tenant} / {mapping.subject}
+                    </option>
+                  ))}
+                  {browserSession?.operator && (
+                    <option value="operator">{auth.operator}</option>
+                  )}
+                </select>
+              </label>
+              <label>
+                <span className="sr-only">{t("language")}</span>
+                <select
+                  data-testid="language-selector"
+                  value={locale}
+                  onChange={(event) => setLocale(event.target.value as Locale)}
+                >
+                  <option value="ja-JP">日本語</option>
+                  <option value="en-US">English</option>
+                </select>
+              </label>
+              <button type="button" onClick={disconnect}>
+                {auth.currentDevice}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void logOut(true);
+                }}
+              >
+                {auth.allDevices}
+              </button>
+              <button
+                type="button"
+                onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+              >
+                {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+                {locale === "ja-JP"
+                  ? theme === "dark"
+                    ? "ライトテーマ"
+                    : "ダークテーマ"
+                  : theme === "dark"
+                    ? "Light theme"
+                    : "Dark theme"}
+              </button>
+            </div>
+          </details>
+        </header>
         <aside className="collab-rail">
-          <div className="brand">
-            <span className="brand-symbol">a</span>
-            <strong>Aidash</strong>
+          <div className="brand" title="Aidash">
+            <img src={aidashAppIcon} alt="Aidash" width={36} height={36} />
           </div>
           <nav aria-label={copy.collaboration}>
             {(
@@ -650,7 +841,7 @@ function Dashboard({
                 className={`collab-nav ${route.section === name ? "selected" : ""}`}
               >
                 <Icon size={20} />
-                <span>{copy[name]}</span>
+                <span className="rail-label">{copy[name]}</span>
               </Link>
             ))}
           </nav>
@@ -666,65 +857,11 @@ function Dashboard({
               className={`collab-nav ${route.section === "settings" ? "selected" : ""}`}
             >
               <Settings size={20} />
-              <span>{copy.settings}</span>
+              <span className="rail-label">{copy.settings}</span>
             </Link>
           </nav>
         </aside>
         <div className="collab-shell">
-          <header className="collab-topbar">
-            {route.section === "collaboration" && (
-              <button
-                type="button"
-                className="collab-channel-toggle"
-                aria-expanded={mobileChannels}
-                onClick={() => setMobileChannels((value) => !value)}
-              >
-                {copy.channels}
-              </button>
-            )}
-            <span className={`stream-status ${streamStatus}`}>
-              <span className="status-dot" />
-              {copy[streamStatus]}
-            </span>
-            <label>
-              <span className="sr-only">{auth.choose}</span>
-              <select
-                value={context ?? ""}
-                onChange={(event) => chooseContext(event.target.value)}
-              >
-                {browserSession?.mappings.map((mapping) => (
-                  <option key={mapping.id} value={`mapping:${mapping.id}`}>
-                    {mapping.tenant} / {mapping.subject}
-                  </option>
-                ))}
-                {browserSession?.operator && (
-                  <option value="operator">{auth.operator}</option>
-                )}
-              </select>
-            </label>
-            <label>
-              <span className="sr-only">{t("language")}</span>
-              <select
-                data-testid="language-selector"
-                value={locale}
-                onChange={(event) => setLocale(event.target.value as Locale)}
-              >
-                <option value="ja-JP">日本語</option>
-                <option value="en-US">English</option>
-              </select>
-            </label>
-            <button type="button" onClick={disconnect}>
-              {auth.currentDevice}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                void logOut(true);
-              }}
-            >
-              {auth.allDevices}
-            </button>
-          </header>
           <div
             className={`collab-workspace ${route.section !== "collaboration" ? "wide" : ""}`}
           >
@@ -734,7 +871,12 @@ function Dashboard({
                 aria-label={copy.channels}
               >
                 <div className="collab-sidebar-title">
-                  <h2>{copy.channels}</h2>
+                  <div>
+                    <h2>
+                      Aidash Lab <ChevronDown size={12} />
+                    </h2>
+                    <small>{words.subtitle}</small>
+                  </div>
                   <button
                     type="button"
                     aria-label={copy.create}
@@ -743,19 +885,52 @@ function Dashboard({
                     <Plus size={18} />
                   </button>
                 </div>
-                <label>
-                  <span className="sr-only">{copy.search}</span>
-                  <input
-                    type="search"
-                    value={filter}
-                    onChange={(event) => setFilter(event.target.value)}
-                    placeholder={copy.search}
-                  />
-                </label>
+                <div className="workspace-destinations">
+                  <button
+                    type="button"
+                    className="selected"
+                    onClick={() => {
+                      go("collaboration", { channel: currentChannel });
+                      setMobileChannels(false);
+                    }}
+                  >
+                    <MessageSquare size={15} />
+                    {words.workspace}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      go("graph", { channel: currentChannel });
+                      setMobileChannels(false);
+                    }}
+                  >
+                    <Network size={15} />
+                    {copy.graph}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={words.threads}
+                    onClick={() => {
+                      void navigate({
+                        to: "/$section",
+                        params: { section: "collaboration" },
+                        search: { channel: currentChannel, view: "threads" },
+                      });
+                      setMobileChannels(false);
+                    }}
+                  >
+                    <MessagesSquare size={15} />
+                    <span>{locale === "ja-JP" ? "スレッド" : "Threads"}</span>
+                  </button>
+                </div>
+                <div className="workspace-section-label">
+                  <ChevronDown size={11} />
+                  {words.goalChannels}
+                </div>
                 <nav aria-label={copy.channels}>
                   {data?.workspaces
                     .filter((value) =>
-                      value.title
+                      `${value.title} ${value.goal}`
                         .toLocaleLowerCase()
                         .includes(filter.toLocaleLowerCase()),
                     )
@@ -785,21 +960,102 @@ function Dashboard({
                             className="collab-unread"
                             aria-label={copy.needsInput}
                           >
-                            !
+                            {
+                              requests.filter(
+                                (item) =>
+                                  item.request.workspace_id === value.id &&
+                                  item.request.response === null,
+                              ).length
+                            }
                           </span>
                         )}
                       </Link>
                     ))}
                 </nav>
+                {data &&
+                  !data.workspaces.some((value) =>
+                    `${value.title} ${value.goal}`
+                      .toLocaleLowerCase()
+                      .includes(filter.toLocaleLowerCase()),
+                  ) && (
+                    <p className="workspace-no-matches">{words.noMatches}</p>
+                  )}
                 <div className="collab-start-actions">
                   <button
                     type="button"
                     onClick={() => open({ kind: "workspace" })}
                   >
+                    <Plus size={14} />
                     {copy.prepare}
                   </button>
                   <button type="button" onClick={() => open({ kind: "goal" })}>
+                    <Plus size={14} />
                     {copy.createAndStart}
+                  </button>
+                </div>
+                <div className="workspace-section-label">
+                  <ChevronDown size={11} />
+                  {words.conversations}
+                </div>
+                <div className="workspace-conversations">
+                  {data?.conversations
+                    .filter(
+                      (value) =>
+                        value.target_kind === "agent" &&
+                        data.workspaces.some(
+                          (channel) => channel.id === value.workspace_id,
+                        ),
+                    )
+                    .map((value) => {
+                      const channel = data.workspaces.find(
+                        (channel) => channel.id === value.workspace_id,
+                      )!;
+                      return (
+                        <button
+                          type="button"
+                          key={value.id}
+                          onClick={() => {
+                            go("collaboration", { channel: channel.id });
+                            setMobileChannels(false);
+                          }}
+                        >
+                          <Avatar name={value.target} small />
+                          <span>{channel.title}</span>
+                        </button>
+                      );
+                    })}
+                  <button type="button" onClick={() => open({ kind: "goal" })}>
+                    <Plus size={13} />
+                    {words.newConversation}
+                  </button>
+                </div>
+                <div className="workspace-sidebar-bottom">
+                  {operator && (
+                    <button
+                      type="button"
+                      className="workspace-marketplace"
+                      onClick={() =>
+                        go("settings", { settings: "marketplace" })
+                      }
+                    >
+                      <strong>
+                        <Bot size={16} />
+                        {words.addAgent}
+                      </strong>
+                      <small>{words.addAgentHelp}</small>
+                      <span>
+                        {words.marketplace}
+                        <ArrowUpRight size={12} />
+                      </span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="workspace-settings-link"
+                    onClick={() => go("settings", { settings: "node" })}
+                  >
+                    <Settings size={14} />
+                    {words.settings}
                   </button>
                 </div>
               </aside>
@@ -829,6 +1085,10 @@ function Dashboard({
                         key={workspace.id}
                         workspace={workspace}
                         data={data}
+                        discovery={
+                          discovery.isError ? undefined : discovery.data
+                        }
+                        threadList={location.search.view === "threads"}
                         runs={runs}
                         requests={requests}
                         open={open}
@@ -912,6 +1172,18 @@ function Dashboard({
             </main>
           </div>
         </div>
+        <footer className="workspace-footer">
+          <span>
+            <span className={`status-dot ${streamStatus}`} />
+            {copy[streamStatus]}
+          </span>
+          <span>{words.access}</span>
+          <span>
+            <History size={10} />
+            {words.history}
+          </span>
+          <span className="workspace-footer-end">AIDASH WORKSPACE · 0.1</span>
+        </footer>
         {selection && data && (
           <Suspense fallback={<p role="status">{copy.processing}</p>}>
             <OperationsDialog
