@@ -79,6 +79,26 @@ BEGIN
         target_run := peer_key_parts[2]::uuid;
     END IF;
 
+	IF target_task IS NOT NULL THEN
+		-- Peer-prefixed output is written on the home node, where the executor's
+		-- run row does not exist. Serialize against the task reservation and reject
+		-- an old home API write while its remote input fence is still active.
+		PERFORM id FROM tasks
+		WHERE id = target_task AND workspace_id = NEW.workspace_id
+		FOR UPDATE;
+		IF FOUND
+			AND current_setting('aidash.input_ledger_worker', true) IS DISTINCT FROM 'true'
+			AND EXISTS (
+				SELECT 1 FROM remote_run_message_fences
+				WHERE task_id = target_task
+				  AND run_id = target_run
+				  AND NOT consumed
+				  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+			) THEN
+			RAISE EXCEPTION 'run input ledger requires fenced response publication';
+		END IF;
+	END IF;
+
     IF target_run IS NOT NULL THEN
         PERFORM id FROM runs
         WHERE id = target_run

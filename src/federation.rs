@@ -144,11 +144,9 @@ impl Federation {
 		Ok(())
 	}
 	/// Explicit cancellation or failure supersedes any still-unobserved
-	/// correction. Its durable home copy is delivered before this call.
-	pub async fn release_terminal_run_messages(&self, run: &Run) -> Result<()> {
-		if run.home_node == self.config.node_id {
-			return Ok(());
-		}
+	/// correction. Consume the home fences in the same task-row transaction as
+	/// the terminal transition so a legacy completion cannot enter between them.
+	pub async fn transition_terminal_run_messages(&self, run: &Run, target: &str) -> Result<Task> {
 		let keys: Vec<String> = self
 			.store
 			.run_inputs(run.id)
@@ -157,10 +155,7 @@ impl Federation {
 			.map(|input| input.idempotency_key)
 			.collect();
 		let home = Home::new(self.clone(), run.clone());
-		for chunk in keys.chunks(100) {
-			home.acknowledge_run_messages(chunk).await?;
-		}
-		Ok(())
+		home.transition_terminal(target, &keys).await
 	}
 	pub async fn require_terminal_safe_delivery(&self, run: &Run) -> Result<()> {
 		if run.home_node == self.config.node_id {
@@ -1167,6 +1162,33 @@ impl Home {
 			self.command("transition", json!({"revision":t.revision,"status":next}))
 				.await
 		}
+	}
+	pub async fn transition_terminal(&self, next: &str, keys: &[String]) -> Result<Task> {
+		let task = self.task().await?;
+		if self.local() {
+			return self
+				.federation
+				.store
+				.transition(task.id, task.revision, &self.owner(), next)
+				.await;
+		}
+		if let Some(task) = self
+			.optional_command(
+				"run_message_terminal_transition",
+				json!({
+					"revision":task.revision,
+					"status":next,
+					"run_id":self.run.id,
+					"keys":keys
+				}),
+			)
+			.await?
+		{
+			return Ok(task);
+		}
+		// A preceding home version has no durable fence table, so there is no
+		// split fence-consumption operation to race on that peer.
+		self.transition(next).await
 	}
 	pub async fn complete(&self, key: &str, artifact: &ArtifactInput) -> Result<Task> {
 		if self.local() {

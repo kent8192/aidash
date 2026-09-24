@@ -849,6 +849,119 @@ impl Store {
 		tx.commit().await?;
 		Ok(t)
 	}
+	/// Consume this remote run's admitted-message fences and perform an explicit
+	/// cancellation or failure while holding the same authoritative task lock.
+	pub async fn transition_remote_run_message_terminal(
+		&self,
+		id: Uuid,
+		revision: i64,
+		owner: &str,
+		next: &str,
+		run_id: Uuid,
+		keys: &[String],
+	) -> Result<Task> {
+		if !matches!(next, "CANCELLED" | "FAILED") {
+			return Err(Error::Invalid(
+				"remote run-message terminal transition must be cancelled or failed".into(),
+			));
+		}
+		let mut tx = self.pool.begin().await?;
+		let task: Task = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
+				.from(sea_orm::sea_query::Alias::new("tasks"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(id)
+		.fetch_one(&mut *tx)
+		.await?;
+		let terminate_unclaimed =
+			task.status == "OPEN" && task.owner.is_none() && matches!(next, "CANCELLED" | "FAILED");
+		if task.owner.as_deref() != Some(owner) && !terminate_unclaimed {
+			return Err(Error::Unauthorized);
+		}
+		if task.revision != revision {
+			return Err(Error::Conflict("task revision changed".into()));
+		}
+		if task.status != next {
+			let before: TaskStatus = serde_json::from_value(json!(task.status))?;
+			let after: TaskStatus = serde_json::from_value(json!(next))
+				.map_err(|_| Error::Invalid("invalid task status".into()))?;
+			if !before.can_transition(&after) {
+				return Err(Error::Conflict(format!(
+					"invalid task transition {} -> {next}",
+					task.status
+				)));
+			}
+		}
+		for key in keys {
+			sqlx::query(
+				&sea_orm::sea_query::Query::update()
+					.table(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+					.value(
+						sea_orm::sea_query::Alias::new("consumed"),
+						sea_orm::sea_query::Expr::cust("TRUE"),
+					)
+					.and_where(sea_orm::sea_query::Expr::cust(
+						"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
+					))
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(id)
+			.bind(run_id)
+			.bind(key)
+			.execute(&mut *tx)
+			.await?;
+		}
+		if task.status == next {
+			tx.commit().await?;
+			return Ok(task);
+		}
+		// Any concurrently reserved key that was not admitted by this executor is
+		// intentionally left active; gate_remote_task_terminal then rejects this
+		// update instead of losing the correction.
+		let updated: Task = sqlx::query_as(
+			&sea_orm::sea_query::Query::update()
+				.table(sea_orm::sea_query::Alias::new("tasks"))
+				.value(
+					sea_orm::sea_query::Alias::new("status"),
+					sea_orm::sea_query::Expr::cust("$4"),
+				)
+				.value(
+					sea_orm::sea_query::Alias::new("owner"),
+					sea_orm::sea_query::Expr::cust(
+						"CASE WHEN $4 = 'OPEN' THEN NULL ELSE $3 END",
+					),
+				)
+				.value(
+					sea_orm::sea_query::Alias::new("revision"),
+					sea_orm::sea_query::Expr::cust("revision + 1"),
+				)
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"id = $1 AND revision = $2 AND (owner = $3 OR (owner IS NULL AND status = 'OPEN' AND $4 IN ('CANCELLED', 'FAILED')))",
+				))
+				.returning_all()
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(id)
+		.bind(revision)
+		.bind(owner)
+		.bind(next)
+		.fetch_optional(&mut *tx)
+		.await?
+		.ok_or_else(|| Error::Conflict("task revision changed".into()))?;
+		self.event(
+			&mut tx,
+			Some(updated.workspace_id),
+			"task.updated",
+			json!(updated),
+		)
+		.await?;
+		tx.commit().await?;
+		Ok(updated)
+	}
 	/// Explicit operator abandonment preserves the failed outcome and reason
 	/// while allowing the parent to finish using the remaining results.
 	pub async fn abandon_task(&self, id: Uuid, revision: i64, reason: &str) -> Result<Task> {
@@ -1948,7 +2061,7 @@ impl Store {
 				&sea_orm::sea_query::Query::delete()
 					.from_table(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
 					.and_where(sea_orm::sea_query::Expr::cust(
-						"task_id = $1 AND run_id = $2 AND idempotency_key = $3 AND NOT consumed",
+						"task_id = $1 AND run_id = $2 AND idempotency_key = $3 AND NOT consumed AND expires_at IS NOT NULL",
 					))
 					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 			)
@@ -2253,7 +2366,18 @@ impl Store {
 				.await?;
 				input.reference_only = true;
 			}
-			used = used.saturating_add(run_input_context_size(input));
+			if input.reference_only {
+				let reference_size = input
+					.message_id
+					.map_or(usize::MAX, |id| run_input_reference_size(&input.sender, id));
+				if reference_size > max_input_tokens {
+					return Err(Error::Invalid(
+						"run message reference exceeds the selected model's input limit".into(),
+					));
+				}
+			} else {
+				used = used.saturating_add(run_input_context_size(input));
+			}
 		}
 		Ok((inputs, used))
 	}
@@ -2428,11 +2552,10 @@ impl Store {
 				> max_input_tokens;
 		if previous.is_none()
 			&& reference_only
-			&& used.saturating_add(run_input_reference_size(&message.sender, message.id))
-				> max_input_tokens
+			&& run_input_reference_size(&message.sender, message.id) > max_input_tokens
 		{
 			return Err(Error::Invalid(
-				"historical run message references exceed the selected model's input limit".into(),
+				"historical run message reference exceeds the selected model's input limit".into(),
 			));
 		}
 		sqlx::query(
@@ -3291,6 +3414,17 @@ impl Store {
 				));
 			}
 		};
+		// Control-plane updates are emitted by upgraded code and must remain
+		// available while a pre-upgrade worker lease is fenced by run_inputs.
+		sqlx::query_scalar::<_, String>(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::cust(
+					"set_config('aidash.input_ledger_worker', 'true', true)",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.fetch_one(&mut **tx)
+		.await?;
 		let r: Run = sqlx::query_as(
 			&sea_orm::sea_query::Query::update()
 				.table(sea_orm::sea_query::Alias::new("runs"))

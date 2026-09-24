@@ -1267,6 +1267,7 @@ async fn peer_workspace(
 			| "run_message_commit"
 			| "run_message_release"
 			| "run_message_ack"
+			| "run_message_terminal_transition"
 			| "task" | "claim"
 	) && !(task.owner.is_none()
 		&& (matches!(
@@ -1278,6 +1279,7 @@ async fn peer_workspace(
 				| "run_message_commit"
 				| "run_message_release"
 				| "run_message_ack"
+				| "run_message_terminal_transition"
 				| "run_message_history"
 				| "run_message_delivery_capability"
 		) || (command.operation == "transition"
@@ -1304,9 +1306,12 @@ async fn peer_workspace(
 		);
 		let replay_completion = command.operation == "complete" && task.status == "COMPLETED";
 		let replay_transition = command.operation == "transition" && d["status"] == task.status;
+		let replay_terminal_transition =
+			command.operation == "run_message_terminal_transition" && d["status"] == task.status;
 		if !read
 			&& !replay_completion
 			&& !replay_transition
+			&& !replay_terminal_transition
 			&& !matches!(
 				command.operation.as_str(),
 				"run_message_delivery"
@@ -1406,6 +1411,32 @@ async fn peer_workspace(
 				)
 				.await?
 		),
+		"run_message_terminal_transition" => {
+			let run_id: Uuid = required(d, "run_id")?
+				.parse()
+				.map_err(|_| Error::Invalid("invalid run ID".into()))?;
+			let keys: Vec<String> = serde_json::from_value(d["keys"].clone())?;
+			if keys
+				.iter()
+				.any(|key| !run_message_key_matches_run(key, run_id))
+			{
+				return Err(Error::Invalid("invalid run message keys".into()));
+			}
+			json!(
+				f.store
+					.transition_remote_run_message_terminal(
+						task.id,
+						d["revision"]
+							.as_i64()
+							.ok_or_else(|| Error::Invalid("revision required".into()))?,
+						&owner,
+						required(d, "status")?,
+						run_id,
+						&keys,
+					)
+					.await?
+			)
+		}
 		"complete" => json!(
 			f.store
 				.complete(

@@ -224,6 +224,64 @@ async fn old_worker_cannot_lease_after_input_ledger_admission() {
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
+async fn upgraded_control_updates_remain_available_while_a_legacy_worker_is_fenced() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Control rollout fence","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	let old_worker = Uuid::new_v4();
+	sqlx::query(
+		&sea_orm::sea_query::Query::update()
+			.table(sea_orm::sea_query::Alias::new("runs"))
+			.value(
+				sea_orm::sea_query::Alias::new("lease_owner"),
+				sea_orm::sea_query::Expr::cust("$2"),
+			)
+			.value(
+				sea_orm::sea_query::Alias::new("lease_until"),
+				sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP + INTERVAL '30 seconds'"),
+			)
+			.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.bind(old_worker)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let mut tx = f.store.pool.begin().await.unwrap();
+	sqlx::query_scalar::<_, String>(
+		"SELECT set_config('aidash.input_ledger_worker', 'true', true)",
+	)
+	.fetch_one(&mut *tx)
+	.await
+	.unwrap();
+	sqlx::query(
+		"INSERT INTO run_inputs (run_id, sender, content, idempotency_key) VALUES ($1, 'human', 'pause before continuing', $2)",
+	)
+	.bind(run.id)
+	.bind(format!("human:{}:{}", run.id, Uuid::new_v4()))
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	let paused = f.store.control(run.id, "pause").await.unwrap();
+	assert_eq!(paused.control, "PAUSED");
+	assert_eq!(paused.lease_owner, Some(old_worker));
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
 async fn old_worker_cannot_start_tool_invocation_after_input_backfill() {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
@@ -662,7 +720,7 @@ async fn included_reference_can_reach_tool_calls_without_becoming_finalizable() 
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
-async fn a_new_input_discards_pending_tool_calls_before_their_effects() {
+async fn a_new_input_discards_pending_tool_calls_and_rotates_a_published_output_key() {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -687,6 +745,22 @@ async fn a_new_input_discards_pending_tool_calls_before_their_effects() {
 		.save_run(&leased, worker, "model.completed")
 		.await
 		.unwrap();
+	let publish_worker = Uuid::new_v4();
+	let published = f
+		.store
+		.lease_run(publish_worker, 30)
+		.await
+		.unwrap()
+		.unwrap();
+	Home::new(f.clone(), published.clone())
+		.response_message(
+			publish_worker,
+			0,
+			&format!("{}:{}:output", run.id, published.step),
+			"stale tool output",
+		)
+		.await
+		.unwrap();
 	let (status, body) = request(
 		&app,
 		&token,
@@ -696,19 +770,121 @@ async fn a_new_input_discards_pending_tool_calls_before_their_effects() {
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
+	f.store.release_lease(run.id, publish_worker).await.unwrap();
 	assert!(harness.worker_once().await.unwrap());
 	let current = f.store.run(run.id).await.unwrap();
 	assert_eq!(current.phase, "THINKING");
-	assert_eq!(current.step, leased.step);
+	assert_eq!(current.step, leased.step + 1);
 	assert!(current.pending.get("response").is_none());
 	assert!(
-		!f.store
+		f.store
 			.snapshot(run.workspace_id)
 			.await
 			.unwrap()
 			.messages
 			.iter()
 			.any(|message| message.content == "stale tool output")
+	);
+	let corrected_worker = Uuid::new_v4();
+	let corrected = f
+		.store
+		.lease_run(corrected_worker, 30)
+		.await
+		.unwrap()
+		.unwrap();
+	let corrected_seq = f
+		.store
+		.run_inputs(run.id)
+		.await
+		.unwrap()
+		.last()
+		.unwrap()
+		.seq;
+	Home::new(f.clone(), corrected.clone())
+		.response_message(
+			corrected_worker,
+			corrected_seq,
+			&format!("{}:{}:output", run.id, corrected.step),
+			"corrected tool output",
+		)
+		.await
+		.expect("the corrected inference uses a fresh deterministic output key");
+	assert!(
+		f.store
+			.snapshot(run.workspace_id)
+			.await
+			.unwrap()
+			.messages
+			.iter()
+			.any(|message| message.content == "corrected tool output")
+	);
+	f.store
+		.release_lease(run.id, corrected_worker)
+		.await
+		.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn oversized_catchup_summary_retries_without_advancing_the_input_sequence() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Summary retry","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	assert!(
+		(Harness {
+			federation: f.clone()
+		})
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	let worker = Uuid::new_v4();
+	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
+	leased.phase = "TOOL_CALL".into();
+	leased.pending = json!({
+		"included_input_seq":0,
+		"response":{"text":"summary that is too long","tool_calls":[],"input_tokens":1,"output_tokens":1,"usage_complete":true},
+		"cursor":0,
+		"required_run_message_reads":[],
+		"references_read_at_inference":true,
+		"run_message_catchup":true,
+		"run_message_summary_end_seq":7,
+		"run_message_summary_limit":8
+	});
+	f.store
+		.save_run(&leased, worker, "model.completed")
+		.await
+		.unwrap();
+	assert!(
+		(Harness {
+			federation: f.clone()
+		})
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	let current = f.store.run(run.id).await.unwrap();
+	assert_eq!(current.phase, "THINKING");
+	assert_eq!(current.step, leased.step + 1);
+	assert_eq!(current.context["run_message_summary_seq"], 0);
+	assert_eq!(current.context["run_message_summary"], "");
+	assert!(
+		current.context["history"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|event| event["kind"] == "run_message_summary_required" && event["max_bytes"] == 8)
 	);
 	cleanup(f, &url, &schema).await;
 }

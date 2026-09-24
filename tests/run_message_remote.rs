@@ -7,7 +7,7 @@ use aidash::{
 	harness::Harness,
 };
 use axum::{Router, body::Body, http::Request, middleware::Next, response::IntoResponse};
-use common::{bootstrap, cleanup, setup};
+use common::{bootstrap, cleanup, request, setup};
 use migration::{Migrator, MigratorTrait};
 use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
@@ -107,6 +107,7 @@ async fn old_peer_workspace_compat(
 				| "run_message_commit"
 				| "run_message_release"
 				| "run_message_ack"
+				| "run_message_terminal_transition"
 		) {
 		return (
 			axum::http::StatusCode::BAD_REQUEST,
@@ -124,6 +125,192 @@ async fn old_peer_workspace_compat(
 		return axum::Json(json!({"sent":true})).into_response();
 	}
 	response
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn committed_fence_survives_delayed_release_and_terminal_transition_is_atomic() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Atomic terminal transition","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	assert!(
+		(Harness {
+			federation: f.clone()
+		})
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	let task = f.store.task(run.task_id).await.unwrap();
+	let owner = task.owner.clone().unwrap();
+	let key = format!("human:{}:{}", run.id, Uuid::new_v4());
+	f.store
+		.reserve_remote_run_message(task.id, run.id, "aidash://executor", &key, "correction")
+		.await
+		.unwrap();
+	f.store
+		.commit_remote_run_message(task.id, run.id, &key, "correction")
+		.await
+		.unwrap();
+	// A rejection response from an earlier overlapping attempt can arrive after
+	// the successful commit. It must not delete the non-expiring fence.
+	f.store
+		.release_remote_run_message(task.id, run.id, std::slice::from_ref(&key))
+		.await
+		.unwrap();
+	let retained: bool = sqlx::query_scalar(
+		"SELECT EXISTS(SELECT 1 FROM remote_run_message_fences WHERE task_id = $1 AND run_id = $2 AND idempotency_key = $3 AND expires_at IS NULL AND NOT consumed)",
+	)
+	.bind(task.id)
+	.bind(run.id)
+	.bind(&key)
+	.fetch_one(&f.store.pool)
+	.await
+	.unwrap();
+	assert!(retained);
+	assert!(
+		f.store
+			.transition(task.id, task.revision, &owner, "CANCELLED")
+			.await
+			.is_err(),
+		"the committed correction must fence an ordinary terminal transition"
+	);
+	let cancelled = f
+		.store
+		.transition_remote_run_message_terminal(
+			task.id,
+			task.revision,
+			&owner,
+			"CANCELLED",
+			run.id,
+			std::slice::from_ref(&key),
+		)
+		.await
+		.unwrap();
+	assert_eq!(cancelled.status, "CANCELLED");
+	let consumed: bool = sqlx::query_scalar(
+		"SELECT consumed FROM remote_run_message_fences WHERE task_id = $1 AND idempotency_key = $2",
+	)
+	.bind(task.id)
+	.bind(&key)
+	.fetch_one(&f.store.pool)
+	.await
+	.unwrap();
+	assert!(consumed);
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn peer_prefixed_legacy_output_checks_remote_fence_without_a_local_run() {
+	let (f, url, schema) = setup().await;
+	let workspace = f
+		.store
+		.create_workspace("Remote output fence", "No executor run exists at home")
+		.await
+		.unwrap();
+	let task = f
+		.store
+		.create_task(
+			workspace.id,
+			&NewTask {
+				title: "Remote task".into(),
+				description: "Fence stale output".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"human",
+			None,
+		)
+		.await
+		.unwrap();
+	let remote_run = Uuid::new_v4();
+	let input_key = format!("human:{remote_run}:{}", Uuid::new_v4());
+	f.store
+		.reserve_remote_run_message(
+			task.id,
+			remote_run,
+			"aidash://executor",
+			&input_key,
+			"remote correction",
+		)
+		.await
+		.unwrap();
+	f.store
+		.commit_remote_run_message(task.id, remote_run, &input_key, "remote correction")
+		.await
+		.unwrap();
+	let peer_output_key = format!("aidash://executor:{}:{remote_run}:0:output", task.id);
+	assert!(
+		f.store
+			.message(
+				workspace.id,
+				"agent@aidash://executor",
+				"stale peer output",
+				Some(&peer_output_key),
+			)
+			.await
+			.is_err(),
+		"the database fence must not depend on a home-side executor run row"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn remote_history_references_can_span_multiple_inference_pages() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Paged remote history","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	let mut history = Vec::new();
+	for index in 0..20 {
+		let key = format!("human:{}:{}", run.id, Uuid::new_v4());
+		let message = f
+			.store
+			.message_record(
+				run.workspace_id,
+				"human@remote",
+				&format!("history {index}: {}", "x".repeat(4096)),
+				Some(&format!("remote-history-{index}")),
+			)
+			.await
+			.unwrap();
+		history.push((key, message));
+	}
+	f.store
+		.import_remote_run_messages(run.id, &history, 512)
+		.await
+		.expect("pageable references are not subject to one aggregate page cap");
+	let inputs = f.store.run_inputs(run.id).await.unwrap();
+	assert_eq!(inputs.len(), history.len());
+	assert!(inputs.iter().all(|input| input.reference_only));
+	let new_key = format!("human:{}:{}", run.id, Uuid::new_v4());
+	f.store
+		.accept_run_message(run.id, "human", "latest correction", &new_key, 512)
+		.await
+		.expect("historical reference pages do not consume new-message capacity");
+	cleanup(f, &url, &schema).await;
 }
 
 #[tokio::test]

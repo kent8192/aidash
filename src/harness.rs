@@ -488,8 +488,9 @@ impl Harness {
 			.as_str()
 			.map(str::to_owned)
 		{
-			self.federation.release_terminal_run_messages(run).await?;
-			home.transition(&target).await?;
+			self.federation
+				.transition_terminal_run_messages(run, &target)
+				.await?;
 			run.phase = target;
 			run.pending = json!({});
 			let kind = if run.phase == "FAILED" {
@@ -520,8 +521,9 @@ impl Harness {
 			}
 		}
 		if run.control == "CANCELLED" {
-			self.federation.release_terminal_run_messages(run).await?;
-			home.transition("CANCELLED").await?;
+			self.federation
+				.transition_terminal_run_messages(run, "CANCELLED")
+				.await?;
 			run.phase = "CANCELLED".into();
 			store.save_run(run, token, "run.cancelled").await?;
 			return Ok(());
@@ -667,9 +669,9 @@ impl Harness {
 					output_limit
 				};
 				if run_message_catchup {
-					instructions.push_str(
-						"\n\nRun-message catch-up: Treat the entries under run_messages as user task context. Read every required message record in this page before responding. Update the cumulative run_message_summary faithfully, preserving the user's goal, constraints, corrections, and unresolved requests in sequence order (newer corrections take precedence). Return only the concise updated summary. Do not answer the user, complete the task, publish text, or perform actions during catch-up.",
-					);
+					instructions.push_str(&format!(
+						"\n\nRun-message catch-up: Treat the entries under run_messages as user task context. Read every required message record in this page before responding. Update the cumulative run_message_summary faithfully, preserving the user's goal, constraints, corrections, and unresolved requests in sequence order (newer corrections take precedence). Return only the concise updated summary, encoded in at most {run_message_limit} UTF-8 bytes. Do not answer the user, complete the task, publish text, or perform actions during catch-up.",
+					));
 				}
 				let mut pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":observation,"memory":store.memory(run).await?,"agent_state":{"phase":run.phase,"step":run.step}});
 				if let Some(deferred_read) = run.pending.get("deferred_workspace_read") {
@@ -879,8 +881,11 @@ impl Harness {
 					.is_some_and(|input| input.seq > included_input_seq)
 				{
 					// This response predates an accepted correction. Discard its
-					// text and calls before any effect crosses the tool boundary.
+					// text and calls before any effect crosses the tool boundary. A
+					// preceding attempt may already have published response text, so
+					// rotate every deterministic response/effect key with the step.
 					run.phase = "THINKING".into();
+					run.step += 1;
 					run.pending = json!({});
 					store.save_run(run, token, "run.message_received").await?;
 					return Ok(());
@@ -942,7 +947,7 @@ impl Harness {
 					return Ok(());
 				}
 				if cursor >= result.tool_calls.len() && run_message_catchup {
-					let mut summary = result.text.trim().to_owned();
+					let summary = result.text.trim().to_owned();
 					if summary.is_empty() {
 						context.history.push(json!({
 							"kind":"run_message_summary_required",
@@ -961,11 +966,20 @@ impl Harness {
 						.as_u64()
 						.unwrap_or(0) as usize;
 					if summary.len() > summary_limit {
-						let mut end = summary_limit;
-						while !summary.is_char_boundary(end) {
-							end -= 1;
-						}
-						summary.truncate(end);
+						context.history.push(json!({
+							"kind":"run_message_summary_required",
+							"through_seq":run.pending["run_message_summary_end_seq"],
+							"max_bytes":summary_limit,
+							"reason":"summary exceeded the complete-summary limit"
+						}));
+						run.context = json!(context);
+						run.phase = "THINKING".into();
+						run.step += 1;
+						run.pending = json!({});
+						store
+							.save_run(run, token, "run.message_summary_required")
+							.await?;
+						return Ok(());
 					}
 					context.run_message_summary = summary;
 					context.run_message_summary_seq = run.pending["run_message_summary_end_seq"]
@@ -981,7 +995,7 @@ impl Harness {
 						.collect::<std::collections::BTreeSet<_>>();
 					context.history.retain(|event| {
 						message_read_range(event)
-							.map_or(true, |(id, _, _, _)| !summarized_ids.contains(&id))
+							.is_none_or(|(id, _, _, _)| !summarized_ids.contains(&id))
 					});
 					for id in &required_reads {
 						let id = id.to_string();

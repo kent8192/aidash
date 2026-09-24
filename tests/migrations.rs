@@ -2,6 +2,7 @@
 #[allow(dead_code)]
 mod common;
 use migration::{Migrator, MigratorTrait};
+use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -65,14 +66,75 @@ async fn run_input_migration_preserves_keyed_message_retries() {
 		)
 		.await
 		.unwrap();
+	let unkeyed_content = "scoped correction without a client key";
+	f.store
+		.message(run.workspace_id, "alice", unkeyed_content, None)
+		.await
+		.unwrap();
+	let unkeyed = f
+		.store
+		.snapshot(run.workspace_id)
+		.await
+		.unwrap()
+		.messages
+		.into_iter()
+		.find(|message| message.content == unkeyed_content)
+		.unwrap();
+	let revision: i64 = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("revision"))
+			.from(Alias::new("authorization_bundles"))
+			.and_where(Expr::cust("tenant = 'acme'"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&f.store.pool)
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("authorization_decisions"))
+			.columns([
+				Alias::new("tenant"),
+				Alias::new("revision"),
+				Alias::new("subject"),
+				Alias::new("action"),
+				Alias::new("resource_kind"),
+				Alias::new("resource_id"),
+				Alias::new("decision"),
+				Alias::new("created_at"),
+			])
+			.values_panic([
+				Expr::cust("'acme'"),
+				Expr::cust("$1"),
+				Expr::cust("'alice'"),
+				Expr::cust("'run.message'"),
+				Expr::cust("'run'"),
+				Expr::cust("$2"),
+				Expr::cust("$3"),
+				Expr::cust("$4"),
+			])
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(revision)
+	.bind(run.id.to_string())
+	.bind(json!({"allowed":true}))
+	.bind(unkeyed.created_at)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
 	Migrator::up(&db, None).await.unwrap();
 	let inputs = f.store.run_inputs(run.id).await.unwrap();
-	assert_eq!(inputs.len(), 2);
+	assert_eq!(inputs.len(), 3);
 	assert!(
 		inputs
 			.iter()
 			.any(|input| input.idempotency_key == key && input.message_id.is_some())
 	);
+	assert!(inputs.iter().any(|input| {
+		input.idempotency_key == format!("migration-unkeyed:{}", unkeyed.id)
+			&& input.message_id == Some(unkeyed.id)
+			&& input.content == unkeyed_content
+	}));
 	let admitted_key = format!("human:{}:{}", run.id, Uuid::new_v4());
 	f.store
 		.accept_run_message(

@@ -94,6 +94,56 @@ impl MigrationTrait for Migration {
 			.get_connection()
 			.execute(manager.get_database_backend().build(&backfill))
 			.await?;
+		// The preceding scoped run-message endpoint allowed clients to omit an
+		// idempotency key. Its authorization decisions and message were committed
+		// in one transaction, so PostgreSQL's transaction-stable created_at value
+		// durably identifies the affected run. Recover those inputs with a synthetic
+		// stable key; otherwise an active pre-upgrade TOOL_CALL could publish past a
+		// correction that the API had already accepted.
+		let mut unkeyed_scoped = Query::select();
+		unkeyed_scoped
+			.columns([
+				(Alias::new("r"), Alias::new("id")),
+				(Alias::new("m"), Alias::new("sender")),
+				(Alias::new("m"), Alias::new("content")),
+			])
+			.expr(Expr::cust("'migration-unkeyed:' || m.id::text"))
+			.column((Alias::new("m"), Alias::new("id")))
+			.from_as(Alias::new("messages"), Alias::new("m"))
+			.join_as(
+				JoinType::InnerJoin,
+				Alias::new("authorization_decisions"),
+				Alias::new("d"),
+				Expr::cust(
+					"d.subject = m.sender AND d.created_at = m.created_at AND d.action = 'run.message' AND d.resource_kind = 'run' AND d.decision->>'allowed' = 'true'",
+				),
+			)
+			.join_as(
+				JoinType::InnerJoin,
+				Alias::new("runs"),
+				Alias::new("r"),
+				Expr::cust("r.id::text = d.resource_id AND r.workspace_id = m.workspace_id"),
+			)
+			.and_where(Expr::cust("m.idempotency_key IS NULL"))
+			.order_by((Alias::new("m"), Alias::new("created_at")), Order::Asc)
+			.order_by((Alias::new("m"), Alias::new("id")), Order::Asc);
+		let mut unkeyed_backfill = Query::insert();
+		unkeyed_backfill
+			.into_table(Alias::new("run_inputs"))
+			.columns([
+				Alias::new("run_id"),
+				Alias::new("sender"),
+				Alias::new("content"),
+				Alias::new("idempotency_key"),
+				Alias::new("message_id"),
+			]);
+		unkeyed_backfill
+			.select_from(unkeyed_scoped.to_owned())
+			.map_err(|error| DbErr::Custom(error.to_string()))?;
+		manager
+			.get_connection()
+			.execute(manager.get_database_backend().build(&unkeyed_backfill))
+			.await?;
 		// SeaQuery has no PostgreSQL trigger builder.
 		manager
 			.get_connection()
