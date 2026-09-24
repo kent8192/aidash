@@ -53,6 +53,95 @@ pub struct Federation {
 	pub notify: std::sync::Arc<tokio::sync::Notify>,
 }
 impl Federation {
+	pub async fn run_message_limit(&self, run: &Run) -> Result<usize> {
+		let agent_entry = self.registry.get(&run.agent_id, &run.agent_version).await?;
+		let agent: AgentConfig = serde_json::from_value(agent_entry.config.clone())?;
+		let mut references = Vec::with_capacity(1 + agent.skills.len() + agent.tools.len());
+		references.push(
+			self.registry
+				.get(&agent.model.id, &agent.model.version)
+				.await?,
+		);
+		for reference in agent.skills.iter().chain(&agent.tools) {
+			references.push(self.registry.get(&reference.id, &reference.version).await?);
+		}
+		let private_context = if agent.knowledge_digest.is_some() {
+			json!({"reference_documents":crate::knowledge::load(&self.registry.db, &agent_entry).await?})
+		} else {
+			Value::Null
+		};
+		let available =
+			crate::registry::agent_prompt_headroom(&agent, &references, &private_context)?;
+		// Keep most of the registered model's remaining window for the task,
+		// workspace observation and tool history.
+		Ok((available / 4).min(16_384))
+	}
+
+	pub async fn deliver_run_messages(&self, run: &Run) -> Result<()> {
+		if run.home_node == self.config.node_id {
+			return Ok(());
+		}
+		let home = Home::new(self.clone(), run.clone());
+		for input in self.store.run_inputs(run.id).await? {
+			if input.message_id.is_some() {
+				continue;
+			}
+			let message = home
+				.human_message_record(&input.idempotency_key, &input.content)
+				.await?;
+			if message.workspace_id != run.workspace_id || message.content != input.content {
+				return Err(Error::Conflict(
+					"remote run message delivery changed".into(),
+				));
+			}
+			self.store
+				.bind_run_input_message(run.id, &input.idempotency_key, message.id)
+				.await?;
+		}
+		Ok(())
+	}
+
+	pub async fn reconcile_run_messages(&self, run: &Run) -> Result<()> {
+		if run.home_node == self.config.node_id {
+			return Ok(());
+		}
+		let home = Home::new(self.clone(), run.clone());
+		let prefix = format!("{}:{}:", self.config.node_id, run.task_id);
+		for message in home.historical_run_messages().await? {
+			let key = message
+				.idempotency_key
+				.as_deref()
+				.and_then(|key| key.strip_prefix(&prefix))
+				.ok_or_else(|| Error::Conflict("historical run message key changed".into()))?;
+			if message.workspace_id != run.workspace_id {
+				return Err(Error::Conflict(
+					"historical run message workspace changed".into(),
+				));
+			}
+			self.store
+				.import_remote_run_message(run.id, key, &message)
+				.await?;
+		}
+		Ok(())
+	}
+	pub async fn recover_historical_run_message(
+		&self,
+		run: &Run,
+		key: &str,
+		content: &str,
+	) -> Result<bool> {
+		if run.home_node == self.config.node_id {
+			return Ok(false);
+		}
+		self.reconcile_run_messages(run).await?;
+		Ok(self
+			.store
+			.run_inputs(run.id)
+			.await?
+			.iter()
+			.any(|input| input.idempotency_key == key && input.content == content))
+	}
+
 	/// Workers need reserved database capacity to finish an effect while API
 	/// revocations wait for its authority lease. Embedded runners must use this
 	/// separate pool too; otherwise waiting API requests can exhaust the pool.
@@ -1009,6 +1098,39 @@ impl Home {
 				.await?;
 			Ok(())
 		}
+	}
+	pub async fn human_message_record(&self, key: &str, content: &str) -> Result<Message> {
+		if self.local() {
+			self.federation
+				.store
+				.message_record(self.run.workspace_id, "human", content, Some(key))
+				.await
+		} else {
+			self.command("human_message", json!({"key":key,"content":content}))
+				.await
+		}
+	}
+	pub async fn historical_run_messages(&self) -> Result<Vec<Message>> {
+		if self.local() {
+			return Ok(Vec::new());
+		}
+		let mut messages = Vec::new();
+		loop {
+			let page: Vec<Message> = self
+				.command(
+					"run_message_history",
+					json!({
+						"run_id":self.run.id,"offset":messages.len()
+					}),
+				)
+				.await?;
+			let count = page.len();
+			messages.extend(page);
+			if count < 50 {
+				break;
+			}
+		}
+		Ok(messages)
 	}
 	pub async fn report(&self, key: &str, kind: &str, data: Value) -> Result<()> {
 		if self.local() {

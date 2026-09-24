@@ -1,6 +1,6 @@
 mod common;
 
-use aidash::{api, harness::Harness};
+use aidash::{api, domain::qualified_agent, harness::Harness};
 use axum::{Json, Router, routing::post};
 use common::{bootstrap, cleanup, request, setup};
 use serde_json::{Value, json};
@@ -134,6 +134,19 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 	assert!(seen[2].to_string().contains("second correction"));
 	drop(seen);
 	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
+	let correction = snapshot
+		.messages
+		.iter()
+		.find(|message| message.content == "first correction")
+		.unwrap();
+	let tracked: bool = sqlx::query_scalar(&sea_orm::sea_query::Query::select()
+		.expr(sea_orm::sea_query::Expr::cust("EXISTS(SELECT 1 FROM authorization_run_reads WHERE run_id = $1 AND resource_kind = 'message' AND resource_id = $2)"))
+		.to_string(sea_orm::sea_query::PostgresQueryBuilder))
+		.bind(run.id).bind(correction.id).fetch_one(&f.store.pool).await.unwrap();
+	assert!(
+		tracked,
+		"run-directed message must be tracked as an authorized source"
+	);
 	assert_eq!(snapshot.artifacts.len(), 1);
 	assert_eq!(
 		snapshot.artifacts[0].content,
@@ -180,5 +193,231 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 		200
 	);
 	server.abort();
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn run_message_limit_rejects_oversized_input_before_recording_it() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
+		"title":"Run message budget","goal":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
+	})).await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	let path = format!("/api/runs/{}/message", run.id);
+	let large = "x".repeat(32_768);
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&path,
+		json!({"content":large,"idempotency_key":Uuid::new_v4()}),
+	)
+	.await;
+	assert_eq!(status, 400, "{body}");
+	assert!(f.store.run_inputs(run.id).await.unwrap().is_empty());
+	assert!(
+		!f.store
+			.snapshot(run.workspace_id)
+			.await
+			.unwrap()
+			.messages
+			.iter()
+			.any(|message| message.content == large)
+	);
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"POST",
+			&path,
+			json!({"content":"short correction"})
+		)
+		.await
+		.0,
+		200
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn scoped_run_never_infers_from_an_unreadable_message() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
+		"title":"Private correction","goal":"Respond","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
+	})).await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	let worker = Harness {
+		federation: f.clone(),
+	};
+	assert!(worker.worker_once().await.unwrap());
+	let path = format!("/api/runs/{}/message", run.id);
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"POST",
+			&path,
+			json!({"content":"private correction"})
+		)
+		.await
+		.0,
+		200
+	);
+	let message = f
+		.store
+		.snapshot(run.workspace_id)
+		.await
+		.unwrap()
+		.messages
+		.into_iter()
+		.find(|message| message.content == "private correction")
+		.unwrap();
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-run-correction-read", "effect":"deny",
+		"subjects":{"ids":[qualified_agent(&f.config.node_id,"research","1.0.0")]},
+		"actions":["message.read"], "resources":{"kinds":["message"],"ids":[message.id]}
+	}));
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	assert!(worker.worker_once().await.unwrap());
+	let paused = f.store.run(run.id).await.unwrap();
+	assert_eq!(paused.control, "PAUSED");
+	assert_eq!(paused.phase, "THINKING");
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn queued_terminal_transitions_reject_new_run_messages() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	for (index, terminal) in ["cancel", "failure_pending"].iter().enumerate() {
+		let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
+			"title":format!("Terminal {index}"),"goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
+		})).await;
+		assert_eq!(status, 200, "{created}");
+		let run = f
+			.store
+			.runs()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|run| {
+				run.workspace_id.to_string() == created["workspace"]["id"].as_str().unwrap()
+			})
+			.unwrap();
+		if *terminal == "cancel" {
+			f.store.control(run.id, "cancel").await.unwrap();
+		} else {
+			sqlx::query(
+				&sea_orm::sea_query::Query::update()
+					.table(sea_orm::sea_query::Alias::new("runs"))
+					.value(
+						sea_orm::sea_query::Alias::new("pending"),
+						sea_orm::sea_query::Expr::cust(
+							"'{\"terminal_transition\":\"FAILED\"}'::jsonb",
+						),
+					)
+					.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(run.id)
+			.execute(&f.store.pool)
+			.await
+			.unwrap();
+		}
+		let (status, body) = request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			&format!("/api/runs/{}/message", run.id),
+			json!({
+				"content":format!("late {index}"),"idempotency_key":Uuid::new_v4()
+			}),
+		)
+		.await;
+		assert_eq!(status, 409, "{body}");
+		assert!(f.store.run_inputs(run.id).await.unwrap().is_empty());
+		assert!(
+			!f.store
+				.snapshot(run.workspace_id)
+				.await
+				.unwrap()
+				.messages
+				.iter()
+				.any(|message| message.content == format!("late {index}"))
+		);
+	}
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn expired_worker_lease_cannot_begin_final_completion() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
+		"title":"Expired lease", "goal":"Reply", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"
+	})).await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	let worker = Uuid::new_v4();
+	sqlx::query(
+		&sea_orm::sea_query::Query::update()
+			.table(sea_orm::sea_query::Alias::new("runs"))
+			.value(
+				sea_orm::sea_query::Alias::new("phase"),
+				sea_orm::sea_query::Expr::cust("'TOOL_CALL'"),
+			)
+			.value(
+				sea_orm::sea_query::Alias::new("pending"),
+				sea_orm::sea_query::Expr::cust("$3"),
+			)
+			.value(
+				sea_orm::sea_query::Alias::new("lease_owner"),
+				sea_orm::sea_query::Expr::cust("$2"),
+			)
+			.value(
+				sea_orm::sea_query::Alias::new("lease_until"),
+				sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP - INTERVAL '1 second'"),
+			)
+			.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.bind(worker)
+	.bind(json!({"response":{"text":"answer","tool_calls":[],"input_tokens":1,"output_tokens":1},"cursor":0}))
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let stale = f.store.run(run.id).await.unwrap();
+	assert!(matches!(
+		f.store.begin_final_completion(&stale, worker).await,
+		Err(aidash::Error::Conflict(_))
+	));
+	assert_ne!(
+		f.store.run(run.id).await.unwrap().pending["finalizing"],
+		true
+	);
 	cleanup(f, &url, &schema).await;
 }

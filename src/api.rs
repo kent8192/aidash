@@ -956,14 +956,26 @@ async fn run_message(
 		"human:{id}:{}",
 		input.idempotency_key.unwrap_or_else(Uuid::new_v4)
 	);
-	if run.home_node != f.config.node_id {
-		crate::federation::Home::new(f.clone(), run)
-			.human_message(&key, &input.content)
-			.await?;
+	let limit = f.run_message_limit(&run).await?;
+	match f
+		.store
+		.accept_run_message(id, "human", &input.content, &key, limit)
+		.await
+	{
+		Ok(()) => {}
+		Err(error @ Error::Conflict(_)) => {
+			if !f
+				.recover_historical_run_message(&run, &key, &input.content)
+				.await?
+			{
+				return Err(error);
+			}
+		}
+		Err(error) => return Err(error),
 	}
-	f.store
-		.accept_run_message(id, "human", &input.content, &key)
-		.await?;
+	if let Err(error) = f.deliver_run_messages(&run).await {
+		tracing::warn!(run_id=%id, %error, "accepted run message awaits home delivery");
+	}
 	f.notify.notify_waiters();
 	Ok(Json(SentResponse { sent: true }))
 }
@@ -1246,6 +1258,7 @@ async fn peer_workspace(
 			| "workspace_record"
 			| "workspace_record_chunk"
 			| "workspace_children"
+			| "run_message_history"
 			| "task" | "claim"
 	) && !(task.owner.is_none()
 		&& (command.operation == "human_message"
@@ -1267,6 +1280,7 @@ async fn peer_workspace(
 				| "workspace_record"
 				| "workspace_record_chunk"
 				| "workspace_children"
+				| "run_message_history"
 				| "task"
 		);
 		let replay_completion = command.operation == "complete" && task.status == "COMPLETED";
@@ -1416,15 +1430,41 @@ async fn peer_workspace(
 			} else {
 				owner.clone()
 			};
-			f.store
-				.message(
+			let message = f
+				.store
+				.message_record(
 					task.workspace_id,
 					&sender,
 					required(d, "content")?,
 					Some(&key()?),
 				)
 				.await?;
-			json!({"sent":true})
+			if command.operation == "human_message" {
+				json!(message)
+			} else {
+				json!({"sent":true})
+			}
+		}
+		"run_message_history" => {
+			f.store.require_legacy_execution(task.workspace_id).await?;
+			let run_id: Uuid = required(d, "run_id")?
+				.parse()
+				.map_err(|_| Error::Invalid("invalid run ID".into()))?;
+			let offset = d["offset"]
+				.as_u64()
+				.ok_or_else(|| Error::Invalid("offset required".into()))?;
+			let prefix = format!("{node}:{}:", task.id);
+			let messages: Vec<Message> = sqlx::query_as(&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
+				.from(sea_orm::sea_query::Alias::new("messages"))
+				.and_where(sea_orm::sea_query::Expr::cust("workspace_id = $1 AND LEFT(idempotency_key, LENGTH($2)) = $2 AND (SUBSTRING(idempotency_key FROM LENGTH($2) + 1) LIKE 'human:' || $3 || ':%' OR (SUBSTRING(idempotency_key FROM LENGTH($2) + 1) LIKE 'subject-human:%' AND RIGHT(idempotency_key, 74) LIKE ':' || $3 || ':%'))"))
+				.order_by(sea_orm::sea_query::Alias::new("created_at"), sea_orm::sea_query::Order::Asc)
+				.order_by(sea_orm::sea_query::Alias::new("id"), sea_orm::sea_query::Order::Asc)
+				.limit(50).offset(offset)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder))
+				.bind(task.workspace_id).bind(prefix).bind(run_id.to_string())
+				.fetch_all(&f.store.pool).await?;
+			json!(messages)
 		}
 		"event" => {
 			let event_id =
@@ -1639,8 +1679,27 @@ async fn peer_control(
 				run.id,
 				input.idempotency_key.unwrap_or_else(Uuid::new_v4)
 			);
-			let home = crate::federation::Home::new(f, run);
-			home.human_message(&key, &content).await?;
+			let limit = f.run_message_limit(&run).await?;
+			match f
+				.store
+				.accept_run_message(run.id, "human", &content, &key, limit)
+				.await
+			{
+				Ok(()) => {}
+				Err(error @ Error::Conflict(_)) => {
+					if !f
+						.recover_historical_run_message(&run, &key, &content)
+						.await?
+					{
+						return Err(error);
+					}
+				}
+				Err(error) => return Err(error),
+			}
+			if let Err(error) = f.deliver_run_messages(&run).await {
+				tracing::warn!(run_id=%run.id, %error, "accepted remote-control message awaits home delivery");
+			}
+			f.notify.notify_waiters();
 			Ok(Json(json!({"sent":true})))
 		}
 		action => Ok(Json(json!(f.store.control(run.id, action).await?))),

@@ -241,17 +241,33 @@ pub async fn message_keyed(
 				"message.create",
 			)
 			.await?;
-		if run.home_node != f.config.node_id {
-			crate::federation::Home::new(f.clone(), run)
-				.human_message(&key, content)
-				.await?;
-		}
+		let limit = f.run_message_limit(&run).await?;
 		f.store
-			.accept_run_message_in(&mut access.tx, id, &identity.subject, content, &key)
+			.accept_run_message_in(&mut access.tx, id, &identity.subject, content, &key, limit)
 			.await
 	}
 	.await;
-	access.finish(result).await?;
+	let outcome = match access.finish(result).await {
+		Ok(()) => Ok(()),
+		Err(error @ Error::Conflict(_)) => Err(error),
+		Err(error) => return Err(error),
+	};
+	let run = f.store.run(id).await?;
+	match outcome {
+		Ok(()) => {}
+		Err(error @ Error::Conflict(_)) => {
+			if !f
+				.recover_historical_run_message(&run, &key, content)
+				.await?
+			{
+				return Err(error);
+			}
+		}
+		Err(error) => return Err(error),
+	}
+	if let Err(error) = f.deliver_run_messages(&run).await {
+		tracing::warn!(run_id=%id, %error, "accepted scoped run message awaits home delivery");
+	}
 	f.notify.notify_waiters();
 	Ok(())
 }

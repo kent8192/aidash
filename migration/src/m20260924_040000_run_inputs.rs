@@ -32,6 +32,7 @@ impl MigrationTrait for Migration {
 					.col(ColumnDef::new(Alias::new("run_id")).uuid().not_null())
 					.col(ColumnDef::new(Alias::new("sender")).text().not_null())
 					.col(ColumnDef::new(Alias::new("content")).text().not_null())
+					.col(ColumnDef::new(Alias::new("message_id")).uuid())
 					.col(
 						ColumnDef::new(Alias::new("idempotency_key"))
 							.text()
@@ -54,6 +55,44 @@ impl MigrationTrait for Migration {
 					)
 					.to_owned(),
 			)
+			.await?;
+		// Populate local historical run messages before new admissions can use
+		// their keys. SeaQuery expresses the INSERT SELECT; the PostgreSQL cast
+		// only formats the UUID embedded in the existing idempotency key.
+		let historical = Query::select()
+			.columns([
+				(Alias::new("r"), Alias::new("id")),
+				(Alias::new("m"), Alias::new("sender")),
+				(Alias::new("m"), Alias::new("content")),
+				(Alias::new("m"), Alias::new("idempotency_key")),
+				(Alias::new("m"), Alias::new("id")),
+			])
+			.from_as(Alias::new("messages"), Alias::new("m"))
+			.join_as(
+				JoinType::InnerJoin,
+				Alias::new("runs"),
+				Alias::new("r"),
+				Expr::cust("m.workspace_id = r.workspace_id"),
+			)
+			.and_where(Expr::cust("m.idempotency_key IS NOT NULL"))
+			.and_where(Expr::cust("(m.idempotency_key LIKE 'human:' || r.id::text || ':%' OR (m.idempotency_key LIKE 'subject-human:%' AND RIGHT(m.idempotency_key, 74) LIKE ':' || r.id::text || ':%'))"))
+			.order_by((Alias::new("m"), Alias::new("created_at")), Order::Asc)
+			.order_by((Alias::new("m"), Alias::new("id")), Order::Asc)
+			.to_owned();
+		let mut backfill = Query::insert();
+		backfill.into_table(Alias::new("run_inputs")).columns([
+			Alias::new("run_id"),
+			Alias::new("sender"),
+			Alias::new("content"),
+			Alias::new("idempotency_key"),
+			Alias::new("message_id"),
+		]);
+		backfill
+			.select_from(historical)
+			.map_err(|error| DbErr::Custom(error.to_string()))?;
+		manager
+			.get_connection()
+			.execute(manager.get_database_backend().build(&backfill))
 			.await?;
 		// SeaQuery has no PostgreSQL trigger builder.
 		manager

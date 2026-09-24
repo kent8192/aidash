@@ -359,6 +359,10 @@ impl Harness {
 				store.save_run(run, token, "run.started").await?;
 			}
 			"THINKING" => {
+				self.federation.reconcile_run_messages(run).await?;
+				// An accepted remote correction is durable even if its first home
+				// delivery failed. Deliver it before building any inference request.
+				self.federation.deliver_run_messages(run).await?;
 				let force_read_compaction =
 					run.pending["force_workspace_read_compaction"].as_bool() == Some(true);
 				if let Some(guard) = guard {
@@ -402,6 +406,28 @@ impl Harness {
 				let observation = home
 					.observation(0, context::observation::DEFAULT_LIMIT)
 					.await?;
+				let inputs = store.run_inputs(run.id).await?;
+				let input_seq = inputs
+					.last()
+					.map_or(run.observed_input_seq, |input| input.seq);
+				let mut run_messages = Vec::with_capacity(inputs.len());
+				for input in &inputs {
+					let id = input.message_id.ok_or_else(|| {
+						Error::External("run message home delivery is pending".into())
+					})?;
+					// The same record-read path filters message.read and records the
+					// source for the later execution-boundary recheck.
+					let message: Message = serde_json::from_value(
+						home.read_record("message", &id.to_string()).await?,
+					)?;
+					if message.workspace_id != run.workspace_id || message.content != input.content
+					{
+						return Err(Error::Conflict("run input message binding changed".into()));
+					}
+					run_messages.push(
+						json!({"seq":input.seq,"sender":input.sender,"content":message.content}),
+					);
+				}
 				let mut pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":observation,"memory":store.memory(run).await?,"agent_state":{"phase":run.phase,"step":run.step}});
 				if let Some(deferred_read) = run.pending.get("deferred_workspace_read") {
 					pinned["deferred_workspace_read"] = deferred_read.clone();
@@ -447,7 +473,11 @@ impl Harness {
 				// Keep room for history and JSON message escaping. The final fitting
 				// decision below measures the complete provider input, not this quota.
 				let available = budget.remaining(&Context::default(), &private_context);
-				let snapshot_fit = context::bound_snapshot(&mut pinned, available / 4);
+				let message_size = context::estimated_tokens(&json!(run_messages).to_string());
+				let snapshot_fit = context::bound_snapshot(
+					&mut pinned,
+					available.saturating_sub(message_size) / 4,
+				);
 				if agent.knowledge_digest.is_some() {
 					pinned["reference_documents"] = documents;
 				}
@@ -461,21 +491,10 @@ impl Harness {
 				{
 					return Err(error);
 				}
-				// Include the complete run-directed input independently of the
-				// bounded workspace preview. These messages must never be truncated.
-				let inputs = store.run_inputs(run.id).await?;
-				let input_seq = inputs
-					.last()
-					.map_or(run.observed_input_seq, |(seq, _, _)| *seq);
-				if !inputs.is_empty() {
-					pinned["run_messages"] = json!(
-						inputs
-							.iter()
-							.map(
-								|(seq, sender, content)| json!({"seq":seq,"sender":sender,"content":content})
-							)
-							.collect::<Vec<_>>()
-					);
+				// Keep the authorized run-directed input independent of the bounded
+				// workspace preview. Admission has already capped its aggregate size.
+				if !run_messages.is_empty() {
+					pinned["run_messages"] = json!(run_messages);
 				}
 				let semantic_budget = budget.remaining(&Context::default(), &pinned) / 2;
 				if let Some(guard) = guard {
