@@ -125,9 +125,25 @@ export async function setup(
     runMemory?: boolean;
     latestMessageChangesOnPoll?: boolean;
     messageAttachment?: boolean;
+    extraGraphAgent?: boolean;
   } = {},
 ) {
   let data = fixture();
+  if (options.extraGraphAgent) {
+    data.registry.push({
+      id: 'review/"[special]:/agent',
+      kind: "agent",
+      version: "1.0.0",
+      name: { en: "Special reviewer" },
+      description: { en: "Special reviewer" },
+      capabilities: [],
+      tags: [],
+      languages: ["en"],
+      skills: [],
+      schema: {},
+      config: { model: { id: "model", version: "1.0.0" } },
+    });
+  }
   const messages: Record<string, Message[]> = {
     "workspace-one": [
       ...Array.from({ length: options.olderMessages ?? 0 }, (_, index) => ({
