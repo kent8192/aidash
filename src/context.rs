@@ -1,6 +1,13 @@
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct MessageReadCoverage {
+	pub total_chars: usize,
+	pub ranges: Vec<[usize; 2]>,
+}
 
 mod compaction;
 pub mod jev;
@@ -17,6 +24,10 @@ pub struct Context {
 	pub usage: Value,
 	#[serde(default)]
 	pub compactions: u32,
+	// Execution proof stays out of provider context and survives Jev history
+	// compaction, which may remove the tool events that established it.
+	#[serde(default)]
+	pub message_read_coverage: BTreeMap<String, MessageReadCoverage>,
 }
 
 // Conservative upper bound for mixed-language text, not a provider tokenizer.

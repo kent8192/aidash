@@ -1191,8 +1191,30 @@ impl Home {
 				)
 				.await?
 			else {
-				// Existing 0.1 peers do not provide the history extension. Their
-				// ordinary workspace observation still contains legacy messages.
+				// Older 0.1 peers expose only their latest 100 messages through
+				// snapshot_page. Fail closed if that window is full: earlier run
+				// corrections might otherwise be missed during finalization.
+				let mut legacy = self.snapshot_collection::<Message>("messages").await?;
+				if legacy.len() == 100 {
+					return Err(Error::External(
+						"legacy peer message snapshot may omit run history".into(),
+					));
+				}
+				let prefix = format!("{}:{}:", self.federation.config.node_id, self.run.task_id);
+				let run_id = self.run.id.to_string();
+				legacy.retain(|message| {
+					message
+						.idempotency_key
+						.as_deref()
+						.and_then(|key| key.strip_prefix(&prefix))
+						.is_some_and(|key| {
+							key.starts_with(&format!("human:{run_id}:"))
+								|| (key.starts_with("subject-human:")
+									&& key.rsplit(':').nth(1) == Some(run_id.as_str()))
+						})
+				});
+				legacy.sort_by_key(|message| (message.created_at, message.id));
+				messages.extend(legacy);
 				return Ok(messages);
 			};
 			let count = page.len();

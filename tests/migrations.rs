@@ -43,7 +43,7 @@ async fn run_input_migration_preserves_keyed_message_retries() {
 	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());
 	// Remove the run-input migrations to simulate a message written before
 	// the ledger existed, then apply the backfill and delivery extensions.
-	Migrator::down(&db, Some(3)).await.unwrap();
+	Migrator::down(&db, Some(4)).await.unwrap();
 	let retry_key = Uuid::new_v4();
 	let key = format!("subject-human:acme:alice:{}:{retry_key}", run.id);
 	f.store
@@ -93,22 +93,35 @@ async fn run_input_migration_preserves_keyed_message_retries() {
 			.any(|input| input.idempotency_key == large_key && input.reference_only)
 	);
 	let old_replica_key = format!("human:{}:{}", run.id, Uuid::new_v4());
-	f.store
-		.message(
-			run.workspace_id,
-			"human",
-			"accepted by an old replica",
-			Some(&old_replica_key),
-		)
-		.await
-		.unwrap();
 	assert!(
 		f.store
-			.run_inputs(run.id)
+			.message(
+				run.workspace_id,
+				"human",
+				"old replica lacks admission",
+				Some(&old_replica_key)
+			)
 			.await
-			.unwrap()
-			.iter()
-			.any(|input| input.idempotency_key == old_replica_key && input.message_id.is_some())
+			.is_err()
+	);
+	assert!(
+		f.store
+			.message(run.workspace_id, "alice", "unkeyed old correction", None)
+			.await
+			.is_err()
+	);
+	let workspace_message_path = format!("/api/workspaces/{}/messages", run.workspace_id);
+	assert_eq!(
+		common::request(
+			&app,
+			&token,
+			"POST",
+			&workspace_message_path,
+			json!({"content":"new workspace message"})
+		)
+		.await
+		.0,
+		200
 	);
 	sqlx::query(
 		&sea_orm::sea_query::Query::update()

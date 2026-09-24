@@ -299,7 +299,29 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 		);
 	}
 	mode.old_peer.store(true, Ordering::SeqCst);
+	let old_home_key = Uuid::new_v4();
+	home.store
+		.message(
+			workspace.id,
+			&format!("human@{}", executor.config.node_id),
+			"old-home historical correction",
+			Some(&format!(
+				"{}:{}:human:{}:{old_home_key}",
+				executor.config.node_id, task.id, run.id
+			)),
+		)
+		.await
+		.unwrap();
 	executor.reconcile_run_messages(&run).await.unwrap();
+	assert!(
+		executor
+			.store
+			.run_inputs(run.id)
+			.await
+			.unwrap()
+			.iter()
+			.any(|input| input.content == "old-home historical correction")
+	);
 	let compatibility_key = Uuid::new_v4();
 	assert_eq!(
 		peer_control(

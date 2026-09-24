@@ -663,11 +663,12 @@ async fn message_create(
 			.await?;
 		return Ok(Json(SentResponse { sent: true }));
 	}
-	let key = input
-		.idempotency_key
-		.map(|key| format!("workspace-human:{id}:{key}"));
+	let key = format!(
+		"workspace-human:{id}:{}",
+		input.idempotency_key.unwrap_or_else(Uuid::new_v4)
+	);
 	f.store
-		.message(id, "human", &input.content, key.as_deref())
+		.message(id, "human", &input.content, Some(&key))
 		.await?;
 	Ok(Json(SentResponse { sent: true }))
 }

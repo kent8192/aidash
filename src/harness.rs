@@ -46,48 +46,66 @@ fn request_context_window(window: usize, minimum_request: usize) -> usize {
 	window.saturating_sub(reserve.saturating_mul(2))
 }
 
-fn referenced_message_read(context: &Context, id: Uuid) -> bool {
-	let id_text = id.to_string();
-	let mut ranges = context
-		.history
-		.iter()
-		.filter_map(|event| {
-			let call = &event["call"];
-			let output = &event["result"];
-			if event["kind"] != "tool"
-				|| call["name"] != "workspace_read"
-				|| call["arguments"]["kind"] != "message"
-				|| call["arguments"]["id"] != id_text
-				|| output["kind"] != "message"
-				|| output["id"] != id_text
-				|| output["encoding"] != "json"
-			{
-				return None;
-			}
-			let start = output["offset"].as_u64()? as usize;
-			let total = output["total_chars"].as_u64()? as usize;
-			let content = output["content"].as_str()?;
-			let end = start.checked_add(content.chars().count())?;
-			let next = output["next_offset"].as_u64().map(|value| value as usize);
-			(end <= total && end > start && next.unwrap_or(total) == end)
-				.then_some((start, end, total))
-		})
-		.collect::<Vec<_>>();
-	ranges.sort_unstable_by_key(|range| range.0);
-	let Some(total) = ranges.first().map(|range| range.2) else {
-		return false;
+fn message_read_range(event: &Value) -> Option<(String, usize, usize, usize)> {
+	let call = &event["call"];
+	let output = &event["result"];
+	if event["kind"] != "tool"
+		|| call["name"] != "workspace_read"
+		|| call["arguments"]["kind"] != "message"
+		|| output["kind"] != "message"
+		|| output["encoding"] != "json"
+		|| call["arguments"]["id"] != output["id"]
+	{
+		return None;
+	}
+	let id = output["id"].as_str()?.to_owned();
+	let start = output["offset"].as_u64()? as usize;
+	let total = output["total_chars"].as_u64()? as usize;
+	let content = output["content"].as_str()?;
+	let end = start.checked_add(content.chars().count())?;
+	let next = output["next_offset"].as_u64().map(|value| value as usize);
+	(end <= total && end > start && next.unwrap_or(total) == end).then_some((id, start, end, total))
+}
+
+fn record_message_read(context: &mut Context, event: &Value) {
+	let Some((id, start, end, total)) = message_read_range(event) else {
+		return;
 	};
-	let mut covered = 0;
-	for (start, end, range_total) in ranges {
-		if range_total != total || start > covered {
-			return false;
-		}
-		covered = covered.max(end);
-		if covered == total {
-			return true;
+	let coverage = context.message_read_coverage.entry(id).or_default();
+	if coverage.total_chars != total {
+		coverage.total_chars = total;
+		coverage.ranges.clear();
+	}
+	coverage.ranges.push([start, end]);
+	coverage.ranges.sort_unstable_by_key(|range| range[0]);
+	let mut merged: Vec<[usize; 2]> = Vec::with_capacity(coverage.ranges.len());
+	for range in coverage.ranges.drain(..) {
+		if let Some(last) = merged.last_mut()
+			&& range[0] <= last[1]
+		{
+			last[1] = last[1].max(range[1]);
+		} else {
+			merged.push(range);
 		}
 	}
-	false
+	coverage.ranges = merged;
+}
+
+fn capture_message_read_coverage(context: &mut Context) {
+	for event in context.history.clone() {
+		record_message_read(context, &event);
+	}
+}
+
+fn referenced_message_read(context: &Context, id: Uuid) -> bool {
+	context
+		.message_read_coverage
+		.get(&id.to_string())
+		.is_some_and(|coverage| {
+			coverage.total_chars > 0
+				&& coverage.ranges.len() == 1
+				&& coverage.ranges[0] == [0, coverage.total_chars]
+		})
 }
 
 #[derive(Clone)]
@@ -461,6 +479,7 @@ impl Harness {
 				let documents =
 					crate::knowledge::load(&self.federation.registry.db, &entry).await?;
 				let mut context: Context = serde_json::from_value(run.context.clone())?;
+				capture_message_read_coverage(&mut context);
 				let observation = home
 					.observation(0, context::observation::DEFAULT_LIMIT)
 					.await?;
@@ -683,7 +702,9 @@ impl Harness {
 				let required_reads: Vec<Uuid> =
 					serde_json::from_value(run.pending["required_run_message_reads"].clone())
 						.unwrap_or_default();
-				let context: Context = serde_json::from_value(run.context.clone())?;
+				let mut context: Context = serde_json::from_value(run.context.clone())?;
+				capture_message_read_coverage(&mut context);
+				run.context = json!(context);
 				let references_read = required_reads
 					.iter()
 					.all(|id| referenced_message_read(&context, *id));
@@ -789,6 +810,7 @@ impl Harness {
 					return Ok(());
 				}
 				let mut context: Context = serde_json::from_value(run.context.clone())?;
+				capture_message_read_coverage(&mut context);
 				let mut call = result.tool_calls[cursor].clone();
 				let mut prepared_result = None;
 				if call.name == "workspace_read" {
@@ -1043,6 +1065,7 @@ impl Harness {
 					store.invocation_finish(run, token, &key, &output).await?;
 				}
 				let event = json!({"kind":"tool","call":call,"result":output});
+				record_message_read(&mut context, &event);
 				let growth = context::tool_event_growth(&context, &event);
 				context.history.push(event);
 				run.pending["request_tokens"] = json!(
@@ -1940,10 +1963,15 @@ mod review_tests {
 		};
 		let mut context = crate::context::Context::default();
 		context.history.push(event(0, "abc", Some(3)));
+		super::capture_message_read_coverage(&mut context);
 		assert!(!super::referenced_message_read(&context, id));
 		context.history.push(event(4, "ef", None));
+		super::capture_message_read_coverage(&mut context);
 		assert!(!super::referenced_message_read(&context, id));
 		context.history.push(event(3, "def", None));
+		super::capture_message_read_coverage(&mut context);
+		assert!(super::referenced_message_read(&context, id));
+		context.history.clear();
 		assert!(super::referenced_message_read(&context, id));
 	}
 

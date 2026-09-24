@@ -846,12 +846,12 @@ impl Workspaces {
 	}
 
 	pub async fn message_keyed(&self, id: Uuid, content: &str, key: Option<Uuid>) -> Result<()> {
-		let key = key.map(|key| {
-			format!(
-				"workspace-subject:{}:{}:{id}:{key}",
-				self.identity.tenant, self.identity.subject
-			)
-		});
+		let key = format!(
+			"workspace-subject:{}:{}:{id}:{}",
+			self.identity.tenant,
+			self.identity.subject,
+			key.unwrap_or_else(Uuid::new_v4)
+		);
 		let mut access = Access::begin(&self.store, &self.identity).await?;
 		let result = async {
 			access.require_workspace(id, "message.create").await?;
@@ -861,7 +861,7 @@ impl Workspaces {
 					id,
 					&self.identity.subject,
 					content,
-					key.as_deref(),
+					Some(&key),
 				)
 				.await
 				.map(|_| ())
