@@ -1,5 +1,8 @@
 import { test, expect } from "@playwright/test";
-import { installBearerDashboard } from "./auth-fixture";
+import {
+  installBearerDashboard,
+  selectDashboardLanguage,
+} from "./auth-fixture";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { randomUUID } from "node:crypto";
@@ -204,7 +207,7 @@ test("subject dashboard completes a conversation and clears revoked access", asy
     await expect(page.getByRole("button", { name: "Peerを追加" })).toHaveCount(
       0,
     );
-    await page.getByTestId("language-selector").selectOption("en-US");
+    await selectDashboardLanguage(page, "en-US");
     await expect(page.getByText("Signed in as", { exact: true })).toBeVisible();
     await page.screenshot({
       path: "../.ignore/dashboard-scoped-access.png",
