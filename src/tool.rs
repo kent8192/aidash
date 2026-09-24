@@ -196,7 +196,17 @@ impl Tool for PluginTool {
 							"URL is outside the tool's configured hosts".into(),
 						));
 					}
-					let response = self.client.get(url).send().await?.error_for_status()?;
+					let response = self.client.get(url.clone()).send().await?;
+					if response.status().is_client_error() {
+						// A rejected public source is evidence the agent can work around.
+						// Do not turn its body into an observation or retry the call.
+						let status = response.status();
+						let url = &url.as_str()[..bounded_utf8_end(url.as_str(), 0, 2048)];
+						return Ok(
+							json!({"ok":false,"error":{"kind":"http_status","url":url,"status":status.as_u16()}}),
+						);
+					}
+					let response = response.error_for_status()?;
 					let mut body = response;
 					let mut bytes = Vec::new();
 					while let Some(chunk) = body.chunk().await? {
