@@ -68,7 +68,18 @@ impl Federation {
 			.await?
 			.into_iter()
 			.find(|input| input.idempotency_key == key);
-		let history = if existing.is_none() && !home.local() {
+		if let Some(input) = existing {
+			if input.content != content {
+				return Err(Error::Conflict("run message idempotency key reused".into()));
+			}
+			if !home.local() && !home.recover_run_message(key, content).await? {
+				return Err(Error::Conflict(
+					"remote home cannot persist run message admission".into(),
+				));
+			}
+			return Ok(());
+		}
+		let history = if !home.local() {
 			self.historical_run_message_batch(run).await?
 		} else {
 			Vec::new()
@@ -82,15 +93,6 @@ impl Federation {
 				"remote home cannot atomically reserve run messages".into(),
 			));
 		};
-		if let Some(input) = existing {
-			if input.content != content {
-				return Err(Error::Conflict("run message idempotency key reused".into()));
-			}
-			if reserved_at_home {
-				home.commit_run_message(key, content).await?;
-			}
-			return Ok(());
-		}
 		let admission = if reserved_at_home {
 			self.store
 				.import_remote_run_messages_and_accept(
@@ -147,15 +149,9 @@ impl Federation {
 	/// correction. Consume the home fences in the same task-row transaction as
 	/// the terminal transition so a legacy completion cannot enter between them.
 	pub async fn transition_terminal_run_messages(&self, run: &Run, target: &str) -> Result<Task> {
-		let keys: Vec<String> = self
-			.store
-			.run_inputs(run.id)
-			.await?
-			.into_iter()
-			.map(|input| input.idempotency_key)
-			.collect();
+		let through_seq = self.store.run_input_high_watermark(run.id).await?;
 		let home = Home::new(self.clone(), run.clone());
-		home.transition_terminal(target, &keys).await
+		home.transition_terminal(target, through_seq).await
 	}
 	pub async fn require_terminal_safe_delivery(&self, run: &Run) -> Result<()> {
 		if run.home_node == self.config.node_id {
@@ -205,13 +201,10 @@ impl Federation {
 			if input.message_id.is_some() && input.seq <= run.observed_input_seq {
 				continue;
 			}
-			let reserved = home
-				.reserve_run_message(&input.idempotency_key, &input.content)
-				.await?;
-			if reserved {
-				home.commit_run_message(&input.idempotency_key, &input.content)
-					.await?;
-			} else {
+			if !home
+				.recover_run_message(&input.idempotency_key, &input.content)
+				.await?
+			{
 				tracing::debug!(run_id=%run.id, "older home does not support remote message reservations");
 			}
 			let message = home
@@ -247,7 +240,10 @@ impl Federation {
 			.await
 	}
 
-	async fn historical_run_message_batch(&self, run: &Run) -> Result<Vec<(String, Message)>> {
+	pub(crate) async fn historical_run_message_batch(
+		&self,
+		run: &Run,
+	) -> Result<Vec<(String, Message)>> {
 		let home = Home::new(self.clone(), run.clone());
 		let prefix = format!("{}:{}:", self.config.node_id, run.task_id);
 		let mut batch = Vec::new();
@@ -1163,7 +1159,7 @@ impl Home {
 				.await
 		}
 	}
-	pub async fn transition_terminal(&self, next: &str, keys: &[String]) -> Result<Task> {
+	pub async fn transition_terminal(&self, next: &str, through_seq: i64) -> Result<Task> {
 		let task = self.task().await?;
 		if self.local() {
 			return self
@@ -1179,7 +1175,8 @@ impl Home {
 					"revision":task.revision,
 					"status":next,
 					"run_id":self.run.id,
-					"keys":keys
+					"keys":[],
+					"through_seq":through_seq
 				}),
 			)
 			.await?
@@ -1353,23 +1350,46 @@ impl Home {
 			.await?
 			.is_some())
 	}
-	pub async fn commit_run_message(&self, key: &str, content: &str) -> Result<()> {
+	async fn promote_run_message(&self, key: &str, content: &str) -> Result<bool> {
 		if self.local() {
-			return Ok(());
+			return Ok(true);
 		}
-		if self
+		let seq = self
+			.federation
+			.store
+			.run_input_sequence(self.run.id, key, content)
+			.await?;
+		Ok(self
 			.optional_command::<Value>(
 				"run_message_commit",
-				json!({"run_id":self.run.id,"key":key,"content":content}),
+				json!({"run_id":self.run.id,"key":key,"content":content,"input_seq":seq}),
 			)
 			.await?
-			.is_none()
-		{
+			.is_some())
+	}
+	pub async fn commit_run_message(&self, key: &str, content: &str) -> Result<()> {
+		if !self.promote_run_message(key, content).await? {
 			return Err(Error::Conflict(
 				"remote home cannot persist run message admission".into(),
 			));
 		}
 		Ok(())
+	}
+	async fn recover_run_message(&self, key: &str, content: &str) -> Result<bool> {
+		match self.promote_run_message(key, content).await {
+			Ok(supported) => Ok(supported),
+			Err(Error::Conflict(_)) => {
+				// Imported pre-ledger history may not have a fence on an older home.
+				// Reserve only after trying the durable acknowledgement, otherwise
+				// expired admissions would be rejected forever on terminal tasks.
+				if !self.reserve_run_message(key, content).await? {
+					return Ok(false);
+				}
+				self.commit_run_message(key, content).await?;
+				Ok(true)
+			}
+			Err(error) => Err(error),
+		}
 	}
 	pub async fn release_run_messages(&self, keys: &[String]) -> Result<()> {
 		if self.local() || keys.is_empty() {

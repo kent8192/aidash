@@ -1415,27 +1415,43 @@ async fn peer_workspace(
 			let run_id: Uuid = required(d, "run_id")?
 				.parse()
 				.map_err(|_| Error::Invalid("invalid run ID".into()))?;
-			let keys: Vec<String> = serde_json::from_value(d["keys"].clone())?;
-			if keys
-				.iter()
-				.any(|key| !run_message_key_matches_run(key, run_id))
-			{
-				return Err(Error::Invalid("invalid run message keys".into()));
+			let revision = d["revision"]
+				.as_i64()
+				.ok_or_else(|| Error::Invalid("revision required".into()))?;
+			let status = required(d, "status")?;
+			if let Some(value) = d.get("through_seq") {
+				let through_seq = value
+					.as_i64()
+					.ok_or_else(|| Error::Invalid("invalid terminal input sequence".into()))?;
+				json!(
+					f.store
+						.transition_remote_run_message_terminal_through(
+							task.id,
+							revision,
+							&owner,
+							status,
+							run_id,
+							through_seq,
+						)
+						.await?
+				)
+			} else {
+				let keys: Vec<String> = serde_json::from_value(d["keys"].clone())?;
+				if keys.len() > 1024
+					|| keys
+						.iter()
+						.any(|key| !run_message_key_matches_run(key, run_id))
+				{
+					return Err(Error::Invalid("invalid run message keys".into()));
+				}
+				json!(
+					f.store
+						.transition_remote_run_message_terminal(
+							task.id, revision, &owner, status, run_id, &keys,
+						)
+						.await?
+				)
 			}
-			json!(
-				f.store
-					.transition_remote_run_message_terminal(
-						task.id,
-						d["revision"]
-							.as_i64()
-							.ok_or_else(|| Error::Invalid("revision required".into()))?,
-						&owner,
-						required(d, "status")?,
-						run_id,
-						&keys,
-					)
-					.await?
-			)
 		}
 		"complete" => json!(
 			f.store
@@ -1587,8 +1603,22 @@ async fn peer_workspace(
 			if !run_message_key_matches_run(input_key, run_id) {
 				return Err(Error::Invalid("invalid run message key".into()));
 			}
+			let input_seq = d
+				.get("input_seq")
+				.map(|value| {
+					value
+						.as_i64()
+						.ok_or_else(|| Error::Invalid("invalid admitted input sequence".into()))
+				})
+				.transpose()?;
 			f.store
-				.commit_remote_run_message(task.id, run_id, input_key, required(d, "content")?)
+				.commit_remote_run_message_with_sequence(
+					task.id,
+					run_id,
+					input_key,
+					required(d, "content")?,
+					input_seq,
+				)
 				.await?;
 			json!({"committed":true})
 		}

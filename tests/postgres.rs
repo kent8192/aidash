@@ -1025,8 +1025,17 @@ async fn failed_home_transition_survives_outage_and_worker_restart() {
 						);
 					}
 					let mut task = task.lock().unwrap();
-					if body["operation"] == "transition" {
-						task.status = body["data"]["status"].as_str().unwrap().into();
+					match body["operation"].as_str() {
+						Some("task") => {}
+						Some("run_message_terminal_transition") => {
+							task.status = body["data"]["status"].as_str().unwrap().into();
+						}
+						_ => {
+							return (
+								StatusCode::BAD_REQUEST,
+								axum::Json(json!({"error":"unknown federation operation"})),
+							);
+						}
 					}
 					(StatusCode::OK, axum::Json(json!(*task)))
 				}

@@ -284,6 +284,13 @@ pub async fn message_keyed(
 		f.run_message_limit(&run).await
 	}
 	.await?;
+	// Fetch only after the authorized preflight. Import and the new admission
+	// then commit under the same run lock as the scoped authorization recheck.
+	let history = if home.local() {
+		Vec::new()
+	} else {
+		f.historical_run_message_batch(&run).await?
+	};
 	if !home.local() && !home.reserve_run_message(&key, content).await? {
 		return Err(Error::Conflict(
 			"remote home cannot reserve run messages during task termination".into(),
@@ -301,6 +308,9 @@ pub async fn message_keyed(
 					&access.resource("workspace", current.workspace_id, json!({})),
 					"message.create",
 				)
+				.await?;
+			f.store
+				.import_remote_run_messages_in(&mut access.tx, id, &history, limit)
 				.await?;
 			f.store
 				.accept_run_message_in(&mut access.tx, id, &identity.subject, content, &key, limit)

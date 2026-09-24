@@ -68,6 +68,11 @@ fn run_input_context_size(input: &RunInput) -> usize {
 	}
 }
 
+enum TerminalRunMessageInputs<'a> {
+	Keys(&'a [String]),
+	Through(i64),
+}
+
 impl Store {
 	async fn ensure_run_response_current_in(
 		&self,
@@ -860,6 +865,47 @@ impl Store {
 		run_id: Uuid,
 		keys: &[String],
 	) -> Result<Task> {
+		self.transition_remote_run_message_terminal_in(
+			id,
+			revision,
+			owner,
+			next,
+			run_id,
+			TerminalRunMessageInputs::Keys(keys),
+		)
+		.await
+	}
+	pub(crate) async fn transition_remote_run_message_terminal_through(
+		&self,
+		id: Uuid,
+		revision: i64,
+		owner: &str,
+		next: &str,
+		run_id: Uuid,
+		through_seq: i64,
+	) -> Result<Task> {
+		if through_seq < 0 {
+			return Err(Error::Invalid("invalid terminal input sequence".into()));
+		}
+		self.transition_remote_run_message_terminal_in(
+			id,
+			revision,
+			owner,
+			next,
+			run_id,
+			TerminalRunMessageInputs::Through(through_seq),
+		)
+		.await
+	}
+	async fn transition_remote_run_message_terminal_in(
+		&self,
+		id: Uuid,
+		revision: i64,
+		owner: &str,
+		next: &str,
+		run_id: Uuid,
+		inputs: TerminalRunMessageInputs<'_>,
+	) -> Result<Task> {
 		if !matches!(next, "CANCELLED" | "FAILED") {
 			return Err(Error::Invalid(
 				"remote run-message terminal transition must be cancelled or failed".into(),
@@ -896,24 +942,47 @@ impl Store {
 				)));
 			}
 		}
-		for key in keys {
-			sqlx::query(
-				&sea_orm::sea_query::Query::update()
-					.table(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
-					.value(
-						sea_orm::sea_query::Alias::new("consumed"),
-						sea_orm::sea_query::Expr::cust("TRUE"),
+		match inputs {
+			TerminalRunMessageInputs::Keys(keys) => {
+				for key in keys {
+					sqlx::query(
+						&sea_orm::sea_query::Query::update()
+							.table(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+							.value(
+								sea_orm::sea_query::Alias::new("consumed"),
+								sea_orm::sea_query::Expr::cust("TRUE"),
+							)
+							.and_where(sea_orm::sea_query::Expr::cust(
+								"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
+							))
+							.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 					)
-					.and_where(sea_orm::sea_query::Expr::cust(
-						"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
-					))
-					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
-			)
-			.bind(id)
-			.bind(run_id)
-			.bind(key)
-			.execute(&mut *tx)
-			.await?;
+					.bind(id)
+					.bind(run_id)
+					.bind(key)
+					.execute(&mut *tx)
+					.await?;
+				}
+			}
+			TerminalRunMessageInputs::Through(through_seq) => {
+				// Only a durable admission acknowledgement assigns input_seq.
+				// Unadmitted reservations and inputs newer than this snapshot stay
+				// active and cause the task update below to roll back atomically.
+				sqlx::query(
+					&sea_orm::sea_query::Query::update()
+						.table(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+						.value(sea_orm::sea_query::Alias::new("consumed"), true)
+						.and_where(sea_orm::sea_query::Expr::cust(
+							"task_id = $1 AND run_id = $2 AND input_seq <= $3",
+						))
+						.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+				)
+				.bind(id)
+				.bind(run_id)
+				.bind(through_seq)
+				.execute(&mut *tx)
+				.await?;
+			}
 		}
 		if task.status == next {
 			tx.commit().await?;
@@ -1962,6 +2031,20 @@ impl Store {
 		key: &str,
 		content: &str,
 	) -> Result<()> {
+		self.commit_remote_run_message_with_sequence(task_id, run_id, key, content, None)
+			.await
+	}
+	pub(crate) async fn commit_remote_run_message_with_sequence(
+		&self,
+		task_id: Uuid,
+		run_id: Uuid,
+		key: &str,
+		content: &str,
+		input_seq: Option<i64>,
+	) -> Result<()> {
+		if input_seq.is_some_and(|seq| seq <= 0) {
+			return Err(Error::Invalid("invalid admitted input sequence".into()));
+		}
 		let mut tx = self.pool.begin().await?;
 		let task: Task = sqlx::query_as(
 			&sea_orm::sea_query::Query::select()
@@ -1974,13 +2057,14 @@ impl Store {
 		.bind(task_id)
 		.fetch_one(&mut *tx)
 		.await?;
-		let reservation: Option<(String, bool, bool)> = sqlx::query_as(
+		let reservation: Option<(String, bool, bool, Option<i64>)> = sqlx::query_as(
 			&sea_orm::sea_query::Query::select()
 				.column(sea_orm::sea_query::Alias::new("content"))
 				.expr(sea_orm::sea_query::Expr::cust("expires_at IS NULL"))
 				.expr(sea_orm::sea_query::Expr::cust(
 					"expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP",
 				))
+				.column(sea_orm::sea_query::Alias::new("input_seq"))
 				.from(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
 				.and_where(sea_orm::sea_query::Expr::cust(
 					"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
@@ -1993,7 +2077,7 @@ impl Store {
 		.bind(key)
 		.fetch_optional(&mut *tx)
 		.await?;
-		let Some((reserved_content, committed, active)) = reservation else {
+		let Some((reserved_content, committed, active, previous_seq)) = reservation else {
 			return Err(Error::Conflict(
 				"remote run message was not reserved at home".into(),
 			));
@@ -2003,15 +2087,26 @@ impl Store {
 				"remote run message reservation changed".into(),
 			));
 		}
-		if committed {
+		if input_seq
+			.zip(previous_seq)
+			.is_some_and(|(seq, previous)| seq != previous)
+		{
+			return Err(Error::Conflict("run message input sequence changed".into()));
+		}
+		if committed && (input_seq.is_none() || input_seq == previous_seq) {
 			tx.commit().await?;
 			return Ok(());
 		}
-		if !active
-			|| matches!(
-				task.status.as_str(),
-				"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
-			) {
+		// A run-bound acknowledgement from the delegated executor describes an
+		// already persisted input, not a new admission. Its exact fence remains
+		// recoverable after expiry or task termination; this never reopens the task.
+		if !committed
+			&& input_seq.is_none()
+			&& (!active
+				|| matches!(
+					task.status.as_str(),
+					"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+				)) {
 			return Err(Error::Conflict(
 				"remote run message reservation expired before admission was committed".into(),
 			));
@@ -2023,6 +2118,10 @@ impl Store {
 					sea_orm::sea_query::Alias::new("expires_at"),
 					sea_orm::sea_query::Expr::cust("NULL"),
 				)
+				.value(
+					sea_orm::sea_query::Alias::new("input_seq"),
+					sea_orm::sea_query::Expr::cust("COALESCE(input_seq, $5)"),
+				)
 				.and_where(sea_orm::sea_query::Expr::cust(
 					"task_id = $1 AND run_id = $2 AND idempotency_key = $3 AND content = $4",
 				))
@@ -2032,6 +2131,7 @@ impl Store {
 		.bind(run_id)
 		.bind(key)
 		.bind(content)
+		.bind(input_seq)
 		.execute(&mut *tx)
 		.await?;
 		tx.commit().await?;
@@ -2387,6 +2487,42 @@ impl Store {
 		tx.commit().await?;
 		Ok(inputs)
 	}
+	pub(crate) async fn run_input_sequence(
+		&self,
+		run_id: Uuid,
+		key: &str,
+		content: &str,
+	) -> Result<i64> {
+		use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+		sqlx::query_scalar(
+			&Query::select()
+				.column(Alias::new("seq"))
+				.from(Alias::new("run_inputs"))
+				.and_where(Expr::cust(
+					"run_id = $1 AND idempotency_key = $2 AND content = $3",
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.bind(key)
+		.bind(content)
+		.fetch_optional(&self.pool)
+		.await?
+		.ok_or_else(|| Error::Conflict("run message has no matching durable admission".into()))
+	}
+	pub(crate) async fn run_input_high_watermark(&self, run_id: Uuid) -> Result<i64> {
+		use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+		Ok(sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COALESCE(MAX(seq), 0)"))
+				.from(Alias::new("run_inputs"))
+				.and_where(Expr::cust("run_id = $1"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.fetch_one(&self.pool)
+		.await?)
+	}
 	pub async fn pending_terminal_run_message(&self) -> Result<Option<Run>> {
 		Ok(sqlx::query_as(
 			&sea_orm::sea_query::Query::select()
@@ -2453,10 +2589,22 @@ impl Store {
 		messages: &[(String, Message)],
 		max_input_tokens: usize,
 	) -> Result<()> {
+		let mut tx = self.pool.begin().await?;
+		self.import_remote_run_messages_in(&mut tx, run_id, messages, max_input_tokens)
+			.await?;
+		tx.commit().await?;
+		Ok(())
+	}
+	pub(crate) async fn import_remote_run_messages_in(
+		&self,
+		tx: &mut Transaction<'_, Postgres>,
+		run_id: Uuid,
+		messages: &[(String, Message)],
+		max_input_tokens: usize,
+	) -> Result<()> {
 		if messages.is_empty() {
 			return Ok(());
 		}
-		let mut tx = self.pool.begin().await?;
 		// Hold the run-row lock for the whole fetched history batch. New admissions
 		// use the same lock, so they cannot split older imports and overtake them.
 		let current: Run = sqlx::query_as(
@@ -2468,20 +2616,12 @@ impl Store {
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 		)
 		.bind(run_id)
-		.fetch_one(&mut *tx)
+		.fetch_one(&mut **tx)
 		.await?;
 		for (key, message) in messages {
-			self.import_remote_run_message_in(
-				&mut tx,
-				run_id,
-				&current,
-				key,
-				message,
-				max_input_tokens,
-			)
-			.await?;
+			self.import_remote_run_message_in(tx, run_id, &current, key, message, max_input_tokens)
+				.await?;
 		}
-		tx.commit().await?;
 		Ok(())
 	}
 	/// Import the remote home's existing message history before admitting a new
@@ -2497,28 +2637,8 @@ impl Store {
 		max_input_tokens: usize,
 	) -> Result<()> {
 		let mut tx = self.pool.begin().await?;
-		let current: Run = sqlx::query_as(
-			&sea_orm::sea_query::Query::select()
-				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
-				.from(sea_orm::sea_query::Alias::new("runs"))
-				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
-				.lock(sea_orm::sea_query::LockType::Update)
-				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
-		)
-		.bind(run_id)
-		.fetch_one(&mut *tx)
-		.await?;
-		for (message_key, message) in messages {
-			self.import_remote_run_message_in(
-				&mut tx,
-				run_id,
-				&current,
-				message_key,
-				message,
-				max_input_tokens,
-			)
+		self.import_remote_run_messages_in(&mut tx, run_id, messages, max_input_tokens)
 			.await?;
-		}
 		self.accept_run_message_in(&mut tx, run_id, sender, content, key, max_input_tokens)
 			.await?;
 		tx.commit().await?;

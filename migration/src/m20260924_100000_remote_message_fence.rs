@@ -18,6 +18,7 @@ impl MigrationTrait for Migration {
 							.not_null(),
 					)
 					.col(ColumnDef::new(Alias::new("content")).text().not_null())
+					.col(ColumnDef::new(Alias::new("input_seq")).big_integer().null())
 					.col(
 						ColumnDef::new(Alias::new("expires_at"))
 							.timestamp_with_time_zone()
@@ -87,6 +88,69 @@ ON remote_run_message_fences FOR EACH STATEMENT EXECUTE FUNCTION atomic_write_gu
 "#,
 			)
 			.await?;
+		// CREATE TRIGGER above holds the task-table DDL lock until this migration
+		// commits. Backfill while that lock is held so legacy task termination
+		// cannot slip between the history snapshot and activation of the gate.
+		let prefix = "(SUBSTRING(m.sender FROM 7) || ':' || t.id::text || ':')";
+		let input_key = format!("SUBSTRING(m.idempotency_key FROM LENGTH({prefix}) + 1)");
+		let uuid = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+		let valid_key = format!("{input_key} ~ '^(human:|subject-human:.+:){uuid}:{uuid}$'");
+		let history = Query::select()
+			.expr(Expr::cust("t.id"))
+			.expr(Expr::cust(format!(
+				"CASE WHEN {valid_key} THEN LEFT(RIGHT({input_key}, 73), 36)::uuid END"
+			)))
+			.expr(Expr::cust(&input_key))
+			.expr(Expr::cust("m.content"))
+			.expr(Expr::cust("NULL"))
+			.expr(Expr::value(false))
+			.from_as(Alias::new("messages"), Alias::new("m"))
+			.join_as(
+				JoinType::InnerJoin,
+				Alias::new("tasks"),
+				Alias::new("t"),
+				Expr::cust("m.workspace_id = t.workspace_id"),
+			)
+			.and_where(Expr::cust(
+				"t.status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED', 'ABANDONED')",
+			))
+			.and_where(Expr::cust("LEFT(m.sender, 6) = 'human@'"))
+			.and_where(Expr::cust(format!(
+				"LEFT(m.idempotency_key, LENGTH({prefix})) = {prefix}"
+			)))
+			.and_where(Expr::cust(valid_key))
+			.to_owned();
+		let backfill = Query::insert()
+			.into_table(Alias::new("remote_run_message_fences"))
+			.columns(
+				[
+					"task_id",
+					"run_id",
+					"idempotency_key",
+					"content",
+					"expires_at",
+					"consumed",
+				]
+				.map(Alias::new),
+			)
+			.select_from(history)
+			.map_err(|error| DbErr::Custom(error.to_string()))?
+			.to_owned();
+		let db = manager.get_connection();
+		db.execute(db.get_database_backend().build(&backfill))
+			.await?;
+		manager
+			.create_index(
+				Index::create()
+					.name("remote_run_message_fences_sequence")
+					.table(Alias::new("remote_run_message_fences"))
+					.col(Alias::new("task_id"))
+					.col(Alias::new("run_id"))
+					.col(Alias::new("input_seq"))
+					.to_owned(),
+			)
+			.await?;
+
 		Ok(())
 	}
 
