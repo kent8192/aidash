@@ -832,6 +832,137 @@ async fn successful_tool_retry_resets_the_next_invocation_budget() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL; see scripts/check.sh"]
+async fn rejected_web_sources_reach_the_agent_without_retrying_or_escaping_allowed_hosts() {
+	use aidash::harness::Harness;
+	use axum::{
+		Json, Router,
+		extract::Path,
+		routing::{get, post},
+	};
+	use std::sync::atomic::{AtomicUsize, Ordering};
+
+	let (store, database_url, schema) = setup().await;
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let forbidden_host = format!(
+		"http://localhost:{}/blocked",
+		listener.local_addr().unwrap().port()
+	);
+	let source_hits = Arc::new(AtomicUsize::new(0));
+	let hits = source_hits.clone();
+	let model_endpoint = endpoint.clone();
+	let server = Router::new()
+		.route("/{source}", get(move |Path(source): Path<String>| {
+			let hits = hits.clone();
+			async move {
+				hits.fetch_add(1, Ordering::SeqCst);
+				match source.as_str() {
+					"blocked" => (StatusCode::FORBIDDEN, "blocked source"),
+					"missing" => (StatusCode::NOT_FOUND, "missing source"),
+					"alternate" => (StatusCode::OK, "Alternate evidence"),
+					_ => (StatusCode::INTERNAL_SERVER_ERROR, "unexpected source"),
+				}
+			}
+		}))
+		.route("/v1/chat/completions", post(move |Json(body): Json<serde_json::Value>| {
+			let endpoint = model_endpoint.clone();
+			let forbidden_host = forbidden_host.clone();
+			async move {
+				let context: serde_json::Value = serde_json::from_str(
+					body["messages"][1]["content"].as_str().unwrap()
+				).unwrap();
+				let history = context["history"].as_array().unwrap();
+				let next = match history.len() {
+					0 => Some(format!("{endpoint}/blocked?query={}", "a".repeat(3000))),
+					1 => {
+						assert_eq!(history[0]["result"]["ok"], false);
+						assert_eq!(history[0]["result"]["error"]["kind"], "http_status");
+						assert_eq!(history[0]["result"]["error"]["status"], 403);
+						let url = history[0]["result"]["error"]["url"].as_str().unwrap();
+						assert!(url.starts_with(&format!("{endpoint}/blocked?query=")));
+						assert_eq!(url.len(), 2048, "error URL must be bounded");
+						Some(format!("{endpoint}/missing"))
+					}
+					2 => {
+						assert_eq!(history[1]["result"], json!({"ok":false,"error":{"kind":"http_status","url":format!("{endpoint}/missing"),"status":404}}));
+						Some(format!("{endpoint}/alternate"))
+					}
+					3 => {
+						assert_eq!(history[2]["result"]["text"], "Alternate evidence");
+						Some(forbidden_host)
+					}
+					4 => {
+						assert!(history[3]["result"]["error"].as_str().unwrap().contains("outside the tool's configured hosts"));
+						None
+					}
+					_ => panic!("unexpected inference after final response"),
+				};
+				let message = if let Some(url) = next {
+					json!({"role":"assistant","content":null,"tool_calls":[{"id":format!("fetch-{}",history.len()),"type":"function","function":{"name":"plugin_0","arguments":json!({"url":url}).to_string()}}]})
+				} else {
+					json!({"role":"assistant","content":"Used alternate evidence"})
+				};
+				Json(json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some() {"tool_calls"} else {"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+			}
+		}));
+	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+	let federation = federation_for(&store);
+	federation.registry.register(entry("model", "web-model", json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"credential_env":null,"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
+	federation
+		.registry
+		.register(entry(
+			"tool",
+			"web-fetch",
+			json!({"transport":"native","operation":"http_get","allowed_hosts":["127.0.0.1"]}),
+		))
+		.await
+		.unwrap();
+	let agent = federation.registry.register(entry("agent", "web-research", json!({"model":{"id":"web-model","version":"1.0.0"},"instructions":"Use available public evidence","tools":[{"id":"web-fetch","version":"1.0.0"}],"skills":[]}))).await.unwrap();
+	let workspace = store
+		.create_workspace("Web research", "Use available evidence")
+		.await
+		.unwrap();
+	let task = running_task(&store, &agent, workspace.id, None).await;
+	let harness = Harness { federation };
+	for _ in 0..20 {
+		if !harness.worker_once().await.unwrap() {
+			break;
+		}
+		if store.task(task.id).await.unwrap().status == "COMPLETED" {
+			break;
+		}
+	}
+	let run = store.runs().await.unwrap().remove(0);
+	assert_eq!(
+		run.phase, "COMPLETED",
+		"error={:?}, pending={}",
+		run.error, run.pending
+	);
+	assert_eq!(store.task(task.id).await.unwrap().status, "COMPLETED");
+	assert_eq!(
+		source_hits.load(Ordering::SeqCst),
+		3,
+		"each permitted source is fetched once"
+	);
+	assert_eq!(
+		store.snapshot(workspace.id).await.unwrap().artifacts[0].content,
+		json!("Used alternate evidence")
+	);
+	assert!(
+		!store
+			.events(0, Some(workspace.id), 100)
+			.await
+			.unwrap()
+			.iter()
+			.any(|event| event.kind == "run.retrying")
+	);
+	server.abort();
+	let _ = server.await;
+	cleanup(store, &database_url, &schema).await;
+}
+
 async fn add_test_peer(store: &Store, node: &str, endpoint: &str) {
 	sqlx::query(
 		&sea_orm::sea_query::Query::insert()
