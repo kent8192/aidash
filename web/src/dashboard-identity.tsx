@@ -22,6 +22,7 @@ type Mapping = {
   tenant: string;
   subject: string;
   enabled: boolean;
+  revision: number;
 };
 type Grant = { identity_id: string; enabled: boolean; revision: number };
 
@@ -156,7 +157,13 @@ export function DashboardIdentityAdministration() {
                 void act(() =>
                   authenticatedFetch(
                     `/api/dashboard/mappings/${mapping.id}/disable`,
-                    { method: "POST" },
+                    {
+                      method: "POST",
+                      headers: { "content-type": "application/json" },
+                      body: JSON.stringify({
+                        expected_revision: mapping.revision,
+                      }),
+                    },
                   ),
                 );
               }}

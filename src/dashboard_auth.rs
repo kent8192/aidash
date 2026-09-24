@@ -27,11 +27,15 @@ use openidconnect::{
 	PkceCodeVerifier, RedirectUrl, TokenResponse,
 	core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
 };
-use sea_orm::sea_query::{Alias, Expr, LockType, OnConflict, Order, PostgresQueryBuilder, Query};
+use sea_orm::sea_query::{
+	Alias, Expr, JoinType, LockType, OnConflict, Order, PostgresQueryBuilder, Query,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::FromRow;
+use std::{collections::HashMap, sync::OnceLock, time::Instant};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 const SESSION_COOKIE: &str = "__Host-aidash-session";
@@ -40,7 +44,10 @@ const CSRF_COOKIE: &str = "aidash-csrf";
 const STATUS_FRESH_SECONDS: i64 = 300;
 const STATUS_LIMIT_SECONDS: i64 = 900;
 const MAX_PENDING_LOGIN_TRANSACTIONS: i64 = 10_000;
+const DISCOVERY_CACHE_SECONDS: u64 = 300;
 type IdentityValidity = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+type DiscoveryCache = Mutex<HashMap<String, (Instant, CoreProviderMetadata)>>;
+static DISCOVERY_CACHE: OnceLock<DiscoveryCache> = OnceLock::new();
 
 fn table(name: &str) -> Alias {
 	Alias::new(name)
@@ -141,6 +148,23 @@ fn oidc_http_client() -> Result<openidconnect::reqwest::Client> {
 		.map_err(|_| Error::External("OIDC client unavailable".into()))
 }
 
+async fn provider_metadata(config: &OidcConfig) -> Result<CoreProviderMetadata> {
+	let cache = DISCOVERY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+	let mut entries = cache.lock().await;
+	if let Some((fetched_at, metadata)) = entries.get(&config.issuer)
+		&& fetched_at.elapsed().as_secs() < DISCOVERY_CACHE_SECONDS
+	{
+		return Ok(metadata.clone());
+	}
+	let issuer = IssuerUrl::new(config.issuer.clone())
+		.map_err(|_| Error::Invalid("invalid OIDC issuer".into()))?;
+	let metadata = CoreProviderMetadata::discover_async(issuer, &oidc_http_client()?)
+		.await
+		.map_err(|_| Error::External("OIDC discovery unavailable".into()))?;
+	entries.insert(config.issuer.clone(), (Instant::now(), metadata.clone()));
+	Ok(metadata)
+}
+
 #[derive(Serialize)]
 struct Configuration {
 	enabled: bool,
@@ -190,31 +214,6 @@ async fn login(
 ) -> Result<Response> {
 	let config = required_config(&f)?;
 	let destination = return_path(query.return_to.as_deref())?;
-	let http_client = oidc_http_client()?;
-	let issuer = IssuerUrl::new(config.issuer.clone())
-		.map_err(|_| Error::Invalid("invalid OIDC issuer".into()))?;
-	let metadata = CoreProviderMetadata::discover_async(issuer, &http_client)
-		.await
-		.map_err(|_| Error::External("OIDC discovery unavailable".into()))?;
-	let callback = format!("{}/auth/callback", config.public_origin);
-	let client = CoreClient::from_provider_metadata(
-		metadata,
-		ClientId::new(config.client_id.clone()),
-		Some(ClientSecret::new(config.client_secret.clone())),
-	)
-	.set_redirect_uri(
-		RedirectUrl::new(callback.clone())
-			.map_err(|_| Error::Invalid("invalid OIDC callback URI".into()))?,
-	);
-	let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
-	let (url, state, nonce) = client
-		.authorize_url(
-			CoreAuthenticationFlow::AuthorizationCode,
-			CsrfToken::new_random,
-			Nonce::new_random,
-		)
-		.set_pkce_challenge(challenge)
-		.url();
 	let browser = cookie_value(&headers, &cookie_name(LOGIN_COOKIE, config))
 		.map(str::to_owned)
 		.unwrap_or_else(random_secret);
@@ -247,6 +246,26 @@ async fn login(
 	if count >= 8 {
 		return Err(Error::Conflict("too many pending sign-ins".into()));
 	}
+	let metadata = provider_metadata(config).await?;
+	let callback = format!("{}/auth/callback", config.public_origin);
+	let client = CoreClient::from_provider_metadata(
+		metadata,
+		ClientId::new(config.client_id.clone()),
+		Some(ClientSecret::new(config.client_secret.clone())),
+	)
+	.set_redirect_uri(
+		RedirectUrl::new(callback.clone())
+			.map_err(|_| Error::Invalid("invalid OIDC callback URI".into()))?,
+	);
+	let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
+	let (url, state, nonce) = client
+		.authorize_url(
+			CoreAuthenticationFlow::AuthorizationCode,
+			CsrfToken::new_random,
+			Nonce::new_random,
+		)
+		.set_pkce_challenge(challenge)
+		.url();
 	let query = Query::insert()
 		.into_table(table("dashboard_login_transactions"))
 		.columns([
@@ -459,11 +478,19 @@ async fn account_valid(
 	}
 }
 
-async fn origin_run_ids(f: &Federation, identity_id: Uuid) -> Result<Vec<Uuid>> {
+async fn status_waiting_run_ids(f: &Federation, identity_id: Uuid) -> Result<Vec<Uuid>> {
 	let query = Query::select()
-		.column(table("run_id"))
-		.from(table("dashboard_execution_origins"))
-		.and_where(Expr::col(table("identity_id")).eq(Expr::cust("$1")))
+		.column((table("o"), table("run_id")))
+		.from_as(table("dashboard_execution_origins"), table("o"))
+		.join_as(
+			JoinType::InnerJoin,
+			table("runs"),
+			table("r"),
+			Expr::col((table("o"), table("run_id"))).equals((table("r"), table("id"))),
+		)
+		.and_where(Expr::col((table("o"), table("identity_id"))).eq(Expr::cust("$1")))
+		.and_where(Expr::col((table("r"), table("control"))).eq("PAUSED"))
+		.and_where(Expr::col((table("r"), table("error"))).eq("identity status unavailable"))
 		.to_string(PostgresQueryBuilder);
 	Ok(sqlx::query_scalar(&query)
 		.bind(identity_id)
@@ -472,7 +499,7 @@ async fn origin_run_ids(f: &Federation, identity_id: Uuid) -> Result<Vec<Uuid>> 
 }
 
 async fn mark_explicit_disable(f: &Federation, identity_id: Uuid) -> Result<()> {
-	for run_id in origin_run_ids(f, identity_id).await? {
+	for run_id in status_waiting_run_ids(f, identity_id).await? {
 		let query = Query::update()
 			.table(table("runs"))
 			.value(table("error"), "external identity disabled")
@@ -504,7 +531,7 @@ async fn resume_status_waiting(f: &Federation, identity_id: Uuid) -> Result<()> 
 	if last_valid_at <= Utc::now() - Duration::seconds(STATUS_FRESH_SECONDS) {
 		return Ok(());
 	}
-	for run_id in origin_run_ids(f, identity_id).await? {
+	for run_id in status_waiting_run_ids(f, identity_id).await? {
 		let run = f.store.run(run_id).await?;
 		if run.control != "PAUSED" || run.error.as_deref() != Some("identity status unavailable") {
 			continue;
@@ -589,6 +616,12 @@ pub async fn refresh_active(
 		return Ok(());
 	}
 	loop {
+		// Absolute expiry bounds even revoked sessions when no new login occurs.
+		let prune = Query::delete()
+			.from_table(table("dashboard_sessions"))
+			.and_where(Expr::col(table("expires_at")).lte(Expr::cust("clock_timestamp()")))
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&prune).execute(&f.store.pool).await?;
 		let query = Query::select()
 			.columns([
 				table("id"),
@@ -649,12 +682,7 @@ async fn callback(
 		return Err(Error::Unauthorized);
 	}
 	let http_client = oidc_http_client()?;
-	let metadata = CoreProviderMetadata::discover_async(
-		IssuerUrl::new(config.issuer.clone()).map_err(|_| Error::Unauthorized)?,
-		&http_client,
-	)
-	.await
-	.map_err(|_| Error::External("OIDC discovery unavailable".into()))?;
+	let metadata = provider_metadata(config).await?;
 	let client = CoreClient::from_provider_metadata(
 		metadata,
 		ClientId::new(config.client_id.clone()),
@@ -1074,16 +1102,16 @@ async fn latest_registration(f: &Federation, identity_id: Uuid) -> Result<Option
 		.await?)
 }
 
-async fn registration_status(
-	State(f): State<Federation>,
-	headers: HeaderMap,
-) -> Result<Json<Option<Registration>>> {
+async fn registration_status(State(f): State<Federation>, headers: HeaderMap) -> Result<Response> {
 	let session = session_from_headers(&f, &headers).await?;
-	Ok(Json(
+	let mut response = Json(
 		latest_registration(&f, session.identity_id)
 			.await?
 			.map(Registration::with_effective_status),
-	))
+	)
+	.into_response();
+	no_store(&mut response);
+	Ok(response)
 }
 
 async fn registration_create(
@@ -1306,6 +1334,7 @@ struct AdminMapping {
 	tenant: String,
 	subject: String,
 	enabled: bool,
+	revision: i64,
 }
 
 async fn admin_mappings(State(f): State<Federation>) -> Result<Json<Vec<AdminMapping>>> {
@@ -1316,6 +1345,7 @@ async fn admin_mappings(State(f): State<Federation>) -> Result<Json<Vec<AdminMap
 			table("tenant"),
 			table("subject"),
 			table("enabled"),
+			table("revision"),
 		])
 		.from(table("dashboard_mappings"))
 		.order_by(table("tenant"), Order::Asc)
@@ -1620,9 +1650,16 @@ async fn admin_operator_grants(
 	Ok(Json(sqlx::query_as(&query).fetch_all(&f.store.pool).await?))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MappingRevision {
+	expected_revision: i64,
+}
+
 async fn admin_disable_mapping(
 	State(f): State<Federation>,
 	Path(id): Path<Uuid>,
+	Json(input): Json<MappingRevision>,
 ) -> Result<axum::http::StatusCode> {
 	let mut tx = f.store.pool.begin().await?;
 	let query = Query::update()
@@ -1630,13 +1667,16 @@ async fn admin_disable_mapping(
 		.value(table("enabled"), false)
 		.value(table("revision"), Expr::cust("revision+1"))
 		.and_where(Expr::col(table("id")).eq(Expr::cust("$1")))
+		.and_where(Expr::col(table("enabled")).eq(true))
+		.and_where(Expr::col(table("revision")).eq(Expr::cust("$2")))
 		.returning(Query::returning().column(table("credential_id")))
 		.to_string(PostgresQueryBuilder);
 	let credential_id: Uuid = sqlx::query_scalar(&query)
 		.bind(id)
+		.bind(input.expected_revision)
 		.fetch_optional(&mut *tx)
 		.await?
-		.ok_or(Error::NotFound("mapping".into()))?;
+		.ok_or(Error::Conflict("mapping revision changed".into()))?;
 	let revoke = Query::update()
 		.table(table("authorization_credentials"))
 		.value(

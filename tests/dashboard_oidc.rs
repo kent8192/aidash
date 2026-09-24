@@ -9,6 +9,10 @@ use axum::{Json, Router, body::Body, http::Request, routing::get};
 use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::sync::{
+	Arc,
+	atomic::{AtomicUsize, Ordering},
+};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -19,11 +23,14 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins() {
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let issuer = format!("http://{}/realms/test", listener.local_addr().unwrap());
 	let metadata_issuer = issuer.clone();
+	let discoveries = Arc::new(AtomicUsize::new(0));
+	let discovery_counter = discoveries.clone();
 	let fixture = Router::new()
 		.route(
 			"/realms/test/.well-known/openid-configuration",
 			get(move || {
 				let issuer = metadata_issuer.clone();
+				discovery_counter.fetch_add(1, Ordering::SeqCst);
 				async move {
 					Json(json!({
 						"issuer": issuer,
@@ -128,6 +135,21 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins() {
 		.await
 		.unwrap();
 	assert_eq!(count, 8);
+	assert_eq!(discoveries.load(Ordering::SeqCst), 1);
+	// A full browser queue must be rejected before contacting an uncached issuer.
+	federation.config.oidc.as_mut().unwrap().issuer =
+		"http://127.0.0.1:1/realms/unavailable".into();
+	let denied = api::router(federation.clone())
+		.oneshot(
+			Request::builder()
+				.uri("/auth/login")
+				.header("cookie", cookie.unwrap())
+				.body(Body::empty())
+				.unwrap(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(denied.status(), 409);
 	server.abort();
 	common::cleanup(federation, &url, &schema).await;
 }
@@ -346,6 +368,18 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user() 
 	)
 	.await;
 	assert_eq!(expired["status"], "expired");
+	let registration_response = app
+		.clone()
+		.oneshot(
+			Request::builder()
+				.uri("/auth/registration")
+				.header("cookie", "aidash-session=fixture-session")
+				.body(Body::empty())
+				.unwrap(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(registration_response.headers()["cache-control"], "no-store");
 	let (_, listed) = call(
 		&app,
 		"GET",
@@ -405,10 +439,31 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user() 
 		"/api/dashboard/mappings/{}/disable",
 		mapping["id"].as_str().unwrap()
 	);
+	let (_, mapping_rows) = call(
+		&app,
+		"GET",
+		"/api/dashboard/mappings",
+		false,
+		false,
+		None,
+		true,
+		Value::Null,
+	)
+	.await;
+	let revision = mapping_rows[0]["revision"].as_i64().unwrap();
 	assert_eq!(
-		call(&app, "POST", &path, false, false, None, true, Value::Null)
-			.await
-			.0,
+		call(
+			&app,
+			"POST",
+			&path,
+			false,
+			false,
+			None,
+			true,
+			json!({"expected_revision":revision})
+		)
+		.await
+		.0,
 		204
 	);
 	assert_eq!(
@@ -456,6 +511,25 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user() 
 	.await;
 	assert_eq!(status, 200, "{restored}");
 	assert_eq!(restored["id"], mapping["id"]);
+	let disable_path = format!(
+		"/api/dashboard/mappings/{}/disable",
+		mapping["id"].as_str().unwrap()
+	);
+	assert_eq!(
+		call(
+			&app,
+			"POST",
+			&disable_path,
+			false,
+			false,
+			None,
+			true,
+			json!({"expected_revision":revision})
+		)
+		.await
+		.0,
+		409
+	);
 	assert_eq!(
 		call(
 			&app,
@@ -500,7 +574,13 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user() 
 		.0,
 		409
 	);
-	for path in ["/api/marketplace", "/api/transactions"] {
+	for path in [
+		"/api/marketplace",
+		"/api/transactions",
+		"/api/generation/acme/policies/research",
+		"/api/generation/acme/requests/00000000-0000-0000-0000-000000000001/control",
+		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/index",
+	] {
 		assert_ne!(
 			call(
 				&app,
@@ -518,6 +598,21 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user() 
 			"operator route {path} must reach its handler"
 		);
 	}
+	assert_eq!(
+		call(
+			&app,
+			"POST",
+			"/api/generation/acme/tasks/00000000-0000-0000-0000-000000000001/assign",
+			true,
+			true,
+			Some("operator"),
+			false,
+			Value::Null
+		)
+		.await
+		.0,
+		403
+	);
 	let (status, revoked) = call(
 		&app,
 		"POST",
@@ -591,5 +686,41 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user() 
 		.0,
 		401
 	);
+	let expire_session = Query::update()
+		.table(Alias::new("dashboard_sessions"))
+		.value(
+			Alias::new("expires_at"),
+			Expr::cust("clock_timestamp()-interval '1 second'"),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&expire_session)
+		.execute(&federation.store.pool)
+		.await
+		.unwrap();
+	let (stop, stopping) = tokio::sync::watch::channel(false);
+	let refresh = tokio::spawn(aidash::dashboard_auth::refresh_active(
+		federation.clone(),
+		stopping,
+	));
+	let count_query = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("dashboard_sessions"))
+		.to_string(PostgresQueryBuilder);
+	tokio::time::timeout(std::time::Duration::from_secs(5), async {
+		loop {
+			let count: i64 = sqlx::query_scalar(&count_query)
+				.fetch_one(&federation.store.pool)
+				.await
+				.unwrap();
+			if count == 0 {
+				break;
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+		}
+	})
+	.await
+	.unwrap();
+	stop.send(true).unwrap();
+	refresh.await.unwrap().unwrap();
 	common::cleanup(federation, &url, &schema).await;
 }

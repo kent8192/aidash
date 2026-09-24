@@ -195,6 +195,15 @@ impl MigrationTrait for Migration {
 			)
 			.await?;
 		manager
+			.create_index(
+				Index::create()
+					.name("dashboard_session_expiry")
+					.table(Alias::new("dashboard_sessions"))
+					.col(Alias::new("expires_at"))
+					.to_owned(),
+			)
+			.await?;
+		manager
 			.create_table(
 				table("dashboard_logout_tokens")
 					.col(
@@ -269,10 +278,39 @@ impl MigrationTrait for Migration {
 					.to_owned(),
 			)
 			.await?;
+		manager
+			.create_index(
+				Index::create()
+					.name("dashboard_origin_identity_run")
+					.table(Alias::new("dashboard_execution_origins"))
+					.col(Alias::new("identity_id"))
+					.col(Alias::new("run_id"))
+					.to_owned(),
+			)
+			.await?;
+		manager
+			.create_index(
+				Index::create()
+					.name("dashboard_status_waiting_runs")
+					.table(Alias::new("runs"))
+					.col(Alias::new("id"))
+					.and_where(Expr::col(Alias::new("control")).eq("PAUSED"))
+					.and_where(Expr::col(Alias::new("error")).eq("identity status unavailable"))
+					.to_owned(),
+			)
+			.await?;
 		Ok(())
 	}
 
 	async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+		manager
+			.drop_index(
+				Index::drop()
+					.name("dashboard_status_waiting_runs")
+					.table(Alias::new("runs"))
+					.to_owned(),
+			)
+			.await?;
 		for name in [
 			"dashboard_execution_origins",
 			"dashboard_registration_requests",

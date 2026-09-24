@@ -255,6 +255,15 @@ fn browser_operator_allowed(method: &Method, path: &str) -> bool {
 	) {
 		return true;
 	}
+	if *method == Method::POST
+		&& matches!(
+			segments.as_slice(),
+			["", "generation", _, "policies", _]
+				| ["", "generation", _, "requests", _, "control"]
+				| ["", "workspaces", _, "semantic", "index"]
+		) {
+		return true;
+	}
 	// Browser operator mode administers the installation and may stop work.
 	// It cannot silently become a tenant subject for new work or resumption.
 	path.starts_with("/dashboard/")

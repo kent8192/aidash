@@ -1903,7 +1903,7 @@ impl Store {
 				)
 				.value(
 					sea_orm::sea_query::Alias::new("error"),
-					sea_orm::sea_query::Expr::cust("$3"),
+					sea_orm::sea_query::Expr::cust("CASE WHEN control = 'PAUSED' AND error IS DISTINCT FROM 'identity status unavailable' THEN error ELSE $3 END"),
 				)
 				.value(
 					sea_orm::sea_query::Alias::new("revision"),
@@ -2092,6 +2092,12 @@ impl Store {
 				.value(
 					sea_orm::sea_query::Alias::new("control"),
 					sea_orm::sea_query::Expr::cust("$2"),
+				)
+				.value(
+					sea_orm::sea_query::Alias::new("error"),
+					sea_orm::sea_query::Expr::cust(
+						"CASE WHEN $2 = 'PAUSED' AND error = 'identity status unavailable' THEN NULL ELSE error END",
+					),
 				)
 				.value(
 					sea_orm::sea_query::Alias::new("revision"),
