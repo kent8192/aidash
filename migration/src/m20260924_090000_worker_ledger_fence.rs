@@ -38,7 +38,8 @@ BEGIN
             OR NEW.pending IS DISTINCT FROM OLD.pending
             OR NEW.context IS DISTINCT FROM OLD.context
             OR NEW.step IS DISTINCT FROM OLD.step
-            OR NEW.observed_input_seq IS DISTINCT FROM OLD.observed_input_seq) THEN
+            OR NEW.observed_input_seq IS DISTINCT FROM OLD.observed_input_seq
+            OR NEW.revision IS DISTINCT FROM OLD.revision) THEN
         RAISE EXCEPTION 'run input ledger requires an upgraded worker';
     END IF;
     IF NEW.lease_owner IS NOT NULL

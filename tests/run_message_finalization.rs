@@ -169,6 +169,132 @@ async fn old_worker_cannot_lease_after_input_ledger_admission() {
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
+async fn old_worker_cannot_start_tool_invocation_after_input_backfill() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Invocation rollout fence","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	let pending = json!({
+		"included_input_seq":1,
+		"response":{"text":"","tool_calls":[{"id":"stale-call","name":"unsafe","arguments":{"action":"write"}}],"input_tokens":0,"output_tokens":0},
+		"cursor":0
+	});
+	sqlx::query(
+		&sea_orm::sea_query::Query::update()
+			.table(sea_orm::sea_query::Alias::new("runs"))
+			.value(
+				sea_orm::sea_query::Alias::new("phase"),
+				sea_orm::sea_query::Expr::cust("'TOOL_CALL'"),
+			)
+			.value(
+				sea_orm::sea_query::Alias::new("pending"),
+				sea_orm::sea_query::Expr::cust("$2"),
+			)
+			.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.bind(&pending)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let old_worker = Uuid::new_v4();
+	sqlx::query(
+		&sea_orm::sea_query::Query::update()
+			.table(sea_orm::sea_query::Alias::new("runs"))
+			.value(
+				sea_orm::sea_query::Alias::new("lease_owner"),
+				sea_orm::sea_query::Expr::cust("$2"),
+			)
+			.value(
+				sea_orm::sea_query::Alias::new("lease_until"),
+				sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP + INTERVAL '30 seconds'"),
+			)
+			.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.bind(old_worker)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let input_key = format!("human:{}:{}", run.id, Uuid::new_v4());
+	let mut backfill = f.store.pool.begin().await.unwrap();
+	sqlx::query_scalar::<_, String>(
+		&sea_orm::sea_query::Query::select()
+			.expr(sea_orm::sea_query::Expr::cust(
+				"set_config('aidash.input_ledger_worker', 'true', true)",
+			))
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *backfill)
+	.await
+	.unwrap();
+	sqlx::query(
+		&sea_orm::sea_query::Query::insert()
+			.into_table(sea_orm::sea_query::Alias::new("run_inputs"))
+			.columns([
+				sea_orm::sea_query::Alias::new("run_id"),
+				sea_orm::sea_query::Alias::new("sender"),
+				sea_orm::sea_query::Alias::new("content"),
+				sea_orm::sea_query::Alias::new("idempotency_key"),
+			])
+			.values_panic([
+				sea_orm::sea_query::Expr::cust("$1"),
+				sea_orm::sea_query::Expr::cust("$2"),
+				sea_orm::sea_query::Expr::cust("$3"),
+				sea_orm::sea_query::Expr::cust("$4"),
+			])
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.bind("human")
+	.bind("recovered correction")
+	.bind(input_key)
+	.execute(&mut *backfill)
+	.await
+	.unwrap();
+	backfill.commit().await.unwrap();
+	let stale_run = f.store.run(run.id).await.unwrap();
+	let error = f
+		.store
+		.invocation_start(
+			&stale_run,
+			old_worker,
+			"stale-tool-invocation",
+			"unsafe",
+			&json!({"action":"write"}),
+			false,
+		)
+		.await
+		.unwrap_err();
+	assert!(error.to_string().contains("requires an upgraded worker"));
+	let invocation_count: i64 = sqlx::query_scalar(
+		&sea_orm::sea_query::Query::select()
+			.expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+			.from(sea_orm::sea_query::Alias::new("invocations"))
+			.and_where(sea_orm::sea_query::Expr::cust("run_id = $1"))
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.fetch_one(&f.store.pool)
+	.await
+	.unwrap();
+	assert_eq!(invocation_count, 0, "the stale tool effect must not start");
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
 async fn upgraded_worker_reclaims_an_expired_legacy_lease_after_input_backfill() {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
