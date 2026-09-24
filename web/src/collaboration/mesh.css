@@ -6,7 +6,9 @@
   --mesh-muted: #92aca2;
   --line: var(--mesh-line);
   --muted: var(--mesh-muted);
-  grid-template-columns: 172px minmax(0, 1fr);
+  grid-template:
+    "header header" 42px
+    "rail shell" minmax(0, 1fr) / 172px minmax(0, 1fr);
   color: var(--mesh-text);
   background: var(--mesh-bg);
   font-size: 12px;
@@ -25,6 +27,16 @@
 }
 .graph-shell .brand-lockup {
   width: 132px;
+}
+.graph-shell .rail-label {
+  position: static;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip: auto;
+}
+.graph-shell .workspace-footer {
+  display: none;
 }
 .graph-shell .collab-nav {
   padding: 11px 10px;
@@ -47,8 +59,8 @@
   margin-top: -16px;
 }
 .graph-shell .collab-topbar {
-  min-height: 44px;
-  height: 44px;
+  min-height: 42px;
+  height: 42px;
   padding: 6px 16px;
   gap: 15px;
   background: #08271f;
@@ -1073,8 +1085,9 @@
 @media (max-width: 650px) {
   .graph-shell {
     display: grid;
-    grid-template-columns: 48px minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr);
+    grid-template:
+      "header header" 48px
+      "rail shell" minmax(0, 1fr) / 48px minmax(0, 1fr);
     height: 100dvh;
   }
   .graph-shell .collab-rail {
@@ -1277,12 +1290,12 @@
 .graph-shell .collab-rail {
   order: 0;
   grid-column: 1;
-  grid-row: 1;
+  grid-row: 2;
 }
 .graph-shell .collab-shell {
   order: 0;
   grid-column: 2;
-  grid-row: 1;
+  grid-row: 2;
 }
 .mesh-graph {
   position: relative;

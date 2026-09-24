@@ -1,5 +1,8 @@
 import { test, expect } from "@playwright/test";
-import { installBearerDashboard } from "./auth-fixture";
+import {
+  installBearerDashboard,
+  selectDashboardLanguage,
+} from "./auth-fixture";
 
 test("deployment dashboard shows replica changes, failures and unavailable observations in both languages", async ({
   page,
@@ -83,7 +86,7 @@ test("deployment dashboard shows replica changes, failures and unavailable obser
     path: "../.ignore/dashboard-deployment-desktop.png",
     fullPage: true,
   });
-  await page.getByTestId("language-selector").selectOption("ja-JP");
+  await selectDashboardLanguage(page, "ja-JP");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(
     page.getByRole("heading", { name: "レプリカの状態", exact: true }),

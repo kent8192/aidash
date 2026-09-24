@@ -1,5 +1,8 @@
 import { test, expect } from "@playwright/test";
-import { installBearerDashboard } from "./auth-fixture";
+import {
+  installBearerDashboard,
+  selectDashboardLanguage,
+} from "./auth-fixture";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
@@ -251,7 +254,7 @@ test("transaction dashboard survives reload during a partition, aborts safely an
       (await api(`/api/workspaces/${workspace.id}`)).workspace.revision,
     ).toBe(1);
     await page.getByRole("button", { name: "Close", exact: true }).click();
-    await page.getByTestId("language-selector").selectOption("ja-JP");
+    await selectDashboardLanguage(page, "ja-JP");
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(
       page.getByRole("heading", { name: "分散トランザクション", exact: true }),

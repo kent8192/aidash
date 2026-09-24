@@ -1,5 +1,8 @@
 import { test, expect } from "@playwright/test";
-import { installBearerDashboard } from "./auth-fixture";
+import {
+  installBearerDashboard,
+  selectDashboardLanguage,
+} from "./auth-fixture";
 
 test.beforeEach(async ({ page }) => {
   await installBearerDashboard(page, "acceptance-access-token");
@@ -32,6 +35,7 @@ test("restarts the event stream when the tab selects another authority", async (
   const selector = page.locator(".collab-topbar select").first();
   await expect(selector).toHaveValue("operator");
   await expect.poll(() => contexts.includes("operator")).toBeTruthy();
+  await page.locator(".account-popover > summary").click();
   await selector.selectOption("mapping:fixture-mapping");
   await expect
     .poll(() => contexts.includes("mapping:fixture-mapping"))
@@ -98,7 +102,7 @@ test("observes the two-node execution and all management screens", async ({
     await expect(page.locator(".collab-settings h1")).toHaveText("設定");
   }
   await page.goto("/collaboration");
-  await page.getByTestId("language-selector").selectOption("en-US");
+  await selectDashboardLanguage(page, "en-US");
   await expect(
     page
       .locator(".collab-rail nav")

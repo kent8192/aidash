@@ -69,6 +69,18 @@ export type MeshGraph = {
   omitted: number;
   omittedEdges: number;
 };
+export function canvasEdges(graph: MeshGraph, grouped: boolean): MeshEdge[] {
+  if (!grouped) return graph.edges;
+  return graph.edges.filter(
+    (edge) =>
+      edge.relation !== "member" ||
+      !graph.nodes.some(
+        (node) =>
+          (node.id === edge.source && node.parent === edge.target) ||
+          (node.id === edge.target && node.parent === edge.source),
+      ),
+  );
+}
 export const resourceKey = (nodeId: string, kind: string, id: string) =>
   JSON.stringify(["resource", nodeId, kind, id]);
 export function reference(value: unknown): EntityReference | undefined {
@@ -406,6 +418,7 @@ export function filterMeshGraph(
     query: string;
     relations?: readonly MeshRelation[];
     focus?: string;
+    pin?: string;
     maxNodes?: number;
     maxEdges?: number;
   },
@@ -461,15 +474,17 @@ export function filterMeshGraph(
   // Share a crowded canvas across kinds so registry entries cannot exhaust the
   // budget before any workspace or recorded activity becomes visible.
   if (candidates.length > maxNodes) {
-    const focused = candidates.find((n) => n.id === options.focus);
+    const priority = [options.focus, options.pin]
+      .map((id) => candidates.find((n) => n.id === id))
+      .filter((n): n is MeshNode => Boolean(n));
     const groups = new Map<MeshKind, MeshNode[]>();
     for (const candidate of candidates) {
-      if (candidate === focused) continue;
+      if (priority.includes(candidate)) continue;
       const group = groups.get(candidate.kind) ?? [];
       group.push(candidate);
       groups.set(candidate.kind, group);
     }
-    const ordered = focused ? [focused] : [];
+    const ordered = [...new Set(priority)];
     const kinds: MeshKind[] = [
       "workspace",
       "agent",
@@ -849,7 +864,8 @@ export function nodeEvents(
     .filter((e) => {
       if (
         !inWindow(e.created_at, hours, now) ||
-        e.node_id !== node.nodeId ||
+        (["remote", "workspace", "goal"].includes(node.kind) &&
+          e.node_id !== node.nodeId) ||
         (channel && e.workspace_id !== channel)
       )
         return false;

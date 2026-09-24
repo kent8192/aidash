@@ -1,5 +1,8 @@
 import { test, expect } from "@playwright/test";
-import { installBearerDashboard } from "./auth-fixture";
+import {
+  installBearerDashboard,
+  selectDashboardLanguage,
+} from "./auth-fixture";
 import { randomUUID } from "node:crypto";
 
 test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog and credential revocation", async ({
@@ -291,7 +294,7 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
     .getByRole("button", { name: "前のページ", exact: true })
     .click();
   await expect(history.locator(".auth-history")).toHaveCount(25);
-  await page.getByTestId("language-selector").selectOption("en-US");
+  await selectDashboardLanguage(page, "en-US");
   await expect(
     page.getByRole("heading", { name: "Policy bundle", exact: true }),
   ).toBeVisible();
@@ -299,7 +302,7 @@ test("authorization dashboard manages revisions, RBAC/ABAC decisions, catalog an
     path: "../.ignore/dashboard-authorization-desktop.png",
     fullPage: true,
   });
-  await page.getByTestId("language-selector").selectOption("ja-JP");
+  await selectDashboardLanguage(page, "ja-JP");
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
     path: "../.ignore/dashboard-authorization-mobile.png",
@@ -421,7 +424,7 @@ test("peer identity mappings preserve revisions, credential rotation and bilingu
     path: "../.ignore/dashboard-peer-mappings-en.png",
     fullPage: true,
   });
-  await page.getByTestId("language-selector").selectOption("ja-JP");
+  await selectDashboardLanguage(page, "ja-JP");
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(
     page.getByRole("heading", {

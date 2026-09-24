@@ -60,9 +60,8 @@ export function Graph({
 }) {
   const { locale, t } = useI18n();
   const copy = meshCopy[locale];
-  const [mode, setMode] = useState<MeshMode | "neighborhood">(
-    focus ? "neighborhood" : "mesh",
-  );
+  const [requestedMode, setMode] = useState<MeshMode | "neighborhood">("mesh");
+  const mode = focus ? "neighborhood" : requestedMode;
   const [layout, setLayout] = useState<MeshLayout>("structured");
   const [hours, setHours] = useState(24);
   const [kinds, setKinds] = useState<MeshKind[]>(
@@ -94,8 +93,9 @@ export function Graph({
         query: search,
         relations,
         focus: focused,
+        pin: selectedId,
       }),
-    [full, graphMode, kinds, search, relations, focused],
+    [full, graphMode, kinds, search, relations, focused, selectedId],
   );
   const labels = useMemo(
     () =>

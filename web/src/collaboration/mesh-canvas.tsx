@@ -9,6 +9,7 @@ import { Crosshair, Maximize, Minus, Plus, Scan } from "lucide-react";
 import type { MeshCopy } from "./mesh-copy";
 import { meshColors, meshIcons } from "./mesh-icons";
 import {
+  canvasEdges,
   meshPositions,
   type MeshGraph,
   type MeshKind,
@@ -82,31 +83,21 @@ function elements(
             : "",
         ].join(" "),
       })),
-    ...graph.edges
-      .filter(
-        (e) =>
-          !grouped ||
-          !graph.nodes.some(
-            (n) =>
-              (n.id === e.source && n.parent === e.target) ||
-              (n.id === e.target && n.parent === e.source),
-          ),
-      )
-      .map((e) => ({
-        data: {
-          id: e.id,
-          source: e.source,
-          target: e.target,
-          label:
-            graph.edges.length < 30 ||
-            ["goal", "delegates", "federation", "depends"].includes(e.relation)
-              ? copy.relations[e.relation]
-              : "",
-          fullLabel: copy.relations[e.relation],
-          layer: e.layer,
-          relation: e.relation,
-        },
-      })),
+    ...canvasEdges(graph, grouped).map((e) => ({
+      data: {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        label:
+          graph.edges.length < 30 ||
+          ["goal", "delegates", "federation", "depends"].includes(e.relation)
+            ? copy.relations[e.relation]
+            : "",
+        fullLabel: copy.relations[e.relation],
+        layer: e.layer,
+        relation: e.relation,
+      },
+    })),
   ];
 }
 

@@ -199,6 +199,18 @@ test("leaving a focused agent relationship view clears its URL without changing 
   await expect
     .poll(() => new URL(page.url()).searchParams.has("focus"))
     .toBe(false);
+  await page.goBack();
+  await expect(page.getByLabel("Graph perspective")).toHaveValue(
+    "neighborhood",
+  );
+  await expect
+    .poll(() => new URL(page.url()).searchParams.get("focus"))
+    .toBe(focus);
+  await page.goForward();
+  await expect
+    .poll(() => new URL(page.url()).searchParams.has("focus"))
+    .toBe(false);
+  await expect(page.getByLabel("Graph perspective")).toHaveValue("knowledge");
   await page.reload();
   await expect(page.getByLabel("Graph perspective")).toHaveValue("mesh");
   expect(errors).toEqual([]);

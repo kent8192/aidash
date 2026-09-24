@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildMeshGraph,
+  canvasEdges,
   eventReferences,
   filterMeshGraph,
   inWindow,
@@ -116,6 +117,48 @@ test("node budget keeps workspace activity alongside a large registry", () => {
       kind,
     );
   assert.ok(graph.edges.some((e) => e.relation === "contains"));
+});
+test("an inspector target outside the node budget remains visible with its relationship", () => {
+  const s = scene();
+  const tool = s.data.registry.find((entry) => entry.kind === "tool");
+  for (let i = 0; i < 200; i++)
+    s.data.registry.push({ ...tool, id: `tool-${i}` });
+  s.data.registry[0].config.tools.push({ id: "tool-199", version: "1.0.0" });
+  const full = project(s);
+  const target = node(full, "tool-199");
+  assert.ok(target);
+  assert.ok(!visible(full).nodes.some((item) => item.id === target.id));
+  const selected = visible(full, { pin: target.id });
+  assert.ok(selected.nodes.some((item) => item.id === target.id));
+  assert.ok(
+    selected.edges.some(
+      (edge) =>
+        edge.source === node(full, "planner").id && edge.target === target.id,
+    ),
+  );
+});
+test("the canvas keeps coordinator edges while suppressing compound membership", () => {
+  const graph = visible(project(scene()));
+  const cluster = node(graph, "local-cluster");
+  const planner = node(graph, "planner");
+  assert.equal(planner.parent, cluster.id);
+  const edges = canvasEdges(graph, true);
+  assert.ok(
+    edges.some(
+      (edge) =>
+        edge.source === cluster.id &&
+        edge.target === planner.id &&
+        edge.relation === "coordinates",
+    ),
+  );
+  assert.ok(
+    !edges.some(
+      (edge) =>
+        edge.source === planner.id &&
+        edge.target === cluster.id &&
+        edge.relation === "member",
+    ),
+  );
 });
 test("edge budget retains a connection for every displayed connected node", () => {
   const nodes = Array.from({ length: 20 }, (_, i) => ({
@@ -354,6 +397,30 @@ test("inspector events stay within the selected workspace for agents and the loc
       ),
     );
   }
+});
+test("remote executing agents show exact home task events", () => {
+  const s = scene();
+  const peer = s.data.peers[0].node_id;
+  const run = {
+    ...s.data.runs[0],
+    id: "remote-run",
+    agent_id: "remote-worker",
+  };
+  const graph = buildMeshGraph(s.data, {
+    channel: "product-lab",
+    runs: [{ node: peer, run }],
+    now,
+  });
+  const agent = node(graph, "remote-worker");
+  assert.ok(agent);
+  s.data.events.push({
+    ...s.data.events[0],
+    id: "unrelated-home-task",
+    data: { task_id: "other-task" },
+  });
+  const events = nodeEvents(agent, graph, s.data, 24, now, "product-lab");
+  assert.ok(events.some((event) => event.id === "event-0"));
+  assert.ok(!events.some((event) => event.id === "unrelated-home-task"));
 });
 test("revoked entities and disabled peers remove cached names and remote status", () => {
   const s = scene();

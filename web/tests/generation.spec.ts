@@ -1,5 +1,8 @@
 import { test, expect } from "@playwright/test";
-import { installBearerDashboard } from "./auth-fixture";
+import {
+  installBearerDashboard,
+  selectDashboardLanguage,
+} from "./auth-fixture";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { randomUUID } from "node:crypto";
@@ -407,7 +410,7 @@ test("generation dashboard manages policy, approval, completion and retained his
       "定義と上限を確認済み",
     );
     await dialog.getByRole("button", { name: "閉じる", exact: true }).click();
-    await page.getByTestId("language-selector").selectOption("en-US");
+    await selectDashboardLanguage(page, "en-US");
     await expect(page.locator(".collab-settings h1")).toHaveText("Settings");
     await expect(page.locator(".collab-settings-select select")).toHaveValue(
       "generation",
@@ -430,7 +433,7 @@ test("generation dashboard manages policy, approval, completion and retained his
       fullPage: true,
     });
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
-    await page.getByTestId("language-selector").selectOption("ja-JP");
+    await selectDashboardLanguage(page, "ja-JP");
     const denied = await assign("Rejected specialist");
     await denied.click();
     await dialog
