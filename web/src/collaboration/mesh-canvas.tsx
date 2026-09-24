@@ -458,7 +458,7 @@ export function MeshCanvas({
     const selected = cy.getElementById(selectedId);
     selected.addClass("is-selected");
     selected.connectedEdges().addClass("is-connected");
-  }, [selectedId, graph]);
+  }, [selectedId, graph, mode, layout, label, copy]);
   const zoom = (factor: number) => {
     const cy = instance.current;
     if (cy)
@@ -542,11 +542,19 @@ export function MeshCanvas({
             cy.fit(undefined, 36);
             return;
           }
-          const rect = event.currentTarget.getBoundingClientRect();
+          const canvas = mini.current;
+          if (!canvas) return;
+          const rect = canvas.getBoundingClientRect();
           const { x, y, scale } = miniBounds.current;
           const world = {
-            x: (event.clientX - rect.left - 8) / scale + x,
-            y: (event.clientY - rect.top - 8) / scale + y,
+            x:
+              (((event.clientX - rect.left) * canvas.width) / rect.width - 8) /
+                scale +
+              x,
+            y:
+              (((event.clientY - rect.top) * canvas.height) / rect.height - 8) /
+                scale +
+              y,
           };
           cy.pan({
             x: cy.width() / 2 - world.x * cy.zoom(),

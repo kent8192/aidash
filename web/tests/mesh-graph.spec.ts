@@ -177,6 +177,32 @@ test("connected local node opens topology and relationship controls only show ac
   await expect(page.locator(".collab-run-grid button")).not.toHaveCount(0);
   expect(errors).toEqual([]);
 });
+test("leaving a focused agent relationship view clears its URL without changing the chosen perspective", async ({
+  page,
+}) => {
+  const { errors } = await setup(page);
+  const focus = JSON.stringify([
+    "entity",
+    "aidash://product-lab",
+    "agent",
+    "planner",
+    "1.0.0",
+  ]);
+  await page.goto(
+    `/graph?channel=product-lab&focus=${encodeURIComponent(focus)}`,
+  );
+  await expect(page.getByLabel("Graph perspective")).toHaveValue(
+    "neighborhood",
+  );
+  await page.getByLabel("Graph perspective").selectOption("knowledge");
+  await expect(page.getByLabel("Graph perspective")).toHaveValue("knowledge");
+  await expect
+    .poll(() => new URL(page.url()).searchParams.has("focus"))
+    .toBe(false);
+  await page.reload();
+  await expect(page.getByLabel("Graph perspective")).toHaveValue("mesh");
+  expect(errors).toEqual([]);
+});
 test("all perspectives and layout engines render and execution events select tasks", async ({
   page,
 }) => {

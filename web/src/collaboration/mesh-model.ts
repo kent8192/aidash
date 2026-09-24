@@ -138,10 +138,16 @@ export function buildMeshGraph(
       workspaceId,
       available: true,
     });
+  const registryByIdentity = new Map(
+    data.registry.map((entry) => [
+      JSON.stringify([entry.kind, entry.id, entry.version]),
+      entry,
+    ]),
+  );
   const entryNode = (kind: MeshKind, ref: EntityReference) => {
     const id = entityKey(nodeId, kind, ref);
-    const entry = data.registry.find(
-      (e) => e.kind === kind && e.id === ref.id && e.version === ref.version,
+    const entry = registryByIdentity.get(
+      JSON.stringify([kind, ref.id, ref.version]),
     );
     add({
       id,
@@ -285,10 +291,28 @@ export function buildMeshGraph(
         Date.parse(b.run.updated_at) - Date.parse(a.run.updated_at),
     );
   const statusSet = new Set<string>();
+  const enabledPeers = new Set(
+    data.peers.filter((peer) => peer.enabled).map((peer) => peer.node_id),
+  );
   for (const { node, run } of activity) {
-    const id = qualified.get(
-      `${node}/agents/${run.agent_id}@${run.agent_version}`,
-    );
+    const identity = `${node}/agents/${run.agent_id}@${run.agent_version}`;
+    let id = qualified.get(identity);
+    if (!id && node !== nodeId && enabledPeers.has(node)) {
+      id = add({
+        id: entityKey(node, "agent", {
+          id: run.agent_id,
+          version: run.agent_version,
+        }),
+        kind: "agent",
+        name: {},
+        nodeId: node,
+        entity: { id: run.agent_id, version: run.agent_version },
+        available: false,
+        remote: true,
+      });
+      qualified.set(identity, id);
+      edge(resourceKey(node, "remote", node), id, "hosts", "federation");
+    }
     if (!id) continue;
     edge(id, resourceKey(nodeId, "task", run.task_id), "executes", "activity");
     if (!statusSet.has(id)) {
@@ -474,7 +498,33 @@ export function filterMeshGraph(
   const nodes = candidates.slice(0, maxNodes);
   const ids = new Set(nodes.map((n) => n.id));
   edges = edges.filter((e) => ids.has(e.source) && ids.has(e.target));
-  const keptEdges = edges.slice(0, options.maxEdges ?? 600);
+  const maxEdges = options.maxEdges ?? 600;
+  const keptEdges: MeshEdge[] = [];
+  const keptIds = new Set<string>();
+  const connected = new Set<string>();
+  const keep = (e: MeshEdge) => {
+    keptEdges.push(e);
+    keptIds.add(e.id);
+    connected.add(e.source);
+    connected.add(e.target);
+  };
+  // Cover visible endpoints first, then retain the original relationship order.
+  for (const e of edges) {
+    if (keptEdges.length >= maxEdges) break;
+    if (!connected.has(e.source) && !connected.has(e.target)) keep(e);
+  }
+  for (const e of edges) {
+    if (keptEdges.length >= maxEdges) break;
+    if (
+      !keptIds.has(e.id) &&
+      (!connected.has(e.source) || !connected.has(e.target))
+    )
+      keep(e);
+  }
+  for (const e of edges) {
+    if (keptEdges.length >= maxEdges) break;
+    if (!keptIds.has(e.id)) keep(e);
+  }
   return {
     nodes: nodes.map((n) => ({
       ...n,
@@ -810,7 +860,9 @@ export function nodeEvents(
       return (
         (typeof payload.task_id === "string" && tasks.has(payload.task_id)) ||
         (typeof payload.run_id === "string" && runIds.has(payload.run_id)) ||
-        (node.kind === "artifact" && payload.artifact_id === node.resourceId)
+        (node.kind === "artifact" && payload.artifact_id === node.resourceId) ||
+        (node.kind === "conversation" &&
+          payload.conversation_id === node.resourceId)
       );
     })
     .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
@@ -822,6 +874,7 @@ export function eventReferences(event: MeshEvent): {
   task_id?: string;
   run_id?: string;
   artifact_id?: string;
+  conversation_id?: string;
 } {
   const record = (value: unknown): Record<string, unknown> =>
     value && typeof value === "object" && !Array.isArray(value)
@@ -846,5 +899,8 @@ export function eventReferences(event: MeshEvent): {
         : event.kind.startsWith("artifact.")
           ? text(data.id)
           : undefined),
+    conversation_id: event.kind.startsWith("conversation.")
+      ? (text(record(data.conversation).id) ?? text(data.id))
+      : undefined,
   };
 }

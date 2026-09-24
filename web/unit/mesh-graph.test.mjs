@@ -117,6 +117,45 @@ test("node budget keeps workspace activity alongside a large registry", () => {
     );
   assert.ok(graph.edges.some((e) => e.relation === "contains"));
 });
+test("edge budget retains a connection for every displayed connected node", () => {
+  const nodes = Array.from({ length: 20 }, (_, i) => ({
+    id: `agent-${i}`,
+    kind: "agent",
+    name: { en: `Agent ${i}` },
+    nodeId: "local",
+    available: true,
+  }));
+  const edges = [
+    ...Array.from({ length: 10 }, (_, i) => ({
+      id: `dense-${i}`,
+      source: "agent-0",
+      target: `agent-${i + 1}`,
+      relation: "member",
+      layer: "configuration",
+    })),
+    ...Array.from({ length: 9 }, (_, i) => ({
+      id: `late-${i}`,
+      source: `agent-${i + 10}`,
+      target: `agent-${i + 11}`,
+      relation: "member",
+      layer: "configuration",
+    })),
+  ];
+  const filtered = visible(
+    { nodes, edges, omitted: 0, omittedEdges: 0 },
+    {
+      maxEdges: 15,
+    },
+  );
+  assert.equal(filtered.edges.length, 15);
+  assert.ok(filtered.edges.some((e) => e.id === "late-8"));
+  assert.ok(filtered.edges.some((e) => e.id === "dense-0"));
+  assert.equal(
+    new Set(filtered.edges.flatMap((e) => [e.source, e.target])).size,
+    20,
+  );
+  assert.equal(filtered.omittedEdges, 4);
+});
 test("uses exact versions, preserves remote identities, and does not invent health", () => {
   const s = scene();
   s.data.registry[0].config.tools.push({ id: "not-found", version: "1.0.0" });
@@ -141,6 +180,41 @@ test("uses exact versions, preserves remote identities, and does not invent heal
   assert.ok(
     g.nodes.every((n) => n.status !== "HEALTHY" && n.status !== "ONLINE"),
   );
+});
+test("observed remote runs keep their exact agent identity without discovery", () => {
+  const s = scene();
+  const peer = s.data.peers[0].node_id;
+  const run = {
+    ...s.data.runs[0],
+    id: "remote-run",
+    agent_id: "unlisted",
+    agent_version: "2.0.0",
+  };
+  const graph = buildMeshGraph(s.data, {
+    channel: "product-lab",
+    discovery: { agents: [], errors: [] },
+    runs: [{ node: peer, run }],
+    now,
+  });
+  const agent = graph.nodes.find(
+    (n) => n.nodeId === peer && n.entity?.id === "unlisted",
+  );
+  assert.ok(agent);
+  assert.equal(agent.available, false);
+  assert.equal(agent.status, "THINKING");
+  assert.ok(
+    graph.edges.some((e) => e.source === agent.id && e.relation === "executes"),
+  );
+  assert.ok(
+    graph.edges.some((e) => e.target === agent.id && e.relation === "hosts"),
+  );
+  s.data.peers[0].enabled = false;
+  const disabled = buildMeshGraph(s.data, {
+    channel: "product-lab",
+    runs: [{ node: peer, run }],
+    now,
+  });
+  assert.ok(!disabled.nodes.some((n) => n.nodeId === peer));
 });
 test("subject views cannot join discovery or remote runs, and renderers receive no private payload", () => {
   const s = scene();
@@ -307,7 +381,12 @@ test("matches server event envelopes for task creation, completion, publication 
       kind: "task.completed",
       data: { task, artifact },
     }),
-    { task_id: task.id, artifact_id: artifact.id, run_id: undefined },
+    {
+      task_id: task.id,
+      artifact_id: artifact.id,
+      run_id: undefined,
+      conversation_id: undefined,
+    },
   );
   assert.equal(
     eventReferences({ ...event, kind: "artifact.published", data: artifact })
@@ -330,6 +409,33 @@ test("matches server event envelopes for task creation, completion, publication 
   ];
   assert.deepEqual(
     nodeEvents(node(graph, task.id), graph, s.data, 24, now).map((e) => e.id),
+    ["created"],
+  );
+});
+test("conversation creation events appear only in the matching conversation inspector", () => {
+  const s = scene();
+  const conversation = s.data.conversations[0];
+  const other = { ...conversation, id: "another-conversation" };
+  s.data.conversations.push(other);
+  const graph = project(s);
+  const event = s.data.events[0];
+  s.data.events = [
+    {
+      ...event,
+      id: "created",
+      kind: "conversation.created",
+      data: conversation,
+    },
+    { ...event, id: "other", kind: "conversation.created", data: other },
+  ];
+  assert.equal(
+    eventReferences(s.data.events[0]).conversation_id,
+    conversation.id,
+  );
+  assert.deepEqual(
+    nodeEvents(node(graph, conversation.id), graph, s.data, 24, now).map(
+      (e) => e.id,
+    ),
     ["created"],
   );
 });

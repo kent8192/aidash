@@ -970,7 +970,7 @@ function Dashboard({
                     ))}
                   {route.section === "graph" && (
                     <Graph
-                      key={`${context}:${currentChannel}:${route.focus}`}
+                      key={`${context}:${currentChannel}`}
                       data={data}
                       search={graphSearch}
                       setSearch={setGraphSearch}

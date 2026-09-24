@@ -120,17 +120,17 @@ export function Graph({
     [labels, copy],
   );
   const status = (n: MeshNode) =>
-    !n.available
-      ? copy.missing
-      : n.status === "LOCAL"
-        ? copy.localNode
-        : n.status === "CONFIGURED"
-          ? copy.configured
-          : n.status === "DISCOVERED"
-            ? copy.discovered
-            : n.status
-              ? t(n.status)
-              : copy.unknown;
+    n.status === "LOCAL"
+      ? copy.localNode
+      : n.status === "CONFIGURED"
+        ? copy.configured
+        : n.status === "DISCOVERED"
+          ? copy.discovered
+          : n.status
+            ? t(n.status)
+            : n.available
+              ? copy.unknown
+              : copy.missing;
   const selected =
     graph.nodes.find((n) => n.id === selectedId) ??
     (!selectedId
@@ -180,6 +180,7 @@ export function Graph({
     if (focus) setFocus("");
   };
   const changeMode = (value: MeshMode | "neighborhood") => {
+    if (value !== "neighborhood" && focus) setFocus("");
     setMode(value);
     setKinds(
       value === "mesh"
