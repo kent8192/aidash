@@ -17,7 +17,18 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { MessageSquare, Network, Settings, Plus } from "lucide-react";
+import {
+  MessageSquare,
+  Network,
+  Settings,
+  Plus,
+  Search,
+  CircleUserRound,
+  FolderKanban,
+  Bot,
+  Boxes,
+  Store,
+} from "lucide-react";
 import {
   state as getState,
   session as getSession,
@@ -35,6 +46,7 @@ import {
 import { LocaleContext, useI18n, type Locale } from "./ui";
 import { Channel } from "./collaboration/channel";
 import { Graph } from "./collaboration/graph";
+import { meshCopy } from "./collaboration/mesh-copy";
 const Configuration = lazy(() =>
   import("./collaboration/settings").then((module) => ({
     default: module.Configuration,
@@ -62,6 +74,7 @@ import {
 } from "./collaboration/model";
 import "./style.css";
 import "./collaboration/style.css";
+import "./collaboration/mesh.css";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 1000 } },
@@ -140,6 +153,7 @@ function Dashboard({
     "reconnecting",
   );
   const [filter, setFilter] = useState("");
+  const [graphSearch, setGraphSearch] = useState("");
   const [selection, setSelection] = useState<Selection | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -475,8 +489,13 @@ function Dashboard({
     return (
       <main className="login">
         <div className="login-brand">
-          <span className="brand-symbol">a</span>
-          <strong>Aidash</strong>
+          <img
+            className="brand-lockup"
+            src="/brand/aidash-logo.svg"
+            alt="Aidash"
+            width="830"
+            height="310"
+          />
           <span>0.1</span>
         </div>
         <div className="login-card">
@@ -624,12 +643,56 @@ function Dashboard({
     : [];
   return (
     <DisplayProvider data={data}>
-      <div className="collab-app">
+      <div
+        className={`collab-app ${route.section === "graph" ? "graph-shell" : ""}`}
+      >
         <aside className="collab-rail">
           <div className="brand">
-            <span className="brand-symbol">a</span>
-            <strong>Aidash</strong>
+            <img
+              className="brand-lockup"
+              src="/brand/aidash-logo-on-dark.svg"
+              alt="Aidash"
+              width="830"
+              height="310"
+            />
+            <img
+              className="brand-compact"
+              src="/brand/aidash-app-icon.svg"
+              alt="Aidash"
+              width="256"
+              height="256"
+            />
           </div>
+          {route.section === "graph" && data && (
+            <label className="graph-workspace-picker">
+              <FolderKanban size={22} />
+              <div>
+                <span className="sr-only">
+                  {meshCopy[locale].kinds.workspace}
+                </span>
+                <select
+                  value={currentChannel}
+                  onChange={(event) =>
+                    go("graph", { channel: event.target.value, focus: "" })
+                  }
+                >
+                  {!workspace && (
+                    <option value={currentChannel}>{copy.noChannel}</option>
+                  )}
+                  {data.workspaces.map((value) => (
+                    <option key={value.id} value={value.id}>
+                      {value.title}
+                    </option>
+                  ))}
+                </select>
+                <small>
+                  {locale === "ja-JP"
+                    ? "人とエージェントの協働"
+                    : "Human × Agent collaboration"}
+                </small>
+              </div>
+            </label>
+          )}
           <nav aria-label={copy.collaboration}>
             {(
               [
@@ -647,6 +710,7 @@ function Dashboard({
                     name === "graph" ? route.focus || undefined : undefined,
                 }}
                 aria-current={route.section === name ? "page" : undefined}
+                aria-label={copy[name]}
                 className={`collab-nav ${route.section === name ? "selected" : ""}`}
               >
                 <Icon size={20} />
@@ -654,6 +718,30 @@ function Dashboard({
               </Link>
             ))}
           </nav>
+          {route.section === "graph" && (
+            <nav className="collab-graph-links" aria-label={copy.settings}>
+              {(
+                [
+                  ["agents", Bot],
+                  ["registry", Boxes],
+                  ["clusters", Network],
+                  ["marketplace", Store],
+                ] as const
+              ).map(([view, Icon]) => (
+                <Link
+                  key={view}
+                  to="/$section"
+                  params={{ section: "settings" }}
+                  search={{ view, channel: currentChannel || undefined }}
+                  className="collab-nav"
+                  title={t(view)}
+                >
+                  <Icon size={18} />
+                  <span>{t(view)}</span>
+                </Link>
+              ))}
+            </nav>
+          )}
           <nav className="collab-secondary" aria-label={copy.settings}>
             <Link
               to="/$section"
@@ -663,6 +751,7 @@ function Dashboard({
                 view: route.settings,
               }}
               aria-current={route.section === "settings" ? "page" : undefined}
+              aria-label={copy.settings}
               className={`collab-nav ${route.section === "settings" ? "selected" : ""}`}
             >
               <Settings size={20} />
@@ -672,6 +761,18 @@ function Dashboard({
         </aside>
         <div className="collab-shell">
           <header className="collab-topbar">
+            {route.section === "graph" && (
+              <label className="graph-search">
+                <Search size={14} />
+                <span className="sr-only">{meshCopy[locale].search}</span>
+                <input
+                  type="search"
+                  value={graphSearch}
+                  onChange={(event) => setGraphSearch(event.target.value)}
+                  placeholder={meshCopy[locale].search}
+                />
+              </label>
+            )}
             {route.section === "collaboration" && (
               <button
                 type="button"
@@ -686,44 +787,57 @@ function Dashboard({
               <span className="status-dot" />
               {copy[streamStatus]}
             </span>
-            <label>
-              <span className="sr-only">{auth.choose}</span>
-              <select
-                value={context ?? ""}
-                onChange={(event) => chooseContext(event.target.value)}
-              >
-                {browserSession?.mappings.map((mapping) => (
-                  <option key={mapping.id} value={`mapping:${mapping.id}`}>
-                    {mapping.tenant} / {mapping.subject}
-                  </option>
-                ))}
-                {browserSession?.operator && (
-                  <option value="operator">{auth.operator}</option>
-                )}
-              </select>
-            </label>
-            <label>
-              <span className="sr-only">{t("language")}</span>
-              <select
-                data-testid="language-selector"
-                value={locale}
-                onChange={(event) => setLocale(event.target.value as Locale)}
-              >
-                <option value="ja-JP">日本語</option>
-                <option value="en-US">English</option>
-              </select>
-            </label>
-            <button type="button" onClick={disconnect}>
-              {auth.currentDevice}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                void logOut(true);
-              }}
+            <details
+              key={route.section === "graph" ? "graph-account" : "account"}
+              className="collab-account-menu"
+              open={route.section !== "graph" ? true : undefined}
             >
-              {auth.allDevices}
-            </button>
+              <summary aria-label={auth.choose}>
+                <CircleUserRound size={24} />
+              </summary>
+              <div className="collab-account-controls">
+                <label>
+                  <span className="sr-only">{auth.choose}</span>
+                  <select
+                    value={context ?? ""}
+                    onChange={(event) => chooseContext(event.target.value)}
+                  >
+                    {browserSession?.mappings.map((mapping) => (
+                      <option key={mapping.id} value={`mapping:${mapping.id}`}>
+                        {mapping.tenant} / {mapping.subject}
+                      </option>
+                    ))}
+                    {browserSession?.operator && (
+                      <option value="operator">{auth.operator}</option>
+                    )}
+                  </select>
+                </label>
+                <label>
+                  <span className="sr-only">{t("language")}</span>
+                  <select
+                    data-testid="language-selector"
+                    value={locale}
+                    onChange={(event) =>
+                      setLocale(event.target.value as Locale)
+                    }
+                  >
+                    <option value="ja-JP">日本語</option>
+                    <option value="en-US">English</option>
+                  </select>
+                </label>
+                <button type="button" onClick={disconnect}>
+                  {auth.currentDevice}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void logOut(true);
+                  }}
+                >
+                  {auth.allDevices}
+                </button>
+              </div>
+            </details>
           </header>
           <div
             className={`collab-workspace ${route.section !== "collaboration" ? "wide" : ""}`}
@@ -856,7 +970,10 @@ function Dashboard({
                     ))}
                   {route.section === "graph" && (
                     <Graph
+                      key={`${context}:${currentChannel}:${route.focus}`}
                       data={data}
+                      search={graphSearch}
+                      setSearch={setGraphSearch}
                       discovery={discovery.isError ? undefined : discovery.data}
                       runs={runs}
                       channel={currentChannel}
