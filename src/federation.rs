@@ -115,6 +115,25 @@ impl Federation {
 		}
 		Ok(())
 	}
+	/// Explicit cancellation or failure supersedes any still-unobserved
+	/// correction. Its durable home copy is delivered before this call.
+	pub async fn release_terminal_run_messages(&self, run: &Run) -> Result<()> {
+		if run.home_node == self.config.node_id {
+			return Ok(());
+		}
+		let keys: Vec<String> = self
+			.store
+			.run_inputs(run.id)
+			.await?
+			.into_iter()
+			.map(|input| input.idempotency_key)
+			.collect();
+		let home = Home::new(self.clone(), run.clone());
+		for chunk in keys.chunks(100) {
+			home.release_run_messages(chunk).await?;
+		}
+		Ok(())
+	}
 	pub async fn require_terminal_safe_delivery(&self, run: &Run) -> Result<()> {
 		if run.home_node == self.config.node_id {
 			return Ok(());
@@ -464,11 +483,16 @@ impl Federation {
 		let status = response.status();
 		if !status.is_success() {
 			return Err(
-				if status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+				if (status == reqwest::StatusCode::SERVICE_UNAVAILABLE
 					&& response
 						.headers()
 						.get("x-aidash-transaction-pending")
-						.is_some_and(|value| value == "1")
+						.is_some_and(|value| value == "1"))
+					|| (status == reqwest::StatusCode::CONFLICT
+						&& response
+							.headers()
+							.get("x-aidash-run-message-pending")
+							.is_some())
 				{
 					Error::TransactionPending
 				} else if status == reqwest::StatusCode::CONFLICT {
@@ -877,6 +901,9 @@ impl Home {
 				self.run.home_node, body["error"]
 			)));
 		}
+		if response.status() == reqwest::StatusCode::CONFLICT {
+			return Err(Error::Conflict("remote task state changed".into()));
+		}
 		let response = response.error_for_status()?;
 		Ok(Some(crate::response::json(response, 4_194_304).await?))
 	}
@@ -1209,18 +1236,25 @@ impl Home {
 		if self.local() {
 			return Ok(());
 		}
-		self.command::<Value>(
-			"run_message_reserve",
-			json!({"run_id":self.run.id,"key":key,"content":content}),
-		)
-		.await?;
+		if self
+			.optional_command::<Value>(
+				"run_message_reserve",
+				json!({"run_id":self.run.id,"key":key,"content":content}),
+			)
+			.await?
+			.is_none()
+		{
+			return Err(Error::Conflict(
+				"remote home cannot reserve run messages during task termination".into(),
+			));
+		}
 		Ok(())
 	}
 	pub async fn release_run_messages(&self, keys: &[String]) -> Result<()> {
 		if self.local() || keys.is_empty() {
 			return Ok(());
 		}
-		self.command::<Value>(
+		self.optional_command::<Value>(
 			"run_message_release",
 			json!({"run_id":self.run.id,"keys":keys}),
 		)

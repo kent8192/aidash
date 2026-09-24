@@ -3,7 +3,7 @@ mod common;
 use aidash::{
 	api,
 	domain::{NewTask, qualified_agent},
-	federation::Federation,
+	federation::{Federation, Home},
 	harness::Harness,
 };
 use axum::{Router, body::Body, http::Request, middleware::Next, response::IntoResponse};
@@ -99,7 +99,11 @@ async fn old_peer_workspace_compat(
 	if mode.old_peer.load(Ordering::SeqCst)
 		&& matches!(
 			operation,
-			"run_message_history" | "run_message_delivery" | "run_message_delivery_capability"
+			"run_message_history"
+				| "run_message_delivery"
+				| "run_message_delivery_capability"
+				| "run_message_reserve"
+				| "run_message_release"
 		) {
 		return (
 			axum::http::StatusCode::BAD_REQUEST,
@@ -248,6 +252,12 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.is_err(),
 		"home termination must wait until the correction reaches inference"
 	);
+	assert!(matches!(
+		Home::new(executor.clone(), run.clone())
+			.transition("CANCELLED")
+			.await,
+		Err(aidash::error::Error::TransactionPending)
+	));
 	assert!(
 		home.store
 			.snapshot(workspace.id)
@@ -357,6 +367,19 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.iter()
 			.any(|input| input.content == "old-home historical correction")
 	);
+	let mut old_peer_observed = run.clone();
+	old_peer_observed.observed_input_seq = executor
+		.store
+		.run_inputs(run.id)
+		.await
+		.unwrap()
+		.last()
+		.unwrap()
+		.seq;
+	executor
+		.acknowledge_run_messages(&old_peer_observed)
+		.await
+		.unwrap();
 	let compatibility_key = Uuid::new_v4();
 	assert_eq!(
 		peer_control(

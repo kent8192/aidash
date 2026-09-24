@@ -385,6 +385,7 @@ impl Harness {
 			.as_str()
 			.map(str::to_owned)
 		{
+			self.federation.release_terminal_run_messages(run).await?;
 			home.transition(&target).await?;
 			run.phase = target;
 			run.pending = json!({});
@@ -416,6 +417,7 @@ impl Harness {
 			}
 		}
 		if run.control == "CANCELLED" {
+			self.federation.release_terminal_run_messages(run).await?;
 			home.transition("CANCELLED").await?;
 			run.phase = "CANCELLED".into();
 			store.save_run(run, token, "run.cancelled").await?;
