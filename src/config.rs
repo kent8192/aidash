@@ -106,7 +106,7 @@ impl OidcConfig {
 			issuer,
 			client_id,
 			client_secret,
-			public_origin: public_origin.trim_end_matches('/').to_string(),
+			public_origin: origin_url.origin().ascii_serialization(),
 			keycloak_admin_url: keycloak_admin_url.trim_end_matches('/').to_string(),
 			status_client_id,
 			status_client_secret,
@@ -250,6 +250,12 @@ pub(crate) fn same_secret(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn oidc_public_origin_uses_canonical_origin_serialization() {
+		let origin = reqwest::Url::parse("https://example.com:443/").unwrap();
+		assert_eq!(origin.origin().ascii_serialization(), "https://example.com");
+	}
+
 	#[test]
 	fn peer_credentials_reject_short_or_repeated_values() {
 		for value in [

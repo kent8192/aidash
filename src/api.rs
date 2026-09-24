@@ -262,7 +262,9 @@ fn browser_operator_allowed(method: &Method, path: &str) -> bool {
 	if *method == Method::POST
 		&& matches!(
 			segments.as_slice(),
-			["", "generation", _, "policies", _]
+			["", "agents", "personal"]
+				| ["", "skills", "import"]
+				| ["", "generation", _, "policies", _]
 				| ["", "generation", _, "requests", _, "control"]
 				| ["", "workspaces", _, "semantic", "index"]
 				| ["", "workspaces", _, "semantic", "search"]
@@ -1744,5 +1746,23 @@ mod schema_tests {
 			document["components"]["schemas"]["Search"]["additionalProperties"],
 			false
 		);
+	}
+}
+
+#[cfg(test)]
+mod browser_operator_allowlist_tests {
+	use super::*;
+
+	#[test]
+	fn permits_operator_registry_creation_workflows() {
+		assert!(browser_operator_allowed(
+			&Method::POST,
+			"/api/skills/import"
+		));
+		assert!(browser_operator_allowed(
+			&Method::POST,
+			"/api/agents/personal"
+		));
+		assert!(!browser_operator_allowed(&Method::POST, "/api/agents"));
 	}
 }

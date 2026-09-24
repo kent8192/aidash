@@ -286,9 +286,14 @@ async fn login(
 	let browser = cookie_value(&headers, &cookie_name(LOGIN_COOKIE, config))
 		.map(str::to_owned)
 		.unwrap_or_else(random_secret);
+	let callback = format!("{}/auth/callback", config.public_origin);
+	let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
+	let state = CsrfToken::new_random();
+	let nonce = Nonce::new_random();
+	let state_hash = digest(state.secret());
 	let mut tx = f.store.pool.begin().await?;
-	// Serialize admission through reservation. The lock remains held until the
-	// transaction row is inserted, including a cold provider discovery.
+	// Reserve capacity atomically, then release the connection before provider
+	// discovery, which can take up to ten seconds on a cold cache.
 	let admission = Query::select()
 		.expr(Expr::cust("pg_advisory_xact_lock(71003204)"))
 		.to_string(PostgresQueryBuilder);
@@ -320,26 +325,8 @@ async fn login(
 	if count >= 8 {
 		return Err(Error::Conflict("too many pending sign-ins".into()));
 	}
-	let metadata = provider_metadata(config).await?;
-	let callback = format!("{}/auth/callback", config.public_origin);
-	let client = CoreClient::from_provider_metadata(
-		metadata,
-		ClientId::new(config.client_id.clone()),
-		Some(ClientSecret::new(config.client_secret.clone())),
-	)
-	.set_redirect_uri(
-		RedirectUrl::new(callback.clone())
-			.map_err(|_| Error::Invalid("invalid OIDC callback URI".into()))?,
-	);
-	let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
-	let (url, state, nonce) = client
-		.authorize_url(
-			CoreAuthenticationFlow::AuthorizationCode,
-			CsrfToken::new_random,
-			Nonce::new_random,
-		)
-		.set_pkce_challenge(challenge)
-		.url();
+	let redirect_uri = RedirectUrl::new(callback.clone())
+		.map_err(|_| Error::Invalid("invalid OIDC callback URI".into()))?;
 	let query = Query::insert()
 		.into_table(table("dashboard_login_transactions"))
 		.columns([
@@ -362,7 +349,7 @@ async fn login(
 		])
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&query)
-		.bind(digest(state.secret()))
+		.bind(state_hash.clone())
 		.bind(digest(&browser))
 		.bind(nonce.secret())
 		.bind(verifier.secret())
@@ -372,6 +359,37 @@ async fn login(
 		.execute(&mut *tx)
 		.await?;
 	tx.commit().await?;
+	let metadata = match provider_metadata(config).await {
+		Ok(metadata) => metadata,
+		Err(error) => {
+			let release = Query::delete()
+				.from_table(table("dashboard_login_transactions"))
+				.and_where(Expr::col(table("state_hash")).eq(Expr::cust("$1")))
+				.to_string(PostgresQueryBuilder);
+			if let Err(cleanup_error) = sqlx::query(&release)
+				.bind(state_hash)
+				.execute(&f.store.pool)
+				.await
+			{
+				tracing::warn!(%cleanup_error, "failed to release pending OIDC login reservation");
+			}
+			return Err(error);
+		}
+	};
+	let client = CoreClient::from_provider_metadata(
+		metadata,
+		ClientId::new(config.client_id.clone()),
+		Some(ClientSecret::new(config.client_secret.clone())),
+	)
+	.set_redirect_uri(redirect_uri);
+	let (url, _, _) = client
+		.authorize_url(
+			CoreAuthenticationFlow::AuthorizationCode,
+			move || state.clone(),
+			move || nonce.clone(),
+		)
+		.set_pkce_challenge(challenge)
+		.url();
 	let mut response = Redirect::temporary(url.as_str()).into_response();
 	set_cookie(&mut response, LOGIN_COOKIE, &browser, config, true, 300)?;
 	no_store(&mut response);
@@ -721,101 +739,131 @@ pub async fn refresh_active(
 		return Ok(());
 	}
 	loop {
-		// Absolute expiry bounds even revoked sessions when no new login occurs.
-		let prune = Query::delete()
-			.from_table(table("dashboard_sessions"))
-			.and_where(Expr::col(table("expires_at")).lte(Expr::cust("clock_timestamp()")))
-			.to_string(PostgresQueryBuilder);
-		sqlx::query(&prune).execute(&f.store.pool).await?;
-		let active_sessions = Query::select()
-			.column((table("s"), table("id")))
-			.from_as(table("dashboard_sessions"), table("s"))
-			.and_where(
-				Expr::col((table("s"), table("identity_id")))
-					.equals((table("dashboard_identities"), table("id"))),
-			)
-			.and_where(Expr::col((table("s"), table("revoked_at"))).is_null())
-			.and_where(
-				Expr::col((table("s"), table("expires_at"))).gt(Expr::cust("clock_timestamp()")),
-			)
-			.and_where(
-				Expr::col((table("s"), table("last_activity_at")))
-					.gt(Expr::cust("clock_timestamp()-make_interval(secs => $1)")),
-			)
-			.to_owned();
-		let ongoing_runs = Query::select()
-			.column((table("o"), table("run_id")))
-			.from_as(table("dashboard_execution_origins"), table("o"))
-			.join_as(
-				JoinType::InnerJoin,
-				table("runs"),
-				table("r"),
-				Expr::col((table("o"), table("run_id"))).equals((table("r"), table("id"))),
-			)
-			.and_where(
-				Expr::col((table("o"), table("identity_id")))
-					.equals((table("dashboard_identities"), table("id"))),
-			)
-			.and_where(Expr::col((table("r"), table("phase"))).is_not_in([
-				"COMPLETED",
-				"FAILED",
-				"CANCELLED",
-			]))
-			.to_owned();
-		let query = Query::select()
-			.columns([
-				table("id"),
-				table("issuer"),
-				table("subject"),
-				table("last_valid_at"),
-				table("disabled_at"),
-			])
-			.from(table("dashboard_identities"))
-			.and_where(Expr::col(table("disabled_at")).is_null())
-			.and_where(
-				Condition::any()
-					.add(Expr::exists(active_sessions))
-					.add(Expr::exists(ongoing_runs))
-					.into(),
-			)
-			.to_string(PostgresQueryBuilder);
-		let identities: Vec<Identity> = sqlx::query_as(&query)
-			.bind(
-				f.config
-					.oidc
-					.as_ref()
-					.expect("OIDC configured")
-					.session_idle_seconds as f64,
-			)
-			.fetch_all(&f.store.pool)
-			.await?;
-		stream::iter(identities.into_iter().map(|identity| {
-			let f = f.clone();
-			async move {
-				if f.config.oidc.as_ref().is_some_and(|config| identity.issuer != config.issuer) {
-					if let Err(error) = disable_identity(&f, identity.id, None).await {
-						tracing::warn!(identity_id=%identity.id, %error, "old-issuer identity could not be disabled");
-					}
-					return;
-				}
-				match account_valid(&f, identity.id, &identity.issuer, &identity.subject, identity.last_valid_at, identity.disabled_at).await {
-					Ok(()) => if let Err(error) = resume_status_waiting(&f, identity.id).await {
-						tracing::warn!(identity_id=%identity.id, %error, "status recovery check failed");
-					},
-					Err(error) if !matches!(error, Error::Forbidden | Error::IdentityStatusUnavailable) => {
-						tracing::warn!(identity_id=%identity.id, "Keycloak status refresh did not establish validity");
-					},
-					Err(_) => {},
-				}
-			}
-		}))
-		.buffer_unordered(8)
-		.for_each(|_| async {})
+		let identities: Result<Vec<Identity>> = async {
+			// Absolute expiry bounds even revoked sessions when no new login occurs.
+			let prune = Query::delete()
+				.from_table(table("dashboard_sessions"))
+				.and_where(Expr::col(table("expires_at")).lte(Expr::cust("clock_timestamp()")))
+				.to_string(PostgresQueryBuilder);
+			sqlx::query(&prune).execute(&f.store.pool).await?;
+			let active_sessions = Query::select()
+				.column((table("s"), table("id")))
+				.from_as(table("dashboard_sessions"), table("s"))
+				.and_where(
+					Expr::col((table("s"), table("identity_id")))
+						.equals((table("dashboard_identities"), table("id"))),
+				)
+				.and_where(Expr::col((table("s"), table("revoked_at"))).is_null())
+				.and_where(
+					Expr::col((table("s"), table("expires_at")))
+						.gt(Expr::cust("clock_timestamp()")),
+				)
+				.and_where(
+					Expr::col((table("s"), table("last_activity_at")))
+						.gt(Expr::cust("clock_timestamp()-make_interval(secs => $1)")),
+				)
+				.to_owned();
+			let ongoing_runs = Query::select()
+				.column((table("o"), table("run_id")))
+				.from_as(table("dashboard_execution_origins"), table("o"))
+				.join_as(
+					JoinType::InnerJoin,
+					table("runs"),
+					table("r"),
+					Expr::col((table("o"), table("run_id"))).equals((table("r"), table("id"))),
+				)
+				.and_where(
+					Expr::col((table("o"), table("identity_id")))
+						.equals((table("dashboard_identities"), table("id"))),
+				)
+				.and_where(Expr::col((table("r"), table("phase"))).is_not_in([
+					"COMPLETED",
+					"FAILED",
+					"CANCELLED",
+				]))
+				.to_owned();
+			let query = Query::select()
+				.columns([
+					table("id"),
+					table("issuer"),
+					table("subject"),
+					table("last_valid_at"),
+					table("disabled_at"),
+				])
+				.from(table("dashboard_identities"))
+				.and_where(Expr::col(table("disabled_at")).is_null())
+				.and_where(
+					Condition::any()
+						.add(Expr::exists(active_sessions))
+						.add(Expr::exists(ongoing_runs))
+						.into(),
+				)
+				.to_string(PostgresQueryBuilder);
+			let identities = sqlx::query_as(&query)
+				.bind(
+					f.config
+						.oidc
+						.as_ref()
+						.expect("OIDC configured")
+						.session_idle_seconds as f64,
+				)
+				.fetch_all(&f.store.pool)
+				.await?;
+			Ok(identities)
+		}
 		.await;
+		match identities {
+			Ok(identities) => {
+				stream::iter(
+					identities
+						.into_iter()
+						.map(|identity| refresh_identity(f.clone(), identity)),
+				)
+				.buffer_unordered(8)
+				.for_each(|_| async {})
+				.await;
+			}
+			Err(error) => {
+				tracing::warn!(%error, "OIDC refresh pass failed; retrying after interval")
+			}
+		}
 		tokio::select! {
 			_ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {},
 			_ = stopping.changed() => if *stopping.borrow() { return Ok(()); },
 		}
+	}
+}
+
+async fn refresh_identity(f: Federation, identity: Identity) {
+	if f.config
+		.oidc
+		.as_ref()
+		.is_some_and(|config| identity.issuer != config.issuer)
+	{
+		if let Err(error) = disable_identity(&f, identity.id, None).await {
+			tracing::warn!(identity_id=%identity.id, %error, "old-issuer identity could not be disabled");
+		}
+		return;
+	}
+	match account_valid(
+		&f,
+		identity.id,
+		&identity.issuer,
+		&identity.subject,
+		identity.last_valid_at,
+		identity.disabled_at,
+	)
+	.await
+	{
+		Ok(()) => {
+			if let Err(error) = resume_status_waiting(&f, identity.id).await {
+				tracing::warn!(identity_id=%identity.id, %error, "status recovery check failed");
+			}
+		}
+		Err(error) if !matches!(error, Error::Forbidden | Error::IdentityStatusUnavailable) => {
+			tracing::warn!(identity_id=%identity.id, "Keycloak status refresh did not establish validity");
+		}
+		Err(_) => {}
 	}
 }
 
@@ -1512,7 +1560,16 @@ struct AdminMapping {
 	revision: i64,
 }
 
-async fn admin_mappings(State(f): State<Federation>) -> Result<Json<Vec<AdminMapping>>> {
+#[derive(Deserialize)]
+struct AdminMappingPage {
+	#[serde(default)]
+	offset: u64,
+}
+
+async fn admin_mappings(
+	State(f): State<Federation>,
+	QueryParams(page): QueryParams<AdminMappingPage>,
+) -> Result<Json<Vec<AdminMapping>>> {
 	let query = Query::select()
 		.columns([
 			table("id"),
@@ -1525,7 +1582,9 @@ async fn admin_mappings(State(f): State<Federation>) -> Result<Json<Vec<AdminMap
 		.from(table("dashboard_mappings"))
 		.order_by(table("tenant"), Order::Asc)
 		.order_by(table("subject"), Order::Asc)
+		.order_by(table("id"), Order::Asc)
 		.limit(200)
+		.offset(page.offset)
 		.to_string(PostgresQueryBuilder);
 	Ok(Json(sqlx::query_as(&query).fetch_all(&f.store.pool).await?))
 }
@@ -2098,38 +2157,27 @@ async fn backchannel_logout(
 	if sub.is_some() {
 		identities.and_where(Expr::col(table("subject")).eq(Expr::cust("$2")));
 	}
-	let identities = identities.to_string(PostgresQueryBuilder);
-	let ids: Vec<Uuid> = if let Some(sub) = sub {
-		sqlx::query_scalar(&identities)
-			.bind(&config.issuer)
-			.bind(sub)
-			.fetch_all(&mut *tx)
-			.await?
-	} else {
-		sqlx::query_scalar(&identities)
-			.bind(&config.issuer)
-			.fetch_all(&mut *tx)
-			.await?
-	};
-	for id in ids {
-		let mut update = Query::update();
-		update
-			.table(table("dashboard_sessions"))
-			.value(
-				table("revoked_at"),
-				Expr::cust("coalesce(revoked_at,clock_timestamp())"),
-			)
-			.and_where(Expr::col(table("identity_id")).eq(Expr::cust("$1")));
-		if sid.is_some() {
-			update.and_where(Expr::col(table("provider_sid")).eq(Expr::cust("$2")));
-		}
-		let query = update.to_string(PostgresQueryBuilder);
-		let mut statement = sqlx::query(&query).bind(id);
-		if let Some(sid) = sid {
-			statement = statement.bind(sid);
-		}
-		statement.execute(&mut *tx).await?;
+	let mut update = Query::update();
+	update
+		.table(table("dashboard_sessions"))
+		.value(
+			table("revoked_at"),
+			Expr::cust("coalesce(revoked_at,clock_timestamp())"),
+		)
+		.and_where(Expr::col(table("identity_id")).in_subquery(identities.to_owned()));
+	if sid.is_some() {
+		let sid_parameter = if sub.is_some() { "$3" } else { "$2" };
+		update.and_where(Expr::col(table("provider_sid")).eq(Expr::cust(sid_parameter)));
 	}
+	let query = update.to_string(PostgresQueryBuilder);
+	let mut statement = sqlx::query(&query).bind(&config.issuer);
+	if let Some(sub) = sub {
+		statement = statement.bind(sub);
+	}
+	if let Some(sid) = sid {
+		statement = statement.bind(sid);
+	}
+	statement.execute(&mut *tx).await?;
 	tx.commit().await?;
 	Ok(axum::http::StatusCode::OK)
 }

@@ -25,13 +25,15 @@ type Mapping = {
   revision: number;
 };
 type Grant = { identity_id: string; enabled: boolean; revision: number };
+const MAPPING_PAGE_SIZE = 200;
 
 export function DashboardIdentityAdministration() {
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const english = locale === "en-US";
   const client = useQueryClient();
   const [tenant, setTenant] = useState("");
   const [subject, setSubject] = useState("");
+  const [mappingOffset, setMappingOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const registrations = useQuery({
@@ -52,8 +54,9 @@ export function DashboardIdentityAdministration() {
     },
   });
   const mappings = useQuery({
-    queryKey: ["dashboard-mappings"],
-    queryFn: () => apiFetch<Mapping[]>("/api/dashboard/mappings"),
+    queryKey: ["dashboard-mappings", mappingOffset],
+    queryFn: () =>
+      apiFetch<Mapping[]>(`/api/dashboard/mappings?offset=${mappingOffset}`),
   });
   const grants = useQuery({
     queryKey: ["dashboard-operator-grants"],
@@ -182,6 +185,28 @@ export function DashboardIdentityAdministration() {
           )}
         </div>
       ))}
+      <div className="auth-pagination">
+        <button
+          disabled={mappingOffset === 0 || mappings.isFetching}
+          onClick={() =>
+            setMappingOffset(Math.max(0, mappingOffset - MAPPING_PAGE_SIZE))
+          }
+        >
+          {t("authPrevious")}
+        </button>
+        <span>
+          {t("authPage")} {mappingOffset / MAPPING_PAGE_SIZE + 1}
+        </span>
+        <button
+          disabled={
+            (mappings.data?.length ?? 0) < MAPPING_PAGE_SIZE ||
+            mappings.isFetching
+          }
+          onClick={() => setMappingOffset(mappingOffset + MAPPING_PAGE_SIZE)}
+        >
+          {t("authNext")}
+        </button>
+      </div>
       <h3>{english ? "Operator grants" : "operator 権限"}</h3>
       {(identities.data ?? []).map((item) => {
         const grant = grants.data?.find(

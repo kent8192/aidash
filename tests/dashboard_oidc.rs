@@ -32,6 +32,10 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins() {
 	let metadata_issuer = issuer.clone();
 	let discoveries = Arc::new(AtomicUsize::new(0));
 	let discovery_counter = discoveries.clone();
+	let discovery_started = Arc::new(tokio::sync::Notify::new());
+	let started = discovery_started.clone();
+	let discovery_release = Arc::new(tokio::sync::Notify::new());
+	let release = discovery_release.clone();
 	let key_fetches = Arc::new(AtomicUsize::new(0));
 	let key_counter = key_fetches.clone();
 	let fixture = Router::new()
@@ -40,7 +44,11 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins() {
 			get(move || {
 				let issuer = metadata_issuer.clone();
 				discovery_counter.fetch_add(1, Ordering::SeqCst);
+				let started = started.clone();
+				let release = release.clone();
 				async move {
+					started.notify_one();
+					release.notified().await;
 					Json(json!({
 						"issuer": issuer,
 						"authorization_endpoint": format!("{issuer}/protocol/openid-connect/auth"),
@@ -103,16 +111,32 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins() {
 		.await
 		.unwrap();
 	let app = api::router(federation.clone());
-	let first = app
-		.clone()
-		.oneshot(
-			Request::builder()
-				.uri("/auth/login")
-				.body(Body::empty())
-				.unwrap(),
-		)
-		.await
-		.unwrap();
+	let first_app = app.clone();
+	let first_request = tokio::spawn(async move {
+		first_app
+			.oneshot(
+				Request::builder()
+					.uri("/auth/login")
+					.body(Body::empty())
+					.unwrap(),
+			)
+			.await
+			.unwrap()
+	});
+	discovery_started.notified().await;
+	let mut admission_probe = federation.store.pool.begin().await.unwrap();
+	let admission_lock_available: bool =
+		sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(71003204)")
+			.fetch_one(&mut *admission_probe)
+			.await
+			.unwrap();
+	assert!(
+		admission_lock_available,
+		"login admission lock stayed held during discovery"
+	);
+	admission_probe.commit().await.unwrap();
+	discovery_release.notify_one();
+	let first = first_request.await.unwrap();
 	assert_eq!(first.status(), 307);
 	let cookie = first.headers()["set-cookie"]
 		.to_str()
@@ -980,6 +1004,101 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user() 
 			.unwrap()
 			.iter()
 			.all(|identity| !first_ids.contains(identity["id"].as_str().unwrap()))
+	);
+	let insert_credential = Query::insert()
+		.into_table(Alias::new("authorization_credentials"))
+		.columns(
+			[
+				"id",
+				"tenant",
+				"subject",
+				"token_hash",
+				"expires_at",
+				"issued_by",
+			]
+			.map(Alias::new),
+		)
+		.values_panic([
+			Expr::cust("$1"),
+			Expr::cust("$2"),
+			Expr::cust("$3"),
+			Expr::cust("$4"),
+			Expr::cust("clock_timestamp()+interval '12 hours'"),
+			Expr::cust("$5"),
+		])
+		.to_string(PostgresQueryBuilder);
+	let insert_mapping = Query::insert()
+		.into_table(Alias::new("dashboard_mappings"))
+		.columns(["id", "identity_id", "tenant", "subject", "credential_id"].map(Alias::new))
+		.values_panic([
+			Expr::cust("$1"),
+			Expr::cust("$2"),
+			Expr::cust("$3"),
+			Expr::cust("$4"),
+			Expr::cust("$5"),
+		])
+		.to_string(PostgresQueryBuilder);
+	for index in 0..205 {
+		let mapping_id = Uuid::new_v4();
+		let credential_id = Uuid::new_v4();
+		let subject = format!("paged-{index:03}");
+		sqlx::query(&insert_credential)
+			.bind(credential_id)
+			.bind("acme")
+			.bind(&subject)
+			.bind(Sha256::digest(format!("mapping-token-{index}")).to_vec())
+			.bind("operator")
+			.execute(&federation.store.pool)
+			.await
+			.unwrap();
+		sqlx::query(&insert_mapping)
+			.bind(mapping_id)
+			.bind(identity_id)
+			.bind("acme")
+			.bind(subject)
+			.bind(credential_id)
+			.execute(&federation.store.pool)
+			.await
+			.unwrap();
+	}
+	let (status, first_mapping_page) = call(
+		&app,
+		"GET",
+		"/api/dashboard/mappings?offset=0",
+		false,
+		false,
+		None,
+		true,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200);
+	assert_eq!(first_mapping_page.as_array().unwrap().len(), 200);
+	let (status, second_mapping_page) = call(
+		&app,
+		"GET",
+		"/api/dashboard/mappings?offset=200",
+		false,
+		false,
+		None,
+		true,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200);
+	assert_eq!(second_mapping_page.as_array().unwrap().len(), 6);
+	let first_mapping_ids: std::collections::HashSet<_> = first_mapping_page
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|mapping| mapping["id"].as_str().unwrap())
+		.collect();
+	assert!(
+		second_mapping_page
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|mapping| !first_mapping_ids.contains(mapping["id"].as_str().unwrap()))
 	);
 	sqlx::query(&insert_session)
 		.bind(Uuid::new_v4())
