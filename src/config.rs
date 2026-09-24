@@ -44,9 +44,12 @@ impl OidcConfig {
 			return Ok(None);
 		}
 		let required = |key: &str| {
-			env::var(key).map_err(|_| {
-				Error::Invalid(format!("{key} is required when dashboard OIDC is enabled"))
-			})
+			env::var(key)
+				.ok()
+				.filter(|value| !value.trim().is_empty())
+				.ok_or_else(|| {
+					Error::Invalid(format!("{key} is required when dashboard OIDC is enabled"))
+				})
 		};
 		let issuer = required(keys[0])?;
 		let client_id = required(keys[1])?;

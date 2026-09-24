@@ -25,7 +25,10 @@ use axum::{
 use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{convert::Infallible, time::Duration};
+use std::{
+	convert::Infallible,
+	time::{Duration, Instant},
+};
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
@@ -262,6 +265,17 @@ fn browser_operator_allowed(method: &Method, path: &str) -> bool {
 			["", "generation", _, "policies", _]
 				| ["", "generation", _, "requests", _, "control"]
 				| ["", "workspaces", _, "semantic", "index"]
+				| ["", "workspaces", _, "semantic", "search"]
+				| ["", "workspaces", _, "semantic", "entries"]
+				| ["", "workspaces", _, "semantic", "entries", _, "reindex"]
+				| ["", "remote"]
+		) {
+		return true;
+	}
+	if *method == Method::DELETE
+		&& matches!(
+			segments.as_slice(),
+			["", "workspaces", _, "semantic", "entries", _]
 		) {
 		return true;
 	}
@@ -1063,9 +1077,12 @@ async fn events(
 async fn stream(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
+	browser: Option<Extension<crate::dashboard_auth::BrowserOrigin>>,
 	headers: HeaderMap,
 	Query(q): Query<EventQuery>,
 ) -> Result<Sse<impl futures_util::Stream<Item = std::result::Result<SseEvent, Infallible>>>> {
+	let browser = browser.map(|Extension(origin)| origin);
+	let operator = matches!(&actor, Actor::Operator);
 	let scope = scoped(&f, actor);
 	let mut cursor = headers
 		.get("last-event-id")
@@ -1087,7 +1104,14 @@ async fn stream(
 		scope.events(cursor, q.workspace_id, 1).await?;
 	}
 	let stream = async_stream::stream! {
+		let mut last_browser_check = Instant::now();
 		loop {
+			if let Some(origin) = &browser
+				&& last_browser_check.elapsed() >= Duration::from_secs(5)
+			{
+				if !browser_stream_authorized(&f, &headers, origin, operator).await { return; }
+				last_browser_check = Instant::now();
+			}
 			let visibility=match crate::transactions::gate::ReadLease::begin(&f.store).await {
 				Ok(lease)=>lease,
 				Err(Error::TransactionPending)=>{tokio::time::sleep(Duration::from_millis(250)).await;continue;},
@@ -1106,6 +1130,10 @@ async fn stream(
 						}
 					};
 					cursor = event.sequence;
+					if let Some(origin) = &browser {
+						if !browser_stream_authorized(&f, &headers, origin, operator).await { return; }
+						last_browser_check = Instant::now();
+					}
 					if let Some(scope) = &scope {
 						match scope.can_emit(&event).await {
 							Ok(true) => {},
@@ -1122,6 +1150,25 @@ async fn stream(
 		}
 	};
 	Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
+}
+
+async fn browser_stream_authorized(
+	f: &Federation,
+	headers: &HeaderMap,
+	origin: &crate::dashboard_auth::BrowserOrigin,
+	operator: bool,
+) -> bool {
+	match crate::dashboard_auth::actor_from_headers(f, headers, &Method::GET).await {
+		Ok((actor, current)) => {
+			current.identity_id == origin.identity_id
+				&& current.mapping_id == origin.mapping_id
+				&& matches!(
+					(operator, actor),
+					(true, Actor::Operator) | (false, Actor::Subject(_))
+				)
+		}
+		Err(_) => false,
+	}
 }
 
 async fn peer_discover(

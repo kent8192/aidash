@@ -40,7 +40,16 @@ export function DashboardIdentityAdministration() {
   });
   const identities = useQuery({
     queryKey: ["dashboard-identities"],
-    queryFn: () => apiFetch<Identity[]>("/api/dashboard/identities"),
+    queryFn: async () => {
+      const all: Identity[] = [];
+      for (let offset = 0; ; offset += 200) {
+        const page = await apiFetch<Identity[]>(
+          `/api/dashboard/identities?offset=${offset}`,
+        );
+        all.push(...page);
+        if (page.length < 200) return all;
+      }
+    },
   });
   const mappings = useQuery({
     queryKey: ["dashboard-mappings"],

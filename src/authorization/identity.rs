@@ -147,6 +147,7 @@ impl Authorization {
 				.column(Alias::new("issued_by"))
 				.from(Alias::new("authorization_credentials"))
 				.cond_where(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
+				.cond_where(Expr::col(Alias::new("issued_by")).ne("dashboard-oidc"))
 				.order_by(Alias::new("created_at"), Order::Desc)
 				.order_by(Alias::new("id"), Order::Asc)
 				.limit(200)
@@ -169,7 +170,8 @@ impl Authorization {
 				.cond_where(
 					Condition::all()
 						.add(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
-						.add(Expr::col(Alias::new("id")).eq(Expr::cust("$2"))),
+						.add(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+						.add(Expr::col(Alias::new("issued_by")).ne("dashboard-oidc")),
 				)
 				.returning(Query::returning().columns([
 					Alias::new("id"),

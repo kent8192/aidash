@@ -5,8 +5,15 @@ use aidash::{
 	authorization::{Authorization, policy::PolicyBundle},
 	config::OidcConfig,
 };
-use axum::{Json, Router, body::Body, http::Request, routing::get};
-use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+use axum::{
+	Json, Router,
+	body::Body,
+	http::Request,
+	routing::{get, post},
+};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use futures_util::{StreamExt, future::join_all};
+use sea_orm::sea_query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::sync::{
@@ -25,6 +32,8 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins() {
 	let metadata_issuer = issuer.clone();
 	let discoveries = Arc::new(AtomicUsize::new(0));
 	let discovery_counter = discoveries.clone();
+	let key_fetches = Arc::new(AtomicUsize::new(0));
+	let key_counter = key_fetches.clone();
 	let fixture = Router::new()
 		.route(
 			"/realms/test/.well-known/openid-configuration",
@@ -46,7 +55,10 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins() {
 		)
 		.route(
 			"/realms/test/protocol/openid-connect/certs",
-			get(|| async { Json(json!({"keys": []})) }),
+			get(move || {
+				key_counter.fetch_add(1, Ordering::SeqCst);
+				async { Json(json!({"keys": []})) }
+			}),
 		);
 	let server = tokio::spawn(async move { axum::serve(listener, fixture).await.unwrap() });
 	federation.config.oidc = Some(OidcConfig {
@@ -91,41 +103,52 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins() {
 		.await
 		.unwrap();
 	let app = api::router(federation.clone());
-	let mut cookie = None;
-	for attempt in 0..9 {
-		let mut request = Request::builder().uri("/auth/login");
-		if let Some(value) = &cookie {
-			request = request.header("cookie", value);
-		}
-		let response = app
-			.clone()
-			.oneshot(request.body(Body::empty()).unwrap())
+	let first = app
+		.clone()
+		.oneshot(
+			Request::builder()
+				.uri("/auth/login")
+				.body(Body::empty())
+				.unwrap(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(first.status(), 307);
+	let cookie = first.headers()["set-cookie"]
+		.to_str()
+		.unwrap()
+		.split(';')
+		.next()
+		.unwrap()
+		.to_owned();
+	let responses = join_all((0..15).map(|_| {
+		let app = app.clone();
+		let cookie = cookie.clone();
+		async move {
+			app.oneshot(
+				Request::builder()
+					.uri("/auth/login")
+					.header("cookie", cookie)
+					.body(Body::empty())
+					.unwrap(),
+			)
 			.await
-			.unwrap();
-		if attempt < 8 {
-			if response.status() != 307 {
-				let status = response.status();
-				let body = axum::body::to_bytes(response.into_body(), 1_048_576)
-					.await
-					.unwrap();
-				panic!(
-					"login returned {status}: {}",
-					String::from_utf8_lossy(&body)
-				);
-			}
-			cookie = Some(
-				response.headers()["set-cookie"]
-					.to_str()
-					.unwrap()
-					.split(';')
-					.next()
-					.unwrap()
-					.to_owned(),
-			);
-		} else {
-			assert_eq!(response.status(), 409);
+			.unwrap()
+			.status()
+			.as_u16()
 		}
-	}
+	}))
+	.await;
+	assert_eq!(
+		responses.iter().filter(|&&status| status == 307).count(),
+		7,
+		"{responses:?}"
+	);
+	assert_eq!(
+		responses.iter().filter(|&&status| status == 409).count(),
+		8,
+		"{responses:?}"
+	);
 	let count_query = Query::select()
 		.expr(Expr::cust("count(*)"))
 		.from(Alias::new("dashboard_login_transactions"))
@@ -136,6 +159,27 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins() {
 		.unwrap();
 	assert_eq!(count, 8);
 	assert_eq!(discoveries.load(Ordering::SeqCst), 1);
+	let initial_key_fetches = key_fetches.load(Ordering::SeqCst);
+	let header = URL_SAFE_NO_PAD.encode(json!({"alg":"RS256","kid":"unknown"}).to_string());
+	let payload = URL_SAFE_NO_PAD.encode("{}");
+	let token = format!("{header}.{payload}.signature");
+	for _ in 0..3 {
+		let response = app
+			.clone()
+			.oneshot(
+				Request::builder()
+					.method("POST")
+					.uri("/auth/backchannel-logout")
+					.header("content-type", "application/x-www-form-urlencoded")
+					.body(Body::from(format!("logout_token={token}")))
+					.unwrap(),
+			)
+			.await
+			.unwrap();
+		assert_eq!(response.status(), 400);
+	}
+	assert_eq!(discoveries.load(Ordering::SeqCst), 1);
+	assert_eq!(key_fetches.load(Ordering::SeqCst), initial_key_fetches + 1);
 	// A full browser queue must be rejected before contacting an uncached issuer.
 	federation.config.oidc.as_mut().unwrap().issuer =
 		"http://127.0.0.1:1/realms/unavailable".into();
@@ -143,7 +187,7 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins() {
 		.oneshot(
 			Request::builder()
 				.uri("/auth/login")
-				.header("cookie", cookie.unwrap())
+				.header("cookie", cookie)
 				.body(Body::empty())
 				.unwrap(),
 		)
@@ -275,6 +319,24 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user() 
 		.await
 		.unwrap();
 	let app = api::router(federation.clone());
+	let mut changed_issuer = federation.clone();
+	changed_issuer.config.oidc.as_mut().unwrap().issuer =
+		"http://127.0.0.1:18099/realms/other".into();
+	assert_eq!(
+		call(
+			&api::router(changed_issuer),
+			"GET",
+			"/auth/session",
+			true,
+			false,
+			None,
+			false,
+			Value::Null,
+		)
+		.await
+		.0,
+		403
+	);
 	let (status, session) = call(
 		&app,
 		"GET",
@@ -391,7 +453,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user() 
 		Value::Null,
 	)
 	.await;
-	assert_eq!(listed[0]["status"], "expired");
+	assert_eq!(listed, json!([]));
 	let (status, fresh) = call(
 		&app,
 		"POST",
@@ -405,6 +467,38 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user() 
 	.await;
 	assert_eq!(status, 200);
 	assert_ne!(fresh["id"], first["id"]);
+	let insert_old = Query::insert()
+		.into_table(Alias::new("dashboard_registration_requests"))
+		.columns(["id", "identity_id", "status", "created_at", "expires_at"].map(Alias::new))
+		.values_panic([
+			Expr::cust("$1"),
+			Expr::cust("$2"),
+			Expr::value("rejected"),
+			Expr::cust("clock_timestamp()"),
+			Expr::cust("clock_timestamp()+interval '1 day'"),
+		])
+		.to_string(PostgresQueryBuilder);
+	for _ in 0..201 {
+		sqlx::query(&insert_old)
+			.bind(Uuid::new_v4())
+			.bind(identity_id)
+			.execute(&federation.store.pool)
+			.await
+			.unwrap();
+	}
+	let (status, actionable) = call(
+		&app,
+		"GET",
+		"/api/dashboard/registrations",
+		false,
+		false,
+		None,
+		true,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200);
+	assert_eq!(actionable, json!([fresh]));
 	let path = format!(
 		"/api/dashboard/registrations/{}/approve",
 		fresh["id"].as_str().unwrap()
@@ -421,6 +515,47 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user() 
 	)
 	.await;
 	assert_eq!(status, 200, "{mapping}");
+	let credential_query = Query::select()
+		.column(Alias::new("credential_id"))
+		.from(Alias::new("dashboard_mappings"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+		.to_string(PostgresQueryBuilder);
+	let credential_id: Uuid = sqlx::query_scalar(&credential_query)
+		.bind(mapping["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+		.fetch_one(&federation.store.pool)
+		.await
+		.unwrap();
+	assert_eq!(
+		call(
+			&app,
+			"POST",
+			&format!("/api/authorization/acme/credentials/{credential_id}/revoke"),
+			false,
+			false,
+			None,
+			true,
+			Value::Null
+		)
+		.await
+		.0,
+		404
+	);
+	let (_, generic_credentials) = call(
+		&app,
+		"GET",
+		"/api/authorization/acme/credentials",
+		false,
+		false,
+		None,
+		true,
+		Value::Null,
+	)
+	.await;
+	assert!(
+		!generic_credentials
+			.to_string()
+			.contains(&credential_id.to_string())
+	);
 	let context = format!("mapping:{}", mapping["id"].as_str().unwrap());
 	let (status, session) = call(
 		&app,
@@ -451,19 +586,56 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user() 
 	)
 	.await;
 	let revision = mapping_rows[0]["revision"].as_i64().unwrap();
-	assert_eq!(
+	let mut worker = federation.store.pool.begin().await.unwrap();
+	let lock_credential = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("authorization_credentials"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+		.lock(LockType::Share)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query_scalar::<_, Uuid>(&lock_credential)
+		.bind(credential_id)
+		.fetch_one(&mut *worker)
+		.await
+		.unwrap();
+	let disable_app = app.clone();
+	let disable_path = path.clone();
+	let disable = tokio::spawn(async move {
 		call(
-			&app,
+			&disable_app,
 			"POST",
-			&path,
+			&disable_path,
 			false,
 			false,
 			None,
 			true,
-			json!({"expected_revision":revision})
+			json!({"expected_revision":revision}),
 		)
 		.await
-		.0,
+		.0
+	});
+	tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+	let lock_mapping = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("dashboard_mappings"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+		.lock(LockType::Share)
+		.to_string(PostgresQueryBuilder);
+	tokio::time::timeout(
+		std::time::Duration::from_secs(2),
+		sqlx::query_scalar::<_, Uuid>(&lock_mapping)
+			.bind(mapping["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+			.fetch_one(&mut *worker),
+	)
+	.await
+	.unwrap()
+	.unwrap();
+	worker.commit().await.unwrap();
+	assert_eq!(
+		tokio::time::timeout(std::time::Duration::from_secs(5), disable)
+			.await
+			.unwrap()
+			.unwrap(),
 		204
 	);
 	assert_eq!(
@@ -580,6 +752,10 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user() 
 		"/api/generation/acme/policies/research",
 		"/api/generation/acme/requests/00000000-0000-0000-0000-000000000001/control",
 		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/index",
+		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/search",
+		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/entries",
+		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/entries/00000000-0000-0000-0000-000000000002/reindex",
+		"/api/remote",
 	] {
 		assert_ne!(
 			call(
@@ -598,6 +774,35 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user() 
 			"operator route {path} must reach its handler"
 		);
 	}
+	assert_ne!(
+		call(
+			&app,
+			"DELETE",
+			"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/entries/00000000-0000-0000-0000-000000000002",
+			true,
+			true,
+			Some("operator"),
+			false,
+			Value::Null,
+		)
+		.await
+		.0,
+		403
+	);
+	let stream_response = app
+		.clone()
+		.oneshot(
+			Request::builder()
+				.uri("/api/events/stream?after=-1")
+				.header("cookie", "aidash-session=fixture-session")
+				.header("x-aidash-context", "operator")
+				.body(Body::empty())
+				.unwrap(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(stream_response.status(), 200);
+	let mut operator_stream = stream_response.into_body().into_data_stream();
 	assert_eq!(
 		call(
 			&app,
@@ -626,6 +831,12 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user() 
 	.await;
 	assert_eq!(status, 200, "{revoked}");
 	assert_eq!(revoked["revision"], 2);
+	assert!(
+		tokio::time::timeout(std::time::Duration::from_secs(7), operator_stream.next())
+			.await
+			.unwrap()
+			.is_none()
+	);
 	assert_eq!(
 		call(
 			&app,
@@ -722,5 +933,261 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user() 
 	.unwrap();
 	stop.send(true).unwrap();
 	refresh.await.unwrap().unwrap();
+	for index in 0..205 {
+		sqlx::query(&insert_identity)
+			.bind(Uuid::new_v4())
+			.bind("http://127.0.0.1:18099/realms/test")
+			.bind(format!("paged-{index:03}"))
+			.execute(&federation.store.pool)
+			.await
+			.unwrap();
+	}
+	let (status, first_page) = call(
+		&app,
+		"GET",
+		"/api/dashboard/identities?offset=0",
+		false,
+		false,
+		None,
+		true,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200);
+	assert_eq!(first_page.as_array().unwrap().len(), 200);
+	let (status, second_page) = call(
+		&app,
+		"GET",
+		"/api/dashboard/identities?offset=200",
+		false,
+		false,
+		None,
+		true,
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200);
+	assert_eq!(second_page.as_array().unwrap().len(), 6);
+	let first_ids: std::collections::HashSet<_> = first_page
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|identity| identity["id"].as_str().unwrap())
+		.collect();
+	assert!(
+		second_page
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|identity| !first_ids.contains(identity["id"].as_str().unwrap()))
+	);
+	sqlx::query(&insert_session)
+		.bind(Uuid::new_v4())
+		.bind(Sha256::digest(b"issuer-change-session").to_vec())
+		.bind(Sha256::digest(b"issuer-change-csrf").to_vec())
+		.bind(identity_id)
+		.execute(&federation.store.pool)
+		.await
+		.unwrap();
+	let mut changed_issuer = federation.clone();
+	changed_issuer.config.oidc.as_mut().unwrap().issuer =
+		"http://127.0.0.1:18099/realms/other".into();
+	let (stop, stopping) = tokio::sync::watch::channel(false);
+	let refresh = tokio::spawn(aidash::dashboard_auth::refresh_active(
+		changed_issuer,
+		stopping,
+	));
+	let disabled = Query::select()
+		.column(Alias::new("disabled_at"))
+		.from(Alias::new("dashboard_identities"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+		.to_string(PostgresQueryBuilder);
+	tokio::time::timeout(std::time::Duration::from_secs(5), async {
+		loop {
+			let disabled_at: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(&disabled)
+				.bind(identity_id)
+				.fetch_one(&federation.store.pool)
+				.await
+				.unwrap();
+			if disabled_at.is_some() {
+				break;
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+		}
+	})
+	.await
+	.unwrap();
+	stop.send(true).unwrap();
+	refresh.await.unwrap().unwrap();
+	common::cleanup(federation, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
+async fn older_negative_status_cannot_revoke_a_newer_valid_session() {
+	let (mut federation, url, schema) = common::setup().await;
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let issuer = format!("http://{}/realms/test", listener.local_addr().unwrap());
+	let checks = Arc::new(AtomicUsize::new(0));
+	let count = checks.clone();
+	let release = Arc::new(tokio::sync::Notify::new());
+	let released = release.clone();
+	let fixture = Router::new()
+		.route(
+			"/realms/test/protocol/openid-connect/token",
+			post(|| async { Json(json!({"access_token":"fixture"})) }),
+		)
+		.route(
+			"/realms/test/admin/users/stale-user",
+			get(move || {
+				let index = count.fetch_add(1, Ordering::SeqCst);
+				let released = released.clone();
+				async move {
+					if index == 0 {
+						released.notified().await;
+					}
+					Json(json!({"id":"stale-user","enabled":index != 0}))
+				}
+			}),
+		);
+	let server = tokio::spawn(async move { axum::serve(listener, fixture).await.unwrap() });
+	federation.config.oidc = Some(OidcConfig {
+		issuer: issuer.clone(),
+		client_id: "aidash".into(),
+		client_secret: "secret".into(),
+		public_origin: "http://127.0.0.1:8080".into(),
+		keycloak_admin_url: format!("{issuer}/admin"),
+		status_client_id: "status".into(),
+		status_client_secret: "status-secret".into(),
+		session_absolute_seconds: 43_200,
+		session_idle_seconds: 1_800,
+	});
+	let identity_id = Uuid::new_v4();
+	let identity = Query::insert()
+		.into_table(Alias::new("dashboard_identities"))
+		.columns(["id", "issuer", "subject", "last_valid_at"].map(Alias::new))
+		.values_panic([
+			Expr::cust("$1"),
+			Expr::cust("$2"),
+			Expr::value("stale-user"),
+			Expr::cust("clock_timestamp()-interval '10 minutes'"),
+		])
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&identity)
+		.bind(identity_id)
+		.bind(&issuer)
+		.execute(&federation.store.pool)
+		.await
+		.unwrap();
+	let session = Query::insert()
+		.into_table(Alias::new("dashboard_sessions"))
+		.columns(
+			[
+				"id",
+				"token_hash",
+				"csrf_hash",
+				"identity_id",
+				"created_at",
+				"last_activity_at",
+				"expires_at",
+			]
+			.map(Alias::new),
+		)
+		.values_panic([
+			Expr::cust("$1"),
+			Expr::cust("$2"),
+			Expr::cust("$3"),
+			Expr::cust("$4"),
+			Expr::cust("clock_timestamp()"),
+			Expr::cust("clock_timestamp()"),
+			Expr::cust("clock_timestamp()+interval '12 hours'"),
+		])
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&session)
+		.bind(Uuid::new_v4())
+		.bind(Sha256::digest(b"fixture-session").to_vec())
+		.bind(Sha256::digest(b"fixture-csrf").to_vec())
+		.bind(identity_id)
+		.execute(&federation.store.pool)
+		.await
+		.unwrap();
+	let app = api::router(federation.clone());
+	let old_app = app.clone();
+	let old = tokio::spawn(async move {
+		call(
+			&old_app,
+			"GET",
+			"/auth/session",
+			true,
+			false,
+			None,
+			false,
+			Value::Null,
+		)
+		.await
+		.0
+	});
+	tokio::time::timeout(std::time::Duration::from_secs(5), async {
+		while checks.load(Ordering::SeqCst) == 0 {
+			tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+		}
+	})
+	.await
+	.unwrap();
+	assert_eq!(
+		call(
+			&app,
+			"GET",
+			"/auth/session",
+			true,
+			false,
+			None,
+			false,
+			Value::Null
+		)
+		.await
+		.0,
+		200
+	);
+	release.notify_one();
+	assert_eq!(old.await.unwrap(), 403);
+	assert_eq!(
+		call(
+			&app,
+			"GET",
+			"/auth/session",
+			true,
+			false,
+			None,
+			false,
+			Value::Null
+		)
+		.await
+		.0,
+		200
+	);
+	let status = Query::select()
+		.columns([Alias::new("disabled_at"), Alias::new("revoked_at")])
+		.from(Alias::new("dashboard_identities"))
+		.join(
+			sea_orm::sea_query::JoinType::InnerJoin,
+			Alias::new("dashboard_sessions"),
+			Expr::col((Alias::new("dashboard_identities"), Alias::new("id")))
+				.equals((Alias::new("dashboard_sessions"), Alias::new("identity_id"))),
+		)
+		.and_where(
+			Expr::col((Alias::new("dashboard_identities"), Alias::new("id"))).eq(Expr::cust("$1")),
+		)
+		.to_string(PostgresQueryBuilder);
+	let (disabled_at, revoked_at): (
+		Option<chrono::DateTime<chrono::Utc>>,
+		Option<chrono::DateTime<chrono::Utc>>,
+	) = sqlx::query_as(&status)
+		.bind(identity_id)
+		.fetch_one(&federation.store.pool)
+		.await
+		.unwrap();
+	assert!(disabled_at.is_none() && revoked_at.is_none());
+	server.abort();
 	common::cleanup(federation, &url, &schema).await;
 }

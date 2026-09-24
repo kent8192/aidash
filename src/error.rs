@@ -19,6 +19,8 @@ pub enum Error {
 	Unauthorized,
 	#[error("forbidden")]
 	Forbidden,
+	#[error("back-channel logout is busy; retry shortly")]
+	RateLimited,
 	#[error("external identity status is unavailable")]
 	IdentityStatusUnavailable,
 	#[error("atomic transaction visibility pending; retry after recovery")]
@@ -51,6 +53,7 @@ impl IntoResponse for Error {
 			Self::NotFound(s) => (StatusCode::NOT_FOUND, s.clone()),
 			Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
 			Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden".into()),
+			Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
 			Self::IdentityStatusUnavailable => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
 			Self::TransactionPending
 			| Self::SemanticUnavailable
@@ -81,7 +84,7 @@ impl IntoResponse for Error {
 				axum::http::HeaderValue::from_static("1"),
 			);
 		}
-		if status == StatusCode::SERVICE_UNAVAILABLE {
+		if status == StatusCode::SERVICE_UNAVAILABLE || status == StatusCode::TOO_MANY_REQUESTS {
 			response.headers_mut().insert(
 				axum::http::header::RETRY_AFTER,
 				axum::http::HeaderValue::from_static("1"),

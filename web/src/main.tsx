@@ -313,7 +313,7 @@ function Dashboard({
     if (!browserSessionId) return;
     let lastSent = 0;
     const onActivity = () => {
-      if (Date.now() - lastSent < 60_000) return;
+      if (Date.now() - lastSent < 15_000) return;
       const csrf = csrfToken();
       if (!csrf) return;
       lastSent = Date.now();

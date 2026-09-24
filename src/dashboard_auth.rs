@@ -28,7 +28,7 @@ use openidconnect::{
 	core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
 };
 use sea_orm::sea_query::{
-	Alias, Expr, JoinType, LockType, OnConflict, Order, PostgresQueryBuilder, Query,
+	Alias, Condition, Expr, JoinType, LockType, OnConflict, Order, PostgresQueryBuilder, Query,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -45,9 +45,14 @@ const STATUS_FRESH_SECONDS: i64 = 300;
 const STATUS_LIMIT_SECONDS: i64 = 900;
 const MAX_PENDING_LOGIN_TRANSACTIONS: i64 = 10_000;
 const DISCOVERY_CACHE_SECONDS: u64 = 300;
+const JWKS_CACHE_SECONDS: u64 = 300;
+const UNKNOWN_KID_REFRESH_SECONDS: u64 = 30;
 type IdentityValidity = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 type DiscoveryCache = Mutex<HashMap<String, (Instant, CoreProviderMetadata)>>;
 static DISCOVERY_CACHE: OnceLock<DiscoveryCache> = OnceLock::new();
+type JwksCache = Mutex<HashMap<String, (Instant, JwkSet)>>;
+static JWKS_CACHE: OnceLock<JwksCache> = OnceLock::new();
+static BACKCHANNEL_CAPACITY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
 fn table(name: &str) -> Alias {
 	Alias::new(name)
@@ -165,6 +170,70 @@ async fn provider_metadata(config: &OidcConfig) -> Result<CoreProviderMetadata> 
 	Ok(metadata)
 }
 
+async fn logout_decoding_key(
+	f: &Federation,
+	config: &OidcConfig,
+	kid: &str,
+) -> Result<DecodingKey> {
+	let cache = JWKS_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+	let mut entries = cache.lock().await;
+	if let Some((fetched_at, keys)) = entries.get(&config.issuer) {
+		let age = fetched_at.elapsed().as_secs();
+		if age < JWKS_CACHE_SECONDS && keys.find(kid).is_some() {
+			return decoding_key(keys, kid);
+		}
+		// An arbitrary kid must not force a provider request on every attempt.
+		if age < UNKNOWN_KID_REFRESH_SECONDS {
+			return Err(Error::Invalid("unknown logout signing key".into()));
+		}
+	}
+	let metadata = provider_metadata(config).await?;
+	let response = f
+		.client
+		.get(metadata.jwks_uri().url().as_str())
+		.timeout(std::time::Duration::from_secs(10))
+		.send()
+		.await
+		.map_err(|_| Error::External("OIDC key set unavailable".into()))?;
+	if !response.status().is_success() {
+		return Err(Error::External("OIDC key set unavailable".into()));
+	}
+	let mut response = response;
+	let mut body = Vec::new();
+	while let Some(chunk) = response
+		.chunk()
+		.await
+		.map_err(|_| Error::External("OIDC key set unavailable".into()))?
+	{
+		if body.len() + chunk.len() > 1_048_576 {
+			return Err(Error::External("OIDC key set unavailable".into()));
+		}
+		body.extend_from_slice(&chunk);
+	}
+	let keys: JwkSet = serde_json::from_slice(&body)
+		.map_err(|_| Error::External("OIDC key set unavailable".into()))?;
+	let result = decoding_key(&keys, kid);
+	entries.insert(config.issuer.clone(), (Instant::now(), keys));
+	result
+}
+
+fn decoding_key(keys: &JwkSet, kid: &str) -> Result<DecodingKey> {
+	let key = keys
+		.find(kid)
+		.ok_or(Error::Invalid("unknown logout signing key".into()))?;
+	if key
+		.common
+		.key_algorithm
+		.as_ref()
+		.is_some_and(|algorithm| algorithm.to_string() != "RS256")
+	{
+		return Err(Error::Invalid(
+			"logout signing key algorithm mismatch".into(),
+		));
+	}
+	DecodingKey::from_jwk(key).map_err(|_| Error::Invalid("invalid logout signing key".into()))
+}
+
 #[derive(Serialize)]
 struct Configuration {
 	enabled: bool,
@@ -217,20 +286,25 @@ async fn login(
 	let browser = cookie_value(&headers, &cookie_name(LOGIN_COOKIE, config))
 		.map(str::to_owned)
 		.unwrap_or_else(random_secret);
+	let mut tx = f.store.pool.begin().await?;
+	// Serialize admission through reservation. The lock remains held until the
+	// transaction row is inserted, including a cold provider discovery.
+	let admission = Query::select()
+		.expr(Expr::cust("pg_advisory_xact_lock(71003204)"))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&admission).execute(&mut *tx).await?;
 	// Admission cleans up callbacks that were never completed. The expiry index
 	// keeps cleanup efficient; the global cap also bounds burst storage use.
 	let cleanup = Query::delete()
 		.from_table(table("dashboard_login_transactions"))
 		.and_where(Expr::col(table("expires_at")).lte(Expr::cust("clock_timestamp()")))
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&cleanup).execute(&f.store.pool).await?;
+	sqlx::query(&cleanup).execute(&mut *tx).await?;
 	let total_query = Query::select()
 		.expr(Expr::cust("count(*)"))
 		.from(table("dashboard_login_transactions"))
 		.to_string(PostgresQueryBuilder);
-	let total: i64 = sqlx::query_scalar(&total_query)
-		.fetch_one(&f.store.pool)
-		.await?;
+	let total: i64 = sqlx::query_scalar(&total_query).fetch_one(&mut *tx).await?;
 	if total >= MAX_PENDING_LOGIN_TRANSACTIONS {
 		return Err(Error::Conflict("too many pending sign-ins".into()));
 	}
@@ -241,7 +315,7 @@ async fn login(
 		.to_string(PostgresQueryBuilder);
 	let count: i64 = sqlx::query_scalar(&outstanding)
 		.bind(digest(&browser))
-		.fetch_one(&f.store.pool)
+		.fetch_one(&mut *tx)
 		.await?;
 	if count >= 8 {
 		return Err(Error::Conflict("too many pending sign-ins".into()));
@@ -295,8 +369,9 @@ async fn login(
 		.bind(destination)
 		.bind(callback)
 		.bind(Utc::now() + Duration::minutes(5))
-		.execute(&f.store.pool)
+		.execute(&mut *tx)
 		.await?;
+	tx.commit().await?;
 	let mut response = Redirect::temporary(url.as_str()).into_response();
 	set_cookie(&mut response, LOGIN_COOKIE, &browser, config, true, 300)?;
 	no_store(&mut response);
@@ -312,6 +387,7 @@ struct CallbackQuery {
 #[derive(FromRow)]
 struct Identity {
 	id: Uuid,
+	issuer: String,
 	subject: String,
 	last_valid_at: Option<DateTime<Utc>>,
 	disabled_at: Option<DateTime<Utc>>,
@@ -321,6 +397,7 @@ async fn known_identity(f: &Federation, issuer: &str, subject: &str) -> Result<I
 	let query = Query::select()
 		.columns([
 			table("id"),
+			table("issuer"),
 			table("subject"),
 			table("last_valid_at"),
 			table("disabled_at"),
@@ -405,6 +482,7 @@ async fn keycloak_enabled(f: &Federation, config: &OidcConfig, subject: &str) ->
 async fn account_valid(
 	f: &Federation,
 	id: Uuid,
+	issuer: &str,
 	subject: &str,
 	last_valid_at: Option<DateTime<Utc>>,
 	disabled_at: Option<DateTime<Utc>>,
@@ -413,6 +491,9 @@ async fn account_valid(
 		return Err(Error::Forbidden);
 	}
 	let config = required_config(f)?;
+	if issuer != config.issuer {
+		return Err(Error::Forbidden);
+	}
 	let now = Utc::now();
 	if last_valid_at.is_some_and(|time| time > now - Duration::seconds(STATUS_FRESH_SECONDS)) {
 		return Ok(());
@@ -444,28 +525,7 @@ async fn account_valid(
 			}
 		}
 		Ok(false) => {
-			let query = Query::update()
-				.table(table("dashboard_identities"))
-				.value(
-					table("disabled_at"),
-					Expr::cust("coalesce(disabled_at,clock_timestamp())"),
-				)
-				.and_where(Expr::col(table("id")).eq(Expr::cust("$1")))
-				.to_string(PostgresQueryBuilder);
-			sqlx::query(&query).bind(id).execute(&f.store.pool).await?;
-			let sessions = Query::update()
-				.table(table("dashboard_sessions"))
-				.value(
-					table("revoked_at"),
-					Expr::cust("coalesce(revoked_at,clock_timestamp())"),
-				)
-				.and_where(Expr::col(table("identity_id")).eq(Expr::cust("$1")))
-				.to_string(PostgresQueryBuilder);
-			sqlx::query(&sessions)
-				.bind(id)
-				.execute(&f.store.pool)
-				.await?;
-			mark_explicit_disable(f, id).await?;
+			disable_identity(f, id, Some(check_started_at)).await?;
 			Err(Error::Forbidden)
 		}
 		Err(_)
@@ -476,6 +536,51 @@ async fn account_valid(
 		}
 		Err(_) => Err(Error::IdentityStatusUnavailable),
 	}
+}
+
+async fn disable_identity(
+	f: &Federation,
+	id: Uuid,
+	check_started_at: Option<DateTime<Utc>>,
+) -> Result<()> {
+	let mut query = Query::update();
+	query
+		.table(table("dashboard_identities"))
+		.value(
+			table("disabled_at"),
+			Expr::cust("coalesce(disabled_at,clock_timestamp())"),
+		)
+		.and_where(Expr::col(table("id")).eq(Expr::cust("$1")))
+		.and_where(Expr::col(table("disabled_at")).is_null());
+	if check_started_at.is_some() {
+		query.and_where(
+			Condition::any()
+				.add(Expr::col(table("last_valid_at")).is_null())
+				.add(Expr::col(table("last_valid_at")).lte(Expr::cust("$2")))
+				.into(),
+		);
+	}
+	let query = query.to_string(PostgresQueryBuilder);
+	let mut statement = sqlx::query(&query).bind(id);
+	if let Some(check_started_at) = check_started_at {
+		statement = statement.bind(check_started_at);
+	}
+	if statement.execute(&f.store.pool).await?.rows_affected() == 0 {
+		return Ok(());
+	}
+	let sessions = Query::update()
+		.table(table("dashboard_sessions"))
+		.value(
+			table("revoked_at"),
+			Expr::cust("coalesce(revoked_at,clock_timestamp())"),
+		)
+		.and_where(Expr::col(table("identity_id")).eq(Expr::cust("$1")))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&sessions)
+		.bind(id)
+		.execute(&f.store.pool)
+		.await?;
+	mark_explicit_disable(f, id).await
 }
 
 async fn status_waiting_run_ids(f: &Federation, identity_id: Uuid) -> Result<Vec<Uuid>> {
@@ -622,21 +727,78 @@ pub async fn refresh_active(
 			.and_where(Expr::col(table("expires_at")).lte(Expr::cust("clock_timestamp()")))
 			.to_string(PostgresQueryBuilder);
 		sqlx::query(&prune).execute(&f.store.pool).await?;
+		let active_sessions = Query::select()
+			.column((table("s"), table("id")))
+			.from_as(table("dashboard_sessions"), table("s"))
+			.and_where(
+				Expr::col((table("s"), table("identity_id")))
+					.equals((table("dashboard_identities"), table("id"))),
+			)
+			.and_where(Expr::col((table("s"), table("revoked_at"))).is_null())
+			.and_where(
+				Expr::col((table("s"), table("expires_at"))).gt(Expr::cust("clock_timestamp()")),
+			)
+			.and_where(
+				Expr::col((table("s"), table("last_activity_at")))
+					.gt(Expr::cust("clock_timestamp()-make_interval(secs => $1)")),
+			)
+			.to_owned();
+		let ongoing_runs = Query::select()
+			.column((table("o"), table("run_id")))
+			.from_as(table("dashboard_execution_origins"), table("o"))
+			.join_as(
+				JoinType::InnerJoin,
+				table("runs"),
+				table("r"),
+				Expr::col((table("o"), table("run_id"))).equals((table("r"), table("id"))),
+			)
+			.and_where(
+				Expr::col((table("o"), table("identity_id")))
+					.equals((table("dashboard_identities"), table("id"))),
+			)
+			.and_where(Expr::col((table("r"), table("phase"))).is_not_in([
+				"COMPLETED",
+				"FAILED",
+				"CANCELLED",
+			]))
+			.to_owned();
 		let query = Query::select()
 			.columns([
 				table("id"),
+				table("issuer"),
 				table("subject"),
 				table("last_valid_at"),
 				table("disabled_at"),
 			])
 			.from(table("dashboard_identities"))
 			.and_where(Expr::col(table("disabled_at")).is_null())
+			.and_where(
+				Condition::any()
+					.add(Expr::exists(active_sessions))
+					.add(Expr::exists(ongoing_runs))
+					.into(),
+			)
 			.to_string(PostgresQueryBuilder);
-		let identities: Vec<Identity> = sqlx::query_as(&query).fetch_all(&f.store.pool).await?;
+		let identities: Vec<Identity> = sqlx::query_as(&query)
+			.bind(
+				f.config
+					.oidc
+					.as_ref()
+					.expect("OIDC configured")
+					.session_idle_seconds as f64,
+			)
+			.fetch_all(&f.store.pool)
+			.await?;
 		stream::iter(identities.into_iter().map(|identity| {
 			let f = f.clone();
 			async move {
-				match account_valid(&f, identity.id, &identity.subject, identity.last_valid_at, identity.disabled_at).await {
+				if f.config.oidc.as_ref().is_some_and(|config| identity.issuer != config.issuer) {
+					if let Err(error) = disable_identity(&f, identity.id, None).await {
+						tracing::warn!(identity_id=%identity.id, %error, "old-issuer identity could not be disabled");
+					}
+					return;
+				}
+				match account_valid(&f, identity.id, &identity.issuer, &identity.subject, identity.last_valid_at, identity.disabled_at).await {
 					Ok(()) => if let Err(error) = resume_status_waiting(&f, identity.id).await {
 						tracing::warn!(identity_id=%identity.id, %error, "status recovery check failed");
 					},
@@ -813,7 +975,6 @@ async fn callback(
 		false,
 		config.session_absolute_seconds,
 	)?;
-	clear_cookie(&mut response, LOGIN_COOKIE, config, true)?;
 	no_store(&mut response);
 	Ok(response)
 }
@@ -866,6 +1027,7 @@ pub async fn session_from_headers(f: &Federation, headers: &HeaderMap) -> Result
 	let identity_query = Query::select()
 		.columns([
 			table("id"),
+			table("issuer"),
 			table("subject"),
 			table("last_valid_at"),
 			table("disabled_at"),
@@ -880,6 +1042,7 @@ pub async fn session_from_headers(f: &Federation, headers: &HeaderMap) -> Result
 	account_valid(
 		f,
 		identity.id,
+		&identity.issuer,
 		&identity.subject,
 		identity.last_valid_at,
 		identity.disabled_at,
@@ -1222,8 +1385,9 @@ async fn admin_registrations(State(f): State<Federation>) -> Result<Json<Vec<Reg
 	let query = Query::select()
 		.columns(registration_columns())
 		.from(table("dashboard_registration_requests"))
+		.and_where(Expr::col(table("status")).eq("pending"))
+		.and_where(Expr::col(table("expires_at")).gt(Expr::cust("clock_timestamp()")))
 		.order_by(table("created_at"), Order::Desc)
-		.limit(200)
 		.to_string(PostgresQueryBuilder);
 	let registrations: Vec<Registration> = sqlx::query_as(&query).fetch_all(&f.store.pool).await?;
 	Ok(Json(
@@ -1312,7 +1476,16 @@ async fn admin_restore_identity(
 	Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
-async fn admin_identities(State(f): State<Federation>) -> Result<Json<Vec<IdentityView>>> {
+#[derive(Deserialize)]
+struct AdminIdentityPage {
+	#[serde(default)]
+	offset: u64,
+}
+
+async fn admin_identities(
+	State(f): State<Federation>,
+	QueryParams(page): QueryParams<AdminIdentityPage>,
+) -> Result<Json<Vec<IdentityView>>> {
 	let query = Query::select()
 		.columns([
 			table("id"),
@@ -1322,7 +1495,9 @@ async fn admin_identities(State(f): State<Federation>) -> Result<Json<Vec<Identi
 		])
 		.from(table("dashboard_identities"))
 		.order_by(table("subject"), Order::Asc)
+		.order_by(table("id"), Order::Asc)
 		.limit(200)
+		.offset(page.offset)
 		.to_string(PostgresQueryBuilder);
 	Ok(Json(sqlx::query_as(&query).fetch_all(&f.store.pool).await?))
 }
@@ -1662,6 +1837,30 @@ async fn admin_disable_mapping(
 	Json(input): Json<MappingRevision>,
 ) -> Result<axum::http::StatusCode> {
 	let mut tx = f.store.pool.begin().await?;
+	let credential = Query::select()
+		.column(table("credential_id"))
+		.from(table("dashboard_mappings"))
+		.and_where(Expr::col(table("id")).eq(Expr::cust("$1")))
+		.and_where(Expr::col(table("enabled")).eq(true))
+		.and_where(Expr::col(table("revision")).eq(Expr::cust("$2")))
+		.to_string(PostgresQueryBuilder);
+	let credential_id: Uuid = sqlx::query_scalar(&credential)
+		.bind(id)
+		.bind(input.expected_revision)
+		.fetch_optional(&mut *tx)
+		.await?
+		.ok_or(Error::Conflict("mapping revision changed".into()))?;
+	// Execution leases lock the credential before the mapping.
+	let credential_lock = Query::select()
+		.column(table("id"))
+		.from(table("authorization_credentials"))
+		.and_where(Expr::col(table("id")).eq(Expr::cust("$1")))
+		.lock(LockType::Update)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query_scalar::<_, Uuid>(&credential_lock)
+		.bind(credential_id)
+		.fetch_one(&mut *tx)
+		.await?;
 	let query = Query::update()
 		.table(table("dashboard_mappings"))
 		.value(table("enabled"), false)
@@ -1669,14 +1868,18 @@ async fn admin_disable_mapping(
 		.and_where(Expr::col(table("id")).eq(Expr::cust("$1")))
 		.and_where(Expr::col(table("enabled")).eq(true))
 		.and_where(Expr::col(table("revision")).eq(Expr::cust("$2")))
-		.returning(Query::returning().column(table("credential_id")))
+		.and_where(Expr::col(table("credential_id")).eq(Expr::cust("$3")))
 		.to_string(PostgresQueryBuilder);
-	let credential_id: Uuid = sqlx::query_scalar(&query)
+	let changed = sqlx::query(&query)
 		.bind(id)
 		.bind(input.expected_revision)
-		.fetch_optional(&mut *tx)
+		.bind(credential_id)
+		.execute(&mut *tx)
 		.await?
-		.ok_or(Error::Conflict("mapping revision changed".into()))?;
+		.rows_affected();
+	if changed != 1 {
+		return Err(Error::Conflict("mapping revision changed".into()));
+	}
 	let revoke = Query::update()
 		.table(table("authorization_credentials"))
 		.value(
@@ -1792,6 +1995,9 @@ async fn backchannel_logout(
 	Form(body): Form<BackchannelLogout>,
 ) -> Result<axum::http::StatusCode> {
 	let config = required_config(&f)?;
+	let _admission = BACKCHANNEL_CAPACITY
+		.try_acquire()
+		.map_err(|_| Error::RateLimited)?;
 	if body.logout_token.len() > 16_384 {
 		return Err(Error::Invalid("invalid logout token".into()));
 	}
@@ -1805,47 +2011,10 @@ async fn backchannel_logout(
 	let kid = header
 		.kid
 		.ok_or(Error::Invalid("logout token is missing a key ID".into()))?;
-	let http_client = oidc_http_client()?;
-	let metadata = CoreProviderMetadata::discover_async(
-		IssuerUrl::new(config.issuer.clone())
-			.map_err(|_| Error::Invalid("invalid OIDC issuer".into()))?,
-		&http_client,
-	)
-	.await
-	.map_err(|_| Error::External("OIDC discovery unavailable".into()))?;
-	let response = f
-		.client
-		.get(metadata.jwks_uri().url().as_str())
-		.timeout(std::time::Duration::from_secs(10))
-		.send()
-		.await
-		.map_err(|_| Error::External("OIDC key set unavailable".into()))?;
-	if !response.status().is_success()
-		|| response
-			.content_length()
-			.is_some_and(|length| length > 1_048_576)
-	{
-		return Err(Error::External("OIDC key set unavailable".into()));
+	if kid.is_empty() || kid.len() > 256 {
+		return Err(Error::Invalid("invalid logout key ID".into()));
 	}
-	let keys: JwkSet = response
-		.json()
-		.await
-		.map_err(|_| Error::External("OIDC key set unavailable".into()))?;
-	let key = keys
-		.find(&kid)
-		.ok_or(Error::Invalid("unknown logout signing key".into()))?;
-	if key
-		.common
-		.key_algorithm
-		.as_ref()
-		.is_some_and(|algorithm| algorithm.to_string() != "RS256")
-	{
-		return Err(Error::Invalid(
-			"logout signing key algorithm mismatch".into(),
-		));
-	}
-	let decoding_key = DecodingKey::from_jwk(key)
-		.map_err(|_| Error::Invalid("invalid logout signing key".into()))?;
+	let decoding_key = logout_decoding_key(&f, config, &kid).await?;
 	let mut validation = Validation::new(Algorithm::RS256);
 	validation.set_issuer(&[&config.issuer]);
 	validation.set_audience(&[&config.client_id]);
@@ -1895,6 +2064,14 @@ async fn backchannel_logout(
 		return Err(Error::Invalid("invalid logout token lifetime".into()));
 	}
 	let mut tx = f.store.pool.begin().await?;
+	let prune = Query::delete()
+		.from_table(table("dashboard_logout_tokens"))
+		.and_where(
+			Expr::col(table("expires_at"))
+				.lt(Expr::cust("clock_timestamp()-interval '30 seconds'")),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&prune).execute(&mut *tx).await?;
 	let replay = Query::insert()
 		.into_table(table("dashboard_logout_tokens"))
 		.columns([table("jti_hash"), table("expires_at")])
