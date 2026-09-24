@@ -110,6 +110,16 @@ impl Source {
 			format!("{base}/{suffix}")
 		}
 	}
+
+	fn reference_paths(&self) -> impl Iterator<Item = (String, String)> + '_ {
+		let longest = self.ref_and_path.len() - usize::from(self.blob);
+		(1..=longest).rev().map(|length| {
+			(
+				self.ref_and_path[..length].join("/"),
+				self.ref_and_path[length..].join("/"),
+			)
+		})
+	}
 }
 
 #[derive(Deserialize)]
@@ -469,6 +479,25 @@ fn resource_paths(tree: &Tree, skill_path: &str) -> Result<Vec<String>> {
 	Ok(paths)
 }
 
+fn validate_imported_instructions(instructions: &str) -> Result<()> {
+	if instructions.trim().is_empty() {
+		return Err(Error::Invalid("Skill instructions are empty".into()));
+	}
+	if instructions.len() > 65_536 || instructions.contains('\0') {
+		return Err(Error::Invalid(
+			"Skill instructions exceed 64 KiB or contain NUL".into(),
+		));
+	}
+	Ok(())
+}
+
+fn github_instructions(bytes: Vec<u8>, path: &str) -> Result<String> {
+	let instructions = String::from_utf8(bytes)
+		.map_err(|_| Error::Invalid(format!("{path} is not a UTF-8 text file")))?;
+	validate_imported_instructions(&instructions)?;
+	Ok(instructions)
+}
+
 fn imported_snapshot(url: &str, snapshot: SkillsShSnapshot) -> Result<ImportResult> {
 	if snapshot.files.len() > MAX_FILES {
 		return Err(Error::Invalid("Skill contains more than 64 files".into()));
@@ -508,6 +537,7 @@ fn imported_snapshot(url: &str, snapshot: SkillsShSnapshot) -> Result<ImportResu
 	}
 	let instructions =
 		instructions.ok_or_else(|| Error::Invalid("registry Skill has no SKILL.md".into()))?;
+	validate_imported_instructions(&instructions)?;
 	Ok(ImportResult {
 		skills: vec!["SKILL.md".into()],
 		selected: Some(ImportedSkill {
@@ -659,10 +689,9 @@ async fn import_github(request: ImportRequest) -> Result<ImportResult> {
 	}
 	let (commit, subpath) = if source.explicit {
 		let mut found = None;
-		for length in (1..source.ref_and_path.len()).rev() {
-			let reference = source.ref_and_path[..length].join("/");
+		for (reference, subpath) in source.reference_paths() {
 			if let Some(value) = commit(&client, &source, &reference).await? {
-				found = Some((value, source.ref_and_path[length..].join("/")));
+				found = Some((value, subpath));
 				break;
 			}
 		}
@@ -733,10 +762,7 @@ async fn import_github(request: ImportRequest) -> Result<ImportResult> {
 		let bytes = bounded_get(&client, raw_url.as_str(), MAX_FILE_BYTES - total).await?;
 		total += bytes.len();
 		if path == "SKILL.md" {
-			instructions =
-				Some(String::from_utf8(bytes).map_err(|_| {
-					Error::Invalid(format!("{full_path} is not a UTF-8 text file"))
-				})?);
+			instructions = Some(github_instructions(bytes, &full_path)?);
 		} else {
 			let (content, encoding) = match String::from_utf8(bytes) {
 				Ok(text) if !text.contains('\0') => (text, None),
@@ -784,6 +810,35 @@ mod tests {
 		assert_eq!(root_tree.ref_and_path, vec!["release"]);
 		assert!(root_tree.explicit);
 		assert!(!root_tree.blob);
+		assert_eq!(
+			root_tree.reference_paths().collect::<Vec<_>>(),
+			vec![("release".into(), String::new())]
+		);
+		let slashed_ref =
+			Source::parse("https://github.com/openai/skills/tree/release/v1").unwrap();
+		assert_eq!(
+			slashed_ref.reference_paths().collect::<Vec<_>>(),
+			vec![
+				("release/v1".into(), String::new()),
+				("release".into(), "v1".into())
+			]
+		);
+		let skill_directory =
+			Source::parse("https://github.com/openai/skills/tree/release/skills/foo").unwrap();
+		assert_eq!(
+			skill_directory.reference_paths().collect::<Vec<_>>(),
+			vec![
+				("release/skills/foo".into(), String::new()),
+				("release/skills".into(), "foo".into()),
+				("release".into(), "skills/foo".into())
+			]
+		);
+		let skill_blob =
+			Source::parse("https://github.com/openai/skills/blob/release/SKILL.md").unwrap();
+		assert_eq!(
+			skill_blob.reference_paths().collect::<Vec<_>>(),
+			vec![("release".into(), "SKILL.md".into())]
+		);
 		let source = Source::parse("https://github.com/openai/skills").unwrap();
 		assert_eq!(source.api(""), "https://api.github.com/repos/openai/skills");
 		let mut commit_url = Url::parse(&source.api("commits")).unwrap();
@@ -970,5 +1025,22 @@ mod tests {
 				"{path:?}"
 			);
 		}
+	}
+
+	#[test]
+	fn rejects_github_instructions_that_registry_cannot_store() {
+		assert_eq!(
+			github_instructions(b"---\nname: example\n---\nBody".to_vec(), "SKILL.md").unwrap(),
+			"---\nname: example\n---\nBody"
+		);
+		for bytes in [
+			b"---\nname: example\n---\nBad\0body".to_vec(),
+			vec![b'x'; 65_537],
+			b"  \n".to_vec(),
+			vec![0xff],
+		] {
+			assert!(github_instructions(bytes, "SKILL.md").is_err());
+		}
+		assert!(github_instructions(vec![b'x'; 65_536], "SKILL.md").is_ok());
 	}
 }
