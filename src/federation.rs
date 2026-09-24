@@ -107,6 +107,7 @@ impl Federation {
 		}
 		let home = Home::new(self.clone(), run.clone());
 		let prefix = format!("{}:{}:", self.config.node_id, run.task_id);
+		let limit = self.run_message_limit(run).await?;
 		for message in home.historical_run_messages().await? {
 			let key = message
 				.idempotency_key
@@ -119,7 +120,7 @@ impl Federation {
 				));
 			}
 			self.store
-				.import_remote_run_message(run.id, key, &message)
+				.import_remote_run_message(run.id, key, &message, limit)
 				.await?;
 		}
 		Ok(())
@@ -774,6 +775,34 @@ impl Home {
 	async fn command<T: DeserializeOwned>(&self, op: &str, data: Value) -> Result<T> {
 		self.federation.request(&self.run.home_node,Method::POST,"/workspace",Some(&json!({"task_id":self.run.task_id,"agent":{"id":self.run.agent_id,"version":self.run.agent_version},"operation":op,"data":data}))).await
 	}
+	async fn optional_command<T: DeserializeOwned>(
+		&self,
+		op: &str,
+		data: Value,
+	) -> Result<Option<T>> {
+		let command = json!({"task_id":self.run.task_id,"agent":{"id":self.run.agent_id,"version":self.run.agent_version},"operation":op,"data":data});
+		let response = self
+			.federation
+			.peer_response(
+				&self.run.home_node,
+				Method::POST,
+				"/workspace",
+				Some(&command),
+			)
+			.await?;
+		if response.status() == reqwest::StatusCode::BAD_REQUEST {
+			let body: Value = crate::response::json(response, 4096).await?;
+			if body["error"] == "unknown federation operation" {
+				return Ok(None);
+			}
+			return Err(Error::External(format!(
+				"peer {} rejected {op}: {}",
+				self.run.home_node, body["error"]
+			)));
+		}
+		let response = response.error_for_status()?;
+		Ok(Some(crate::response::json(response, 4_194_304).await?))
+	}
 	pub async fn snapshot(&self) -> Result<WorkspaceSnapshot> {
 		if let Some(authority) = &self.authority {
 			authority.snapshot(self.run.workspace_id).await
@@ -1106,8 +1135,30 @@ impl Home {
 				.message_record(self.run.workspace_id, "human", content, Some(key))
 				.await
 		} else {
-			self.command("human_message", json!({"key":key,"content":content}))
-				.await
+			if let Some(message) = self
+				.optional_command(
+					"run_message_delivery",
+					json!({"run_id":self.run.id,"key":key,"content":content}),
+				)
+				.await?
+			{
+				return Ok(message);
+			}
+			// Protocol 0.1 peers from before the delivery extension return only
+			// {"sent":true}. Read the newly published record from their snapshot.
+			self.command::<Value>("human_message", json!({"key":key,"content":content}))
+				.await?;
+			let full_key = format!(
+				"{}:{}:{key}",
+				self.federation.config.node_id, self.run.task_id
+			);
+			self.snapshot_collection::<Message>("messages")
+				.await?
+				.into_iter()
+				.find(|message| message.idempotency_key.as_deref() == Some(&full_key))
+				.ok_or_else(|| {
+					Error::External("legacy peer did not expose delivered message".into())
+				})
 		}
 	}
 	pub async fn historical_run_messages(&self) -> Result<Vec<Message>> {
@@ -1116,14 +1167,19 @@ impl Home {
 		}
 		let mut messages = Vec::new();
 		loop {
-			let page: Vec<Message> = self
-				.command(
+			let Some(page): Option<Vec<Message>> = self
+				.optional_command(
 					"run_message_history",
 					json!({
 						"run_id":self.run.id,"offset":messages.len()
 					}),
 				)
-				.await?;
+				.await?
+			else {
+				// Existing 0.1 peers do not provide the history extension. Their
+				// ordinary workspace observation still contains legacy messages.
+				return Ok(messages);
+			};
 			let count = page.len();
 			messages.extend(page);
 			if count < 50 {

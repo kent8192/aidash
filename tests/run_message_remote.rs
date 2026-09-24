@@ -4,11 +4,16 @@ use aidash::{
 	api,
 	domain::{NewTask, qualified_agent},
 	federation::Federation,
+	harness::Harness,
 };
-use axum::{Router, body::Body, http::Request};
+use axum::{Router, body::Body, http::Request, middleware::Next, response::IntoResponse};
 use common::{bootstrap, cleanup, setup};
 use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
+use std::sync::{
+	Arc,
+	atomic::{AtomicBool, Ordering},
+};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -79,6 +84,34 @@ async fn set_peer_endpoint(f: &Federation, node: &str, endpoint: &str) {
 	.unwrap();
 }
 
+async fn old_peer_workspace_compat(
+	axum::extract::State(old_peer): axum::extract::State<Arc<AtomicBool>>,
+	request: Request<Body>,
+	next: Next,
+) -> axum::response::Response {
+	if !old_peer.load(Ordering::SeqCst) || !request.uri().path().ends_with("/workspace") {
+		return next.run(request).await;
+	}
+	let (parts, body) = request.into_parts();
+	let bytes = axum::body::to_bytes(body, 1_048_576).await.unwrap();
+	let command: Value = serde_json::from_slice(&bytes).unwrap();
+	let operation = command["operation"].as_str().unwrap();
+	if matches!(operation, "run_message_history" | "run_message_delivery") {
+		return (
+			axum::http::StatusCode::BAD_REQUEST,
+			axum::Json(json!({"error":"unknown federation operation"})),
+		)
+			.into_response();
+	}
+	let response = next
+		.run(Request::from_parts(parts, Body::from(bytes)))
+		.await;
+	if operation == "human_message" && response.status().is_success() {
+		return axum::Json(json!({"sent":true})).into_response();
+	}
+	response
+}
+
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL and peer fixture credential"]
 async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
@@ -88,7 +121,11 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 	executor.store.node_id = executor.config.node_id.clone();
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	home.config.endpoint = format!("http://{}", listener.local_addr().unwrap());
-	let home_app = api::router(home.clone());
+	let old_peer = Arc::new(AtomicBool::new(false));
+	let home_app = api::router(home.clone()).layer(axum::middleware::from_fn_with_state(
+		old_peer.clone(),
+		old_peer_workspace_compat,
+	));
 	let executor_app = api::router(executor.clone());
 	bootstrap(&home, &home_app, "http://127.0.0.1:9").await;
 	bootstrap(&executor, &executor_app, "http://127.0.0.1:9").await;
@@ -202,6 +239,55 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.iter()
 			.any(|input| input.content == "before upgrade")
 	);
+	let large_key = Uuid::new_v4();
+	let large_content = "historic correction ".repeat(1500);
+	home.store
+		.message(
+			workspace.id,
+			&format!("human@{}", executor.config.node_id),
+			&large_content,
+			Some(&format!(
+				"{}:{}:human:{}:{large_key}",
+				executor.config.node_id, task.id, run.id
+			)),
+		)
+		.await
+		.unwrap();
+	executor.reconcile_run_messages(&run).await.unwrap();
+	assert!(
+		executor
+			.store
+			.run_inputs(run.id)
+			.await
+			.unwrap()
+			.iter()
+			.any(|input| input.content == large_content && input.reference_only)
+	);
+	old_peer.store(true, Ordering::SeqCst);
+	executor.reconcile_run_messages(&run).await.unwrap();
+	let compatibility_key = Uuid::new_v4();
+	assert_eq!(
+		peer_control(
+			&executor_app,
+			&home.config.node_id,
+			json!({
+				"run_id":run.id,"action":"message","content":"old peer correction","idempotency_key":compatibility_key
+			})
+		)
+		.await
+		.0,
+		200
+	);
+	assert!(
+		executor
+			.store
+			.run_inputs(run.id)
+			.await
+			.unwrap()
+			.iter()
+			.any(|input| input.content == "old peer correction" && input.message_id.is_some())
+	);
+	old_peer.store(false, Ordering::SeqCst);
 	set_peer_endpoint(&executor, &home.config.node_id, "http://127.0.0.1:9").await;
 	let pending_key = Uuid::new_v4();
 	assert_eq!(
@@ -236,7 +322,30 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.any(|message| message.content == "queued delivery")
 	);
 	set_peer_endpoint(&executor, &home.config.node_id, &home.config.endpoint).await;
-	executor.deliver_run_messages(&run).await.unwrap();
+	let current_task = home.store.task(task.id).await.unwrap();
+	home.store
+		.transition(task.id, current_task.revision, &owner, "CANCELLED")
+		.await
+		.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("runs"))
+			.value(Alias::new("phase"), Expr::cust("'CANCELLED'"))
+			.and_where(Expr::cust("id = $1"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.execute(&executor.store.pool)
+	.await
+	.unwrap();
+	assert!(
+		Harness {
+			federation: executor.clone()
+		}
+		.worker_once()
+		.await
+		.unwrap()
+	);
 	assert!(
 		executor
 			.store

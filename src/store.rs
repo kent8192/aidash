@@ -22,6 +22,7 @@ pub struct RunInput {
 	pub content: String,
 	pub idempotency_key: String,
 	pub message_id: Option<Uuid>,
+	pub reference_only: bool,
 }
 
 fn run_input_size(sender: &str, content: &str) -> usize {
@@ -29,6 +30,21 @@ fn run_input_size(sender: &str, content: &str) -> usize {
 	// framing. This is the same conservative byte-based estimate as Context.
 	serde_json::to_string(&json!({"seq":i64::MAX,"sender":sender,"content":content}))
 		.map_or(usize::MAX, |value| crate::context::estimated_tokens(&value))
+}
+
+fn run_input_reference_size(sender: &str, message_id: Uuid) -> usize {
+	serde_json::to_string(&json!({"seq":i64::MAX,"sender":sender,"record":{"kind":"message","id":message_id},"requires_workspace_read":true}))
+		.map_or(usize::MAX, |value| crate::context::estimated_tokens(&value))
+}
+
+fn run_input_context_size(input: &RunInput) -> usize {
+	if input.reference_only {
+		input
+			.message_id
+			.map_or(usize::MAX, |id| run_input_reference_size(&input.sender, id))
+	} else {
+		run_input_size(&input.sender, &input.content)
+	}
 }
 
 impl Store {
@@ -1523,7 +1539,7 @@ impl Store {
 			.run_inputs_in(tx, run_id)
 			.await?
 			.iter()
-			.map(|input| run_input_size(&input.sender, &input.content))
+			.map(run_input_context_size)
 			.sum::<usize>();
 		if used.saturating_add(run_input_size(sender, content)) > max_input_tokens {
 			return Err(Error::Invalid(
@@ -1575,6 +1591,7 @@ impl Store {
 					sea_orm::sea_query::Alias::new("content"),
 					sea_orm::sea_query::Alias::new("idempotency_key"),
 					sea_orm::sea_query::Alias::new("message_id"),
+					sea_orm::sea_query::Alias::new("reference_only"),
 				])
 				.from(sea_orm::sea_query::Alias::new("run_inputs"))
 				.and_where(sea_orm::sea_query::Expr::cust("run_id = $1"))
@@ -1594,6 +1611,40 @@ impl Store {
 		tx.commit().await?;
 		Ok(inputs)
 	}
+	pub async fn pending_terminal_run_message(&self) -> Result<Option<Run>> {
+		Ok(sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
+				.from(sea_orm::sea_query::Alias::new("runs"))
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"home_node <> $1 AND phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND EXISTS (SELECT 1 FROM run_inputs WHERE run_inputs.run_id = runs.id AND message_id IS NULL AND (delivery_retry_at IS NULL OR delivery_retry_at <= CURRENT_TIMESTAMP))",
+				))
+				.order_by(sea_orm::sea_query::Alias::new("updated_at"), sea_orm::sea_query::Order::Asc)
+				.limit(1)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(&self.node_id)
+		.fetch_optional(&self.pool)
+		.await?)
+	}
+	pub async fn defer_run_message_delivery(&self, run_id: Uuid) -> Result<()> {
+		sqlx::query(
+			&sea_orm::sea_query::Query::update()
+				.table(sea_orm::sea_query::Alias::new("run_inputs"))
+				.value(
+					sea_orm::sea_query::Alias::new("delivery_retry_at"),
+					sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP + INTERVAL '5 seconds'"),
+				)
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"run_id = $1 AND message_id IS NULL",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.execute(&self.pool)
+		.await?;
+		Ok(())
+	}
 	pub async fn bind_run_input_message(
 		&self,
 		run_id: Uuid,
@@ -1611,8 +1662,39 @@ impl Store {
 		run_id: Uuid,
 		key: &str,
 		message: &Message,
+		max_input_tokens: usize,
 	) -> Result<()> {
 		let mut tx = self.pool.begin().await?;
+		// Serialize capacity decisions with new admissions on the run row. Old
+		// messages exceeding the current model budget remain addressable through
+		// their message IDs instead of being pinned in full.
+		let _: Uuid = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.column(sea_orm::sea_query::Alias::new("id"))
+				.from(sea_orm::sea_query::Alias::new("runs"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.fetch_one(&mut *tx)
+		.await?;
+		let used = self
+			.run_inputs_in(&mut tx, run_id)
+			.await?
+			.iter()
+			.map(run_input_context_size)
+			.sum::<usize>();
+		let reference_only = used.saturating_add(run_input_size(&message.sender, &message.content))
+			> max_input_tokens;
+		if reference_only
+			&& used.saturating_add(run_input_reference_size(&message.sender, message.id))
+				> max_input_tokens
+		{
+			return Err(Error::Invalid(
+				"historical run message references exceed the selected model's input limit".into(),
+			));
+		}
 		sqlx::query(
 			&sea_orm::sea_query::Query::insert()
 				.into_table(sea_orm::sea_query::Alias::new("run_inputs"))
@@ -1622,6 +1704,7 @@ impl Store {
 					sea_orm::sea_query::Alias::new("content"),
 					sea_orm::sea_query::Alias::new("idempotency_key"),
 					sea_orm::sea_query::Alias::new("message_id"),
+					sea_orm::sea_query::Alias::new("reference_only"),
 				])
 				.values_panic([
 					sea_orm::sea_query::Expr::cust("$1"),
@@ -1629,6 +1712,7 @@ impl Store {
 					sea_orm::sea_query::Expr::cust("$3"),
 					sea_orm::sea_query::Expr::cust("$4"),
 					sea_orm::sea_query::Expr::cust("$5"),
+					sea_orm::sea_query::Expr::cust("$6"),
 				])
 				.on_conflict(
 					sea_orm::sea_query::OnConflict::columns([
@@ -1645,6 +1729,7 @@ impl Store {
 		.bind(&message.content)
 		.bind(key)
 		.bind(message.id)
+		.bind(reference_only)
 		.execute(&mut *tx)
 		.await?;
 		let existing: String = sqlx::query_scalar(

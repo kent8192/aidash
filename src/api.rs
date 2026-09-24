@@ -1261,9 +1261,11 @@ async fn peer_workspace(
 			| "run_message_history"
 			| "task" | "claim"
 	) && !(task.owner.is_none()
-		&& (command.operation == "human_message"
-			|| (command.operation == "transition"
-				&& (d["status"] == "CANCELLED" || d["status"] == "FAILED"))))
+		&& (matches!(
+			command.operation.as_str(),
+			"human_message" | "run_message_delivery"
+		) || (command.operation == "transition"
+			&& (d["status"] == "CANCELLED" || d["status"] == "FAILED"))))
 		&& task.owner.as_deref() != Some(&owner)
 	{
 		return Err(Error::Unauthorized);
@@ -1285,7 +1287,11 @@ async fn peer_workspace(
 		);
 		let replay_completion = command.operation == "complete" && task.status == "COMPLETED";
 		let replay_transition = command.operation == "transition" && d["status"] == task.status;
-		if !read && !replay_completion && !replay_transition {
+		if !read
+			&& !replay_completion
+			&& !replay_transition
+			&& command.operation != "run_message_delivery"
+		{
 			return Err(Error::Unauthorized);
 		}
 	}
@@ -1444,6 +1450,30 @@ async fn peer_workspace(
 			} else {
 				json!({"sent":true})
 			}
+		}
+		"run_message_delivery" => {
+			f.store.require_legacy_execution(task.workspace_id).await?;
+			let run_id: Uuid = required(d, "run_id")?
+				.parse()
+				.map_err(|_| Error::Invalid("invalid run ID".into()))?;
+			let input_key = required(d, "key")?;
+			let run_id_text = run_id.to_string();
+			let key_matches_run = input_key.starts_with(&format!("human:{run_id}:"))
+				|| (input_key.starts_with("subject-human:")
+					&& input_key.rsplit(':').nth(1) == Some(run_id_text.as_str()));
+			if !key_matches_run {
+				return Err(Error::Invalid("invalid run message delivery key".into()));
+			}
+			json!(
+				f.store
+					.message_record(
+						task.workspace_id,
+						&format!("human@{node}"),
+						required(d, "content")?,
+						Some(&key()?)
+					)
+					.await?
+			)
 		}
 		"run_message_history" => {
 			f.store.require_legacy_execution(task.workspace_id).await?;

@@ -53,6 +53,17 @@ pub struct Harness {
 impl Harness {
 	pub async fn worker_once(&self) -> Result<bool> {
 		let store = &self.federation.store;
+		// Terminal runs are no longer leased, but their accepted remote inputs
+		// remain in the durable outbox until home delivery is acknowledged.
+		if let Some(run) = store.pending_terminal_run_message().await? {
+			match self.federation.deliver_run_messages(&run).await {
+				Ok(()) => return Ok(true),
+				Err(error) => {
+					tracing::warn!(run_id=%run.id, %error, "terminal run message delivery deferred");
+					store.defer_run_message_delivery(run.id).await?;
+				}
+			}
+		}
 		let mut visibility = crate::transactions::gate::ReadLease::begin(store).await?;
 		let token = Uuid::new_v4();
 		let Some(mut run) = store
@@ -261,6 +272,9 @@ impl Harness {
 		let store = &self.federation.store;
 		let home = Home::new(self.federation.clone(), run.clone())
 			.with_authority(guard.map(Guard::authority));
+		// Accepted remote inputs remain deliverable even when the home task has
+		// already reached a terminal state. Drain them before terminal recovery.
+		self.federation.deliver_run_messages(run).await?;
 		let task = home.task().await?;
 		if matches!(
 			task.status.as_str(),
@@ -411,6 +425,9 @@ impl Harness {
 					.last()
 					.map_or(run.observed_input_seq, |input| input.seq);
 				let mut run_messages = Vec::with_capacity(inputs.len());
+				let run_message_limit = self.federation.run_message_limit(run).await?;
+				let mut pinned_message_size = 0_usize;
+				let mut has_run_message_references = false;
 				for input in &inputs {
 					let id = input.message_id.ok_or_else(|| {
 						Error::External("run message home delivery is pending".into())
@@ -424,9 +441,21 @@ impl Harness {
 					{
 						return Err(Error::Conflict("run input message binding changed".into()));
 					}
-					run_messages.push(
-						json!({"seq":input.seq,"sender":input.sender,"content":message.content}),
-					);
+					let full =
+						json!({"seq":input.seq,"sender":input.sender,"content":message.content});
+					let full_size = context::estimated_tokens(&full.to_string());
+					if input.reference_only
+						|| pinned_message_size.saturating_add(full_size) > run_message_limit
+					{
+						has_run_message_references = true;
+						let reference = json!({"seq":input.seq,"sender":input.sender,"record":{"kind":"message","id":id},"requires_workspace_read":true});
+						pinned_message_size = pinned_message_size
+							.saturating_add(context::estimated_tokens(&reference.to_string()));
+						run_messages.push(reference);
+					} else {
+						pinned_message_size = pinned_message_size.saturating_add(full_size);
+						run_messages.push(full);
+					}
 				}
 				let mut pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":observation,"memory":store.memory(run).await?,"agent_state":{"phase":run.phase,"step":run.step}});
 				if let Some(deferred_read) = run.pending.get("deferred_workspace_read") {
@@ -483,6 +512,16 @@ impl Harness {
 				}
 				// The snapshot quota is a heuristic. Required IDs and other minimum
 				// context may exceed it while the complete request still fits.
+				// Keep the authorized run-directed input independent of the bounded
+				// workspace preview. Admission has already capped its aggregate size.
+				if !run_messages.is_empty() {
+					pinned["run_messages"] = json!(run_messages);
+					if has_run_message_references {
+						pinned["run_message_read_instruction"] = json!(
+							"Read every run_messages entry with requires_workspace_read through workspace_read(kind=message, id=record.id) before completing the task. Its full content remains in that workspace record."
+						);
+					}
+				}
 				if let Err(error) = snapshot_fit
 					&& budget
 						.request(&Context::default(), &pinned)
@@ -490,11 +529,6 @@ impl Harness {
 						> budget.window
 				{
 					return Err(error);
-				}
-				// Keep the authorized run-directed input independent of the bounded
-				// workspace preview. Admission has already capped its aggregate size.
-				if !run_messages.is_empty() {
-					pinned["run_messages"] = json!(run_messages);
 				}
 				let semantic_budget = budget.remaining(&Context::default(), &pinned) / 2;
 				if let Some(guard) = guard {
