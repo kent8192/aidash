@@ -228,7 +228,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 	);
 	let home_db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(home.store.pool.clone());
 	// Historical writes were possible before the new home database gate.
-	Migrator::down(&home_db, Some(1)).await.unwrap();
+	Migrator::down(&home_db, Some(2)).await.unwrap();
 	let legacy_key = Uuid::new_v4();
 	home.store
 		.message(
@@ -462,6 +462,24 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.iter()
 			.any(|input| input.content == "after home cancellation")
 	);
+	let (status, body) = common::request(
+		&executor_app,
+		&executor.config.api_token,
+		"POST",
+		&format!("/api/runs/{}/message", run.id),
+		json!({"content":"direct message after home cancellation","idempotency_key":Uuid::new_v4()}),
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	assert!(
+		!executor
+			.store
+			.run_inputs(run.id)
+			.await
+			.unwrap()
+			.iter()
+			.any(|input| input.content == "direct message after home cancellation")
+	);
 	sqlx::query(
 		&Query::update()
 			.table(Alias::new("runs"))
@@ -490,6 +508,15 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.iter()
 			.any(|input| input.content == "queued delivery" && input.message_id.is_some())
 	);
+	let (status, body) = common::request(
+		&executor_app,
+		&executor.config.api_token,
+		"POST",
+		&format!("/api/runs/{}/message", run.id),
+		json!({"content":"remote correction","idempotency_key":first_key}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
 	sqlx::query(
 		&Query::update()
 			.table(Alias::new("runs"))

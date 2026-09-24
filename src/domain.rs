@@ -194,6 +194,8 @@ pub struct Run {
 	pub revision: i64,
 	#[serde(default)]
 	pub observed_input_seq: i64,
+	#[serde(default)]
+	pub ledger_worker_ready: bool,
 	pub error: Option<String>,
 	pub lease_owner: Option<Uuid>,
 	pub lease_until: Option<DateTime<Utc>>,

@@ -1560,6 +1560,26 @@ impl Store {
 				"run message was not accepted because the run is completing or terminal".into(),
 			));
 		}
+		if !run.ledger_worker_ready {
+			if run.lease_owner.is_some() {
+				return Err(Error::Conflict(
+					"run is leased by a worker without input ledger fencing".into(),
+				));
+			}
+			sqlx::query(
+				&sea_orm::sea_query::Query::update()
+					.table(sea_orm::sea_query::Alias::new("runs"))
+					.value(
+						sea_orm::sea_query::Alias::new("ledger_worker_ready"),
+						sea_orm::sea_query::Expr::value(true),
+					)
+					.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(run_id)
+			.execute(&mut **tx)
+			.await?;
+		}
 		let (_, used) = self
 			.run_inputs_with_budget_in(tx, run_id, max_input_tokens)
 			.await?;
@@ -2259,7 +2279,7 @@ impl Store {
 	}
 	pub async fn lease_run(&self, worker: Uuid, seconds: i32) -> Result<Option<Run>> {
 		// SKIP LOCKED permits independent workers; the token fences stale writers.
-		Ok(sqlx::query_as(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("runs")).value(sea_orm::sea_query::Alias::new("pending"), sea_orm::sea_query::Expr::cust("CASE WHEN lease_owner IS NOT NULL THEN pending || CAST('{\"lease_recovered\":true}' AS JSONB) ELSE pending END")).value(sea_orm::sea_query::Alias::new("lease_owner"), sea_orm::sea_query::Expr::cust("$1")).value(sea_orm::sea_query::Alias::new("lease_until"), sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP + MAKE_INTERVAL(secs => $2)")).value(sea_orm::sea_query::Alias::new("revision"), sea_orm::sea_query::Expr::cust("revision + 1")).and_where(sea_orm::sea_query::Expr::cust("id = (SELECT id FROM runs WHERE NOT phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND control <> 'PAUSED' AND revision < 9223372036854775805 AND (lease_until IS NULL OR lease_until < CURRENT_TIMESTAMP) AND (NOT (pending ? 'retry_at') OR CAST((pending ->> 'retry_at') AS TIMESTAMPTZ) < CURRENT_TIMESTAMP) AND (phase <> 'WAITING' OR control = 'CANCELLED' OR CAST((pending ->> 'wake_at') AS TIMESTAMPTZ) < CURRENT_TIMESTAMP OR EXISTS(SELECT 1 FROM human_requests AS h WHERE CAST(h.id AS TEXT) = runs.pending ->> 'human_request_id' AND h.response IS NOT NULL)) ORDER BY updated_at LIMIT 1 FOR UPDATE SKIP LOCKED)")).returning_all().to_string(sea_orm::sea_query::PostgresQueryBuilder))
+		Ok(sqlx::query_as(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("runs")).value(sea_orm::sea_query::Alias::new("pending"), sea_orm::sea_query::Expr::cust("CASE WHEN lease_owner IS NOT NULL THEN pending || CAST('{\"lease_recovered\":true}' AS JSONB) ELSE pending END")).value(sea_orm::sea_query::Alias::new("lease_owner"), sea_orm::sea_query::Expr::cust("$1")).value(sea_orm::sea_query::Alias::new("lease_until"), sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP + MAKE_INTERVAL(secs => $2)")).value(sea_orm::sea_query::Alias::new("revision"), sea_orm::sea_query::Expr::cust("revision + 1")).value(sea_orm::sea_query::Alias::new("ledger_worker_ready"), sea_orm::sea_query::Expr::value(true)).and_where(sea_orm::sea_query::Expr::cust("id = (SELECT id FROM runs WHERE NOT phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND control <> 'PAUSED' AND revision < 9223372036854775805 AND (lease_until IS NULL OR lease_until < CURRENT_TIMESTAMP) AND (NOT (pending ? 'retry_at') OR CAST((pending ->> 'retry_at') AS TIMESTAMPTZ) < CURRENT_TIMESTAMP) AND (phase <> 'WAITING' OR control = 'CANCELLED' OR CAST((pending ->> 'wake_at') AS TIMESTAMPTZ) < CURRENT_TIMESTAMP OR EXISTS(SELECT 1 FROM human_requests AS h WHERE CAST(h.id AS TEXT) = runs.pending ->> 'human_request_id' AND h.response IS NOT NULL)) ORDER BY updated_at LIMIT 1 FOR UPDATE SKIP LOCKED) AND set_config('aidash.input_ledger_worker', 'true', true) = 'true'")).returning_all().to_string(sea_orm::sea_query::PostgresQueryBuilder))
             .bind(worker).bind(seconds as f64).fetch_optional(&self.pool).await?)
 	}
 	pub async fn renew_lease(&self, id: Uuid, worker: Uuid, seconds: i32) -> Result<bool> {
@@ -2271,7 +2291,7 @@ impl Store {
 					sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP + MAKE_INTERVAL(secs => $3)"),
 				)
 				.and_where(sea_orm::sea_query::Expr::cust(
-					"id = $1 AND lease_owner = $2 AND lease_until > CURRENT_TIMESTAMP",
+					"id = $1 AND lease_owner = $2 AND lease_until > CURRENT_TIMESTAMP AND set_config('aidash.input_ledger_worker', 'true', true) = 'true'",
 				))
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 		)

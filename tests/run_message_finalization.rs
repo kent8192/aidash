@@ -13,6 +13,141 @@ use uuid::Uuid;
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
+async fn old_worker_cannot_lease_after_input_ledger_admission() {
+	let (f, url, schema) = setup().await;
+	let app = api::router(f.clone());
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Worker rollout fence","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	let old_worker = Uuid::new_v4();
+	let old_lease = sea_orm::sea_query::Query::update()
+		.table(sea_orm::sea_query::Alias::new("runs"))
+		.value(
+			sea_orm::sea_query::Alias::new("lease_owner"),
+			sea_orm::sea_query::Expr::cust("$2"),
+		)
+		.value(
+			sea_orm::sea_query::Alias::new("lease_until"),
+			sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP + INTERVAL '30 seconds'"),
+		)
+		.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+		.to_string(sea_orm::sea_query::PostgresQueryBuilder);
+	sqlx::query(&old_lease)
+		.bind(run.id)
+		.bind(old_worker)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	let key = format!("human:{}:{}", run.id, Uuid::new_v4());
+	let limit = f.run_message_limit(&run).await.unwrap();
+	assert!(matches!(
+		f.store
+			.accept_run_message(run.id, "human", "correction", &key, limit)
+			.await,
+		Err(aidash::error::Error::Conflict(_))
+	));
+	assert!(f.store.run_inputs(run.id).await.unwrap().is_empty());
+	f.store.release_lease(run.id, old_worker).await.unwrap();
+	f.store
+		.accept_run_message(run.id, "human", "correction", &key, limit)
+		.await
+		.unwrap();
+	assert!(f.store.run(run.id).await.unwrap().ledger_worker_ready);
+	assert_eq!(f.store.run_inputs(run.id).await.unwrap().len(), 1);
+	assert!(
+		sqlx::query(&old_lease)
+			.bind(run.id)
+			.bind(Uuid::new_v4())
+			.execute(&f.store.pool)
+			.await
+			.is_err()
+	);
+	let upgraded_worker = Uuid::new_v4();
+	let leased = f
+		.store
+		.lease_run(upgraded_worker, 30)
+		.await
+		.unwrap()
+		.unwrap();
+	assert_eq!(leased.id, run.id);
+	assert!(leased.ledger_worker_ready);
+	assert!(
+		f.store
+			.renew_lease(run.id, upgraded_worker, 30)
+			.await
+			.unwrap()
+	);
+	// An old worker cannot extend an upgraded worker's lease either.
+	assert!(
+		sqlx::query(
+			&sea_orm::sea_query::Query::update()
+				.table(sea_orm::sea_query::Alias::new("runs"))
+				.value(
+					sea_orm::sea_query::Alias::new("lease_until"),
+					sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP + INTERVAL '60 seconds'"),
+				)
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run.id)
+		.execute(&f.store.pool)
+		.await
+		.is_err()
+	);
+	f.store
+		.release_lease(run.id, upgraded_worker)
+		.await
+		.unwrap();
+	// Model an older lease that was already active when the fence migration
+	// landed, with a correction admitted by the preceding schema.
+	let stale_worker = Uuid::new_v4();
+	sqlx::query(
+		&sea_orm::sea_query::Query::update()
+			.table(sea_orm::sea_query::Alias::new("runs"))
+			.value(
+				sea_orm::sea_query::Alias::new("ledger_worker_ready"),
+				sea_orm::sea_query::Expr::value(false),
+			)
+			.value(
+				sea_orm::sea_query::Alias::new("lease_owner"),
+				sea_orm::sea_query::Expr::cust("$2"),
+			)
+			.value(
+				sea_orm::sea_query::Alias::new("lease_until"),
+				sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP + INTERVAL '30 seconds'"),
+			)
+			.and_where(sea_orm::sea_query::Expr::cust(
+				"id = $1 AND set_config('aidash.input_ledger_worker', 'true', true) = 'true'",
+			))
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.bind(stale_worker)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let mut stale = f.store.run(run.id).await.unwrap();
+	stale.phase = "THINKING".into();
+	let error = f
+		.store
+		.save_run(&stale, stale_worker, "run.message_received")
+		.await
+		.unwrap_err();
+	assert!(error.to_string().contains("requires an upgraded worker"));
+	f.store.release_lease(run.id, stale_worker).await.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL"]
 async fn messages_accepted_during_and_after_inference_are_seen_before_completion() {
 	let entered = Arc::new(Notify::new());
 	let release = Arc::new(Notify::new());

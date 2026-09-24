@@ -959,11 +959,22 @@ async fn run_message(
 	);
 	f.require_terminal_safe_delivery(&run).await?;
 	let limit = f.run_message_limit(&run).await?;
-	match f
-		.store
-		.accept_run_message(id, "human", &input.content, &key, limit)
-		.await
-	{
+	let admission = if run.home_node != f.config.node_id
+		&& matches!(
+			Home::new(f.clone(), run.clone())
+				.task()
+				.await?
+				.status
+				.as_str(),
+			"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+		) {
+		Err(Error::Conflict("home task is terminal".into()))
+	} else {
+		f.store
+			.accept_run_message(id, "human", &input.content, &key, limit)
+			.await
+	};
+	match admission {
 		Ok(()) => {}
 		Err(error @ Error::Conflict(_)) => {
 			if !f
