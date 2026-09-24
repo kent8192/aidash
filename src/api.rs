@@ -33,6 +33,7 @@ fn ordinary_routes() -> OpenApiRouter<Federation> {
 	let administration = OpenApiRouter::new()
 		.merge(crate::authorization::api::routes())
 		.routes(routes!(registry_create))
+		.routes(routes!(skill_import))
 		.routes(routes!(crate::knowledge::create))
 		.routes(routes!(openrouter_models))
 		.routes(routes!(peer_create))
@@ -537,6 +538,13 @@ async fn registry_create(
 	}
 	tx.commit().await?;
 	Ok(Json(entry))
+}
+
+#[utoipa::path(post, path = "/skills/import", operation_id = "skill_import", request_body = crate::skill_import::ImportRequest, responses((status = 200, body = crate::skill_import::ImportResult)), security(("bearer_auth" = [])))]
+async fn skill_import(
+	Json(request): Json<crate::skill_import::ImportRequest>,
+) -> Result<Json<crate::skill_import::ImportResult>> {
+	Ok(Json(crate::skill_import::import(request).await?))
 }
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -1651,7 +1659,7 @@ mod schema_tests {
 				.values()
 				.map(|path| path.as_object().unwrap().len())
 				.sum::<usize>(),
-			76
+			77
 		);
 		for (path, method) in [
 			("/api/workspaces/{id}/threads", "post"),
@@ -1661,6 +1669,7 @@ mod schema_tests {
 			("/api/workspaces/{id}/attachments/{attachment_id}", "get"),
 			("/api/providers/openrouter/models", "get"),
 			("/api/agents/personal", "post"),
+			("/api/skills/import", "post"),
 			("/api/tasks", "get"),
 			("/api/tasks/{id}/remote-grants", "post"),
 			("/api/tasks/{id}/remote-grants/{grant}/revoke", "post"),

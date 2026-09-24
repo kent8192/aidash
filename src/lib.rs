@@ -16,6 +16,7 @@ pub mod orchestration;
 pub mod provider;
 pub mod registry;
 pub mod semantic;
+pub mod skill_import;
 pub mod store;
 pub mod tool;
 pub mod transactions;

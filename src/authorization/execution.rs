@@ -989,6 +989,18 @@ impl Guard {
 			),
 			"memory_write" => ("memory.write", "memory", self.run.agent_id.clone()),
 			"human_request" => ("human.request", "run", self.run.id.to_string()),
+			"skill_read" => {
+				let reference: EntityRef = serde_json::from_value(call.arguments["skill"].clone())
+					.map_err(|error| Error::Invalid(error.to_string()))?;
+				if !self.agent.skills.contains(&reference) {
+					return Err(Error::Forbidden);
+				}
+				let entry = catalog::entry(&mut access, &reference, "skill.use").await?;
+				if entry.kind != "skill" {
+					return Err(Error::Forbidden);
+				}
+				return Ok(());
+			}
 			"agent_discover" | "workspace_observe" | "workspace_read" | "workspace_wait" => {
 				return Ok(());
 			}

@@ -635,7 +635,9 @@ async fn oversized_agent_instructions_skills_and_tools_are_rejected_at_registrat
 	bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let mut skill = tool("large-skill");
 	skill.kind = "skill".into();
-	skill.config = json!({"instructions":"x".repeat(128000)});
+	skill.config = json!({"instructions":"x".repeat(60000)});
+	f.registry.register(skill.clone()).await.unwrap();
+	skill.id = "large-skill-second".into();
 	f.registry.register(skill).await.unwrap();
 	let mut large_tool = tool("large-schema");
 	large_tool.schema = json!({"type":"object","description":"x".repeat(128000)});
@@ -645,7 +647,10 @@ async fn oversized_agent_instructions_skills_and_tools_are_rejected_at_registrat
 		agent.id = format!("oversized-{source}");
 		agent.config[source] = match source {
 			"instructions" => json!("x".repeat(128000)),
-			"skills" => json!([{"id":"large-skill","version":"1.0.0"}]),
+			"skills" => json!([
+				{"id":"large-skill","version":"1.0.0"},
+				{"id":"large-skill-second","version":"1.0.0"}
+			]),
 			_ => json!([{"id":"large-schema","version":"1.0.0"}]),
 		};
 		assert!(f.registry.register(agent.clone()).await.is_err());
