@@ -146,6 +146,8 @@ Conversation reads and events require `conversation.read`; trusted attributes in
 
 Human answers persist `answered_by`. Repeating the same answer preserves the original actor and produces no duplicate answer event; conflicting answers return HTTP 409. Task abandonment retains the existing revision/child-state constraints and records the authenticated actor in its event. Cross-tenant interaction IDs return HTTP 403 before exposing resource state.
 
+`POST /api/runs/{id}/message` accepts instructions for an active run. Accepted messages are included in subsequent inference requests. When a message arrives during final inference or while its answer is pending publication, the worker discards that answer and starts a fresh inference before publishing its final response and artifact. New messages sent once final completion starts, or after the run is terminal, return HTTP 409 instead of a successful `sent` response. Clients should create an explicit follow-up task for a correction rejected at this boundary. Retrying a previously accepted message with the same idempotency key remains safe.
+
 ## Resource reads and journal sources
 
 Workspace snapshots, `/api/state`, event replay, every SSE frame, model context and observation tools filter individual tasks, artifacts and messages using the same stored-resource resolvers. Run visibility requires its task to be readable. Creation and assignment responses also enforce task read permission: unreadable new-task responses roll back their writes while retaining the denial audit, and unreadable parents/dependencies cannot be used to create a new task. A claim cannot return or execute a task that the caller cannot read.

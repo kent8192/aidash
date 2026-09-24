@@ -214,6 +214,24 @@ impl Harness {
 		}
 		Ok(tools)
 	}
+	async fn publish_model_text(
+		&self,
+		home: &Home,
+		guard: Option<&Guard>,
+		run: &Run,
+		text: &str,
+	) -> Result<()> {
+		if text.is_empty() {
+			return Ok(());
+		}
+		if let Some(guard) = guard {
+			guard
+				.action("message.create", "workspace", run.workspace_id)
+				.await?;
+		}
+		home.message(&format!("{}:{}:output", run.id, run.step), text)
+			.await
+	}
 	async fn advance(
 		&self,
 		run: &mut Run,
@@ -443,6 +461,22 @@ impl Harness {
 				{
 					return Err(error);
 				}
+				// Include the complete run-directed input independently of the
+				// bounded workspace preview. These messages must never be truncated.
+				let inputs = store.run_inputs(run.id).await?;
+				let input_seq = inputs
+					.last()
+					.map_or(run.observed_input_seq, |(seq, _, _)| *seq);
+				if !inputs.is_empty() {
+					pinned["run_messages"] = json!(
+						inputs
+							.iter()
+							.map(
+								|(seq, sender, content)| json!({"seq":seq,"sender":sender,"content":content})
+							)
+							.collect::<Vec<_>>()
+					);
+				}
 				let semantic_budget = budget.remaining(&Context::default(), &pinned) / 2;
 				if let Some(guard) = guard {
 					if let Some(semantic) = guard
@@ -523,6 +557,7 @@ impl Harness {
 				}
 				context.usage = json!({"input_tokens":result.input_tokens,"output_tokens":result.output_tokens,"context_window":window,"compactions":context.compactions});
 				run.context = json!(context);
+				run.observed_input_seq = input_seq;
 				run.pending = json!({
 					"response":result,
 					"cursor":0,
@@ -536,13 +571,8 @@ impl Harness {
 			"TOOL_CALL" => {
 				let mut result: ModelResponse =
 					serde_json::from_value(run.pending["response"].clone())?;
-				if !result.text.is_empty() {
-					if let Some(guard) = guard {
-						guard
-							.action("message.create", "workspace", run.workspace_id)
-							.await?;
-					}
-					home.message(&format!("{}:{}:output", run.id, run.step), &result.text)
+				if !result.tool_calls.is_empty() {
+					self.publish_model_text(&home, guard, run, &result.text)
 						.await?;
 				}
 				let cursor = run.pending["cursor"].as_u64().unwrap_or(0) as usize;
@@ -550,6 +580,8 @@ impl Harness {
 					if result.tool_calls.is_empty() {
 						let children = home.child_summary(run.task_id).await?;
 						if children.has_pending {
+							self.publish_model_text(&home, guard, run, &result.text)
+								.await?;
 							let failed = children.has_failed;
 							if failed {
 								if let Some(guard) = guard {
@@ -577,6 +609,14 @@ impl Harness {
 								.await?;
 							guard.action("task.complete", "task", run.task_id).await?;
 						}
+						if !store.begin_final_completion(run, token).await? {
+							run.phase = "THINKING".into();
+							run.pending = json!({});
+							store.save_run(run, token, "run.message_received").await?;
+							return Ok(());
+						}
+						self.publish_model_text(&home, guard, run, &result.text)
+							.await?;
 						if let Err(error) = home
 							.complete(&format!("{}:complete", run.id), &artifact)
 							.await
@@ -593,6 +633,7 @@ impl Harness {
 							return Err(error);
 						}
 						run.phase = "COMPLETED".into();
+						run.pending = json!({});
 						store.save_run(run, token, "run.completed").await?;
 					} else {
 						run.phase = "THINKING".into();

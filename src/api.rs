@@ -939,7 +939,7 @@ async fn run_control(
 	f.notify.notify_waiters();
 	Ok(Json(r))
 }
-#[utoipa::path(post, path = "/runs/{id}/message", operation_id = "run_message", request_body = MessageInput, params(("id" = Uuid, Path)), responses((status = 200, body = SentResponse)), security(("bearer_auth" = [])))]
+#[utoipa::path(post, path = "/runs/{id}/message", operation_id = "run_message", request_body = MessageInput, params(("id" = Uuid, Path)), responses((status = 200, body = SentResponse), (status = 409, description = "New message was not accepted because the run is completing or terminal")), security(("bearer_auth" = [])))]
 async fn run_message(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
@@ -952,15 +952,19 @@ async fn run_message(
 		return Ok(Json(SentResponse { sent: true }));
 	}
 	let run = f.store.run(id).await?;
-	let home = crate::federation::Home::new(f, run);
-	home.human_message(
-		&format!(
-			"human:{id}:{}",
-			input.idempotency_key.unwrap_or_else(Uuid::new_v4)
-		),
-		&input.content,
-	)
-	.await?;
+	let key = format!(
+		"human:{id}:{}",
+		input.idempotency_key.unwrap_or_else(Uuid::new_v4)
+	);
+	if run.home_node != f.config.node_id {
+		crate::federation::Home::new(f.clone(), run)
+			.human_message(&key, &input.content)
+			.await?;
+	}
+	f.store
+		.accept_run_message(id, "human", &input.content, &key)
+		.await?;
+	f.notify.notify_waiters();
 	Ok(Json(SentResponse { sent: true }))
 }
 #[utoipa::path(post, path = "/human-requests/{id}/answer", operation_id = "human_answer", request_body = Value, params(("id" = Uuid, Path)), responses((status = 200, body = HumanRequest)), security(("bearer_auth" = [])))]

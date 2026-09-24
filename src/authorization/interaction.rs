@@ -223,12 +223,12 @@ pub async fn message_keyed(
 	content: &str,
 	key: Option<Uuid>,
 ) -> Result<()> {
-	let key = key.map(|key| {
-		format!(
-			"subject-human:{}:{}:{id}:{key}",
-			identity.tenant, identity.subject
-		)
-	});
+	let key = format!(
+		"subject-human:{}:{}:{id}:{}",
+		identity.tenant,
+		identity.subject,
+		key.unwrap_or_else(Uuid::new_v4)
+	);
 	let mut access = Access::begin(&f.store, identity).await?;
 	let result = async {
 		let run = access.run_for_interaction(id).await?;
@@ -241,16 +241,14 @@ pub async fn message_keyed(
 				"message.create",
 			)
 			.await?;
+		if run.home_node != f.config.node_id {
+			crate::federation::Home::new(f.clone(), run)
+				.human_message(&key, content)
+				.await?;
+		}
 		f.store
-			.message_in(
-				&mut access.tx,
-				run.workspace_id,
-				&identity.subject,
-				content,
-				key.as_deref(),
-			)
+			.accept_run_message_in(&mut access.tx, id, &identity.subject, content, &key)
 			.await
-			.map(|_| ())
 	}
 	.await;
 	access.finish(result).await?;

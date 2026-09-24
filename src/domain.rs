@@ -192,6 +192,7 @@ pub struct Run {
 	pub pending: Value,
 	pub step: i32,
 	pub revision: i64,
+	pub observed_input_seq: i64,
 	pub error: Option<String>,
 	pub lease_owner: Option<Uuid>,
 	pub lease_until: Option<DateTime<Utc>>,

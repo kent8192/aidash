@@ -1414,6 +1414,176 @@ impl Store {
 		tx.commit().await?;
 		Ok(())
 	}
+	pub async fn accept_run_message(
+		&self,
+		run_id: Uuid,
+		sender: &str,
+		content: &str,
+		key: &str,
+	) -> Result<()> {
+		let mut tx = self.pool.begin().await?;
+		self.accept_run_message_in(&mut tx, run_id, sender, content, key)
+			.await?;
+		tx.commit().await?;
+		Ok(())
+	}
+	pub(crate) async fn accept_run_message_in(
+		&self,
+		tx: &mut Transaction<'_, Postgres>,
+		run_id: Uuid,
+		sender: &str,
+		content: &str,
+		key: &str,
+	) -> Result<()> {
+		nonempty(content, "message")?;
+		let run: Run = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
+				.from(sea_orm::sea_query::Alias::new("runs"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.fetch_one(&mut **tx)
+		.await?;
+		let previous: Option<(String, String)> = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.columns([
+					sea_orm::sea_query::Alias::new("sender"),
+					sea_orm::sea_query::Alias::new("content"),
+				])
+				.from(sea_orm::sea_query::Alias::new("run_inputs"))
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"run_id = $1 AND idempotency_key = $2",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.bind(key)
+		.fetch_optional(&mut **tx)
+		.await?;
+		if let Some((old_sender, old_content)) = previous {
+			return if old_sender == sender && old_content == content {
+				Ok(())
+			} else {
+				Err(Error::Conflict("run message idempotency key reused".into()))
+			};
+		}
+		let task_status: Option<String> = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.column(sea_orm::sea_query::Alias::new("status"))
+				.from(sea_orm::sea_query::Alias::new("tasks"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run.task_id)
+		.fetch_optional(&mut **tx)
+		.await?;
+		if matches!(run.phase.as_str(), "COMPLETED" | "FAILED" | "CANCELLED")
+			|| run.pending["finalizing"] == true
+			|| task_status.as_deref().is_some_and(|status| {
+				matches!(status, "COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED")
+			}) {
+			return Err(Error::Conflict(
+				"run message was not accepted because the run is completing or terminal".into(),
+			));
+		}
+		sqlx::query(
+			&sea_orm::sea_query::Query::insert()
+				.into_table(sea_orm::sea_query::Alias::new("run_inputs"))
+				.columns([
+					sea_orm::sea_query::Alias::new("run_id"),
+					sea_orm::sea_query::Alias::new("sender"),
+					sea_orm::sea_query::Alias::new("content"),
+					sea_orm::sea_query::Alias::new("idempotency_key"),
+				])
+				.values_panic([
+					sea_orm::sea_query::Expr::cust("$1"),
+					sea_orm::sea_query::Expr::cust("$2"),
+					sea_orm::sea_query::Expr::cust("$3"),
+					sea_orm::sea_query::Expr::cust("$4"),
+				])
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.bind(sender)
+		.bind(content)
+		.bind(key)
+		.execute(&mut **tx)
+		.await?;
+		if run.home_node == self.node_id {
+			self.message_in(tx, run.workspace_id, sender, content, Some(key))
+				.await?;
+		}
+		Ok(())
+	}
+	pub async fn run_inputs(&self, run_id: Uuid) -> Result<Vec<(i64, String, String)>> {
+		Ok(sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.columns([
+					sea_orm::sea_query::Alias::new("seq"),
+					sea_orm::sea_query::Alias::new("sender"),
+					sea_orm::sea_query::Alias::new("content"),
+				])
+				.from(sea_orm::sea_query::Alias::new("run_inputs"))
+				.and_where(sea_orm::sea_query::Expr::cust("run_id = $1"))
+				.order_by(
+					sea_orm::sea_query::Alias::new("seq"),
+					sea_orm::sea_query::Order::Asc,
+				)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.fetch_all(&self.pool)
+		.await?)
+	}
+	pub async fn begin_final_completion(&self, run: &Run, worker: Uuid) -> Result<bool> {
+		let mut tx = self.pool.begin().await?;
+		let current: Run = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
+				.from(sea_orm::sea_query::Alias::new("runs"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run.id)
+		.fetch_one(&mut *tx)
+		.await?;
+		if current.lease_owner != Some(worker) || current.phase != "TOOL_CALL" {
+			return Err(Error::Conflict("worker lease lost".into()));
+		}
+		let stale: bool = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::cust(
+					"EXISTS(SELECT 1 FROM run_inputs WHERE run_id = $1 AND seq > $2)",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run.id)
+		.bind(run.observed_input_seq)
+		.fetch_one(&mut *tx)
+		.await?;
+		if stale {
+			return Ok(false);
+		}
+		sqlx::query(
+			&sea_orm::sea_query::Query::update()
+				.table(sea_orm::sea_query::Alias::new("runs"))
+				.value(
+					sea_orm::sea_query::Alias::new("pending"),
+					sea_orm::sea_query::Expr::cust("pending || '{\"finalizing\":true}'::jsonb"),
+				)
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run.id)
+		.execute(&mut *tx)
+		.await?;
+		tx.commit().await?;
+		Ok(true)
+	}
 	pub(crate) async fn message_from_run(
 		&self,
 		run: &Run,
@@ -1797,6 +1967,35 @@ impl Store {
 			None
 		};
 		let mut tx = self.pool.begin().await?;
+		if kind == "model.completed" {
+			// Message admission takes this same row lock. A response is durable only
+			// when every accepted input was present in its provider request.
+			let _: Uuid = sqlx::query_scalar(
+				&sea_orm::sea_query::Query::select()
+					.column(sea_orm::sea_query::Alias::new("id"))
+					.from(sea_orm::sea_query::Alias::new("runs"))
+					.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+					.lock(sea_orm::sea_query::LockType::Update)
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(run.id)
+			.fetch_one(&mut *tx)
+			.await?;
+			let stale: bool = sqlx::query_scalar(
+				&sea_orm::sea_query::Query::select()
+					.expr(sea_orm::sea_query::Expr::cust(
+						"EXISTS(SELECT 1 FROM run_inputs WHERE run_id = $1 AND seq > $2)",
+					))
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(run.id)
+			.bind(run.observed_input_seq)
+			.fetch_one(&mut *tx)
+			.await?;
+			if stale {
+				return Err(Error::StaleInference);
+			}
+		}
 		let saved: Run = sqlx::query_as(
 			&sea_orm::sea_query::Query::update()
 				.table(sea_orm::sea_query::Alias::new("runs"))
@@ -1820,10 +2019,14 @@ impl Store {
 					sea_orm::sea_query::Alias::new("error"),
 					sea_orm::sea_query::Expr::cust("$7"),
 				)
-				.value(
-					sea_orm::sea_query::Alias::new("revision"),
-					sea_orm::sea_query::Expr::cust("revision + 1"),
-				)
+			.value(
+				sea_orm::sea_query::Alias::new("revision"),
+				sea_orm::sea_query::Expr::cust("revision + 1"),
+			)
+			.value(
+				sea_orm::sea_query::Alias::new("observed_input_seq"),
+				sea_orm::sea_query::Expr::cust("$9"),
+			)
 				.value(
 					sea_orm::sea_query::Alias::new("updated_at"),
 					sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP"),
@@ -1850,6 +2053,7 @@ impl Store {
 		.bind(run.step)
 		.bind(error)
 		.bind(kind != "model.completed")
+		.bind(run.observed_input_seq)
 		.fetch_optional(&mut *tx)
 		.await?
 		.ok_or_else(|| Error::Conflict("worker lease lost".into()))?;
