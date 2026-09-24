@@ -21,19 +21,27 @@ export type Location = {
   focus: string;
   legacy: boolean;
 };
+export function parseQuery(search: string): Record<string, string> {
+  return Object.fromEntries(new URLSearchParams(search));
+}
+export function stringifyQuery(search: Record<string, unknown>): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(search)) {
+    if (typeof value === "string" && value) params.set(key, value);
+  }
+  return params.size ? `?${params}` : "";
+}
 export function resolveLocation(pathname: string, search = ""): Location {
   const path = pathname.replace(/\/+$/, "") || "/";
   const name = path.split("/")[1] || "collaboration";
-  const params = new URLSearchParams(search);
-  const settings = settingsSections.includes(
-    params.get("view") as SettingsSection,
-  )
-    ? (params.get("view") as SettingsSection)
+  const params = parseQuery(search);
+  const settings = settingsSections.includes(params.view as SettingsSection)
+    ? (params.view as SettingsSection)
     : "node";
   const common = {
     settings,
-    channel: params.get("channel") || "",
-    focus: params.get("focus") || "",
+    channel: params.channel || "",
+    focus: params.focus || "",
     legacy: false,
   };
   if (name === "collaboration" || name === "graph" || name === "settings") {
@@ -54,15 +62,15 @@ export function destination(
   section: Destination,
   context: { channel?: string; focus?: string; settings?: string } = {},
 ): string {
-  const params = new URLSearchParams();
-  if (context.channel) params.set("channel", context.channel);
-  if (section === "graph" && context.focus) params.set("focus", context.focus);
-  if (
-    section === "settings" &&
-    settingsSections.includes(context.settings as SettingsSection)
-  )
-    params.set("view", context.settings!);
-  return `/${section}${params.size ? `?${params}` : ""}`;
+  return `/${section}${stringifyQuery({
+    channel: context.channel,
+    focus: section === "graph" ? context.focus : undefined,
+    view:
+      section === "settings" &&
+      settingsSections.includes(context.settings as SettingsSection)
+        ? context.settings
+        : undefined,
+  })}`;
 }
 export type WorkspaceRef = { id: string; title: string };
 export type TaskRef = {

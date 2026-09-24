@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   resolveLocation,
   destination,
+  parseQuery,
+  stringifyQuery,
   chooseChannel,
   relatedChannels,
   taskProgress,
@@ -83,6 +85,19 @@ test("URL navigation preserves channel and exact entity identity", () => {
   const [p, q] = url.split("?");
   assert.equal(resolveLocation(p, `?${q}`).focus, focus);
   assert.equal(resolveLocation(p, `?${q}`).channel, "one");
+});
+test("router query round trip keeps JSON shaped agent keys as plain strings", () => {
+  const focus = JSON.stringify([
+    "entity",
+    "aidash://home",
+    "agent",
+    'review/"[special]:/agent',
+    "1.0.0",
+  ]);
+  const search = stringifyQuery({ channel: "one", focus });
+  assert.equal(new URLSearchParams(search).get("focus"), focus);
+  assert.deepEqual(parseQuery(search), { channel: "one", focus });
+  assert.equal(resolveLocation("/graph", search).focus, focus);
 });
 test("unrecognized settings section cannot become an arbitrary route", () =>
   assert.equal(
