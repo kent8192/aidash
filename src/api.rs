@@ -1493,15 +1493,15 @@ async fn peer_workspace(
 			let content = required(d, "content")?;
 			json!(
 				f.store
-					.run_message_delivery_record(
-						task.workspace_id,
-						task.id,
+					.run_message_delivery_record(crate::store::RunMessageDelivery {
+						workspace: task.workspace_id,
+						task_id: task.id,
 						run_id,
-						&format!("human@{node}"),
+						sender: &format!("human@{node}"),
 						content,
 						input_key,
-						&key()?
-					)
+						message_key: &key()?,
+					})
 					.await?
 			)
 		}

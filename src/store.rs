@@ -26,6 +26,26 @@ pub struct RunInput {
 	pub reference_only: bool,
 }
 
+pub(crate) struct RunResponseMessage<'a> {
+	pub run: &'a Run,
+	pub worker: Uuid,
+	pub included_input_seq: i64,
+	pub sender: &'a str,
+	pub content: &'a str,
+	pub key: &'a str,
+	pub track_output: bool,
+}
+
+pub(crate) struct RunMessageDelivery<'a> {
+	pub workspace: Uuid,
+	pub task_id: Uuid,
+	pub run_id: Uuid,
+	pub sender: &'a str,
+	pub content: &'a str,
+	pub input_key: &'a str,
+	pub message_key: &'a str,
+}
+
 fn run_input_size(sender: &str, content: &str) -> usize {
 	// The provider receives JSON records, so count escaped content as well as
 	// framing. This is the same conservative byte-based estimate as Context.
@@ -110,14 +130,17 @@ impl Store {
 	}
 	pub(crate) async fn response_message_in_run(
 		&self,
-		run: &Run,
-		worker: Uuid,
-		included_input_seq: i64,
-		sender: &str,
-		content: &str,
-		key: &str,
-		track_output: bool,
+		request: RunResponseMessage<'_>,
 	) -> Result<()> {
+		let RunResponseMessage {
+			run,
+			worker,
+			included_input_seq,
+			sender,
+			content,
+			key,
+			track_output,
+		} = request;
 		let mut tx = self.pool.begin().await?;
 		self.ensure_run_response_current_in(&mut tx, run.id, worker, included_input_seq)
 			.await?;
@@ -1551,14 +1574,17 @@ impl Store {
 	}
 	pub(crate) async fn run_message_delivery_record(
 		&self,
-		workspace: Uuid,
-		task_id: Uuid,
-		run_id: Uuid,
-		sender: &str,
-		content: &str,
-		input_key: &str,
-		message_key: &str,
+		delivery: RunMessageDelivery<'_>,
 	) -> Result<Message> {
+		let RunMessageDelivery {
+			workspace,
+			task_id,
+			run_id,
+			sender,
+			content,
+			input_key,
+			message_key,
+		} = delivery;
 		let mut tx = self.pool.begin().await?;
 		let task: Task = sqlx::query_as(
 			&sea_orm::sea_query::Query::select()

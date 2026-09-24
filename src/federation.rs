@@ -3,7 +3,7 @@ use crate::{
 	config::{Config, PROTOCOL_VERSION, peer_secret, validate_endpoint, validate_node_id},
 	domain::*,
 	registry::{AgentConfig, EntityRef, Entry, Registry, Search},
-	store::Store,
+	store::{RunResponseMessage, Store},
 };
 use futures_util::{StreamExt, stream};
 use reqwest::Method;
@@ -85,15 +85,14 @@ impl Federation {
 			.accept_run_message(run.id, sender, content, key, limit)
 			.await;
 		if let Err(error) = admission {
-			if matches!(error, Error::Conflict(_)) {
-				if self
+			if matches!(error, Error::Conflict(_))
+				&& self
 					.recover_historical_run_message(run, key, content)
 					.await?
-				{
-					// Keep the fence: the recovered historical input is now in the
-					// durable ledger and must reach inference before task termination.
-					return Ok(());
-				}
+			{
+				// Keep the fence: the recovered historical input is now in the
+				// durable ledger and must reach inference before task termination.
+				return Ok(());
 			}
 			if !home.local() {
 				home.release_run_messages(&[key.to_owned()]).await?;
@@ -1250,15 +1249,15 @@ impl Home {
 		if self.authority.is_some() || self.local() {
 			self.federation
 				.store
-				.response_message_in_run(
-					&self.run,
+				.response_message_in_run(RunResponseMessage {
+					run: &self.run,
 					worker,
 					included_input_seq,
-					&self.owner(),
+					sender: &self.owner(),
 					content,
 					key,
-					self.authority.is_some(),
-				)
+					track_output: self.authority.is_some(),
+				})
 				.await
 		} else {
 			self.federation
