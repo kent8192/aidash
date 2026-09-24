@@ -1492,6 +1492,7 @@ async fn peer_observe(State(f): State<Federation>, headers: HeaderMap) -> Result
 				sea_orm::sea_query::Alias::new("control"),
 				sea_orm::sea_query::Alias::new("step"),
 				sea_orm::sea_query::Alias::new("revision"),
+				sea_orm::sea_query::Alias::new("observed_input_seq"),
 				sea_orm::sea_query::Alias::new("lease_owner"),
 				sea_orm::sea_query::Alias::new("lease_until"),
 				sea_orm::sea_query::Alias::new("updated_at"),
