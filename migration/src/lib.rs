@@ -28,6 +28,9 @@ mod m20260922_134000_inference_timeout_constraints;
 mod m20260923_010000_channel_threads;
 mod m20260923_020000_channel_attachments;
 mod m20260923_120000_atomic_gate_commit_epoch;
+mod m20260923_190000_dashboard_oidc;
+mod m20260924_020000_dashboard_oidc_indexes;
+mod m20260924_030000_dashboard_session_revocation_indexes;
 
 pub struct Migrator;
 #[async_trait::async_trait]
@@ -62,6 +65,9 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260923_010000_channel_threads::Migration),
 			Box::new(m20260923_020000_channel_attachments::Migration),
 			Box::new(m20260923_120000_atomic_gate_commit_epoch::Migration),
+			Box::new(m20260923_190000_dashboard_oidc::Migration),
+			Box::new(m20260924_020000_dashboard_oidc_indexes::Migration),
+			Box::new(m20260924_030000_dashboard_session_revocation_indexes::Migration),
 		]
 	}
 }

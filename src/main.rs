@@ -48,6 +48,11 @@ async fn main() -> Result<()> {
 	let (shutdown, stopping) = tokio::sync::watch::channel(false);
 	let mut background = tokio::task::JoinSet::new();
 	let mut workers = tokio::task::JoinSet::new();
+	if config.oidc.is_some() {
+		let f = federation.clone();
+		let stopping = stopping.clone();
+		background.spawn(async move { aidash::dashboard_auth::refresh_active(f, stopping).await });
+	}
 	if let Ok(address) = std::env::var("AIDASH_PROBE_LISTEN") {
 		let address = address
 			.parse()

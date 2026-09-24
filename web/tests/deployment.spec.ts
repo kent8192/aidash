@@ -1,10 +1,11 @@
 import { test, expect } from "@playwright/test";
+import { installBearerDashboard } from "./auth-fixture";
 
 test("deployment dashboard shows replica changes, failures and unavailable observations in both languages", async ({
   page,
 }) => {
+  await installBearerDashboard(page, "acceptance-access-token");
   await page.addInitScript(() => {
-    sessionStorage.setItem("aidash-token", "acceptance-access-token");
     localStorage.setItem("aidash-locale", "en-US");
   });
   const errors: string[] = [];

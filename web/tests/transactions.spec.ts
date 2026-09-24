@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { installBearerDashboard } from "./auth-fixture";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
@@ -70,8 +71,8 @@ test("transaction dashboard survives reload during a partition, aborts safely an
       protocol_version: "0.1",
       enabled: true,
     });
+    await installBearerDashboard(page, "acceptance-access-token");
     await page.addInitScript(() => {
-      sessionStorage.setItem("aidash-token", "acceptance-access-token");
       localStorage.setItem("aidash-locale", "en-US");
     });
     await page.goto("/transactions");

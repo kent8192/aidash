@@ -1,8 +1,7 @@
-import { ReferenceName } from "./record-view";
-import { DisplayProvider } from "./record-view";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import React from "react";
 import { createRoot } from "react-dom/client";
+import { DisplayProvider, ReferenceName } from "./record-view";
 import {
   createRootRoute,
   createRoute,
@@ -27,8 +26,13 @@ import {
   marketplace,
 } from "./generated/aidash";
 import { subscribe } from "./event-stream";
-import { AUTHENTICATION_EXPIRED } from "./transport";
-import { Field, LocaleContext, useI18n, type Locale } from "./ui";
+import {
+  AUTHENTICATION_EXPIRED,
+  csrfToken,
+  dashboardContext,
+  selectDashboardContext,
+} from "./transport";
+import { LocaleContext, useI18n, type Locale } from "./ui";
 import { Channel } from "./collaboration/channel";
 import { Graph } from "./collaboration/graph";
 const Configuration = lazy(() =>
@@ -61,6 +65,40 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 1000 } },
 });
 type Search = { channel?: string; focus?: string; view?: string };
+type BrowserSession = {
+  id: string;
+  operator: boolean;
+  mappings: { id: string; tenant: string; subject: string }[];
+};
+type Registration = { status: string; expires_at: string } | null;
+const authCopy = {
+  "ja-JP": {
+    signIn: "Keycloak でサインイン",
+    setup:
+      "管理者が Aidash の OIDC 接続を設定してください。API の Bearer 認証は引き続き利用できます。",
+    choose: "このタブで使う権限を選択してください",
+    operator: "operator",
+    request: "登録を申請",
+    pending: "登録申請は承認待ちです。",
+    rejected: "登録申請は却下されました。24 時間後に再申請できます。",
+    expired: "登録申請の期限が切れました。再申請できます。",
+    allDevices: "全端末からログアウト",
+    currentDevice: "このブラウザからログアウト",
+  },
+  "en-US": {
+    signIn: "Sign in with Keycloak",
+    setup:
+      "Ask an administrator to configure OIDC for Aidash. Bearer API access remains available.",
+    choose: "Choose the authority for this tab",
+    operator: "operator",
+    request: "Request access",
+    pending: "Your registration is awaiting approval.",
+    rejected: "Your request was rejected. You can try again after 24 hours.",
+    expired: "Your request expired. You can submit another.",
+    allDevices: "Log out on all devices",
+    currentDevice: "Log out of this browser",
+  },
+} as const;
 function App() {
   const [locale, setLocale] = useState<Locale>(() =>
     localStorage.getItem("aidash-locale") === "en-US" ? "en-US" : "ja-JP",
@@ -88,12 +126,14 @@ function Dashboard({
   const navigate = useNavigate();
   const route = resolveLocation(location.pathname, location.searchStr);
   const client = useQueryClient();
-  const [token, setToken] = useState(
-    () => sessionStorage.getItem("aidash-token") ?? "",
+  const [authLoading, setAuthLoading] = useState(true);
+  const [oidcEnabled, setOidcEnabled] = useState(false);
+  const [browserSession, setBrowserSession] = useState<BrowserSession | null>(
+    null,
   );
-  const [connected, setConnected] = useState(() =>
-    Boolean(sessionStorage.getItem("aidash-token")),
-  );
+  const [context, setContext] = useState<string | null>(null);
+  const connected = browserSession !== null && context !== null;
+  const auth = authCopy[locale];
   const [streamStatus, setStreamStatus] = useState<"live" | "reconnecting">(
     "reconnecting",
   );
@@ -103,6 +143,16 @@ function Dashboard({
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [mobileChannels, setMobileChannels] = useState(false);
+  const registration = useQuery({
+    queryKey: ["registration", browserSession?.id],
+    queryFn: async (): Promise<Registration> => {
+      const response = await fetch("/auth/registration", { cache: "no-store" });
+      if (!response.ok) throw new Error("Unable to read registration status");
+      return response.json() as Promise<Registration>;
+    },
+    enabled: browserSession !== null,
+    refetchInterval: 60_000,
+  });
   const session = useQuery({
     queryKey: ["session"],
     queryFn: () => getSession(),
@@ -161,25 +211,186 @@ function Dashboard({
       },
     });
   };
-  const disconnect = () => {
-    setConnected(false);
-    setToken("");
-    setSelection(null);
+  useEffect(() => {
+    let cancelled = false;
     sessionStorage.removeItem("aidash-token");
+    const restore = async () => {
+      try {
+        const configResponse = await fetch("/auth/config", {
+          cache: "no-store",
+        });
+        if (!configResponse.ok)
+          throw new Error("Aidash authentication is unavailable");
+        const config = (await configResponse.json()) as { enabled: boolean };
+        if (cancelled) return;
+        setOidcEnabled(config.enabled);
+        if (!config.enabled) return;
+        const response = await fetch("/auth/session", { cache: "no-store" });
+        if (response.status === 401) return;
+        if (!response.ok) throw new Error("Unable to read browser session");
+        const session = (await response.json()) as BrowserSession;
+        if (cancelled) return;
+        const previousSession = sessionStorage.getItem("aidash-session-id");
+        if (previousSession !== session.id) selectDashboardContext(null);
+        sessionStorage.setItem("aidash-session-id", session.id);
+        const selected = dashboardContext();
+        const valid =
+          selected === "operator"
+            ? session.operator
+            : session.mappings.some(
+                (mapping) => selected === `mapping:${mapping.id}`,
+              );
+        setBrowserSession(session);
+        setContext(valid ? selected : null);
+        if (!valid) selectDashboardContext(null);
+      } catch (reason) {
+        if (!cancelled)
+          setError(reason instanceof Error ? reason.message : String(reason));
+      } finally {
+        if (!cancelled) setAuthLoading(false);
+      }
+    };
+    void restore();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const clearBrowser = () => {
+    selectDashboardContext(null);
+    sessionStorage.removeItem("aidash-session-id");
+    setContext(null);
+    setBrowserSession(null);
+    setSelection(null);
     client.clear();
+  };
+  const chooseContext = (selected: string) => {
+    void client.cancelQueries();
+    client.clear();
+    selectDashboardContext(selected);
+    setContext(selected);
+    setStreamStatus("reconnecting");
+    setSelection(null);
+  };
+  const logOut = async (allDevices: boolean) => {
+    const csrf = csrfToken();
+    if (!csrf) {
+      setError("Missing CSRF token");
+      return;
+    }
+    try {
+      const response = await fetch(
+        allDevices ? "/auth/logout-all" : "/auth/logout",
+        {
+          method: "POST",
+          headers: { "x-aidash-csrf": csrf },
+          credentials: "same-origin",
+        },
+      );
+      if (!response.ok) throw new Error("Logout failed");
+      clearBrowser();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+  const disconnect = () => {
+    void logOut(false);
   };
   useEffect(() => {
     const revoked = (event: Event) => {
       setError((event as CustomEvent<string>).detail);
-      setConnected(false);
-      setToken("");
+      selectDashboardContext(null);
+      sessionStorage.removeItem("aidash-session-id");
+      setContext(null);
+      setBrowserSession(null);
       setSelection(null);
-      sessionStorage.removeItem("aidash-token");
       client.clear();
     };
     window.addEventListener(AUTHENTICATION_EXPIRED, revoked);
     return () => window.removeEventListener(AUTHENTICATION_EXPIRED, revoked);
   }, [client]);
+  const browserSessionId = browserSession?.id;
+  useEffect(() => {
+    if (!browserSessionId) return;
+    let lastSent = 0;
+    const onActivity = () => {
+      if (Date.now() - lastSent < 15_000) return;
+      const csrf = csrfToken();
+      if (!csrf) return;
+      lastSent = Date.now();
+      void fetch("/auth/activity", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "x-aidash-csrf": csrf },
+      });
+    };
+    window.addEventListener("pointerdown", onActivity);
+    window.addEventListener("keydown", onActivity);
+    return () => {
+      window.removeEventListener("pointerdown", onActivity);
+      window.removeEventListener("keydown", onActivity);
+    };
+  }, [browserSessionId]);
+  useEffect(() => {
+    if (!browserSessionId) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const response = await fetch("/auth/session", { cache: "no-store" });
+        if (cancelled) return;
+        if (response.status === 401 || response.status === 403) {
+          selectDashboardContext(null);
+          sessionStorage.removeItem("aidash-session-id");
+          setContext(null);
+          setBrowserSession(null);
+          client.clear();
+          return;
+        }
+        if (!response.ok) return;
+        const current = (await response.json()) as BrowserSession;
+        if (cancelled) return;
+        if (current.id !== browserSessionId) {
+          void client.cancelQueries();
+          selectDashboardContext(null);
+          sessionStorage.setItem("aidash-session-id", current.id);
+          setContext(null);
+          setSelection(null);
+          client.clear();
+          setBrowserSession(current);
+          return;
+        }
+        const selected = dashboardContext();
+        const valid =
+          selected === "operator"
+            ? current.operator
+            : current.mappings.some(
+                (mapping) => selected === `mapping:${mapping.id}`,
+              );
+        if (!valid) {
+          void client.cancelQueries();
+          selectDashboardContext(null);
+          setContext(null);
+          client.clear();
+        }
+        setBrowserSession(current);
+      } catch {
+        /* The next request still checks authority on the server. */
+      }
+    };
+    const timer = window.setInterval(() => {
+      void refresh();
+    }, 60_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [browserSessionId, client]);
   useEffect(() => {
     if (!connected) return;
     const controller = new AbortController();
@@ -209,7 +420,7 @@ function Dashboard({
       controller.abort();
       clearTimeout(timer);
     };
-  }, [connected, client]);
+  }, [connected, client, context]);
   useEffect(() => {
     if (route.legacy) {
       void navigate({
@@ -267,33 +478,110 @@ function Dashboard({
           <span>0.1</span>
         </div>
         <div className="login-card">
-          <h1>{t("connect")}</h1>
-          <p>{t("tokenHelp")}</p>
+          <h1>{browserSession ? auth.choose : t("connect")}</h1>
           {error && (
             <p className="error" role="alert">
               {error}
             </p>
           )}
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              client.clear();
-              sessionStorage.setItem("aidash-token", token);
-              setError("");
-              setConnected(true);
-            }}
-          >
-            <Field label={t("token")}>
-              <input
-                type="password"
-                required
-                value={token}
-                autoComplete="off"
-                onChange={(event) => setToken(event.target.value)}
-              />
-            </Field>
-            <button className="primary">{t("connectAction")}</button>
-          </form>
+          {authLoading ? (
+            <p>Loading…</p>
+          ) : !oidcEnabled ? (
+            <p>{auth.setup}</p>
+          ) : !browserSession ? (
+            <button
+              className="primary"
+              type="button"
+              onClick={() => {
+                const returnTo =
+                  window.location.pathname + window.location.search;
+                window.location.assign(
+                  `/auth/login?return_to=${encodeURIComponent(returnTo)}`,
+                );
+              }}
+            >
+              {auth.signIn}
+            </button>
+          ) : (
+            <>
+              {browserSession.mappings.map((mapping) => (
+                <button
+                  key={mapping.id}
+                  type="button"
+                  onClick={() => chooseContext(`mapping:${mapping.id}`)}
+                >
+                  {mapping.tenant} / {mapping.subject}
+                </button>
+              ))}
+              {browserSession.operator && (
+                <button type="button" onClick={() => chooseContext("operator")}>
+                  {auth.operator}
+                </button>
+              )}
+              {browserSession.mappings.length === 0 &&
+                !browserSession.operator && (
+                  <>
+                    <p>
+                      {registration.data?.status === "pending"
+                        ? auth.pending
+                        : registration.data?.status === "rejected"
+                          ? auth.rejected
+                          : registration.data?.status === "expired"
+                            ? auth.expired
+                            : auth.choose}
+                    </p>
+                    {registration.data?.status !== "pending" && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const csrf = csrfToken();
+                          if (!csrf) {
+                            setError("Missing CSRF token");
+                            return;
+                          }
+                          void fetch("/auth/registration", {
+                            method: "POST",
+                            credentials: "same-origin",
+                            headers: { "x-aidash-csrf": csrf },
+                          })
+                            .then(async (response) => {
+                              if (!response.ok)
+                                throw new Error(
+                                  (
+                                    (await response.json()) as {
+                                      error?: string;
+                                    }
+                                  ).error ?? "Registration failed",
+                                );
+                              void registration.refetch();
+                            })
+                            .catch((reason: unknown) =>
+                              setError(
+                                reason instanceof Error
+                                  ? reason.message
+                                  : String(reason),
+                              ),
+                            );
+                        }}
+                      >
+                        {auth.request}
+                      </button>
+                    )}
+                  </>
+                )}
+              <button type="button" onClick={disconnect}>
+                {auth.currentDevice}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void logOut(true);
+                }}
+              >
+                {auth.allDevices}
+              </button>
+            </>
+          )}
         </div>
       </main>
     );
@@ -397,6 +685,22 @@ function Dashboard({
               {copy[streamStatus]}
             </span>
             <label>
+              <span className="sr-only">{auth.choose}</span>
+              <select
+                value={context ?? ""}
+                onChange={(event) => chooseContext(event.target.value)}
+              >
+                {browserSession?.mappings.map((mapping) => (
+                  <option key={mapping.id} value={`mapping:${mapping.id}`}>
+                    {mapping.tenant} / {mapping.subject}
+                  </option>
+                ))}
+                {browserSession?.operator && (
+                  <option value="operator">{auth.operator}</option>
+                )}
+              </select>
+            </label>
+            <label>
               <span className="sr-only">{t("language")}</span>
               <select
                 data-testid="language-selector"
@@ -408,7 +712,15 @@ function Dashboard({
               </select>
             </label>
             <button type="button" onClick={disconnect}>
-              {copy.disconnect}
+              {auth.currentDevice}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void logOut(true);
+              }}
+            >
+              {auth.allDevices}
             </button>
           </header>
           <div
@@ -515,9 +827,6 @@ function Dashboard({
                         key={workspace.id}
                         workspace={workspace}
                         data={data}
-                        discovery={
-                          discovery.isError ? undefined : discovery.data
-                        }
                         runs={runs}
                         requests={requests}
                         open={open}

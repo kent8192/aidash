@@ -1,10 +1,11 @@
 import { test, expect } from "@playwright/test";
+import { installBearerDashboard } from "./auth-fixture";
 
 test("generation policy requires instructions unless a Skill is selected", async ({
   page,
 }) => {
+  await installBearerDashboard(page, "fixture-token");
   await page.addInitScript(() => {
-    sessionStorage.setItem("aidash-token", "fixture-token");
     localStorage.setItem("aidash-locale", "ja-JP");
   });
 

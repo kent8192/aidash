@@ -20,6 +20,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": process.env.AIDASH_BACKEND ?? "http://127.0.0.1:8080",
+      "/auth": process.env.AIDASH_BACKEND ?? "http://127.0.0.1:8080",
       "/.well-known": process.env.AIDASH_BACKEND ?? "http://127.0.0.1:8080",
     },
   },

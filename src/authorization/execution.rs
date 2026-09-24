@@ -292,6 +292,34 @@ async fn admit(
 	.bind(&access.subjects)
 	.execute(&mut **access.tx)
 	.await?;
+	let origin: Option<(Uuid, Uuid)> = sqlx::query_as(
+		&Query::select()
+			.columns([Alias::new("identity_id"), Alias::new("id")])
+			.from(Alias::new("dashboard_mappings"))
+			.and_where(Expr::col(Alias::new("credential_id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(access.identity.credential_id)
+	.fetch_optional(&mut **access.tx)
+	.await?;
+	if let Some((identity_id, mapping_id)) = origin {
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("dashboard_execution_origins"))
+				.columns([
+					Alias::new("run_id"),
+					Alias::new("identity_id"),
+					Alias::new("mapping_id"),
+				])
+				.values_panic([Expr::cust("$1"), Expr::cust("$2"), Expr::cust("$3")])
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.bind(identity_id)
+		.bind(mapping_id)
+		.execute(&mut **access.tx)
+		.await?;
+	}
 	Ok(claimed)
 }
 

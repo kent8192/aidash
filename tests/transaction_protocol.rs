@@ -47,6 +47,7 @@ impl Node {
 			api_token: "atomic-operator-fixture-token".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
+			oidc: None,
 		};
 		let f = Federation {
 			registry: Registry::new(store.pool.clone(), &store.node_id),

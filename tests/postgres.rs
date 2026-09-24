@@ -382,6 +382,7 @@ async fn registry_installation_versions_and_authenticated_api() {
 		api_token: "test-access-token".into(),
 		web_dir: "web/dist".into(),
 		lease_seconds: 30,
+		oidc: None,
 	};
 	let f = Federation {
 		store: store.clone(),
@@ -456,6 +457,7 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish() {
 		api_token: "test-access-token".into(),
 		web_dir: "web/dist".into(),
 		lease_seconds: 30,
+		oidc: None,
 	};
 	let federation = Federation {
 		store: store.clone(),
@@ -467,7 +469,26 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish() {
 	let harness = aidash::harness::Harness {
 		federation: federation.clone(),
 	};
-	store.control(run.id, "pause").await.unwrap();
+	let outage_pause = sea_orm::sea_query::Query::update()
+		.table(sea_orm::sea_query::Alias::new("runs"))
+		.value(sea_orm::sea_query::Alias::new("control"), "PAUSED")
+		.value(
+			sea_orm::sea_query::Alias::new("error"),
+			"identity status unavailable",
+		)
+		.and_where(
+			sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id"))
+				.eq(sea_orm::sea_query::Expr::cust("$1")),
+		)
+		.to_string(sea_orm::sea_query::PostgresQueryBuilder);
+	sqlx::query(&outage_pause)
+		.bind(run.id)
+		.execute(&store.pool)
+		.await
+		.unwrap();
+	let explicitly_paused = store.control(run.id, "pause").await.unwrap();
+	assert_eq!(explicitly_paused.control, "PAUSED");
+	assert_eq!(explicitly_paused.error, None);
 	assert!(!harness.worker_once().await.unwrap());
 	assert_eq!(
 		store.control(run.id, "resume").await.unwrap().control,
@@ -548,6 +569,7 @@ fn federation_for(store: &Store) -> Federation {
 			api_token: "test-access-token".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
+			oidc: None,
 		},
 		client: reqwest::Client::builder()
 			.timeout(std::time::Duration::from_secs(2))

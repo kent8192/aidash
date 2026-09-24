@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+#[allow(dead_code)] // Shared fixtures are used by different integration-test binaries.
 pub async fn request(
 	app: &Router,
 	token: &str,
@@ -99,6 +100,7 @@ pub async fn setup() -> (Federation, String, String) {
 			api_token: "operator-execution-fixture".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
+			oidc: None,
 		},
 		client: reqwest::Client::new(),
 		notify: Arc::new(tokio::sync::Notify::new()),
@@ -117,12 +119,14 @@ pub async fn cleanup(f: Federation, url: &str, schema: &str) {
 		.unwrap();
 }
 
+#[allow(dead_code)]
 pub fn policy(node: &str) -> Value {
 	let agent = qualified_agent(node, "research", "1.0.0");
 	json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},agent:{"kind":"agent"}},
         "policies":[{"id":"approved-work","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]})
 }
 
+#[allow(dead_code)]
 pub async fn bootstrap(f: &Federation, app: &Router, endpoint: &str) -> (Value, String, Uuid) {
 	let operator = &f.config.api_token;
 	let policy = policy(&f.config.node_id);

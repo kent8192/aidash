@@ -14,7 +14,7 @@ use crate::{
 use axum::{
 	Extension, Json, Router,
 	extract::{Path, Query, Request, State},
-	http::HeaderMap,
+	http::{HeaderMap, Method},
 	middleware::{self, Next},
 	response::{
 		Response, Sse,
@@ -25,7 +25,10 @@ use axum::{
 use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{convert::Infallible, time::Duration};
+use std::{
+	convert::Infallible,
+	time::{Duration, Instant},
+};
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
@@ -103,7 +106,11 @@ pub fn router(f: Federation) -> Router {
 		.split_for_parts();
 	let api = api
 		.route_layer(middleware::from_fn_with_state(f.clone(), node_visibility))
-		.merge(transactions);
+		.merge(transactions)
+		.nest(
+			"/dashboard",
+			crate::dashboard_auth::admin_routes().route_layer(middleware::from_fn(operator_only)),
+		);
 	let api = api.route_layer(middleware::from_fn_with_state(f.clone(), api_auth));
 	let federation = Router::new()
 		.route("/discover", post(peer_discover))
@@ -159,6 +166,7 @@ pub fn router(f: Federation) -> Router {
 		)
 		.nest("/api", api)
 		.nest("/federation/v0.1", federation)
+		.nest("/auth", crate::dashboard_auth::routes())
 		.fallback_service(web)
 		.layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
 		.with_state(f)
@@ -201,15 +209,34 @@ async fn api_auth(
 	mut request: Request,
 	next: Next,
 ) -> Result<Response> {
-	let token = bearer(request.headers()).ok_or(Error::Unauthorized)?;
-	let actor = if same_secret(token, &f.config.api_token) {
-		Actor::Operator
-	} else {
-		Authorization {
-			pool: f.store.pool.clone(),
+	let actor = if request
+		.headers()
+		.contains_key(axum::http::header::AUTHORIZATION)
+	{
+		let token = bearer(request.headers()).ok_or(Error::Unauthorized)?;
+		if same_secret(token, &f.config.api_token) {
+			Actor::Operator
+		} else {
+			Authorization {
+				pool: f.store.pool.clone(),
+			}
+			.authenticate(token)
+			.await?
 		}
-		.authenticate(token)
-		.await?
+	} else {
+		if f.config.oidc.is_none() {
+			return Err(Error::Unauthorized);
+		}
+		let (actor, origin) =
+			crate::dashboard_auth::actor_from_headers(&f, request.headers(), request.method())
+				.await?;
+		if matches!(actor, Actor::Operator)
+			&& !browser_operator_allowed(request.method(), request.uri().path())
+		{
+			return Err(Error::Forbidden);
+		}
+		request.extensions_mut().insert(origin);
+		actor
 	};
 	request.extensions_mut().insert(actor);
 	let mut response = next.run(request).await;
@@ -218,6 +245,53 @@ async fn api_auth(
 		axum::http::HeaderValue::from_static("no-store"),
 	);
 	Ok(response)
+}
+
+fn browser_operator_allowed(method: &Method, path: &str) -> bool {
+	if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
+		return true;
+	}
+	let path = path.strip_prefix("/api").unwrap_or(path);
+	let segments: Vec<&str> = path.split('/').collect();
+	if matches!(
+		segments.as_slice(),
+		["", "runs", _, "control"] | ["", "tasks", _, "abandon"]
+	) {
+		return true;
+	}
+	if *method == Method::POST
+		&& matches!(
+			segments.as_slice(),
+			["", "agents", "personal"]
+				| ["", "skills", "import"]
+				| ["", "generation", _, "policies", _]
+				| ["", "generation", _, "requests", _, "control"]
+				| ["", "workspaces", _, "semantic", "index"]
+				| ["", "workspaces", _, "semantic", "search"]
+				| ["", "workspaces", _, "semantic", "entries"]
+				| ["", "workspaces", _, "semantic", "entries", _, "reindex"]
+				| ["", "remote"]
+		) {
+		return true;
+	}
+	if *method == Method::DELETE
+		&& matches!(
+			segments.as_slice(),
+			["", "workspaces", _, "semantic", "entries", _]
+		) {
+		return true;
+	}
+	// Browser operator mode administers the installation and may stop work.
+	// It cannot silently become a tenant subject for new work or resumption.
+	path.starts_with("/dashboard/")
+		|| path.starts_with("/authorization/")
+		|| path.starts_with("/registry/")
+		|| path.starts_with("/marketplace/")
+		|| path.starts_with("/transactions/")
+		|| matches!(
+			path,
+			"/registry" | "/peers" | "/marketplace" | "/transactions"
+		)
 }
 pub(crate) async fn operator_only(request: Request, next: Next) -> Result<Response> {
 	if !matches!(request.extensions().get::<Actor>(), Some(Actor::Operator)) {
@@ -849,9 +923,13 @@ struct ControlInput {
 async fn run_control(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
+	browser: Option<Extension<crate::dashboard_auth::BrowserOrigin>>,
 	Path(id): Path<Uuid>,
 	Json(input): Json<ControlInput>,
 ) -> Result<Json<Run>> {
+	if matches!(actor, Actor::Operator) && browser.is_some() && input.action == "resume" {
+		return Err(Error::Forbidden);
+	}
 	if let Actor::Subject(identity) = actor {
 		return Ok(Json(
 			execution::control(&f, &identity, id, &input.action).await?,
@@ -1001,9 +1079,12 @@ async fn events(
 async fn stream(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
+	browser: Option<Extension<crate::dashboard_auth::BrowserOrigin>>,
 	headers: HeaderMap,
 	Query(q): Query<EventQuery>,
 ) -> Result<Sse<impl futures_util::Stream<Item = std::result::Result<SseEvent, Infallible>>>> {
+	let browser = browser.map(|Extension(origin)| origin);
+	let operator = matches!(&actor, Actor::Operator);
 	let scope = scoped(&f, actor);
 	let mut cursor = headers
 		.get("last-event-id")
@@ -1025,7 +1106,14 @@ async fn stream(
 		scope.events(cursor, q.workspace_id, 1).await?;
 	}
 	let stream = async_stream::stream! {
+		let mut last_browser_check = Instant::now();
 		loop {
+			if let Some(origin) = &browser
+				&& last_browser_check.elapsed() >= Duration::from_secs(5)
+			{
+				if !browser_stream_authorized(&f, &headers, origin, operator).await { return; }
+				last_browser_check = Instant::now();
+			}
 			let visibility=match crate::transactions::gate::ReadLease::begin(&f.store).await {
 				Ok(lease)=>lease,
 				Err(Error::TransactionPending)=>{tokio::time::sleep(Duration::from_millis(250)).await;continue;},
@@ -1044,6 +1132,10 @@ async fn stream(
 						}
 					};
 					cursor = event.sequence;
+					if let Some(origin) = &browser {
+						if !browser_stream_authorized(&f, &headers, origin, operator).await { return; }
+						last_browser_check = Instant::now();
+					}
 					if let Some(scope) = &scope {
 						match scope.can_emit(&event).await {
 							Ok(true) => {},
@@ -1060,6 +1152,25 @@ async fn stream(
 		}
 	};
 	Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
+}
+
+async fn browser_stream_authorized(
+	f: &Federation,
+	headers: &HeaderMap,
+	origin: &crate::dashboard_auth::BrowserOrigin,
+	operator: bool,
+) -> bool {
+	match crate::dashboard_auth::actor_from_headers(f, headers, &Method::GET).await {
+		Ok((actor, current)) => {
+			current.identity_id == origin.identity_id
+				&& current.mapping_id == origin.mapping_id
+				&& matches!(
+					(operator, actor),
+					(true, Actor::Operator) | (false, Actor::Subject(_))
+				)
+		}
+		Err(_) => false,
+	}
 }
 
 async fn peer_discover(
@@ -1635,5 +1746,23 @@ mod schema_tests {
 			document["components"]["schemas"]["Search"]["additionalProperties"],
 			false
 		);
+	}
+}
+
+#[cfg(test)]
+mod browser_operator_allowlist_tests {
+	use super::*;
+
+	#[test]
+	fn permits_operator_registry_creation_workflows() {
+		assert!(browser_operator_allowed(
+			&Method::POST,
+			"/api/skills/import"
+		));
+		assert!(browser_operator_allowed(
+			&Method::POST,
+			"/api/agents/personal"
+		));
+		assert!(!browser_operator_allowed(&Method::POST, "/api/agents"));
 	}
 }

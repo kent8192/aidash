@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { installBearerDashboard } from "./auth-fixture";
 
 function entity(
   id: string,
@@ -104,8 +105,8 @@ async function setup(page: Page, locale = "en-US") {
   const errors: string[] = [];
   const requests: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  await installBearerDashboard(page, "fixture-token");
   await page.addInitScript((language) => {
-    sessionStorage.setItem("aidash-token", "fixture-token");
     localStorage.setItem("aidash-locale", language);
   }, locale);
   await page.route("**/api/**", async (route) => {

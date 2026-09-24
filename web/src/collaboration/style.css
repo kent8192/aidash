@@ -563,7 +563,9 @@
   .collab-topbar {
     min-height: 54px;
     padding: 8px 12px;
-    gap: 10px;
+    gap: 6px;
+    flex-wrap: wrap;
+    min-width: 0;
   }
   .collab-topbar .stream-status {
     font-size: 10px;
@@ -572,10 +574,12 @@
   .collab-topbar button {
     font-size: 11px;
     padding: 8px;
+    white-space: normal;
   }
   .collab-topbar select {
     font-size: 12px;
     min-width: 80px;
+    max-width: 130px;
     padding: 8px;
   }
   .collab-channel-toggle {

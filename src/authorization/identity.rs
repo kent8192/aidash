@@ -1,11 +1,13 @@
 use super::{Authorization, Snapshot};
 use crate::{Error, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use sea_orm::sea_query::{Alias, Condition, Expr, LockType, Order, PostgresQueryBuilder, Query};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
+
+type IdentityValidity = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 
 /// Constructed only after authenticating a bearer token. Never deserialize this
 /// from a request body, query parameter or peer-provided identity claim.
@@ -44,7 +46,7 @@ fn digest(token: &str) -> Vec<u8> {
 	Sha256::digest(token.as_bytes()).to_vec()
 }
 
-fn enabled(snapshot: &Snapshot, subject: &str) -> bool {
+pub(crate) fn enabled(snapshot: &Snapshot, subject: &str) -> bool {
 	if snapshot.bundle.validate().is_err() {
 		return false;
 	}
@@ -145,6 +147,7 @@ impl Authorization {
 				.column(Alias::new("issued_by"))
 				.from(Alias::new("authorization_credentials"))
 				.cond_where(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
+				.cond_where(Expr::col(Alias::new("issued_by")).ne("dashboard-oidc"))
 				.order_by(Alias::new("created_at"), Order::Desc)
 				.order_by(Alias::new("id"), Order::Asc)
 				.limit(200)
@@ -167,7 +170,8 @@ impl Authorization {
 				.cond_where(
 					Condition::all()
 						.add(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
-						.add(Expr::col(Alias::new("id")).eq(Expr::cust("$2"))),
+						.add(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
+						.add(Expr::col(Alias::new("issued_by")).ne("dashboard-oidc")),
 				)
 				.returning(Query::returning().columns([
 					Alias::new("id"),
@@ -220,7 +224,7 @@ impl Authorization {
 impl SubjectIdentity {
 	/// Kept through the protected transaction: a concurrent credential or policy
 	/// revocation must wait for this boundary, and the next boundary reloads both.
-	pub(super) async fn lock_with_mode(
+	pub(crate) async fn lock_with_mode(
 		&self,
 		tx: &mut Transaction<'_, Postgres>,
 		exclusive: bool,
@@ -248,6 +252,42 @@ impl SubjectIdentity {
 		.await?;
 		if valid.is_none() {
 			return Err(Error::Unauthorized);
+		}
+		// Dashboard credentials are never exported as bearer secrets. Their
+		// original mapping and external identity remain part of every durable
+		// execution lease, including leases obtained after browser logout.
+		let mapping: Option<(Uuid, bool)> = sqlx::query_as(
+			&Query::select()
+				.columns([Alias::new("identity_id"), Alias::new("enabled")])
+				.from(Alias::new("dashboard_mappings"))
+				.and_where(Expr::col(Alias::new("credential_id")).eq(Expr::cust("$1")))
+				.lock(LockType::Share)
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(self.credential_id)
+		.fetch_optional(&mut **tx)
+		.await?;
+		if let Some((identity_id, mapping_enabled)) = mapping {
+			if !mapping_enabled {
+				return Err(Error::Forbidden);
+			}
+			let validity: Option<IdentityValidity> = sqlx::query_as(
+				&Query::select()
+					.columns([Alias::new("last_valid_at"), Alias::new("disabled_at")])
+					.from(Alias::new("dashboard_identities"))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+					.lock(LockType::Share)
+					.to_string(PostgresQueryBuilder),
+			)
+			.bind(identity_id)
+			.fetch_optional(&mut **tx)
+			.await?;
+			let Some((Some(last_valid_at), None)) = validity else {
+				return Err(Error::Forbidden);
+			};
+			if last_valid_at <= Utc::now() - Duration::minutes(15) {
+				return Err(Error::IdentityStatusUnavailable);
+			}
 		}
 		if !enabled(&snapshot, &self.subject) {
 			return Err(Error::Forbidden);

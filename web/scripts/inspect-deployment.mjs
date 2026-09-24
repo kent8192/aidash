@@ -13,9 +13,34 @@ try {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(() => {
-    sessionStorage.setItem("aidash-token", "acceptance-access-token");
+    sessionStorage.setItem("aidash-session-id", "cluster-browser-session");
+    sessionStorage.setItem("aidash-context", "operator");
     localStorage.setItem("aidash-locale", "en-US");
   });
+  const configResponse = await context.request.get("/auth/config");
+  assert.equal(configResponse.status(), 200);
+  assert.equal(typeof (await configResponse.json()).enabled, "boolean");
+  await page.route("**/auth/config", (route) =>
+    route.fulfill({
+      json: { enabled: true, login_url: "/auth/login" },
+    }),
+  );
+  await page.route("**/auth/session", (route) =>
+    route.fulfill({
+      json: { id: "cluster-browser-session", operator: true, mappings: [] },
+    }),
+  );
+  await page.route("**/auth/activity", (route) =>
+    route.fulfill({ status: 204 }),
+  );
+  await page.route("**/api/**", (route) =>
+    route.continue({
+      headers: {
+        ...route.request().headers(),
+        authorization: "Bearer acceptance-access-token",
+      },
+    }),
+  );
   const response = await context.request.get("/api/deployment", {
     headers: { authorization: "Bearer acceptance-access-token" },
   });

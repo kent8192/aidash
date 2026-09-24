@@ -87,8 +87,18 @@ impl Harness {
 			};
 			let mut current = store.run(id).await?;
 			let attempts = current.pending["retry_count"].as_u64().unwrap_or(0) + 1;
-			if matches!(e, Error::Forbidden | Error::Unauthorized) {
-				store.pause_for_authorization(&current, token).await?;
+			if matches!(
+				e,
+				Error::Forbidden | Error::Unauthorized | Error::IdentityStatusUnavailable
+			) {
+				let reason = if matches!(e, Error::IdentityStatusUnavailable) {
+					"identity status unavailable"
+				} else {
+					"execution authority denied"
+				};
+				store
+					.pause_for_authorization(&current, token, reason)
+					.await?;
 			} else if matches!(e, Error::TransactionPending | Error::StaleInference) {
 				current.pending["retry_at"] =
 					json!(chrono::Utc::now() + chrono::Duration::seconds(1));

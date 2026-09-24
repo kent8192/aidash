@@ -19,13 +19,9 @@ Aidash backend, frontend, and PostgreSQL images (including `pg_jsonschema`),
 starts persistent PostgreSQL, JetStream NATS and Qdrant, deploys the server,
 worker, and frontend with Helm, and exposes the dashboard at
 <http://127.0.0.1:8080>. The frontend Service serves the dashboard and proxies
-API, federation, and health requests to the internal backend Service.
+API, authentication, federation, and health requests to the internal backend Service.
 
-Sign in with `local-development-token`. The kind configuration and local
-example Secrets live in `deploy/local-k8s/`. Kubernetes startup uses these
-manifests directly and does not load `.env`. To add provider credentials, edit
-`aidash-local-app` using kubectl, then re-run `cargo make k8s-up` to restart the
-Pods with the updated Secret:
+The dashboard requires a configured Keycloak OIDC provider. Without one it shows setup guidance; `AIDASH_API_TOKEN` remains available for the API and initial operator grant. Kubernetes startup uses the example Secrets in `deploy/local-k8s/` and does not load `.env`. Add the seven `AIDASH_OIDC_*` connection values to the `aidash-local-app` Secret, including `AIDASH_OIDC_PUBLIC_ORIGIN=http://127.0.0.1:8080`, then re-run `cargo make k8s-up` to restart the Pods. Register `http://127.0.0.1:8080/auth/callback` in Keycloak. The issuer and admin URLs must be reachable from the backend Pod. Add provider credentials to this Secret as needed:
 
 ```sh
 kubectl --kubeconfig .ignore/local-k8s/kubeconfig -n aidash-local edit secret aidash-local-app
@@ -55,18 +51,24 @@ Qdrant, the backend, and Vite in detached mode:
 cargo make dev
 ```
 
-Open <http://127.0.0.1:5173> and enter the token from `AIDASH_API_TOKEN`
-(`local-development-token` by default). The backend is available at
-<http://127.0.0.1:18080>. Compose reads `.env` directly; set
-`AIDASH_BACKEND_PORT` or `AIDASH_FRONTEND_PORT` there to change host ports.
-Run `docker compose --profile dev logs -f` to follow logs and
+Open <http://127.0.0.1:5173> and configure Keycloak OIDC as described below to sign in.
+The backend defaults to <http://127.0.0.1:18080>. Compose reads `.env`
+directly; set `AIDASH_BACKEND_PORT` or `AIDASH_FRONTEND_PORT` there to change
+host ports. Run `docker compose --profile dev logs -f` to follow logs and
 `cargo make dev-down` to stop the services while retaining their data volumes.
-Re-run `cargo make dev` to rebuild after source changes.
+Re-run `cargo make dev` to rebuild after source changes. The example credentials
+and localhost bindings are for local development. Configure unique credentials
+and an HTTPS endpoint for a deployed node.
 
-The example credentials and localhost bindings are for local development.
-Configure unique credentials and an HTTPS endpoint for a deployed node.
+The [authorization API](docs/authorization.md) issues revocable subject tokens for tenant-scoped workspaces, approved Registry discovery, local agent execution and event streams. Workers recheck the root and delegated agents at every durable boundary. The dashboard signs in with Keycloak and requires an explicit mapping to an existing user subject or a separate operator grant. Its selected authority is local to each tab. Existing API Bearer credentials remain available. Operators use **Access policies / アクセス制御** to edit role/attribute policies, simulate decisions, approve registration requests, manage mappings and operator grants, and issue or revoke subject credentials. Scoped remote federation remains under implementation.
 
-The [authorization API](docs/authorization.md) issues revocable subject tokens for tenant-scoped workspaces, approved Registry discovery, local agent execution and event streams. Workers recheck the root and delegated agents at every durable boundary. The dashboard supports subject tokens for local goals, conversations, human answers and run controls, and shows their tenant identity. Operators use **Access policies / アクセス制御** to edit role/attribute policies, simulate decisions, inspect audits, approve component versions and issue or revoke subject credentials. Scoped remote federation remains under implementation.
+### Dashboard OIDC setup
+
+Aidash uses Authorization Code with PKCE and keeps provider tokens on the backend. Set the seven `AIDASH_OIDC_*` connection variables shown in `.env.example` on the API server. `AIDASH_OIDC_PUBLIC_ORIGIN` is the exact browser origin serving the dashboard; the registered callback URI is `<origin>/auth/callback`. The Vite proxy forwards `/auth` to the backend. In production use HTTPS for the dashboard, issuer and admin endpoint so Aidash issues Secure host-only session cookies. The browser session expires after 12 hours or 30 minutes without user activity by default.
+
+For a local Keycloak fixture, start the pinned container with `docker compose --profile oidc up -d keycloak`. It listens at `http://127.0.0.1:18099` with the local-only bootstrap account defined in `compose.yaml`. Create a realm with local users, then create a confidential `aidash-dashboard` client with Standard Flow enabled, the exact callback URI, and the dashboard origin as a Web Origin. Configure its Back-Channel Logout URL to reach the backend at `/auth/backchannel-logout`. Create a separate confidential `aidash-status` service-account client with only read access to users in that realm (for example, `realm-management` `view-users`); it needs no user-write, impersonation, or realm-admin role. Set its client ID and secret as the status integration variables. Run the Aidash backend on the host when using the loopback Keycloak issuer, so both browser and backend resolve the same issuer URL. A Keycloak service in a container needs a backend address reachable from that container for logout notifications.
+
+The first external identity has no authority. After its first sign-in, list verified identity IDs with `GET /api/dashboard/identities` using the existing operator Bearer token, then grant the selected identity operator access with `POST /api/dashboard/identities/{id}/operator-grant` and body `{"enabled":true,"expected_revision":0}`. Applicants can submit an authenticated registration request; operators approve one against an existing enabled user subject in **Access policies**. Approval never creates a subject or grants operator access. To disable an external identity in Keycloak, Aidash checks its enabled status at most 15 minutes after the last successful check; a definite disablement revokes browser sessions and pauses work. Once Keycloak access is restored, an operator must explicitly call `POST /api/dashboard/identities/{id}/restore`; previously revoked sessions require a new sign-in. Current-browser and all-device Aidash logout are separate dashboard actions. API Bearer recovery remains available during IdP outages.
 
 The **Registry** screen can register models, tools, skills, clusters, agents, compactors and embedding providers. Register a model before an agent. Inference uses OpenRouter `/chat/completions`. Specify the provider's actual model ID, context window, modalities and cost metadata. Credentials are resolved only from `AIDASH_SECRET_*` environment variables. Registry records store the environment variable name, never its value. Model selection is explicit; Aidash does not select fallback models or automatically route between models.
 
@@ -160,7 +162,7 @@ Jev decides whether to keep each old tool call and its full result. Aidash keeps
 
 ## Generated API client
 
-Axum management routes and Rust request/response types define the OpenAPI contract through `utoipa` and `utoipa-axum`. The public `/api/openapi.json` endpoint and `aidash openapi` command export the same document; the command needs no database, broker, or credentials. All other `/api` routes require a bearer token.
+Axum management routes and Rust request/response types define the OpenAPI contract through `utoipa` and `utoipa-axum`. The public `/api/openapi.json` endpoint and `aidash openapi` command export the same document; the command needs no database, broker, or credentials. Other `/api` routes require a bearer token or an authorized dashboard session and selected context.
 
 After changing an API route or type, run `scripts/generate-api.sh`. It exports `openapi/aidash.json` and runs the pinned Orval generator to update `web/src/generated/`. These outputs are ignored by Git, lint and coverage. The dashboard predev and prebuild scripts regenerate them automatically. Dashboard requests and types use these generated files; `transport.ts` supplies authentication/error handling, while `api.ts` reads and reconnects the SSE stream. The Orval transformer exposes unbounded `text/event-stream` responses as `Response`, so the browser can read frames without buffering the entire stream. Do not edit generated files by hand. CI generates them from a clean checkout before building and testing the UI.
 

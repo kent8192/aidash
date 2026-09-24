@@ -124,7 +124,7 @@
   "noAssignment": "Unassigned",
   "goalPlaceholder": "Research competing Rust web frameworks and compare their tradeoffs.",
   "goalTitle": "Rust framework research",
-  "tokenHelp": "Use an operator token or a subject token issued for your tenant. It stays in this browser tab.",
+  "tokenHelp": "Sign in with the configured identity provider.",
   "error": "Operation failed",
   "success": "Saved",
   "jsonHint": "Enter a valid JSON object.",
