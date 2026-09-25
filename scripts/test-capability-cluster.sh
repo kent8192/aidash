@@ -70,4 +70,6 @@ for _ in range(180):
 else: raise SystemExit('runner admission did not become ready')
 PY
 python3 scripts/test-capability-recovery.py "$state/private" "$evidence" "$runner_pid" > "$evidence/recovery.log" 2>&1
-RUST_TEST_THREADS=1 scripts/test-capability-runtime.sh -- --nocapture > "$evidence/runtime.log" 2>&1
+# Keep each harness result line intact for the evidence parser, then include
+# captured measurements and fault diagnostics in the successful-test output.
+RUST_TEST_THREADS=1 scripts/test-capability-runtime.sh -- --show-output > "$evidence/runtime.log" 2>&1
