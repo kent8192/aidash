@@ -14,31 +14,50 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Package tracked source and commit history
-        run: git bundle create /tmp/aidash-source.bundle HEAD
+      - run: git bundle create /tmp/aidash-source.bundle HEAD
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: issue-43-source
           path: /tmp/aidash-source.bundle
           retention-days: 1
-  toolchain:
+  services:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Prepare offline Rust dependencies
+      - name: Package disposable integration service filesystems
         run: |
-          rustup show active-toolchain
-          mkdir -p /tmp/aidash-offline
-          cargo vendor --locked /tmp/aidash-offline/vendor > /tmp/aidash-offline/config.toml
-          TOOLCHAIN=$(rustc --print sysroot)
-          cp -a "$TOOLCHAIN" /tmp/aidash-offline/toolchain
-          rm -rf /tmp/aidash-offline/toolchain/share/doc
-          tar -czf /tmp/aidash-offline.tar.gz -C /tmp aidash-offline
+          set -eu
+          mkdir -p /tmp/aidash-test-services
+          docker build -t aidash-test-postgres -f deploy/postgres/Dockerfile .
+          for pair in 'postgres aidash-test-postgres' 'nats nats:2.12-alpine' 'qdrant qdrant/qdrant:v1.19.1'; do
+            read -r name image <<< "$pair"
+            id=$(docker create "$image")
+            docker export "$id" | gzip > "/tmp/aidash-test-services/$name.tar.gz"
+            docker rm "$id"
+          done
+          tar -cf /tmp/aidash-test-services.tar -C /tmp aidash-test-services
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: issue-43-offline-rust
-          path: /tmp/aidash-offline.tar.gz
+          name: issue-43-test-services
+          path: /tmp/aidash-test-services.tar
+          retention-days: 1
+  dashboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22'
+      - run: npm ci --ignore-scripts --prefix web
+      - run: tar -czf /tmp/aidash-node-modules.tar.gz -C web node_modules
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: issue-43-node-modules
+          path: /tmp/aidash-node-modules.tar.gz
           retention-days: 1
