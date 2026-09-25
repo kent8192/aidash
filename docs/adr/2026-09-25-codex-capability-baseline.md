@@ -60,13 +60,15 @@ The Issue's File search requirement does not require a hosted vector store.
 
 ### Code interpreter
 
-Use a live Interpreter session that preserves variables and import state across invocations while its execution environment remains alive. If that environment stops or is recreated, explicitly report a session reset. Restoring in-memory state after an environment failure is not guaranteed. Working-file retention is a separate contract; losing variables does not imply losing saved files.
+Provide a Python Interpreter session that preserves variables and import state across invocations while its execution environment remains alive. If that environment stops or is recreated, explicitly report a session reset. Restoring in-memory state after an environment failure is not guaranteed. Working-file retention is a separate contract; losing variables does not imply losing saved files.
+
+Python is the initial language for the dedicated stateful Code interpreter. This does not prohibit other languages through Shell when their runtimes are installed and permitted; it does not promise stateful sessions for those languages. Python version, preinstalled packages and dependency installation policy are separate execution-environment choices.
 
 Automatically stop an Interpreter session after a configurable period of inactivity. Code that is still executing is not idle; execution-time limits are a separate policy. On the next invocation, create a new session and explicitly report the loss of variable and import state. Idle suspension leaves working files available under their cleanup policy.
 
 Do not reconstruct the session by blindly replaying past code. Such code may have performed writes or external actions whose outcome is unknown. Recovery must preserve Aidash's existing tool-effect contract.
 
-Provide a Harness-owned input/output contract, bounded outputs, and filesystem, network, and resource enforcement under the applicable policy. The separately documented OpenAI API Code Interpreter is not, by itself, a Codex specification. Its hosted API, Python session lifetime, and billing model are not implied dependencies. The concrete language/runtime and numeric idle timeout must be named in the implementation specification rather than inferred from the word "Codex".
+Provide a Harness-owned input/output contract, bounded outputs, and filesystem, network, and resource enforcement under the applicable policy. The separately documented OpenAI API Code Interpreter is not, by itself, a Codex specification. Its hosted API, Python session lifetime, and billing model are not implied dependencies. The concrete Python runtime version and numeric idle timeout must be named in the implementation specification rather than inferred from the word "Codex".
 
 ## Aidash constraints retained
 
@@ -87,7 +89,7 @@ Explicit cleanup choices avoid silently discarding working files at task boundar
 
 The baseline reduces bespoke design choices while preserving Aidash's security and recovery contracts. Each deviation from Codex should have an Aidash-specific reason rather than an accidental implementation limitation.
 
-This decision does not claim the five capabilities are implemented. Runtime selection, numeric resource limits and idle timeout, concurrency and version-transition rules, snapshot retention duration and retained-file access after thread deletion, concrete approval expiry, migration mechanics, and executable acceptance tests belong in the implementation specification.
+This decision does not claim the five capabilities are implemented. Python runtime version and package policy, numeric resource limits and idle timeout, concurrency and version-transition rules, snapshot retention duration and retained-file access after thread deletion, concrete approval expiry, migration mechanics, and executable acceptance tests belong in the implementation specification.
 
 ## References
 
