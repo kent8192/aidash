@@ -26,7 +26,19 @@ The authorized working files associated with one thread and one Agent, available
 
 ## Working-area cleanup
 
-The user-authorized removal of an Agent working area after a lifecycle boundary. It is distinct from stopping an Interpreter session, deleting a thread, or deleting separately published artifacts. Recovery-copy retention is a separate decision.
+The user-authorized removal of an active Agent working area, either by reversible cleanup or by irreversible working-area deletion. It is distinct from stopping an Interpreter session, deleting a thread, or deleting separately published artifacts.
+
+## Reversible cleanup
+
+Removal of an active Agent working area while retaining a time-limited recovery snapshot of its working files.
+
+## Recovery snapshot
+
+A retained copy of working files that permits authorized restoration until its expiry or explicit deletion. It does not preserve Interpreter memory or approval grants.
+
+## Irreversible working-area deletion
+
+Removal of the selected working files and their associated Harness-managed recovery copies without retaining a Harness restoration path. It does not imply deletion of original uploaded references, separately published artifacts, or independent backups.
 
 ## Worktree
 
