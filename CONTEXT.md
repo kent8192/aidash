@@ -20,9 +20,21 @@ A Harness-managed facility available without a Registry tool record or a `plugin
 
 The filesystem location selected for an execution context. It is distinct from an Aidash Workspace and from the complete set of paths a sandbox permits. Its lifetime need not match one tool invocation.
 
+## Agent working area
+
+The authorized working files associated with one thread and one Agent, available to that Agent across successive Runs in the thread. Other Agents receive explicitly shared files rather than implicit access to the working area. This association does not override access policy.
+
 ## Worktree
 
 A separate Git checkout used to isolate file changes from another checkout. A Worktree is a working-directory option, not an operating-system security boundary.
+
+## Interpreter session
+
+A live code execution environment whose variables and import state can persist across invocations while the environment remains alive. Its memory state is distinct from the Agent working area's files.
+
+## Session reset
+
+The explicit loss of an Interpreter session's in-memory state after the environment stops or is recreated. A reset does not by itself mean that working files have been deleted.
 
 ## Skill
 
@@ -47,6 +59,10 @@ The enforced execution boundary for processes, filesystem access, network access
 ## Approval
 
 An authorized decision on a particular action or explicitly scoped permission request. Approval does not implicitly grant access beyond the applicable policy ceiling.
+
+## Designated approver
+
+A person assigned to review approval requests that the original requester is not authorized to approve. Assignment does not grant authority beyond the applicable policy ceiling.
 
 ## Registry integration
 
