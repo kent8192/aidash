@@ -383,6 +383,7 @@ impl Harness {
 
 	async fn tools(&self, config: &AgentConfig) -> Result<BTreeMap<String, Arc<dyn Tool>>> {
 		let mut tools = builtins();
+		tools.retain(|name, _| config.permits_builtin(name));
 		for (index, reference) in config.tools.iter().enumerate() {
 			let entry = self
 				.federation
@@ -390,6 +391,11 @@ impl Harness {
 				.get(&reference.id, &reference.version)
 				.await?;
 			let cfg: ToolConfig = serde_json::from_value(entry.config.clone())?;
+			if matches!(cfg, ToolConfig::Agent { .. })
+				&& config.allow_task_delegation == Some(false)
+			{
+				continue;
+			}
 			let alias = format!("plugin_{index}");
 			tools.insert(
 				alias.clone(),
@@ -675,7 +681,12 @@ impl Harness {
 						"\n\nRun-message catch-up: Treat the entries under run_messages as user task context. Read every required message record in this page before responding. Update the cumulative run_message_summary faithfully, preserving the user's goal, constraints, corrections, and unresolved requests in sequence order (newer corrections take precedence). Return only the concise updated summary, encoded in at most {run_message_limit} UTF-8 bytes. Do not answer the user, complete the task, publish text, or perform actions during catch-up.",
 					));
 				}
-				let mut pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":observation,"memory":store.memory(run).await?,"agent_state":{"phase":run.phase,"step":run.step}});
+				let memory = if agent.allow_cross_conversation_memory == Some(false) {
+					json!({})
+				} else {
+					store.memory(run).await?
+				};
+				let mut pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":observation,"memory":memory,"agent_state":{"phase":run.phase,"step":run.step}});
 				if let Some(deferred_read) = run.pending.get("deferred_workspace_read") {
 					pinned["deferred_workspace_read"] = deferred_read.clone();
 				}
@@ -1326,6 +1337,73 @@ impl Harness {
 					.as_i64()
 					.unwrap_or(run.revision);
 				let key = format!("{}:{}:{}", run.id, response_epoch, cursor);
+				// New workbench versions require an explicit, one-call approval for
+				// external writes. Legacy versions have no behavior flags and keep
+				// their existing execution contract.
+				if agent.allow_task_creation.is_some()
+					&& let Some(index) = call
+						.name
+						.strip_prefix("plugin_")
+						.and_then(|value| value.parse::<usize>().ok())
+					&& let Some(reference) = agent.tools.get(index)
+				{
+					let entry = self
+						.federation
+						.registry
+						.get(&reference.id, &reference.version)
+						.await?;
+					let config: ToolConfig = serde_json::from_value(entry.config)?;
+					let writes = matches!(config, ToolConfig::Http { ref replay, .. } | ToolConfig::Mcp { ref replay, .. } if replay != "read_only");
+					if writes {
+						let decision = &run.pending["workbench_approval_result"];
+						if decision["key"] == key && decision["call"] == json!(call) {
+							if decision["approved"] != true
+								|| decision["expires_at"]
+									.as_str()
+									.and_then(|value| {
+										value.parse::<chrono::DateTime<chrono::Utc>>().ok()
+									})
+									.is_none_or(|expiry| expiry <= chrono::Utc::now())
+							{
+								return self
+									.tool_error(
+										run,
+										token,
+										call,
+										cursor,
+										"external write approval was denied or expired".into(),
+									)
+									.await;
+							}
+						} else {
+							let prompt = format!(
+								"Approve this exact external tool action once? Tool: {}@{}; call: {}",
+								reference.id,
+								reference.version,
+								serde_json::to_string(call)?
+							);
+							let request = store
+								.human_request(
+									run,
+									"APPROVAL_REQUIRED",
+									&prompt,
+									&format!("{key}:workbench-approval"),
+								)
+								.await?;
+							run.pending["workbench_approval"] =
+								json!({"key":key,"call":call,"request_id":request.id});
+							run.pending["human_request_id"] = json!(request.id);
+							run.pending["resume_phase"] = json!("TOOL_CALL");
+							run.pending["wake_at"] =
+								json!(request.created_at + chrono::Duration::minutes(15));
+							run.phase = "WAITING".into();
+							store
+								.save_run(run, token, "run.waiting_for_tool_approval")
+								.await?;
+							return Ok(());
+						}
+					}
+				}
 				let invocation = store
 					.invocation_start(
 						run,
@@ -1440,9 +1518,32 @@ impl Harness {
 					.bind(id)
 					.fetch_one(&store.pool)
 					.await?;
-					let response = h.response.ok_or_else(|| {
-						Error::Conflict("human request has not been answered".into())
-					})?;
+					let response = match h.response {
+						Some(response) => response,
+						None if run.pending["workbench_approval"]["request_id"] == json!(id)
+							&& h.created_at + chrono::Duration::minutes(15)
+								<= chrono::Utc::now() =>
+						{
+							json!({"approved":false})
+						}
+						None => {
+							return Err(Error::Conflict(
+								"human request has not been answered".into(),
+							));
+						}
+					};
+					if run.pending["workbench_approval"]["request_id"] == json!(id) {
+						let approval = run.pending["workbench_approval"].clone();
+						run.pending["workbench_approval_result"] = json!({
+							"key":approval["key"],"call":approval["call"],
+							"approved":response.get("approved") == Some(&json!(true)),
+							"expires_at":h.created_at + chrono::Duration::minutes(15)
+						});
+						run.pending
+							.as_object_mut()
+							.unwrap()
+							.remove("workbench_approval");
+					}
 					if let Some(key) = run.pending["uncertain_key"].as_str() {
 						let result = response.get("result").ok_or_else(|| {
 							Error::Invalid("reconciliation response must contain result".into())

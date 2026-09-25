@@ -2,7 +2,7 @@
 
 Aidash 0.1 is a self-hosted federated agent mesh. Register an explicitly selected model and an agent, start a goal in the dashboard, and let agents claim work across independently operated nodes. Workspaces retain tasks, artifacts, messages and an ordered event log. Workers persist their execution state and recover after process termination.
 
-The current implementation includes a federated mesh, scoped authorization, policy-driven local agent generation, recoverable cross-node transactions, persistent semantic memory, and Kubernetes/k3s deployment. See [architecture](docs/architecture.md), [authorization](docs/authorization.md), [generation](docs/generation.md), [distributed transactions](docs/transactions.md), [semantic memory](docs/semantic-memory.md), [orchestration](docs/orchestration.md), and [protocol and recovery contracts](docs/protocol.md). Scoped federation, full A2A compatibility, and the combined release acceptance gates remain under development.
+The current implementation includes a federated mesh, scoped authorization, policy-driven local agent generation, recoverable cross-node transactions, persistent semantic memory, Creator and Trust workbenches, and Kubernetes/k3s deployment. See [architecture](docs/architecture.md), [authorization](docs/authorization.md), [generation](docs/generation.md), [agent workbenches](docs/features/agent-workbenches.md), [distributed transactions](docs/transactions.md), [semantic memory](docs/semantic-memory.md), [orchestration](docs/orchestration.md), and [protocol and recovery contracts](docs/protocol.md). Scoped federation, full A2A compatibility, and the combined release acceptance gates remain under development.
 
 ## Run locally
 

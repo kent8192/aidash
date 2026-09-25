@@ -38,6 +38,7 @@ mod m20260924_070000_legacy_run_input_gate;
 mod m20260924_080000_legacy_federated_input_gate;
 mod m20260924_090000_worker_ledger_fence;
 mod m20260924_100000_remote_message_fence;
+mod m20260925_000000_agent_workbenches;
 
 pub struct Migrator;
 #[async_trait::async_trait]
@@ -82,6 +83,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260924_080000_legacy_federated_input_gate::Migration),
 			Box::new(m20260924_090000_worker_ledger_fence::Migration),
 			Box::new(m20260924_100000_remote_message_fence::Migration),
+			Box::new(m20260925_000000_agent_workbenches::Migration),
 		]
 	}
 }

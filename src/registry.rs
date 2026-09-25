@@ -156,6 +156,30 @@ pub struct AgentConfig {
 	pub cluster: Option<EntityRef>,
 	#[serde(default = "max_steps")]
 	pub max_steps: i32,
+	/// Missing fields preserve the behavior of previously registered versions.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub allow_task_creation: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub allow_task_delegation: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub allow_memory_write: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub allow_workspace_retrieval: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub allow_cross_conversation_memory: Option<bool>,
+}
+impl AgentConfig {
+	pub fn permits_builtin(&self, name: &str) -> bool {
+		match name {
+			"task_create" | "task_assign" => self.allow_task_creation != Some(false),
+			"task_delegate" => self.allow_task_delegation != Some(false),
+			"memory_write" => self.allow_memory_write != Some(false),
+			"workspace_read" | "workspace_observe" | "workspace_wait" => {
+				self.allow_workspace_retrieval != Some(false)
+			}
+			_ => true,
+		}
+	}
 }
 fn max_steps() -> i32 {
 	64

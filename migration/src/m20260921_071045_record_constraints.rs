@@ -265,6 +265,17 @@ fn agent_content(config: &str) -> String {
 }
 
 pub(crate) fn checks(personal_agents: bool) -> Vec<(&'static str, &'static str, String)> {
+	checks_internal(personal_agents, false)
+}
+
+pub(crate) fn workbench_checks() -> Vec<(&'static str, &'static str, String)> {
+	checks_internal(true, true)
+}
+
+fn checks_internal(
+	personal_agents: bool,
+	workbench: bool,
+) -> Vec<(&'static str, &'static str, String)> {
 	let mut checks = Vec::new();
 	let mut agent_fields = vec![
 		"model",
@@ -276,6 +287,16 @@ pub(crate) fn checks(personal_agents: bool) -> Vec<(&'static str, &'static str, 
 	];
 	if personal_agents {
 		agent_fields.push("knowledge_digest");
+	}
+	let workbench_fields = [
+		"allow_task_creation",
+		"allow_task_delegation",
+		"allow_memory_write",
+		"allow_workspace_retrieval",
+		"allow_cross_conversation_memory",
+	];
+	if workbench {
+		agent_fields.extend(workbench_fields);
 	}
 	for &(table, name, expression) in CHECKS {
 		let mut parts = vec![expression.replace("{whitespace}", WHITESPACE_SQL)];
@@ -349,6 +370,11 @@ pub(crate) fn checks(personal_agents: bool) -> Vec<(&'static str, &'static str, 
 						entity_ref(&format!("{config}->'cluster'"))
 					),
 				];
+				if workbench {
+					for field in workbench_fields {
+						parts.push(format!("(kind <> 'agent' OR NOT ({config} ? '{field}') OR jsonb_typeof({config}->'{field}') = 'boolean')"));
+					}
+				}
 				parts.push(format!("kind <> 'agent' OR ({})", shape.join(" AND ")));
 				parts.push(format!(
 					"kind <> 'agent' OR ({})",
@@ -639,6 +665,11 @@ pub(crate) fn checks(personal_agents: bool) -> Vec<(&'static str, &'static str, 
 					"({entity}->>'kind' <> 'agent' OR ({}))",
 					agent_config.join(" AND ")
 				));
+				if workbench {
+					for field in workbench_fields {
+						parts.push(format!("({entity}->>'kind' <> 'agent' OR NOT ({entity_config} ? '{field}') OR jsonb_typeof({entity_config}->'{field}') = 'boolean')"));
+					}
+				}
 				parts.push(format!(
 					"({entity}->>'kind' <> 'skill' OR (jsonb_typeof({entity}->'config'->'instructions') = 'string' AND length(btrim({entity}->'config'->>'instructions', {WHITESPACE_SQL})) > 0))"
 				));

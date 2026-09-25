@@ -51,6 +51,7 @@ fn ordinary_routes() -> OpenApiRouter<Federation> {
 		.merge(crate::collaboration::api::routes())
 		.merge(crate::generation::api::routes())
 		.merge(crate::semantic::api::routes())
+		.merge(crate::workbench::routes())
 		.merge(crate::authorization::remote::routes())
 		.routes(routes!(human_answer))
 		.routes(routes!(run_message))
