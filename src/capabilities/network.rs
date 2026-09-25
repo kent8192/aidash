@@ -95,7 +95,7 @@ async fn fetch(store: &Store, record: &Record) -> Result<(u16, Vec<u8>, String)>
 		let status = response.status().as_u16();
 		let mut bytes = vec![];
 		while let Some(chunk) = response.chunk().await? {
-			if bytes.len() + chunk.len() > 1 << 20 {
+			if (bytes.len() + chunk.len()) as u64 > store.capabilities.0.output_bytes {
 				return Err(Error::Invalid("OUTBOUND_RESPONSE_LIMIT".into()));
 			}
 			bytes.extend_from_slice(&chunk);
@@ -169,6 +169,9 @@ async fn drive(store: &Store, id: Uuid) -> Result<()> {
 	};
 	let (http_status, bytes, final_url) = match outcome {
 		Ok(result) => result,
+		Err(Error::Invalid(code)) if code == "OUTBOUND_RESPONSE_LIMIT" => {
+			return fail(store, id, &code).await;
+		}
 		Err(_) => return fail(store, id, "OUTBOUND_STOPPED").await,
 	};
 	let mut access = Access::begin(store, &identity).await?;

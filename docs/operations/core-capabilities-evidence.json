@@ -328,6 +328,10 @@
         {
           "name": "capabilities::limits::tests::defaults_and_lower_content_limits_preserve_wire_ceilings",
           "source": "src/capabilities/limits.rs"
+        },
+        {
+          "name": "network_tests::broker_response_budget_uses_the_operator_profile_and_retains_no_partial_artifact",
+          "source": "tests/core_capabilities/network.rs"
         }
       ],
       "admission_probe": "runner/probe.py and runner/node_guard.py: executed in the pinned gVisor image; verify direct egress, metadata, host sockets, filesystem, non-root, resource ceilings and physical writer freeze/termination."

@@ -72,6 +72,39 @@ async fn outcome(c: &CoreFixture, run: Uuid, input: &Value, state: &str) -> Valu
 		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 	}
 }
+
+#[rstest::fixture]
+async fn small_network_fixture(
+	#[future] network_fixture: (CoreFixture, aidash::domain::Run),
+) -> (CoreFixture, aidash::domain::Run) {
+	let (mut c, run) = Box::pin(network_fixture).await;
+	let mut profile = (*c.f.store.capabilities.0).clone();
+	profile.output_bytes = 128;
+	c.f.store.capabilities = Runtime::new(profile).unwrap();
+	c.app = aidash::api::router(c.f.clone());
+	(c, run)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn broker_response_budget_uses_the_operator_profile_and_retains_no_partial_artifact(
+	#[future] small_network_fixture: (CoreFixture, aidash::domain::Run),
+) {
+	let (c, run) = Box::pin(small_network_fixture).await;
+	let (stop, rx) = tokio::sync::watch::channel(false);
+	let worker = tokio::spawn(aidash::capabilities::operations::run(c.f.store.clone(), rx));
+	let (input, _) = approve(&c, run.id, "https://httpbingo.org/bytes/1024", false).await;
+	let result = outcome(&c, run.id, &input, "uncertain").await;
+	assert_eq!(result["error"]["code"], "OUTBOUND_RESPONSE_LIMIT");
+	assert!(result["output_file"].is_null());
+	assert_eq!(
+		outcome(&c, run.id, &input, "uncertain").await["operation_id"],
+		result["operation_id"]
+	);
+	stop.send(true).unwrap();
+	worker.await.unwrap().unwrap();
+	c.close().await;
+}
 #[rstest::rstest]
 #[tokio::test]
 async fn real_https_redirects_stay_inside_the_grant_and_private_dns_is_denied(

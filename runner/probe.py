@@ -37,15 +37,20 @@ for root, budget in [('/work', int(sys.argv[1])), ('/tmp', int(sys.argv[2]))]:
             report['disk_enforced'][root] = False
         except OSError as error:
             report['disk_enforced'][root] = error.errno == errno.ENOSPC
+# Verify fork works before lowering this probe's inherited hard limit. Exhausting
+# the entire Pod pids.max also consumes the Sentry's host threads and can kill
+# the verifier itself. The trusted node adapter independently checks the exact
+# configured pids.max; this bounded probe exercises enforcement inside gVisor.
+subprocess.run(['true'], check=True)
+report['fork_probe_limit'] = 8
+resource.setrlimit(resource.RLIMIT_NPROC, (report['fork_probe_limit'], report['fork_probe_limit']))
 processes = []
 try:
-    for _ in range(report['process_limit'] + 1):
+    for _ in range(report['fork_probe_limit'] + 1):
         processes.append(subprocess.Popen(['sleep','10']))
     report['fork_denied'] = False
 except OSError as error:
-    # gVisor reports host cgroup thread exhaustion as ENOMEM. The trusted
-    # node probe separately verifies the actual pids.max ceiling.
-    report['fork_denied'] = error.errno in (errno.EAGAIN, errno.ENOMEM) and 0 < len(processes) <= report['process_limit']
+    report['fork_denied'] = error.errno == errno.EAGAIN and len(processes) <= report['fork_probe_limit']
     report['fork_error'] = errno.errorcode.get(error.errno, str(error.errno))
 finally:
     for process in processes:

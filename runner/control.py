@@ -94,7 +94,7 @@ class Runner:
         operation = str(uuid.uuid4())
         self.admission_operation = operation
         self.accept({"operation_id": operation, "area_id": str(uuid.uuid4()), "epoch": 1,
-                     "digest": "immutable-admission-probe/2", "kind": "shell", "code": f"python -I /opt/aidash/probe.py {self.config['working_bytes']} {self.config['temporary_bytes']}",
+                     "digest": "immutable-admission-probe/3", "kind": "shell", "code": f"python -I /opt/aidash/probe.py {self.config['working_bytes']} {self.config['temporary_bytes']}",
                      "seconds": 30, "files": []})
         deadline = time.monotonic() + 150
         while time.monotonic() < deadline:
@@ -687,10 +687,9 @@ class Runner:
                     # Retain the terminal journal and files before collecting Kubernetes resources.
                     self.kube(["delete", "pod", self.pod_name(operation), "--wait=false"], check=False)
                     break
-                # Fork exhaustion is an intentional admission probe. Starting
-                # another collector process at that instant can exhaust the
-                # Sentry's own thread budget. Its final output is collected only
-                # after the probe reaps its children; ordinary previews continue.
+                # Collect the bounded admission probe only after it reaps its
+                # children, avoiding needless processes during the fork check.
+                # Ordinary operation previews continue while execution runs.
                 if hydrated and operation != self.admission_operation and time.monotonic() - preview_at > 1:
                     captured = json.loads(self.exec_collector(operation, ["logs", "16384"]).stdout)
                     self.update(operation, stdout=captured["stdout"], truncated=captured["truncated"])

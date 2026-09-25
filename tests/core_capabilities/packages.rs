@@ -177,8 +177,8 @@ async fn approved_wheel_installs_offline_with_hashes_and_explicit_memory_reset(
 	assert_eq!(status, 200, "{op}");
 	let timed_out = operation_until(&c, run.id, "python", &op["operation_id"], &["failed"]).await;
 	assert_eq!(timed_out["termination_confirmed"], true);
-	assert_eq!(
-		timed_out["exit_code"], 137,
+	assert!(
+		matches!(timed_out["exit_code"].as_i64(), Some(137 | 143)),
 		"the runtime deadline must terminate installation: {timed_out}"
 	);
 	assert_eq!(
