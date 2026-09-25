@@ -26,11 +26,17 @@ This scope preserves continuity without making concurrent Agents implicit co-wri
 
 ### Working-area cleanup
 
-At lifecycle boundaries such as goal completion and the thread-deletion flow, offer buttons for the user to decide whether to remove the associated working area. Reaching a boundary or leaving the prompt unanswered does not itself authorize file deletion. Keep the decision explicit rather than deleting working files solely because a goal finished or an idle timeout elapsed.
+At lifecycle boundaries such as goal completion and the thread-deletion flow, offer separate controls for reversible cleanup and irreversible working-area deletion. Normally suggest "Clean up (restorable)" / "整理する（復元可能）". Offer "Delete working files (not restorable)" / "作業ファイルを削除する（復元不可）" separately and require an additional confirmation. Reaching a boundary or leaving the prompt unanswered does not authorize either operation.
 
-The cleanup control must identify the working area it affects and remain separate from stopping an Interpreter session. The thread-deletion flow must resolve the cleanup choice before its controls become inaccessible. The treatment of published artifacts, recovery snapshots, and retained files after thread deletion requires a separate lifecycle contract; this decision does not silently select their deletion or indefinite retention.
+Reversible cleanup retains a recovery snapshot of the working files for a limited retention period, then removes the active working area. Confirm that the snapshot is available before removing the active files; a failed snapshot must leave them intact. Show the recovery expiry to the user. Restoration recovers files, not Interpreter memory or past approval grants, and remains subject to current authorization. The numeric retention period is an implementation parameter.
 
-This is an intentional difference from the documented Codex-managed Worktree lifecycle: Codex supports automatic cleanup on chat archival or retention-limit pressure and saves a snapshot before removal. Aidash adopts an explicit cleanup choice; Codex-style snapshot recovery has not yet been selected. See the Worktree cleanup section of the Codex reference below.
+Irreversible working-area deletion removes the selected working files and their associated Harness-managed recovery copies without creating a new recovery snapshot. After successful deletion, the Harness provides no restoration for that working area. Clearly identify the thread, Agent, and files or snapshots in scope before confirmation. This is not a promise to erase independent backups, audit records, or copies held by external systems.
+
+Both operations are limited to the selected Agent working area and its recovery copies. They do not implicitly delete original uploaded references, separately published artifacts, shared copies owned elsewhere, or a user-managed source checkout outside that working area. Those resources keep their own authorization and retention rules. Cleanup must coordinate with live execution so it cannot race an ongoing write; the concurrency mechanism remains an implementation decision.
+
+The cleanup control must remain distinct from stopping an Interpreter session or deleting a thread. Resolve the cleanup choice in the thread-deletion flow before its controls become inaccessible. Access to retained working files or recovery snapshots after thread deletion requires a defined owner and management location; that integration remains to be specified.
+
+Codex documents automatic cleanup of managed Worktrees on chat archival or retention-limit pressure, with a snapshot saved before removal. Aidash retains the recovery concept but makes the cleanup choice explicit and separates it from non-restorable deletion. See the Worktree cleanup section of the Codex reference below.
 
 ### Skills
 
@@ -77,11 +83,11 @@ Live Interpreter sessions support iterative analysis without promising durable p
 
 Requester-first approval routing supports individual use while allowing organizations to assign authorized reviewers. It requires the system to retain the original requester through delegation and check approval authority, rather than treating thread membership or an approver label as permission.
 
-Explicit cleanup choices avoid silently discarding working files at task boundaries. Automatic idle suspension releases process resources independently of that choice. Run-scoped approval reduces repeated prompts without turning a one-time decision into a permanent or cross-Agent permission.
+Explicit cleanup choices avoid silently discarding working files at task boundaries. Distinguishing reversible cleanup from irreversible deletion prevents retained recovery copies from contradicting the user's deletion choice. Recovery snapshots still consume storage and need an explicit expiry; restoration does not preserve live process memory. Automatic idle suspension releases process resources independently of that choice. Run-scoped approval reduces repeated prompts without turning a one-time decision into a permanent or cross-Agent permission.
 
 The baseline reduces bespoke design choices while preserving Aidash's security and recovery contracts. Each deviation from Codex should have an Aidash-specific reason rather than an accidental implementation limitation.
 
-This decision does not claim the five capabilities are implemented. Runtime selection, numeric resource limits and idle timeout, concurrency and version-transition rules, cleanup recovery and retained-file access after thread deletion, the treatment of published artifacts, concrete approval expiry, migration mechanics, and executable acceptance tests belong in the implementation specification.
+This decision does not claim the five capabilities are implemented. Runtime selection, numeric resource limits and idle timeout, concurrency and version-transition rules, snapshot retention duration and retained-file access after thread deletion, concrete approval expiry, migration mechanics, and executable acceptance tests belong in the implementation specification.
 
 ## References
 
