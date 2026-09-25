@@ -25,7 +25,7 @@ async fn generation_policy_is_revisioned_and_requests_reserve_deduplicated_quota
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let spec = definition(&app, &f.config.api_token).await;
@@ -112,7 +112,7 @@ async fn approval_activation_and_stop_are_atomic_and_audited(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let spec = definition(&app, &f.config.api_token).await;
@@ -270,7 +270,7 @@ async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_all
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", listener.local_addr().unwrap());
 	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
 	let mut spec = definition(&app, &f.config.api_token).await;
@@ -417,7 +417,7 @@ async fn concurrent_requests_obey_quota_and_denial_releases_it_once(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let mut spec = definition(&app, &f.config.api_token).await;
@@ -501,7 +501,7 @@ async fn agent_created_tasks_keep_generation_depth_when_requested_by_root(
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", listener.local_addr().unwrap());
 	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
 	let mut spec = definition(&app, &f.config.api_token).await;
@@ -597,7 +597,7 @@ async fn revoked_requester_cannot_activate_and_failed_admission_leaves_no_agent(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let mut spec = definition(&app, &f.config.api_token).await;
@@ -689,7 +689,7 @@ async fn missing_usage_keeps_reservation_and_stops_before_another_model_call(
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", listener.local_addr().unwrap());
 	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
 	let mut spec = definition(&app, &f.config.api_token).await;
@@ -770,7 +770,7 @@ async fn worker_can_request_nested_generation_without_dropping_parent_authority(
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", listener.local_addr().unwrap());
 	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
 	let mut spec = definition(&app, &f.config.api_token).await;
@@ -842,7 +842,7 @@ async fn generation_reads_and_events_respect_denial_and_tenant_boundaries(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let spec = definition(&app, &f.config.api_token).await;
@@ -998,7 +998,7 @@ async fn expiration_cancels_generated_run_before_any_provider_call(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let mut spec = definition(&app, &f.config.api_token).await;
@@ -1093,7 +1093,7 @@ async fn stop_commits_during_inflight_inference_and_discards_its_result(
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", listener.local_addr().unwrap());
 	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
 	let mut spec = definition(&app, &f.config.api_token).await;
@@ -1234,7 +1234,7 @@ async fn atomic_commit_discards_generated_output_but_settles_its_usage(
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", listener.local_addr().unwrap());
 	let server = tokio::spawn(async move { axum::serve(listener, provider).await.unwrap() });
-	let (mut f, url, schema) = setup().await;
+	let (mut f, url, schema) = setup(&_test_environment).await;
 	f.config.lease_seconds = 300;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
@@ -1332,7 +1332,7 @@ async fn matching_ordinary_agent_is_reused_without_generation_or_quota(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (mut bundle, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	bundle["policies"][0]["resources"]["kinds"] = json!([
@@ -1406,7 +1406,7 @@ async fn disabling_an_existing_policy_remains_possible_after_component_revocatio
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let mut spec = definition(&app, &f.config.api_token).await;
@@ -1469,7 +1469,7 @@ async fn count_concurrency_and_total_token_limits_are_independent(
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	for limit in ["max_agents", "max_concurrent", "token_budget"] {
-		let (f, url, schema) = setup().await;
+		let (f, url, schema) = setup(&_test_environment).await;
 		let app = api::router(f.clone());
 		let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 		let mut spec = definition(&app, &f.config.api_token).await;
@@ -1583,7 +1583,7 @@ async fn generated_permission_attributes_deny_tools_without_losing_the_pending_c
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", listener.local_addr().unwrap());
 	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (mut bundle, token, _) = bootstrap(&f, &app, &endpoint).await;
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"deny-research-tools","effect":"deny","subjects":{"kinds":["agent"]},"actions":["tool.invoke"],"resources":{"kinds":["tool"]},"condition":{"op":"eq","left":{"source":"subject","path":"/team"},"right":{"source":"literal","value":"research"}}}));
@@ -1686,7 +1686,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (mut policy, token, other_task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let spec = definition(&app, &f.config.api_token).await;

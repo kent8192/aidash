@@ -43,6 +43,23 @@ struct Source {
 	blob: bool,
 }
 
+#[derive(Clone)]
+struct GitHubEndpoints {
+	web: Url,
+	api: Url,
+	raw: Url,
+}
+
+impl GitHubEndpoints {
+	fn official() -> Self {
+		Self {
+			web: Url::parse("https://github.com/").expect("static GitHub web URL"),
+			api: Url::parse("https://api.github.com/").expect("static GitHub API URL"),
+			raw: Url::parse("https://raw.githubusercontent.com/").expect("static GitHub raw URL"),
+		}
+	}
+}
+
 impl Source {
 	fn parse(value: &str) -> Result<Self> {
 		let url =
@@ -102,13 +119,35 @@ impl Source {
 		})
 	}
 
-	fn api(&self, suffix: &str) -> String {
-		let base = format!("https://api.github.com/repos/{}/{}", self.owner, self.repo);
-		if suffix.is_empty() {
-			base
-		} else {
-			format!("{base}/{suffix}")
+	fn api_with_base(&self, base: &Url, suffix: &str) -> Result<Url> {
+		let (path, query) = suffix.split_once('?').unwrap_or((suffix, ""));
+		let mut url = base.clone();
+		{
+			let mut segments = url
+				.path_segments_mut()
+				.map_err(|_| Error::Invalid("invalid GitHub API base URL".into()))?;
+			segments
+				.pop_if_empty()
+				.push("repos")
+				.push(&self.owner)
+				.push(&self.repo);
+			for segment in path.split('/').filter(|segment| !segment.is_empty()) {
+				segments.push(segment);
+			}
 		}
+		url.set_query((!query.is_empty()).then_some(query));
+		Ok(url)
+	}
+
+	#[cfg(test)]
+	fn api(&self, suffix: &str) -> String {
+		self.api_with_base(
+			&Url::parse("https://api.github.com/").expect("static GitHub API URL"),
+			suffix,
+		)
+		.expect("valid GitHub API endpoint")
+		.as_str()
+		.to_owned()
 	}
 
 	fn reference_paths(&self) -> impl Iterator<Item = (String, String)> + '_ {
@@ -313,9 +352,13 @@ async fn api_get_with_accept(
 	Ok(Some(bytes))
 }
 
-async fn commit(client: &Client, source: &Source, reference: &str) -> Result<Option<Commit>> {
-	let mut url =
-		Url::parse(&source.api("commits")).map_err(|error| Error::Invalid(error.to_string()))?;
+async fn commit(
+	client: &Client,
+	source: &Source,
+	endpoints: &GitHubEndpoints,
+	reference: &str,
+) -> Result<Option<Commit>> {
+	let mut url = source.api_with_base(&endpoints.api, "commits")?;
 	url.path_segments_mut()
 		.map_err(|_| Error::Invalid("invalid GitHub reference".into()))?
 		.push(reference);
@@ -332,10 +375,16 @@ async fn commit(client: &Client, source: &Source, reference: &str) -> Result<Opt
 	if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
 		return Err(Error::Invalid("invalid GitHub commit SHA response".into()));
 	}
-	api_get(client, &source.api(&format!("git/commits/{sha}")), 64_000)
-		.await?
-		.map(|bytes| serde_json::from_slice(&bytes).map_err(Error::from))
-		.transpose()
+	api_get(
+		client,
+		source
+			.api_with_base(&endpoints.api, &format!("git/commits/{sha}"))?
+			.as_str(),
+		64_000,
+	)
+	.await?
+	.map(|bytes| serde_json::from_slice(&bytes).map_err(Error::from))
+	.transpose()
 }
 
 fn candidates(tree: &Tree, selected_dir: Option<&str>) -> Vec<String> {
@@ -365,12 +414,20 @@ fn candidates(tree: &Tree, selected_dir: Option<&str>) -> Vec<String> {
 	paths
 }
 
-async fn fetch_tree(client: &Client, source: &Source, sha: &str, recursive: bool) -> Result<Tree> {
+async fn fetch_tree(
+	client: &Client,
+	source: &Source,
+	endpoints: &GitHubEndpoints,
+	sha: &str,
+	recursive: bool,
+) -> Result<Tree> {
 	let suffix = if recursive { "?recursive=1" } else { "" };
 	let tree: Tree = serde_json::from_slice(
 		&api_get(
 			client,
-			&source.api(&format!("git/trees/{sha}{suffix}")),
+			source
+				.api_with_base(&endpoints.api, &format!("git/trees/{sha}{suffix}"))?
+				.as_str(),
 			MAX_TREE_BYTES,
 		)
 		.await?
@@ -387,6 +444,7 @@ async fn fetch_tree(client: &Client, source: &Source, sha: &str, recursive: bool
 async fn skill_tree(
 	client: &Client,
 	source: &Source,
+	endpoints: &GitHubEndpoints,
 	root_sha: &str,
 	subpath: &str,
 ) -> Result<Tree> {
@@ -396,7 +454,7 @@ async fn skill_tree(
 		subpath
 	};
 	if source.blob && directory.is_empty() {
-		let root = fetch_tree(client, source, root_sha, false).await?;
+		let root = fetch_tree(client, source, endpoints, root_sha, false).await?;
 		let mut entries = Vec::new();
 		for entry in root.tree {
 			if entry.kind == "blob" && entry.path == "SKILL.md" {
@@ -404,7 +462,7 @@ async fn skill_tree(
 			} else if entry.kind == "tree"
 				&& ["references", "scripts", "assets", "templates"].contains(&entry.path.as_str())
 			{
-				let mut subtree = fetch_tree(client, source, &entry.sha, true).await?;
+				let mut subtree = fetch_tree(client, source, endpoints, &entry.sha, true).await?;
 				for file in &mut subtree.tree {
 					file.path = format!("{}/{}", entry.path, file.path);
 				}
@@ -419,7 +477,7 @@ async fn skill_tree(
 	let mut sha = root_sha.to_owned();
 	if !directory.is_empty() {
 		for segment in directory.split('/') {
-			let parent = fetch_tree(client, source, &sha, false).await?;
+			let parent = fetch_tree(client, source, endpoints, &sha, false).await?;
 			sha = parent
 				.tree
 				.into_iter()
@@ -428,7 +486,7 @@ async fn skill_tree(
 				.sha;
 		}
 	}
-	let mut tree = fetch_tree(client, source, &sha, true).await?;
+	let mut tree = fetch_tree(client, source, endpoints, &sha, true).await?;
 	if !directory.is_empty() {
 		for entry in &mut tree.tree {
 			entry.path = format!("{directory}/{}", entry.path);
@@ -549,7 +607,10 @@ fn imported_snapshot(url: &str, snapshot: SkillsShSnapshot) -> Result<ImportResu
 	})
 }
 
-async fn import_skills_sh(request: ImportRequest) -> Result<ImportResult> {
+async fn import_skills_sh(
+	request: ImportRequest,
+	endpoints: &GitHubEndpoints,
+) -> Result<ImportResult> {
 	let url =
 		Url::parse(&request.url).map_err(|_| Error::Invalid("invalid skills.sh URL".into()))?;
 	if url.scheme() != "https"
@@ -586,10 +647,13 @@ async fn import_skills_sh(request: ImportRequest) -> Result<ImportResult> {
 				"skills.sh pack URLs are not supported yet".into(),
 			));
 		}
-		return import_github(ImportRequest {
-			url: format!("https://github.com/{}/{}", parts[0], parts[1]),
-			skill_path: request.skill_path,
-		})
+		return import_github(
+			ImportRequest {
+				url: format!("https://github.com/{}/{}", parts[0], parts[1]),
+				skill_path: request.skill_path,
+			},
+			endpoints,
+		)
 		.await;
 	}
 	if request
@@ -612,19 +676,29 @@ async fn import_skills_sh(request: ImportRequest) -> Result<ImportResult> {
 }
 
 pub async fn import(request: ImportRequest) -> Result<ImportResult> {
+	import_with_endpoints(request, &GitHubEndpoints::official()).await
+}
+
+async fn import_with_endpoints(
+	request: ImportRequest,
+	endpoints: &GitHubEndpoints,
+) -> Result<ImportResult> {
 	let host = Url::parse(&request.url)
 		.ok()
 		.and_then(|url| url.host_str().map(str::to_owned));
 	match host.as_deref() {
-		Some("github.com") => import_github(request).await,
+		Some("github.com") => import_github(request, endpoints).await,
 		Some("raw.githubusercontent.com") => {
-			import_github(ImportRequest {
-				url: raw_github_to_blob(&request.url)?,
-				skill_path: request.skill_path,
-			})
+			import_github(
+				ImportRequest {
+					url: raw_github_to_blob(&request.url)?,
+					skill_path: request.skill_path,
+				},
+				endpoints,
+			)
 			.await
 		}
-		Some("skills.sh" | "www.skills.sh") => import_skills_sh(request).await,
+		Some("skills.sh" | "www.skills.sh") => import_skills_sh(request, endpoints).await,
 		_ => Err(Error::Invalid("use a GitHub or skills.sh Skill URL".into())),
 	}
 }
@@ -661,14 +735,23 @@ fn raw_github_to_blob(value: &str) -> Result<String> {
 	Ok(blob)
 }
 
-async fn import_github(request: ImportRequest) -> Result<ImportResult> {
+async fn import_github(
+	request: ImportRequest,
+	endpoints: &GitHubEndpoints,
+) -> Result<ImportResult> {
 	let source = Source::parse(&request.url)?;
 	let client = client()?;
 	// The GitHub web page is checked without credentials because the anonymous
 	// REST API may already be rate limited. Private repositories return 404.
-	let public_url = format!("https://github.com/{}/{}", source.owner, source.repo);
+	let mut public_url = endpoints.web.clone();
+	public_url
+		.path_segments_mut()
+		.map_err(|_| Error::Invalid("invalid GitHub web base URL".into()))?
+		.pop_if_empty()
+		.push(&source.owner)
+		.push(&source.repo);
 	let response = client
-		.get(&public_url)
+		.get(public_url)
 		.send()
 		.await
 		.map_err(|error| Error::External(format!("GitHub visibility check failed: {error}")))?;
@@ -678,9 +761,13 @@ async fn import_github(request: ImportRequest) -> Result<ImportResult> {
 		));
 	}
 	let repo: Repository = serde_json::from_slice(
-		&api_get(&client, &source.api(""), 64_000)
-			.await?
-			.ok_or_else(|| Error::Invalid("public GitHub repository was not found".into()))?,
+		&api_get(
+			&client,
+			source.api_with_base(&endpoints.api, "")?.as_str(),
+			64_000,
+		)
+		.await?
+		.ok_or_else(|| Error::Invalid("public GitHub repository was not found".into()))?,
 	)?;
 	if repo.private {
 		return Err(Error::Invalid(
@@ -690,14 +777,14 @@ async fn import_github(request: ImportRequest) -> Result<ImportResult> {
 	let (commit, subpath) = if source.explicit {
 		let mut found = None;
 		for (reference, subpath) in source.reference_paths() {
-			if let Some(value) = commit(&client, &source, &reference).await? {
+			if let Some(value) = commit(&client, &source, endpoints, &reference).await? {
 				found = Some((value, subpath));
 				break;
 			}
 		}
 		found.ok_or_else(|| Error::Invalid("GitHub reference was not found".into()))?
 	} else {
-		let commit = commit(&client, &source, &repo.default_branch)
+		let commit = commit(&client, &source, endpoints, &repo.default_branch)
 			.await?
 			.ok_or_else(|| Error::Invalid("GitHub default branch was not found".into()))?;
 		(commit, String::new())
@@ -712,7 +799,7 @@ async fn import_github(request: ImportRequest) -> Result<ImportResult> {
 			"GitHub blob URL must point to SKILL.md".into(),
 		));
 	}
-	let tree = skill_tree(&client, &source, &commit.tree.sha, &subpath).await?;
+	let tree = skill_tree(&client, &source, endpoints, &commit.tree.sha, &subpath).await?;
 	let skills = candidates(&tree, explicit_path);
 	if skills.is_empty() {
 		return Err(Error::Invalid(
@@ -745,8 +832,7 @@ async fn import_github(request: ImportRequest) -> Result<ImportResult> {
 		} else {
 			format!("{dir}/{path}")
 		};
-		let mut raw_url = Url::parse("https://raw.githubusercontent.com")
-			.map_err(|error| Error::Invalid(error.to_string()))?;
+		let mut raw_url = endpoints.raw.clone();
 		{
 			let mut segments = raw_url
 				.path_segments_mut()
@@ -802,6 +888,144 @@ async fn import_github(request: ImportRequest) -> Result<ImportResult> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use axum::{
+		body::Body,
+		http::{Request, StatusCode},
+		routing::any,
+	};
+	use std::sync::{
+		Arc,
+		atomic::{AtomicBool, Ordering},
+	};
+
+	const FIXTURE_COMMIT_SHA: &str = "0123456789012345678901234567890123456789";
+
+	#[derive(Clone)]
+	struct GitHubMockState {
+		requests: Arc<std::sync::Mutex<Vec<String>>>,
+		overflow_reference: Arc<AtomicBool>,
+	}
+
+	struct GitHubImportFixture {
+		endpoints: GitHubEndpoints,
+		state: GitHubMockState,
+		server: tokio::task::JoinHandle<()>,
+	}
+
+	impl Drop for GitHubImportFixture {
+		fn drop(&mut self) {
+			self.server.abort();
+		}
+	}
+
+	#[rstest::fixture]
+	async fn github_import_fixture() -> GitHubImportFixture {
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+			.await
+			.expect("bind GitHub mock fixture");
+		let origin = Url::parse(&format!("http://{}", listener.local_addr().unwrap()))
+			.expect("local GitHub mock URL");
+		let endpoints = GitHubEndpoints {
+			web: origin.clone(),
+			api: origin.clone(),
+			raw: origin,
+		};
+		let state = GitHubMockState {
+			requests: Arc::new(std::sync::Mutex::new(Vec::new())),
+			overflow_reference: Arc::new(AtomicBool::new(false)),
+		};
+		let app = axum::Router::new()
+			.fallback(any(github_mock_response))
+			.with_state(state.clone());
+		let server = tokio::spawn(async move {
+			axum::serve(listener, app).await.unwrap();
+		});
+		GitHubImportFixture {
+			endpoints,
+			state,
+			server,
+		}
+	}
+
+	async fn github_mock_response(
+		axum::extract::State(state): axum::extract::State<GitHubMockState>,
+		request: Request<Body>,
+	) -> axum::response::Response {
+		let uri = request.uri();
+		let path = uri.path().to_owned();
+		let requested = format!(
+			"{path}{}",
+			uri.query()
+				.map(|query| format!("?{query}"))
+				.unwrap_or_default()
+		);
+		state.requests.lock().unwrap().push(requested);
+
+		let (status, content_type, body) = match path.as_str() {
+			"/openai/skills" => (StatusCode::OK, "text/html", Vec::new()),
+			"/repos/openai/skills" => (
+				StatusCode::OK,
+				"application/json",
+				br#"{"default_branch":"main","private":false}"#.to_vec(),
+			),
+			"/repos/openai/skills/commits/main" => (
+				StatusCode::OK,
+				"text/plain",
+				FIXTURE_COMMIT_SHA.as_bytes().to_vec(),
+			),
+			"/repos/openai/skills/git/commits/0123456789012345678901234567890123456789" => (
+				StatusCode::OK,
+				"application/json",
+				format!(r#"{{"sha":"{FIXTURE_COMMIT_SHA}","tree":{{"sha":"root-tree"}}}}"#)
+					.into_bytes(),
+			),
+			"/repos/openai/skills/git/trees/root-tree" => (
+				StatusCode::OK,
+				"application/json",
+				br#"{"truncated":false,"tree":[{"path":"skills","type":"tree","sha":"skills-tree"}]}"#.to_vec(),
+			),
+			"/repos/openai/skills/git/trees/skills-tree" => (
+				StatusCode::OK,
+				"application/json",
+				br#"{"truncated":false,"tree":[{"path":".curated","type":"tree","sha":"curated-tree"}]}"#.to_vec(),
+			),
+			"/repos/openai/skills/git/trees/curated-tree" => (
+				StatusCode::OK,
+				"application/json",
+				br#"{"truncated":false,"tree":[{"path":"aspnet-core","type":"tree","sha":"aspnet-tree"}]}"#.to_vec(),
+			),
+			"/repos/openai/skills/git/trees/aspnet-tree" => (
+				StatusCode::OK,
+				"application/json",
+				br#"{"truncated":false,"tree":[{"path":"SKILL.md","type":"blob","sha":"skill"},{"path":"references/stack-selection.md","type":"blob","sha":"reference"},{"path":"assets/icon.png","type":"blob","sha":"binary"}]}"#.to_vec(),
+			),
+			path if path.ends_with("/skills/.curated/aspnet-core/SKILL.md") => (
+				StatusCode::OK,
+				"text/plain",
+				b"---\nname: aspnet-core\ndescription: Mocked import\n---\nUse references/stack-selection.md"
+					.to_vec(),
+			),
+			path if path.ends_with("/skills/.curated/aspnet-core/assets/icon.png") => (
+				StatusCode::OK,
+				"application/octet-stream",
+				vec![0x00, 0xff, 0x01, 0x80],
+			),
+			path if path.ends_with("/skills/.curated/aspnet-core/references/stack-selection.md") => {
+				let body = if state.overflow_reference.load(Ordering::SeqCst) {
+					vec![b'x'; 256_000]
+				} else {
+					b"Use the approved framework version.".to_vec()
+				};
+				(StatusCode::OK, "text/plain", body)
+			}
+			_ => (StatusCode::NOT_FOUND, "text/plain", Vec::new()),
+		};
+		axum::response::Response::builder()
+			.status(status)
+			.header("content-type", content_type)
+			.body(Body::from(body))
+			.unwrap()
+	}
 
 	#[rstest::fixture]
 	fn skills_sh_snapshot() -> (&'static str, SkillsShSnapshot) {
@@ -846,6 +1070,70 @@ mod tests {
 				},
 			],
 		}
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn github_import_fetches_commits_tree_files_and_enforces_total_size(
+		#[future(awt)]
+		#[from(github_import_fixture)]
+		fixture: GitHubImportFixture,
+	) {
+		let request = || ImportRequest {
+			url: "https://github.com/openai/skills/tree/main/skills/.curated/aspnet-core".into(),
+			skill_path: None,
+		};
+		let result = import_with_endpoints(request(), &fixture.endpoints)
+			.await
+			.expect("import mocked GitHub Skill");
+		assert_eq!(result.skills, vec!["skills/.curated/aspnet-core/SKILL.md"]);
+		let selected = result.selected.expect("single Skill is selected");
+		assert!(selected.instructions.contains("name: aspnet-core"));
+		assert_eq!(
+			selected.source,
+			format!(
+				"https://github.com/openai/skills/blob/{FIXTURE_COMMIT_SHA}/skills/.curated/aspnet-core/SKILL.md"
+			)
+		);
+		assert_eq!(
+			selected
+				.files
+				.iter()
+				.map(|file| file.path.as_str())
+				.collect::<Vec<_>>(),
+			vec!["assets/icon.png", "references/stack-selection.md"]
+		);
+		assert_eq!(selected.files[0].content, "AP8BgA==");
+		assert_eq!(selected.files[0].encoding.as_deref(), Some("base64"));
+		assert_eq!(
+			selected.files[1].content,
+			"Use the approved framework version."
+		);
+		let requests = fixture.state.requests.lock().unwrap().clone();
+		assert!(requests.contains(&"/openai/skills".into()));
+		assert!(requests.contains(&"/repos/openai/skills".into()));
+		assert!(requests.contains(&format!(
+			"/repos/openai/skills/git/commits/{FIXTURE_COMMIT_SHA}"
+		)));
+		assert!(
+			requests.contains(&"/repos/openai/skills/git/trees/aspnet-tree?recursive=1".into())
+		);
+		assert!(requests.contains(&format!(
+			"/openai/skills/{FIXTURE_COMMIT_SHA}/skills/.curated/aspnet-core/SKILL.md"
+		)));
+
+		fixture
+			.state
+			.overflow_reference
+			.store(true, Ordering::SeqCst);
+		let error = import_with_endpoints(request(), &fixture.endpoints)
+			.await
+			.expect_err("aggregate Skill size exceeds the importer limit");
+		assert!(
+			error
+				.to_string()
+				.contains("Skill exceeds the import size limit")
+		);
 	}
 
 	#[rstest::rstest]

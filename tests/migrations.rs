@@ -11,7 +11,7 @@ async fn seaorm_migrations_round_trip_a_fresh_schema(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = common::setup().await;
+	let (f, url, schema) = common::setup(&_test_environment).await;
 	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());
 	assert_eq!(
 		Migrator::get_applied_migrations(&db).await.unwrap().len(),

@@ -48,7 +48,7 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (mut policy, subject_token, _) = bootstrap(&f, &app, "http://localhost:1").await;
 	// A peer record is a fixture prerequisite, not a substitute for the inbound
@@ -292,7 +292,7 @@ async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_dis
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (mut policy, _, _) = bootstrap(&f, &app, "http://localhost:1").await;
 	sqlx::query(

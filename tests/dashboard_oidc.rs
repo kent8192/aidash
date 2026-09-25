@@ -31,7 +31,7 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (mut federation, url, schema) = common::setup().await;
+	let (mut federation, url, schema) = common::setup(&_test_environment).await;
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let issuer = format!("http://{}/realms/test", listener.local_addr().unwrap());
 	let metadata_issuer = issuer.clone();
@@ -279,7 +279,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (mut federation, url, schema) = common::setup().await;
+	let (mut federation, url, schema) = common::setup(&_test_environment).await;
 	federation.config.oidc = Some(OidcConfig {
 		issuer: "http://127.0.0.1:18099/realms/test".into(),
 		client_id: "aidash".into(),
@@ -1157,7 +1157,7 @@ async fn older_negative_status_cannot_revoke_a_newer_valid_session(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (mut federation, url, schema) = common::setup().await;
+	let (mut federation, url, schema) = common::setup(&_test_environment).await;
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let issuer = format!("http://{}/realms/test", listener.local_addr().unwrap());
 	let checks = Arc::new(AtomicUsize::new(0));

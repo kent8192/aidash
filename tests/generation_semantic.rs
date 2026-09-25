@@ -17,6 +17,7 @@ struct Fixture {
 	schema: String,
 	app: Router,
 	token: String,
+	nats_url: String,
 	workspace: Uuid,
 	index: Value,
 	job: Value,
@@ -28,8 +29,12 @@ struct Fixture {
 	server: tokio::task::JoinHandle<()>,
 }
 impl Fixture {
-	async fn new(allowance: Option<i64>, usage: Option<u64>) -> Self {
-		let (f, url, schema) = setup().await;
+	async fn new(
+		environment: &TestEnvironment,
+		allowance: Option<i64>,
+		usage: Option<u64>,
+	) -> Self {
+		let (f, url, schema) = setup(environment).await;
 		let embeddings = Arc::new(AtomicUsize::new(0));
 		let inference = Arc::new(AtomicUsize::new(0));
 		let embedding_calls = embeddings.clone();
@@ -124,7 +129,7 @@ impl Fixture {
 		)
 		.await;
 		assert_eq!(status, 200, "{response}");
-		let (status, index) = request(&app,&f.config.api_token,"POST",&format!("/api/workspaces/{workspace}/semantic/index"),json!({"expected_revision":0,"spec":{"embedding":{"provider":"openai","endpoint":format!("{endpoint}/v1"),"credential_env":null,"model":"fixture-embedding","model_version":"1","dimensions":3},"vector":{"provider":"qdrant","endpoint":std::env::var("AIDASH_TEST_QDRANT_URL").unwrap(),"credential_env":"AIDASH_SECRET_TEST_QDRANT"},"enabled":true,"auto_context":true,"max_sources":64,"max_results":10,"max_result_tokens":4096,"max_input_bytes":8192}})).await;
+		let (status, index) = request(&app,&f.config.api_token,"POST",&format!("/api/workspaces/{workspace}/semantic/index"),json!({"expected_revision":0,"spec":{"embedding":{"provider":"openai","endpoint":format!("{endpoint}/v1"),"credential_env":null,"model":"fixture-embedding","model_version":"1","dimensions":3},"vector":{"provider":"qdrant","endpoint":environment.qdrant_url,"credential_env":"AIDASH_SECRET_TEST_QDRANT"},"enabled":true,"auto_context":true,"max_sources":64,"max_results":10,"max_result_tokens":4096,"max_input_bytes":8192}})).await;
 		assert_eq!(status, 200, "{index}");
 		assert_eq!(request(&app,&token,"POST",&format!("/api/workspaces/{workspace}/semantic/entries"),json!({"key":"reference","expected_revision":0,"source":{"kind":"memory","text":"A car carries passengers."},"metadata":{}})).await.0,200);
 		semantic::worker::sweep(&f.store).await.unwrap();
@@ -155,6 +160,7 @@ impl Fixture {
 			schema,
 			app,
 			token,
+			nats_url: environment.nats_url.clone(),
 			workspace,
 			index,
 			job: assignment["generation"].clone(),
@@ -292,7 +298,7 @@ async fn generated_semantic_context_without_embedding_approval_never_calls_provi
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let fixture = Fixture::new(None, Some(2)).await;
+	let fixture = Fixture::new(&_test_environment, None, Some(2)).await;
 	fixture.drive().await;
 	let observed = (
 		fixture.embeddings.load(Ordering::SeqCst),
@@ -313,7 +319,7 @@ async fn generated_embeddings_are_pinned_reserved_and_limited_with_reported_usag
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let fixture = Fixture::new(Some(2), Some(2)).await;
+	let fixture = Fixture::new(&_test_environment, Some(2), Some(2)).await;
 	let (_, policies) = request(
 		&fixture.app,
 		&fixture.f.config.api_token,
@@ -366,7 +372,7 @@ async fn missing_embedding_usage_retains_input_reservation_and_expired_agents_ma
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let fixture = Fixture::new(Some(1), None).await;
+	let fixture = Fixture::new(&_test_environment, Some(1), None).await;
 	fixture.drive().await;
 	let reserved: i64 = sqlx::query_scalar(
 		&sea_orm::sea_query::Query::select()
@@ -385,7 +391,7 @@ async fn missing_embedding_usage_retains_input_reservation_and_expired_agents_ma
 	assert_eq!(usage["used_tokens"], reserved + 12);
 	assert_eq!(fixture.embeddings.load(Ordering::SeqCst), 2);
 	fixture.dispose().await;
-	let fixture = Fixture::new(Some(2), Some(2)).await;
+	let fixture = Fixture::new(&_test_environment, Some(2), Some(2)).await;
 	sqlx::query(
 		&sea_orm::sea_query::Query::update()
 			.table(sea_orm::sea_query::Alias::new("generation_requests"))
@@ -413,7 +419,7 @@ async fn generated_embedding_catalog_policy_and_provider_changes_cannot_increase
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	for reason in ["catalog", "policy", "index"] {
-		let mut fixture = Fixture::new(Some(2), Some(2)).await;
+		let mut fixture = Fixture::new(&_test_environment, Some(2), Some(2)).await;
 		if reason == "catalog" {
 			assert_eq!(
 				request(
@@ -478,7 +484,7 @@ async fn background_indexing_retains_failed_charges_across_recovery_and_cannot_o
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let fixture = Fixture::new(Some(2), Some(2)).await;
+	let fixture = Fixture::new(&_test_environment, Some(2), Some(2)).await;
 	let entry = fixture.remember().await;
 	assert_eq!(fixture.usage().await["embedding_calls"], 1);
 	fixture.response_mode.store(1, Ordering::SeqCst);
@@ -566,7 +572,7 @@ async fn background_indexing_uses_generated_authority_and_checks_expiry_before_h
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	for expired in [false, true] {
-		let fixture = Fixture::new(Some(2), Some(2)).await;
+		let fixture = Fixture::new(&_test_environment, Some(2), Some(2)).await;
 		let entry = fixture.remember().await;
 		if expired {
 			sqlx::query(
@@ -626,7 +632,7 @@ async fn excessive_embedding_usage_retains_reservation_and_prevents_inference(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let fixture = Fixture::new(Some(2), Some(1_000_000)).await;
+	let fixture = Fixture::new(&_test_environment, Some(2), Some(1_000_000)).await;
 	fixture.drive().await;
 	let reserved: i64 = sqlx::query_scalar(
 		&sea_orm::sea_query::Query::select()
@@ -654,7 +660,7 @@ async fn nested_embeddings_intersect_pinned_providers_and_charge_each_ancestor(
 ) {
 	for case in ["unapproved", "approved", "token_exhausted"] {
 		let approved = case == "approved";
-		let mut fixture = Fixture::new(Some(1), Some(2)).await;
+		let mut fixture = Fixture::new(&_test_environment, Some(1), Some(2)).await;
 		let parent = fixture.job.clone();
 		let parent_run = fixture.f.store.runs().await.unwrap().remove(0);
 		fixture
@@ -804,11 +810,7 @@ impl WorkerProcess {
 				.env("AIDASH_NODE_ID", &fixture.f.config.node_id)
 				.env("AIDASH_ENDPOINT", &fixture.f.config.endpoint)
 				.env("AIDASH_API_TOKEN", &fixture.f.config.api_token)
-				.env(
-					"NATS_URL",
-					std::env::var("AIDASH_TEST_NATS_URL")
-						.unwrap_or_else(|_| "nats://127.0.0.1:42270".into()),
-				)
+				.env("NATS_URL", &fixture.nats_url)
 				.env("RUST_LOG", "aidash=warn")
 				.spawn()
 				.unwrap(),
@@ -829,7 +831,7 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let fixture = Fixture::new(Some(2), Some(2)).await;
+	let fixture = Fixture::new(&_test_environment, Some(2), Some(2)).await;
 	fixture.response_mode.store(2, Ordering::SeqCst);
 	let mut worker = WorkerProcess::start(&fixture);
 	let reached = tokio::time::timeout(

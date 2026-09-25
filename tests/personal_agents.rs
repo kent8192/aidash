@@ -37,7 +37,7 @@ async fn private_documents_are_atomic_idempotent_and_absent_from_registry(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	personal_agent_roundtrip(false).await;
+	personal_agent_roundtrip(&_test_environment, false).await;
 }
 
 #[rstest::rstest]
@@ -47,11 +47,11 @@ async fn admitted_large_private_documents_fit_the_execution_soft_window(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	personal_agent_roundtrip(true).await;
+	personal_agent_roundtrip(&_test_environment, true).await;
 }
 
-async fn personal_agent_roundtrip(large_documents: bool) {
-	let (f, url, schema) = setup().await;
+async fn personal_agent_roundtrip(environment: &TestEnvironment, large_documents: bool) {
+	let (f, url, schema) = setup(environment).await;
 	let received = std::sync::Arc::new(std::sync::Mutex::new(None::<Value>));
 	let capture = received.clone();
 	let provider = axum::Router::new().route("/v1/chat/completions", axum::routing::post(move |axum::Json(body): axum::Json<Value>| {

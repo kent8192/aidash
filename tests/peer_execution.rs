@@ -36,7 +36,7 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (policy, user_token, _) = bootstrap(&f, &app, "http://localhost:1").await;
 	sqlx::query(

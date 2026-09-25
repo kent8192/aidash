@@ -43,7 +43,7 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let operator = f.config.api_token.clone();
 	let app = api::router(f.clone());
 	let (mut policy, alice, task) = bootstrap(&f, &app, "http://127.0.0.1:1").await;
@@ -224,7 +224,7 @@ async fn attachments_cannot_be_rebound_or_linked_from_another_channel(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let token = f.config.api_token.clone();
 	let app = api::router(f.clone());
 	let (_, a) = request(

@@ -18,8 +18,8 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (a, a_url, a_schema) = setup().await;
-	let (mut b, b_url, b_schema) = setup().await;
+	let (a, a_url, a_schema) = setup(&_test_environment).await;
+	let (mut b, b_url, b_schema) = setup(&_test_environment).await;
 	b.config.node_id = "aidash://remote-journal".into();
 	b.store.node_id = b.config.node_id.clone();
 	let b_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -74,7 +74,7 @@ async fn embeddings() -> (String, tokio::task::JoinHandle<()>) {
 	});
 	(url, server)
 }
-fn spec(endpoint: &str) -> IndexSpec {
+fn spec(endpoint: &str, qdrant_url: &str) -> IndexSpec {
 	IndexSpec {
 		embedding: EmbeddingConfig {
 			provider: "openai".into(),
@@ -86,7 +86,7 @@ fn spec(endpoint: &str) -> IndexSpec {
 		},
 		vector: VectorConfig {
 			provider: "qdrant".into(),
-			endpoint: std::env::var("AIDASH_TEST_QDRANT_URL").expect("disposable Qdrant required"),
+			endpoint: qdrant_url.into(),
 			credential_env: Some("AIDASH_SECRET_TEST_QDRANT".into()),
 		},
 		enabled: true,
@@ -175,12 +175,12 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = common::setup().await;
+	let (f, url, schema) = common::setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (endpoint, server) = embeddings().await;
 	let (_, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
-	let mut config = spec(&endpoint);
+	let mut config = spec(&endpoint, &_test_environment.qdrant_url);
 	let first = configure(&app, &f.config.api_token, workspace, &config, 0).await;
 	assert_eq!(
 		configure(&app, &f.config.api_token, workspace, &config, 0).await["revision"],
@@ -341,12 +341,19 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = common::setup().await;
+	let (f, url, schema) = common::setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (endpoint, server) = embeddings().await;
 	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
-	configure(&app, &f.config.api_token, workspace, &spec(&endpoint), 0).await;
+	configure(
+		&app,
+		&f.config.api_token,
+		workspace,
+		&spec(&endpoint, &_test_environment.qdrant_url),
+		0,
+	)
+	.await;
 	let cars = put(
 		&app,
 		&token,
@@ -454,12 +461,12 @@ async fn semantic_outage_and_input_bounds_are_visible_and_retriable(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = common::setup().await;
+	let (f, url, schema) = common::setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (endpoint, server) = embeddings().await;
 	let (_, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
-	let mut config = spec(&endpoint);
+	let mut config = spec(&endpoint, &_test_environment.qdrant_url);
 	config.embedding.dimensions = 4; // Provider's actual width is three.
 	configure(&app, &f.config.api_token, workspace, &config, 0).await;
 	let cars = put(
@@ -540,7 +547,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	use std::sync::{Arc, Mutex};
-	let (f, url, schema) = common::setup().await;
+	let (f, url, schema) = common::setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (embedding_endpoint, embedding_server) = embeddings().await;
 	let captured = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -563,7 +570,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 		&app,
 		&f.config.api_token,
 		workspace,
-		&spec(&embedding_endpoint),
+		&spec(&embedding_endpoint, &_test_environment.qdrant_url),
 		0,
 	)
 	.await;
@@ -761,12 +768,19 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	use aidash::domain::{ArtifactInput, qualified_agent};
-	let (f, url, schema) = common::setup().await;
+	let (f, url, schema) = common::setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (endpoint, server) = embeddings().await;
 	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
-	configure(&app, &f.config.api_token, workspace, &spec(&endpoint), 0).await;
+	configure(
+		&app,
+		&f.config.api_token,
+		workspace,
+		&spec(&endpoint, &_test_environment.qdrant_url),
+		0,
+	)
+	.await;
 	assert_eq!(
 		request(
 			&app,
@@ -902,7 +916,14 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		.create_workspace("Other", "Isolation")
 		.await
 		.unwrap();
-	configure(&app, &f.config.api_token, other.id, &spec(&endpoint), 0).await;
+	configure(
+		&app,
+		&f.config.api_token,
+		other.id,
+		&spec(&endpoint, &_test_environment.qdrant_url),
+		0,
+	)
+	.await;
 	assert_eq!(request(&app,&f.config.api_token,"POST",&format!("/api/workspaces/{}/semantic/entries",other.id),json!({"key":"forged","expected_revision":0,"source":{"kind":"artifact","id":artifact.id},"metadata":{}})).await.0,403);
 	assert_eq!(search(&app, &token, other.id).await.0, 403);
 	server.abort();
@@ -922,12 +943,12 @@ async fn semantic_qdrant_restart_outage_and_lost_points_recover(
 		container,
 		endpoint,
 	} = restartable_qdrant;
-	let (f, url, schema) = common::setup().await;
+	let (f, url, schema) = common::setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (embedding, server) = embeddings().await;
 	let (_, token, task) = common::bootstrap(&f, &app, &embedding).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
-	let mut config = spec(&embedding);
+	let mut config = spec(&embedding, &_test_environment.qdrant_url);
 	config.vector.endpoint = endpoint.clone();
 	config.vector.credential_env = None;
 	let index = configure(&app, &f.config.api_token, workspace, &config, 0).await;

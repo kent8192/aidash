@@ -12,7 +12,7 @@ async fn simultaneous_migration_startup_preserves_one_complete_schema(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = common::setup().await;
+	let (f, url, schema) = common::setup(&_test_environment).await;
 	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());
 	migration::Migrator::down(&db, None).await.unwrap();
 	let (a, b, c) = tokio::join!(
@@ -44,7 +44,7 @@ async fn probes_report_draining_without_restarting_for_dependency_failure(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = common::setup().await;
+	let (f, url, schema) = common::setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (_, subject, _) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	assert_eq!(

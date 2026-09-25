@@ -137,8 +137,8 @@ impl ReleasableProvider {
 	}
 }
 
-async fn cancel_stalled_inference(scoped: bool, stall_body: bool) {
-	let (mut f, url, schema) = setup().await;
+async fn cancel_stalled_inference(environment: &TestEnvironment, scoped: bool, stall_body: bool) {
+	let (mut f, url, schema) = setup(environment).await;
 	// Cancellation must not wait for the next (100-second) lease heartbeat.
 	f.config.lease_seconds = 300;
 	let mut server = StalledProvider::start(stall_body).await;
@@ -252,7 +252,7 @@ async fn model_completion_save_cannot_overwrite_a_committed_cancellation(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (_, subject_token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, claimed) = request(
@@ -306,7 +306,7 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (mut f, url, schema) = setup().await;
+	let (mut f, url, schema) = setup(&_test_environment).await;
 	f.config.lease_seconds = 300;
 	let mut server = ReleasableProvider::start().await;
 	let app = api::router(f.clone());
@@ -426,7 +426,7 @@ async fn model_infer_policy_revocation_during_inference_blocks_result(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (mut f, url, schema) = setup().await;
+	let (mut f, url, schema) = setup(&_test_environment).await;
 	f.config.lease_seconds = 300;
 	let mut server = ReleasableProvider::start().await;
 	let app = api::router(f.clone());
@@ -497,7 +497,7 @@ async fn inference_completion_waits_for_visibility_gate_reacquisition(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (mut f, url, schema) = setup().await;
+	let (mut f, url, schema) = setup(&_test_environment).await;
 	f.config.lease_seconds = 300;
 	let mut server = ReleasableProvider::start().await;
 	let app = api::router(f.clone());
@@ -577,7 +577,7 @@ async fn inference_result_is_retried_after_atomic_commit_during_provider_wait(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (mut f, url, schema) = setup().await;
+	let (mut f, url, schema) = setup(&_test_environment).await;
 	f.config.lease_seconds = 300;
 	let mut server = ReleasableProvider::start().await;
 	let app = api::router(f.clone());
@@ -644,7 +644,7 @@ async fn scoped_cancellation_aborts_inference_before_response_headers(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	cancel_stalled_inference(true, false).await;
+	cancel_stalled_inference(&_test_environment, true, false).await;
 }
 
 #[rstest::rstest]
@@ -654,5 +654,5 @@ async fn legacy_cancellation_aborts_inference_during_response_body(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	cancel_stalled_inference(false, true).await;
+	cancel_stalled_inference(&_test_environment, false, true).await;
 }

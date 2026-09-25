@@ -123,7 +123,7 @@ async fn generated_agent_budget_includes_the_models_full_output_limit(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (_, mut spec) = policy(&f, &app, "http://127.0.0.1:9").await;
 	let model = json!({
@@ -178,7 +178,7 @@ async fn approved_compaction_is_pinned_bounded_and_accounted_before_http(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let pool = f.store.pool.clone();
 	let calls = Arc::new(AtomicUsize::new(0));
 	let seen = calls.clone();
@@ -259,7 +259,7 @@ async fn compaction_total_budget_is_atomic_and_unused_calls_release_once(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (token, _) = policy(&f, &app, "http://127.0.0.1:9").await;
 	let (first, second) = tokio::join!(assign(&app, &token), assign(&app, &token));
@@ -320,7 +320,7 @@ async fn failed_compaction_attempts_remain_charged_and_exhaustion_prevents_http(
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", listener.local_addr().unwrap());
 	let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (token, _) = policy(&f, &app, &endpoint).await;
 	let (_, assignment) = assign(&app, &token).await;
@@ -393,7 +393,7 @@ async fn compaction_denial_and_catalog_revocation_prevent_disclosure(
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	for revoke_catalog in [false, true] {
-		let (f, url, schema) = setup().await;
+		let (f, url, schema) = setup(&_test_environment).await;
 		let app = api::router(f.clone());
 		let (token, _) = policy(&f, &app, "http://127.0.0.1:9").await;
 		let (_, assignment) = assign(&app, &token).await;
@@ -493,7 +493,7 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let first_model = Arc::new(tokio::sync::Notify::new());
 	let first_compaction = Arc::new(tokio::sync::Notify::new());
 	let model_calls = Arc::new(AtomicUsize::new(0));
@@ -635,7 +635,7 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	for approved in [true, false] {
-		let (f, url, schema) = setup().await;
+		let (f, url, schema) = setup(&_test_environment).await;
 		let calls = Arc::new(AtomicUsize::new(0));
 		let seen = calls.clone();
 		let pool = f.store.pool.clone();

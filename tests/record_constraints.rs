@@ -225,7 +225,7 @@ async fn registry_constraints_reject_invalid_models_without_application_validati
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let good = serde_json::to_value(model()).unwrap();
 	for (field, invalid) in [
 		("provider", json!("unsupported")),
@@ -313,7 +313,7 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let other = f.store.create_workspace("Other", "Goal").await.unwrap();
 	let input = NewTask {
@@ -532,7 +532,7 @@ async fn constraints_upgrade_and_rollback_preserve_data_and_reject_invalid_histo
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	use migration::MigratorTrait;
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());
 	let good = serde_json::to_value(model()).unwrap();
 	insert_entry(&f.store.pool, &good).await.unwrap();
@@ -585,7 +585,7 @@ async fn nonblank_constraints_match_rust_unicode_whitespace(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	insert_entry(&f.store.pool, &serde_json::to_value(model()).unwrap())
 		.await
 		.unwrap();
@@ -674,7 +674,7 @@ async fn localized_metadata_requires_string_values_for_every_locale(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	for field in ["name", "description"] {
 		for invalid in [
 			json!(7),
@@ -712,7 +712,7 @@ async fn package_identity_requires_matching_json_strings(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut entry = model();
 	entry.id = "1".into();
 	entry.kind = "skill".into();
@@ -814,7 +814,7 @@ async fn package_digest_backfill_preserves_previous_publish_serialization(
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	use migration::MigratorTrait;
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut entity = model();
 	entity.id = "legacy-digest".into();
 	entity.kind = "skill".into();
@@ -867,7 +867,7 @@ async fn package_agent_config_requires_all_typed_fields(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let agent: Entry = serde_json::from_value(json!({
 		"id":"packaged-agent",
 		"version":"1.0.0",
@@ -943,7 +943,7 @@ async fn package_tool_config_uses_registry_validation(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut tool = model();
 	tool.id = "packaged-tool".into();
 	tool.kind = "tool".into();
@@ -1008,7 +1008,7 @@ async fn registry_json_shapes_remain_deserializable(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let good = serde_json::to_value(model()).unwrap();
 	for invalid_schema in [
 		json!({"type":7}),
@@ -1068,7 +1068,7 @@ async fn model_and_agent_configs_reject_unusable_shapes(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let good = serde_json::to_value(model()).unwrap();
 	for (field, value) in [
 		("unexpected", json!(true)),
@@ -1241,7 +1241,7 @@ async fn tool_configs_reject_undecodable_shapes(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut tool = serde_json::to_value(model()).unwrap();
 	tool["id"] = json!("tool");
 	tool["kind"] = json!("tool");
@@ -1303,7 +1303,7 @@ async fn compactor_and_embedding_configs_reject_undecodable_shapes(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut entry = serde_json::to_value(model()).unwrap();
 	entry["id"] = json!("compactor");
 	entry["kind"] = json!("compactor");
@@ -1363,7 +1363,7 @@ async fn requirements_and_run_state_reject_wrong_shapes(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let task = f
 		.store
@@ -1755,7 +1755,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let spec = index_spec();
 	let _: aidash::semantic::IndexSpec = serde_json::from_value(spec.clone()).unwrap();
@@ -2139,7 +2139,7 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	use migration::MigratorTrait;
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let other = f.store.create_workspace("Other", "Goal").await.unwrap();
 	let input = NewTask {
@@ -2278,7 +2278,7 @@ async fn concurrent_dependency_changes_cannot_race_target_deletion(
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	use std::time::Duration;
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
@@ -2356,7 +2356,7 @@ async fn task_parent_cycle_guard_rejects_direct_cycles(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
@@ -2405,7 +2405,7 @@ async fn task_dependency_cycles_include_parent_edges(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
@@ -2477,7 +2477,7 @@ async fn task_cycle_checks_deduplicate_diamond_reachability(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
@@ -2534,7 +2534,7 @@ async fn historical_task_cycles_fail_migration_through_query_validation(
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	use migration::MigratorTrait;
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
@@ -2625,7 +2625,7 @@ async fn concurrent_parent_cycle_checks_are_serialized(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
@@ -2684,7 +2684,7 @@ async fn cluster_and_registry_identity_constraints_match_application_bounds(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut cluster = serde_json::to_value(model()).unwrap();
 	cluster["id"] = json!("test-cluster");
 	cluster["kind"] = json!("cluster");
@@ -2738,7 +2738,7 @@ async fn installation_constraints_validate_model_overrides(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let entry = serde_json::to_value(model()).unwrap();
 	insert_entry(&f.store.pool, &entry).await.unwrap();
 	insert_values(
@@ -2782,7 +2782,7 @@ async fn agent_installation_model_overrides_keep_valid_registry_references(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut base_model = serde_json::to_value(model()).unwrap();
 	base_model["id"] = json!("base-model");
 	insert_entry(&f.store.pool, &base_model).await.unwrap();
@@ -2858,7 +2858,7 @@ async fn installation_constraints_validate_effective_tool_config(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut tool = serde_json::to_value(model()).unwrap();
 	tool["id"] = json!("installed-tool");
 	tool["kind"] = json!("tool");
@@ -2909,7 +2909,7 @@ async fn installation_constraints_validate_skill_overrides(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut skill = serde_json::to_value(model()).unwrap();
 	skill["id"] = json!("installed-skill");
 	skill["kind"] = json!("skill");
@@ -2955,7 +2955,7 @@ async fn registry_updates_revalidate_installed_tool_overrides(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut tool = serde_json::to_value(model()).unwrap();
 	tool["id"] = json!("changing-tool");
 	tool["kind"] = json!("tool");
@@ -3014,7 +3014,7 @@ async fn concurrent_registry_and_installation_writes_use_one_lock_order(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut tool = serde_json::to_value(model()).unwrap();
 	tool["id"] = json!("concurrent-tool");
 	tool["kind"] = json!("tool");

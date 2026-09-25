@@ -66,7 +66,7 @@ async fn channel_threads_survive_new_router_and_do_not_become_tasks(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let token = f.config.api_token.clone();
 	let app = api::router(f.clone());
 	let workspace = workspace(&app, &token, "Threads").await;
@@ -124,7 +124,7 @@ async fn duplicate_message_reuses_id_but_changed_thread_or_content_conflicts(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let token = f.config.api_token.clone();
 	let app = api::router(f.clone());
 	let workspace = workspace(&app, &token, "Idempotency").await;
@@ -155,7 +155,7 @@ async fn threads_and_cursors_cannot_cross_workspace_boundaries(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let token = f.config.api_token.clone();
 	let app = api::router(f.clone());
 	let a = workspace(&app, &token, "A").await;
@@ -195,7 +195,7 @@ async fn message_history_pages_without_duplicates_and_validates_inputs(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let token = f.config.api_token.clone();
 	let app = api::router(f.clone());
 	let workspace = workspace(&app, &token, "Paging").await;
@@ -237,7 +237,7 @@ async fn concurrent_identical_submissions_create_one_message(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let token = f.config.api_token.clone();
 	let app = api::router(f.clone());
 	let workspace = workspace(&app, &token, "Concurrent").await;
@@ -261,7 +261,7 @@ async fn scoped_history_filters_records_and_rechecks_root_and_post_authority(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let operator = f.config.api_token.clone();
 	let app = api::router(f.clone());
 	let foreign = workspace(&app, &operator, "Operator-owned").await;

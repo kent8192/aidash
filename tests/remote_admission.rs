@@ -37,8 +37,8 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (mut a, au, aschema) = setup().await;
-	let (mut b, bu, bschema) = setup().await;
+	let (mut a, au, aschema) = setup(&_test_environment).await;
+	let (mut b, bu, bschema) = setup(&_test_environment).await;
 	b.config.node_id = "aidash://admission-host".into();
 	b.store.node_id = b.config.node_id.clone();
 	let al = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -22,8 +22,8 @@ struct Node {
 	_capacity: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 impl Node {
-	async fn new(suffix: &str) -> Self {
-		let admin = std::env::var("AIDASH_TEST_DATABASE_URL").unwrap();
+	async fn new(environment: &TestEnvironment, suffix: &str) -> Self {
+		let admin = environment.database_url.clone();
 		let database = format!("atomic_{}_{}", suffix, Uuid::new_v4().simple());
 		PgConnection::connect(&admin)
 			.await
@@ -45,7 +45,7 @@ impl Node {
 			endpoint: format!("http://{listen}"),
 			listen,
 			database_url: url.to_string(),
-			nats_url: "nats://127.0.0.1:42270".into(),
+			nats_url: environment.nats_url.clone(),
 			api_token: "atomic-operator-fixture-token".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
@@ -145,13 +145,13 @@ impl Drop for Node {
 		}
 	}
 }
-async fn pair() -> (Node, Node, Manifest, Uuid, Uuid) {
+async fn pair(environment: &TestEnvironment) -> (Node, Node, Manifest, Uuid, Uuid) {
 	static CAPACITY: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
 		std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(2)));
 	let capacity = CAPACITY.clone().acquire_owned().await.unwrap();
-	let mut a = Node::new("a").await;
+	let mut a = Node::new(environment, "a").await;
 	a._capacity = Some(capacity);
-	let b = Node::new("b").await;
+	let b = Node::new(environment, "b").await;
 	for (local, remote) in [(&a, &b), (&b, &a)] {
 		local
 			.f
@@ -250,7 +250,7 @@ async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lea
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (a, b, manifest, wa, wb) = pair().await;
+	let (a, b, manifest, wa, wb) = pair(&_test_environment).await;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 4).await; // Both votes are prepared, still undecided.
 	let mut transition = a.f.store.control_pool.begin().await.unwrap();
@@ -315,7 +315,7 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (a, b, manifest, wa, wb) = pair().await;
+	let (a, b, manifest, wa, wb) = pair(&_test_environment).await;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 2).await;
 	unavailable(&a, wa).await;
@@ -428,7 +428,7 @@ async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (a, b, mut manifest, wa, wb) = pair().await;
+	let (a, b, mut manifest, wa, wb) = pair(&_test_environment).await;
 	if let aidash::transactions::Mutation::WorkspaceState {
 		expected_revision, ..
 	} = &mut manifest.participants[1].mutations[0]
@@ -474,7 +474,7 @@ async fn partition_after_commit_retains_barriers_and_restart_recovers_the_same_d
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (mut a, mut b, manifest, wa, wb) = pair().await;
+	let (mut a, mut b, manifest, wa, wb) = pair(&_test_environment).await;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 5).await;
 	b.stop().await;
@@ -503,7 +503,7 @@ async fn overlapping_coordinators_use_the_same_node_order_without_lost_updates(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (a, b, first, wa, wb) = pair().await;
+	let (a, b, first, wa, wb) = pair(&_test_environment).await;
 	let mut second = first.clone();
 	second.id = Uuid::new_v4();
 	second.coordinator = b.f.config.node_id.clone();
@@ -539,7 +539,7 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
 		domain::{NewTask, qualified_agent},
 		registry::Entry,
 	};
-	let (a, b, mut manifest, wa, _wb) = pair().await;
+	let (a, b, mut manifest, wa, _wb) = pair(&_test_environment).await;
 	let agent:Entry=serde_json::from_value(json!({"id":"executor","version":"1.0.0","kind":"agent","name":{"en":"Executor"},"description":{"en":"Atomic fixture"},"config":{"model":{"id":"fixture","version":"1.0.0"},"instructions":"Atomic execution","tools":[],"skills":[]}})).unwrap();
 	let owner = qualified_agent(&b.f.config.node_id, &agent.id, &agent.version);
 	let task =
@@ -686,7 +686,7 @@ async fn participant_pulls_only_durable_decisions_and_never_guesses_after_timeou
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (mut a, b, manifest, wa, wb) = pair().await;
+	let (mut a, b, manifest, wa, wb) = pair(&_test_environment).await;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 4).await;
 	a.stop().await;
@@ -718,7 +718,7 @@ async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_chan
 	use axum::{body::Body, http::Request};
 	use futures_util::StreamExt;
 	use tower::ServiceExt;
-	let (a, b, manifest, wa, _wb) = pair().await;
+	let (a, b, manifest, wa, _wb) = pair(&_test_environment).await;
 	let response = api::router(a.f.clone())
 		.oneshot(
 			Request::builder()
@@ -763,7 +763,7 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (a, b, manifest, wa, wb) = pair().await;
+	let (a, b, manifest, wa, wb) = pair(&_test_environment).await;
 	let set_trust = |enabled| json!({"node_id":a.f.config.node_id,"enabled":enabled});
 	assert_eq!(
 		b.request(
@@ -849,7 +849,7 @@ async fn every_durable_transition_survives_fresh_pools_and_http_servers(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (mut a, mut b, manifest, wa, wb) = pair().await;
+	let (mut a, mut b, manifest, wa, wb) = pair(&_test_environment).await;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	let mut transitions = 0;
 	loop {
@@ -886,7 +886,7 @@ async fn undecided_deadline_aborts_without_publishing_prepared_mutations(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (a, b, mut manifest, wa, wb) = pair().await;
+	let (a, b, mut manifest, wa, wb) = pair(&_test_environment).await;
 	manifest.deadline = Utc::now() + Duration::seconds(2);
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 4).await;
@@ -934,7 +934,7 @@ async fn actual_worker_sigkill_after_commit_recovers_without_replaying_effects(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (a, mut b, manifest, wa, wb) = pair().await;
+	let (a, mut b, manifest, wa, wb) = pair(&_test_environment).await;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 5).await;
 	b.stop().await;
@@ -1019,7 +1019,7 @@ async fn unreachable_aborted_transactions_cannot_starve_later_local_work(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (a, mut b, manifest, wa, _wb) = pair().await;
+	let (a, mut b, manifest, wa, _wb) = pair(&_test_environment).await;
 	for _ in 0..33 {
 		let mut old = manifest.clone();
 		old.id = Uuid::new_v4();

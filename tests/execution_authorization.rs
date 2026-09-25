@@ -18,7 +18,7 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let operator = &f.config.api_token;
@@ -130,7 +130,7 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let effects = Arc::new(AtomicUsize::new(0));
 	let counter = effects.clone();
 	let server=Router::new().route("/effect",post(move || { let counter=counter.clone(); async move {
@@ -289,7 +289,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 ) {
 	use futures_util::StreamExt;
 	use std::time::Duration;
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	assert_eq!(
@@ -682,7 +682,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let child = qualified_agent(&f.config.node_id, "child", "1.0.0");
@@ -948,7 +948,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	use std::time::Duration;
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let worker_federation = f.for_workers().await.unwrap();
 	let entered = Arc::new(tokio::sync::Notify::new());
 	let release = Arc::new(tokio::sync::Notify::new());
@@ -1133,7 +1133,7 @@ async fn scoped_delegation_requires_permission_before_atomic_admission(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-delegation","effect":"deny","subjects":{"ids":["alice"]},"actions":["task.delegate"],"resources":{"kinds":["task"]}}));
@@ -1196,7 +1196,7 @@ async fn scoped_collections_fill_after_denied_runs_and_stream_cursor_skips_denie
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	use aidash::authorization::{Authorization, identity::Actor, workspace::Workspaces};
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	assert_eq!(
@@ -1310,7 +1310,7 @@ async fn malformed_scoped_delegation_arguments_remain_model_correctable(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	assert_eq!(
@@ -1374,7 +1374,7 @@ async fn decision_cursor_follows_transaction_commit_order(
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	use aidash::authorization::{Authorization, policy::Evaluation};
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let authorization = Authorization {

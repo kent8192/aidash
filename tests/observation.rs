@@ -17,7 +17,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, url, schema) = common::setup().await;
+	let (f, url, schema) = common::setup(&_test_environment).await;
 	let workspace = f
 		.store
 		.create_workspace("Airline", "航空会社の新規事業計画")

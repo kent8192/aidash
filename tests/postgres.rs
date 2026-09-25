@@ -20,9 +20,8 @@ use std::sync::Arc;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn setup() -> (Store, String, String) {
-	let url = std::env::var("AIDASH_TEST_DATABASE_URL")
-		.expect("set AIDASH_TEST_DATABASE_URL to a disposable PostgreSQL database");
+async fn setup(environment: &TestEnvironment) -> (Store, String, String) {
+	let url = environment.database_url.clone();
 	let schema = format!("aidash_{}", Uuid::new_v4().simple());
 	// SeaQuery has no CREATE/DROP SCHEMA builder; these DDL statements isolate fixtures.
 	let mut admin = PgConnection::connect(&url).await.unwrap();
@@ -95,7 +94,7 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (store, url, schema) = setup().await;
+	let (store, url, schema) = setup(&_test_environment).await;
 	let registry = Registry::new(store.pool.clone(), &store.node_id);
 	let agent = seed(&registry).await;
 	let w = store
@@ -205,7 +204,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (store, url, schema) = setup().await;
+	let (store, url, schema) = setup(&_test_environment).await;
 	let registry = Registry::new(store.pool.clone(), &store.node_id);
 	let agent = seed(&registry).await;
 	let w = store
@@ -324,7 +323,7 @@ async fn registry_installation_versions_and_authenticated_api(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (store, url, schema) = setup().await;
+	let (store, url, schema) = setup(&_test_environment).await;
 	let registry = Registry::new(store.pool.clone(), &store.node_id);
 	seed(&registry).await;
 	let skill = entry(
@@ -445,7 +444,7 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (store, url, schema) = setup().await;
+	let (store, url, schema) = setup(&_test_environment).await;
 	let registry = Registry::new(store.pool.clone(), &store.node_id);
 	let agent = seed(&registry).await;
 	let workspace = store
@@ -646,7 +645,7 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (store, url, schema) = setup().await;
+	let (store, url, schema) = setup(&_test_environment).await;
 	let f = federation_for(&store);
 	let agent = seed(&f.registry).await;
 	let workspace = store
@@ -757,7 +756,7 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (store, url, schema) = setup().await;
+	let (store, url, schema) = setup(&_test_environment).await;
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", listener.local_addr().unwrap());
 	let server = tokio::spawn(async move {
@@ -873,7 +872,7 @@ async fn rejected_web_sources_reach_the_agent_without_retrying_or_escaping_allow
 	};
 	use std::sync::atomic::{AtomicUsize, Ordering};
 
-	let (store, database_url, schema) = setup().await;
+	let (store, database_url, schema) = setup(&_test_environment).await;
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", listener.local_addr().unwrap());
 	let forbidden_host = format!(
@@ -1026,7 +1025,7 @@ async fn failed_home_transition_survives_outage_and_worker_restart(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (store, url, schema) = setup().await;
+	let (store, url, schema) = setup(&_test_environment).await;
 	let f = federation_for(&store);
 	let agent = seed(&f.registry).await;
 	let workspace = store
@@ -1143,7 +1142,7 @@ async fn terminal_delegations_allow_reads_and_exact_completion_replay_only(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (store, url, schema) = setup().await;
+	let (store, url, schema) = setup(&_test_environment).await;
 	let f = federation_for(&store);
 	let agent = seed(&f.registry).await;
 	let workspace = store
@@ -1257,7 +1256,7 @@ async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (store, url, schema) = setup().await;
+	let (store, url, schema) = setup(&_test_environment).await;
 	let f = federation_for(&store);
 	let agent = seed(&f.registry).await;
 	let mut other = agent.clone();
@@ -1348,7 +1347,7 @@ async fn child_creation_and_parent_completion_are_serialized(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (store, url, schema) = setup().await;
+	let (store, url, schema) = setup(&_test_environment).await;
 	let f = federation_for(&store);
 	let agent = seed(&f.registry).await;
 	let workspace = store
@@ -1417,7 +1416,7 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (store, url, schema) = setup().await;
+	let (store, url, schema) = setup(&_test_environment).await;
 	let f = federation_for(&store);
 	f.registry
 		.register(entry(
@@ -1486,7 +1485,7 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (store, url, schema) = setup().await;
+	let (store, url, schema) = setup(&_test_environment).await;
 	let f = federation_for(&store);
 	let agent = seed(&f.registry).await;
 	let workspace = store
@@ -1599,7 +1598,7 @@ async fn peer_disable_and_retry_rotation_do_not_require_a_live_peer(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (store, url, schema) = setup().await;
+	let (store, url, schema) = setup(&_test_environment).await;
 	let f = federation_for(&store);
 	let agent = seed(&f.registry).await;
 	add_test_peer(&store, "aidash://offline", "http://127.0.0.1:1").await;
@@ -1703,7 +1702,7 @@ async fn registry_event_and_conversation_creation_roll_back_as_units(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (store, url, schema) = setup().await;
+	let (store, url, schema) = setup(&_test_environment).await;
 	let f = federation_for(&store);
 	seed(&f.registry).await;
 	let app = aidash::api::router(f);
@@ -1760,15 +1759,10 @@ async fn oversized_outbox_payload_publishes_a_reference_without_blocking_later_e
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (mut store, url, schema) = setup().await;
+	let (mut store, url, schema) = setup(&_test_environment).await;
 	store.node_id = format!("aidash://outbox-{}", Uuid::new_v4().simple());
 	let mut f = federation_for(&store);
-	f.config.nats_url = std::env::var("AIDASH_TEST_NATS_URL").unwrap_or_else(|_| {
-		format!(
-			"nats://127.0.0.1:{}",
-			std::env::var("AIDASH_NATS_PORT").unwrap_or_else(|_| "42270".into())
-		)
-	});
+	f.config.nats_url = _test_environment.nats_url.clone();
 	let bus = aidash::bus::EventBus::connect(&f.config.nats_url, &store.node_id)
 		.await
 		.unwrap();
@@ -1842,7 +1836,7 @@ async fn ambiguous_peer_credentials_cannot_impersonate_another_node(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (store, url, schema) = setup().await;
+	let (store, url, schema) = setup(&_test_environment).await;
 	let f = federation_for(&store);
 	let secret = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
 	add_test_peer(&store, "aidash://peer-b", "http://127.0.0.1:1").await;
@@ -1894,7 +1888,7 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (store, url, schema) = setup().await;
+	let (store, url, schema) = setup(&_test_environment).await;
 	let f = federation_for(&store);
 	let mut agent = seed(&f.registry).await;
 	f.registry
@@ -1991,7 +1985,7 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	use aidash::tool::{PluginTool, Tool, ToolConfig, ToolContext};
-	let (store, url, schema) = setup().await;
+	let (store, url, schema) = setup(&_test_environment).await;
 	let f = federation_for(&store);
 	let agent = seed(&f.registry).await;
 	for coordinator in ["missing", "model"] {
@@ -2078,7 +2072,7 @@ async fn agent_memory_is_isolated_by_home_even_for_colliding_workspace_ids(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (store, url, schema) = setup().await;
+	let (store, url, schema) = setup(&_test_environment).await;
 	let agent = seed(&Registry::new(store.pool.clone(), &store.node_id)).await;
 	let workspace = store
 		.create_workspace("Memory", "Separate homes")
@@ -2133,7 +2127,7 @@ async fn terminal_dependencies_fail_dependents_instead_of_polling_forever(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (store, url, schema) = setup().await;
+	let (store, url, schema) = setup(&_test_environment).await;
 	let f = federation_for(&store);
 	let agent = seed(&f.registry).await;
 	let worker = aidash::harness::Harness { federation: f };
@@ -2211,7 +2205,7 @@ async fn remote_workspace_snapshot_pages_large_accumulated_artifacts(
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (home, url, schema) = setup().await;
+	let (home, url, schema) = setup(&_test_environment).await;
 	let f = federation_for(&home);
 	let agent = seed(&f.registry).await;
 	let workspace = home
@@ -2247,7 +2241,7 @@ async fn remote_workspace_snapshot_pages_large_accumulated_artifacts(
 	assert!(serde_json::to_vec(&page).unwrap().len() < 3_145_728);
 	assert_eq!(page.items.len(), 1);
 	assert!(page.next.is_some());
-	let (mut worker_store, worker_url, worker_schema) = setup().await;
+	let (mut worker_store, worker_url, worker_schema) = setup(&_test_environment).await;
 	worker_store.node_id = "aidash://worker".into();
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", listener.local_addr().unwrap());

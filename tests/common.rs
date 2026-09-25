@@ -18,7 +18,6 @@ use tokio::sync::Mutex;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-const TEST_PEER_TOKEN: &str = "local-peer-regression-test-token-0123456789";
 const TEST_QDRANT_TOKEN: &str = "local-semantic-vector-fixture-key-0123456789";
 
 static TEST_ENVIRONMENT: LazyLock<Mutex<Weak<TestEnvironment>>> =
@@ -32,6 +31,10 @@ static TEST_ENVIRONMENT: LazyLock<Mutex<Weak<TestEnvironment>>> =
 #[derive(Debug)]
 pub struct TestEnvironment {
 	_compose: DockerCompose,
+	pub database_url: String,
+	#[allow(dead_code)] // Only semantic integration-test binaries need Qdrant.
+	pub qdrant_url: String,
+	pub nats_url: String,
 }
 
 impl TestEnvironment {
@@ -65,30 +68,33 @@ impl TestEnvironment {
 			.await
 			.expect("mapped NATS port");
 
+		let database_url =
+			format!("postgres://aidash:aidash-test@127.0.0.1:{postgres_port}/aidash_test");
 		let qdrant_url = format!("http://127.0.0.1:{qdrant_port}");
+		let nats_url = format!("nats://127.0.0.1:{nats_port}");
+		wait_for_nats(&nats_url).await;
 		wait_for_qdrant(&qdrant_url).await;
 
-		// SAFETY: every environment-dependent integration test receives this
-		// fixture before reading these process variables. Initialization is
-		// serialized by TEST_ENVIRONMENT, and an environment remains strongly
-		// referenced for the complete duration of every overlapping test.
-		unsafe {
-			std::env::set_var(
-				"AIDASH_TEST_DATABASE_URL",
-				format!("postgres://aidash:aidash-test@127.0.0.1:{postgres_port}/aidash_test"),
-			);
-			std::env::set_var("AIDASH_SECRET_TEST_PEER", TEST_PEER_TOKEN);
-			std::env::set_var(
-				"AIDASH_TEST_NATS_URL",
-				format!("nats://127.0.0.1:{nats_port}"),
-			);
-			std::env::set_var("AIDASH_NATS_PORT", nats_port.to_string());
-			std::env::set_var("AIDASH_TEST_QDRANT_URL", qdrant_url);
-			std::env::set_var("AIDASH_SECRET_TEST_QDRANT", TEST_QDRANT_TOKEN);
+		Self {
+			_compose: compose,
+			database_url,
+			qdrant_url,
+			nats_url,
 		}
-
-		Self { _compose: compose }
 	}
+}
+
+async fn wait_for_nats(url: &str) {
+	for _ in 0..120 {
+		if let Ok(Ok(client)) =
+			tokio::time::timeout(Duration::from_secs(1), async_nats::connect(url)).await
+			&& client.flush().await.is_ok()
+		{
+			return;
+		}
+		tokio::time::sleep(Duration::from_millis(250)).await;
+	}
+	panic!("NATS test container did not accept connections");
 }
 
 async fn wait_for_qdrant(url: &str) {
@@ -150,9 +156,9 @@ pub async fn request(
 	)
 }
 
-#[allow(dead_code)] // Not every integration-test binary needs an application fixture.
-pub async fn setup() -> (Federation, String, String) {
-	let url = std::env::var("AIDASH_TEST_DATABASE_URL").expect("disposable PostgreSQL required");
+#[allow(dead_code)] // Shared fixtures are used by different integration-test binaries.
+pub async fn setup(environment: &TestEnvironment) -> (Federation, String, String) {
+	let url = environment.database_url.clone();
 	let schema = format!("execution_{}", Uuid::new_v4().simple());
 	// SeaQuery has no CREATE/DROP SCHEMA builder; these DDL statements isolate fixtures.
 	let mut admin = PgConnection::connect(&url).await.unwrap();
@@ -204,7 +210,7 @@ pub async fn setup() -> (Federation, String, String) {
 			endpoint: "http://localhost:8080".into(),
 			listen: "127.0.0.1:0".parse().unwrap(),
 			database_url: url.clone(),
-			nats_url: "nats://127.0.0.1:4222".into(),
+			nats_url: environment.nats_url.clone(),
 			api_token: "operator-execution-fixture".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,

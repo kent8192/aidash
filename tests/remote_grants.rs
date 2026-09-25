@@ -44,8 +44,8 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (a, au, aschema) = setup().await;
-	let (mut b, bu, bschema) = setup().await;
+	let (a, au, aschema) = setup(&_test_environment).await;
+	let (mut b, bu, bschema) = setup(&_test_environment).await;
 	b.config.node_id = "aidash://grant-host".into();
 	b.store.node_id = b.config.node_id.clone();
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
