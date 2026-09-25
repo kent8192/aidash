@@ -1693,7 +1693,7 @@ struct RemoteActionInput {
 
 #[cfg(test)]
 mod schema_tests {
-	#[test]
+	#[rstest::rstest]
 	fn openapi_describes_authenticated_management_routes_and_streams() {
 		// The router itself registers these operations with utoipa-axum, so an
 		// export needs neither environment configuration nor a live database.
@@ -1753,7 +1753,7 @@ mod schema_tests {
 mod browser_operator_allowlist_tests {
 	use super::*;
 
-	#[test]
+	#[rstest::rstest]
 	fn permits_operator_registry_creation_workflows() {
 		assert!(browser_operator_allowed(
 			&Method::POST,

@@ -2,12 +2,17 @@ mod common;
 use aidash::api;
 use chrono::{Duration, Utc};
 use common::*;
+use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn atomic_submission_validates_the_entire_manifest_before_creating_work() {
+async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (_, subject, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;

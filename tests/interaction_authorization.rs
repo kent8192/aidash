@@ -4,6 +4,7 @@ use aidash::{
 	domain::{Run, qualified_agent},
 };
 use common::*;
+use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -11,9 +12,13 @@ fn conversation() -> Value {
 	json!({"title":"Scoped conversation","goal":"Complete approved work","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn conversation_admission_is_atomic_and_records_denials_without_orphans() {
+async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -114,9 +119,13 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans() 
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_attribution() {
+async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_attribution(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use aidash::harness::Harness;
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
@@ -461,9 +470,13 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn cluster_conversations_recheck_approval_at_worker_boundaries() {
+async fn cluster_conversations_recheck_approval_at_worker_boundaries(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;

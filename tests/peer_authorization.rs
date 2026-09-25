@@ -2,6 +2,7 @@ mod common;
 use aidash::api;
 use axum::{Router, body::Body, http::Request};
 use common::*;
+use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -40,9 +41,13 @@ async fn discover(
 	)
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn inbound_discovery_requires_exact_mapping_and_current_local_authority() {
+async fn inbound_discovery_requires_exact_mapping_and_current_local_authority(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (mut policy, subject_token, _) = bootstrap(&f, &app, "http://localhost:1").await;
@@ -280,9 +285,13 @@ async fn inbound_discovery_requires_exact_mapping_and_current_local_authority() 
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_discovery() {
+async fn mappings_cannot_cross_tenants_and_expiry_or_disabled_subject_denies_discovery(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (mut policy, _, _) = bootstrap(&f, &app, "http://localhost:1").await;

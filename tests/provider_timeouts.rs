@@ -145,6 +145,7 @@ async fn infer_after(
 	result
 }
 
+#[rstest::rstest]
 #[tokio::test]
 async fn provider_timeout_above_120_seconds_allows_a_508_second_response() {
 	let (response, elapsed) = infer_after(Some(900), 508).await;
@@ -154,6 +155,7 @@ async fn provider_timeout_above_120_seconds_allows_a_508_second_response() {
 	assert_eq!(elapsed.as_secs(), 508);
 }
 
+#[rstest::rstest]
 #[tokio::test]
 async fn provider_timeout_is_not_capped_by_the_900_second_default() {
 	let (response, elapsed) = infer_after(Some(1200), 1000).await;
@@ -161,12 +163,14 @@ async fn provider_timeout_is_not_capped_by_the_900_second_default() {
 	assert_eq!(elapsed.as_secs(), 1000);
 }
 
+#[rstest::rstest]
 #[tokio::test]
 async fn omitted_provider_timeout_allows_a_508_second_response() {
 	let (response, _) = infer_after(None, 508).await;
 	assert_eq!(response.unwrap().text, "Completed");
 }
 
+#[rstest::rstest]
 #[tokio::test]
 async fn shorter_provider_timeout_is_enforced() {
 	let (response, elapsed) = infer_after(Some(30), 60).await;
@@ -177,6 +181,7 @@ async fn shorter_provider_timeout_is_enforced() {
 	);
 }
 
+#[rstest::rstest]
 #[tokio::test]
 async fn omitted_provider_timeout_expires_at_900_seconds() {
 	let (response, elapsed) = infer_after(None, 1000).await;
@@ -187,6 +192,7 @@ async fn omitted_provider_timeout_expires_at_900_seconds() {
 	);
 }
 
+#[rstest::rstest]
 #[tokio::test]
 async fn non_inference_requests_keep_the_shared_client_timeout() {
 	let mut server = DelayedServer::start().await;
@@ -202,7 +208,7 @@ async fn non_inference_requests_keep_the_shared_client_timeout() {
 	);
 }
 
-#[test]
+#[rstest::rstest]
 fn registry_validates_provider_timeout_values() {
 	let mut entry: Entry = serde_json::from_value(json!({
 		"id":"timeout-model", "version":"1.0.0", "kind":"model",
@@ -227,7 +233,7 @@ fn registry_validates_provider_timeout_values() {
 	}
 }
 
-#[test]
+#[rstest::rstest]
 fn legacy_and_null_timeouts_remain_optional_when_serialized() {
 	let mut value = model_config("https://openrouter.ai/api/v1");
 	for explicit_null in [false, true] {
@@ -244,7 +250,7 @@ fn legacy_and_null_timeouts_remain_optional_when_serialized() {
 	}
 }
 
-#[test]
+#[rstest::rstest]
 fn provider_rejects_zero_timeout_before_sending_a_request() {
 	let mut value = model_config("http://127.0.0.1:1");
 	value["request_timeout_secs"] = json!(0);

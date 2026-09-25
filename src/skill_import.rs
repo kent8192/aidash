@@ -803,7 +803,52 @@ async fn import_github(request: ImportRequest) -> Result<ImportResult> {
 mod tests {
 	use super::*;
 
-	#[test]
+	#[rstest::fixture]
+	fn skills_sh_snapshot() -> (&'static str, SkillsShSnapshot) {
+		(
+			"https://skills.sh/vercel-labs/skills/find-skills",
+			SkillsShSnapshot {
+				files: vec![
+					SkillsShFile {
+						path: "SKILL.md".into(),
+						contents:
+							"---\nname: find-skills\ndescription: Find reusable skills\n---\nBody"
+								.into(),
+					},
+					SkillsShFile {
+						path: "references/catalog.md".into(),
+						contents: "Catalog fixture".into(),
+					},
+				],
+			},
+		)
+	}
+
+	#[rstest::fixture]
+	fn github_skill_tree() -> Tree {
+		Tree {
+			truncated: false,
+			tree: vec![
+				TreeEntry {
+					path: "skills/.curated/aspnet-core/SKILL.md".into(),
+					kind: "blob".into(),
+					sha: "skill".into(),
+				},
+				TreeEntry {
+					path: "skills/.curated/aspnet-core/references/stack-selection.md".into(),
+					kind: "blob".into(),
+					sha: "reference".into(),
+				},
+				TreeEntry {
+					path: "skills/.curated/aspnet-core/assets/icon.png".into(),
+					kind: "blob".into(),
+					sha: "binary".into(),
+				},
+			],
+		}
+	}
+
+	#[rstest::rstest]
 	fn accepts_only_restricted_github_sources() {
 		assert!(Source::parse("https://github.com/openai/skills/tree/main/skills/foo").is_ok());
 		let root_tree = Source::parse("https://github.com/openai/skills/tree/release").unwrap();
@@ -875,7 +920,7 @@ mod tests {
 		);
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn converts_registry_snapshot_without_losing_reference_files() {
 		let result = imported_snapshot(
 			"https://skills.sh/example/repo/research",
@@ -901,15 +946,11 @@ mod tests {
 		assert_eq!(selected.files[0].content, "Guide");
 	}
 
-	#[tokio::test]
-	#[ignore = "requires the public skills.sh registry"]
-	async fn imports_live_skills_sh_page() {
-		let result = import(ImportRequest {
-			url: "https://skills.sh/vercel-labs/skills/find-skills".into(),
-			skill_path: None,
-		})
-		.await
-		.unwrap();
+	#[rstest::rstest]
+	fn imports_skills_sh_snapshot(
+		#[from(skills_sh_snapshot)] (url, snapshot): (&str, SkillsShSnapshot),
+	) {
+		let result = imported_snapshot(url, snapshot).unwrap();
 		assert!(
 			result
 				.selected
@@ -919,32 +960,32 @@ mod tests {
 		);
 	}
 
-	#[tokio::test]
-	#[ignore = "requires GitHub network access and API quota or GitHub CLI authentication"]
-	async fn imports_live_github_skill_directory() {
-		let result = import(ImportRequest {
-			url: "https://github.com/openai/skills/tree/main/skills/.curated/aspnet-core".into(),
-			skill_path: None,
-		})
-		.await
-		.unwrap();
-		let selected = result.selected.unwrap();
-		assert!(selected.instructions.contains("name: aspnet-core"));
-		assert!(
-			selected
-				.files
-				.iter()
-				.any(|file| file.path == "references/stack-selection.md")
+	#[rstest::rstest]
+	fn imports_github_skill_directory_fixture(github_skill_tree: Tree) {
+		let selected = "skills/.curated/aspnet-core/SKILL.md";
+		assert_eq!(
+			candidates(&github_skill_tree, Some(selected)),
+			vec![selected]
+		);
+		assert_eq!(
+			resource_paths(&github_skill_tree, selected).unwrap(),
+			vec![
+				"SKILL.md",
+				"assets/icon.png",
+				"references/stack-selection.md"
+			]
 		);
 		assert!(
-			selected
-				.files
-				.iter()
-				.any(|file| file.encoding.as_deref() == Some("base64"))
+			github_instructions(
+				b"---\nname: aspnet-core\n---\nUse references/stack-selection.md".to_vec(),
+				selected,
+			)
+			.unwrap()
+			.contains("name: aspnet-core")
 		);
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn discovers_nested_skills_and_keeps_only_selected_directory() {
 		let tree = Tree {
 			truncated: false,
@@ -993,7 +1034,7 @@ mod tests {
 		);
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn rejects_github_resource_paths_that_registry_cannot_store() {
 		let tree_with = |path: String| Tree {
 			truncated: false,
@@ -1027,7 +1068,7 @@ mod tests {
 		}
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn rejects_github_instructions_that_registry_cannot_store() {
 		assert_eq!(
 			github_instructions(b"---\nname: example\n---\nBody".to_vec(), "SKILL.md").unwrap(),

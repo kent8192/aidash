@@ -1,3 +1,4 @@
+mod common;
 use aidash::{
 	config::Config,
 	domain::*,
@@ -9,6 +10,7 @@ use axum::{
 	body::Body,
 	http::{Request, StatusCode},
 };
+use common::{TestEnvironment, test_environment};
 use serde_json::json;
 use sqlx::{
 	Connection, Executor,
@@ -86,9 +88,13 @@ fn new_task() -> NewTask {
 	}
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL; see scripts/check.sh"]
-async fn concurrent_claims_dependencies_and_idempotent_completion() {
+async fn concurrent_claims_dependencies_and_idempotent_completion(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (store, url, schema) = setup().await;
 	let registry = Registry::new(store.pool.clone(), &store.node_id);
 	let agent = seed(&registry).await;
@@ -192,9 +198,13 @@ async fn concurrent_claims_dependencies_and_idempotent_completion() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL; see scripts/check.sh"]
-async fn lease_fencing_and_uncertain_effect_reconciliation() {
+async fn lease_fencing_and_uncertain_effect_reconciliation(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (store, url, schema) = setup().await;
 	let registry = Registry::new(store.pool.clone(), &store.node_id);
 	let agent = seed(&registry).await;
@@ -307,9 +317,13 @@ async fn lease_fencing_and_uncertain_effect_reconciliation() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL; see scripts/check.sh"]
-async fn registry_installation_versions_and_authenticated_api() {
+async fn registry_installation_versions_and_authenticated_api(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (store, url, schema) = setup().await;
 	let registry = Registry::new(store.pool.clone(), &store.node_id);
 	seed(&registry).await;
@@ -424,9 +438,13 @@ async fn registry_installation_versions_and_authenticated_api() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL; see scripts/check.sh"]
-async fn human_requests_controls_and_cancellation_before_dependencies_finish() {
+async fn human_requests_controls_and_cancellation_before_dependencies_finish(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (store, url, schema) = setup().await;
 	let registry = Registry::new(store.pool.clone(), &store.node_id);
 	let agent = seed(&registry).await;
@@ -621,9 +639,13 @@ async fn final_response(store: &Store, task: Uuid) {
 	.unwrap();
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL; see scripts/check.sh"]
-async fn parent_can_finish_after_explicit_child_abandonment() {
+async fn parent_can_finish_after_explicit_child_abandonment(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (store, url, schema) = setup().await;
 	let f = federation_for(&store);
 	let agent = seed(&f.registry).await;
@@ -728,9 +750,13 @@ async fn parent_can_finish_after_explicit_child_abandonment() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL; see scripts/check.sh"]
-async fn successful_tool_retry_resets_the_next_invocation_budget() {
+async fn successful_tool_retry_resets_the_next_invocation_budget(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (store, url, schema) = setup().await;
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -832,9 +858,13 @@ async fn successful_tool_retry_resets_the_next_invocation_budget() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL; see scripts/check.sh"]
-async fn rejected_web_sources_reach_the_agent_without_retrying_or_escaping_allowed_hosts() {
+async fn rejected_web_sources_reach_the_agent_without_retrying_or_escaping_allowed_hosts(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use aidash::harness::Harness;
 	use axum::{
 		Json, Router,
@@ -989,9 +1019,13 @@ async fn add_test_peer(store: &Store, node: &str, endpoint: &str) {
 	.await
 	.unwrap();
 }
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and AIDASH_SECRET_TEST_PEER; see scripts/check.sh"]
-async fn failed_home_transition_survives_outage_and_worker_restart() {
+async fn failed_home_transition_survives_outage_and_worker_restart(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (store, url, schema) = setup().await;
 	let f = federation_for(&store);
 	let agent = seed(&f.registry).await;
@@ -1102,9 +1136,13 @@ async fn failed_home_transition_survives_outage_and_worker_restart() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and AIDASH_SECRET_TEST_PEER; see scripts/check.sh"]
-async fn terminal_delegations_allow_reads_and_exact_completion_replay_only() {
+async fn terminal_delegations_allow_reads_and_exact_completion_replay_only(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (store, url, schema) = setup().await;
 	let f = federation_for(&store);
 	let agent = seed(&f.registry).await;
@@ -1212,9 +1250,13 @@ async fn terminal_delegations_allow_reads_and_exact_completion_replay_only() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait() {
+async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (store, url, schema) = setup().await;
 	let f = federation_for(&store);
 	let agent = seed(&f.registry).await;
@@ -1299,9 +1341,13 @@ async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn child_creation_and_parent_completion_are_serialized() {
+async fn child_creation_and_parent_completion_are_serialized(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (store, url, schema) = setup().await;
 	let f = federation_for(&store);
 	let agent = seed(&f.registry).await;
@@ -1364,9 +1410,13 @@ async fn child_creation_and_parent_completion_are_serialized() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn skill_reads_fit_the_pending_request_budget_before_recording() {
+async fn skill_reads_fit_the_pending_request_budget_before_recording(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (store, url, schema) = setup().await;
 	let f = federation_for(&store);
 	f.registry
@@ -1429,9 +1479,13 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn unavailable_tools_are_results_and_child_gating_advances_step() {
+async fn unavailable_tools_are_results_and_child_gating_advances_step(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (store, url, schema) = setup().await;
 	let f = federation_for(&store);
 	let agent = seed(&f.registry).await;
@@ -1538,9 +1592,13 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn peer_disable_and_retry_rotation_do_not_require_a_live_peer() {
+async fn peer_disable_and_retry_rotation_do_not_require_a_live_peer(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (store, url, schema) = setup().await;
 	let f = federation_for(&store);
 	let agent = seed(&f.registry).await;
@@ -1638,9 +1696,13 @@ async fn peer_disable_and_retry_rotation_do_not_require_a_live_peer() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn registry_event_and_conversation_creation_roll_back_as_units() {
+async fn registry_event_and_conversation_creation_roll_back_as_units(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (store, url, schema) = setup().await;
 	let f = federation_for(&store);
 	seed(&f.registry).await;
@@ -1691,9 +1753,13 @@ async fn registry_event_and_conversation_creation_roll_back_as_units() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and NATS"]
-async fn oversized_outbox_payload_publishes_a_reference_without_blocking_later_events() {
+async fn oversized_outbox_payload_publishes_a_reference_without_blocking_later_events(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (mut store, url, schema) = setup().await;
 	store.node_id = format!("aidash://outbox-{}", Uuid::new_v4().simple());
 	let mut f = federation_for(&store);
@@ -1769,9 +1835,13 @@ async fn oversized_outbox_payload_publishes_a_reference_without_blocking_later_e
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn ambiguous_peer_credentials_cannot_impersonate_another_node() {
+async fn ambiguous_peer_credentials_cannot_impersonate_another_node(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (store, url, schema) = setup().await;
 	let f = federation_for(&store);
 	let secret = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
@@ -1817,9 +1887,13 @@ async fn ambiguous_peer_credentials_cannot_impersonate_another_node() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn recovery_publishes_reconciliation_marker_with_the_request() {
+async fn recovery_publishes_reconciliation_marker_with_the_request(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (store, url, schema) = setup().await;
 	let f = federation_for(&store);
 	let mut agent = seed(&f.registry).await;
@@ -1909,9 +1983,13 @@ async fn recovery_publishes_reconciliation_marker_with_the_request() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn agent_tools_attach_children_and_clusters_require_existing_agents() {
+async fn agent_tools_attach_children_and_clusters_require_existing_agents(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use aidash::tool::{PluginTool, Tool, ToolConfig, ToolContext};
 	let (store, url, schema) = setup().await;
 	let f = federation_for(&store);
@@ -1993,9 +2071,13 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn agent_memory_is_isolated_by_home_even_for_colliding_workspace_ids() {
+async fn agent_memory_is_isolated_by_home_even_for_colliding_workspace_ids(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (store, url, schema) = setup().await;
 	let agent = seed(&Registry::new(store.pool.clone(), &store.node_id)).await;
 	let workspace = store
@@ -2044,9 +2126,13 @@ async fn agent_memory_is_isolated_by_home_even_for_colliding_workspace_ids() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn terminal_dependencies_fail_dependents_instead_of_polling_forever() {
+async fn terminal_dependencies_fail_dependents_instead_of_polling_forever(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (store, url, schema) = setup().await;
 	let f = federation_for(&store);
 	let agent = seed(&f.registry).await;
@@ -2118,9 +2204,13 @@ async fn terminal_dependencies_fail_dependents_instead_of_polling_forever() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and AIDASH_SECRET_TEST_PEER"]
-async fn remote_workspace_snapshot_pages_large_accumulated_artifacts() {
+async fn remote_workspace_snapshot_pages_large_accumulated_artifacts(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (home, url, schema) = setup().await;
 	let f = federation_for(&home);
 	let agent = seed(&f.registry).await;

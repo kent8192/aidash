@@ -8,9 +8,116 @@ use sqlx::{
 	Connection, Executor,
 	postgres::{PgConnection, PgPoolOptions},
 };
-use std::sync::Arc;
+use std::{
+	path::PathBuf,
+	sync::{Arc, LazyLock, Weak},
+	time::Duration,
+};
+use testcontainers::compose::DockerCompose;
+use tokio::sync::Mutex;
 use tower::ServiceExt;
 use uuid::Uuid;
+
+const TEST_PEER_TOKEN: &str = "local-peer-regression-test-token-0123456789";
+const TEST_QDRANT_TOKEN: &str = "local-semantic-vector-fixture-key-0123456789";
+
+static TEST_ENVIRONMENT: LazyLock<Mutex<Weak<TestEnvironment>>> =
+	LazyLock::new(|| Mutex::new(Weak::new()));
+
+/// Disposable service endpoints arranged by Testcontainers for integration tests.
+///
+/// The global cache stores only a weak reference: tests that overlap share one
+/// Compose stack, while the final fixture owner still triggers deterministic
+/// Testcontainers cleanup.
+#[derive(Debug)]
+pub struct TestEnvironment {
+	_compose: DockerCompose,
+}
+
+impl TestEnvironment {
+	async fn start() -> Self {
+		let compose_path =
+			PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/compose.yaml");
+		let mut compose = DockerCompose::with_local_client(&[compose_path.as_path()])
+			.with_build(true)
+			.with_wait(true);
+		compose
+			.up()
+			.await
+			.expect("start disposable integration-test services");
+
+		let postgres_port = compose
+			.service("postgres")
+			.expect("PostgreSQL service")
+			.get_host_port_ipv4(5432)
+			.await
+			.expect("mapped PostgreSQL port");
+		let qdrant_port = compose
+			.service("qdrant")
+			.expect("Qdrant service")
+			.get_host_port_ipv4(6333)
+			.await
+			.expect("mapped Qdrant port");
+		let nats_port = compose
+			.service("nats")
+			.expect("NATS service")
+			.get_host_port_ipv4(4222)
+			.await
+			.expect("mapped NATS port");
+
+		let qdrant_url = format!("http://127.0.0.1:{qdrant_port}");
+		wait_for_qdrant(&qdrant_url).await;
+
+		// SAFETY: every environment-dependent integration test receives this
+		// fixture before reading these process variables. Initialization is
+		// serialized by TEST_ENVIRONMENT, and an environment remains strongly
+		// referenced for the complete duration of every overlapping test.
+		unsafe {
+			std::env::set_var(
+				"AIDASH_TEST_DATABASE_URL",
+				format!("postgres://aidash:aidash-test@127.0.0.1:{postgres_port}/aidash_test"),
+			);
+			std::env::set_var("AIDASH_SECRET_TEST_PEER", TEST_PEER_TOKEN);
+			std::env::set_var(
+				"AIDASH_TEST_NATS_URL",
+				format!("nats://127.0.0.1:{nats_port}"),
+			);
+			std::env::set_var("AIDASH_NATS_PORT", nats_port.to_string());
+			std::env::set_var("AIDASH_TEST_QDRANT_URL", qdrant_url);
+			std::env::set_var("AIDASH_SECRET_TEST_QDRANT", TEST_QDRANT_TOKEN);
+		}
+
+		Self { _compose: compose }
+	}
+}
+
+async fn wait_for_qdrant(url: &str) {
+	let client = reqwest::Client::new();
+	for _ in 0..120 {
+		if client
+			.get(format!("{url}/readyz"))
+			.header("api-key", TEST_QDRANT_TOKEN)
+			.send()
+			.await
+			.is_ok_and(|response| response.status().is_success())
+		{
+			return;
+		}
+		tokio::time::sleep(Duration::from_millis(250)).await;
+	}
+	panic!("Qdrant test container did not become ready");
+}
+
+#[rstest::fixture]
+pub async fn test_environment() -> Arc<TestEnvironment> {
+	let mut cached = TEST_ENVIRONMENT.lock().await;
+	if let Some(environment) = cached.upgrade() {
+		return environment;
+	}
+	let environment = Arc::new(TestEnvironment::start().await);
+	*cached = Arc::downgrade(&environment);
+	environment
+}
 
 #[allow(dead_code)] // Shared fixtures are used by different integration-test binaries.
 pub async fn request(
@@ -43,6 +150,7 @@ pub async fn request(
 	)
 }
 
+#[allow(dead_code)] // Not every integration-test binary needs an application fixture.
 pub async fn setup() -> (Federation, String, String) {
 	let url = std::env::var("AIDASH_TEST_DATABASE_URL").expect("disposable PostgreSQL required");
 	let schema = format!("execution_{}", Uuid::new_v4().simple());
@@ -108,6 +216,7 @@ pub async fn setup() -> (Federation, String, String) {
 	(federation, url, schema)
 }
 
+#[allow(dead_code)] // Paired with setup in the integration-test binaries that use it.
 pub async fn cleanup(f: Federation, url: &str, schema: &str) {
 	f.store.control_pool.close().await;
 	f.store.pool.close().await;

@@ -203,12 +203,12 @@ fn validate_response(r: &ModelResponse) -> Result<()> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	#[test]
+	#[rstest::rstest]
 	fn parses_openrouter_tool_calls() {
 		let result = parse_openai(json!({"choices":[{"finish_reason":"tool_calls","message":{"tool_calls":[{"id":"one","function":{"name":"search","arguments":"{\"q\":\"Rust\"}"}}]}}]})).unwrap();
 		assert_eq!(result.tool_calls[0].arguments, json!({"q":"Rust"}));
 	}
-	#[test]
+	#[rstest::rstest]
 	fn whitespace_only_tool_call_content_is_not_a_workspace_message() {
 		let result = parse_openai(json!({"choices":[{"finish_reason":"tool_calls","message":{"content":" \n\t ","tool_calls":[{"id":"one","function":{"name":"search","arguments":"{}"}}]}}]})).unwrap();
 		assert!(result.text.is_empty());
@@ -220,7 +220,7 @@ mod tests {
 			.is_err()
 		);
 	}
-	#[test]
+	#[rstest::rstest]
 	fn truncation_cannot_complete_a_task() {
 		assert!(
 			parse_openai(

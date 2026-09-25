@@ -98,7 +98,7 @@ mod tests {
 	use super::*;
 	use serde_json::json;
 
-	#[test]
+	#[rstest::rstest]
 	fn reasoning_distinguishes_missing_and_unrestricted_efforts() {
 		let absent: ReasoningOptions = serde_json::from_value(json!({"mandatory":true})).unwrap();
 		assert!(absent.supported_efforts.is_none());
@@ -112,7 +112,7 @@ mod tests {
 		assert!(restricted.mandatory);
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn catalog_only_offers_models_usable_by_agents() {
 		let model = json!({
 			"id":"vendor/model", "name":"Text model", "context_length":32768,
@@ -145,7 +145,7 @@ mod tests {
 		);
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn catalog_rejects_models_without_a_known_output_limit() {
 		let mut unknown_limit = json!({
 			"id":"vendor/model", "name":"Text model", "context_length":32768,
@@ -158,7 +158,7 @@ mod tests {
 		assert!(eligible(catalog.data).is_empty());
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn catalog_rejects_output_limits_larger_than_the_context_window() {
 		let catalog: Catalog = serde_json::from_value(json!({"data":[{
 			"id":"vendor/model", "name":"Text model", "context_length":32768,

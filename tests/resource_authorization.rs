@@ -5,11 +5,16 @@ use aidash::{
 	harness::Harness,
 };
 use common::*;
+use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn guarded_child_summary_pages_minimal_visible_rows() {
+async fn guarded_child_summary_pages_minimal_visible_rows(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (mut bundle, token, parent_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -98,9 +103,13 @@ async fn guarded_child_summary_pages_minimal_visible_rows() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn task_artifact_message_denials_filter_aggregate_events_and_run_details() {
+async fn task_artifact_message_denials_filter_aggregate_events_and_run_details(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (mut bundle, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -224,9 +233,13 @@ async fn task_artifact_message_denials_filter_aggregate_events_and_run_details()
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn hidden_task_cannot_be_claimed_or_used_as_a_dependency() {
+async fn hidden_task_cannot_be_claimed_or_used_as_a_dependency(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (mut bundle, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -282,15 +295,23 @@ async fn hidden_task_cannot_be_claimed_or_used_as_a_dependency() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn recorded_source_revocation_hides_journals_and_pauses_before_provider_io() {
+async fn recorded_source_revocation_hides_journals_and_pauses_before_provider_io(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	retained_snapshot_revocation(false).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn workspace_event_revocation_hides_journals_and_pauses_before_provider_io() {
+async fn workspace_event_revocation_hides_journals_and_pauses_before_provider_io(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	retained_snapshot_revocation(true).await;
 }
 async fn retained_snapshot_revocation(events_only: bool) {
@@ -448,9 +469,13 @@ async fn retained_snapshot_revocation(events_only: bool) {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn opened_thread_events_retain_their_root_message_read_dependency() {
+async fn opened_thread_events_retain_their_root_message_read_dependency(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use axum::{Json, Router, routing::post};
 	use std::sync::{
 		Arc,
@@ -641,9 +666,13 @@ async fn opened_thread_events_retain_their_root_message_read_dependency() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn stored_message_author_controls_visibility_and_forged_authorship_is_rejected() {
+async fn stored_message_author_controls_visibility_and_forged_authorship_is_rejected(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (mut bundle, alice, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -725,9 +754,13 @@ async fn stored_message_author_controls_visibility_and_forged_authorship_is_reje
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn denied_new_task_read_rolls_back_creation_but_retains_the_decision() {
+async fn denied_new_task_read_rolls_back_creation_but_retains_the_decision(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (mut bundle, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -782,9 +815,13 @@ async fn denied_new_task_read_rolls_back_creation_but_retains_the_decision() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn legacy_journal_migration_retains_sources_and_cyclic_read_graphs_terminate() {
+async fn legacy_journal_migration_retains_sources_and_cyclic_read_graphs_terminate(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (mut bundle, token, first) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -906,9 +943,13 @@ async fn legacy_journal_migration_retains_sources_and_cyclic_read_graphs_termina
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn worker_continues_with_visible_subset_and_never_sends_denied_records() {
+async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use axum::{Json, Router, routing::post};
 	use std::sync::{
 		Arc,
@@ -1083,9 +1124,13 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn artifact_state_page_is_filled_after_task_denials() {
+async fn artifact_state_page_is_filled_after_task_denials(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (mut bundle, token, hidden) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -1196,9 +1241,13 @@ async fn artifact_state_page_is_filled_after_task_denials() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn discovered_registry_entries_remain_live_journal_dependencies() {
+async fn discovered_registry_entries_remain_live_journal_dependencies(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use axum::{Json, Router, routing::post};
 	use std::sync::{
 		Arc,

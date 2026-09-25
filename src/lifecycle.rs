@@ -67,6 +67,7 @@ pub async fn probes(
 
 #[cfg(test)]
 mod tests {
+	#[rstest::rstest]
 	#[tokio::test]
 	async fn draining_observes_already_sent_and_closed_signals() {
 		let (sender, mut receiver) = tokio::sync::watch::channel(false);

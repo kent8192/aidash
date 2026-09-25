@@ -6,12 +6,17 @@ use aidash::{
 	federation::Home,
 	tool::{ToolContext, builtins},
 };
+use common::{TestEnvironment, test_environment};
 use serde_json::json;
 use uuid::Uuid;
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL; see scripts/check.sh"]
-async fn observations_do_not_recursively_embed_the_invocation_journal() {
+async fn observations_do_not_recursively_embed_the_invocation_journal(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = common::setup().await;
 	let workspace = f
 		.store

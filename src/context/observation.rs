@@ -192,7 +192,7 @@ mod tests {
 		}
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn fit_projection_picks_largest_page_from_one_snapshot() {
 		let snapshot = snapshot(3);
 		let one = project(&snapshot, 0, 1).to_string().len();
@@ -208,7 +208,7 @@ mod tests {
 		assert_eq!(fitted.1["tasks"].as_array().unwrap().len(), 1);
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn fit_projection_defers_when_even_one_row_cannot_fit() {
 		let snapshot = snapshot(1);
 		assert!(

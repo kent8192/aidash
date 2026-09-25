@@ -1,6 +1,7 @@
 mod common;
 use aidash::api;
 use common::*;
+use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 
 async fn definition(app: &axum::Router, token: &str) -> Value {
@@ -17,9 +18,13 @@ async fn definition(app: &axum::Router, token: &str) -> Value {
 	json!({"enabled":true,"template":template,"permissions":{"roles":[],"groups":[],"attributes":{"team":"research"}},"approval_required":true,"limits":{"max_agents":4,"max_concurrent":2,"max_depth":2,"token_budget":800000,"tokens_per_agent":200000,"lifetime_seconds":3600}})
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn generation_policy_is_revisioned_and_requests_reserve_deduplicated_quota() {
+async fn generation_policy_is_revisioned_and_requests_reserve_deduplicated_quota(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -100,9 +105,13 @@ async fn missing_task(app: &axum::Router, token: &str) -> String {
 	task["id"].as_str().unwrap().to_owned()
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn approval_activation_and_stop_are_atomic_and_audited() {
+async fn approval_activation_and_stop_are_atomic_and_audited(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -246,9 +255,13 @@ async fn approval_activation_and_stop_are_atomic_and_audited() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_allowance() {
+async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_allowance(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use axum::{Json, Router, routing::post};
 	let server=Router::new().route("/v1/chat/completions",post(|Json(body):Json<Value>|async move {
         assert_eq!(body["model"],"fixture");
@@ -397,9 +410,13 @@ async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_all
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn concurrent_requests_obey_quota_and_denial_releases_it_once() {
+async fn concurrent_requests_obey_quota_and_denial_releases_it_once(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -470,9 +487,13 @@ async fn concurrent_requests_obey_quota_and_denial_releases_it_once() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn agent_created_tasks_keep_generation_depth_when_requested_by_root() {
+async fn agent_created_tasks_keep_generation_depth_when_requested_by_root(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use axum::{Json, Router, routing::post};
 	let server=Router::new().route("/v1/chat/completions",post(||async {
         Json(json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"create-child","type":"function","function":{"name":"task_create","arguments":json!({"title":"Child specialist","description":"Nested generation","requirements":{"capability":"special.research"}}).to_string()}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":10}}))
@@ -569,9 +590,13 @@ async fn agent_created_tasks_keep_generation_depth_when_requested_by_root() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn revoked_requester_cannot_activate_and_failed_admission_leaves_no_agent() {
+async fn revoked_requester_cannot_activate_and_failed_admission_leaves_no_agent(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -643,9 +668,13 @@ async fn revoked_requester_cannot_activate_and_failed_admission_leaves_no_agent(
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn missing_usage_keeps_reservation_and_stops_before_another_model_call() {
+async fn missing_usage_keeps_reservation_and_stops_before_another_model_call(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use axum::{Json, Router, routing::post};
 	use std::sync::{
 		Arc,
@@ -724,9 +753,13 @@ async fn missing_usage_keeps_reservation_and_stops_before_another_model_call() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn worker_can_request_nested_generation_without_dropping_parent_authority() {
+async fn worker_can_request_nested_generation_without_dropping_parent_authority(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use axum::{Json, Router, routing::post};
 	let server=Router::new().route("/v1/chat/completions",post(|Json(body):Json<Value>|async move {
         let context:Value=serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
@@ -802,9 +835,13 @@ async fn worker_can_request_nested_generation_without_dropping_parent_authority(
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn generation_reads_and_events_respect_denial_and_tenant_boundaries() {
+async fn generation_reads_and_events_respect_denial_and_tenant_boundaries(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -954,9 +991,13 @@ async fn generation_reads_and_events_respect_denial_and_tenant_boundaries() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn expiration_cancels_generated_run_before_any_provider_call() {
+async fn expiration_cancels_generated_run_before_any_provider_call(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -1031,9 +1072,13 @@ async fn expiration_cancels_generated_run_before_any_provider_call() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn stop_commits_during_inflight_inference_and_discards_its_result() {
+async fn stop_commits_during_inflight_inference_and_discards_its_result(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use axum::{Json, Router, routing::post};
 	use std::sync::Arc;
 	use tokio::sync::Notify;
@@ -1148,9 +1193,13 @@ async fn stop_commits_during_inflight_inference_and_discards_its_result() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn atomic_commit_discards_generated_output_but_settles_its_usage() {
+async fn atomic_commit_discards_generated_output_but_settles_its_usage(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use axum::{Json, Router, routing::post};
 	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 	use std::sync::{
@@ -1276,9 +1325,13 @@ async fn atomic_commit_discards_generated_output_but_settles_its_usage() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn matching_ordinary_agent_is_reused_without_generation_or_quota() {
+async fn matching_ordinary_agent_is_reused_without_generation_or_quota(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (mut bundle, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -1346,9 +1399,13 @@ async fn matching_ordinary_agent_is_reused_without_generation_or_quota() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn disabling_an_existing_policy_remains_possible_after_component_revocation() {
+async fn disabling_an_existing_policy_remains_possible_after_component_revocation(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -1404,9 +1461,13 @@ async fn disabling_an_existing_policy_remains_possible_after_component_revocatio
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn count_concurrency_and_total_token_limits_are_independent() {
+async fn count_concurrency_and_total_token_limits_are_independent(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	for limit in ["max_agents", "max_concurrent", "token_budget"] {
 		let (f, url, schema) = setup().await;
 		let app = api::router(f.clone());
@@ -1498,9 +1559,13 @@ async fn count_concurrency_and_total_token_limits_are_independent() {
 	}
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn generated_permission_attributes_deny_tools_without_losing_the_pending_call() {
+async fn generated_permission_attributes_deny_tools_without_losing_the_pending_call(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use axum::{Json, Router, routing::post};
 	use std::sync::{
 		Arc,
@@ -1614,9 +1679,13 @@ async fn generated_permission_attributes_deny_tools_without_losing_the_pending_c
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn generation_visibility_paginates_and_cannot_override_later_event_ownership() {
+async fn generation_visibility_paginates_and_cannot_override_later_event_ownership(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (mut policy, token, other_task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;

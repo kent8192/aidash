@@ -1,3 +1,4 @@
+mod common;
 use aidash::{
 	Error, api,
 	config::Config,
@@ -7,6 +8,7 @@ use aidash::{
 	transactions::{Manifest, coordinator, participant},
 };
 use chrono::{Duration, Utc};
+use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 use sqlx::{Connection, Executor, postgres::PgConnection};
 use std::sync::Arc;
@@ -241,9 +243,13 @@ async fn unavailable(node: &Node, workspace: Uuid) {
 	);
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lease() {
+async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lease(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (a, b, manifest, wa, wb) = pair().await;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 4).await; // Both votes are prepared, still undecided.
@@ -302,9 +308,13 @@ async fn abort_records_a_durable_decision_while_recovery_owns_the_transition_lea
 	b.cleanup().await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn two_node_commit_hides_partial_application_and_releases_only_after_all_apply() {
+async fn two_node_commit_hides_partial_application_and_releases_only_after_all_apply(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (a, b, manifest, wa, wb) = pair().await;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 2).await;
@@ -411,9 +421,13 @@ async fn two_node_commit_hides_partial_application_and_releases_only_after_all_a
 	b.cleanup().await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it() {
+async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (a, b, mut manifest, wa, wb) = pair().await;
 	if let aidash::transactions::Mutation::WorkspaceState {
 		expected_revision, ..
@@ -453,9 +467,13 @@ async fn stale_prepare_aborts_every_node_and_delayed_reserve_cannot_resurrect_it
 	b.cleanup().await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn partition_after_commit_retains_barriers_and_restart_recovers_the_same_decision() {
+async fn partition_after_commit_retains_barriers_and_restart_recovers_the_same_decision(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (mut a, mut b, manifest, wa, wb) = pair().await;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 5).await;
@@ -478,9 +496,13 @@ async fn partition_after_commit_retains_barriers_and_restart_recovers_the_same_d
 	b.cleanup().await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn overlapping_coordinators_use_the_same_node_order_without_lost_updates() {
+async fn overlapping_coordinators_use_the_same_node_order_without_lost_updates(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (a, b, first, wa, wb) = pair().await;
 	let mut second = first.clone();
 	second.id = Uuid::new_v4();
@@ -506,9 +528,13 @@ async fn overlapping_coordinators_use_the_same_node_order_without_lost_updates()
 	b.cleanup().await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn registry_workspace_task_execution_and_artifact_commit_together_once() {
+async fn registry_workspace_task_execution_and_artifact_commit_together_once(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use aidash::{
 		domain::{NewTask, qualified_agent},
 		registry::Entry,
@@ -653,9 +679,13 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once() {
 	b.cleanup().await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn participant_pulls_only_durable_decisions_and_never_guesses_after_timeout() {
+async fn participant_pulls_only_durable_decisions_and_never_guesses_after_timeout(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (mut a, b, manifest, wa, wb) = pair().await;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 4).await;
@@ -678,9 +708,13 @@ async fn participant_pulls_only_durable_decisions_and_never_guesses_after_timeou
 	b.cleanup().await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_changes() {
+async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_changes(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use axum::{body::Body, http::Request};
 	use futures_util::StreamExt;
 	use tower::ServiceExt;
@@ -722,9 +756,13 @@ async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_chan
 	b.cleanup().await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_recovery() {
+async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_recovery(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (a, b, manifest, wa, wb) = pair().await;
 	let set_trust = |enabled| json!({"node_id":a.f.config.node_id,"enabled":enabled});
 	assert_eq!(
@@ -804,9 +842,13 @@ async fn peer_trust_denial_aborts_promptly_and_revocation_preserves_admitted_rec
 	b.cleanup().await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn every_durable_transition_survives_fresh_pools_and_http_servers() {
+async fn every_durable_transition_survives_fresh_pools_and_http_servers(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (mut a, mut b, manifest, wa, wb) = pair().await;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	let mut transitions = 0;
@@ -837,9 +879,13 @@ async fn every_durable_transition_survives_fresh_pools_and_http_servers() {
 	b.cleanup().await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn undecided_deadline_aborts_without_publishing_prepared_mutations() {
+async fn undecided_deadline_aborts_without_publishing_prepared_mutations(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (a, b, mut manifest, wa, wb) = pair().await;
 	manifest.deadline = Utc::now() + Duration::seconds(2);
 	coordinator::submit(&a.f, &manifest).await.unwrap();
@@ -881,9 +927,13 @@ impl Drop for WorkerProcess {
 	}
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn actual_worker_sigkill_after_commit_recovers_without_replaying_effects() {
+async fn actual_worker_sigkill_after_commit_recovers_without_replaying_effects(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (a, mut b, manifest, wa, wb) = pair().await;
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 5).await;
@@ -962,9 +1012,13 @@ async fn actual_worker_sigkill_after_commit_recovers_without_replaying_effects()
 	b.cleanup().await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn unreachable_aborted_transactions_cannot_starve_later_local_work() {
+async fn unreachable_aborted_transactions_cannot_starve_later_local_work(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (a, mut b, manifest, wa, _wb) = pair().await;
 	for _ in 0..33 {
 		let mut old = manifest.clone();

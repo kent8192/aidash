@@ -1,5 +1,6 @@
 #[allow(dead_code)]
 mod common;
+use common::{TestEnvironment, test_environment};
 
 use aidash::registry::{Entry, ModelConfig};
 use common::{cleanup, request, setup};
@@ -72,9 +73,13 @@ fn rejected(result: Result<(), sqlx::Error>, constraint: &str) {
 	assert_eq!(database.constraint(), Some(constraint), "{error}");
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn configured_timeouts_round_trip_through_the_registry_api() {
+async fn configured_timeouts_round_trip_through_the_registry_api(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = aidash::api::router(f.clone());
 	for (index, timeout) in [
@@ -113,9 +118,13 @@ async fn configured_timeouts_round_trip_through_the_registry_api() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn database_validates_registered_and_overridden_timeouts() {
+async fn database_validates_registered_and_overridden_timeouts(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	f.registry.register(model("timeout-model")).await.unwrap();
 	for timeout in [
@@ -168,9 +177,13 @@ async fn database_validates_registered_and_overridden_timeouts() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn timeout_migration_upgrades_existing_models_and_preserves_rollback_safety() {
+async fn timeout_migration_upgrades_existing_models_and_preserves_rollback_safety(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let migrations = Migrator::migrations();
 	let timeout_index = migrations

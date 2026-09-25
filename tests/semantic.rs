@@ -5,8 +5,60 @@ use aidash::{
 };
 use axum::{Json, Router, routing::post};
 use common::request;
+use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
+use testcontainers::{
+	ContainerAsync, GenericImage, ImageExt, core::IntoContainerPort, runners::AsyncRunner,
+};
 use uuid::Uuid;
+
+struct RestartableQdrant {
+	container: ContainerAsync<GenericImage>,
+	endpoint: String,
+}
+
+#[rstest::fixture]
+async fn restartable_qdrant() -> RestartableQdrant {
+	use std::time::{Duration, Instant};
+
+	// A restart test needs the endpoint to survive stop/start. Reserve a random
+	// host port, then ask Testcontainers to keep that mapping for this container.
+	let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+	let host_port = reservation.local_addr().unwrap().port();
+	drop(reservation);
+	let container = GenericImage::new("qdrant/qdrant", "v1.19.1")
+		.with_mapped_port(host_port, 6333.tcp())
+		.start()
+		.await
+		.expect("start restartable Qdrant fixture");
+	let port = container
+		.get_host_port_ipv4(6333)
+		.await
+		.expect("mapped Qdrant fixture port");
+	let endpoint = format!("http://127.0.0.1:{port}");
+	let client = reqwest::Client::builder()
+		.timeout(Duration::from_secs(1))
+		.build()
+		.unwrap();
+	let until = Instant::now() + Duration::from_secs(30);
+	loop {
+		if client
+			.get(format!("{endpoint}/readyz"))
+			.send()
+			.await
+			.is_ok_and(|response| response.status().is_success())
+		{
+			break;
+		}
+		assert!(Instant::now() < until, "test Qdrant startup timed out");
+		tokio::time::sleep(Duration::from_millis(100)).await;
+	}
+
+	RestartableQdrant {
+		container,
+		endpoint,
+	}
+}
 
 async fn embeddings() -> (String, tokio::task::JoinHandle<()>) {
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -116,9 +168,13 @@ async fn dispose(f: aidash::federation::Federation, url: &str, schema: &str) {
 	common::cleanup(f, url, schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and Qdrant"]
-async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search() {
+async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = common::setup().await;
 	let app = api::router(f.clone());
 	let (endpoint, server) = embeddings().await;
@@ -278,9 +334,13 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search() {
 	dispose(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and Qdrant"]
-async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation() {
+async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = common::setup().await;
 	let app = api::router(f.clone());
 	let (endpoint, server) = embeddings().await;
@@ -387,9 +447,13 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation() {
 	dispose(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and Qdrant"]
-async fn semantic_outage_and_input_bounds_are_visible_and_retriable() {
+async fn semantic_outage_and_input_bounds_are_visible_and_retriable(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = common::setup().await;
 	let app = api::router(f.clone());
 	let (endpoint, server) = embeddings().await;
@@ -468,9 +532,13 @@ async fn semantic_outage_and_input_bounds_are_visible_and_retriable() {
 	dispose(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and Qdrant"]
-async fn semantic_context_is_provenanced_and_revocation_hides_run_journals() {
+async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use std::sync::{Arc, Mutex};
 	let (f, url, schema) = common::setup().await;
 	let app = api::router(f.clone());
@@ -685,9 +753,13 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals() {
 	dispose(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and Qdrant"]
-async fn linked_sources_and_agent_metadata_filters_respect_original_authority() {
+async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use aidash::domain::{ArtifactInput, qualified_agent};
 	let (f, url, schema) = common::setup().await;
 	let app = api::router(f.clone());
@@ -837,75 +909,19 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority() 
 	dispose(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL, Qdrant image and Docker"]
-async fn semantic_qdrant_restart_outage_and_lost_points_recover() {
+async fn semantic_qdrant_restart_outage_and_lost_points_recover(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+	#[future(awt)] restartable_qdrant: RestartableQdrant,
+) {
 	use std::time::{Duration, Instant};
-	struct Container(String);
-	impl Drop for Container {
-		fn drop(&mut self) {
-			let _ = std::process::Command::new("docker")
-				.args(["rm", "-fv", &self.0])
-				.output();
-		}
-	}
-	async fn docker(args: &[&str]) -> String {
-		let output = tokio::process::Command::new("docker")
-			.args(args)
-			.output()
-			.await
-			.unwrap();
-		assert!(
-			output.status.success(),
-			"{}",
-			String::from_utf8_lossy(&output.stderr)
-		);
-		String::from_utf8(output.stdout).unwrap()
-	}
-	let container = Container(format!("aidash-semantic-test-{}", Uuid::new_v4().simple()));
-	let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-	let mapping = format!(
-		"127.0.0.1:{}:6333",
-		reservation.local_addr().unwrap().port()
-	);
-	drop(reservation);
-	docker(&[
-		"run",
-		"-d",
-		"--name",
-		&container.0,
-		"-p",
-		&mapping,
-		"-v",
-		"/qdrant/storage",
-		"qdrant/qdrant:v1.19.1",
-	])
-	.await;
-	let port = docker(&["port", &container.0, "6333/tcp"])
-		.await
-		.trim()
-		.to_owned();
-	let client = reqwest::Client::builder()
-		.timeout(Duration::from_secs(1))
-		.build()
-		.unwrap();
-	let endpoint = format!("http://{port}");
-	let ready = async {
-		let until = Instant::now() + Duration::from_secs(30);
-		loop {
-			if client
-				.get(format!("{endpoint}/readyz"))
-				.send()
-				.await
-				.is_ok_and(|r| r.status().is_success())
-			{
-				break;
-			}
-			assert!(Instant::now() < until, "test Qdrant startup timed out");
-			tokio::time::sleep(Duration::from_millis(100)).await;
-		}
-	};
-	ready.await;
+	let RestartableQdrant {
+		container,
+		endpoint,
+	} = restartable_qdrant;
 	let (f, url, schema) = common::setup().await;
 	let app = api::router(f.clone());
 	let (embedding, server) = embeddings().await;
@@ -926,7 +942,13 @@ async fn semantic_qdrant_restart_outage_and_lost_points_recover() {
 	.await;
 	semantic::worker::sweep(&f.store).await.unwrap();
 	assert_eq!(search(&app, &token, workspace).await.0, 200);
-	docker(&["restart", &container.0]).await;
+	container.stop_with_timeout(Some(1)).await.unwrap();
+	container.start().await.unwrap();
+	// Do not retain an HTTP connection pool across a deliberate process restart.
+	let client = reqwest::Client::builder()
+		.timeout(Duration::from_secs(1))
+		.build()
+		.unwrap();
 	let until = Instant::now() + Duration::from_secs(30);
 	loop {
 		if client
@@ -973,7 +995,7 @@ async fn semantic_qdrant_restart_outage_and_lost_points_recover() {
 	.unwrap();
 	semantic::worker::sweep(&f.store).await.unwrap();
 	assert_eq!(search(&app, &token, workspace).await.0, 200);
-	docker(&["stop", "-t", "1", &container.0]).await;
+	container.stop_with_timeout(Some(1)).await.unwrap();
 	assert_eq!(search(&app, &token, workspace).await.0, 503);
 	put(&app, &token, workspace, "restart", "A car uses roads.", 1).await;
 	semantic::worker::sweep(&f.store).await.unwrap();
@@ -990,7 +1012,11 @@ async fn semantic_qdrant_restart_outage_and_lost_points_recover() {
 	.await
 	.unwrap();
 	assert_eq!(state, "ERROR");
-	docker(&["start", &container.0]).await;
+	container.start().await.unwrap();
+	let client = reqwest::Client::builder()
+		.timeout(Duration::from_secs(1))
+		.build()
+		.unwrap();
 	let until = Instant::now() + Duration::from_secs(30);
 	loop {
 		if client

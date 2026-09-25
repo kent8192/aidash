@@ -1,4 +1,5 @@
 mod common;
+use common::{TestEnvironment, test_environment};
 
 use aidash::{api, harness::Harness};
 use common::*;
@@ -244,9 +245,13 @@ async fn cancel_stalled_inference(scoped: bool, stall_body: bool) {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn model_completion_save_cannot_overwrite_a_committed_cancellation() {
+async fn model_completion_save_cannot_overwrite_a_committed_cancellation(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (_, subject_token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -294,9 +299,13 @@ async fn model_completion_save_cannot_overwrite_a_committed_cancellation() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn credential_revocation_can_finish_during_inference_and_blocks_result() {
+async fn credential_revocation_can_finish_during_inference_and_blocks_result(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (mut f, url, schema) = setup().await;
 	f.config.lease_seconds = 300;
 	let mut server = ReleasableProvider::start().await;
@@ -410,9 +419,13 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn model_infer_policy_revocation_during_inference_blocks_result() {
+async fn model_infer_policy_revocation_during_inference_blocks_result(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (mut f, url, schema) = setup().await;
 	f.config.lease_seconds = 300;
 	let mut server = ReleasableProvider::start().await;
@@ -477,9 +490,13 @@ async fn model_infer_policy_revocation_during_inference_blocks_result() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn inference_completion_waits_for_visibility_gate_reacquisition() {
+async fn inference_completion_waits_for_visibility_gate_reacquisition(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (mut f, url, schema) = setup().await;
 	f.config.lease_seconds = 300;
 	let mut server = ReleasableProvider::start().await;
@@ -553,9 +570,13 @@ async fn inference_completion_waits_for_visibility_gate_reacquisition() {
 	);
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn inference_result_is_retried_after_atomic_commit_during_provider_wait() {
+async fn inference_result_is_retried_after_atomic_commit_during_provider_wait(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (mut f, url, schema) = setup().await;
 	f.config.lease_seconds = 300;
 	let mut server = ReleasableProvider::start().await;
@@ -616,14 +637,22 @@ async fn inference_result_is_retried_after_atomic_commit_during_provider_wait() 
 	);
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn scoped_cancellation_aborts_inference_before_response_headers() {
+async fn scoped_cancellation_aborts_inference_before_response_headers(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	cancel_stalled_inference(true, false).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn legacy_cancellation_aborts_inference_during_response_body() {
+async fn legacy_cancellation_aborts_inference_during_response_body(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	cancel_stalled_inference(false, true).await;
 }

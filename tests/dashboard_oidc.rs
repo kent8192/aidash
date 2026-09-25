@@ -1,4 +1,5 @@
 mod common;
+use common::{TestEnvironment, test_environment};
 
 use aidash::{
 	api,
@@ -23,9 +24,13 @@ use std::sync::{
 use tower::ServiceExt;
 use uuid::Uuid;
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins() {
+async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (mut federation, url, schema) = common::setup().await;
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let issuer = format!("http://{}/realms/test", listener.local_addr().unwrap());
@@ -267,9 +272,13 @@ async fn call(
 	)
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn unmapped_identity_stays_denied_until_operator_approves_existing_user() {
+async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (mut federation, url, schema) = common::setup().await;
 	federation.config.oidc = Some(OidcConfig {
 		issuer: "http://127.0.0.1:18099/realms/test".into(),
@@ -1141,9 +1150,13 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user() 
 	common::cleanup(federation, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn older_negative_status_cannot_revoke_a_newer_valid_session() {
+async fn older_negative_status_cannot_revoke_a_newer_valid_session(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (mut federation, url, schema) = common::setup().await;
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let issuer = format!("http://{}/realms/test", listener.local_addr().unwrap());

@@ -2,6 +2,7 @@ mod common;
 use aidash::{api, federation::Federation, harness::Harness};
 use axum::{Json, Router, routing::post};
 use common::*;
+use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 use std::sync::{
 	Arc,
@@ -115,9 +116,13 @@ async fn seed_history(f: &Federation, run: &aidash::domain::Run) {
 	.unwrap();
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn generated_agent_budget_includes_the_models_full_output_limit() {
+async fn generated_agent_budget_includes_the_models_full_output_limit(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (_, mut spec) = policy(&f, &app, "http://127.0.0.1:9").await;
@@ -166,9 +171,13 @@ async fn generated_agent_budget_includes_the_models_full_output_limit() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn approved_compaction_is_pinned_bounded_and_accounted_before_http() {
+async fn approved_compaction_is_pinned_bounded_and_accounted_before_http(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let pool = f.store.pool.clone();
 	let calls = Arc::new(AtomicUsize::new(0));
@@ -243,9 +252,13 @@ async fn approved_compaction_is_pinned_bounded_and_accounted_before_http() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn compaction_total_budget_is_atomic_and_unused_calls_release_once() {
+async fn compaction_total_budget_is_atomic_and_unused_calls_release_once(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (token, _) = policy(&f, &app, "http://127.0.0.1:9").await;
@@ -285,9 +298,13 @@ async fn compaction_total_budget_is_atomic_and_unused_calls_release_once() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn failed_compaction_attempts_remain_charged_and_exhaustion_prevents_http() {
+async fn failed_compaction_attempts_remain_charged_and_exhaustion_prevents_http(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let calls = Arc::new(AtomicUsize::new(0));
 	let seen = calls.clone();
 	let server = Router::new().route(
@@ -368,9 +385,13 @@ async fn failed_compaction_attempts_remain_charged_and_exhaustion_prevents_http(
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn compaction_denial_and_catalog_revocation_prevent_disclosure() {
+async fn compaction_denial_and_catalog_revocation_prevent_disclosure(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	for revoke_catalog in [false, true] {
 		let (f, url, schema) = setup().await;
 		let app = api::router(f.clone());
@@ -465,9 +486,13 @@ impl Drop for WorkerProcess {
 	}
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge() {
+async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = setup().await;
 	let first_model = Arc::new(tokio::sync::Notify::new());
 	let first_compaction = Arc::new(tokio::sync::Notify::new());
@@ -602,9 +627,13 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn nested_generation_intersects_compaction_approval_and_charges_both_ancestors() {
+async fn nested_generation_intersects_compaction_approval_and_charges_both_ancestors(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	for approved in [true, false] {
 		let (f, url, schema) = setup().await;
 		let calls = Arc::new(AtomicUsize::new(0));

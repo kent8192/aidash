@@ -250,13 +250,13 @@ pub(crate) fn same_secret(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	#[test]
+	#[rstest::rstest]
 	fn oidc_public_origin_uses_canonical_origin_serialization() {
 		let origin = reqwest::Url::parse("https://example.com:443/").unwrap();
 		assert_eq!(origin.origin().ascii_serialization(), "https://example.com");
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn peer_credentials_reject_short_or_repeated_values() {
 		for value in [
 			"",

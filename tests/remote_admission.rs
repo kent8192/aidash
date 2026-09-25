@@ -2,6 +2,7 @@ mod common;
 use aidash::{api, domain::qualified_agent, store::Store};
 use axum::{Router, body::Body, http::Request};
 use common::*;
+use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -29,9 +30,13 @@ async fn peer(app: &Router, node: &str, path: &str, input: Value) -> (u16, Value
 		.unwrap();
 	(status, serde_json::from_slice(&body).unwrap_or(Value::Null))
 }
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect() {
+async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (mut a, au, aschema) = setup().await;
 	let (mut b, bu, bschema) = setup().await;
 	b.config.node_id = "aidash://admission-host".into();

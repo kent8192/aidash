@@ -5,6 +5,7 @@ use axum::{
 	http::Request,
 };
 use common::*;
+use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -29,15 +30,23 @@ async fn personal(app: &axum::Router, token: &str, key: Uuid, value: Value) -> (
 	(status, serde_json::from_slice(&bytes).unwrap())
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn private_documents_are_atomic_idempotent_and_absent_from_registry() {
+async fn private_documents_are_atomic_idempotent_and_absent_from_registry(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	personal_agent_roundtrip(false).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn admitted_large_private_documents_fit_the_execution_soft_window() {
+async fn admitted_large_private_documents_fit_the_execution_soft_window(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	personal_agent_roundtrip(true).await;
 }
 

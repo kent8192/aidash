@@ -1,11 +1,16 @@
 // This suite only needs the shared database fixture, not the API helpers.
 #[allow(dead_code)]
 mod common;
+use common::{TestEnvironment, test_environment};
 use migration::{Migrator, MigratorTrait};
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn seaorm_migrations_round_trip_a_fresh_schema() {
+async fn seaorm_migrations_round_trip_a_fresh_schema(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (f, url, schema) = common::setup().await;
 	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());
 	assert_eq!(

@@ -2,6 +2,7 @@ mod common;
 use aidash::{api, federation::Peer, harness::Harness};
 use axum::{Json, Router, routing::post};
 use common::*;
+use common::{TestEnvironment, test_environment};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 use std::sync::{
@@ -10,9 +11,13 @@ use std::sync::{
 };
 use tower::ServiceExt;
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_journals() {
+async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_journals(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let (a, a_url, a_schema) = setup().await;
 	let (mut b, b_url, b_schema) = setup().await;
 	b.config.node_id = "aidash://remote-journal".into();

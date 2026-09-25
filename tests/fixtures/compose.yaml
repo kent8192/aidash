@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: aidash-test-postgres:17-pg-jsonschema-0.3.4
+    build:
+      context: ../..
+      dockerfile: deploy/postgres/Dockerfile
+    environment:
+      POSTGRES_USER: aidash
+      POSTGRES_PASSWORD: aidash-test
+      POSTGRES_DB: aidash_a
+    ports:
+      - "127.0.0.1::5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U aidash -d aidash_a"]
+      interval: 1s
+      timeout: 5s
+      retries: 60
+  qdrant:
+    image: qdrant/qdrant:v1.19.1
+    environment:
+      QDRANT__SERVICE__API_KEY: local-semantic-vector-fixture-key-0123456789
+    ports:
+      - "127.0.0.1::6333"
+  nats:
+    image: nats:2.12-alpine
+    command: ["-js", "-sd", "/data"]
+    ports:
+      - "127.0.0.1::4222"

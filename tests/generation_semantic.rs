@@ -1,4 +1,5 @@
 mod common;
+use common::{TestEnvironment, test_environment};
 
 use aidash::{api, federation::Federation, harness::Harness, semantic};
 use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::post};
@@ -284,9 +285,13 @@ impl Fixture {
 	}
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and Qdrant"]
-async fn generated_semantic_context_without_embedding_approval_never_calls_provider() {
+async fn generated_semantic_context_without_embedding_approval_never_calls_provider(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let fixture = Fixture::new(None, Some(2)).await;
 	fixture.drive().await;
 	let observed = (
@@ -301,9 +306,13 @@ async fn generated_semantic_context_without_embedding_approval_never_calls_provi
 	);
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and Qdrant"]
-async fn generated_embeddings_are_pinned_reserved_and_limited_with_reported_usage() {
+async fn generated_embeddings_are_pinned_reserved_and_limited_with_reported_usage(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let fixture = Fixture::new(Some(2), Some(2)).await;
 	let (_, policies) = request(
 		&fixture.app,
@@ -350,9 +359,13 @@ async fn generated_embeddings_are_pinned_reserved_and_limited_with_reported_usag
 	fixture.dispose().await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and Qdrant"]
-async fn missing_embedding_usage_retains_input_reservation_and_expired_agents_make_no_call() {
+async fn missing_embedding_usage_retains_input_reservation_and_expired_agents_make_no_call(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let fixture = Fixture::new(Some(1), None).await;
 	fixture.drive().await;
 	let reserved: i64 = sqlx::query_scalar(
@@ -392,9 +405,13 @@ async fn missing_embedding_usage_retains_input_reservation_and_expired_agents_ma
 	fixture.dispose().await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and Qdrant"]
-async fn generated_embedding_catalog_policy_and_provider_changes_cannot_increase_authority() {
+async fn generated_embedding_catalog_policy_and_provider_changes_cannot_increase_authority(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	for reason in ["catalog", "policy", "index"] {
 		let mut fixture = Fixture::new(Some(2), Some(2)).await;
 		if reason == "catalog" {
@@ -454,9 +471,13 @@ async fn generated_embedding_catalog_policy_and_provider_changes_cannot_increase
 	}
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and Qdrant"]
-async fn background_indexing_retains_failed_charges_across_recovery_and_cannot_overspend() {
+async fn background_indexing_retains_failed_charges_across_recovery_and_cannot_overspend(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let fixture = Fixture::new(Some(2), Some(2)).await;
 	let entry = fixture.remember().await;
 	assert_eq!(fixture.usage().await["embedding_calls"], 1);
@@ -537,9 +558,13 @@ async fn background_indexing_retains_failed_charges_across_recovery_and_cannot_o
 	fixture.dispose().await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and Qdrant"]
-async fn background_indexing_uses_generated_authority_and_checks_expiry_before_http() {
+async fn background_indexing_uses_generated_authority_and_checks_expiry_before_http(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	for expired in [false, true] {
 		let fixture = Fixture::new(Some(2), Some(2)).await;
 		let entry = fixture.remember().await;
@@ -594,9 +619,13 @@ async fn background_indexing_uses_generated_authority_and_checks_expiry_before_h
 	}
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and Qdrant"]
-async fn excessive_embedding_usage_retains_reservation_and_prevents_inference() {
+async fn excessive_embedding_usage_retains_reservation_and_prevents_inference(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let fixture = Fixture::new(Some(2), Some(1_000_000)).await;
 	fixture.drive().await;
 	let reserved: i64 = sqlx::query_scalar(
@@ -616,9 +645,13 @@ async fn excessive_embedding_usage_retains_reservation_and_prevents_inference() 
 	fixture.dispose().await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and Qdrant"]
-async fn nested_embeddings_intersect_pinned_providers_and_charge_each_ancestor() {
+async fn nested_embeddings_intersect_pinned_providers_and_charge_each_ancestor(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	for case in ["unapproved", "approved", "token_exhausted"] {
 		let approved = case == "approved";
 		let mut fixture = Fixture::new(Some(1), Some(2)).await;
@@ -789,9 +822,13 @@ impl Drop for WorkerProcess {
 	}
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and Qdrant"]
-async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_new_attempt() {
+async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_new_attempt(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	let fixture = Fixture::new(Some(2), Some(2)).await;
 	fixture.response_mode.store(2, Ordering::SeqCst);
 	let mut worker = WorkerProcess::start(&fixture);

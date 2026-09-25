@@ -444,7 +444,7 @@ pub(super) async fn prune(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	#[test]
+	#[rstest::rstest]
 	fn persisted_mcp_errors_are_classified_as_failures() {
 		for result in [
 			serde_json::json!({"is_error":true,"content":[]}),

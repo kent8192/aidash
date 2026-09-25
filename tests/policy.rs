@@ -1,7 +1,7 @@
 use aidash::authorization::policy::{Evaluation, PolicyBundle};
 use serde_json::{Value, json};
 
-#[test]
+#[rstest::rstest]
 fn policy_management_routes_publish_authenticated_typed_contracts() {
 	let document = serde_json::to_value(aidash::api::openapi()).unwrap();
 	for (path, method) in [
@@ -67,7 +67,7 @@ fn policy(value: Value) -> PolicyBundle {
 	serde_json::from_value(value).unwrap()
 }
 
-#[test]
+#[rstest::rstest]
 fn inherited_group_roles_require_matching_resource_and_environment_attributes() {
 	let rules = policy(document());
 	rules.validate().unwrap();
@@ -84,7 +84,7 @@ fn inherited_group_roles_require_matching_resource_and_environment_attributes() 
 	assert!(!rules.evaluate(&request).allowed);
 }
 
-#[test]
+#[rstest::rstest]
 fn explicit_deny_overrides_allow_in_both_policy_orders() {
 	let mut doc = document();
 	doc["policies"]
@@ -101,7 +101,7 @@ fn explicit_deny_overrides_allow_in_both_policy_orders() {
 	}
 }
 
-#[test]
+#[rstest::rstest]
 fn default_deny_and_tenant_boundary_apply_even_to_wildcard_policies() {
 	let mut doc = document();
 	doc["policies"] = json!([]);
@@ -119,7 +119,7 @@ fn default_deny_and_tenant_boundary_apply_even_to_wildcard_policies() {
 	assert!(!rules.evaluate(&request).allowed);
 }
 
-#[test]
+#[rstest::rstest]
 fn missing_attributes_fail_closed_for_inequality_while_null_is_a_value() {
 	let mut doc = document();
 	doc["policies"][0]["condition"] = json!({"op":"not_eq","left":{"source":"resource","path":"/classification"},"right":{"source":"literal","value":"secret"}});
@@ -132,7 +132,7 @@ fn missing_attributes_fail_closed_for_inequality_while_null_is_a_value() {
 	assert!(!rules.evaluate(&request).allowed);
 }
 
-#[test]
+#[rstest::rstest]
 fn delegation_intersects_ancestors_and_honors_revocation() {
 	let mut doc = document();
 	let mut request = input();
@@ -148,7 +148,7 @@ fn delegation_intersects_ancestors_and_honors_revocation() {
 	assert!(!policy(doc).evaluate(&request).allowed);
 }
 
-#[test]
+#[rstest::rstest]
 fn cycles_and_dangling_authority_references_are_rejected() {
 	for changed in [
 		("/roles/reader/inherits", json!(["editor"])),
@@ -174,7 +174,7 @@ fn cycles_and_dangling_authority_references_are_rejected() {
 	assert!(policy(doc).validate().is_err());
 }
 
-#[test]
+#[rstest::rstest]
 fn malformed_expressions_duplicate_policy_ids_and_ambiguous_selectors_are_rejected() {
 	let mut doc = document();
 	doc["policies"][0]["condition"] = json!({"op":"any","conditions":[]});
@@ -194,7 +194,7 @@ fn malformed_expressions_duplicate_policy_ids_and_ambiguous_selectors_are_reject
 	);
 }
 
-#[test]
+#[rstest::rstest]
 fn expression_depth_and_role_graph_limits_prevent_unbounded_evaluation() {
 	let mut expression = json!({"op":"exists","value":{"source":"environment","path":"/network"}});
 	for _ in 0..40 {
