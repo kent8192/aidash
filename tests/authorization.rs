@@ -1,3 +1,4 @@
+mod common;
 use aidash::{
 	api,
 	authorization::{
@@ -10,6 +11,7 @@ use aidash::{
 	store::Store,
 };
 use axum::{Router, body::Body, http::Request};
+use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 use sqlx::{
 	Connection, Executor,
@@ -19,9 +21,8 @@ use std::sync::Arc;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn setup() -> (Router, Store, String, String) {
-	let url = std::env::var("AIDASH_TEST_DATABASE_URL")
-		.expect("AIDASH_TEST_DATABASE_URL must name a disposable PostgreSQL database");
+async fn setup(environment: &TestEnvironment) -> (Router, Store, String, String) {
+	let url = environment.database_url.clone();
 	let schema = format!("authorization_{}", Uuid::new_v4().simple());
 	// SeaQuery has no CREATE/DROP SCHEMA builder; these DDL statements isolate fixtures.
 	let mut admin = PgConnection::connect(&url).await.unwrap();
@@ -73,7 +74,7 @@ async fn setup() -> (Router, Store, String, String) {
 			endpoint: "http://localhost:8080".into(),
 			listen: "127.0.0.1:0".parse().unwrap(),
 			database_url: url.clone(),
-			nats_url: "nats://127.0.0.1:4222".into(),
+			nats_url: environment.nats_url.clone(),
 			api_token: "authorization-test-token".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
@@ -198,10 +199,14 @@ fn workspace_policy(tenant: &str) -> Value {
             {"id":"workspace-content","effect":"allow","subjects":{"ids":["alice"]},"actions":["task.read","artifact.read","message.read"],"resources":{"kinds":["task","artifact","message"]},"condition":{"op":"eq","left":{"source":"resource","path":"/owner"},"right":{"source":"literal","value":"alice"}}}]})
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn subject_credentials_enforce_workspace_isolation_and_live_revocation() {
-	let (app, store, url, schema) = setup().await;
+async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (app, store, url, schema) = setup(&_test_environment).await;
 	let legacy = store
 		.create_workspace("operator-only", "legacy secret")
 		.await
@@ -465,8 +470,10 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation() {
 	cleanup(store, &url, &schema).await;
 }
 
-async fn subject_fixture() -> (Router, Store, String, String, Value, Value) {
-	let (app, store, url, schema) = setup().await;
+async fn subject_fixture(
+	environment: &TestEnvironment,
+) -> (Router, Store, String, String, Value, Value) {
+	let (app, store, url, schema) = setup(environment).await;
 	assert_eq!(
 		request(
 			&app,
@@ -498,13 +505,18 @@ async fn subject_fixture() -> (Router, Store, String, String, Value, Value) {
 	(app, store, url, schema, credential, workspace)
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn subject_receives_thread_opened_event_for_a_visible_root_message() {
+async fn subject_receives_thread_opened_event_for_a_visible_root_message(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use futures_util::StreamExt;
 	use std::time::Duration;
 
-	let (app, store, url, schema, credential, workspace) = subject_fixture().await;
+	let (app, store, url, schema, credential, workspace) =
+		subject_fixture(&_test_environment).await;
 	let token = credential["token"].as_str().unwrap();
 	let workspace_id = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
 	store
@@ -572,12 +584,17 @@ async fn subject_receives_thread_opened_event_for_a_visible_root_message() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn subject_streams_recheck_buffered_frames_after_policy_and_credential_revocation() {
+async fn subject_streams_recheck_buffered_frames_after_policy_and_credential_revocation(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use futures_util::StreamExt;
 	use std::time::Duration;
-	let (app, store, url, schema, credential, workspace) = subject_fixture().await;
+	let (app, store, url, schema, credential, workspace) =
+		subject_fixture(&_test_environment).await;
 	let token = credential["token"].as_str().unwrap();
 	let workspace_id = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
 	store
@@ -685,11 +702,16 @@ async fn subject_streams_recheck_buffered_frames_after_policy_and_credential_rev
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn credential_revocation_serializes_with_workspace_mutation() {
+async fn credential_revocation_serializes_with_workspace_mutation(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use std::time::Duration;
-	let (app, store, url, schema, credential, workspace) = subject_fixture().await;
+	let (app, store, url, schema, credential, workspace) =
+		subject_fixture(&_test_environment).await;
 	let token = credential["token"].as_str().unwrap().to_owned();
 	let credential_id = Uuid::parse_str(credential["credential"]["id"].as_str().unwrap()).unwrap();
 	let path = format!("/api/workspaces/{}", workspace["id"].as_str().unwrap());
@@ -795,10 +817,14 @@ async fn credential_revocation_serializes_with_workspace_mutation() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn credential_issuance_validates_subjects_lifetime_and_tenant_revocation() {
-	let (app, store, url, schema, credential, _) = subject_fixture().await;
+async fn credential_issuance_validates_subjects_lifetime_and_tenant_revocation(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (app, store, url, schema, credential, _) = subject_fixture(&_test_environment).await;
 	for body in [
 		json!({"subject":"missing"}),
 		json!({"subject":"alice","expires_in_seconds":0}),
@@ -899,10 +925,15 @@ async fn credential_issuance_validates_subjects_lifetime_and_tenant_revocation()
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn denied_reads_cannot_be_bypassed_through_workspace_update_responses() {
-	let (app, store, url, schema, credential, workspace) = subject_fixture().await;
+async fn denied_reads_cannot_be_bypassed_through_workspace_update_responses(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (app, store, url, schema, credential, workspace) =
+		subject_fixture(&_test_environment).await;
 	let mut policy = workspace_policy("acme");
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"read-denied","effect":"deny","subjects":{"any":true},
@@ -955,10 +986,14 @@ async fn denied_reads_cannot_be_bypassed_through_workspace_update_responses() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL; see scripts/check.sh"]
-async fn authorization_api_enforces_policy_revision_revocation_and_audit() {
-	let (app, store, url, schema) = setup().await;
+async fn authorization_api_enforces_policy_revision_revocation_and_audit(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (app, store, url, schema) = setup(&_test_environment).await;
 	let mut policy = bundle();
 	let update = json!({"expected_revision":0,"bundle":policy});
 	assert_eq!(
@@ -1093,11 +1128,14 @@ async fn authorization_api_enforces_policy_revision_revocation_and_audit() {
 	cleanup(store, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL; see scripts/check.sh"]
-async fn authorization_transaction_blocks_revocation_and_concurrent_updates_keep_history_consistent()
- {
-	let (_app, store, url, schema) = setup().await;
+async fn authorization_transaction_blocks_revocation_and_concurrent_updates_keep_history_consistent(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (_app, store, url, schema) = setup(&_test_environment).await;
 	let service = Authorization {
 		pool: store.pool.clone(),
 	};

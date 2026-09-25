@@ -28,6 +28,7 @@ mod tests {
 	use super::*;
 	use axum::{Router, body::Body, routing::get};
 
+	#[rstest::rstest]
 	#[tokio::test]
 	async fn rejects_oversized_chunked_bodies_and_malformed_json() {
 		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

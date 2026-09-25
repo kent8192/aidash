@@ -552,7 +552,7 @@ async fn description_lease(f: &Federation, node: &str, id: Uuid) -> Result<(Acce
 #[cfg(test)]
 mod tests {
 	use super::*;
-	#[test]
+	#[rstest::rstest]
 	fn untrusted_inspections_cannot_substitute_or_omit_executor_definitions() {
 		let reference = EntityRef {
 			id: "agent".into(),

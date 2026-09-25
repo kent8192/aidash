@@ -69,7 +69,7 @@ jobs:
       - run: rustup show active-toolchain
       - name: Install coverage tool
         run: cargo install cargo-llvm-cov --version 0.8.7 --locked
-      - name: Test with disposable PostgreSQL and collect LCOV
+      - name: Test with disposable Testcontainers services and collect LCOV
         run: scripts/test-rust.sh --coverage
       - name: Upload Rust coverage to Codecov
         uses: codecov/codecov-action@04b047e8bb82a0c002c8312c1c880fbc6a999d45 # v5
@@ -85,9 +85,6 @@ jobs:
           name: rust-coverage
           path: coverage/rust.lcov
           if-no-files-found: error
-      - name: Stop verification services
-        if: always()
-        run: docker compose down
   acceptance:
     name: Federation and browser tests
     runs-on: ubuntu-latest

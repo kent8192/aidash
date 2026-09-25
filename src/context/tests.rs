@@ -47,6 +47,7 @@ fn history() -> Vec<Value> {
 	history
 }
 
+#[rstest::rstest]
 #[tokio::test]
 async fn japanese_history_compacts_before_the_final_request_check() {
 	let mut context = Context {
@@ -69,7 +70,7 @@ async fn japanese_history_compacts_before_the_final_request_check() {
 	assert_eq!(context.compactions, 1);
 }
 
-#[test]
+#[rstest::rstest]
 fn request_check_reserves_completion_tokens() {
 	let request = crate::provider::ModelRequest {
 		instructions: String::new(),
@@ -80,7 +81,7 @@ fn request_check_reserves_completion_tokens() {
 	assert!(crate::generation::budget::Reservation::check_request(2000, &request).is_err());
 }
 
-#[test]
+#[rstest::rstest]
 fn request_check_reserves_the_registered_model_maximum_with_input_and_framing() {
 	let budget = RequestBudget {
 		window: 1_048_576,
@@ -94,7 +95,7 @@ fn request_check_reserves_the_registered_model_maximum_with_input_and_framing() 
 	assert!(crate::generation::budget::Reservation::check_request(67_000, &request).is_ok());
 }
 
-#[test]
+#[rstest::rstest]
 fn tool_event_growth_matches_the_complete_request_delta() {
 	use crate::provider::ToolSpec;
 	let tools = vec![ToolSpec {
@@ -127,6 +128,7 @@ fn tool_event_growth_matches_the_complete_request_delta() {
 	assert_eq!(tool_event_growth(&context, &event), delta);
 }
 
+#[rstest::rstest]
 #[tokio::test]
 async fn fitting_and_final_checks_share_escaped_input_tools_and_output_budget() {
 	use crate::{generation::budget::Reservation, provider::ToolSpec};
@@ -167,6 +169,7 @@ async fn fitting_and_final_checks_share_escaped_input_tools_and_output_budget() 
 	}
 }
 
+#[rstest::rstest]
 #[tokio::test]
 async fn legacy_observation_projection_preserves_human_records_and_failed_contexts() {
 	let snapshot = json!({
@@ -206,6 +209,7 @@ async fn legacy_observation_projection_preserves_human_records_and_failed_contex
 	assert_eq!(context.compactions, 0);
 }
 
+#[rstest::rstest]
 #[tokio::test]
 async fn compaction_uses_jev_without_rewriting_text_or_legacy_summaries() {
 	let mut context = Context {
@@ -237,6 +241,7 @@ async fn compaction_uses_jev_without_rewriting_text_or_legacy_summaries() {
 	assert!(!state.contains(&"old".repeat(100)));
 }
 
+#[rstest::rstest]
 #[tokio::test]
 async fn failed_or_insufficient_compaction_never_mutates_context() {
 	for answer in [
@@ -258,6 +263,7 @@ async fn failed_or_insufficient_compaction_never_mutates_context() {
 	}
 }
 
+#[rstest::rstest]
 #[tokio::test]
 async fn short_runs_and_pinned_only_histories_never_call_jev() {
 	let asker = FakeJev::new(drop_all);
@@ -277,6 +283,7 @@ async fn short_runs_and_pinned_only_histories_never_call_jev() {
 	assert!(asker.seen.lock().unwrap().is_empty());
 }
 
+#[rstest::rstest]
 #[tokio::test]
 async fn decisions_keep_pairs_truncate_results_and_drop_only_obsolete_pairs() {
 	let mut events = vec![
@@ -320,6 +327,7 @@ async fn decisions_keep_pairs_truncate_results_and_drop_only_obsolete_pairs() {
 	assert_eq!(output.history[2..], events[3..]);
 }
 
+#[rstest::rstest]
 #[tokio::test]
 async fn batches_resend_the_same_state_and_fit_the_request_budget() {
 	let mut events = vec![json!({"kind":"human","text":"Do the task"})];
@@ -366,6 +374,7 @@ async fn batches_resend_the_same_state_and_fit_the_request_budget() {
 	);
 }
 
+#[rstest::rstest]
 #[tokio::test]
 async fn state_fitting_shrinks_only_the_classification_view() {
 	let mut events = vec![json!({"kind":"human","text":"first instruction"})];
@@ -408,7 +417,7 @@ async fn state_fitting_shrinks_only_the_classification_view() {
 	);
 }
 
-#[test]
+#[rstest::rstest]
 fn jev_token_estimate_matches_upstream_examples() {
 	for (input, tokens) in [
 		("", 0),
@@ -420,7 +429,7 @@ fn jev_token_estimate_matches_upstream_examples() {
 	}
 }
 
-#[test]
+#[rstest::rstest]
 fn large_optional_workspace_snapshot_fits_without_changing_task_identity() {
 	let id = uuid::Uuid::new_v4().to_string();
 	let mut pinned = json!({"task":{"id":id,"description":"important task"},"workspace":{"tasks":(0..300).map(|_|json!({"description":"x".repeat(10000)})).collect::<Vec<_>>()},"memory":"y".repeat(100000)});
@@ -430,7 +439,7 @@ fn large_optional_workspace_snapshot_fits_without_changing_task_identity() {
 	assert!(super::estimated_tokens(&pinned.to_string()) <= 2048);
 }
 
-#[test]
+#[rstest::rstest]
 fn snapshot_budget_also_bounds_wide_state_objects() {
 	let state: serde_json::Map<String, Value> = (0..4000)
 		.map(|n| (format!("field-{n}"), json!(true)))
@@ -442,7 +451,7 @@ fn snapshot_budget_also_bounds_wide_state_objects() {
 	assert_eq!(pinned["snapshot_truncated"], true);
 }
 
-#[test]
+#[rstest::rstest]
 fn registration_and_execution_share_the_context_reserve_at_its_boundary() {
 	let instructions = "Use the private reference documents.";
 	let specifications = vec![];
@@ -482,7 +491,7 @@ fn registration_and_execution_share_the_context_reserve_at_its_boundary() {
 	);
 }
 
-#[test]
+#[rstest::rstest]
 fn compaction_snapshot_redacts_private_documents_without_mutating_inference_context() {
 	let pinned = json!({
 		"task":{"title":"Summarize references"},
@@ -520,6 +529,7 @@ async fn compact(
 	.await
 }
 
+#[rstest::rstest]
 #[tokio::test]
 async fn compaction_counts_private_documents_without_disclosing_them() {
 	let mut context = Context {

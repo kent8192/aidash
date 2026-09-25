@@ -14,7 +14,7 @@ use axum::{
 	response::IntoResponse,
 	routing::post,
 };
-use common::{bootstrap, cleanup, request, setup};
+use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
 use migration::{Migrator, MigratorTrait};
 use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
@@ -78,10 +78,14 @@ async fn promotion_outage(
 		.await
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn failed_admission_with_unavailable_release_expires_at_home() {
-	let fixture = RemoteFixture::new().await;
+async fn failed_admission_with_unavailable_release_expires_at_home(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let fixture = RemoteFixture::new(&test_environment).await;
 	let run = &fixture.run;
 	let key = format!("human:{}:{}", run.id, Uuid::new_v4());
 	fixture.outage.store(true, Ordering::SeqCst);
@@ -159,9 +163,9 @@ struct RemoteFixture {
 }
 
 impl RemoteFixture {
-	async fn new() -> Self {
-		let (mut home, home_url, home_schema) = setup().await;
-		let (mut executor, executor_url, executor_schema) = setup().await;
+	async fn new(environment: &TestEnvironment) -> Self {
+		let (mut home, home_url, home_schema) = setup(environment).await;
+		let (mut executor, executor_url, executor_schema) = setup(environment).await;
 		executor.config.node_id = "aidash://fence-executor".into();
 		executor.store.node_id = executor.config.node_id.clone();
 		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -255,10 +259,14 @@ impl RemoteFixture {
 	}
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn admitted_input_recovers_promotion_after_expiry_and_terminal_home() {
-	let fixture = RemoteFixture::new().await;
+async fn admitted_input_recovers_promotion_after_expiry_and_terminal_home(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let fixture = RemoteFixture::new(&test_environment).await;
 	let run = &fixture.run;
 	let key = format!("human:{}:{}", run.id, Uuid::new_v4());
 	fixture.outage.store(true, Ordering::SeqCst);
@@ -407,10 +415,14 @@ async fn admitted_input_recovers_promotion_after_expiry_and_terminal_home() {
 	fixture.cleanup().await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn scoped_remote_admission_imports_history_before_assigning_new_sequence() {
-	let (f, url, schema) = setup().await;
+async fn scoped_remote_admission_imports_history_before_assigning_new_sequence(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
@@ -495,10 +507,14 @@ async fn scoped_remote_admission_imports_history_before_assigning_new_sequence()
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn migration_backfills_active_remote_fences_before_legacy_effects() {
-	let fixture = RemoteFixture::new().await;
+async fn migration_backfills_active_remote_fences_before_legacy_effects(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let fixture = RemoteFixture::new(&test_environment).await;
 	let db =
 		sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(fixture.home.store.pool.clone());
 	Migrator::down(&db, Some(3)).await.unwrap();
@@ -658,10 +674,14 @@ async fn migration_backfills_active_remote_fences_before_legacy_effects() {
 	fixture.cleanup().await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn terminal_rpc_is_bounded_for_large_historical_ledgers() {
-	let fixture = RemoteFixture::new().await;
+async fn terminal_rpc_is_bounded_for_large_historical_ledgers(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let fixture = RemoteFixture::new(&test_environment).await;
 	let run = &fixture.run;
 	// These are already-imported pageable references, which legitimately do not
 	// share the inline-content quota. Seed in one statement to keep the test fast.
@@ -697,10 +717,14 @@ async fn terminal_rpc_is_bounded_for_large_historical_ledgers() {
 	fixture.cleanup().await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn bounded_terminal_transition_keeps_unadmitted_reservations_and_rolls_back_consumption() {
-	let fixture = RemoteFixture::new().await;
+async fn bounded_terminal_transition_keeps_unadmitted_reservations_and_rolls_back_consumption(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let fixture = RemoteFixture::new(&test_environment).await;
 	let run = &fixture.run;
 	let key = format!("human:{}:{}", run.id, Uuid::new_v4());
 	fixture

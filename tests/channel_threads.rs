@@ -2,7 +2,7 @@ mod common;
 
 use aidash::api;
 use axum::Router;
-use common::{bootstrap, cleanup, request, setup};
+use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -59,9 +59,14 @@ async fn history(app: &Router, token: &str, workspace: &str, query: &str) -> (u1
 	.await
 }
 
+#[rstest::rstest]
 #[tokio::test]
-async fn channel_threads_survive_new_router_and_do_not_become_tasks() {
-	let (f, url, schema) = setup().await;
+async fn channel_threads_survive_new_router_and_do_not_become_tasks(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let token = f.config.api_token.clone();
 	let app = api::router(f.clone());
 	let workspace = workspace(&app, &token, "Threads").await;
@@ -112,9 +117,14 @@ async fn channel_threads_survive_new_router_and_do_not_become_tasks() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-async fn duplicate_message_reuses_id_but_changed_thread_or_content_conflicts() {
-	let (f, url, schema) = setup().await;
+async fn duplicate_message_reuses_id_but_changed_thread_or_content_conflicts(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let token = f.config.api_token.clone();
 	let app = api::router(f.clone());
 	let workspace = workspace(&app, &token, "Idempotency").await;
@@ -138,9 +148,14 @@ async fn duplicate_message_reuses_id_but_changed_thread_or_content_conflicts() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-async fn threads_and_cursors_cannot_cross_workspace_boundaries() {
-	let (f, url, schema) = setup().await;
+async fn threads_and_cursors_cannot_cross_workspace_boundaries(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let token = f.config.api_token.clone();
 	let app = api::router(f.clone());
 	let a = workspace(&app, &token, "A").await;
@@ -173,9 +188,14 @@ async fn threads_and_cursors_cannot_cross_workspace_boundaries() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-async fn message_history_pages_without_duplicates_and_validates_inputs() {
-	let (f, url, schema) = setup().await;
+async fn message_history_pages_without_duplicates_and_validates_inputs(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let token = f.config.api_token.clone();
 	let app = api::router(f.clone());
 	let workspace = workspace(&app, &token, "Paging").await;
@@ -210,9 +230,14 @@ async fn message_history_pages_without_duplicates_and_validates_inputs() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-async fn concurrent_identical_submissions_create_one_message() {
-	let (f, url, schema) = setup().await;
+async fn concurrent_identical_submissions_create_one_message(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let token = f.config.api_token.clone();
 	let app = api::router(f.clone());
 	let workspace = workspace(&app, &token, "Concurrent").await;
@@ -229,9 +254,14 @@ async fn concurrent_identical_submissions_create_one_message() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-async fn scoped_history_filters_records_and_rechecks_root_and_post_authority() {
-	let (f, url, schema) = setup().await;
+async fn scoped_history_filters_records_and_rechecks_root_and_post_authority(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let operator = f.config.api_token.clone();
 	let app = api::router(f.clone());
 	let foreign = workspace(&app, &operator, "Operator-owned").await;

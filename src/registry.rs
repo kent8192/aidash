@@ -1177,7 +1177,7 @@ mod tests {
 	fn entry() -> Entry {
 		serde_json::from_value(json!({"id":"research","version":"1.0.0","kind":"skill","name":{"en":"Research","ja":"調査"},"description":{"en":"Research"},"capabilities":["web.search"],"languages":["ja","en"],"config":{"instructions":"Research carefully"}})).unwrap()
 	}
-	#[test]
+	#[rstest::rstest]
 	fn conjunctive_search_and_localization() {
 		let e = entry();
 		validate(&e).unwrap();
@@ -1205,7 +1205,7 @@ mod tests {
 			.matches(&e)
 		);
 	}
-	#[test]
+	#[rstest::rstest]
 	fn bundled_skill_files_have_bounded_safe_paths_and_are_listed_on_demand() {
 		let mut e = entry();
 		e.config = json!({"instructions":"Read the guide when relevant","files":[{"path":"references/guide.md","content":"Evidence"}]});
@@ -1241,7 +1241,7 @@ mod tests {
 			assert!(validate(&e).is_err(), "{path}");
 		}
 	}
-	#[test]
+	#[rstest::rstest]
 	fn skills_only_agents_do_not_need_custom_prompts() {
 		let mut e = entry();
 		e.kind = "agent".into();
@@ -1252,7 +1252,7 @@ mod tests {
 		e.config["instructions"] = json!("Legacy instructions");
 		assert!(validate(&e).is_ok());
 	}
-	#[test]
+	#[rstest::rstest]
 	fn rejects_invalid_metadata() {
 		let mut e = entry();
 		e.version = "latest".into();
@@ -1261,7 +1261,7 @@ mod tests {
 		e.id = "../../escape".into();
 		assert!(validate(&e).is_err());
 	}
-	#[test]
+	#[rstest::rstest]
 	fn unknown_requirements_and_invalid_clusters_are_rejected() {
 		for value in [
 			json!({"capabilty":"web.search"}),
@@ -1282,7 +1282,7 @@ mod tests {
 		e.config = json!({"coordinator":{"id":"research","version":"1.0.0"}});
 		validate(&e).unwrap();
 	}
-	#[test]
+	#[rstest::rstest]
 	fn installation_overrides_cannot_clear_a_personal_agent_knowledge_digest() {
 		let mut config = json!({"knowledge_digest":"immutable-digest"});
 		assert!(overlay_config(&mut config, &json!({"knowledge_digest":null})).is_err());

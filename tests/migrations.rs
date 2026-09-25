@@ -1,15 +1,21 @@
 // This suite only needs the shared database fixture, not the API helpers.
 #[allow(dead_code)]
 mod common;
+use common::{TestEnvironment, test_environment};
 use migration::{Migrator, MigratorTrait};
 use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::json;
+use std::sync::Arc;
 use uuid::Uuid;
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn seaorm_migrations_round_trip_a_fresh_schema() {
-	let (f, url, schema) = common::setup().await;
+async fn seaorm_migrations_round_trip_a_fresh_schema(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = common::setup(&_test_environment).await;
 	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());
 	assert_eq!(
 		Migrator::get_applied_migrations(&db).await.unwrap().len(),
@@ -30,10 +36,14 @@ async fn seaorm_migrations_round_trip_a_fresh_schema() {
 	common::cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn run_input_migration_preserves_keyed_message_retries() {
-	let (f, url, schema) = common::setup().await;
+async fn run_input_migration_preserves_keyed_message_retries(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = common::setup(&test_environment).await;
 	let app = aidash::api::router(f.clone());
 	let (_, token, _) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = common::request(&app, &token, "POST", "/api/conversations", json!({

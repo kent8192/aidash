@@ -349,6 +349,7 @@ mod tests {
 		atomic::{AtomicUsize, Ordering},
 	};
 
+	#[rstest::rstest]
 	#[tokio::test]
 	async fn paginated_observations_filter_other_releases_and_reject_partial_failure() {
 		let calls = Arc::new(AtomicUsize::new(0));

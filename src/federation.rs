@@ -1547,7 +1547,7 @@ fn map_workspace_chunk_bad_request(
 mod review_tests {
 	use super::*;
 
-	#[test]
+	#[rstest::rstest]
 	fn remote_workspace_chunk_bad_requests_keep_the_tool_error_type() {
 		let request = json!({"operation":"workspace_record_chunk"});
 		let error = json!({"error":"workspace record offset out of range"});
@@ -1559,7 +1559,7 @@ mod review_tests {
 		assert!(map_workspace_chunk_bad_request("/workspace", None, &error).is_none());
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn child_task_summary_is_independent_of_child_payload_sizes() {
 		let mut summary = ChildTaskSummary {
 			has_pending: false,

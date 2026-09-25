@@ -21,7 +21,7 @@ fn config(provider: &str, endpoint: String) -> ModelConfig {
 	}
 }
 
-#[test]
+#[rstest::rstest]
 fn model_configuration_uses_the_catalog_limit_and_preserves_legacy_records() {
 	let selected: ModelConfig = serde_json::from_value(json!({
 		"provider":"openrouter", "model_id":"google/gemini-3.8-flash",
@@ -41,7 +41,7 @@ fn model_configuration_uses_the_catalog_limit_and_preserves_legacy_records() {
 	assert_eq!(legacy.output_token_limit(), 4096);
 }
 
-#[test]
+#[rstest::rstest]
 fn local_model_registration_requires_a_valid_catalog_output_limit() {
 	let mut entry: Entry = serde_json::from_value(json!({
 		"id":"router-model","version":"1.0.0","kind":"model",
@@ -62,7 +62,7 @@ fn local_model_registration_requires_a_valid_catalog_output_limit() {
 	assert!(validate(&entry).is_err());
 }
 
-#[test]
+#[rstest::rstest]
 fn registry_accepts_openrouter_and_rejects_unknown_providers() {
 	let mut entry: Entry = serde_json::from_value(json!({
 		"id":"router-model","version":"1.0.0","kind":"model",
@@ -84,6 +84,7 @@ fn registry_accepts_openrouter_and_rejects_unknown_providers() {
 	}
 }
 
+#[rstest::rstest]
 #[tokio::test]
 async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage() {
 	let (tx, mut received) = tokio::sync::mpsc::unbounded_channel();
@@ -172,7 +173,7 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage() {
 	server.abort();
 }
 
-#[test]
+#[rstest::rstest]
 fn refunds_require_complete_usage() {
 	let incomplete = json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],"usage":{"completion_tokens":1}});
 	assert!(
@@ -182,7 +183,7 @@ fn refunds_require_complete_usage() {
 	);
 }
 
-#[test]
+#[rstest::rstest]
 fn malformed_arguments_and_inconsistent_stop_reasons_are_retryable() {
 	use aidash::{Error, provider::parse_openai};
 	for message in [
@@ -196,7 +197,7 @@ fn malformed_arguments_and_inconsistent_stop_reasons_are_retryable() {
 	}
 }
 
-#[test]
+#[rstest::rstest]
 fn registry_and_transport_configs_reject_misspelled_optional_fields() {
 	use aidash::{registry::AgentConfig, tool::ToolConfig};
 	let mut model =
@@ -213,7 +214,7 @@ fn registry_and_transport_configs_reject_misspelled_optional_fields() {
 	assert!(serde_json::from_value::<Entry>(json!({"id":"a","version":"1.0.0","kind":"skill","name":{"en":"a"},"description":{},"capabilty":[]})).is_err());
 }
 
-#[test]
+#[rstest::rstest]
 fn reasoning_effort_is_optional_and_rejects_unknown_values() {
 	let mut value =
 		serde_json::to_value(config("openrouter", "http://localhost/v1".into())).unwrap();
@@ -228,6 +229,7 @@ fn reasoning_effort_is_optional_and_rejects_unknown_values() {
 	assert!(serde_json::from_value::<ModelConfig>(value).is_err());
 }
 
+#[rstest::rstest]
 #[tokio::test]
 async fn unavailable_zdr_endpoint_does_not_retry_without_zdr() {
 	use axum::http::StatusCode;

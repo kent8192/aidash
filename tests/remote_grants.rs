@@ -2,6 +2,7 @@ mod common;
 use aidash::{api, domain::qualified_agent, federation::Peer};
 use axum::{Router, body::Body, http::Request};
 use common::*;
+use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -36,11 +37,15 @@ async fn grant_request(app: &Router, node: &str, grant: Uuid, operation: &str) -
 		serde_json::from_slice(&bytes).unwrap_or(Value::Null),
 	)
 }
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revocation() {
-	let (a, au, aschema) = setup().await;
-	let (mut b, bu, bschema) = setup().await;
+async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revocation(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (a, au, aschema) = setup(&_test_environment).await;
+	let (mut b, bu, bschema) = setup(&_test_environment).await;
 	b.config.node_id = "aidash://grant-host".into();
 	b.store.node_id = b.config.node_id.clone();
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

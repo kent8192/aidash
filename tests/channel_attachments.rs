@@ -2,7 +2,7 @@ mod common;
 
 use aidash::api;
 use axum::{Router, body::Body, http::Request};
-use common::{bootstrap, cleanup, request, setup};
+use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -36,9 +36,14 @@ async fn upload(
 	(status, value)
 }
 
+#[rstest::rstest]
 #[tokio::test]
-async fn attachment_upload_is_idempotent_and_download_requires_current_message_access() {
-	let (f, url, schema) = setup().await;
+async fn attachment_upload_is_idempotent_and_download_requires_current_message_access(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let operator = f.config.api_token.clone();
 	let app = api::router(f.clone());
 	let (mut policy, alice, task) = bootstrap(&f, &app, "http://127.0.0.1:1").await;
@@ -212,9 +217,14 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-async fn attachments_cannot_be_rebound_or_linked_from_another_channel() {
-	let (f, url, schema) = setup().await;
+async fn attachments_cannot_be_rebound_or_linked_from_another_channel(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let token = f.config.api_token.clone();
 	let app = api::router(f.clone());
 	let (_, a) = request(

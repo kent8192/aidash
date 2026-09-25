@@ -145,6 +145,7 @@ mod tests {
 	use axum::{Router, routing::post};
 	use serde_json::json;
 
+	#[rstest::rstest]
 	#[tokio::test]
 	async fn oversized_json_and_unterminated_sse_are_rejected_before_decoding() {
 		for content_type in ["application/json", "text/event-stream"] {

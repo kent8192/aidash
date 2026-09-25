@@ -238,7 +238,7 @@ pub fn qualified_agent(node: &str, id: &str, version: &str) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	#[test]
+	#[rstest::rstest]
 	fn task_transitions_protect_terminal_states() {
 		assert!(TaskStatus::Open.can_transition(&TaskStatus::Claimed));
 		assert!(!TaskStatus::Open.can_transition(&TaskStatus::Completed));
@@ -246,7 +246,7 @@ mod tests {
 		assert!(TaskStatus::Running.can_transition(&TaskStatus::Blocked));
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn run_from_old_peer_defaults_observed_input_sequence() {
 		let id = Uuid::new_v4();
 		let wire = json!({

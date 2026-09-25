@@ -7,7 +7,7 @@ use aidash::{
 	harness::Harness,
 };
 use axum::{Router, body::Body, http::Request, middleware::Next, response::IntoResponse};
-use common::{bootstrap, cleanup, request, setup};
+use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
 use migration::{Migrator, MigratorTrait};
 use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
@@ -140,10 +140,14 @@ async fn old_peer_workspace_compat(
 	response
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn committed_fence_survives_delayed_release_and_terminal_transition_is_atomic() {
-	let (f, url, schema) = setup().await;
+async fn committed_fence_survives_delayed_release_and_terminal_transition_is_atomic(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
@@ -244,10 +248,14 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn peer_prefixed_legacy_output_checks_remote_fence_without_a_local_run() {
-	let (f, url, schema) = setup().await;
+async fn peer_prefixed_legacy_output_checks_remote_fence_without_a_local_run(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&test_environment).await;
 	let workspace = f
 		.store
 		.create_workspace("Remote output fence", "No executor run exists at home")
@@ -301,10 +309,14 @@ async fn peer_prefixed_legacy_output_checks_remote_fence_without_a_local_run() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn remote_history_references_can_span_multiple_inference_pages() {
-	let (f, url, schema) = setup().await;
+async fn remote_history_references_can_span_multiple_inference_pages(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
@@ -347,11 +359,15 @@ async fn remote_history_references_can_span_multiple_inference_pages() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn remote_admission_imports_legacy_history_before_new_input() {
-	let (mut home, home_url, home_schema) = setup().await;
-	let (mut executor, executor_url, executor_schema) = setup().await;
+async fn remote_admission_imports_legacy_history_before_new_input(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (mut home, home_url, home_schema) = setup(&test_environment).await;
+	let (mut executor, executor_url, executor_schema) = setup(&test_environment).await;
 	executor.config.node_id = "aidash://ordered-run-message-executor".into();
 	executor.store.node_id = executor.config.node_id.clone();
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -477,11 +493,15 @@ async fn remote_admission_imports_legacy_history_before_new_input() {
 	cleanup(executor, &executor_url, &executor_schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
-	let (mut home, home_url, home_schema) = setup().await;
-	let (mut executor, executor_url, executor_schema) = setup().await;
+async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (mut home, home_url, home_schema) = setup(&test_environment).await;
+	let (mut executor, executor_url, executor_schema) = setup(&test_environment).await;
 	executor.config.node_id = "aidash://run-message-executor".into();
 	executor.store.node_id = executor.config.node_id.clone();
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

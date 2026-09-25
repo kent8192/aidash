@@ -1,5 +1,6 @@
 #[allow(dead_code)]
 mod common;
+use common::{TestEnvironment, test_environment};
 
 use aidash::{domain::NewTask, registry::Entry};
 use common::{cleanup, setup};
@@ -217,10 +218,14 @@ async fn update_run_state(
 	.map(|_| ())
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn registry_constraints_reject_invalid_models_without_application_validation() {
-	let (f, url, schema) = setup().await;
+async fn registry_constraints_reject_invalid_models_without_application_validation(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let good = serde_json::to_value(model()).unwrap();
 	for (field, invalid) in [
 		("provider", json!("unsupported")),
@@ -301,10 +306,14 @@ async fn registry_constraints_reject_invalid_models_without_application_validati
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries() {
-	let (f, url, schema) = setup().await;
+async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let other = f.store.create_workspace("Other", "Goal").await.unwrap();
 	let input = NewTask {
@@ -515,11 +524,15 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn constraints_upgrade_and_rollback_preserve_data_and_reject_invalid_history() {
+async fn constraints_upgrade_and_rollback_preserve_data_and_reject_invalid_history(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use migration::MigratorTrait;
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());
 	let good = serde_json::to_value(model()).unwrap();
 	insert_entry(&f.store.pool, &good).await.unwrap();
@@ -565,10 +578,14 @@ async fn constraints_upgrade_and_rollback_preserve_data_and_reject_invalid_histo
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn nonblank_constraints_match_rust_unicode_whitespace() {
-	let (f, url, schema) = setup().await;
+async fn nonblank_constraints_match_rust_unicode_whitespace(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	insert_entry(&f.store.pool, &serde_json::to_value(model()).unwrap())
 		.await
 		.unwrap();
@@ -650,10 +667,14 @@ async fn nonblank_constraints_match_rust_unicode_whitespace() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn localized_metadata_requires_string_values_for_every_locale() {
-	let (f, url, schema) = setup().await;
+async fn localized_metadata_requires_string_values_for_every_locale(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	for field in ["name", "description"] {
 		for invalid in [
 			json!(7),
@@ -684,10 +705,14 @@ async fn localized_metadata_requires_string_values_for_every_locale() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn package_identity_requires_matching_json_strings() {
-	let (f, url, schema) = setup().await;
+async fn package_identity_requires_matching_json_strings(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut entry = model();
 	entry.id = "1".into();
 	entry.kind = "skill".into();
@@ -781,11 +806,15 @@ async fn package_identity_requires_matching_json_strings() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn package_digest_backfill_preserves_previous_publish_serialization() {
+async fn package_digest_backfill_preserves_previous_publish_serialization(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use migration::MigratorTrait;
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut entity = model();
 	entity.id = "legacy-digest".into();
 	entity.kind = "skill".into();
@@ -831,10 +860,14 @@ async fn package_digest_backfill_preserves_previous_publish_serialization() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn package_agent_config_requires_all_typed_fields() {
-	let (f, url, schema) = setup().await;
+async fn package_agent_config_requires_all_typed_fields(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let agent: Entry = serde_json::from_value(json!({
 		"id":"packaged-agent",
 		"version":"1.0.0",
@@ -903,10 +936,14 @@ async fn package_agent_config_requires_all_typed_fields() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn package_tool_config_uses_registry_validation() {
-	let (f, url, schema) = setup().await;
+async fn package_tool_config_uses_registry_validation(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut tool = model();
 	tool.id = "packaged-tool".into();
 	tool.kind = "tool".into();
@@ -964,10 +1001,14 @@ async fn insert_values(
 	.map(|_| ())
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn registry_json_shapes_remain_deserializable() {
-	let (f, url, schema) = setup().await;
+async fn registry_json_shapes_remain_deserializable(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let good = serde_json::to_value(model()).unwrap();
 	for invalid_schema in [
 		json!({"type":7}),
@@ -1020,10 +1061,14 @@ async fn registry_json_shapes_remain_deserializable() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn model_and_agent_configs_reject_unusable_shapes() {
-	let (f, url, schema) = setup().await;
+async fn model_and_agent_configs_reject_unusable_shapes(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let good = serde_json::to_value(model()).unwrap();
 	for (field, value) in [
 		("unexpected", json!(true)),
@@ -1189,10 +1234,14 @@ async fn model_and_agent_configs_reject_unusable_shapes() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn tool_configs_reject_undecodable_shapes() {
-	let (f, url, schema) = setup().await;
+async fn tool_configs_reject_undecodable_shapes(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut tool = serde_json::to_value(model()).unwrap();
 	tool["id"] = json!("tool");
 	tool["kind"] = json!("tool");
@@ -1247,10 +1296,14 @@ async fn tool_configs_reject_undecodable_shapes() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn compactor_and_embedding_configs_reject_undecodable_shapes() {
-	let (f, url, schema) = setup().await;
+async fn compactor_and_embedding_configs_reject_undecodable_shapes(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut entry = serde_json::to_value(model()).unwrap();
 	entry["id"] = json!("compactor");
 	entry["kind"] = json!("compactor");
@@ -1303,10 +1356,14 @@ async fn compactor_and_embedding_configs_reject_undecodable_shapes() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn requirements_and_run_state_reject_wrong_shapes() {
-	let (f, url, schema) = setup().await;
+async fn requirements_and_run_state_reject_wrong_shapes(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let task = f
 		.store
@@ -1691,10 +1748,14 @@ fn index_spec() -> Value {
         "enabled":true,"auto_context":false,"max_sources":64,"max_results":10,"max_result_tokens":4096,"max_input_bytes":8192})
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn semantic_specs_and_sources_reject_undecodable_records() {
-	let (f, url, schema) = setup().await;
+async fn semantic_specs_and_sources_reject_undecodable_records(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let spec = index_spec();
 	let _: aidash::semantic::IndexSpec = serde_json::from_value(spec.clone()).unwrap();
@@ -2070,11 +2131,15 @@ fn dependency_error(error: sqlx::Error) {
 	);
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn task_dependencies_enforce_existence_ownership_and_reverse_changes() {
+async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use migration::MigratorTrait;
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let other = f.store.create_workspace("Other", "Goal").await.unwrap();
 	let input = NewTask {
@@ -2205,11 +2270,15 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn concurrent_dependency_changes_cannot_race_target_deletion() {
+async fn concurrent_dependency_changes_cannot_race_target_deletion(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use std::time::Duration;
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
@@ -2280,10 +2349,14 @@ fn uuid_expr(id: uuid::Uuid) -> SimpleExpr {
 	Expr::cust(format!("'{id}'::uuid"))
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn task_parent_cycle_guard_rejects_direct_cycles() {
-	let (f, url, schema) = setup().await;
+async fn task_parent_cycle_guard_rejects_direct_cycles(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
@@ -2325,10 +2398,14 @@ async fn task_parent_cycle_guard_rejects_direct_cycles() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn task_dependency_cycles_include_parent_edges() {
-	let (f, url, schema) = setup().await;
+async fn task_dependency_cycles_include_parent_edges(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
@@ -2393,10 +2470,14 @@ async fn task_dependency_cycles_include_parent_edges() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn task_cycle_checks_deduplicate_diamond_reachability() {
-	let (f, url, schema) = setup().await;
+async fn task_cycle_checks_deduplicate_diamond_reachability(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
@@ -2445,11 +2526,15 @@ async fn task_cycle_checks_deduplicate_diamond_reachability() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn historical_task_cycles_fail_migration_through_query_validation() {
+async fn historical_task_cycles_fail_migration_through_query_validation(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use migration::MigratorTrait;
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
@@ -2533,10 +2618,14 @@ async fn historical_task_cycles_fail_migration_through_query_validation() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn concurrent_parent_cycle_checks_are_serialized() {
-	let (f, url, schema) = setup().await;
+async fn concurrent_parent_cycle_checks_are_serialized(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	let input = NewTask {
 		title: "Task".into(),
@@ -2588,10 +2677,14 @@ async fn concurrent_parent_cycle_checks_are_serialized() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn cluster_and_registry_identity_constraints_match_application_bounds() {
-	let (f, url, schema) = setup().await;
+async fn cluster_and_registry_identity_constraints_match_application_bounds(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut cluster = serde_json::to_value(model()).unwrap();
 	cluster["id"] = json!("test-cluster");
 	cluster["kind"] = json!("cluster");
@@ -2638,10 +2731,14 @@ async fn cluster_and_registry_identity_constraints_match_application_bounds() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn installation_constraints_validate_model_overrides() {
-	let (f, url, schema) = setup().await;
+async fn installation_constraints_validate_model_overrides(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let entry = serde_json::to_value(model()).unwrap();
 	insert_entry(&f.store.pool, &entry).await.unwrap();
 	insert_values(
@@ -2678,10 +2775,14 @@ async fn installation_constraints_validate_model_overrides() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn agent_installation_model_overrides_keep_valid_registry_references() {
-	let (f, url, schema) = setup().await;
+async fn agent_installation_model_overrides_keep_valid_registry_references(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut base_model = serde_json::to_value(model()).unwrap();
 	base_model["id"] = json!("base-model");
 	insert_entry(&f.store.pool, &base_model).await.unwrap();
@@ -2750,10 +2851,14 @@ async fn agent_installation_model_overrides_keep_valid_registry_references() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn installation_constraints_validate_effective_tool_config() {
-	let (f, url, schema) = setup().await;
+async fn installation_constraints_validate_effective_tool_config(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut tool = serde_json::to_value(model()).unwrap();
 	tool["id"] = json!("installed-tool");
 	tool["kind"] = json!("tool");
@@ -2797,10 +2902,14 @@ async fn installation_constraints_validate_effective_tool_config() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn installation_constraints_validate_skill_overrides() {
-	let (f, url, schema) = setup().await;
+async fn installation_constraints_validate_skill_overrides(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut skill = serde_json::to_value(model()).unwrap();
 	skill["id"] = json!("installed-skill");
 	skill["kind"] = json!("skill");
@@ -2839,10 +2948,14 @@ async fn installation_constraints_validate_skill_overrides() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn registry_updates_revalidate_installed_tool_overrides() {
-	let (f, url, schema) = setup().await;
+async fn registry_updates_revalidate_installed_tool_overrides(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut tool = serde_json::to_value(model()).unwrap();
 	tool["id"] = json!("changing-tool");
 	tool["kind"] = json!("tool");
@@ -2894,10 +3007,14 @@ async fn registry_updates_revalidate_installed_tool_overrides() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn concurrent_registry_and_installation_writes_use_one_lock_order() {
-	let (f, url, schema) = setup().await;
+async fn concurrent_registry_and_installation_writes_use_one_lock_order(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let mut tool = serde_json::to_value(model()).unwrap();
 	tool["id"] = json!("concurrent-tool");
 	tool["kind"] = json!("tool");

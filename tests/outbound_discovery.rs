@@ -6,17 +6,22 @@ use axum::{
 	middleware::{self, Next},
 };
 use common::*;
+use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 use std::sync::{
 	Arc,
 	atomic::{AtomicUsize, Ordering},
 };
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens() {
-	let (a, a_url, a_schema) = setup().await;
-	let (mut b, b_url, b_schema) = setup().await;
+async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (a, a_url, a_schema) = setup(&_test_environment).await;
+	let (mut b, b_url, b_schema) = setup(&_test_environment).await;
 	b.config.node_id = "aidash://destination".into();
 	b.store.node_id = b.config.node_id.clone();
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -215,10 +220,14 @@ async fn discovery_intersects_both_nodes_without_forwarding_subject_tokens() {
 	cleanup(b, &b_url, &b_schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn in_flight_discovery_retains_source_authority_and_subsequent_requests_honor_revocation() {
-	let (f, url, schema) = setup().await;
+async fn in_flight_discovery_retains_source_authority_and_subsequent_requests_honor_revocation(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://localhost:1").await;
 	let entry = f
@@ -336,10 +345,14 @@ async fn in_flight_discovery_retains_source_authority_and_subsequent_requests_ho
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn source_filters_search_results_and_rejects_invalid_peer_metadata() {
-	let (f, url, schema) = setup().await;
+async fn source_filters_search_results_and_rejects_invalid_peer_metadata(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://localhost:1").await;
 	let entry = f

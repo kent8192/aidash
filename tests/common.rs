@@ -8,9 +8,122 @@ use sqlx::{
 	Connection, Executor,
 	postgres::{PgConnection, PgPoolOptions},
 };
-use std::sync::Arc;
+use std::{
+	path::PathBuf,
+	sync::{Arc, LazyLock, Weak},
+	time::Duration,
+};
+use testcontainers::compose::DockerCompose;
+use tokio::sync::Mutex;
 use tower::ServiceExt;
 use uuid::Uuid;
+
+const TEST_QDRANT_TOKEN: &str = "local-semantic-vector-fixture-key-0123456789";
+
+static TEST_ENVIRONMENT: LazyLock<Mutex<Weak<TestEnvironment>>> =
+	LazyLock::new(|| Mutex::new(Weak::new()));
+
+/// Disposable service endpoints arranged by Testcontainers for integration tests.
+///
+/// The global cache stores only a weak reference: tests that overlap share one
+/// Compose stack, while the final fixture owner still triggers deterministic
+/// Testcontainers cleanup.
+#[derive(Debug)]
+pub struct TestEnvironment {
+	_compose: DockerCompose,
+	pub database_url: String,
+	#[allow(dead_code)] // Only semantic integration-test binaries need Qdrant.
+	pub qdrant_url: String,
+	pub nats_url: String,
+}
+
+impl TestEnvironment {
+	async fn start() -> Self {
+		let compose_path =
+			PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/compose.yaml");
+		let mut compose = DockerCompose::with_local_client(&[compose_path.as_path()])
+			.with_build(true)
+			.with_wait(true);
+		compose
+			.up()
+			.await
+			.expect("start disposable integration-test services");
+
+		let postgres_port = compose
+			.service("postgres")
+			.expect("PostgreSQL service")
+			.get_host_port_ipv4(5432)
+			.await
+			.expect("mapped PostgreSQL port");
+		let qdrant_port = compose
+			.service("qdrant")
+			.expect("Qdrant service")
+			.get_host_port_ipv4(6333)
+			.await
+			.expect("mapped Qdrant port");
+		let nats_port = compose
+			.service("nats")
+			.expect("NATS service")
+			.get_host_port_ipv4(4222)
+			.await
+			.expect("mapped NATS port");
+
+		let database_url =
+			format!("postgres://aidash:aidash-test@127.0.0.1:{postgres_port}/aidash_test");
+		let qdrant_url = format!("http://127.0.0.1:{qdrant_port}");
+		let nats_url = format!("nats://127.0.0.1:{nats_port}");
+		wait_for_nats(&nats_url).await;
+		wait_for_qdrant(&qdrant_url).await;
+
+		Self {
+			_compose: compose,
+			database_url,
+			qdrant_url,
+			nats_url,
+		}
+	}
+}
+
+async fn wait_for_nats(url: &str) {
+	for _ in 0..120 {
+		if let Ok(Ok(client)) =
+			tokio::time::timeout(Duration::from_secs(1), async_nats::connect(url)).await
+			&& client.flush().await.is_ok()
+		{
+			return;
+		}
+		tokio::time::sleep(Duration::from_millis(250)).await;
+	}
+	panic!("NATS test container did not accept connections");
+}
+
+async fn wait_for_qdrant(url: &str) {
+	let client = reqwest::Client::new();
+	for _ in 0..120 {
+		if client
+			.get(format!("{url}/readyz"))
+			.header("api-key", TEST_QDRANT_TOKEN)
+			.send()
+			.await
+			.is_ok_and(|response| response.status().is_success())
+		{
+			return;
+		}
+		tokio::time::sleep(Duration::from_millis(250)).await;
+	}
+	panic!("Qdrant test container did not become ready");
+}
+
+#[rstest::fixture]
+pub async fn test_environment() -> Arc<TestEnvironment> {
+	let mut cached = TEST_ENVIRONMENT.lock().await;
+	if let Some(environment) = cached.upgrade() {
+		return environment;
+	}
+	let environment = Arc::new(TestEnvironment::start().await);
+	*cached = Arc::downgrade(&environment);
+	environment
+}
 
 #[allow(dead_code)] // Shared fixtures are used by different integration-test binaries.
 pub async fn request(
@@ -43,8 +156,9 @@ pub async fn request(
 	)
 }
 
-pub async fn setup() -> (Federation, String, String) {
-	let url = std::env::var("AIDASH_TEST_DATABASE_URL").expect("disposable PostgreSQL required");
+#[allow(dead_code)] // Shared fixtures are used by different integration-test binaries.
+pub async fn setup(environment: &TestEnvironment) -> (Federation, String, String) {
+	let url = environment.database_url.clone();
 	let schema = format!("execution_{}", Uuid::new_v4().simple());
 	// SeaQuery has no CREATE/DROP SCHEMA builder; these DDL statements isolate fixtures.
 	let mut admin = PgConnection::connect(&url).await.unwrap();
@@ -96,7 +210,7 @@ pub async fn setup() -> (Federation, String, String) {
 			endpoint: "http://localhost:8080".into(),
 			listen: "127.0.0.1:0".parse().unwrap(),
 			database_url: url.clone(),
-			nats_url: "nats://127.0.0.1:4222".into(),
+			nats_url: environment.nats_url.clone(),
 			api_token: "operator-execution-fixture".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
@@ -108,6 +222,7 @@ pub async fn setup() -> (Federation, String, String) {
 	(federation, url, schema)
 }
 
+#[allow(dead_code)] // Paired with setup in the integration-test binaries that use it.
 pub async fn cleanup(f: Federation, url: &str, schema: &str) {
 	f.store.control_pool.close().await;
 	f.store.pool.close().await;

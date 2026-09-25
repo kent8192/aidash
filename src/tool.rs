@@ -552,6 +552,7 @@ pub fn builtins() -> BTreeMap<String, Arc<dyn Tool>> {
 mod tests {
 	use super::*;
 
+	#[rstest::rstest]
 	#[tokio::test]
 	async fn web_fetch_retries_transient_statuses_and_reports_terminal_source_rejections() {
 		use axum::{Router, extract::Path, http::StatusCode, routing::get};
@@ -601,7 +602,7 @@ mod tests {
 		let _ = server.await;
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn positive_utf8_chunk_limits_return_at_least_one_complete_character() {
 		let text = "界x";
 		assert_eq!(bounded_utf8_end(text, 0, 0), 0);
@@ -611,7 +612,7 @@ mod tests {
 		assert_eq!(bounded_utf8_end(text, 3, 1), 4);
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn idempotent_mcp_requires_a_nonblank_idempotency_argument() {
 		for argument in ["", " \t\n", "\u{2003}\u{00a0}"] {
 			let config = json!({

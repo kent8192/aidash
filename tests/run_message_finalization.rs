@@ -7,7 +7,7 @@ use aidash::{
 	harness::Harness,
 };
 use axum::{Json, Router, routing::post};
-use common::{bootstrap, cleanup, request, setup};
+use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
 use serde_json::{Value, json};
 use std::sync::{
 	Arc,
@@ -16,10 +16,14 @@ use std::sync::{
 use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn old_worker_cannot_lease_after_input_ledger_admission() {
-	let (f, url, schema) = setup().await;
+async fn old_worker_cannot_lease_after_input_ledger_admission(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
@@ -222,10 +226,14 @@ async fn old_worker_cannot_lease_after_input_ledger_admission() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn upgraded_control_updates_remain_available_while_a_legacy_worker_is_fenced() {
-	let (f, url, schema) = setup().await;
+async fn upgraded_control_updates_remain_available_while_a_legacy_worker_is_fenced(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
@@ -280,10 +288,14 @@ async fn upgraded_control_updates_remain_available_while_a_legacy_worker_is_fenc
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn old_worker_cannot_start_tool_invocation_after_input_backfill() {
-	let (f, url, schema) = setup().await;
+async fn old_worker_cannot_start_tool_invocation_after_input_backfill(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
@@ -406,10 +418,14 @@ async fn old_worker_cannot_start_tool_invocation_after_input_backfill() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn upgraded_worker_reclaims_an_expired_legacy_lease_after_input_backfill() {
-	let (f, url, schema) = setup().await;
+async fn upgraded_worker_reclaims_an_expired_legacy_lease_after_input_backfill(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
@@ -472,9 +488,13 @@ async fn upgraded_worker_reclaims_an_expired_legacy_lease_after_input_backfill()
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn messages_accepted_during_and_after_inference_are_seen_before_completion() {
+async fn messages_accepted_during_and_after_inference_are_seen_before_completion(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
 	let entered = Arc::new(Notify::new());
 	let release = Arc::new(Notify::new());
 	let calls = Arc::new(AtomicUsize::new(0));
@@ -511,7 +531,7 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", listener.local_addr().unwrap());
 	let server = tokio::spawn(async move { axum::serve(listener, provider).await.unwrap() });
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
 	let (status, created) = request(
@@ -657,10 +677,14 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn included_reference_can_reach_tool_calls_without_becoming_finalizable() {
-	let (f, url, schema) = setup().await;
+async fn included_reference_can_reach_tool_calls_without_becoming_finalizable(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
@@ -718,10 +742,14 @@ async fn included_reference_can_reach_tool_calls_without_becoming_finalizable() 
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_inference_step() {
-	let (f, url, schema) = setup().await;
+async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_inference_step(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
@@ -840,10 +868,14 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn catchup_summary_retries_and_completes_without_spending_the_last_step() {
-	let (f, url, schema) = setup().await;
+async fn catchup_summary_retries_and_completes_without_spending_the_last_step(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
@@ -939,10 +971,14 @@ async fn catchup_summary_retries_and_completes_without_spending_the_last_step() 
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn reference_only_inputs_suppress_uninformed_tool_calls() {
-	let (f, url, schema) = setup().await;
+async fn reference_only_inputs_suppress_uninformed_tool_calls(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
@@ -1023,10 +1059,14 @@ async fn reference_only_inputs_suppress_uninformed_tool_calls() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn effects_recheck_input_sequence_under_the_run_lock() {
-	let (f, url, schema) = setup().await;
+async fn effects_recheck_input_sequence_under_the_run_lock(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(
@@ -1138,10 +1178,14 @@ async fn effects_recheck_input_sequence_under_the_run_lock() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn run_message_limit_rejects_oversized_input_before_recording_it() {
-	let (f, url, schema) = setup().await;
+async fn run_message_limit_rejects_oversized_input_before_recording_it(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
@@ -1185,10 +1229,14 @@ async fn run_message_limit_rejects_oversized_input_before_recording_it() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn scoped_run_never_infers_from_an_unreadable_message() {
-	let (f, url, schema) = setup().await;
+async fn scoped_run_never_infers_from_an_unreadable_message(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&test_environment).await;
 	let app = api::router(f.clone());
 	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({
@@ -1246,10 +1294,14 @@ async fn scoped_run_never_infers_from_an_unreadable_message() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn queued_terminal_transitions_reject_new_run_messages() {
-	let (f, url, schema) = setup().await;
+async fn queued_terminal_transitions_reject_new_run_messages(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	for (index, terminal) in ["cancel", "failure_pending"].iter().enumerate() {
@@ -1312,10 +1364,14 @@ async fn queued_terminal_transitions_reject_new_run_messages() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn expired_worker_lease_cannot_begin_final_completion() {
-	let (f, url, schema) = setup().await;
+async fn expired_worker_lease_cannot_begin_final_completion(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({

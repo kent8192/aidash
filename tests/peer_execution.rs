@@ -2,6 +2,7 @@ mod common;
 use aidash::{api, domain::qualified_agent, registry::digest};
 use axum::{Router, body::Body, http::Request};
 use common::*;
+use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -28,10 +29,14 @@ async fn inspect(app: &Router, token: &str, input: Value) -> (u16, Value) {
 	(status, serde_json::from_slice(&body).unwrap_or(Value::Null))
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_run() {
-	let (f, url, schema) = setup().await;
+async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_run(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (policy, user_token, _) = bootstrap(&f, &app, "http://localhost:1").await;
 	sqlx::query(

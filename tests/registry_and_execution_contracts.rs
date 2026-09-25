@@ -5,6 +5,7 @@ use aidash::{
 	registry::{Entry, Package},
 };
 use common::*;
+use common::{TestEnvironment, test_environment};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -37,10 +38,14 @@ async fn register_keyed(app: &axum::Router, token: &str, entry: &Entry, key: &st
 	(status, serde_json::from_slice(&body).unwrap())
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn registry_server_ids_survive_retries_and_concurrent_requests() {
-	let (f, url, schema) = setup().await;
+async fn registry_server_ids_survive_retries_and_concurrent_requests(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let mut entry = tool("");
 	entry.name.insert("en".into(), "calm-otter".into());
@@ -117,10 +122,14 @@ async fn registry_server_ids_survive_retries_and_concurrent_requests() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn registry_assigns_uuid_v7_to_blank_ids_and_preserves_explicit_ids() {
-	let (f, url, schema) = setup().await;
+async fn registry_assigns_uuid_v7_to_blank_ids_and_preserves_explicit_ids(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let mut generated = Vec::new();
 	for id in ["", "", "explicit-tool"] {
@@ -150,10 +159,14 @@ async fn registry_assigns_uuid_v7_to_blank_ids_and_preserves_explicit_ids() {
 	assert_ne!(generated[0], generated[1]);
 	cleanup(f, &url, &schema).await;
 }
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn installation_reconfiguration_keeps_manifest_and_events_idempotent() {
-	let (f, url, schema) = setup().await;
+async fn installation_reconfiguration_keeps_manifest_and_events_idempotent(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let package = Package {
 		entity: tool("installed"),
@@ -256,10 +269,14 @@ async fn installation_reconfiguration_keeps_manifest_and_events_idempotent() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn ancestor_dependencies_and_invalid_local_executor_are_rejected() {
-	let (f, url, schema) = setup().await;
+async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let workspace = f.store.create_workspace("tree", "goal").await.unwrap();
 	let input = NewTask {
 		title: "task".into(),
@@ -322,10 +339,14 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn visible_messages_and_events_survive_a_denied_burst() {
-	let (f, url, schema) = setup().await;
+async fn visible_messages_and_events_survive_a_denied_burst(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
@@ -390,10 +411,14 @@ async fn visible_messages_and_events_survive_a_denied_burst() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn delegation_retry_and_run_message_have_one_durable_effect() {
-	let (f, url, schema) = setup().await;
+async fn delegation_retry_and_run_message_have_one_durable_effect(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f.store.create_workspace("operator", "goal").await.unwrap();
@@ -499,7 +524,7 @@ async fn delegation_retry_and_run_message_have_one_durable_effect() {
 	cleanup(f, &url, &schema).await;
 }
 
-#[test]
+#[rstest::rstest]
 fn remote_manifest_validates_secret_reference_without_resolving_it() {
 	let mut entry = tool("remote-secret");
 	entry.config["credential_env"] = json!("AIDASH_SECRET_REVIEW_REMOTE_ONLY_NOT_SET");
@@ -515,10 +540,14 @@ fn remote_manifest_validates_secret_reference_without_resolving_it() {
 	);
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn scoped_run_details_keep_memory_home_namespace() {
-	let (f, url, schema) = setup().await;
+async fn scoped_run_details_keep_memory_home_namespace(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	assert_eq!(
@@ -557,7 +586,7 @@ async fn scoped_run_details_keep_memory_home_namespace() {
 	cleanup(f, &url, &schema).await;
 }
 
-#[test]
+#[rstest::rstest]
 fn agent_versions_fit_the_authorization_identity_limit() {
 	let mut entry = tool(&"a".repeat(100));
 	entry.kind = "agent".into();
@@ -568,11 +597,15 @@ fn agent_versions_fit_the_authorization_identity_limit() {
 	assert!(aidash::registry::validate(&entry).is_err());
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
-async fn mesh_rejects_a_peer_substituting_another_node_identity() {
+async fn mesh_rejects_a_peer_substituting_another_node_identity(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", listener.local_addr().unwrap());
 	let server = tokio::spawn(async move {
@@ -637,10 +670,14 @@ async fn mesh_rejects_a_peer_substituting_another_node_identity() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn oversized_agent_instructions_skills_and_tools_are_rejected_at_registration() {
-	let (f, url, schema) = setup().await;
+async fn oversized_agent_instructions_skills_and_tools_are_rejected_at_registration(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let mut skill = tool("large-skill");
@@ -681,13 +718,17 @@ async fn oversized_agent_instructions_skills_and_tools_are_rejected_at_registrat
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL and NATS"]
-async fn malformed_broker_messages_do_not_stop_valid_delivery() {
+async fn malformed_broker_messages_do_not_stop_valid_delivery(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let bus = aidash::bus::EventBus::connect(
-		&std::env::var("AIDASH_TEST_NATS_URL").unwrap(),
+		&_test_environment.nats_url,
 		&format!("aidash://review-{}", Uuid::new_v4().simple()),
 	)
 	.await
@@ -741,11 +782,15 @@ async fn malformed_broker_messages_do_not_stop_valid_delivery() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn registry_replays_emit_once_and_disabled_peers_can_lose_trust() {
+async fn registry_replays_emit_once_and_disabled_peers_can_lose_trust(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	for _ in 0..2 {
 		let (status, body) = request(
@@ -841,10 +886,14 @@ async fn registry_replays_emit_once_and_disabled_peers_can_lose_trust() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_keys() {
-	let (f, url, schema) = setup().await;
+async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_keys(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
@@ -910,10 +959,14 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn operator_conversation_returns_the_committed_task_revision() {
-	let (f, url, schema) = setup().await;
+async fn operator_conversation_returns_the_committed_task_revision(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
 	let app = api::router(f.clone());
 	bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let (status, response) = request(&app, &f.config.api_token, "POST", "/api/conversations", json!({"title":"Conversation","goal":"Work","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
@@ -928,12 +981,16 @@ async fn operator_conversation_returns_the_committed_task_revision() {
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires disposable PostgreSQL"]
-async fn plugin_control_shaped_data_does_not_suspend_execution() {
+async fn plugin_control_shaped_data_does_not_suspend_execution(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
 	use aidash::harness::Harness;
 	use axum::{Json, Router, routing::post};
-	let (f, url, schema) = setup().await;
+	let (f, url, schema) = setup(&_test_environment).await;
 	let output = json!({"human_request_id":Uuid::new_v4(),"wait_seconds":60});
 	let result = output.clone();
 	let server = Router::new()

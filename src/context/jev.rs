@@ -146,7 +146,7 @@ pub(super) fn probability(response: &Value, name: &str) -> Result<f64> {
 mod tests {
 	use super::*;
 
-	#[test]
+	#[rstest::rstest]
 	fn system_one_request_has_bearer_auth_and_probability_questions() {
 		let client = JevClient::new(
 			reqwest::Client::new(),
@@ -178,7 +178,7 @@ mod tests {
 		);
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn malformed_missing_and_out_of_range_probabilities_are_rejected() {
 		for answer in [
 			json!(null),
@@ -199,6 +199,7 @@ mod tests {
 		}
 	}
 
+	#[rstest::rstest]
 	#[tokio::test]
 	async fn system_one_http_contract_and_failure_redaction() {
 		use axum::{
@@ -255,6 +256,7 @@ mod tests {
 		}
 		server.abort();
 	}
+	#[rstest::rstest]
 	#[tokio::test]
 	async fn bounded_transport_rejects_oversize_requests_responses_and_redirects() {
 		use axum::{Router, response::IntoResponse, routing::post};

@@ -1850,6 +1850,7 @@ mod review_tests {
 	use serde_json::json;
 	use uuid::Uuid;
 
+	#[rstest::rstest]
 	#[tokio::test(start_paused = true)]
 	async fn inference_cancellation_poll_errors_do_not_signal_cancellation() {
 		let pool = sqlx::postgres::PgPoolOptions::new()
@@ -1874,14 +1875,14 @@ mod review_tests {
 		}
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn small_context_windows_keep_their_available_budget() {
 		assert!(super::request_context_window(2048, 1500) >= 1500);
 		assert!(super::request_context_window(4096, 3000) >= 3000);
 		assert!(super::request_context_window(32_000, 4000) < 32_000);
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn discarded_response_keeps_a_fresh_effect_namespace_at_the_step_limit() {
 		let last_step = 63;
 		let old_response = super::response_epoch(20, last_step);
@@ -1891,7 +1892,7 @@ mod review_tests {
 		assert!(corrected_response > old_response);
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn uninformed_responses_may_only_read_required_unread_messages() {
 		let id = Uuid::new_v4();
 		let unrelated_id = Uuid::new_v4();
@@ -1957,7 +1958,7 @@ mod review_tests {
 		));
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn tight_windows_leave_room_for_the_pinned_workspace_context() {
 		for slack in [2048, 4096, 8192] {
 			let minimum_request = 20_000;
@@ -1986,7 +1987,7 @@ mod review_tests {
 		}
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn skill_read_fits_utf8_chunks_to_the_remaining_request_budget() {
 		let call = crate::provider::ToolCall {
 			id: "skill-1".into(),
@@ -2037,7 +2038,7 @@ mod review_tests {
 		assert_eq!(super::skill_read_result(&output, 0)["deferred"], true);
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn skill_read_can_fit_one_character_when_the_deferred_envelope_cannot_fit() {
 		let call = crate::provider::ToolCall {
 			id: "skill-1".into(),
@@ -2081,7 +2082,7 @@ mod review_tests {
 		assert_eq!(super::skill_read_result(&output, bytes)["text"], "界");
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn workspace_read_chunks_fit_remaining_complete_request_budget() {
 		let call = crate::provider::ToolCall {
 			id: "read-1".into(),
@@ -2149,7 +2150,7 @@ mod review_tests {
 		assert!(request_tokens + crate::context::tool_event_growth(&context, &event) > allowed);
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn workspace_read_fit_uses_the_persisted_request_window() {
 		let call = crate::provider::ToolCall {
 			id: "read-1".into(),
@@ -2190,7 +2191,7 @@ mod review_tests {
 		assert!(chars > 0);
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn workspace_observation_fit_includes_the_adjusted_call_and_following_events() {
 		let context = crate::context::Context::default();
 		let call = crate::provider::ToolCall {
@@ -2234,7 +2235,7 @@ mod review_tests {
 		));
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn workspace_read_rejects_negative_offset_before_fitting() {
 		let call = crate::provider::ToolCall {
 			id: "read-1".into(),
@@ -2247,7 +2248,7 @@ mod review_tests {
 		));
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn workspace_read_rejects_oversized_max_chars_before_fitting() {
 		let call = crate::provider::ToolCall {
 			id: "read-1".into(),
@@ -2260,7 +2261,7 @@ mod review_tests {
 		));
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn cached_workspace_read_plans_still_validate_the_original_call() {
 		let pending = serde_json::json!({
 			"workspace_read_plan": {
@@ -2287,7 +2288,7 @@ mod review_tests {
 		));
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn zero_length_envelope_is_checked_before_deferring_a_read() {
 		let call = crate::provider::ToolCall {
 			id: "read-1".into(),
@@ -2335,7 +2336,7 @@ mod review_tests {
 		assert_eq!(deferred["call"]["arguments"]["id"], call.arguments["id"]);
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn referenced_run_message_requires_every_record_chunk() {
 		let id = uuid::Uuid::new_v4();
 		let event = |offset: usize, content: &str, next: Option<usize>| {
@@ -2372,7 +2373,7 @@ mod review_tests {
 		assert!(super::referenced_message_inferred(&context, id));
 	}
 
-	#[test]
+	#[rstest::rstest]
 	fn result_names_fit_for_ascii_and_multibyte_titles() {
 		for title in ["a".repeat(64_000), "界".repeat(21_333)] {
 			let name = super::result_artifact_name(&title);

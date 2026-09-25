@@ -152,7 +152,7 @@ pub async fn load(db: &DatabaseConnection, entry: &Entry) -> Result<Value> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	#[test]
+	#[rstest::rstest]
 	fn documents_are_bounded_and_nonempty() {
 		let mut docs = vec![ReferenceDocument {
 			name: "personal.pdf".into(),
