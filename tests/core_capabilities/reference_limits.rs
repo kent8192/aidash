@@ -2,13 +2,20 @@ use super::*;
 use base64::{Engine, engine::general_purpose::STANDARD};
 
 #[rstest::fixture]
-async fn bounded_reference_fixture(#[future] runtime_fixture: CoreFixture) -> CoreFixture {
-	let mut c = Box::pin(runtime_fixture).await;
-	let mut profile = (*c.f.store.capabilities.0).clone();
-	profile.limits.reference_text_bytes = 64;
-	c.f.store.capabilities = Runtime::new(profile).unwrap();
-	c.app = aidash::api::router(c.f.clone());
-	c
+fn bounded_reference_fixture(
+	#[future] runtime_fixture: CoreFixture,
+) -> impl std::future::Future<Output = CoreFixture> {
+	// Box before constructing the next fixture future so nested setup does not
+	// retain another copy of the large database/bootstrap future on the stack.
+	let runtime_fixture = Box::pin(runtime_fixture);
+	async move {
+		let mut c = runtime_fixture.await;
+		let mut profile = (*c.f.store.capabilities.0).clone();
+		profile.limits.reference_text_bytes = 64;
+		c.f.store.capabilities = Runtime::new(profile).unwrap();
+		c.app = aidash::api::router(c.f.clone());
+		c
+	}
 }
 
 #[rstest::rstest]
