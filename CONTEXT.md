@@ -24,6 +24,10 @@ The filesystem location selected for an execution context. It is distinct from a
 
 The authorized working files associated with one thread and one Agent, available to that Agent across successive Runs in the thread. Other Agents receive explicitly shared files rather than implicit access to the working area. This association does not override access policy.
 
+## Agent file sharing
+
+An explicit, policy-authorized operation that makes selected files available to an identified recipient Agent. It is distinct from access to the sender's whole working area, task delegation, and transfer of credentials or approval grants.
+
 ## Working-area cleanup
 
 The user-authorized removal of an active Agent working area, either by reversible cleanup or by irreversible working-area deletion. It is distinct from stopping an Interpreter session, deleting a thread, or deleting separately published artifacts.
