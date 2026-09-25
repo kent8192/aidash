@@ -87,6 +87,10 @@ impl Federation {
 		let reserved_at_home = if home.local() {
 			false
 		} else if home.reserve_run_message(key, content).await? {
+			// Persist the home fence before the executor transaction can make the
+			// input durable. If this RPC response is lost, an exact retry can
+			// continue admission while the home remains fenced.
+			home.commit_run_message_reservation(key, content).await?;
 			true
 		} else {
 			return Err(Error::Conflict(
@@ -118,7 +122,18 @@ impl Federation {
 				return Ok(());
 			}
 			if !home.local() {
-				home.release_run_messages(&[key.to_owned()]).await?;
+				match self.store.run_input_sequence(run.id, key, content).await {
+					Ok(_) => {
+						// The transaction may have committed even if the client saw a
+						// late connection error. Preserve its fence and bind the sequence.
+						home.commit_run_message(key, content).await?;
+						return Ok(());
+					}
+					Err(Error::Conflict(_)) => {
+						home.release_run_messages(&[key.to_owned()]).await?;
+					}
+					Err(check_error) => return Err(check_error),
+				}
 			}
 			return Err(error);
 		}
@@ -159,12 +174,12 @@ impl Federation {
 		}
 		let home = Home::new(self.clone(), run.clone());
 		match home
-			.optional_command::<bool>("run_message_delivery_capability", json!({}))
+			.optional_command::<Value>("run_message_delivery_capability", json!({}))
 			.await?
 		{
-			Some(true) => Ok(()),
+			Some(capability) if capability["protocol"].as_u64() == Some(2) => Ok(()),
 			_ => Err(Error::Conflict(
-				"remote home cannot durably deliver run messages after task termination".into(),
+				"remote home does not support fenced run-message publication and completion".into(),
 			)),
 		}
 	}
@@ -1197,11 +1212,18 @@ impl Home {
 					key,
 					artifact,
 					self.authority.as_ref().map(|_| self.run.id),
+					None,
 				)
 				.await
 		} else {
-			self.command("complete", json!({"key":key,"artifact":artifact}))
-				.await
+			let through_seq = self.run.pending["included_input_seq"]
+				.as_i64()
+				.unwrap_or(self.run.observed_input_seq);
+			self.command(
+				"run_message_complete",
+				json!({"run_id":self.run.id,"through_seq":through_seq,"key":key,"artifact":artifact}),
+			)
+			.await
 		}
 	}
 	pub async fn artifact(&self, key: &str, artifact: &ArtifactInput) -> Result<Artifact> {
@@ -1319,7 +1341,7 @@ impl Home {
 					included_input_seq,
 					self.command::<Value>(
 						"run_message_output",
-						json!({"run_id":self.run.id,"key":key,"content":content}),
+						json!({"run_id":self.run.id,"included_input_seq":included_input_seq,"key":key,"content":content}),
 					),
 				)
 				.await?;
@@ -1366,6 +1388,24 @@ impl Home {
 			)
 			.await?
 			.is_some())
+	}
+	pub async fn commit_run_message_reservation(&self, key: &str, content: &str) -> Result<()> {
+		if self.local() {
+			return Ok(());
+		}
+		if self
+			.optional_command::<Value>(
+				"run_message_commit",
+				json!({"run_id":self.run.id,"key":key,"content":content}),
+			)
+			.await?
+			.is_none()
+		{
+			return Err(Error::Conflict(
+				"remote home cannot persist run message admission".into(),
+			));
+		}
+		Ok(())
 	}
 	pub async fn commit_run_message(&self, key: &str, content: &str) -> Result<()> {
 		if !self.promote_run_message(key, content).await? {

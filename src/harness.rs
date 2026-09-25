@@ -424,7 +424,13 @@ impl Harness {
 			run.pending["included_input_seq"]
 				.as_i64()
 				.unwrap_or(run.observed_input_seq),
-			&format!("{}:{}:output", run.id, run.step),
+			&format!(
+				"{}:{}:output",
+				run.id,
+				run.pending["response_epoch"]
+					.as_i64()
+					.unwrap_or(run.revision)
+			),
 			text,
 		)
 		.await
@@ -461,10 +467,6 @@ impl Harness {
 		// Accepted remote inputs remain deliverable even when the home task has
 		// already reached a terminal state. Drain them before terminal recovery.
 		self.federation.deliver_run_messages(run).await?;
-		// The executor advances observed_input_seq only after a model request
-		// containing these inputs succeeds. Release the home-side termination
-		// fence before asking the home task to complete.
-		self.federation.acknowledge_run_messages(run).await?;
 		let task = home.task().await?;
 		if matches!(
 			task.status.as_str(),
@@ -845,6 +847,7 @@ impl Harness {
 				}
 				run.pending = json!({
 					"response":result,
+					"response_epoch":response_epoch(run.revision, run.step),
 					"cursor":0,
 					"included_input_seq":input_seq,
 					"request_window":budget.window,
@@ -881,13 +884,19 @@ impl Harness {
 					.is_some_and(|input| input.seq > included_input_seq)
 				{
 					// This response predates an accepted correction. Discard its
-					// text and calls before any effect crosses the tool boundary. A
-					// preceding attempt may already have published response text, so
-					// rotate every deterministic response/effect key with the step.
+					// text and calls before any effect crosses the tool boundary. Keep
+					// the inference allowance and let the next stored response get a
+					// fresh response_epoch for idempotency keys.
 					run.phase = "THINKING".into();
-					run.step += 1;
 					run.pending = json!({});
 					store.save_run(run, token, "run.message_received").await?;
+					return Ok(());
+				}
+				if run.pending["response_epoch"].as_i64().is_none() {
+					// Preserve the step-based idempotency keys for responses saved by
+					// an older worker, so replay cannot duplicate an existing effect.
+					run.pending["response_epoch"] = json!(run.step);
+					store.save_run(run, token, "run.response_namespace").await?;
 					return Ok(());
 				}
 				let mut result: ModelResponse =
@@ -1024,7 +1033,10 @@ impl Harness {
 								if let Some(guard) = guard {
 									guard.action("human.request", "run", run.id).await?;
 								}
-								let h=store.human_request(run,"INFORMATION_REQUEST","A subtask needs intervention. You can explicitly abandon failed, blocked or cancelled subtasks in their task details, providing a reason. Then answer this request to continue with the remaining results, or cancel this parent.",&format!("{}:{}:subtasks",run.id,run.step)).await?;
+								let response_epoch = run.pending["response_epoch"]
+									.as_i64()
+									.unwrap_or(run.revision);
+								let h=store.human_request(run,"INFORMATION_REQUEST","A subtask needs intervention. You can explicitly abandon failed, blocked or cancelled subtasks in their task details, providing a reason. Then answer this request to continue with the remaining results, or cancel this parent.",&format!("{}:{}:subtasks",run.id,response_epoch)).await?;
 								run.pending =
 									json!({"human_request_id":h.id,"resume_phase":"THINKING"});
 							} else {
@@ -1308,7 +1320,10 @@ impl Harness {
 						Err(error) => return Err(error),
 					}
 				}
-				let key = format!("{}:{}:{}", run.id, run.step, cursor);
+				let response_epoch = run.pending["response_epoch"]
+					.as_i64()
+					.unwrap_or(run.revision);
+				let key = format!("{}:{}:{}", run.id, response_epoch, cursor);
 				let invocation = store
 					.invocation_start(
 						run,
@@ -1824,6 +1839,10 @@ fn result_artifact_name(title: &str) -> String {
 	format!("{} result", &title[..end])
 }
 
+fn response_epoch(revision: i64, step: i32) -> i64 {
+	revision.saturating_add(i64::from(step)).saturating_add(1)
+}
+
 #[cfg(test)]
 mod review_tests {
 	use serde_json::json;
@@ -1858,6 +1877,16 @@ mod review_tests {
 		assert!(super::request_context_window(2048, 1500) >= 1500);
 		assert!(super::request_context_window(4096, 3000) >= 3000);
 		assert!(super::request_context_window(32_000, 4000) < 32_000);
+	}
+
+	#[test]
+	fn discarded_response_keeps_a_fresh_effect_namespace_at_the_step_limit() {
+		let last_step = 63;
+		let old_response = super::response_epoch(20, last_step);
+		let revision_after_discard = 21;
+		let corrected_response = super::response_epoch(revision_after_discard, last_step);
+
+		assert!(corrected_response > old_response);
 	}
 
 	#[test]

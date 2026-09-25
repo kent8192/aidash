@@ -296,6 +296,11 @@ pub async fn message_keyed(
 			"remote home cannot reserve run messages during task termination".into(),
 		));
 	}
+	if !home.local() {
+		// Make the remote fence durable before this transaction can commit the
+		// executor-side input. A lost reply is safe to retry with the same key.
+		home.commit_run_message_reservation(&key, content).await?;
+	}
 	let outcome = async {
 		let mut access = Access::begin(&f.store, identity).await?;
 		let result = async {
@@ -328,8 +333,19 @@ pub async fn message_keyed(
 			// Historical recovery is an accepted input, so keep its home fence.
 		} else {
 			if !home.local() {
-				home.release_run_messages(std::slice::from_ref(&key))
-					.await?;
+				match f.store.run_input_sequence(id, &key, content).await {
+					Ok(_) => {
+						// The admission may have committed even if its client observed
+						// a late database error. Keep the fence and recover its sequence.
+						home.commit_run_message(&key, content).await?;
+						return Ok(());
+					}
+					Err(Error::Conflict(_)) => {
+						home.release_run_messages(std::slice::from_ref(&key))
+							.await?;
+					}
+					Err(check_error) => return Err(check_error),
+				}
 			}
 			return Err(error);
 		}

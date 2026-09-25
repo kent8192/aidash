@@ -1268,6 +1268,7 @@ async fn peer_workspace(
 			| "run_message_release"
 			| "run_message_ack"
 			| "run_message_terminal_transition"
+			| "run_message_complete"
 			| "task" | "claim"
 	) && !(task.owner.is_none()
 		&& (matches!(
@@ -1280,6 +1281,7 @@ async fn peer_workspace(
 				| "run_message_release"
 				| "run_message_ack"
 				| "run_message_terminal_transition"
+				| "run_message_complete"
 				| "run_message_history"
 				| "run_message_delivery_capability"
 		) || (command.operation == "transition"
@@ -1304,7 +1306,10 @@ async fn peer_workspace(
 				| "run_message_delivery_capability"
 				| "task"
 		);
-		let replay_completion = command.operation == "complete" && task.status == "COMPLETED";
+		let replay_completion = matches!(
+			command.operation.as_str(),
+			"complete" | "run_message_complete"
+		) && task.status == "COMPLETED";
 		let replay_transition = command.operation == "transition" && d["status"] == task.status;
 		let replay_terminal_transition =
 			command.operation == "run_message_terminal_transition" && d["status"] == task.status;
@@ -1463,6 +1468,31 @@ async fn peer_workspace(
 				)
 				.await?
 		),
+		"run_message_complete" => {
+			let run_id: Uuid = required(d, "run_id")?
+				.parse()
+				.map_err(|_| Error::Invalid("invalid run ID".into()))?;
+			let input_key = required(d, "key")?;
+			if !input_key.starts_with(&format!("{run_id}:")) {
+				return Err(Error::Invalid("invalid run completion key".into()));
+			}
+			let through_seq = d["through_seq"]
+				.as_i64()
+				.ok_or_else(|| Error::Invalid("invalid terminal input sequence".into()))?;
+			let artifact = serde_json::from_value::<ArtifactInput>(d["artifact"].clone())?;
+			json!(
+				f.store
+					.complete_remote_run_message(
+						task.id,
+						&owner,
+						&key()?,
+						&artifact,
+						run_id,
+						through_seq,
+					)
+					.await?
+			)
+		}
 		"artifact" => json!(
 			f.store
 				.publish_artifact(
@@ -1535,16 +1565,35 @@ async fn peer_workspace(
 			if !input_key.starts_with(&format!("{run_id}:")) {
 				return Err(Error::Invalid("invalid run response key".into()));
 			}
-			f.store
-				.run_message_output_record(
-					task.workspace_id,
-					task.id,
-					run_id,
-					&owner,
-					required(d, "content")?,
-					&key()?,
-				)
-				.await?;
+			let content = required(d, "content")?;
+			let message_key = key()?;
+			if let Some(included_input_seq) = d.get("included_input_seq") {
+				let included_input_seq = included_input_seq
+					.as_i64()
+					.ok_or_else(|| Error::Invalid("invalid included input sequence".into()))?;
+				f.store
+					.run_message_output_record_fenced(
+						task.workspace_id,
+						task.id,
+						run_id,
+						included_input_seq,
+						&owner,
+						content,
+						&message_key,
+					)
+					.await?;
+			} else {
+				f.store
+					.run_message_output_record(
+						task.workspace_id,
+						task.id,
+						run_id,
+						&owner,
+						content,
+						&message_key,
+					)
+					.await?;
+			}
 			json!({"sent":true})
 		}
 		"run_message_delivery" => {
@@ -1636,7 +1685,7 @@ async fn peer_workspace(
 				return Err(Error::Invalid("invalid run message keys".into()));
 			}
 			f.store
-				.release_remote_run_message(task.id, run_id, &keys)
+				.release_remote_run_message(task.id, run_id, node, &keys)
 				.await?;
 			json!({"released":true})
 		}
@@ -1684,7 +1733,7 @@ async fn peer_workspace(
 		}
 		"run_message_delivery_capability" => {
 			// This is a capability read for the already authorized delegated task.
-			json!(true)
+			json!({"protocol":2})
 		}
 		"event" => {
 			let event_id =

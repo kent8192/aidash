@@ -720,7 +720,7 @@ async fn included_reference_can_reach_tool_calls_without_becoming_finalizable() 
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
-async fn a_new_input_discards_pending_tool_calls_and_rotates_a_published_output_key() {
+async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_inference_step() {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -729,14 +729,24 @@ async fn a_new_input_discards_pending_tool_calls_and_rotates_a_published_output_
 	})).await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs().await.unwrap().remove(0);
+	let agent = f
+		.registry
+		.get(&run.agent_id, &run.agent_version)
+		.await
+		.unwrap();
+	let max_steps = serde_json::from_value::<aidash::registry::AgentConfig>(agent.config)
+		.unwrap()
+		.max_steps;
 	let harness = Harness {
 		federation: f.clone(),
 	};
 	assert!(harness.worker_once().await.unwrap());
 	let worker = Uuid::new_v4();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
+	leased.step = max_steps - 1;
 	leased.phase = "TOOL_CALL".into();
 	leased.pending = json!({
+		"response_epoch":leased.revision + i64::from(leased.step) + 1,
 		"included_input_seq":0,
 		"response":{"text":"stale tool output","tool_calls":[{"id":"stale-call","name":"workspace_observe","arguments":{}}],"input_tokens":1,"output_tokens":1,"usage_complete":true},
 		"cursor":0
@@ -756,7 +766,7 @@ async fn a_new_input_discards_pending_tool_calls_and_rotates_a_published_output_
 		.response_message(
 			publish_worker,
 			0,
-			&format!("{}:{}:output", run.id, published.step),
+			&format!("{}:{}:output", run.id, published.pending["response_epoch"]),
 			"stale tool output",
 		)
 		.await
@@ -774,7 +784,11 @@ async fn a_new_input_discards_pending_tool_calls_and_rotates_a_published_output_
 	assert!(harness.worker_once().await.unwrap());
 	let current = f.store.run(run.id).await.unwrap();
 	assert_eq!(current.phase, "THINKING");
-	assert_eq!(current.step, leased.step + 1);
+	assert_eq!(current.step, max_steps - 1);
+	assert!(
+		current.step < max_steps,
+		"the correction can still be inferred"
+	);
 	assert!(current.pending.get("response").is_none());
 	assert!(
 		f.store
@@ -785,6 +799,7 @@ async fn a_new_input_discards_pending_tool_calls_and_rotates_a_published_output_
 			.iter()
 			.any(|message| message.content == "stale tool output")
 	);
+	let corrected_output_epoch = current.revision + i64::from(current.step) + 1;
 	let corrected_worker = Uuid::new_v4();
 	let corrected = f
 		.store
@@ -804,7 +819,7 @@ async fn a_new_input_discards_pending_tool_calls_and_rotates_a_published_output_
 		.response_message(
 			corrected_worker,
 			corrected_seq,
-			&format!("{}:{}:output", run.id, corrected.step),
+			&format!("{}:{}:output", run.id, corrected_output_epoch),
 			"corrected tool output",
 		)
 		.await

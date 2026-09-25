@@ -2,7 +2,7 @@ mod common;
 
 use aidash::{
 	api,
-	domain::{NewTask, qualified_agent},
+	domain::{ArtifactInput, NewTask, qualified_agent},
 	federation::{Federation, Home},
 	harness::Harness,
 };
@@ -73,6 +73,7 @@ async fn add_peer(f: &Federation, node: &str, endpoint: &str) {
 struct PeerMode {
 	old_peer: AtomicBool,
 	delivery_outage: AtomicBool,
+	commit_response_lost: AtomicBool,
 }
 
 async fn old_peer_workspace_compat(
@@ -81,7 +82,9 @@ async fn old_peer_workspace_compat(
 	next: Next,
 ) -> axum::response::Response {
 	if !request.uri().path().ends_with("/workspace")
-		|| (!mode.old_peer.load(Ordering::SeqCst) && !mode.delivery_outage.load(Ordering::SeqCst))
+		|| (!mode.old_peer.load(Ordering::SeqCst)
+			&& !mode.delivery_outage.load(Ordering::SeqCst)
+			&& !mode.commit_response_lost.load(Ordering::SeqCst))
 	{
 		return next.run(request).await;
 	}
@@ -118,6 +121,16 @@ async fn old_peer_workspace_compat(
 	let response = next
 		.run(Request::from_parts(parts, Body::from(bytes)))
 		.await;
+	if mode.commit_response_lost.load(Ordering::SeqCst)
+		&& operation == "run_message_commit"
+		&& response.status().is_success()
+	{
+		return (
+			axum::http::StatusCode::SERVICE_UNAVAILABLE,
+			axum::Json(json!({"error":"simulated lost commit response"})),
+		)
+			.into_response();
+	}
 	if mode.old_peer.load(Ordering::SeqCst)
 		&& operation == "human_message"
 		&& response.status().is_success()
@@ -162,10 +175,31 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 		.commit_remote_run_message(task.id, run.id, &key, "correction")
 		.await
 		.unwrap();
+	// Model the executor binding the durable input sequence after local admission.
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("remote_run_message_fences"))
+			.value(Alias::new("input_seq"), Expr::cust("1"))
+			.and_where(Expr::cust(
+				"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(task.id)
+	.bind(run.id)
+	.bind(&key)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
 	// A rejection response from an earlier overlapping attempt can arrive after
 	// the successful commit. It must not delete the non-expiring fence.
 	f.store
-		.release_remote_run_message(task.id, run.id, std::slice::from_ref(&key))
+		.release_remote_run_message(
+			task.id,
+			run.id,
+			"aidash://executor",
+			std::slice::from_ref(&key),
+		)
 		.await
 		.unwrap();
 	let retained: bool = sqlx::query_scalar(
@@ -325,6 +359,7 @@ async fn remote_admission_imports_legacy_history_before_new_input() {
 	let mode = Arc::new(PeerMode {
 		old_peer: AtomicBool::new(false),
 		delivery_outage: AtomicBool::new(false),
+		commit_response_lost: AtomicBool::new(false),
 	});
 	let home_app = api::router(home.clone()).layer(axum::middleware::from_fn_with_state(
 		mode,
@@ -454,6 +489,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 	let mode = Arc::new(PeerMode {
 		old_peer: AtomicBool::new(false),
 		delivery_outage: AtomicBool::new(false),
+		commit_response_lost: AtomicBool::new(false),
 	});
 	let home_app = api::router(home.clone()).layer(axum::middleware::from_fn_with_state(
 		mode.clone(),
@@ -596,15 +632,45 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 		200,
 		"peer observations must decode the full Run"
 	);
-	let (status, body) = peer_control(
-		&executor_app,
-		&home.config.node_id,
-		json!({
-			"run_id":run.id,"action":"message","content":"remote correction","idempotency_key":first_key
-		}),
-	)
-	.await;
-	assert_eq!(status, 200, "{body}");
+	mode.commit_response_lost.store(true, Ordering::SeqCst);
+	let first_admission = json!({
+		"run_id":run.id,"action":"message","content":"remote correction","idempotency_key":first_key
+	});
+	let (status, body) =
+		peer_control(&executor_app, &home.config.node_id, first_admission.clone()).await;
+	assert_ne!(
+		status, 200,
+		"the simulated commit reply should be lost: {body}"
+	);
+	mode.commit_response_lost.store(false, Ordering::SeqCst);
+	assert!(
+		executor.store.run_inputs(run.id).await.unwrap().is_empty(),
+		"a lost pre-admission commit reply must not admit an input"
+	);
+	let (durable_before_admission, sequence_before_admission): (bool, Option<i64>) =
+		sqlx::query_as(
+			&Query::select()
+				.expr(Expr::cust("expires_at IS NULL"))
+				.column(Alias::new("input_seq"))
+				.from(Alias::new("remote_run_message_fences"))
+				.and_where(Expr::cust(
+					"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(task.id)
+		.bind(run.id)
+		.bind(format!("human:{}:{first_key}", run.id))
+		.fetch_one(&home.store.pool)
+		.await
+		.unwrap();
+	assert!(durable_before_admission);
+	assert_eq!(sequence_before_admission, None);
+	let (status, body) = peer_control(&executor_app, &home.config.node_id, first_admission).await;
+	assert_eq!(
+		status, 200,
+		"exact retry recovers the durable reservation: {body}"
+	);
 	let inputs = executor.store.run_inputs(run.id).await.unwrap();
 	assert_eq!(inputs.len(), 1);
 	assert!(inputs[0].message_id.is_some());
@@ -728,7 +794,11 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 	.fetch_optional(&home.store.pool)
 	.await
 	.unwrap();
-	assert_eq!(retained_consumed_fence, Some(true));
+	assert_eq!(
+		retained_consumed_fence,
+		Some(false),
+		"observing an input does not release the legacy-worker fence"
+	);
 	assert!(
 		home.store
 			.reserve_remote_run_message(
@@ -831,24 +901,16 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 		.await
 		.unwrap()
 		.unwrap();
-	let included_input_seq = executor
-		.store
-		.run_inputs(run.id)
-		.await
-		.unwrap()
-		.last()
-		.unwrap()
-		.seq;
 	assert!(matches!(
 		Home::new(executor.clone(), response_run)
 			.response_message(
 				response_worker,
-				included_input_seq,
-				&format!("{}:response-output", run.id),
-				"response must wait until the correction is observed",
+				0,
+				&format!("{}:0:output", run.id),
+				"stale response must not publish",
 			)
 			.await,
-		Err(aidash::error::Error::TransactionPending)
+		Err(aidash::error::Error::StaleInference)
 	));
 	assert!(
 		!home
@@ -858,7 +920,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.unwrap()
 			.messages
 			.iter()
-			.any(|message| message.content == "response must wait until the correction is observed")
+			.any(|message| message.content == "stale response must not publish")
 	);
 	executor
 		.store
@@ -928,7 +990,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 		.response_message(
 			response_worker,
 			included_input_seq,
-			&format!("{}:observed-response-output", run.id),
+			&format!("{}:1:output", run.id),
 			"response output after correction observation",
 		)
 		.await
@@ -941,6 +1003,25 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.messages
 			.iter()
 			.any(|message| message.content == "response output after correction observation")
+	);
+	let still_fenced: bool = sqlx::query_scalar(
+		"SELECT EXISTS(SELECT 1 FROM remote_run_message_fences WHERE task_id = $1 AND run_id = $2 AND NOT consumed)",
+	)
+	.bind(task.id)
+	.bind(run.id)
+	.fetch_one(&home.store.pool)
+	.await
+	.unwrap();
+	assert!(
+		still_fenced,
+		"corrected output does not release old-worker fences"
+	);
+	assert!(
+		remote_home
+			.message(&format!("{}:0:output", run.id), "stale legacy output")
+			.await
+			.is_err(),
+		"a legacy output path stays blocked after a corrected response is published"
 	);
 	executor
 		.store
@@ -1241,6 +1322,18 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 		.unwrap()
 		.seq;
 	executor.acknowledge_run_messages(&observed).await.unwrap();
+	let observed_fence_still_active: bool = sqlx::query_scalar(
+		"SELECT EXISTS(SELECT 1 FROM remote_run_message_fences WHERE task_id = $1 AND run_id = $2 AND NOT consumed)",
+	)
+	.bind(task.id)
+	.bind(run.id)
+	.fetch_one(&home.store.pool)
+	.await
+	.unwrap();
+	assert!(
+		observed_fence_still_active,
+		"an inference acknowledgment cannot release a stale-worker fence"
+	);
 	// Migration also backfills the historical message for the other run.
 	// Acknowledging this run cannot consume that separate run's correction.
 	assert!(
@@ -1250,21 +1343,76 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.is_err(),
 		"backfilled corrections for another run must still fence termination"
 	);
-	terminal_history_home
-		.acknowledge_run_messages(std::slice::from_ref(&terminal_history_key))
+	// The synthetic history run has no executor-side input ledger. Clear its
+	// fixture-only fence after verifying it blocks termination above.
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("remote_run_message_fences"))
+			.value(Alias::new("consumed"), Expr::cust("TRUE"))
+			.and_where(Expr::cust("task_id = $1 AND run_id = $2"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(task.id)
+	.bind(terminal_history_run.id)
+	.execute(&home.store.pool)
+	.await
+	.unwrap();
+	let completion_run = executor.store.run(run.id).await.unwrap();
+	executor
+		.deliver_run_messages(&completion_run)
 		.await
 		.unwrap();
-	home.store
-		.transition(task.id, current_task.revision, &owner, "CANCELLED")
+	let through_seq = executor
+		.store
+		.run_inputs(run.id)
+		.await
+		.unwrap()
+		.last()
+		.map(|input| input.seq)
+		.unwrap_or(0);
+	let mut completion_run = executor.store.run(run.id).await.unwrap();
+	completion_run.pending = json!({"included_input_seq":through_seq});
+	let artifact = ArtifactInput {
+		kind: "text".into(),
+		name: "Answer".into(),
+		content: json!("Completed after observing corrections"),
+	};
+	assert!(
+		home.store
+			.complete(
+				task.id,
+				&owner,
+				&format!("{}:legacy-complete", run.id),
+				&artifact,
+			)
+			.await
+			.is_err(),
+		"the legacy completion path must remain blocked while run fences are active"
+	);
+	let completed = Home::new(executor.clone(), completion_run)
+		.complete(&format!("{}:complete", run.id), &artifact)
 		.await
 		.unwrap();
+	assert_eq!(completed.status, "COMPLETED");
+	let remaining_current_fences: bool = sqlx::query_scalar(
+		"SELECT EXISTS(SELECT 1 FROM remote_run_message_fences WHERE task_id = $1 AND run_id = $2 AND NOT consumed)",
+	)
+	.bind(task.id)
+	.bind(run.id)
+	.fetch_one(&home.store.pool)
+	.await
+	.unwrap();
+	assert!(
+		!remaining_current_fences,
+		"terminal completion consumes covered fences atomically"
+	);
 	let rejected_after_home_terminal = Uuid::new_v4();
 	assert_eq!(
 		peer_control(
 			&executor_app,
 			&home.config.node_id,
 			json!({
-				"run_id":run.id,"action":"message","content":"after home cancellation","idempotency_key":rejected_after_home_terminal
+				"run_id":run.id,"action":"message","content":"after home completion","idempotency_key":rejected_after_home_terminal
 			})
 		)
 		.await
@@ -1279,14 +1427,14 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.await
 			.unwrap()
 			.iter()
-			.any(|input| input.content == "after home cancellation")
+			.any(|input| input.content == "after home completion")
 	);
 	let (status, body) = common::request(
 		&executor_app,
 		&executor.config.api_token,
 		"POST",
 		&format!("/api/runs/{}/message", run.id),
-		json!({"content":"direct message after home cancellation","idempotency_key":Uuid::new_v4()}),
+		json!({"content":"direct message after home completion","idempotency_key":Uuid::new_v4()}),
 	)
 	.await;
 	assert_eq!(status, 409, "{body}");
@@ -1297,7 +1445,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.await
 			.unwrap()
 			.iter()
-			.any(|input| input.content == "direct message after home cancellation")
+			.any(|input| input.content == "direct message after home completion")
 	);
 	sqlx::query(
 		&Query::update()

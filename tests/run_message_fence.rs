@@ -369,7 +369,9 @@ async fn scoped_remote_admission_imports_history_before_assigning_new_sequence()
 			let old_message = old_message.clone();
 			async move {
 				match command["operation"].as_str().unwrap() {
-					"run_message_delivery_capability" => (StatusCode::OK, Json(json!(true))),
+					"run_message_delivery_capability" => {
+						(StatusCode::OK, Json(json!({"protocol":2})))
+					}
 					"run_message_history" => (StatusCode::OK, Json(json!([old_message]))),
 					"run_message_reserve" => (StatusCode::OK, Json(json!({"reserved":true}))),
 					"run_message_commit" => (StatusCode::OK, Json(json!({"committed":true}))),
@@ -685,7 +687,12 @@ async fn bounded_terminal_transition_keeps_unadmitted_reservations_and_rolls_bac
 	fixture
 		.home
 		.store
-		.release_remote_run_message(run.task_id, run.id, &[unknown_key])
+		.release_remote_run_message(
+			run.task_id,
+			run.id,
+			&fixture.executor.config.node_id,
+			&[unknown_key],
+		)
 		.await
 		.unwrap();
 	let task = fixture
