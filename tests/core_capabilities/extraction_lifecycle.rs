@@ -10,7 +10,7 @@ struct ExtractionFixture {
 	expected_runner: &'static str,
 }
 
-async fn runner(
+pub(super) async fn runner(
 	c: &CoreFixture,
 	method: reqwest::Method,
 	path: &str,
@@ -96,7 +96,11 @@ fn extraction_lifecycle_fixture(
 				} else {
 					json!([])
 				};
-				let code = if case == "failed" {
+				let code = if case == "truncated" {
+					r#"python -I -c 'print("x" * (9 << 20))'"#
+				} else if case == "malformed" {
+					"printf null"
+				} else if case == "failed" {
 					"exit 7"
 				} else {
 					"sleep 30; printf must-not-complete"
@@ -118,7 +122,9 @@ fn extraction_lifecycle_fixture(
 					assert_eq!(cancelled["status"], "cancelled");
 				}
 				if !staged {
-					let wanted = if case == "failed" {
+					let wanted = if matches!(case, "truncated" | "malformed") {
+						"completed"
+					} else if case == "failed" {
 						"failed"
 					} else {
 						"running"
@@ -139,7 +145,9 @@ fn extraction_lifecycle_fixture(
 						tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 					}
 				}
-				expected_runner = if case == "failed" {
+				expected_runner = if matches!(case, "truncated" | "malformed") {
+					"completed"
+				} else if case == "failed" {
 					"failed"
 				} else {
 					"cancelled"
@@ -168,7 +176,9 @@ fn extraction_lifecycle_fixture(
 			c,
 			path,
 			operation,
-			expected: if disabled {
+			expected: if case == "truncated" {
+				"output_limit"
+			} else if disabled {
 				"admission_disabled"
 			} else {
 				"extraction_failed"
@@ -181,6 +191,8 @@ fn extraction_lifecycle_fixture(
 #[rstest::rstest]
 #[case("failed")]
 #[case("cancelled")]
+#[case("truncated")]
+#[case("malformed")]
 #[case("disabled_undispatched")]
 #[case("disabled_intent")]
 #[case("disabled_staged")]

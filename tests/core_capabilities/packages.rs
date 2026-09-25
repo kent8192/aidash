@@ -189,3 +189,30 @@ async fn approved_wheel_installs_offline_with_hashes_and_explicit_memory_reset(
 	worker.await.unwrap().unwrap();
 	c.close().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn package_overlay_publication_survives_process_death_before_swap_and_during_cleanup(
+	#[future] runtime_fixture: CoreFixture,
+) {
+	use base64::{Engine, engine::general_purpose::STANDARD};
+	let c = Box::pin(runtime_fixture).await;
+	let run = admit(&c).await;
+	let (stop, rx) = tokio::sync::watch::channel(false);
+	let worker = tokio::spawn(aidash::capabilities::operations::run(c.f.store.clone(), rx));
+	let script = STANDARD.encode(include_str!("../fixtures/overlay-crash.py"));
+	let code = format!("python -I -c \"import base64;exec(base64.b64decode('{script}'))\"");
+	let (status, op) = request(&c.app,&c.token,"POST",&format!("/api/runs/{}/shell",run.id),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"command":code,"timeout_seconds":60})).await;
+	assert_eq!(status, 200, "{op}");
+	let done = operation_until(&c, run.id, "shell", &op["operation_id"], &["completed"]).await;
+	assert!(
+		done["output"]
+			.as_str()
+			.unwrap()
+			.contains("atomic overlay survived both interruption points"),
+		"{done}"
+	);
+	stop.send(true).unwrap();
+	worker.await.unwrap().unwrap();
+	c.close().await;
+}

@@ -368,6 +368,7 @@ async fn search(
 	let files = files(area)?;
 	let started = std::time::Instant::now();
 	let mut matches = vec![];
+	let mut unavailable: Vec<Value> = vec![];
 	while cursor.file < files.len() {
 		if started.elapsed()
 			> std::time::Duration::from_secs(store.capabilities.0.limits.search_seconds)
@@ -402,8 +403,34 @@ async fn search(
 			if index < cursor.line {
 				continue;
 			}
-			let line = std::str::from_utf8(&line)
-				.map_err(|_| Error::Invalid("REPRESENTATION_UNAVAILABLE: invalid UTF-8".into()))?;
+			let Ok(line) = std::str::from_utf8(&line) else {
+				if input.path.as_deref() == Some(&file.path) {
+					return Err(Error::Invalid(
+						"REPRESENTATION_UNAVAILABLE: invalid UTF-8".into(),
+					));
+				}
+				let item = json!({"file_id":file.file_id,"error":"REPRESENTATION_UNAVAILABLE"});
+				let bytes = matches
+					.iter()
+					.chain(&unavailable)
+					.map(|v: &Value| v.to_string().len())
+					.sum::<usize>() + item.to_string().len();
+				if matches.len() + unavailable.len() >= limit
+					|| bytes
+						> store
+							.capabilities
+							.0
+							.limits
+							.search_bytes
+							.saturating_sub(2768)
+				{
+					cursor.line = index;
+					exhausted = false;
+					break;
+				}
+				unavailable.push(item);
+				break;
+			};
 			if index % 64 == 0
 				&& started.elapsed()
 					> std::time::Duration::from_secs(store.capabilities.0.limits.search_seconds)
@@ -421,9 +448,10 @@ async fn search(
 				let item = json!({"file_id":file.file_id,"path":file.path,"digest":file.digest,"location":{"line":index+1,"source":file.provenance},"snippet":&line[..end]});
 				let byte_count = matches
 					.iter()
+					.chain(&unavailable)
 					.map(|v: &Value| v.to_string().len())
 					.sum::<usize>() + item.to_string().len();
-				if matches.len() >= limit
+				if matches.len() + unavailable.len() >= limit
 					|| byte_count
 						> store
 							.capabilities
@@ -432,7 +460,7 @@ async fn search(
 							.search_bytes
 							.saturating_sub(2768)
 				{
-					if matches.is_empty() {
+					if matches.is_empty() && unavailable.is_empty() {
 						return Err(Error::Invalid(
 							"SEARCH_RESULT_LIMIT: one match exceeds the configured page budget"
 								.into(),
@@ -455,7 +483,9 @@ async fn search(
 	let next = (cursor.file < files.len()).then(|| {
 		URL_SAFE_NO_PAD.encode(serde_json::to_vec(&cursor).expect("cursor serialization"))
 	});
-	Ok(json!({"matches":matches,"truncated":next.is_some(),"next_cursor":next}))
+	Ok(
+		json!({"matches":matches,"unavailable":unavailable,"truncated":next.is_some(),"next_cursor":next}),
+	)
 }
 
 async fn bounded_line(reader: &mut (dyn AsyncBufRead + Unpin + Send)) -> Result<Option<Vec<u8>>> {
@@ -495,6 +525,9 @@ pub(crate) async fn materialize(
 	let digest = crate::registry::digest(&json!(["materialize", run.id, input]));
 	if let Some(cached) = sessions::cached(access, input.idempotency_key, &digest).await? {
 		return Ok(cached);
+	}
+	if sessions::status(access, &area).await?.active_run_id != Some(run.id) {
+		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
 	if input.expected_revision != area.revision {
 		return Err(Error::Conflict("AREA_REVISION_CHANGED".into()));
@@ -623,6 +656,38 @@ pub(crate) async fn materialize(
 	Ok(result)
 }
 pub(crate) async fn publish(store: &Store, access: &mut Access, area: &mut Area) -> Result<()> {
+	// Commit the old working-object tombstones with the new manifest. Only
+	// superseded working bytes are reclaimed, never outputs or recovery copies.
+	let previous: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("manifest"))
+			.from(Alias::new("core_areas"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(area.id)
+	.fetch_one(&mut **access.tx)
+	.await?;
+	let current = files(area)?;
+	for old in serde_json::from_value::<Vec<FileEntry>>(previous)? {
+		if matches!(old.scope, FileScope::Working)
+			&& !current.iter().any(|file| file.file_id == old.file_id)
+		{
+			sqlx::query(
+				&Query::update()
+					.table(Alias::new("core_objects"))
+					.value(Alias::new("kind"), "superseded_working")
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+					.and_where(Expr::col(Alias::new("area_id")).eq(Expr::cust("$2")))
+					.and_where(Expr::col(Alias::new("kind")).eq("working"))
+					.to_string(PostgresQueryBuilder),
+			)
+			.bind(old.file_id)
+			.bind(area.id)
+			.execute(&mut **access.tx)
+			.await?;
+		}
+	}
 	area.revision += 1;
 	sqlx::query(
 		&Query::update()

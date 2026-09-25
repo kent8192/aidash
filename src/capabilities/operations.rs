@@ -511,7 +511,8 @@ async fn drive(store: &Store, id: Uuid) -> Result<()> {
 					set_area(&mut access, area.id, "active", area.epoch).await?;
 					return persist(&mut access, &operation).await;
 				}
-				let mut entries = service::files(&area)?.into_iter().filter(|file| !matches!(file.scope, FileScope::Working)).collect::<Vec<_>>();
+				let previous = service::files(&area)?;
+                let mut entries = previous.iter().filter(|file| !matches!(file.scope, FileScope::Working)).cloned().collect::<Vec<_>>();
 				let exported = observed["files"].as_array().ok_or_else(|| Error::External("invalid runner file manifest".into()))?;
 				let mut size = entries.iter().map(|file| file.size).sum::<u64>();
 				let mut seen = std::collections::BTreeSet::new();
@@ -522,7 +523,12 @@ async fn drive(store: &Store, id: Uuid) -> Result<()> {
 					let file_size = file["size"].as_u64().ok_or(Error::Forbidden)?;
 					size = size.checked_add(file_size).ok_or(Error::Forbidden)?;
 					if size > store.capabilities.0.working_bytes { return Err(Error::Conflict("runner file quota".into())); }
-					let (file_id,digest) = Box::pin(download_output(store, &mut access, area.id, id, file)).await?;
+					if let Some(unchanged) = previous.iter().find(|old| matches!(old.scope,FileScope::Working) && old.path==path && old.size==file_size && file["digest"]==old.digest) {
+                        store.capabilities.verified(&mut access,unchanged).await?;
+                        entries.push(unchanged.clone());
+                        continue;
+                    }
+                    let (file_id,digest) = Box::pin(download_output(store, &mut access, area.id, id, file)).await?;
 					entries.push(FileEntry { file_id, path:path.into(), digest, size:file_size, media_type:"application/octet-stream".into(), scope:FileScope::Working, provenance:json!({"kind":"operation","operation_id":id}) });
 				}
 				let stdout = STANDARD.decode(observed["stdout"].as_str().ok_or(Error::Forbidden)?).map_err(|_| Error::Invalid("invalid runner output encoding".into()))?;
@@ -704,26 +710,46 @@ async fn download_output(
 	object.finish(access, Some(expected)).await
 }
 
-async fn acknowledge_results(store: &Store) -> Result<()> {
-	let rows: Vec<(Uuid, String)> = sqlx::query_as(
+async fn acknowledge_results(store: &Store, cursor: &mut Uuid) -> Result<()> {
+	let rows: Vec<(Uuid, String, Option<String>)> = sqlx::query_as(
 		&Query::select()
-			.columns(["id", "digest"].map(Alias::new))
+			.columns(["id", "digest", "runner_instance"].map(Alias::new))
 			.from(Alias::new("core_operations"))
 			.and_where(Expr::cust("result->'runner_acknowledged' = 'false'::jsonb"))
 			.and_where(Expr::col(Alias::new("state")).is_in(["completed", "cancelled", "failed"]))
+			.and_where(Expr::col(Alias::new("id")).gt(Expr::cust("$1")))
+			.order_by(Alias::new("id"), sea_orm::sea_query::Order::Asc)
 			.limit(16)
 			.to_string(PostgresQueryBuilder),
 	)
+	.bind(*cursor)
 	.fetch_all(&store.pool)
 	.await?;
-	for (id, digest) in rows {
-		remote(
-			store,
-			reqwest::Method::POST,
-			&format!("/v1/operations/{id}/ack"),
-			Some(json!({"digest":digest})),
-		)
-		.await?;
+	if rows.is_empty() {
+		*cursor = Uuid::nil();
+	}
+	for (id, digest, instance) in rows {
+		*cursor = id;
+		let health = remote(store, reqwest::Method::GET, "/v1/health", None).await?;
+		let lost = instance.as_deref().is_some_and(|old| {
+			health["instance"]
+				.as_str()
+				.is_some_and(|current| current != old)
+		});
+		if !lost
+			&& remote(
+				store,
+				reqwest::Method::POST,
+				&format!("/v1/operations/{id}/ack"),
+				Some(json!({"digest":digest})),
+			)
+			.await
+			.is_err()
+		{
+			continue;
+		}
+		// Completed data is already committed. A different durable runner
+		// identity proves its old journal cannot be acknowledged here.
 		sqlx::query(
 			&Query::update()
 				.table(Alias::new("core_operations"))
@@ -755,6 +781,7 @@ async fn execution_loop(
 	store: Store,
 	mut stopping: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
+	let mut acknowledgement_cursor = Uuid::nil();
 	loop {
 		if *stopping.borrow() {
 			return Ok(());
@@ -808,7 +835,7 @@ async fn execution_loop(
 				tracing::warn!(%id, %error, "capability operation reconciliation pending");
 			}
 		}
-		if let Err(error) = acknowledge_results(&store).await {
+		if let Err(error) = acknowledge_results(&store, &mut acknowledgement_cursor).await {
 			tracing::warn!(%error, "runner receipt acknowledgement pending");
 		}
 		tokio::select! { _ = stopping.changed() => {}, _ = tokio::time::sleep(std::time::Duration::from_millis(300)) => {} }

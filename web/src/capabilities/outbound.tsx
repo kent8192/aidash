@@ -113,7 +113,7 @@ export function OutboundFiles({
                   onClick={() =>
                     void act(() =>
                       saveFile(
-                        `/working-areas/${area}/files/${item.output_file!.file_id}`,
+                        `/working-areas/${area}/files/${item.output_file!.file_id}/download`,
                       ),
                     )
                   }

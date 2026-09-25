@@ -95,6 +95,7 @@ pub(crate) async fn share(
 			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::cust("$3")))
 			.and_where(Expr::col(Alias::new("agent_id")).eq(Expr::cust("$4")))
 			.and_where(Expr::col(Alias::new("home_node")).eq(Expr::cust("$5")))
+			.and_where(Expr::col(Alias::new("owner")).eq(Expr::cust("$6")))
 			.lock(LockType::Update)
 			.to_string(PostgresQueryBuilder),
 	)
@@ -103,6 +104,7 @@ pub(crate) async fn share(
 	.bind(input.recipient.thread_id)
 	.bind(&input.recipient.agent_id)
 	.bind(&store.node_id)
+	.bind(&access.identity.subject)
 	.fetch_optional(&mut **access.tx)
 	.await?
 	.ok_or_else(|| Error::NotFound("recipient unavailable".into()))?;

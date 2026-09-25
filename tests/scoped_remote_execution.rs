@@ -297,6 +297,32 @@ async fn scoped_remote_worker_finishes_at_home_and_retries_keep_one_execution(
 			.count(),
 		1
 	);
+	let events =
+		p.a.store
+			.events(0, Some(task.workspace_id), 1000)
+			.await
+			.unwrap();
+	let completed = events
+		.iter()
+		.filter(|event| event.kind == "task.remote_tool_completed")
+		.collect::<Vec<_>>();
+	assert!(!completed.is_empty());
+	assert!(
+		completed
+			.iter()
+			.all(|event| event.data["remote_run_id"] == json!(p.admission)
+				&& event.data["detail"]["call"]["name"].is_string())
+	);
+	assert!(
+		completed
+			.iter()
+			.all(|event| event.data["detail"]["call"]["arguments"].is_null())
+	);
+	assert!(
+		!events
+			.iter()
+			.any(|event| event.kind == "task.remote_run_recovered")
+	);
 	assert_eq!(p.requests.lock().await.len(), 2);
 	let input = p
 		.requests

@@ -103,8 +103,15 @@ pub enum CapabilityResult {
 pub struct SearchResult {
 	#[schema(max_items = 50)]
 	pub matches: Vec<SearchMatch>,
+	#[serde(default)]
+	pub unavailable: Vec<SearchUnavailable>,
 	pub next_cursor: Option<String>,
 	pub truncated: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct SearchUnavailable {
+	pub file_id: Uuid,
+	pub error: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct SearchMatch {

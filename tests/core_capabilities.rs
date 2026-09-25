@@ -1494,3 +1494,17 @@ mod retention_boundary_tests;
 #[cfg(feature = "capability-runtime-tests")]
 #[path = "core_capabilities/extraction_lifecycle.rs"]
 mod extraction_lifecycle_tests;
+
+#[path = "core_capabilities/subject_sessions.rs"]
+mod subject_session_tests;
+
+#[path = "core_capabilities/upload_bounds.rs"]
+mod upload_bound_tests;
+
+#[cfg(feature = "capability-runtime-tests")]
+#[path = "core_capabilities/reference_dispatch.rs"]
+mod reference_dispatch_tests;
+
+#[cfg(feature = "capability-runtime-tests")]
+#[path = "core_capabilities/publication_storage.rs"]
+mod publication_storage_tests;

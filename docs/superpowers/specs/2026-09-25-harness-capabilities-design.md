@@ -72,7 +72,7 @@ The sandbox runner is a service boundary, not a second planner or autonomous Age
 
 ### 4.1 Session identity and input ordering
 
-Identify an execution session by `(tenant, workspace_home_node, workspace_id, thread_id, agent_node, agent_id)`, with a version-independent node-and-Agent identity. The authorization principal still includes the exact version; Agent version is pinned on every Run rather than silently changing inside a running operation.
+Identify an execution session by `(tenant, owner_subject, workspace_home_node, workspace_id, thread_id, agent_node, agent_id)`, with a version-independent node-and-Agent identity. The authorization principal still includes the exact version; Agent version is pinned on every Run rather than silently changing inside a running operation.
 
 The initial controller admits one ordinary active Run in that session. Further independent user requests enter a durable ordered queue. An explicit steer carries the expected active Run ID and enters that Run's ordered input stream; it does not create a second ordinary Run. A stale steer returns a conflict instead of being attached to an unrelated Run. Stop, cancellation, and approval responses are control operations and must not wait behind the work they control.
 

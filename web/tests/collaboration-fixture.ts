@@ -220,6 +220,7 @@ export async function setup(
     approval?: boolean;
     failFirstUpload?: boolean;
     coreCapabilities?: boolean;
+    coreVersion?: boolean;
   } = {},
 ) {
   let data = fixture(options.referenceLayout);
@@ -236,6 +237,8 @@ export async function setup(
       },
     };
   }
+  if (options.coreVersion)
+    data.registry.push({ ...data.registry[0], version: "1.1.0" });
   if (options.extraGraphAgent) {
     data.registry.push({
       id: 'review/"[special]:/agent',

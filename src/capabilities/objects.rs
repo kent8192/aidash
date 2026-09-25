@@ -561,7 +561,7 @@ impl Runtime {
 	/// Unlink is idempotent: a crash between unlink and the database commit is
 	/// retried against the same UUID; quota is released only after unlink.
 	/// Internal reconciliation only: the caller must lock and validate a
-	/// committed cleanup/expiry record containing this exact object identity.
+	/// committed cleanup/expiry record or publication tombstone for this object.
 	pub(crate) async fn erase_committed(
 		&self,
 		tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,

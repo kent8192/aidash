@@ -133,6 +133,7 @@ impl Runtime {
 			|| !profile.storage.is_absolute()
 			|| profile.storage.parent().is_none()
 			|| profile.working_bytes == 0
+			|| profile.working_bytes > 1 << 30
 			|| profile.retained_bytes < profile.working_bytes
 			|| profile.retained_bytes > i64::MAX as u64
 			|| profile.temporary_bytes == 0

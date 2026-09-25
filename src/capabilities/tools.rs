@@ -208,6 +208,10 @@ mod tests {
 			revision: 1,
 			result: CapabilityResult::Search(SearchResult {
 				matches: vec![],
+				unavailable: vec![SearchUnavailable {
+					file_id: uuid::Uuid::nil(),
+					error: "REPRESENTATION_UNAVAILABLE".into(),
+				}],
 				next_cursor: None,
 				truncated: false,
 			}),

@@ -19,6 +19,11 @@ import zipfile
 from pip._vendor.packaging.utils import canonicalize_name, parse_wheel_filename
 from pip._vendor.packaging.requirements import Requirement
 
+# The isolated interpreter excludes the script directory; this is the fixed,
+# read-only runner installation, never an Agent-controlled import directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from overlay import publish
+
 request = json.loads(base64.b64decode(sys.argv[1], validate=True))
 if not 1 <= len(request['wheels']) <= 16:
     raise ValueError('wheel count limit')
@@ -76,22 +81,24 @@ with tempfile.TemporaryDirectory(prefix='aidash-install-') as temporary:
     overlay = Path('/work/.aidash-python')
     if overlay.is_symlink():
         raise ValueError('unsafe overlay')
-    overlay.mkdir(exist_ok=True)
-    # Stage in the same filesystem before replacing the old overlay. The area
-    # remains exclusively owned and unavailable to readers through publication.
-    pending = overlay / 'install-pending'
+    # Stage the package tree and its manifest together on the same filesystem.
+    # Atomic exchange keeps the old or complete new overlay usable even if the
+    # process dies during publication or deletion of the obsolete tree.
+    pending = Path('/work/.aidash-python-pending')
+    if pending.is_symlink():
+        raise ValueError('unsafe staging overlay')
     if pending.exists():
         shutil.rmtree(pending)
-    shutil.copytree(target, pending, symlinks=False)
-    destination = overlay / 'site-packages'
-    if destination.exists():
-        shutil.rmtree(destination)
-    os.replace(pending, destination)
+    pending.mkdir()
+    shutil.copytree(target, pending / 'site-packages', symlinks=False)
     report = {'protocol':'aidash-python-packages/1', 'image':request['image'],
               'packages':sources, 'outcome':'installed', 'network':'disabled', 'automatic_reinstall':False}
-    manifest = overlay / 'manifest.json'
+    manifest = pending / 'manifest.json'
     with manifest.open('w') as file:
         json.dump(report, file, sort_keys=True)
         file.flush()
         os.fsync(file.fileno())
+    publish(pending, overlay)
+    if pending.exists():
+        shutil.rmtree(pending)
     print(json.dumps(report, sort_keys=True))

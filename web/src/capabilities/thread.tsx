@@ -166,6 +166,7 @@ function FileOperations({
   const [mode, setMode] = useState("literal");
   const [search, setSearch] = useState<{
     matches?: { path: string; location: { line: number }; snippet: string }[];
+    unavailable?: { file_id: string; error: string }[];
     next_cursor?: string;
   }>();
   const [code, setCode] = useState("");
@@ -326,6 +327,17 @@ function FileOperations({
             {search.matches?.map((m, i) => (
               <p key={i}>
                 {m.path}:{m.location.line} {m.snippet}
+              </p>
+            ))}
+            {search.unavailable?.map((file) => (
+              <p key={file.file_id}>
+                {
+                  area.manifest.find((entry) => entry.file_id === file.file_id)
+                    ?.path
+                }
+                {ja
+                  ? "：テキストとして検索できません。原本をダウンロードしてください。"
+                  : ": Text search unavailable. Download the original file."}
               </p>
             ))}
             {search.next_cursor && (
@@ -780,24 +792,37 @@ export function ThreadCapabilities({
       setBusy(false);
     }
   };
-  const target = agents.find((e) => `${e.id}@${e.version}` === agent);
+  const availableAgents = agents.filter((e) => !area || e.id === area.agent_id);
+  const effectiveAgent = availableAgents.some(
+    (e) => `${e.id}@${e.version}` === agent,
+  )
+    ? agent
+    : area && session.data?.last_agent_version
+      ? `${area.agent_id}@${session.data.last_agent_version}`
+      : "";
+  const target = availableAgents.find(
+    (e) => `${e.id}@${e.version}` === effectiveAgent,
+  );
   if (!area && agents.length === 0 && !query.isError) return null;
   return (
     <section className="core-panel">
       <h3>{ja ? "Agent の作業" : "Agent work"}</h3>
       {query.isError && <p role="alert">{query.error.message}</p>}
-      {(!area || !session.data?.last_agent_version) && (
+      {
         <Field label={ja ? "実行する Agent" : "Agent to run"}>
-          <select value={agent} onChange={(e) => setAgent(e.target.value)}>
+          <select
+            value={effectiveAgent}
+            onChange={(e) => setAgent(e.target.value)}
+          >
             <option value="">{ja ? "選択" : "Choose"}</option>
-            {agents.map((e) => (
+            {availableAgents.map((e) => (
               <option
                 key={`${e.id}@${e.version}`}
               >{`${e.id}@${e.version}`}</option>
             ))}
           </select>
         </Field>
-      )}
+      }
       {(query.data?.items.length ?? 0) > 1 && (
         <Field label={ja ? "作業領域" : "Working area"}>
           <select
@@ -822,13 +847,12 @@ export function ThreadCapabilities({
       <div className="core-inline">
         <button
           type="button"
-          disabled={busy || !prompt.trim() || (!area && !target)}
+          disabled={busy || !prompt.trim() || !target}
           onClick={() =>
             void act(async () => {
               if (area) {
                 const version =
-                  session.data?.last_agent_version ??
-                  (target?.id === area.agent_id ? target.version : undefined);
+                  target?.id === area.agent_id ? target.version : undefined;
                 if (!version)
                   throw new Error("Select an available Agent version");
                 await post(`/working-areas/${area.id}/queue`, {

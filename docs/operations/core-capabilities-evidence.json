@@ -126,6 +126,10 @@
         {
           "name": "session_boundary_tests::same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runnable",
           "source": "tests/core_capabilities/session_boundaries.rs"
+        },
+        {
+          "name": "subject_session_tests::same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_scoped",
+          "source": "tests/core_capabilities/subject_sessions.rs"
         }
       ]
     },
@@ -143,6 +147,10 @@
         {
           "name": "session_boundary_tests::same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runnable",
           "source": "tests/core_capabilities/session_boundaries.rs"
+        },
+        {
+          "name": "subject_session_tests::completed_run_cannot_materialize_into_its_successor_but_current_run_can",
+          "source": "tests/core_capabilities/subject_sessions.rs"
         }
       ]
     },
@@ -186,6 +194,10 @@
         {
           "name": "runtime_fault_tests::idle_heap_is_physically_stopped_without_deleting_saved_files",
           "source": "tests/core_capabilities/runtime_faults.rs"
+        },
+        {
+          "name": "subject_session_tests::same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_scoped",
+          "source": "tests/core_capabilities/subject_sessions.rs"
         }
       ]
     },
@@ -319,6 +331,10 @@
         {
           "name": "lifecycle_tests::interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_objects",
           "source": "tests/core_capabilities/lifecycle.rs"
+        },
+        {
+          "name": "publication_storage_tests::unchanged_exports_reuse_objects_and_superseded_working_bytes_are_reclaimed",
+          "source": "tests/core_capabilities/publication_storage.rs"
         }
       ]
     },
@@ -348,6 +364,10 @@
         {
           "name": "network_tests::broker_response_budget_uses_the_operator_profile_and_retains_no_partial_artifact",
           "source": "tests/core_capabilities/network.rs"
+        },
+        {
+          "name": "capabilities::limits::tests::working_quota_cannot_exceed_runner_export_ceiling",
+          "source": "src/capabilities/limits.rs"
         }
       ],
       "admission_probe": "runner/probe.py and runner/node_guard.py: executed in the pinned gVisor image; verify direct egress, metadata, host sockets, filesystem, non-root, resource ceilings and physical writer freeze/termination."
@@ -464,6 +484,18 @@
         {
           "name": "extraction_lifecycle_tests::extraction_releases_terminal_runner_payloads_and_rollback_starts_no_new_parser",
           "source": "tests/core_capabilities/extraction_lifecycle.rs"
+        },
+        {
+          "name": "upload_bound_tests::tiny_upload_chunks_allocate_nothing_and_full_chunks_remain_idempotent",
+          "source": "tests/core_capabilities/upload_bounds.rs"
+        },
+        {
+          "name": "upload_bound_tests::reference_names_cannot_create_dot_segment_mounts",
+          "source": "tests/core_capabilities/upload_bounds.rs"
+        },
+        {
+          "name": "reference_dispatch_tests::extraction_requires_current_runner_limits_and_respects_lower_output_budget",
+          "source": "tests/core_capabilities/reference_dispatch.rs"
         }
       ]
     },
@@ -493,6 +525,10 @@
       "tests": [
         {
           "name": "package_tests::approved_wheel_installs_offline_with_hashes_and_explicit_memory_reset",
+          "source": "tests/core_capabilities/packages.rs"
+        },
+        {
+          "name": "package_tests::package_overlay_publication_survives_process_death_before_swap_and_during_cleanup",
           "source": "tests/core_capabilities/packages.rs"
         }
       ]
@@ -545,6 +581,10 @@
         {
           "name": "lifecycle_tests::interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_objects",
           "source": "tests/core_capabilities/lifecycle.rs"
+        },
+        {
+          "name": "publication_storage_tests::stale_and_rejected_receipts_cannot_starve_new_terminal_payload_acknowledgement",
+          "source": "tests/core_capabilities/publication_storage.rs"
         }
       ]
     },
@@ -591,6 +631,11 @@
       "name": "capability setup attaches a direct Skill and failed-extraction original to a new immutable version",
       "source": "web/tests/core-capabilities.spec.ts",
       "acceptance": ["AT02", "AT13", "AT23", "AT24"]
+    },
+    {
+      "name": "generated image and outbound downloads use the authenticated file endpoint",
+      "source": "web/tests/core-capabilities.spec.ts",
+      "acceptance": ["AT05", "AT18"]
     }
   ],
   "commands": {

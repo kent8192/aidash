@@ -7,7 +7,7 @@ export function DisplayFile({ area, file }: { area: string; file: CoreFile }) {
   const ja = locale === "ja-JP";
   const [preview, setPreview] = useState<string>();
   const [error, setError] = useState("");
-  const path = `/working-areas/${area}/files/${file.file_id}`;
+  const path = `/working-areas/${area}/files/${file.file_id}/download`;
   useEffect(
     () => () => {
       if (preview) URL.revokeObjectURL(preview);

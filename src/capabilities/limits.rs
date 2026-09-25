@@ -61,6 +61,26 @@ impl ContentLimits {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[rstest::fixture]
+	fn profile(#[default(1 << 30)] bytes: u64) -> crate::capabilities::Profile {
+		crate::capabilities::Profile {
+			working_bytes: bytes,
+			..Default::default()
+		}
+	}
+
+	#[rstest::rstest]
+	#[case(1 << 30, true)]
+	#[case((1 << 30) + 1, false)]
+	fn working_quota_cannot_exceed_runner_export_ceiling(
+		#[case] bytes: u64,
+		#[case] valid: bool,
+		#[with(bytes)] profile: crate::capabilities::Profile,
+	) {
+		assert_eq!(profile.working_bytes, bytes);
+		assert_eq!(crate::capabilities::Runtime::new(profile).is_ok(), valid);
+	}
+
 	#[test]
 	fn defaults_and_lower_content_limits_preserve_wire_ceilings() {
 		let limits = ContentLimits::default();

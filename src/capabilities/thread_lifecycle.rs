@@ -78,12 +78,16 @@ pub(crate) async fn delete(
 		&sessions::select("core_areas")
 			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
 			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::cust("$2")))
+			// Deleting a shared conversation never grants management of another
+			// subject's private files. Their areas remain available in settings.
+			.and_where(Expr::col(Alias::new("owner")).eq(Expr::cust("$3")))
 			.order_by(Alias::new("id"), Order::Asc)
 			.limit(101)
 			.to_string(PostgresQueryBuilder),
 	)
 	.bind(workspace)
 	.bind(thread)
+	.bind(&access.identity.subject)
 	.fetch_all(&mut **access.tx)
 	.await?;
 	if areas.len() > 100 || input.files.len() != areas.len() {

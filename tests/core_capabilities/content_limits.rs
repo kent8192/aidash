@@ -232,5 +232,23 @@ async fn binary_search_reports_unavailable_text_while_path_search_remains_usable
 	.await;
 	assert_eq!(status, 200, "{result}");
 	assert_eq!(result["matches"].as_array().unwrap().len(), 1);
+	let (status, batch) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&path,
+		json!({"query":"not-present","mode":mode,"scope":"working"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{batch}");
+	assert_eq!(batch["unavailable"].as_array().unwrap().len(), 1);
+	assert_eq!(
+		batch["unavailable"][0]["file_id"],
+		result["matches"][0]["file_id"]
+	);
+	assert_eq!(
+		batch["unavailable"][0]["error"],
+		"REPRESENTATION_UNAVAILABLE"
+	);
 	c.close().await;
 }

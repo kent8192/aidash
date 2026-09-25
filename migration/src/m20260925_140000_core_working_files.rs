@@ -64,7 +64,8 @@ impl MigrationTrait for Migration {
 				.col(a("home_node"))
 				.col(a("workspace_id"))
 				.col(a("thread_id"))
-				.col(a("agent_id")),
+				.col(a("agent_id"))
+				.col(a("owner")),
 		);
 		// No thread cascade: retained files keep their original ownership tombstone.
 		m.create_table(areas.to_owned()).await?;

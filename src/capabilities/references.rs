@@ -52,6 +52,7 @@ pub struct Upload {
 #[serde(deny_unknown_fields)]
 pub struct Chunk {
 	pub offset: u64,
+	/// Base64 bytes: exactly 4 MiB per sequential chunk, except the final chunk.
 	pub data: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, utoipa::ToSchema)]
@@ -113,6 +114,7 @@ pub(crate) async fn start(store: &Store, access: &mut Access, input: Upload) -> 
 		|| input.name.len() > 255
 		|| input.name.chars().any(char::is_control)
 		|| input.name.contains(['/', '\\'])
+		|| matches!(input.name.as_str(), "." | "..")
 		|| input.digest.len() != 64
 		|| !input
 			.digest
@@ -178,6 +180,7 @@ pub(crate) async fn chunk(
 		.ok_or(Error::Forbidden)?;
 	if bytes.is_empty()
 		|| bytes.len() > 4 << 20
+		|| bytes.len() as u64 != maximum.saturating_sub(input.offset).min(4 << 20)
 		|| input
 			.offset
 			.checked_add(bytes.len() as u64)
@@ -253,6 +256,7 @@ pub(crate) async fn commit(store: &Store, access: &mut Access, id: Uuid) -> Resu
 	record.data["original"] = json!(original);
 	record.data["operation_id"] = json!(Uuid::new_v4());
 	record.state = "extracting".into();
+	record.expires_at = None;
 	records::update(access, &mut record).await?;
 	view(&record)
 }
@@ -332,6 +336,14 @@ pub(crate) async fn pin(
 	Ok(())
 }
 
+fn finish_extraction(record: &mut Record, state: &str, digest: &str) {
+	record.state = "ready".into();
+	record.expires_at = None;
+	record.data["extraction_state"] = json!(state);
+	record.data["receipt_pending"] = json!(true);
+	record.data["runner_digest"] = json!(digest);
+}
+
 async fn drive(store: &Store, id: Uuid) -> Result<()> {
 	let snapshot: Record = sqlx::query_as(
 		&sessions::select("core_records")
@@ -361,7 +373,25 @@ async fn drive(store: &Store, id: Uuid) -> Result<()> {
             record.data["extraction_state"]=json!("admission_disabled");
             return records::update(&mut access,&mut record).await;
         }
-        let health=operations::remote(store,reqwest::Method::GET,"/v1/health",None).await?;
+        // JSON can expand each text byte to six escaped bytes. Pin the budget
+        // with the dispatch intent so a lost reply never changes its request.
+        let text_budget=record.data["text_budget"].as_u64().unwrap_or_else(|| (store.capabilities.0.limits.reference_text_bytes as u64).min(store.capabilities.0.output_bytes.saturating_sub(256) / 6));
+        if store.capabilities.0.admission && text_budget<4 && record.data["instance"].is_null() {
+            record.state="ready".into();record.expires_at=None;
+            record.data["extraction_state"]=json!("output_limit");
+            return records::update(&mut access,&mut record).await;
+        }
+        let health=if store.capabilities.0.admission {
+            match operations::verified_health(store,false).await {
+                Ok(health)=>health,
+                Err(_)=>{
+                    // Keep the original and retry after an operator repairs the
+                    // deployment; never start a parser under different limits.
+                    record.data["extraction_state"]=json!("runtime_unavailable");
+                    return records::update(&mut access,&mut record).await;
+                }
+            }
+        } else { operations::remote(store,reqwest::Method::GET,"/v1/health",None).await? };
         let profile=store.capabilities.0.runner.as_ref().ok_or(Error::Forbidden)?;
         if health["verified"]!=true||health["image"]!=profile.image {return Err(Error::Conflict("EXTRACTOR_UNAVAILABLE".into()));}
         if record.data["instance"].is_null() {
@@ -369,6 +399,7 @@ async fn drive(store: &Store, id: Uuid) -> Result<()> {
             // immutable operation identity only observes or resumes that parser.
             record.data["instance"]=health["instance"].clone();
             record.data["dispatch_pending"]=json!(true);
+            record.data["text_budget"]=json!(text_budget);
             return records::update(&mut access,&mut record).await;
         }
         if record.data["instance"]!=health["instance"] {record.state="failed".into();record.data["extraction_state"]=json!("runtime_lost");return records::update(&mut access,&mut record).await;}
@@ -377,7 +408,7 @@ async fn drive(store: &Store, id: Uuid) -> Result<()> {
             // Cancel by its immutable identity; never submit or stage anew.
             operations::remote(store,reqwest::Method::POST,&format!("{path}/cancel"),None).await?
         } else if record.data["dispatch_pending"]==true {
-            operations::remote(store,reqwest::Method::POST,"/v1/operations",Some(json!({"operation_id":operation,"area_id":id,"epoch":1,"digest":digest,"kind":"shell","code":format!("python -I /opt/aidash/extract.py {} {} {}",store.capabilities.0.limits.reference_text_bytes,store.capabilities.0.limits.reference_pages,store.capabilities.0.limits.reference_bytes),"seconds":store.capabilities.0.operation_seconds,"files":[{"file_id":original.file_id,"path":"original","scope":"references","size":original.size,"digest":original.digest}]}))).await?
+            operations::remote(store,reqwest::Method::POST,"/v1/operations",Some(json!({"operation_id":operation,"area_id":id,"epoch":1,"digest":digest,"kind":"shell","code":format!("python -I /opt/aidash/extract.py {} {} {}",text_budget,store.capabilities.0.limits.reference_pages,store.capabilities.0.limits.reference_bytes),"seconds":store.capabilities.0.operation_seconds,"files":[{"file_id":original.file_id,"path":"original","scope":"references","size":original.size,"digest":original.digest}]}))).await?
         } else {operations::remote(store,reqwest::Method::GET,&path,None).await?};
         match observed["status"].as_str() {
             Some("awaiting_files")=>{
@@ -391,31 +422,43 @@ async fn drive(store: &Store, id: Uuid) -> Result<()> {
                 record.data["dispatch_pending"]=json!(false);
             }
             Some("completed") if observed["termination_confirmed"]==true=>{
+                if observed["truncated"]==true {
+                    finish_extraction(&mut record,"output_limit",&digest);
+                    return records::update(&mut access,&mut record).await;
+                }
                 if !store.capabilities.0.admission {
-                    record.state="ready".into();record.expires_at=None;
-                    record.data["extraction_state"]=json!("admission_disabled");
-                    record.data["receipt_pending"]=json!(true);record.data["runner_digest"]=json!(digest);
+                    finish_extraction(&mut record,"admission_disabled",&digest);
                     return records::update(&mut access,&mut record).await;
                 }
                 let bytes=STANDARD.decode(observed["stdout"].as_str().ok_or(Error::Forbidden)?).map_err(|_|Error::Invalid("EXTRACTION_RESULT".into()))?;
-                if bytes.len()>262144 {return Err(Error::Conflict("EXTRACTION_RESULT_LIMIT".into()));}
-                let extracted:Value=serde_json::from_slice(&bytes)?;
-                let text=extracted["text"].as_str().ok_or(Error::Forbidden)?;
-                let state=extracted["state"].as_str().ok_or(Error::Forbidden)?;
+                let maximum=(store.capabilities.0.limits.reference_text_bytes*6+256).min(store.capabilities.0.output_bytes as usize);
+                if bytes.len()>maximum {
+                    finish_extraction(&mut record,"output_limit",&digest);
+                    return records::update(&mut access,&mut record).await;
+                }
+                let extracted:Value=match serde_json::from_slice(&bytes) {
+                    Ok(value)=>value,
+                    Err(_)=>{
+                        finish_extraction(&mut record,"extraction_failed",&digest);
+                        return records::update(&mut access,&mut record).await;
+                    }
+                };
+                let (Some(text),Some(state))=(extracted["text"].as_str(),extracted["state"].as_str()) else {
+                    finish_extraction(&mut record,"extraction_failed",&digest);
+                    return records::update(&mut access,&mut record).await;
+                };
                 if text.len()>store.capabilities.0.limits.reference_text_bytes || !matches!(state,"ready"|"text_limit"|"non_extractable"|"unsupported"|"malformed"|"encrypted"|"page_limit"|"file_limit"|"expanded_size_limit") {
-                    return Err(Error::Conflict("EXTRACTION_RESULT_LIMIT".into()));
+                    finish_extraction(&mut record,"output_limit",&digest);
+                    return records::update(&mut access,&mut record).await;
                 }
                 if !text.is_empty() {
                     let (file_id,digest)=store.capabilities.put(&mut access,None,"reference_extraction",text.as_bytes()).await?;
                     record.data["extraction"]=json!(FileEntry{file_id,path:"extracted.txt".into(),size:text.len() as u64,digest,media_type:"text/plain; charset=utf-8".into(),scope:FileScope::References,provenance:json!({"kind":"reference","id":id,"locations":"page, sheet/cell, or line labels in the extracted text"})});
                 }
-                record.state="ready".into();record.expires_at=None;record.data["extraction_state"]=json!(state);
-                record.data["receipt_pending"]=json!(true);record.data["runner_digest"]=json!(digest);
+                finish_extraction(&mut record,state,&digest);
             }
             Some("failed"|"cancelled") if observed["termination_confirmed"]==true=>{
-                record.state="ready".into();record.expires_at=None;
-                record.data["extraction_state"]=json!(if store.capabilities.0.admission {"extraction_failed"} else {"admission_disabled"});
-                record.data["receipt_pending"]=json!(true);record.data["runner_digest"]=json!(digest);
+                finish_extraction(&mut record,if store.capabilities.0.admission {"extraction_failed"} else {"admission_disabled"},&digest);
             }
             Some("uncertain"|"absent")=>{record.state="ready".into();record.expires_at=None;record.data["extraction_state"]=json!(if store.capabilities.0.admission {"extraction_failed"} else {"admission_disabled"});}
             Some("accepted"|"starting"|"running"|"finishing"|"cancelling")=>{record.data["dispatch_pending"]=json!(false);}

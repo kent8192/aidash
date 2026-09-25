@@ -231,7 +231,7 @@ pub(crate) async fn admit(
 		.fetch_all(&mut **access.tx)
 		.await?;
 		for parent_area in parent_areas {
-			if parent_area.agent_id == agent_id {
+			if parent_area.agent_id == agent_id && parent_area.owner == access.identity.subject {
 				return Err(Error::Conflict(
 					"SESSION_DEPENDENCY_CYCLE: child would wait behind its parent".into(),
 				));
@@ -271,6 +271,7 @@ pub(crate) async fn admit(
 						"workspace_id",
 						"thread_id",
 						"agent_id",
+						"owner",
 					]
 					.map(Alias::new),
 				)
@@ -295,6 +296,7 @@ pub(crate) async fn admit(
 			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::cust("$3")))
 			.and_where(Expr::col(Alias::new("agent_id")).eq(Expr::cust("$4")))
 			.and_where(Expr::col(Alias::new("home_node")).eq(Expr::cust("$5")))
+			.and_where(Expr::col(Alias::new("owner")).eq(Expr::cust("$6")))
 			.lock(LockType::Update)
 			.to_string(PostgresQueryBuilder),
 	)
@@ -303,6 +305,7 @@ pub(crate) async fn admit(
 	.bind(thread)
 	.bind(agent_id)
 	.bind(&store.node_id)
+	.bind(&access.identity.subject)
 	.fetch_one(&mut **access.tx)
 	.await?;
 	authorize(access, &area, "file.read").await?;

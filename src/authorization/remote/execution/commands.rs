@@ -398,22 +398,39 @@ pub(crate) async fn handle(
 				json!({"acknowledged":true})
 			}
 			"event" => {
-				// Only safe lifecycle events are accepted; arbitrary peer event
-				// payloads could otherwise bypass record-level read filtering.
-				if !matches!(
-					field(data, "kind")?,
-					"remote.run.recovered" | "remote.tool.completed"
-				) {
+				// Keep audit metadata typed and bound to this admission. Tool
+				// arguments/results may include separately protected records,
+				// so task events carry identifiers rather than their bytes.
+				let payload = &data["data"];
+				if payload["run_id"] != json!(input.admission_id) {
 					return Err(Error::Forbidden);
 				}
-				f.store
-					.event(
-						&mut access.tx,
-						Some(task.workspace_id),
-						"task.remote_run_recovered",
-						json!({"task_id":task.id,"grant_id":input.grant_id,"remote_run_id":input.admission_id}),
-					)
-					.await?;
+				let (kind, detail) = match field(data, "kind")? {
+					"remote.run.recovered" => {
+						let phase = field(payload, "phase")?;
+						let cause = field(payload, "cause")?;
+						if phase.len() > 32 || cause != "expired worker lease" {
+							return Err(Error::Invalid("invalid recovery event".into()));
+						}
+						("task.remote_run_recovered", json!({"phase":phase,"cause":cause}))
+					}
+					"remote.tool.completed" => {
+						let call = &payload["call"];
+						let name = field(call, "name")?;
+						let id = field(call, "id")?;
+						if name.len() > 256 || id.len() > 256 {
+							return Err(Error::Invalid("invalid tool event".into()));
+						}
+						("task.remote_tool_completed", json!({"call":{"id":id,"name":name}}))
+					}
+					_ => return Err(Error::Forbidden),
+				};
+				f.store.event(
+					&mut access.tx,
+					Some(task.workspace_id),
+					kind,
+					json!({"task_id":task.id,"grant_id":input.grant_id,"remote_run_id":input.admission_id,"detail":detail}),
+				).await?;
 				json!({"recorded":true})
 			}
 			"run_message_history" => {

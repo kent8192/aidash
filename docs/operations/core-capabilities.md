@@ -122,6 +122,7 @@ Do not down-migrate or remove storage to disable the feature.
 | Reference set                          | 8 files, 10 MiB each, 200 PDF pages, 64 KiB extracted text total |
 | Shared snapshot                        | 64 files, 100 MiB each, 256 MiB total; 4 MiB transfer chunks     |
 
+Working storage cannot exceed the 1-GiB runner export ceiling.
 The profile can lower applicable ceilings. Agent input cannot raise them. Disk
 and process enforcement is probed rather than inferred from manifest settings.
 Content budgets live in the same profile's `limits` object. Omitted keys retain
@@ -151,29 +152,41 @@ keeping the deployment's existing runner, storage and resource settings:
 }
 ```
 
-The 4-MiB chunk frame and bounded management pagination are protocol framing
-limits. Transfer negotiation advertises the operator's lowered file/count/total
+Reference uploads require sequential 4-MiB chunks, except for the final
+remainder; retries at the same offset remain idempotent. This bounds the number
+of staging objects. The 4-MiB chunk frame and bounded management pagination are
+protocol framing limits. Transfer negotiation advertises the operator's lowered file/count/total
 budgets. Configuration and Run admission both enforce reference-set limits;
 lowering a limit never rewrites a published Agent version or deletes originals.
 
 ## Files, references, Skills and packages
 
 A working area belongs to an authorized subject, home/workspace/thread and Agent.
-Follow-up Runs share files in admission order. Queue adds a future Run; steer
+Different subjects using the same thread and Agent have separate areas.
+Follow-up Runs by the same subject share files in admission order. Queue adds a future Run; steer
 addresses the expected active Run; stop bypasses ordinary queued work. Python
 variables live only in the currently acknowledged interpreter. Saved files have
 independent immutable identities and remain after an idle or authority reset.
 
 Search returns scope, file digest and source locations. File continuations bind
 the area revision; patches require exact preimages and publish one complete
-revision. Binary original references stay private and read-only. Python edits a
+revision. Unchanged execution exports reuse their immutable objects; publication
+marks superseded working objects for durable reclamation after commit. Outputs
+and independent recovery copies retain their own lifetimes. Binary original references stay private and read-only. Python edits a
 separate working copy. PDF encryption, unsupported formats, malformed content,
 page/text limits and non-extractable content are explicit extraction states.
-Invalid UTF-8 searches and individual matches exceeding the configured page
-budget return explicit errors rather than incomplete or non-advancing results.
+Searching a specific non-UTF-8 file returns `REPRESENTATION_UNAVAILABLE`.
+Scope searches report such files in a bounded `unavailable` list while searching
+the remaining text representations. Individual matches exceeding the configured
+page budget return an explicit error instead of a non-advancing cursor.
 The original remains downloadable by its authorized owner when the upload was
-accepted. OCR, formula recalculation and universal format preservation are not
+accepted; committing it ends the upload staging expiry. OCR, formula recalculation and universal format preservation are not
 provided. Text-only legacy references remain text-only until re-uploaded.
+Extraction requires the current deployment resource profile to match its
+admission probe. A mismatch reports `runtime_unavailable` and waits for repair
+without dispatch. Extracted text is additionally bounded by the configured
+operation output budget, including JSON escaping; truncated or malformed terminal
+results are recorded and acknowledged without leaking the runner payload.
 Disabling admission also cancels pending or live reference extraction; it never
 starts a queued parser. The original remains available with `admission_disabled`.
 Acknowledging completed, failed or cancelled extraction releases the runner's
@@ -197,13 +210,19 @@ objects fetched by the broker from permitted package origins. Installation is
 offline in the sandbox, with no dependency auto-download or source build. It
 changes only the Agent overlay, records the resolved manifest and resets Python
 memory explicitly. Packages are not automatically reinstalled after environment
-loss.
+loss. The complete package tree and manifest are staged together, then atomically
+exchanged with the old overlay. Process death during publication or old-tree
+cleanup leaves either the old or complete new package set available.
 If retained storage fills after an operation executes, its poll result exposes
 `STORAGE_QUOTA`. The old file revision stays intact and the runner's result is
 retained. Restore capacity to reconcile that same operation ID; submitting the
 operation again does not reinstall packages or repeat code.
 
 ## Sharing and cleanup
+
+Deleting a shared thread requires file choices only for the caller's areas.
+Other subjects' private files stay unchanged and remain available through their
+own settings; conversation deletion does not grant authority over those files.
 
 Sharing selects exact file IDs/digests and one recipient node/Agent/version/thread.
 Both disclosure and receipt authority must permit it. Private-input restrictions

@@ -180,6 +180,51 @@ async fn reclaim(store: &Store, id: Uuid) -> Result<()> {
 	tx.commit().await?;
 	Ok(())
 }
+// A committed superseded_working marker is a publication tombstone: no current
+// manifest or independently owned snapshot can acquire this old object again.
+async fn working_objects(store: &Store, cursor: &mut Uuid) -> Result<()> {
+	let ids: Vec<Uuid> = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("core_objects"))
+			.and_where(Expr::col(Alias::new("kind")).eq("superseded_working"))
+			.and_where(Expr::col(Alias::new("id")).gt(Expr::cust("$1")))
+			.order_by(Alias::new("id"), sea_orm::sea_query::Order::Asc)
+			.limit(16)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(*cursor)
+	.fetch_all(&store.pool)
+	.await?;
+	if ids.is_empty() {
+		*cursor = Uuid::nil();
+	}
+	for id in ids {
+		*cursor = id;
+		let mut tx = store.pool.begin().await?;
+		let tenant: Option<String> = sqlx::query_scalar(
+			&Query::select()
+				.column(Alias::new("tenant"))
+				.from(Alias::new("core_objects"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+				.and_where(Expr::col(Alias::new("kind")).eq("superseded_working"))
+				.lock(LockType::Update)
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(id)
+		.fetch_optional(&mut *tx)
+		.await?;
+		if let Some(tenant) = tenant {
+			store
+				.capabilities
+				.erase_committed(&mut tx, &tenant, id)
+				.await?;
+		}
+		tx.commit().await?;
+	}
+	Ok(())
+}
+
 pub(crate) async fn run(
 	store: Store,
 	mut stopping: tokio::sync::watch::Receiver<bool>,
@@ -187,9 +232,13 @@ pub(crate) async fn run(
 	let mut python_cursor = Uuid::nil();
 	let mut record_cursor = Uuid::nil();
 	let mut object_cursor = None;
+	let mut working_cursor = Uuid::nil();
 	loop {
 		if *stopping.borrow() {
 			return Ok(());
+		}
+		if let Err(error) = working_objects(&store, &mut working_cursor).await {
+			tracing::warn!(%error,"superseded working bytes reclamation pending");
 		}
 		if let Err(error) = super::python::reap(&store, &mut python_cursor).await {
 			tracing::warn!(%error,"Python memory reclamation pending");
