@@ -1,0 +1,44 @@
+name: Issue 43 implementation workspace
+on:
+  push:
+    branches: [feat/issue-43-core-capabilities]
+    paths: [.github/workflows/issue-43-workspace.yml]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Package tracked source and commit history
+        run: git bundle create /tmp/aidash-source.bundle HEAD
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: issue-43-source
+          path: /tmp/aidash-source.bundle
+          retention-days: 1
+  toolchain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Prepare offline Rust dependencies
+        run: |
+          rustup show active-toolchain
+          mkdir -p /tmp/aidash-offline
+          cargo vendor --locked /tmp/aidash-offline/vendor > /tmp/aidash-offline/config.toml
+          TOOLCHAIN=$(rustc --print sysroot)
+          cp -a "$TOOLCHAIN" /tmp/aidash-offline/toolchain
+          rm -rf /tmp/aidash-offline/toolchain/share/doc
+          tar -czf /tmp/aidash-offline.tar.gz -C /tmp aidash-offline
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: issue-43-offline-rust
+          path: /tmp/aidash-offline.tar.gz
+          retention-days: 1
