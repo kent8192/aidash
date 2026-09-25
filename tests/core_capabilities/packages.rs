@@ -156,12 +156,31 @@ async fn approved_wheel_installs_offline_with_hashes_and_explicit_memory_reset(
 			.unwrap()
 			.contains("offline package usable")
 	);
-	let limited = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":done["revision"],"timeout_seconds":1,"wheels":[{"outbound_operation_id":fetched["operation_id"],"filename":wheel["filename"],"sha256":wheel["digests"]["sha256"]}]});
+	// A larger, pinned pure-Python wheel makes the one-second deadline exercise
+	// real offline installation rather than relying on a tiny wheel being slow.
+	let large: Value =
+		serde_json::from_str(include_str!("../fixtures/python-wheel-timeout.json")).unwrap();
+	let fetch = json!({"idempotency_key":Uuid::new_v4(),"url":large["url"]});
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+	let fetched = loop {
+		let (status, value) = request(&c.app, &c.token, "POST", &outbound, fetch.clone()).await;
+		assert_eq!(status, 200, "{value}");
+		if value["status"] == "completed" {
+			break value;
+		}
+		assert!(tokio::time::Instant::now() < deadline, "{value}");
+		tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+	};
+	assert_eq!(fetched["output_file"]["digest"], large["digests"]["sha256"]);
+	let limited = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":done["revision"],"timeout_seconds":1,"wheels":[{"outbound_operation_id":fetched["operation_id"],"filename":large["filename"],"sha256":large["digests"]["sha256"]}]});
 	let (status, op) = request(&c.app, &c.token, "POST", &path, limited.clone()).await;
 	assert_eq!(status, 200, "{op}");
 	let timed_out = operation_until(&c, run.id, "python", &op["operation_id"], &["failed"]).await;
 	assert_eq!(timed_out["termination_confirmed"], true);
-	assert_ne!(timed_out["exit_code"], 0);
+	assert_eq!(
+		timed_out["exit_code"], 137,
+		"the runtime deadline must terminate installation: {timed_out}"
+	);
 	assert_eq!(
 		request(&c.app, &c.token, "POST", &path, limited).await.1["operation_id"],
 		op["operation_id"]

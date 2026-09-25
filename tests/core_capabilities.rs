@@ -562,6 +562,30 @@ async fn queued_runs_keep_order_and_cancellation_bypasses_queue(
 	let (status, result) = request(&c.app, &c.token, "POST", &steer_path, json!({"idempotency_key":Uuid::new_v4(),"expected_run_id":queue["queue"][1]["run_id"],"content":"Must not reach a queued run"})).await;
 	assert_eq!(status, 409, "{result}");
 	let steer = json!({"idempotency_key":Uuid::new_v4(),"expected_run_id":run.id,"content":"Prioritize the current question"});
+	let (_, bob) = request(
+		&c.app,
+		&c.f.config.api_token,
+		"POST",
+		"/api/authorization/acme/credentials",
+		json!({"subject":"bob"}),
+	)
+	.await;
+	assert_eq!(
+		request(
+			&c.app,
+			bob["token"].as_str().unwrap(),
+			"POST",
+			&steer_path,
+			steer.clone()
+		)
+		.await
+		.0,
+		404
+	);
+	assert!(
+		c.f.store.run_inputs(run.id).await.unwrap().is_empty(),
+		"another requester cannot steer a privileged Run"
+	);
 	let (status, result) = request(&c.app, &c.token, "POST", &steer_path, steer.clone()).await;
 	assert_eq!(status, 200, "{result}");
 	assert_eq!(
