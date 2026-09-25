@@ -71,8 +71,11 @@ installation, not a production rollout policy.
 ## Rollout and rollback
 
 Without `AIDASH_CAPABILITY_PROFILE`, admission defaults to disabled. Every Agent's
-new capability flags also default to false. Production operators must provision
-the trusted controller, persistent private journal/object storage and equivalent
+new capability flags also default to false, and core reconciliation workers do
+not allocate database pools. An explicitly configured profile with
+`admission: false` keeps reconciliation running for rollback. Production
+operators must provision the trusted controller, persistent private
+journal/object storage and equivalent
 node isolation before setting the profile path on the API and Worker services.
 The runner token is referenced by environment-variable name in the profile;
 secret bytes belong only in the trusted services' environment.
