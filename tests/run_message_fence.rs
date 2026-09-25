@@ -64,7 +64,10 @@ async fn promotion_outage(
 	let (parts, body) = request.into_parts();
 	let bytes = axum::body::to_bytes(body, 1_048_576).await.unwrap();
 	let command: Value = serde_json::from_slice(&bytes).unwrap();
-	if command["operation"] == "run_message_commit" {
+	if matches!(
+		command["operation"].as_str(),
+		Some("run_message_commit" | "run_message_release")
+	) {
 		return (
 			StatusCode::SERVICE_UNAVAILABLE,
 			Json(json!({"error":"promotion acknowledgement unavailable"})),
@@ -73,6 +76,74 @@ async fn promotion_outage(
 	}
 	next.run(Request::from_parts(parts, Body::from(bytes)))
 		.await
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL and peer fixture credential"]
+async fn failed_admission_with_unavailable_release_expires_at_home() {
+	let fixture = RemoteFixture::new().await;
+	let run = &fixture.run;
+	let key = format!("human:{}:{}", run.id, Uuid::new_v4());
+	fixture.outage.store(true, Ordering::SeqCst);
+	assert!(
+		fixture
+			.executor
+			.admit_run_message(run, "human", "rejected correction", &key, 1)
+			.await
+			.is_err()
+	);
+	assert!(
+		fixture
+			.executor
+			.store
+			.run_inputs(run.id)
+			.await
+			.unwrap()
+			.is_empty()
+	);
+	let leased: bool = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::col(Alias::new("expires_at")).is_not_null())
+			.from(Alias::new("remote_run_message_fences"))
+			.and_where(Expr::cust("task_id = $1 AND idempotency_key = $2"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(run.task_id)
+	.bind(&key)
+	.fetch_one(&fixture.home.store.pool)
+	.await
+	.unwrap();
+	assert!(
+		leased,
+		"failed admission must leave only a leased reservation"
+	);
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("remote_run_message_fences"))
+			.value(
+				Alias::new("expires_at"),
+				Expr::cust("CURRENT_TIMESTAMP - INTERVAL '1 second'"),
+			)
+			.and_where(Expr::col(Alias::new("task_id")).eq(uuid_expr(run.task_id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&fixture.home.store.pool)
+	.await
+	.unwrap();
+	let task = fixture.home.store.task(run.task_id).await.unwrap();
+	let cancelled = fixture
+		.home
+		.store
+		.transition(
+			task.id,
+			task.revision,
+			task.owner.as_deref().unwrap(),
+			"CANCELLED",
+		)
+		.await
+		.unwrap();
+	assert_eq!(cancelled.status, "CANCELLED");
+	fixture.cleanup().await;
 }
 
 struct RemoteFixture {

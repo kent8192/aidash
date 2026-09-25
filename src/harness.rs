@@ -893,11 +893,10 @@ impl Harness {
 					return Ok(());
 				}
 				if run.pending["response_epoch"].as_i64().is_none() {
-					// Preserve the step-based idempotency keys for responses saved by
-					// an older worker, so replay cannot duplicate an existing effect.
+					// Older responses use step-based idempotency keys. The first
+					// invocation persists this value atomically with its tool input;
+					// final output can safely replay the same deterministic key.
 					run.pending["response_epoch"] = json!(run.step);
-					store.save_run(run, token, "run.response_namespace").await?;
-					return Ok(());
 				}
 				let mut result: ModelResponse =
 					serde_json::from_value(run.pending["response"].clone())?;
@@ -935,7 +934,9 @@ impl Harness {
 					);
 					run.context = json!(context);
 					run.phase = "THINKING".into();
-					run.step += 1;
+					if !run_message_catchup {
+						run.step += 1;
+					}
 					run.pending = json!({});
 					store
 						.save_run(run, token, "run.message_read_required")
@@ -948,7 +949,9 @@ impl Harness {
 					);
 					run.context = json!(context);
 					run.phase = "THINKING".into();
-					run.step += 1;
+					if !run_message_catchup {
+						run.step += 1;
+					}
 					run.pending = json!({});
 					store
 						.save_run(run, token, "run.message_read_required")
@@ -964,7 +967,6 @@ impl Harness {
 						}));
 						run.context = json!(context);
 						run.phase = "THINKING".into();
-						run.step += 1;
 						run.pending = json!({});
 						store
 							.save_run(run, token, "run.message_summary_required")
@@ -983,7 +985,6 @@ impl Harness {
 						}));
 						run.context = json!(context);
 						run.phase = "THINKING".into();
-						run.step += 1;
 						run.pending = json!({});
 						store
 							.save_run(run, token, "run.message_summary_required")
@@ -1013,7 +1014,6 @@ impl Harness {
 					}
 					run.context = json!(context);
 					run.phase = "THINKING".into();
-					run.step += 1;
 					run.pending = json!({});
 					store.save_run(run, token, "run.message_summarized").await?;
 					return Ok(());
@@ -1142,7 +1142,9 @@ impl Harness {
 								// even that envelope could exceed the smaller forced-compaction
 								// quota on the next request.
 								run.phase = "THINKING".into();
-								run.step += 1;
+								if !run_message_catchup {
+									run.step += 1;
+								}
 								run.pending = json!({
 									"force_workspace_read_compaction":true,
 									"deferred_workspace_read":deferred_workspace_read(&call)

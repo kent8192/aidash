@@ -46,6 +46,16 @@ pub(crate) struct RunMessageDelivery<'a> {
 	pub message_key: &'a str,
 }
 
+pub(crate) struct FencedRunMessageOutput<'a> {
+	pub workspace: Uuid,
+	pub task_id: Uuid,
+	pub run_id: Uuid,
+	pub included_input_seq: i64,
+	pub sender: &'a str,
+	pub content: &'a str,
+	pub key: &'a str,
+}
+
 fn run_input_size(sender: &str, content: &str) -> usize {
 	// The provider receives JSON records, so count escaped content as well as
 	// framing. This is the same conservative byte-based estimate as Context.
@@ -2298,14 +2308,17 @@ impl Store {
 	/// unconsumed so legacy workers remain unable to publish until terminal state.
 	pub(crate) async fn run_message_output_record_fenced(
 		&self,
-		workspace: Uuid,
-		task_id: Uuid,
-		run_id: Uuid,
-		included_input_seq: i64,
-		sender: &str,
-		content: &str,
-		key: &str,
+		output: FencedRunMessageOutput<'_>,
 	) -> Result<Message> {
+		let FencedRunMessageOutput {
+			workspace,
+			task_id,
+			run_id,
+			included_input_seq,
+			sender,
+			content,
+			key,
+		} = output;
 		if included_input_seq < 0 {
 			return Err(Error::Invalid("invalid included input sequence".into()));
 		}

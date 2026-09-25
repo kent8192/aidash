@@ -87,10 +87,8 @@ impl Federation {
 		let reserved_at_home = if home.local() {
 			false
 		} else if home.reserve_run_message(key, content).await? {
-			// Persist the home fence before the executor transaction can make the
-			// input durable. If this RPC response is lost, an exact retry can
-			// continue admission while the home remains fenced.
-			home.commit_run_message_reservation(key, content).await?;
+			// Keep the reservation leased until the executor input is durable.
+			// A failed admission or stopped executor must not strand the home task.
 			true
 		} else {
 			return Err(Error::Conflict(
@@ -1388,24 +1386,6 @@ impl Home {
 			)
 			.await?
 			.is_some())
-	}
-	pub async fn commit_run_message_reservation(&self, key: &str, content: &str) -> Result<()> {
-		if self.local() {
-			return Ok(());
-		}
-		if self
-			.optional_command::<Value>(
-				"run_message_commit",
-				json!({"run_id":self.run.id,"key":key,"content":content}),
-			)
-			.await?
-			.is_none()
-		{
-			return Err(Error::Conflict(
-				"remote home cannot persist run message admission".into(),
-			));
-		}
-		Ok(())
 	}
 	pub async fn commit_run_message(&self, key: &str, content: &str) -> Result<()> {
 		if !self.promote_run_message(key, content).await? {

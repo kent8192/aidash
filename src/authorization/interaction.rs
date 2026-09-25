@@ -296,11 +296,8 @@ pub async fn message_keyed(
 			"remote home cannot reserve run messages during task termination".into(),
 		));
 	}
-	if !home.local() {
-		// Make the remote fence durable before this transaction can commit the
-		// executor-side input. A lost reply is safe to retry with the same key.
-		home.commit_run_message_reservation(&key, content).await?;
-	}
+	// Keep the reservation leased while the scoped executor transaction runs.
+	// The durable input below is required before promoting the home fence.
 	let outcome = async {
 		let mut access = Access::begin(&f.store, identity).await?;
 		let result = async {

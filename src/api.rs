@@ -1572,15 +1572,15 @@ async fn peer_workspace(
 					.as_i64()
 					.ok_or_else(|| Error::Invalid("invalid included input sequence".into()))?;
 				f.store
-					.run_message_output_record_fenced(
-						task.workspace_id,
-						task.id,
+					.run_message_output_record_fenced(crate::store::FencedRunMessageOutput {
+						workspace: task.workspace_id,
+						task_id: task.id,
 						run_id,
 						included_input_seq,
-						&owner,
+						sender: &owner,
 						content,
-						&message_key,
-					)
+						key: &message_key,
+					})
 					.await?;
 			} else {
 				f.store

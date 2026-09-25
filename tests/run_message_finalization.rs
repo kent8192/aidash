@@ -842,7 +842,7 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 
 #[tokio::test]
 #[ignore = "requires disposable PostgreSQL"]
-async fn oversized_catchup_summary_retries_without_advancing_the_input_sequence() {
+async fn catchup_summary_retries_and_completes_without_spending_the_last_step() {
 	let (f, url, schema) = setup().await;
 	let app = api::router(f.clone());
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
@@ -866,6 +866,11 @@ async fn oversized_catchup_summary_retries_without_advancing_the_input_sequence(
 	);
 	let worker = Uuid::new_v4();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
+	let agent = f.registry.get("research", "1.0.0").await.unwrap();
+	let max_steps = serde_json::from_value::<aidash::registry::AgentConfig>(agent.config)
+		.unwrap()
+		.max_steps;
+	leased.step = max_steps - 1;
 	leased.phase = "TOOL_CALL".into();
 	leased.pending = json!({
 		"included_input_seq":0,
@@ -891,7 +896,7 @@ async fn oversized_catchup_summary_retries_without_advancing_the_input_sequence(
 	);
 	let current = f.store.run(run.id).await.unwrap();
 	assert_eq!(current.phase, "THINKING");
-	assert_eq!(current.step, leased.step + 1);
+	assert_eq!(current.step, leased.step);
 	assert_eq!(current.context["run_message_summary_seq"], 0);
 	assert_eq!(current.context["run_message_summary"], "");
 	assert!(
@@ -901,6 +906,36 @@ async fn oversized_catchup_summary_retries_without_advancing_the_input_sequence(
 			.iter()
 			.any(|event| event["kind"] == "run_message_summary_required" && event["max_bytes"] == 8)
 	);
+	let worker = Uuid::new_v4();
+	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
+	leased.phase = "TOOL_CALL".into();
+	leased.pending = json!({
+		"included_input_seq":0,
+		"response":{"text":"done","tool_calls":[],"input_tokens":1,"output_tokens":1,"usage_complete":true},
+		"cursor":0,
+		"required_run_message_reads":[],
+		"references_read_at_inference":true,
+		"run_message_catchup":true,
+		"run_message_summary_end_seq":7,
+		"run_message_summary_limit":8
+	});
+	f.store
+		.save_run(&leased, worker, "model.completed")
+		.await
+		.unwrap();
+	assert!(
+		(Harness {
+			federation: f.clone()
+		})
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	let current = f.store.run(run.id).await.unwrap();
+	assert_eq!(current.phase, "THINKING");
+	assert_eq!(current.step, max_steps - 1);
+	assert_eq!(current.context["run_message_summary_seq"], 7);
+	assert_eq!(current.context["run_message_summary"], "done");
 	cleanup(f, &url, &schema).await;
 }
 

@@ -643,33 +643,33 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 		"the simulated commit reply should be lost: {body}"
 	);
 	mode.commit_response_lost.store(false, Ordering::SeqCst);
+	let pending_input = executor.store.run_inputs(run.id).await.unwrap().remove(0);
 	assert!(
-		executor.store.run_inputs(run.id).await.unwrap().is_empty(),
-		"a lost pre-admission commit reply must not admit an input"
+		pending_input.message_id.is_some(),
+		"historical home delivery remains bound to the admitted input"
 	);
-	let (durable_before_admission, sequence_before_admission): (bool, Option<i64>) =
-		sqlx::query_as(
-			&Query::select()
-				.expr(Expr::cust("expires_at IS NULL"))
-				.column(Alias::new("input_seq"))
-				.from(Alias::new("remote_run_message_fences"))
-				.and_where(Expr::cust(
-					"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
-				))
-				.to_string(PostgresQueryBuilder),
-		)
-		.bind(task.id)
-		.bind(run.id)
-		.bind(format!("human:{}:{first_key}", run.id))
-		.fetch_one(&home.store.pool)
-		.await
-		.unwrap();
-	assert!(durable_before_admission);
-	assert_eq!(sequence_before_admission, None);
+	let (durable_after_admission, sequence_after_admission): (bool, Option<i64>) = sqlx::query_as(
+		&Query::select()
+			.expr(Expr::cust("expires_at IS NULL"))
+			.column(Alias::new("input_seq"))
+			.from(Alias::new("remote_run_message_fences"))
+			.and_where(Expr::cust(
+				"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(task.id)
+	.bind(run.id)
+	.bind(format!("human:{}:{first_key}", run.id))
+	.fetch_one(&home.store.pool)
+	.await
+	.unwrap();
+	assert!(durable_after_admission);
+	assert_eq!(sequence_after_admission, Some(pending_input.seq));
 	let (status, body) = peer_control(&executor_app, &home.config.node_id, first_admission).await;
 	assert_eq!(
 		status, 200,
-		"exact retry recovers the durable reservation: {body}"
+		"exact retry recovers the admitted input: {body}"
 	);
 	let inputs = executor.store.run_inputs(run.id).await.unwrap();
 	assert_eq!(inputs.len(), 1);
@@ -767,6 +767,33 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 			.content,
 		"lease renewal"
 	);
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("runs"))
+			.value(Alias::new("lease_owner"), Expr::cust("NULL"))
+			.value(Alias::new("lease_until"), Expr::cust("NULL"))
+			.and_where(Expr::cust("id = $1"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.execute(&executor.store.pool)
+	.await
+	.unwrap();
+	executor
+		.store
+		.accept_run_message(
+			run.id,
+			"human",
+			"lease renewal",
+			&lease_key,
+			executor.run_message_limit(&run).await.unwrap(),
+		)
+		.await
+		.unwrap();
+	remote_home
+		.commit_run_message(&lease_key, "lease renewal")
+		.await
+		.unwrap();
 	remote_home
 		.acknowledge_run_messages(std::slice::from_ref(&lease_key))
 		.await
@@ -872,18 +899,6 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 	.bind(terminal_history_run.id)
 	.bind(&terminal_history_key)
 	.execute(&home.store.pool)
-	.await
-	.unwrap();
-	sqlx::query(
-		&Query::update()
-			.table(Alias::new("runs"))
-			.value(Alias::new("lease_owner"), Expr::cust("NULL"))
-			.value(Alias::new("lease_until"), Expr::cust("NULL"))
-			.and_where(Expr::cust("id = $1"))
-			.to_string(PostgresQueryBuilder),
-	)
-	.bind(run.id)
-	.execute(&executor.store.pool)
 	.await
 	.unwrap();
 	let unreserved_key = format!("human:{}:{}", run.id, Uuid::new_v4());
@@ -1458,14 +1473,6 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects() {
 	.execute(&executor.store.pool)
 	.await
 	.unwrap();
-	assert!(
-		Harness {
-			federation: executor.clone()
-		}
-		.worker_once()
-		.await
-		.unwrap()
-	);
 	assert!(
 		executor
 			.store
