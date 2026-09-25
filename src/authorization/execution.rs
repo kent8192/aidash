@@ -109,6 +109,38 @@ async fn access_for_run(store: &Store, run: &Run, durable_audit: bool) -> Result
 	Ok(Some(access))
 }
 
+/// Management dispatch preserves every original delegation subject instead
+/// of replacing the chain with only the final Agent.
+pub(crate) async fn inherit_run_authority(access: &mut Access, run: &Run) -> Result<()> {
+	let grant: Grant = sqlx::query_as(
+		&Query::select()
+			.column(Asterisk)
+			.from(Alias::new("authorization_execution"))
+			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::cust("$1")))
+			.lock(LockType::Share)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.fetch_optional(&mut **access.tx)
+	.await?
+	.ok_or(Error::Forbidden)?;
+	if grant.tenant != access.identity.tenant
+		|| grant.root_subject != access.identity.subject
+		|| grant.task_id != run.task_id
+		|| grant.workspace_id != run.workspace_id
+		|| grant.subject_chain.first() != Some(&grant.root_subject)
+		|| grant.subject_chain.last()
+			!= Some(&qualified_agent(
+				&run.home_node,
+				&run.agent_id,
+				&run.agent_version,
+			)) {
+		return Err(Error::NotFound("run unavailable".into()));
+	}
+	access.subjects = grant.subject_chain;
+	Ok(())
+}
+
 async fn refresh_access_for_run(access: &mut Access, store: &Store, run: &Run) -> Result<()> {
 	access.refresh_execution(run.id).await?;
 	let current: Grant = sqlx::query_as(
@@ -175,6 +207,30 @@ pub(crate) async fn inherit_task_origin(access: &mut Access, task: Uuid) -> Resu
 	.bind(task)
 	.fetch_optional(&mut **access.tx)
 	.await?;
+	let origin = if origin.is_some() {
+		origin
+	} else {
+		sqlx::query_as(
+			&Query::select()
+				.columns([
+					(Alias::new("g"), Alias::new("tenant")),
+					(Alias::new("g"), Alias::new("root_subject")),
+					(Alias::new("g"), Alias::new("subject_chain")),
+				])
+				.from_as(Alias::new("authorization_remote_outputs"), Alias::new("o"))
+				.join_as(
+					sea_orm::sea_query::JoinType::InnerJoin,
+					Alias::new("authorization_remote_grants"),
+					Alias::new("g"),
+					Expr::cust("g.id=o.grant_id"),
+				)
+				.and_where(Expr::cust("o.resource_kind='task' AND o.resource_id=$1"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(task)
+		.fetch_optional(&mut **access.tx)
+		.await?
+	};
 	if let Some((tenant, root, chain)) = origin {
 		if tenant != access.identity.tenant
 			|| root != access.identity.subject
@@ -320,6 +376,15 @@ async fn admit(
 		.execute(&mut **access.tx)
 		.await?;
 	}
+	crate::capabilities::sessions::admit(
+		&f.store,
+		access,
+		&task,
+		run_id,
+		&serde_json::from_value(entry.config.clone())?,
+		&agent.id,
+	)
+	.await?;
 	Ok(claimed)
 }
 
@@ -345,7 +410,7 @@ pub async fn delegate(
 	agent: &EntityRef,
 ) -> Result<Delegation> {
 	if node != f.config.node_id {
-		return Err(Error::Forbidden);
+		return super::remote::execution::delegate(f, identity, task, node, agent).await;
 	}
 	let mut access = Access::begin(&f.store, identity).await?;
 	let result = delegate_in(f, &mut access, task, agent).await;
@@ -412,6 +477,40 @@ pub(crate) struct WorkerAuthority {
 }
 
 impl WorkerAuthority {
+	pub async fn core_tool(
+		&self,
+		store: &Store,
+		run: &Run,
+		name: &str,
+		input: Value,
+		key: &str,
+	) -> Result<Value> {
+		let outer = self.access.lock().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result =
+			crate::capabilities::service::invoke(store, &mut access, run, name, input, key).await;
+		match access.finish(result).await {
+			Ok(result) => Ok(json!(result)),
+			Err(
+				error @ (Error::Invalid(_)
+				| Error::Conflict(_)
+				| Error::NotFound(_)
+				| Error::Forbidden),
+			) => {
+				let status = match &error {
+					Error::Invalid(_) => 400,
+					Error::Conflict(_) => 409,
+					Error::NotFound(_) => 404,
+					_ => 403,
+				};
+				Ok(
+					json!({"operation_id":key,"status":"blocked","error":crate::capabilities::errors::CapabilityError::message(status,&error.to_string())}),
+				)
+			}
+			Err(error) => Err(error),
+		}
+	}
+
 	pub async fn remember(&self, store: &Store, run: &Run, data: &Value) -> Result<()> {
 		let outer = self.access.lock().await;
 		let access = Access::under_lease(&outer).await?;
@@ -589,6 +688,10 @@ impl WorkerAuthority {
 			.await
 	}
 
+	pub async fn skill_context(&self, store: &Store, run: &Run) -> Result<String> {
+		let mut access = self.access.lock().await;
+		crate::capabilities::skills::context(store, &mut access, run).await
+	}
 	pub async fn workspace_record(&self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Value> {
 		self.access
 			.lock()
@@ -679,6 +782,7 @@ impl WorkerAuthority {
 }
 
 pub(crate) struct Guard {
+	remote: Option<Federation>,
 	access: Arc<Mutex<Access>>,
 	run: Run,
 	agent: AgentConfig,
@@ -731,6 +835,9 @@ async fn authorize_guard(f: &Federation, run: &Run, access: &mut Access) -> Resu
 		&qualified_agent(&f.config.node_id, &run.agent_id, &run.agent_version),
 	)?;
 	let agent: AgentConfig = serde_json::from_value(entry.config)?;
+	if agent.core_capabilities.enabled() {
+		crate::capabilities::sessions::context_authority(access, run).await?;
+	}
 	// Registry versions are immutable. Recheck every tenant approval before
 	// accepting provider output after an unlocked external wait.
 	for reference in std::iter::once(&agent.model)
@@ -745,11 +852,31 @@ async fn authorize_guard(f: &Federation, run: &Run, access: &mut Access) -> Resu
 
 impl Guard {
 	pub async fn begin(f: &Federation, run: &Run) -> Result<Option<Self>> {
+		if let Some((access, agent)) = super::peer::admission::worker_lease(f, run).await? {
+			return Ok(Some(Self {
+				remote: Some(f.clone()),
+				access: Arc::new(Mutex::new(access)),
+				run: run.clone(),
+				agent,
+			}));
+		}
 		let Some(mut access) = access_for_run(&f.store, run, true).await? else {
 			return Ok(None);
 		};
 		let agent = authorize_guard(f, run, &mut access).await?;
+		if agent.core_capabilities.enabled() && run.control != "CANCELLED" {
+			let mut initialization = Access::under_lease(&access).await?;
+			let result = crate::capabilities::sessions::initialize(
+				&f.store,
+				&mut initialization,
+				run,
+				&agent,
+			)
+			.await;
+			initialization.finish(result).await?;
+		}
 		Ok(Some(Self {
+			remote: None,
 			access: Arc::new(Mutex::new(access)),
 			run: run.clone(),
 			agent,
@@ -759,6 +886,9 @@ impl Guard {
 		self.access.lock().await.suspend().await
 	}
 	pub async fn resume(&self, f: &Federation) -> Result<()> {
+		if self.remote.is_some() {
+			return self.refresh_remote().await;
+		}
 		let mut delay = std::time::Duration::from_millis(250);
 		loop {
 			let mut access = self.access.lock().await;
@@ -787,6 +917,45 @@ impl Guard {
 		}
 	}
 
+	pub fn local_authority(&self) -> Option<WorkerAuthority> {
+		self.remote.is_none().then(|| self.authority())
+	}
+	pub fn is_remote(&self) -> bool {
+		self.remote.is_some()
+	}
+	async fn refresh_remote(&self) -> Result<()> {
+		let Some(f) = &self.remote else { return Ok(()) };
+		let mut access = self.access.lock().await;
+		if access.tx.is_active() {
+			access.suspend().await?;
+		}
+		let (fresh, _) = super::peer::admission::worker_lease(f, &self.run)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		*access = fresh;
+		Ok(())
+	}
+	fn remote_resource(
+		&self,
+		access: &Access,
+		kind: &str,
+		id: impl ToString,
+	) -> Result<super::policy::Resource> {
+		if matches!(kind, "memory" | "run" | "generation_policy") {
+			return Err(Error::Forbidden);
+		}
+		let id = id.to_string();
+		if (kind == "task" && id != self.run.task_id.to_string())
+			|| (kind == "workspace" && id != self.run.workspace_id.to_string())
+		{
+			return Err(Error::Forbidden);
+		}
+		Ok(access.resource(
+			kind,
+			format!("{}/{kind}s/{id}", self.run.home_node),
+			access.context.clone(),
+		))
+	}
 	pub fn authority(&self) -> WorkerAuthority {
 		WorkerAuthority {
 			access: self.access.clone(),
@@ -798,6 +967,9 @@ impl Guard {
 		query: &str,
 		budget: usize,
 	) -> Result<Option<crate::semantic::SearchResult>> {
+		if self.remote.is_some() {
+			return Ok(None);
+		}
 		let mut access = self.access.lock().await;
 		let result = crate::semantic::service::context_in(
 			store,
@@ -844,6 +1016,9 @@ impl Guard {
 	}
 
 	pub async fn human_read(&self, id: Uuid) -> Result<()> {
+		if self.remote.is_some() {
+			return Err(Error::Forbidden);
+		}
 		let mut access = self.access.lock().await;
 		let request: HumanRequest = sqlx::query_as(
 			&Query::select()
@@ -867,6 +1042,12 @@ impl Guard {
 		access.require(&resource, "human.read").await
 	}
 	pub async fn action(&self, action: &str, kind: &str, id: impl ToString) -> Result<()> {
+		self.refresh_remote().await?;
+		if self.remote.is_some() {
+			let mut access = self.access.lock().await;
+			let resource = self.remote_resource(&access, kind, id)?;
+			return access.require(&resource, action).await;
+		}
 		let mut access = self.access.lock().await;
 		let resource = match kind {
 			"task" => {
@@ -909,11 +1090,22 @@ impl Guard {
 	}
 
 	pub async fn inference(&self) -> Result<()> {
+		self.refresh_remote().await?;
 		let mut access = self.access.lock().await;
 		self.authorize_inference_with(&mut access).await
 	}
 
 	async fn authorize_inference_with(&self, access: &mut Access) -> Result<()> {
+		if self.remote.is_some() {
+			catalog::entry(access, &self.agent.model, "model.infer").await?;
+			for skill in &self.agent.skills {
+				catalog::entry(access, skill, "skill.use").await?;
+			}
+			return Ok(());
+		}
+		if self.agent.core_capabilities.enabled() {
+			crate::capabilities::sessions::context_authority(access, &self.run).await?;
+		}
 		let node: String = access.environment["node_id"]
 			.as_str()
 			.ok_or(Error::Forbidden)?
@@ -937,6 +1129,7 @@ impl Guard {
 	}
 
 	pub async fn tool(&self, call: &ToolCall) -> Result<()> {
+		self.refresh_remote().await?;
 		let mut access = self.access.lock().await;
 		if let Some(index) = call
 			.name
@@ -957,6 +1150,34 @@ impl Guard {
 		}
 		let resource = access.resource("tool", format!("builtin:{}", call.name), json!({}));
 		access.require(&resource, "tool.invoke").await?;
+		if matches!(
+			call.name.as_str(),
+			"file_read"
+				| "file_search"
+				| "shell" | "shell_poll"
+				| "shell_cancel"
+				| "apply_patch"
+				| "file_share"
+				| "outbound_get"
+				| "code_interpreter"
+				| "python_install"
+				| "python_poll"
+				| "python_cancel"
+		) {
+			if !self.agent.core_capabilities.permits(&call.name) {
+				return Err(Error::Forbidden);
+			}
+			return Ok(());
+		}
+		if matches!(call.name.as_str(), "skill_list" | "skill_load")
+			|| (call.name == "skill_read" && call.arguments.get("skill_id").is_some())
+		{
+			return if self.agent.core_capabilities.skills {
+				Ok(())
+			} else {
+				Err(Error::Forbidden)
+			};
+		}
 		let (action, kind, id) = match call.name.as_str() {
 			"task_create" => (
 				"task.create",
@@ -1006,23 +1227,61 @@ impl Guard {
 			}
 			_ => return Err(Error::Forbidden),
 		};
-		let resource = match kind {
-			"task" => {
-				let task = access
-					.task_read(id.parse().map_err(|_| Error::Forbidden)?)
-					.await?;
-				access.task_resource(&task).await?
+		let resource = if self.remote.is_some() {
+			self.remote_resource(&access, kind, id)?
+		} else {
+			match kind {
+				"task" => {
+					let task = access
+						.task_read(id.parse().map_err(|_| Error::Forbidden)?)
+						.await?;
+					access.task_resource(&task).await?
+				}
+				"artifact" => {
+					let creator = access.subjects.last().ok_or(Error::Forbidden)?.clone();
+					access
+						.artifact_creation_resource(self.run.task_id, &creator)
+						.await?
+				}
+				"memory" => access.memory_resource(&self.run).await?,
+				_ => access.resource(kind, id, json!({})),
 			}
-			"artifact" => {
-				let creator = access.subjects.last().ok_or(Error::Forbidden)?.clone();
-				access
-					.artifact_creation_resource(self.run.task_id, &creator)
-					.await?
-			}
-			"memory" => access.memory_resource(&self.run).await?,
-			_ => access.resource(kind, id, json!({})),
 		};
 		access.require(&resource, action).await
+	}
+
+	pub async fn filter_core_tools(
+		&self,
+		tools: &mut std::collections::BTreeMap<String, Arc<dyn crate::tool::Tool>>,
+	) -> Result<()> {
+		if self.remote.is_some() {
+			tools.retain(|name, _| {
+				matches!(
+					name.as_str(),
+					"task_create"
+						| "artifact_publish"
+						| "workspace_message"
+						| "workspace_observe"
+						| "workspace_read" | "workspace_wait"
+						| "skill_read"
+				) || name.starts_with("plugin_")
+			});
+		}
+		let mut access = self.access.lock().await;
+		for name in tools.keys().cloned().collect::<Vec<_>>() {
+			if !self.agent.core_capabilities.permits(&name) {
+				continue;
+			}
+			let resource = access.resource("tool", format!("builtin:{name}"), json!({}));
+			match access.require(&resource, "tool.invoke").await {
+				Ok(()) => {}
+				Err(Error::Forbidden | Error::NotFound(_)) => {
+					tools.remove(&name);
+				}
+				Err(error) => return Err(error),
+			}
+		}
+		Ok(())
 	}
 
 	pub async fn finish(self, result: Result<()>) -> Result<()> {
@@ -1177,11 +1436,25 @@ pub async fn discover(
 }
 
 pub(crate) async fn cancel_if_scoped(store: &Store, run: &Run, token: Uuid) -> Result<bool> {
-	if run.control != "CANCELLED" || grant(store, run).await?.is_none() {
+	if run.control != "CANCELLED" {
 		return Ok(false);
 	}
-	// Cancellation was already authorized at the control API. It is cleanup,
-	// without model/tool calls, and must remain possible after revocation.
+	if super::peer::admission::run_grant(store, run)
+		.await?
+		.is_some()
+	{
+		// The source control route owns its task cancellation. Receiver cleanup
+		// must also finish when that source is unavailable or authority expired.
+		let mut cancelled = run.clone();
+		cancelled.phase = "CANCELLED".into();
+		cancelled.pending = json!({});
+		cancelled.error = None;
+		store.save_run(&cancelled, token, "run.cancelled").await?;
+		return Ok(true);
+	}
+	if grant(store, run).await?.is_none() {
+		return Ok(false);
+	}
 	store.cancel_execution(run, token).await?;
 	Ok(true)
 }

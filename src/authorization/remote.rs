@@ -1,6 +1,8 @@
 //! Durable source authority for remote admission. A prepared grant is pinned to
 //! a task revision and exact receiver definitions; possession never bypasses
 //! current policy, credential, task, peer or receiver checks.
+pub(crate) mod execution;
+
 use super::{
 	access::Access,
 	execution::inherit_task_origin,
@@ -86,6 +88,10 @@ pub fn routes() -> OpenApiRouter<Federation> {
 	OpenApiRouter::new()
 		.routes(routes!(prepare))
 		.routes(routes!(revoke))
+		.routes(routes!(execution::activate))
+		.routes(routes!(execution::list))
+		.routes(routes!(execution::control))
+		.routes(routes!(execution::message))
 }
 
 // A receiver may describe only the requested Agent's exact direct dependencies.
@@ -445,6 +451,14 @@ pub(crate) async fn snapshot(
 	access.finish(result).await
 }
 async fn description_lease(f: &Federation, node: &str, id: Uuid) -> Result<(Access, Description)> {
+	description_lease_mode(f, node, id, false).await
+}
+async fn description_lease_mode(
+	f: &Federation,
+	node: &str,
+	id: Uuid,
+	command: bool,
+) -> Result<(Access, Description)> {
 	let grant: Grant = sqlx::query_as(
 		&sea_orm::sea_query::Query::select()
 			.expr(sea_orm::sea_query::SimpleExpr::from(
@@ -471,6 +485,21 @@ async fn description_lease(f: &Federation, node: &str, id: Uuid) -> Result<(Acce
 			}
 		})?;
 	let result = async {
+		// Serialize command journals before acquiring task row locks. This also
+		// prevents two shared leases upgrading to conflicting task writers.
+		if command {
+			sqlx::query(
+				&sea_orm::sea_query::Query::select()
+					.expr(sea_orm::sea_query::Expr::cust(
+						"PG_ADVISORY_XACT_LOCK(HASHTEXTEXTENDED($1, 71003801))",
+					))
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(id.to_string())
+			.execute(&mut **access.tx)
+			.await?;
+		}
+
 		let current: Grant = sqlx::query_as(
 			&sea_orm::sea_query::Query::select()
 				.expr(sea_orm::sea_query::SimpleExpr::from(
@@ -507,12 +536,33 @@ async fn description_lease(f: &Federation, node: &str, id: Uuid) -> Result<(Acce
 		if locked.revision != task.revision {
 			return Err(Error::Forbidden);
 		}
-		if task.revision != current.task_revision
+		let execution = execution::binding(&mut access, current.id).await?;
+		let expected_revision = execution
+			.as_ref()
+			.map_or(current.task_revision, |bound| bound.task_revision);
+		if task.revision != expected_revision
 			|| task.workspace_id != current.workspace_id
-			|| task.status != "OPEN"
+			|| (execution.is_none() && task.status != "OPEN")
 		{
 			return Err(Error::Forbidden);
 		}
+		// Commands may advance only this revision journal. The admission keeps
+		// its original task image, so an unrelated source edit cannot substitute
+		// input or silently change the exact receiver binding.
+		let admitted_task = if let Some(bound) = &execution {
+			let original: Task = serde_json::from_value(bound.initial_task.clone())?;
+			if bound.grant_id != current.id
+				|| bound.task_id != task.id
+				|| original.id != task.id
+				|| original.workspace_id != task.workspace_id
+				|| original.revision != current.task_revision
+			{
+				return Err(Error::Forbidden);
+			}
+			original
+		} else {
+			task.clone()
+		};
 		let inspection: Inspection = serde_json::from_value(current.inspection)?;
 		source_authority(&mut access, &task, node, &inspection).await?;
 		if !access.grant_reads_visible(current.id).await? {
@@ -537,7 +587,7 @@ async fn description_lease(f: &Federation, node: &str, id: Uuid) -> Result<(Acce
 			target_node: current.node_id,
 			source_tenant: current.tenant,
 			source_subject: current.root_subject,
-			task,
+			task: admitted_task,
 			inspection,
 			expires_at: current.expires_at,
 		})

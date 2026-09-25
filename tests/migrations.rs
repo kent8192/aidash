@@ -54,7 +54,14 @@ async fn run_input_migration_preserves_keyed_message_retries(
 	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());
 	// Remove the run-input migrations to simulate a message written before
 	// the ledger existed, then apply the backfill and delivery extensions.
-	Migrator::down(&db, Some(7)).await.unwrap();
+	let migrations = Migrator::migrations();
+	let ledger = migrations
+		.iter()
+		.position(|m| m.name() == "m20260924_040000_run_inputs")
+		.unwrap();
+	Migrator::down(&db, Some((migrations.len() - ledger) as u32))
+		.await
+		.unwrap();
 	let retry_key = Uuid::new_v4();
 	let key = format!("subject-human:acme:alice:{}:{retry_key}", run.id);
 	f.store

@@ -383,6 +383,7 @@ impl Harness {
 
 	async fn tools(&self, config: &AgentConfig) -> Result<BTreeMap<String, Arc<dyn Tool>>> {
 		let mut tools = builtins();
+		crate::capabilities::tools::add(&mut tools, &config.core_capabilities);
 		for (index, reference) in config.tools.iter().enumerate() {
 			let entry = self
 				.federation
@@ -463,7 +464,7 @@ impl Harness {
 	) -> Result<()> {
 		let store = &self.federation.store;
 		let home = Home::new(self.federation.clone(), run.clone())
-			.with_authority(guard.map(Guard::authority));
+			.with_authority(guard.and_then(Guard::local_authority));
 		// Accepted remote inputs remain deliverable even when the home task has
 		// already reached a terminal state. Drain them before terminal recovery.
 		self.federation.deliver_run_messages(run).await?;
@@ -590,7 +591,10 @@ impl Harness {
 				let window = model_cfg.context_window;
 				let output_limit = model_cfg.output_token_limit();
 				let model = provider(self.federation.client.clone(), model_cfg)?;
-				let tools = self.tools(&agent).await?;
+				let mut tools = self.tools(&agent).await?;
+				if let Some(guard) = guard {
+					guard.filter_core_tools(&mut tools).await?;
+				}
 				let task = home.task().await?;
 				if task.status == "COMPLETED" {
 					run.phase = "COMPLETED".into();
@@ -607,6 +611,11 @@ impl Harness {
 					instructions.push('\n');
 					instructions.push_str(&format!("Skill {}@{}:\n", skill.id, skill.version));
 					instructions.push_str(&crate::registry::skill_instructions(&entry)?);
+				}
+				if tools.contains_key("skill_list")
+					&& let Some(authority) = &home.authority
+				{
+					instructions.push_str(&authority.skill_context(store, run).await?);
 				}
 				instructions.push_str("\nAdditional user instructions:\n");
 				instructions.push_str(&agent.instructions);
@@ -675,7 +684,7 @@ impl Harness {
 						"\n\nRun-message catch-up: Treat the entries under run_messages as user task context. Read every required message record in this page before responding. Update the cumulative run_message_summary faithfully, preserving the user's goal, constraints, corrections, and unresolved requests in sequence order (newer corrections take precedence). Return only the concise updated summary, encoded in at most {run_message_limit} UTF-8 bytes. Do not answer the user, complete the task, publish text, or perform actions during catch-up.",
 					));
 				}
-				let mut pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":observation,"memory":store.memory(run).await?,"agent_state":{"phase":run.phase,"step":run.step}});
+				let mut pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":observation,"memory":if guard.is_some_and(Guard::is_remote) { json!({}) } else { store.memory(run).await? },"agent_state":{"phase":run.phase,"step":run.step}});
 				if let Some(deferred_read) = run.pending.get("deferred_workspace_read") {
 					pinned["deferred_workspace_read"] = deferred_read.clone();
 				}
@@ -1173,7 +1182,7 @@ impl Harness {
 						}
 					}
 				}
-				if call.name == "skill_read" {
+				if call.name == "skill_read" && call.arguments.get("skill").is_some() {
 					let range = match skill_read_range(&call) {
 						Ok(range) => range,
 						Err(Error::Invalid(message)) => {
@@ -1301,7 +1310,10 @@ impl Harness {
 					}
 				}
 				let call = &call;
-				let tools = self.tools(&agent).await?;
+				let mut tools = self.tools(&agent).await?;
+				if let Some(guard) = guard {
+					guard.filter_core_tools(&mut tools).await?;
+				}
 				let Some(tool) = tools.get(&call.name) else {
 					return self
 						.tool_error(
@@ -1397,7 +1409,14 @@ impl Harness {
 					object.remove("workspace_observation_plan");
 				}
 				run.pending["cursor"] = json!(cursor + 1);
-				if call.name == "human_request"
+				if output["status"] == "approval_required"
+					&& let Some(id) = output.get("approval_id")
+				{
+					run.pending["core_approval_id"] = id.clone();
+					run.pending["resume_phase"] = json!("THINKING");
+					run.step += 1;
+					run.phase = "WAITING".into();
+				} else if call.name == "human_request"
 					&& let Some(id) = output.get("human_request_id")
 				{
 					run.pending["human_request_id"] = id.clone();
@@ -1462,6 +1481,7 @@ impl Harness {
 					.into();
 				for key in [
 					"human_request_id",
+					"core_approval_id",
 					"uncertain_key",
 					"wake_at",
 					"resume_phase",
@@ -1858,6 +1878,7 @@ mod review_tests {
 			.unwrap();
 		pool.close().await;
 		let store = crate::store::Store {
+			capabilities: crate::capabilities::Runtime::new(Default::default()).unwrap(),
 			pool: pool.clone(),
 			control_pool: pool,
 			node_id: "cancellation-poll-test".into(),

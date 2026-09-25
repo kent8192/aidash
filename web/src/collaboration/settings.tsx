@@ -1,3 +1,4 @@
+import { WorkingFileSettings } from "../capabilities/management";
 import { ReferenceName } from "../record-view";
 import { RecordView } from "../record-view";
 import type { ReactNode } from "react";
@@ -101,6 +102,16 @@ export function Configuration({
         </p>
       ) : (
         <>
+          {section === "workingFiles" &&
+            (operator ? (
+              <p role="status">
+                {locale === "ja-JP"
+                  ? "作業ファイルを管理するには、利用者アカウントで接続してください。"
+                  : "Connect with a user account to manage working files."}
+              </p>
+            ) : (
+              <WorkingFileSettings />
+            ))}
           {section === "generation" && <GenerationPage data={data} />}
           {section === "semantic" && <SemanticPage data={data} />}
           {section === "authorization" && operator && (

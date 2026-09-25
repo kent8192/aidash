@@ -1,0 +1,10 @@
+{
+  "url": "https://files.pythonhosted.org/packages/04/96/92447566d16df59b2a776c0fb82dbc4d9e07cd95062562af01e408583fc4/itsdangerous-2.2.0-py3-none-any.whl",
+  "filename": "itsdangerous-2.2.0-py3-none-any.whl",
+  "size": 16234,
+  "digests": {
+    "blake2b_256": "049692447566d16df59b2a776c0fb82dbc4d9e07cd95062562af01e408583fc4",
+    "md5": "22e41bfb2008481e855f1693a9df4c54",
+    "sha256": "c6242fc49e35958c8b15141343aa660db5fc54d4f13a1db01a3f5891b98700ef"
+  }
+}

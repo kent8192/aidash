@@ -60,6 +60,19 @@ pub(crate) async fn page(
 				Alias::new("root_thread_id"),
 			)
 			.from_as(Alias::new("messages"), Alias::new("m"))
+			.and_where(
+				Expr::exists(
+					Query::select()
+						.expr(Expr::val(1))
+						.from_as(Alias::new("core_records"), Alias::new("d"))
+						.and_where(
+							Expr::col((Alias::new("d"), Alias::new("kind"))).eq("thread_tombstone"),
+						)
+						.and_where(Expr::cust("d.data->>'root_message_id' = m.id::text"))
+						.to_owned(),
+				)
+				.not(),
+			)
 			.join_as(
 				JoinType::LeftJoin,
 				Alias::new("channel_message_context"),

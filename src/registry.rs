@@ -74,7 +74,7 @@ pub struct SkillFile {
 }
 
 impl SkillFile {
-	fn byte_len(&self) -> Result<usize> {
+	pub(crate) fn byte_len(&self) -> Result<usize> {
 		if self.content.len() > 350_000 {
 			return Err(Error::Invalid(format!(
 				"{} exceeds the file size limit",
@@ -143,6 +143,14 @@ pub fn skill_instructions(entry: &Entry) -> Result<String> {
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
+	#[serde(default)]
+	pub core_capabilities: crate::capabilities::CoreCapabilities,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub skill_attachments: Vec<crate::capabilities::skills::SkillAttachment>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub skill_roots: Vec<String>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub reference_attachments: Vec<crate::capabilities::references::Attachment>,
 	pub model: EntityRef,
 	#[serde(default)]
 	pub instructions: String,
@@ -585,7 +593,12 @@ fn validate_in(e: &Entry, local: bool) -> Result<()> {
 		"agent" => {
 			let a: AgentConfig = serde_json::from_value(e.config.clone())
 				.map_err(|e| Error::Invalid(e.to_string()))?;
-			if (a.instructions.trim().is_empty() && a.skills.is_empty())
+			crate::capabilities::skills::validate_config(&a)?;
+			crate::capabilities::references::validate_config(&a)?;
+			if (a.instructions.trim().is_empty()
+				&& a.skills.is_empty()
+				&& a.skill_attachments.is_empty()
+				&& a.skill_roots.is_empty())
 				|| !(1..=1000).contains(&a.max_steps)
 			{
 				return Err(Error::Invalid(
@@ -1157,9 +1170,14 @@ fn overlay_config(target: &mut Value, overrides: &Value) -> Result<()> {
 	let object = overrides
 		.as_object()
 		.ok_or_else(|| Error::Invalid("installation config must be an object".into()))?;
-	if object.contains_key("knowledge_digest") {
+	if object.contains_key("knowledge_digest")
+		|| object.contains_key("core_capabilities")
+		|| object.contains_key("skill_attachments")
+		|| object.contains_key("skill_roots")
+		|| object.contains_key("reference_attachments")
+	{
 		return Err(Error::Invalid(
-			"installation config cannot override immutable knowledge_digest".into(),
+			"installation config cannot override immutable knowledge or capability settings".into(),
 		));
 	}
 	let target = target
@@ -1326,7 +1344,9 @@ pub(crate) fn agent_prompt_headroom(
 	}
 	instructions.push_str("\nAdditional user instructions:\n");
 	instructions.push_str(&config.instructions);
-	let mut specifications = crate::tool::builtins()
+	let mut builtins = crate::tool::builtins();
+	crate::capabilities::tools::add(&mut builtins, &config.core_capabilities);
+	let mut specifications = builtins
 		.values()
 		.map(|t| t.specification())
 		.collect::<Vec<_>>();

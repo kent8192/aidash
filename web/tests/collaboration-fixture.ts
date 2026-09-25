@@ -219,9 +219,23 @@ export async function setup(
     locale?: "ja-JP" | "en-US";
     approval?: boolean;
     failFirstUpload?: boolean;
+    coreCapabilities?: boolean;
   } = {},
 ) {
   let data = fixture(options.referenceLayout);
+  if (options.coreCapabilities) {
+    data.registry[0].config = {
+      ...data.registry[0].config,
+      core_capabilities: {
+        files: true,
+        shell: true,
+        python: true,
+        patch: true,
+        skills: true,
+        sharing: true,
+      },
+    };
+  }
   if (options.extraGraphAgent) {
     data.registry.push({
       id: 'review/"[special]:/agent',
@@ -569,6 +583,10 @@ export async function setup(
             : {},
         },
       });
+    if (/^\/api\/tasks\/[^/]+\/remote-executions$/.test(path))
+      return route.fulfill({ json: [] });
+    if (path === "/api/working-areas" || path === "/api/references")
+      return route.fulfill({ json: { items: [], next_cursor: null } });
     if (path === "/api/marketplace") return route.fulfill({ json: [] });
     return route.fulfill({
       status: 404,

@@ -264,7 +264,52 @@ fn agent_content(config: &str) -> String {
 	)
 }
 
+fn agent_content_extended(config: &str, core: bool) -> String {
+	let old = agent_content(config);
+	if !core {
+		return old;
+	}
+	format!(
+		"(({old}) OR (jsonb_typeof(COALESCE({config}->'instructions', '\"\"'::jsonb)) = 'string' AND (COALESCE({config}->'skill_attachments','[]'::jsonb) <> '[]'::jsonb OR COALESCE({config}->'skill_roots','[]'::jsonb) <> '[]'::jsonb))) AND ({})",
+		optional_string(&format!("{config}->'knowledge_digest'"))
+	)
+}
+
+fn core_settings(config: &str) -> String {
+	let value = format!("({config}->'core_capabilities')");
+	let flags = ["files", "shell", "python", "patch", "skills", "sharing"];
+	let mut parts = vec![object_fields(&value, &flags)];
+	for flag in flags {
+		parts.push(format!(
+			"(NOT ({value} ? '{flag}') OR jsonb_typeof({value}->'{flag}') = 'boolean')"
+		));
+	}
+	let flags = format!(
+		"(NOT ({config} ? 'core_capabilities') OR ({}))",
+		parts.join(" AND ")
+	);
+	let mut shape = vec![flags];
+	for (field, maximum) in [
+		("skill_attachments", 16),
+		("skill_roots", 8),
+		("reference_attachments", 8),
+	] {
+		shape.push(format!("CASE WHEN NOT ({config} ? '{field}') THEN true WHEN jsonb_typeof({config}->'{field}') = 'array' THEN jsonb_array_length({config}->'{field}') <= {maximum} ELSE false END"));
+	}
+	shape.push(string_array(&format!(
+		"COALESCE({config}->'skill_roots','[]'::jsonb)"
+	)));
+	format!("({})", shape.join(" AND "))
+}
+
 pub(crate) fn checks(personal_agents: bool) -> Vec<(&'static str, &'static str, String)> {
+	checks_extended(personal_agents, false)
+}
+
+pub(crate) fn checks_extended(
+	personal_agents: bool,
+	core: bool,
+) -> Vec<(&'static str, &'static str, String)> {
 	let mut checks = Vec::new();
 	let mut agent_fields = vec![
 		"model",
@@ -276,6 +321,14 @@ pub(crate) fn checks(personal_agents: bool) -> Vec<(&'static str, &'static str, 
 	];
 	if personal_agents {
 		agent_fields.push("knowledge_digest");
+	}
+	if core {
+		agent_fields.extend([
+			"core_capabilities",
+			"skill_attachments",
+			"skill_roots",
+			"reference_attachments",
+		]);
 	}
 	for &(table, name, expression) in CHECKS {
 		let mut parts = vec![expression.replace("{whitespace}", WHITESPACE_SQL)];
@@ -334,10 +387,13 @@ pub(crate) fn checks(personal_agents: bool) -> Vec<(&'static str, &'static str, 
 			}
 			"registry_agent_config" => {
 				let config = "(metadata->'config')";
+				if core {
+					parts.push(format!("kind <> 'agent' OR ({})", core_settings(config)));
+				}
 				if personal_agents {
 					parts[0] = format!(
 						"kind <> 'agent' OR ({} AND CASE WHEN NOT ({config} ? 'max_steps') THEN true WHEN jsonb_typeof({config}->'max_steps') = 'number' AND ({config}->>'max_steps') ~ '^(0|[1-9][0-9]*)$' THEN ({config}->>'max_steps')::numeric BETWEEN 1 AND 1000 ELSE false END)",
-						agent_content(config)
+						agent_content_extended(config, core)
 					);
 				}
 				let shape = [
@@ -609,6 +665,12 @@ pub(crate) fn checks(personal_agents: bool) -> Vec<(&'static str, &'static str, 
 					"jsonb_typeof({entity}->'schema') = 'object' AND public.jsonschema_is_valid(({entity}->'schema')::json) AND jsonb_typeof({entity}->'config') = 'object'"
 				));
 				let entity_config = format!("{entity}->'config'");
+				if core {
+					parts.push(format!(
+						"{entity}->>'kind' <> 'agent' OR ({})",
+						core_settings(&entity_config)
+					));
+				}
 				let entity_tools =
 					entity_ref_array(&format!("COALESCE({entity_config}->'tools', '[]'::jsonb)"));
 				let entity_skills =
@@ -619,7 +681,7 @@ pub(crate) fn checks(personal_agents: bool) -> Vec<(&'static str, &'static str, 
 						"jsonb_typeof({entity_config}->'model') = 'object' AND jsonb_typeof({entity_config}->'model'->'id') = 'string' AND jsonb_typeof({entity_config}->'model'->'version') = 'string'"
 					),
 					if personal_agents {
-						agent_content(&entity_config)
+						agent_content_extended(&entity_config, core)
 					} else {
 						format!(
 							"jsonb_typeof({entity_config}->'instructions') = 'string' AND length(btrim({entity_config}->>'instructions', {WHITESPACE_SQL})) > 0"

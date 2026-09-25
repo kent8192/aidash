@@ -517,7 +517,14 @@ async fn migration_backfills_active_remote_fences_before_legacy_effects(
 	let fixture = RemoteFixture::new(&test_environment).await;
 	let db =
 		sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(fixture.home.store.pool.clone());
-	Migrator::down(&db, Some(3)).await.unwrap();
+	let migrations = Migrator::migrations();
+	let gate = migrations
+		.iter()
+		.position(|migration| migration.name() == "m20260924_080000_legacy_federated_input_gate")
+		.expect("legacy federated input gate migration");
+	Migrator::down(&db, Some((migrations.len() - gate) as u32))
+		.await
+		.unwrap();
 	let run = &fixture.run;
 	for key in [
 		format!("human:{}:{}", run.id, Uuid::new_v4()),

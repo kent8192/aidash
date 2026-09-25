@@ -1,3 +1,4 @@
+import { ThreadCapabilities } from "../capabilities/thread";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
@@ -89,12 +90,23 @@ export function ChannelConversation({
       {props.thread &&
         threadContainer &&
         createPortal(
-          <ConversationFeed
-            key={props.thread}
-            {...shared}
-            requests={undefined}
-            threadList={false}
-          />,
+          <>
+            <ConversationFeed
+              key={props.thread}
+              {...shared}
+              requests={undefined}
+              threadList={false}
+            />
+            {props.data.access.kind === "subject" && (
+              <ThreadCapabilities
+                key={props.thread}
+                workspace={props.workspace}
+                thread={props.thread}
+                data={props.data}
+                onDeleted={() => props.selectThread(null)}
+              />
+            )}
+          </>,
           threadContainer,
         )}
     </>

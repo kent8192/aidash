@@ -1,7 +1,9 @@
 //! Receiver admission binds a source grant to one local identity and executor.
-//! The record is not an executable run: worker activation must consume this
-//! authority through scoped home commands, never through legacy offers.
+//! RemoteExecutionActivation consumes this record only after home durably binds its run ID.
+//! Worker boundaries revalidate the same authority; legacy offers stay closed.
 use super::execution::{InspectInput, inspect_in};
+use crate::domain::Run;
+use crate::registry::AgentConfig;
 use crate::{
 	Error, Result,
 	authorization::{access::Access, remote::Description},
@@ -14,6 +16,9 @@ use axum::{
 	http::HeaderMap,
 };
 use chrono::{DateTime, Utc};
+use sea_orm::sea_query::{
+	Alias, Asterisk, Expr, LockType, OnConflict, PostgresQueryBuilder, Query,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -22,6 +27,137 @@ use uuid::Uuid;
 #[serde(deny_unknown_fields)]
 pub(crate) struct Input {
 	grant_id: Uuid,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RemoteExecutionControlInput {
+	grant_id: Uuid,
+	action: crate::authorization::remote::execution::RemoteExecutionControl,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MessageInput {
+	grant_id: Uuid,
+	message: crate::authorization::remote::execution::RemoteExecutionMessageInput,
+}
+
+pub(crate) async fn message(
+	State(f): State<Federation>,
+	headers: HeaderMap,
+	Path(id): Path<Uuid>,
+	Json(input): Json<MessageInput>,
+) -> Result<Json<crate::authorization::remote::execution::RemoteExecutionMessageReceipt>> {
+	let source = crate::api::peer_node(&headers)?;
+	let run = f.store.run(id).await?;
+	if run.home_node != source || run_grant(&f.store, &run).await? != Some(input.grant_id) {
+		return Err(Error::Forbidden);
+	}
+	let (mut access, _) = worker_lease(&f, &run).await?.ok_or(Error::Forbidden)?;
+	let preflight = async {
+		access
+			.require(&access.resource("run", id, json!({})), "run.message")
+			.await?;
+		access
+			.require(
+				&access.resource(
+					"workspace",
+					format!("{source}/workspaces/{}", run.workspace_id),
+					json!({}),
+				),
+				"message.create",
+			)
+			.await?;
+		Ok(())
+	}
+	.await;
+	access.finish(preflight).await?;
+	let home = crate::federation::Home::new(f.clone(), run.clone());
+	let key = format!("human:{id}:{}", input.message.id);
+	let limit = f.run_message_limit(&run).await?;
+	if !home
+		.reserve_run_message(&key, &input.message.content)
+		.await?
+	{
+		return Err(Error::Forbidden);
+	}
+	// Reacquire receiver authority after reserving at home. A revocation
+	// between reservation and admission cannot create an executable input.
+	let (mut access, _) = worker_lease(&f, &run).await?.ok_or(Error::Forbidden)?;
+	let sender = access.identity.subject.clone();
+	let result = f
+		.store
+		.accept_run_message_in(
+			&mut access.tx,
+			id,
+			&sender,
+			&input.message.content,
+			&key,
+			limit,
+		)
+		.await;
+	if let Err(error) = access.finish(result).await
+		&& f.store
+			.run_input_sequence(id, &key, &input.message.content)
+			.await
+			.is_err()
+	{
+		let _ = home.release_run_messages(std::slice::from_ref(&key)).await;
+		return Err(error);
+	}
+	home.commit_run_message(&key, &input.message.content)
+		.await?;
+	f.deliver_run_messages(&run).await?;
+	f.notify.notify_waiters();
+	Ok(Json(
+		crate::authorization::remote::execution::RemoteExecutionMessageReceipt {
+			id: input.message.id,
+			run_id: id,
+			accepted: true,
+		},
+	))
+}
+
+pub(crate) async fn control(
+	State(f): State<Federation>,
+	headers: HeaderMap,
+	Path(id): Path<Uuid>,
+	Json(input): Json<RemoteExecutionControlInput>,
+) -> Result<Json<crate::authorization::remote::execution::RemoteExecutionActivation>> {
+	let source = crate::api::peer_node(&headers)?;
+	let run = f.store.run(id).await?;
+	if run.home_node != source || run_grant(&f.store, &run).await? != Some(input.grant_id) {
+		return Err(Error::Forbidden);
+	}
+	if matches!(
+		input.action,
+		crate::authorization::remote::execution::RemoteExecutionControl::Resume
+	) {
+		let (access, _) = worker_lease(&f, &run).await?.ok_or(Error::Forbidden)?;
+		access.finish(Ok(())).await?;
+	}
+	let run = if matches!(
+		input.action,
+		crate::authorization::remote::execution::RemoteExecutionControl::Cancel
+	) && run.control == "CANCELLED"
+	{
+		run
+	} else {
+		f.store.control(id, input.action.action()).await?
+	};
+	f.notify.notify_waiters();
+	Ok(Json(
+		crate::authorization::remote::execution::RemoteExecutionActivation {
+			grant_id: input.grant_id,
+			admission_id: id,
+			run_id: id,
+			phase: run.phase,
+			control: run.control,
+			error: run
+				.error
+				.map(|_| "Remote execution requires attention.".into()),
+		},
+	))
 }
 #[derive(sqlx::FromRow)]
 struct Record {
@@ -34,13 +170,63 @@ struct Record {
 	subject_chain: Vec<String>,
 	description: Value,
 }
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub(crate) struct Admission {
-	id: Uuid,
-	source_node: String,
-	grant_id: Uuid,
-	task_id: Uuid,
-	expires_at: DateTime<Utc>,
+	pub(crate) id: Uuid,
+	pub(crate) source_node: String,
+	pub(crate) grant_id: Uuid,
+	pub(crate) task_id: Uuid,
+	pub(crate) expires_at: DateTime<Utc>,
+}
+
+pub(crate) async fn status(
+	State(f): State<Federation>,
+	headers: HeaderMap,
+	Json(input): Json<Input>,
+) -> Result<Json<Option<crate::authorization::remote::execution::RemoteExecutionActivation>>> {
+	let source = crate::api::peer_node(&headers)?;
+	let record: Option<Record> = sqlx::query_as(
+		&Query::select()
+			.column(Asterisk)
+			.from(Alias::new("authorization_remote_admissions"))
+			.and_where(Expr::cust("source_node=$1 AND grant_id=$2"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(source)
+	.bind(input.grant_id)
+	.fetch_optional(&f.store.pool)
+	.await?;
+	let Some(record) = record else {
+		return Ok(Json(None));
+	};
+	let run: Option<Run> = sqlx::query_as(
+		&Query::select()
+			.column(Asterisk)
+			.from(Alias::new("runs"))
+			.and_where(Expr::cust("id=$1 AND home_node=$2"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(record.id)
+	.bind(source)
+	.fetch_optional(&f.store.pool)
+	.await?;
+	Ok(Json(Some(
+		crate::authorization::remote::execution::RemoteExecutionActivation {
+			grant_id: input.grant_id,
+			admission_id: record.id,
+			run_id: record.id,
+			phase: run.as_ref().map_or("ADMITTED", |r| r.phase.as_str()).into(),
+			control: run
+				.as_ref()
+				.map_or("INACTIVE", |r| r.control.as_str())
+				.into(),
+			error: run.and_then(|r| {
+				r.error.map(|_| {
+					"Remote execution requires attention. Review current authority and retry controls.".into()
+				})
+			}),
+		},
+	)))
 }
 impl Record {
 	fn matches(&self, access: &Access, description: &Description) -> Result<bool> {
@@ -146,6 +332,15 @@ async fn lease(f: &Federation, source: &str, grant: Uuid) -> Result<(Access, Des
 	Ok((access, description))
 }
 
+fn require_workspace_agent(agent: &AgentConfig) -> Result<()> {
+	// Local working areas require a local conversation; a foreign workspace
+	// grant cannot manufacture that conversation or inherit its private files.
+	if agent.core_capabilities.enabled() {
+		return Err(Error::Invalid("remote execution requires a workspace Agent without local core working-area capabilities; transfer files into an explicitly admitted local thread".into()));
+	}
+	Ok(())
+}
+
 pub(crate) async fn admit(
 	State(f): State<Federation>,
 	headers: HeaderMap,
@@ -154,6 +349,8 @@ pub(crate) async fn admit(
 	let source = crate::api::peer_node(&headers)?;
 	let (mut access, description) = lease(&f, source, input.grant_id).await?;
 	let result = async {
+        let agent: AgentConfig = serde_json::from_value(description.inspection.agent.config.clone())?;
+        require_workspace_agent(&agent)?;
 		sqlx::query(
 			&sea_orm::sea_query::Query::select()
 				.expr(sea_orm::sea_query::Expr::cust(
@@ -167,12 +364,13 @@ pub(crate) async fn admit(
 		let legacy: bool = sqlx::query_scalar(
 			&sea_orm::sea_query::Query::select()
 				.expr(sea_orm::sea_query::Expr::cust(
-					"EXISTS(SELECT 1 FROM runs WHERE home_node = $1 AND task_id = $2)",
+					"EXISTS(SELECT 1 FROM runs r WHERE home_node = $1 AND task_id = $2 AND NOT EXISTS(SELECT 1 FROM authorization_remote_admissions a WHERE a.id = r.id AND a.source_node = r.home_node AND a.grant_id = $3))",
 				))
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 		)
 		.bind(source)
 		.bind(description.task.id)
+		.bind(input.grant_id)
 		.fetch_one(&mut **access.tx)
 		.await?;
 		if legacy {
@@ -299,4 +497,174 @@ pub(crate) async fn verify(
 		Err(Error::Forbidden)
 	};
 	access.finish(result).await
+}
+
+/// A scoped record is never treated as a missing legacy grant, even after expiry.
+pub(crate) async fn run_grant(store: &crate::store::Store, run: &Run) -> Result<Option<Uuid>> {
+	let record: Option<Record> = sqlx::query_as(
+		&Query::select()
+			.column(Asterisk)
+			.from(Alias::new("authorization_remote_admissions"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.fetch_optional(&store.pool)
+	.await?;
+	let Some(record) = record else {
+		return Ok(None);
+	};
+	let d: Description = serde_json::from_value(record.description)?;
+	if record.source_node != run.home_node
+		|| record.task_id != run.task_id
+		|| d.task.workspace_id != run.workspace_id
+		|| d.inspection.agent.id != run.agent_id
+		|| d.inspection.agent.version != run.agent_version
+	{
+		return Err(Error::Forbidden);
+	}
+	Ok(Some(record.grant_id))
+}
+
+pub(crate) async fn worker_lease(
+	f: &Federation,
+	run: &Run,
+) -> Result<Option<(Access, AgentConfig)>> {
+	let Some(grant) = run_grant(&f.store, run).await? else {
+		return Ok(None);
+	};
+	let (mut access, d) = lease(f, &run.home_node, grant).await?;
+	let result = async {
+		let record: Record = sqlx::query_as(
+			&Query::select()
+				.column(Asterisk)
+				.from(Alias::new("authorization_remote_admissions"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+				.lock(LockType::Share)
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(run.id)
+		.fetch_one(&mut **access.tx)
+		.await?;
+		if !record.matches(&access, &d)? {
+			return Err(Error::Forbidden);
+		}
+		let agent: AgentConfig = serde_json::from_value(d.inspection.agent.config)?;
+		access.durable_audit = true;
+		access.worker();
+		Ok(agent)
+	}
+	.await;
+	match result {
+		Ok(agent) => Ok(Some((access, agent))),
+		Err(e) => access.finish(Err(e)).await,
+	}
+}
+
+pub(crate) async fn activate(
+	State(f): State<Federation>,
+	headers: HeaderMap,
+	Path(id): Path<Uuid>,
+	Json(input): Json<Input>,
+) -> Result<Json<crate::authorization::remote::execution::RemoteExecutionActivation>> {
+	let source = crate::api::peer_node(&headers)?;
+	let bound: Uuid = super::authority_request(
+		&f,
+		source,
+		"/scoped/execution/grants/activation",
+		&json!({"grant_id":input.grant_id}),
+	)
+	.await?;
+	if bound != id {
+		return Err(Error::Forbidden);
+	}
+	let (mut access, d) = lease(&f, source, input.grant_id).await?;
+	let result = async {
+		let record: Record = sqlx::query_as(
+			&Query::select()
+				.column(Asterisk)
+				.from(Alias::new("authorization_remote_admissions"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+				.lock(LockType::Share)
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(id)
+		.fetch_optional(&mut **access.tx)
+		.await?
+		.ok_or(Error::Forbidden)?;
+		if !record.matches(&access, &d)? {
+			return Err(Error::Forbidden);
+		}
+		let agent: AgentConfig = serde_json::from_value(d.inspection.agent.config.clone())?;
+		require_workspace_agent(&agent)?;
+		sqlx::query(
+			&Query::select()
+				.expr(Expr::cust(
+					"PG_ADVISORY_XACT_LOCK(HASHTEXTEXTENDED($1, 71003209))",
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(format!("{source}:{}", d.task.id))
+		.execute(&mut **access.tx)
+		.await?;
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("runs"))
+				.columns(
+					[
+						"id",
+						"task_id",
+						"workspace_id",
+						"home_node",
+						"agent_id",
+						"agent_version",
+					]
+					.map(Alias::new),
+				)
+				.values_panic((1..=6).map(|i| Expr::cust(format!("${i}"))))
+				.on_conflict(OnConflict::new().do_nothing().to_owned())
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(id)
+		.bind(d.task.id)
+		.bind(d.task.workspace_id)
+		.bind(source)
+		.bind(&d.inspection.agent.id)
+		.bind(&d.inspection.agent.version)
+		.execute(&mut **access.tx)
+		.await?;
+		let run: Run = sqlx::query_as(
+			&Query::select()
+				.column(Asterisk)
+				.from(Alias::new("runs"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(id)
+		.fetch_optional(&mut **access.tx)
+		.await?
+		.ok_or_else(|| Error::Conflict("source task already has another execution".into()))?;
+		if run.task_id != d.task.id
+			|| run.workspace_id != d.task.workspace_id
+			|| run.home_node != source
+			|| run.agent_id != d.inspection.agent.id
+			|| run.agent_version != d.inspection.agent.version
+		{
+			return Err(Error::Forbidden);
+		}
+		Ok(Json(
+			crate::authorization::remote::execution::RemoteExecutionActivation {
+				grant_id: input.grant_id,
+				admission_id: id,
+				run_id: id,
+				phase: run.phase,
+				control: run.control,
+				error: run.error,
+			},
+		))
+	}
+	.await;
+	let result = access.finish(result).await?;
+	f.notify.notify_waiters();
+	Ok(result)
 }

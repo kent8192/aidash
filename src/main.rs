@@ -13,6 +13,13 @@ async fn main() -> Result<()> {
 		)
 		.init();
 	let mode = std::env::args().nth(1).unwrap_or_else(|| "serve".into());
+	if mode == "capability-profile" {
+		println!(
+			"{}",
+			serde_json::to_string_pretty(&aidash::capabilities::Profile::default())?
+		);
+		return Ok(());
+	}
 	if mode == "openapi" {
 		println!(
 			"{}",
@@ -48,6 +55,17 @@ async fn main() -> Result<()> {
 	let (shutdown, stopping) = tokio::sync::watch::channel(false);
 	let mut background = tokio::task::JoinSet::new();
 	let mut workers = tokio::task::JoinSet::new();
+	{
+		let f = federation.for_runtime_workers().await?;
+		let stopping = stopping.clone();
+		background
+			.spawn(async move { aidash::capabilities::operations::run(f.store, stopping).await });
+	}
+	{
+		let f = federation.for_runtime_workers().await?;
+		let stopping = stopping.clone();
+		background.spawn(async move { aidash::capabilities::transfer::run(f, stopping).await });
+	}
 	if config.oidc.is_some() {
 		let f = federation.clone();
 		let stopping = stopping.clone();

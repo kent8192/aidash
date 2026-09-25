@@ -184,6 +184,7 @@ pub async fn conversation(
 			.await?;
 		let task_resource = access.task_resource(&task).await?;
 		access.require(&task_resource, "task.read").await?;
+		crate::capabilities::sessions::bind_task(&mut access, task.id, conversation.id).await?;
 		let delegation = execution::delegate_in(f, &mut access, task.id, &agent).await?;
 		let task = sqlx::query_as(
 			&Query::select()

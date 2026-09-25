@@ -912,6 +912,12 @@ impl Home {
 		self
 	}
 	pub async fn discover(&self, search: &Search) -> Result<Discovery> {
+		if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
+			.await?
+			.is_some()
+		{
+			return Err(Error::Forbidden);
+		}
 		if let Some(authority) = &self.authority {
 			authority.discover(&self.federation, search).await
 		} else {
@@ -929,6 +935,18 @@ impl Home {
 		self.run.home_node == self.federation.config.node_id
 	}
 	async fn command<T: DeserializeOwned>(&self, op: &str, data: Value) -> Result<T> {
+		if let Some(grant) =
+			crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
+				.await?
+		{
+			return crate::authorization::peer::authority_request(
+				&self.federation,
+				&self.run.home_node,
+				"/scoped/execution/commands",
+				&json!({"grant_id":grant,"admission_id":self.run.id,"operation":op,"data":data}),
+			)
+			.await;
+		}
 		self.federation.request(&self.run.home_node,Method::POST,"/workspace",Some(&json!({"task_id":self.run.task_id,"agent":{"id":self.run.agent_id,"version":self.run.agent_version},"operation":op,"data":data}))).await
 	}
 	async fn optional_command<T: DeserializeOwned>(
@@ -936,6 +954,12 @@ impl Home {
 		op: &str,
 		data: Value,
 	) -> Result<Option<T>> {
+		if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
+			.await?
+			.is_some()
+		{
+			return self.command(op, data).await.map(Some);
+		}
 		let command = json!({"task_id":self.run.task_id,"agent":{"id":self.run.agent_id,"version":self.run.agent_version},"operation":op,"data":data});
 		let response = self
 			.federation
@@ -963,6 +987,12 @@ impl Home {
 		Ok(Some(crate::response::json(response, 4_194_304).await?))
 	}
 	pub async fn snapshot(&self) -> Result<WorkspaceSnapshot> {
+		if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
+			.await?
+			.is_some()
+		{
+			return self.command("snapshot", json!({})).await;
+		}
 		if let Some(authority) = &self.authority {
 			authority.snapshot(self.run.workspace_id).await
 		} else if self.local() {
