@@ -79,16 +79,18 @@ class Runner:
             raise ValueError("verified runsc runtime class required")
         self.ensure_network_policy()
         self.verified = False
+        self.python_verified = False
+        # Existing journals contain untrusted work too. Re-prove the current
+        # isolation boundary before any recovery thread can execute that work.
+        self.verify_isolation()
+        if self.config.get("node_guard"):
+            self.verify_freeze()
         for path in self.root.glob("*.json"):
             if path.name.startswith(("area-", "session-")):
                 continue
             record = json.loads(path.read_bytes())
             if record["status"] not in TERMINAL and record["status"] != "awaiting_files":
                 self.start(record["operation_id"])
-        self.verify_isolation()
-        self.python_verified = False
-        if self.config.get("node_guard"):
-            self.verify_freeze()
 
     def verify_isolation(self):
         operation = str(uuid.uuid4())
@@ -320,7 +322,7 @@ class Runner:
             record = self.get(operation)
             if record["digest"] != digest or record["status"] not in ("completed", "cancelled", "failed"):
                 raise Rejected(409, "outcome is not ready to acknowledge")
-            record = self.update(operation, acknowledged=True, request={}, stdout="", files=[])
+            record = self.update(operation, acknowledged=True, request={}, stdout="", files=[], displays=[])
             for suffix in (".inputs", ".files"):
                 directory = self.root / (operation + suffix)
                 if directory.exists():

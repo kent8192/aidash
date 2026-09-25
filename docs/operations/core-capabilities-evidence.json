@@ -199,6 +199,14 @@
         {
           "name": "lifecycle_tests::failed_snapshot_preserves_active_files_and_interrupted_delete_is_reconcilable",
           "source": "tests/core_capabilities/lifecycle.rs"
+        },
+        {
+          "name": "retention_boundary_tests::keep_converts_the_existing_recovery_snapshot_to_retained_storage",
+          "source": "tests/core_capabilities/retention_boundaries.rs"
+        },
+        {
+          "name": "retention_boundary_tests::restore_rechecks_current_quota_and_administrator_policy",
+          "source": "tests/core_capabilities/retention_boundaries.rs"
         }
       ]
     },
@@ -290,6 +298,14 @@
         {
           "name": "content_limit_tests::lowered_content_limits_bound_reads_search_patches_uploads_and_shares",
           "source": "tests/core_capabilities/content_limits.rs"
+        },
+        {
+          "name": "content_limit_tests::oversized_search_matches_fail_explicitly_instead_of_repeating_an_empty_cursor",
+          "source": "tests/core_capabilities/content_limits.rs"
+        },
+        {
+          "name": "content_limit_tests::binary_search_reports_unavailable_text_while_path_search_remains_usable",
+          "source": "tests/core_capabilities/content_limits.rs"
         }
       ]
     },
@@ -364,6 +380,10 @@
         {
           "name": "transfer_tests::transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible",
           "source": "tests/core_capabilities/transfer.rs"
+        },
+        {
+          "name": "retention_boundary_tests::local_share_requires_the_version_admitted_in_the_current_generation",
+          "source": "tests/core_capabilities/retention_boundaries.rs"
         }
       ]
     },
@@ -440,6 +460,10 @@
         {
           "name": "reference_limit_tests::reference_configuration_enforces_aggregate_and_lowered_limits_without_rewriting_versions",
           "source": "tests/core_capabilities/reference_limits.rs"
+        },
+        {
+          "name": "extraction_lifecycle_tests::extraction_releases_terminal_runner_payloads_and_rollback_starts_no_new_parser",
+          "source": "tests/core_capabilities/extraction_lifecycle.rs"
         }
       ]
     },

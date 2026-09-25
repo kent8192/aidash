@@ -354,6 +354,13 @@ async fn drive(store: &Store, id: Uuid) -> Result<()> {
         let operation:Uuid=serde_json::from_value(record.data["operation_id"].clone())?;
         let path=format!("/v1/operations/{operation}");
         let digest=crate::registry::digest(&json!(["extract/1",id,original]));
+        if !store.capabilities.0.admission && record.data["instance"].is_null() {
+            // No dispatch intent was committed, so rollback can stop this
+            // upload without contacting or starting an execution environment.
+            record.state="ready".into();record.expires_at=None;
+            record.data["extraction_state"]=json!("admission_disabled");
+            return records::update(&mut access,&mut record).await;
+        }
         let health=operations::remote(store,reqwest::Method::GET,"/v1/health",None).await?;
         let profile=store.capabilities.0.runner.as_ref().ok_or(Error::Forbidden)?;
         if health["verified"]!=true||health["image"]!=profile.image {return Err(Error::Conflict("EXTRACTOR_UNAVAILABLE".into()));}
@@ -365,7 +372,11 @@ async fn drive(store: &Store, id: Uuid) -> Result<()> {
             return records::update(&mut access,&mut record).await;
         }
         if record.data["instance"]!=health["instance"] {record.state="failed".into();record.data["extraction_state"]=json!("runtime_lost");return records::update(&mut access,&mut record).await;}
-        let observed=if record.data["dispatch_pending"]==true {
+        let observed=if !store.capabilities.0.admission {
+            // An intent may have reached the runner before a lost reply.
+            // Cancel by its immutable identity; never submit or stage anew.
+            operations::remote(store,reqwest::Method::POST,&format!("{path}/cancel"),None).await?
+        } else if record.data["dispatch_pending"]==true {
             operations::remote(store,reqwest::Method::POST,"/v1/operations",Some(json!({"operation_id":operation,"area_id":id,"epoch":1,"digest":digest,"kind":"shell","code":format!("python -I /opt/aidash/extract.py {} {} {}",store.capabilities.0.limits.reference_text_bytes,store.capabilities.0.limits.reference_pages,store.capabilities.0.limits.reference_bytes),"seconds":store.capabilities.0.operation_seconds,"files":[{"file_id":original.file_id,"path":"original","scope":"references","size":original.size,"digest":original.digest}]}))).await?
         } else {operations::remote(store,reqwest::Method::GET,&path,None).await?};
         match observed["status"].as_str() {
@@ -380,6 +391,12 @@ async fn drive(store: &Store, id: Uuid) -> Result<()> {
                 record.data["dispatch_pending"]=json!(false);
             }
             Some("completed") if observed["termination_confirmed"]==true=>{
+                if !store.capabilities.0.admission {
+                    record.state="ready".into();record.expires_at=None;
+                    record.data["extraction_state"]=json!("admission_disabled");
+                    record.data["receipt_pending"]=json!(true);record.data["runner_digest"]=json!(digest);
+                    return records::update(&mut access,&mut record).await;
+                }
                 let bytes=STANDARD.decode(observed["stdout"].as_str().ok_or(Error::Forbidden)?).map_err(|_|Error::Invalid("EXTRACTION_RESULT".into()))?;
                 if bytes.len()>262144 {return Err(Error::Conflict("EXTRACTION_RESULT_LIMIT".into()));}
                 let extracted:Value=serde_json::from_slice(&bytes)?;
@@ -395,8 +412,13 @@ async fn drive(store: &Store, id: Uuid) -> Result<()> {
                 record.state="ready".into();record.expires_at=None;record.data["extraction_state"]=json!(state);
                 record.data["receipt_pending"]=json!(true);record.data["runner_digest"]=json!(digest);
             }
-            Some("failed"|"cancelled"|"uncertain"|"absent")=>{record.state="ready".into();record.expires_at=None;record.data["extraction_state"]=json!("extraction_failed");}
-            Some("accepted"|"starting"|"running"|"finishing")=>{record.data["dispatch_pending"]=json!(false);}
+            Some("failed"|"cancelled") if observed["termination_confirmed"]==true=>{
+                record.state="ready".into();record.expires_at=None;
+                record.data["extraction_state"]=json!(if store.capabilities.0.admission {"extraction_failed"} else {"admission_disabled"});
+                record.data["receipt_pending"]=json!(true);record.data["runner_digest"]=json!(digest);
+            }
+            Some("uncertain"|"absent")=>{record.state="ready".into();record.expires_at=None;record.data["extraction_state"]=json!(if store.capabilities.0.admission {"extraction_failed"} else {"admission_disabled"});}
+            Some("accepted"|"starting"|"running"|"finishing"|"cancelling")=>{record.data["dispatch_pending"]=json!(false);}
             _=>return Err(Error::Conflict("EXTRACTION_STATE_UNAVAILABLE".into())),
         }
         records::update(&mut access,&mut record).await

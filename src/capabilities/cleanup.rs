@@ -254,6 +254,47 @@ pub(crate) async fn prepare(
 	} else if input.confirmation_id.is_some() {
 		return Err(Error::Invalid("UNEXPECTED_CONFIRMATION".into()));
 	}
+	if matches!(input.choice, Choice::Keep) && area.state == "recoverable" {
+		let mut recovery: Record = sqlx::query_as(
+			&sessions::select("core_records")
+				.and_where(Expr::col(Alias::new("area_id")).eq(Expr::cust("$1")))
+				.and_where(Expr::col(Alias::new("kind")).eq("cleanup"))
+				.and_where(Expr::col(Alias::new("state")).eq("recoverable"))
+				.and_where(Expr::cust("(data->>'generation')::bigint = $2"))
+				.lock(LockType::Update)
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(area.id)
+		.bind(area.generation)
+		.fetch_optional(&mut **access.tx)
+		.await?
+		.ok_or_else(|| Error::Conflict("RECOVERY_UNAVAILABLE".into()))?;
+		if recovery.expires_at.is_none_or(|t| t <= Utc::now()) {
+			return Err(Error::Conflict("RECOVERY_UNAVAILABLE".into()));
+		}
+		// Retain the already verified snapshot itself. The expiry worker locks
+		// this same area and record, so it cannot erase the bytes after Keep.
+		area.manifest = recovery.data["snapshot"].clone();
+		area.state = "retained".into();
+		area.generation += 1;
+		area.epoch += 1;
+		service::publish(store, access, &mut area).await?;
+		persist(access, &area).await?;
+		recovery.state = "kept".into();
+		recovery.expires_at = None;
+		recovery.data["retained"] = json!(true);
+		recovery.data["area_revision"] = json!(area.revision);
+		recovery.data["generation"] = json!(area.generation);
+		records::update(access, &mut recovery).await?;
+		sessions::cache(
+			access,
+			input.idempotency_key,
+			&digest,
+			&json!({"operation_id":recovery.id}),
+		)
+		.await?;
+		return result(&recovery);
+	}
 	if !matches!(input.choice, Choice::Keep) {
 		if !matches!(
 			area.state.as_str(),
@@ -401,9 +442,6 @@ pub(crate) async fn restore(
 		}
 		return Ok(area);
 	}
-	if area.owner != access.identity.subject {
-		return Err(Error::Forbidden);
-	}
 	if area.revision != input.expected_revision
 		|| !matches!(area.state.as_str(), "recoverable" | "retained")
 	{
@@ -442,6 +480,13 @@ pub(crate) async fn restore(
 			.await?;
 	}
 	let snapshot: Vec<FileEntry> = serde_json::from_value(record.data["snapshot"].clone())?;
+	let bytes = snapshot
+		.iter()
+		.filter(|file| !matches!(file.scope, FileScope::References))
+		.try_fold(0_u64, |total, file| total.checked_add(file.size));
+	if bytes.is_none_or(|bytes| bytes > store.capabilities.0.working_bytes) {
+		return Err(Error::Conflict("WORKING_QUOTA".into()));
+	}
 	let mut files = vec![];
 	for file in snapshot {
 		if matches!(file.scope, FileScope::References) {

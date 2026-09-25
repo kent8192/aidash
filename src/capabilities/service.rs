@@ -402,9 +402,8 @@ async fn search(
 			if index < cursor.line {
 				continue;
 			}
-			let Ok(line) = std::str::from_utf8(&line) else {
-				break;
-			};
+			let line = std::str::from_utf8(&line)
+				.map_err(|_| Error::Invalid("REPRESENTATION_UNAVAILABLE: invalid UTF-8".into()))?;
 			if index % 64 == 0
 				&& started.elapsed()
 					> std::time::Duration::from_secs(store.capabilities.0.limits.search_seconds)
@@ -433,6 +432,12 @@ async fn search(
 							.search_bytes
 							.saturating_sub(2768)
 				{
+					if matches.is_empty() {
+						return Err(Error::Invalid(
+							"SEARCH_RESULT_LIMIT: one match exceeds the configured page budget"
+								.into(),
+						));
+					}
 					cursor.line = index;
 					exhausted = false;
 					break;

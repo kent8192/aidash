@@ -123,6 +123,7 @@ pub(crate) async fn share(
 						.column(Alias::new("run_id"))
 						.from(Alias::new("core_runs"))
 						.and_where(Expr::col(Alias::new("area_id")).eq(Expr::cust("$1")))
+						.and_where(Expr::col(Alias::new("generation")).eq(recipient.generation))
 						.to_owned(),
 				),
 			)

@@ -22,6 +22,7 @@ cleanup() {
 }
 trap cleanup EXIT
 python3 scripts/core-capability-evidence.py capture "$evidence"
+python3 scripts/test-capability-controller.py > "$evidence/controller-tests.log" 2>&1
 python3 - "$tools_dir" <<'PY'
 import hashlib, io, pathlib, platform, sys, tarfile, urllib.request
 root=pathlib.Path(sys.argv[1]);osname=platform.system().lower()

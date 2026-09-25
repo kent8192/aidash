@@ -169,9 +169,15 @@ the area revision; patches require exact preimages and publish one complete
 revision. Binary original references stay private and read-only. Python edits a
 separate working copy. PDF encryption, unsupported formats, malformed content,
 page/text limits and non-extractable content are explicit extraction states.
+Invalid UTF-8 searches and individual matches exceeding the configured page
+budget return explicit errors rather than incomplete or non-advancing results.
 The original remains downloadable by its authorized owner when the upload was
 accepted. OCR, formula recalculation and universal format preservation are not
 provided. Text-only legacy references remain text-only until re-uploaded.
+Disabling admission also cancels pending or live reference extraction; it never
+starts a queued parser. The original remains available with `admission_disabled`.
+Acknowledging completed, failed or cancelled extraction releases the runner's
+staged payloads. Python result acknowledgement also releases copied inline images.
 
 Direct Skills use immutable directory manifests. Discovery reveals bounded
 metadata; activation loads the chosen instructions, and other files are read on
@@ -204,6 +210,8 @@ Both disclosure and receipt authority must permit it. Private-input restrictions
 follow derived working files, including after copy or rename. Local and remote
 recipients own independent immutable inputs and can materialize their own working
 copies. Source edits or cleanup do not recall already received information.
+Local receipt requires the exact Agent version admitted in the destination's
+current generation; a historical Run cannot authorize a newly restored area.
 
 Remote transfer negotiates `file-transfer/1` using explicit mapped subject
 identity. Legacy peer authentication alone is insufficient. Prepare reserves
@@ -221,6 +229,11 @@ deletion remains `cleanup_failed`; use **Reconcile cleanup** to retry the same
 intent. Deleted threads leave retained files accessible to current authorized
 owners through settings; restoration creates a new thread binding, not old
 messages or old authority.
+Choosing **Keep** for an existing recovery snapshot converts it to retained
+storage without expiry. Restoration rechecks the current working-byte limit
+before copying or reattaching files. Authorized file administrators can restore
+another owner's area subject to current workspace, source and restoration policy;
+the original ownership remains unchanged.
 
 ## Requirement evidence
 
@@ -235,6 +248,8 @@ it never identifies an uncommitted test as proof of the base commit alone.
 admission and journal recovery. A destroyed fixture Pod with unavailable node
 evidence must remain uncertain, while an observed completed operation returns its
 saved result exactly once. Missing recovery proof also fails the gate.
+`controller-tests.log` covers failure of either admission probe before any
+journaled work is resumed and complete, idempotent result-payload acknowledgement.
 
 The browser job retains its Playwright report and `browser-result.json`.
 Browser fixtures validate interactions and accessibility; the runtime journey

@@ -104,7 +104,10 @@ pub(crate) async fn delete(
 		if area.revision != choice.expected_revision {
 			return Err(Error::Conflict("AREA_REVISION_CHANGED".into()));
 		}
-		if !matches!(area.state.as_str(), "active" | "recoverable" | "deleted") {
+		if !matches!(
+			area.state.as_str(),
+			"active" | "retained" | "recoverable" | "deleted"
+		) {
 			return Err(Error::Conflict(
 				"AREA_BUSY: stop and reconcile execution before deleting the thread".into(),
 			));

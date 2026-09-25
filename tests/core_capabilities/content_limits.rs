@@ -117,3 +117,120 @@ async fn lowered_content_limits_bound_reads_search_patches_uploads_and_shares(
 	assert_eq!(area["manifest"].as_array().unwrap().len(), 1);
 	c.close().await;
 }
+
+#[rstest::fixture]
+fn search_boundary_fixture(
+	#[future] lowered_content_fixture: CoreFixture,
+) -> impl std::future::Future<Output = (CoreFixture, Uuid)> {
+	let lowered_content_fixture = Box::pin(lowered_content_fixture);
+	async move {
+		use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+		let c = lowered_content_fixture.await;
+		let run = admit(&c).await;
+		let message = source(&c, run.workspace_id, &"matched text ".repeat(60)).await;
+		let (status, large) = request(&c.app, &c.token, "POST", &format!("/api/runs/{}/files/materialize", run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"path":"a".repeat(1000),"source":{"kind":"message","message_id":message}})).await;
+		assert_eq!(status, 200, "{large}");
+		let (_, area) = request(
+			&c.app,
+			&c.token,
+			"GET",
+			&format!("/api/runs/{}/working-area", run.id),
+			Value::Null,
+		)
+		.await;
+		// A committed binary working object is valid input, but has no UTF-8
+		// representation. Keep real bytes and a matching immutable digest.
+		let bytes = b"\xff\nmatched text\n";
+		let id = Uuid::new_v4();
+		let digest = aidash::capabilities::objects::digest(bytes);
+		tokio::fs::write(c.root.join(id.simple().to_string()), bytes)
+			.await
+			.unwrap();
+		let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
+		let file = json!({"file_id":id,"path":"binary.bin","size":bytes.len(),"digest":digest,"media_type":"application/octet-stream","scope":"working","provenance":{"kind":"binary-fixture"}});
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("core_objects"))
+				.columns(["id", "tenant", "area_id", "kind", "digest", "size"].map(Alias::new))
+				.values_panic((1..=6).map(|i| Expr::cust(format!("${i}"))))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(id)
+		.bind("acme")
+		.bind(area_id)
+		.bind("working")
+		.bind(&digest)
+		.bind(bytes.len() as i64)
+		.execute(&c.f.store.pool)
+		.await
+		.unwrap();
+		let mut manifest = area["manifest"].clone();
+		manifest.as_array_mut().unwrap().push(file);
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("core_areas"))
+				.value(Alias::new("manifest"), Expr::cust("$2"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(area_id)
+		.bind(manifest)
+		.execute(&c.f.store.pool)
+		.await
+		.unwrap();
+		(c, run.id)
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn oversized_search_matches_fail_explicitly_instead_of_repeating_an_empty_cursor(
+	#[future] search_boundary_fixture: (CoreFixture, Uuid),
+) {
+	let (c, run) = Box::pin(search_boundary_fixture).await;
+	let (status, result) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/runs/{run}/files/search"),
+		json!({"query":"matched","mode":"literal","scope":"working","path":"a".repeat(1000)}),
+	)
+	.await;
+	assert_eq!(status, 400, "{result}");
+	assert_eq!(result["error"]["code"], "SEARCH_RESULT_LIMIT");
+	assert!(result["next_cursor"].is_null());
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[case("literal")]
+#[case("regex")]
+#[tokio::test]
+async fn binary_search_reports_unavailable_text_while_path_search_remains_usable(
+	#[future] search_boundary_fixture: (CoreFixture, Uuid),
+	#[case] mode: &str,
+) {
+	let (c, run) = Box::pin(search_boundary_fixture).await;
+	let path = format!("/api/runs/{run}/files/search");
+	let (status, result) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&path,
+		json!({"query":"matched","mode":mode,"scope":"working","path":"binary.bin"}),
+	)
+	.await;
+	assert_eq!(status, 400, "{result}");
+	assert_eq!(result["error"]["code"], "REPRESENTATION_UNAVAILABLE");
+	let (status, result) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&path,
+		json!({"query":"binary","mode":"path","scope":"working","path":"binary.bin"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+	assert_eq!(result["matches"].as_array().unwrap().len(), 1);
+	c.close().await;
+}
