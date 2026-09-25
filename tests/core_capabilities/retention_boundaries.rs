@@ -180,6 +180,78 @@ async fn keep_converts_the_existing_recovery_snapshot_to_retained_storage(
 		f.area["manifest"][0]["digest"]
 	);
 	assert_eq!(restored["owner"], "alice");
+	// A consumed retained snapshot becomes ordinary working storage. Replacing
+	// it must free its object and quota without deleting the restored area.
+	let (status, admitted) = request(&f.c.app, &f.c.token, "POST", &format!("/api/workspaces/{}/threads/{}/agents/research/runs", f.workspace, f.new_thread["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Continue restored work","description":"Replace the saved file"})).await;
+	assert_eq!(status, 200, "{admitted}");
+	let (_, session) = request(
+		&f.c.app,
+		&f.c.token,
+		"GET",
+		&format!(
+			"/api/working-areas/{}/session",
+			restored["id"].as_str().unwrap()
+		),
+		Value::Null,
+	)
+	.await;
+	let run = session["active_run_id"].as_str().unwrap();
+	let old = &restored["manifest"][0];
+	let old_id: Uuid = serde_json::from_value(old["file_id"].clone()).unwrap();
+	let quota = Query::select()
+		.column(Alias::new("used_bytes"))
+		.from(Alias::new("core_quotas"))
+		.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
+		.to_string(PostgresQueryBuilder);
+	let baseline: i64 = sqlx::query_scalar(&quota)
+		.fetch_one(&f.c.f.store.pool)
+		.await
+		.unwrap();
+	let (status, patched) = request(&f.c.app, &f.c.token, "POST", &format!("/api/runs/{run}/patch"), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":admitted["revision"],"preconditions":{"saved.txt":old["digest"]},"patch":"*** Begin Patch\n*** Update File: saved.txt\n@@\n-Keep 東京 exactly\n+replacement\n*** End Patch"})).await;
+	assert_eq!(status, 200, "{patched}");
+	let object_kind = Query::select()
+		.column(Alias::new("kind"))
+		.from(Alias::new("core_objects"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+		.to_string(PostgresQueryBuilder);
+	let kind: String = sqlx::query_scalar(&object_kind)
+		.bind(old_id)
+		.fetch_one(&f.c.f.store.pool)
+		.await
+		.unwrap();
+	assert_eq!(kind, "superseded_working");
+	let (stop, rx) = tokio::sync::watch::channel(false);
+	let worker = tokio::spawn(aidash::capabilities::operations::run(
+		f.c.f.store.clone(),
+		rx,
+	));
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+	loop {
+		let kind: Option<String> = sqlx::query_scalar(&object_kind)
+			.bind(old_id)
+			.fetch_optional(&f.c.f.store.pool)
+			.await
+			.unwrap();
+		if kind.is_none() {
+			break;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"replaced retained bytes were not reclaimed"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+	}
+	assert!(!f.c.root.join(old_id.simple().to_string()).exists());
+	let used: i64 = sqlx::query_scalar(&quota)
+		.fetch_one(&f.c.f.store.pool)
+		.await
+		.unwrap();
+	assert_eq!(
+		used,
+		baseline - old["size"].as_i64().unwrap() + b"replacement\n".len() as i64
+	);
+	stop.send(true).unwrap();
+	worker.await.unwrap().unwrap();
 	f.c.close().await;
 }
 
@@ -357,4 +429,173 @@ async fn local_share_requires_the_version_admitted_in_the_current_generation(
 	assert_eq!(status, 200, "{after}");
 	assert_eq!(after["manifest"].as_array().unwrap().len(), 2);
 	c.close().await;
+}
+
+struct DeliveredShare {
+	c: CoreFixture,
+	path: String,
+	input: Value,
+	receipt: Value,
+	sender_area: Value,
+	recipient_path: String,
+}
+
+#[rstest::fixture]
+fn delivered_share(
+	#[future] sharing_generation_fixture: (CoreFixture, String, Value, String),
+) -> impl std::future::Future<Output = DeliveredShare> {
+	let fixture = Box::pin(sharing_generation_fixture);
+	async move {
+		let (c, path, mut input, recipient_path) = fixture.await;
+		input["recipient"]["agent_version"] = json!("1.2.0");
+		let (status, receipt) = request(&c.app, &c.token, "POST", &path, input.clone()).await;
+		assert_eq!(status, 200, "{receipt}");
+		let (status, sender_area) = request(
+			&c.app,
+			&c.token,
+			"GET",
+			&path.replace("/files/share", "/working-area"),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{sender_area}");
+		DeliveredShare {
+			c,
+			path,
+			input,
+			receipt,
+			sender_area,
+			recipient_path,
+		}
+	}
+}
+
+#[rstest::fixture]
+fn disabled_share(
+	#[future] delivered_share: DeliveredShare,
+) -> impl std::future::Future<Output = DeliveredShare> {
+	let fixture = Box::pin(delivered_share);
+	async move {
+		let mut f = fixture.await;
+		let mut profile = (*f.c.f.store.capabilities.0).clone();
+		profile.admission = false;
+		f.c.f.store.capabilities = Runtime::new(profile).unwrap();
+		f.c.app = aidash::api::router(f.c.f.clone());
+		f
+	}
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn rollback_blocks_new_local_and_remote_shares_without_losing_receipts(
+	#[future] disabled_share: DeliveredShare,
+	#[case] remote: bool,
+) {
+	let f = Box::pin(disabled_share).await;
+	let (_, before) = request(&f.c.app, &f.c.token, "GET", &f.recipient_path, Value::Null).await;
+	let mut input = f.input.clone();
+	input["idempotency_key"] = json!(Uuid::new_v4());
+	if remote {
+		input["recipient"]["node_id"] = json!("aidash://remote-recipient");
+	}
+	let (status, rejected) = request(&f.c.app, &f.c.token, "POST", &f.path, input).await;
+	assert_eq!(status, 409, "{rejected}");
+	assert_eq!(rejected["error"]["code"], "CAPABILITIES_DISABLED");
+	assert_eq!(
+		request(&f.c.app, &f.c.token, "POST", &f.path, f.input).await,
+		(200, f.receipt)
+	);
+	assert_eq!(
+		request(&f.c.app, &f.c.token, "GET", &f.recipient_path, Value::Null).await,
+		(200, before)
+	);
+	f.c.close().await;
+}
+
+#[rstest::fixture]
+fn completed_share(
+	#[future] delivered_share: DeliveredShare,
+) -> impl std::future::Future<Output = (DeliveredShare, String)> {
+	let fixture = Box::pin(delivered_share);
+	async move {
+		let f = fixture.await;
+		let (status, queued) = request(&f.c.app, &f.c.token, "POST", &format!("/api/working-areas/{}/queue", f.sender_area["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Successor","description":"Only the current Run may disclose files"})).await;
+		assert_eq!(status, 200, "{queued}");
+		let run: Uuid = serde_json::from_value(queued["active_run_id"].clone()).unwrap();
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("runs"))
+				.value(Alias::new("phase"), "COMPLETED")
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(run)
+		.execute(&f.c.f.store.pool)
+		.await
+		.unwrap();
+		let successor = queued["queue"].as_array().unwrap().last().unwrap()["run_id"]
+			.as_str()
+			.unwrap()
+			.to_owned();
+		(f, successor)
+	}
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn completed_sender_cannot_disclose_successor_files_locally_or_remotely(
+	#[future] completed_share: (DeliveredShare, String),
+	#[case] remote: bool,
+) {
+	let (f, successor) = Box::pin(completed_share).await;
+	let (_, before) = request(&f.c.app, &f.c.token, "GET", &f.recipient_path, Value::Null).await;
+	let mut input = f.input.clone();
+	input["idempotency_key"] = json!(Uuid::new_v4());
+	if remote {
+		input["recipient"]["node_id"] = json!("aidash://remote-recipient");
+	}
+	let (status, rejected) = request(&f.c.app, &f.c.token, "POST", &f.path, input.clone()).await;
+	assert_eq!(status, 409, "{rejected}");
+	assert_eq!(rejected["error"]["code"], "RUN_NOT_ACTIVE");
+	assert_eq!(
+		request(&f.c.app, &f.c.token, "POST", &f.path, f.input).await,
+		(200, f.receipt)
+	);
+	assert_eq!(
+		request(&f.c.app, &f.c.token, "GET", &f.recipient_path, Value::Null).await,
+		(200, before)
+	);
+	if !remote {
+		let (status, received) = request(
+			&f.c.app,
+			&f.c.token,
+			"POST",
+			&format!("/api/runs/{successor}/files/share"),
+			input,
+		)
+		.await;
+		assert_eq!(status, 200, "{received}");
+	}
+	f.c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn local_received_files_remain_bound_to_the_exact_recipient_version(
+	#[future] delivered_share: DeliveredShare,
+) {
+	let f = Box::pin(delivered_share).await;
+	let (status, area) = request(&f.c.app, &f.c.token, "GET", &f.recipient_path, Value::Null).await;
+	assert_eq!(status, 200, "{area}");
+	let (status, rejected) = request(&f.c.app, &f.c.token, "POST", &format!("/api/working-areas/{}/queue", area["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Other version","description":"Must not inherit a version-specific disclosure"})).await;
+	assert_eq!(status, 403, "{rejected}");
+	assert_eq!(
+		request(&f.c.app, &f.c.token, "GET", &f.recipient_path, Value::Null).await,
+		(200, area)
+	);
+	f.c.close().await;
 }

@@ -183,7 +183,6 @@ impl MigrationTrait for Migration {
 				.to_owned(),
 		)
 		.await?;
-		// PostgreSQL trigger DDL is not expressible using SeaQuery.
 		let mut operations = Table::create();
 		operations
 			.table(a("core_operations"))
@@ -225,6 +224,8 @@ impl MigrationTrait for Migration {
 				.col(a("request_key")),
 		);
 		m.create_table(operations.to_owned()).await?;
+		// Raw DDL exception: SeaQuery cannot express PostgreSQL triggers.
+		// These triggers enforce the same atomic-write guard as existing tables.
 		for table in [
 			"core_records",
 			"core_operations",

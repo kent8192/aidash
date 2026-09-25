@@ -91,6 +91,7 @@ export function OutboundFiles({
               url,
               idempotency_key: request.current.key,
             });
+            request.current = undefined;
           })
         }
       >

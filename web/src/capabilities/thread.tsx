@@ -750,11 +750,20 @@ export function ThreadCapabilities({
   const [agent, setAgent] = useState("");
   const query = useQuery({
     queryKey: ["core-areas", workspace, thread],
-    queryFn: ({ signal }) =>
-      apiFetch<{ items: Area[] }>(
-        `/api/working-areas?workspace_id=${workspace}&thread_id=${thread}`,
-        { signal },
-      ),
+    queryFn: async ({ signal }) => {
+      const items: Area[] = [];
+      let cursor: string | null = null;
+      do {
+        const page: { items: Area[]; next_cursor: string | null } =
+          await apiFetch(
+            `/api/working-areas?workspace_id=${workspace}&thread_id=${thread}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+            { signal },
+          );
+        items.push(...page.items);
+        cursor = page.next_cursor;
+      } while (cursor);
+      return { items };
+    },
     refetchInterval: 2000,
     retry: false,
   });
@@ -942,6 +951,7 @@ export function ThreadCapabilities({
         workspace={workspace}
         thread={thread}
         areas={query.data?.items ?? []}
+        loaded={query.isSuccess}
         onDeleted={onDeleted}
       />
       {session.data?.last_run_id &&
@@ -965,11 +975,13 @@ function ThreadDeletion({
   workspace,
   thread,
   areas,
+  loaded,
   onDeleted,
 }: {
   workspace: string;
   thread: string;
   areas: Area[];
+  loaded: boolean;
   onDeleted: () => void;
 }) {
   const { locale } = useI18n();
@@ -985,6 +997,13 @@ function ThreadDeletion({
   return (
     <details className="core-panel">
       <summary>{ja ? "このスレッドを削除" : "Delete this thread"}</summary>
+      {!loaded && (
+        <p role="status">
+          {ja
+            ? "すべての作業領域を取得してから削除できます。"
+            : "Deletion is available after all working areas have loaded."}
+        </p>
+      )}
       <p>
         {ja
           ? "スレッドが消える前に、作業ファイルの扱いを選んでください。残したファイルは設定から管理できます。"
@@ -1023,7 +1042,7 @@ function ThreadDeletion({
       {choice === "irreversible" && !confirmed && areas.length > 0 ? (
         <button
           type="button"
-          disabled={busy}
+          disabled={busy || !loaded}
           onClick={async () => {
             setBusy(true);
             setError("");
@@ -1057,7 +1076,7 @@ function ThreadDeletion({
           </p>
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || !loaded}
             onClick={async () => {
               setBusy(true);
               setError("");

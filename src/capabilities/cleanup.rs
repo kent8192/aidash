@@ -495,6 +495,25 @@ pub(crate) async fn restore(
 			continue;
 		} else if retained {
 			store.capabilities.verified(access, &file).await?;
+			if matches!(file.scope, FileScope::Working) {
+				// The snapshot is consumed by this transaction. Its reattached
+				// working bytes must follow normal replacement/reclamation rules.
+				sqlx::query(
+					&Query::update()
+						.table(Alias::new("core_objects"))
+						.value(Alias::new("kind"), "working")
+						.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+						.and_where(Expr::col(Alias::new("area_id")).eq(Expr::cust("$2")))
+						.and_where(Expr::col(Alias::new("tenant")).eq(Expr::cust("$3")))
+						.and_where(Expr::col(Alias::new("kind")).eq("recovery"))
+						.to_string(PostgresQueryBuilder),
+				)
+				.bind(file.file_id)
+				.bind(area.id)
+				.bind(&area.tenant)
+				.execute(&mut **access.tx)
+				.await?;
+			}
 			files.push(file);
 		} else {
 			files.push(

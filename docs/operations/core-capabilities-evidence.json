@@ -21,7 +21,7 @@
       "acceptance": ["AT07"]
     },
     "R05": {
-      "description": "Separate \u201c\u6574\u7406\u3059\u308b\uff08\u5fa9\u5143\u53ef\u80fd\uff09\u201d from \u201c\u4f5c\u696d\u30d5\u30a1\u30a4\u30eb\u3092\u524a\u9664\u3059\u308b\uff08\u5fa9\u5143\u4e0d\u53ef\uff09\u201d. The former verifies a time-limited recovery snapshot before removing active files; the latter additionally confirms deletion of active files and Harness-managed recovery copies. Neither silently deletes originals, published artifacts, or independently shared copies.",
+      "description": "Separate “整理する（復元可能）” from “作業ファイルを削除する（復元不可）”. The former verifies a time-limited recovery snapshot before removing active files; the latter additionally confirms deletion of active files and Harness-managed recovery copies. Neither silently deletes originals, published artifacts, or independently shared copies.",
       "acceptance": ["AT08", "AT09"]
     },
     "R06": {
@@ -404,6 +404,18 @@
         {
           "name": "retention_boundary_tests::local_share_requires_the_version_admitted_in_the_current_generation",
           "source": "tests/core_capabilities/retention_boundaries.rs"
+        },
+        {
+          "name": "retention_boundary_tests::rollback_blocks_new_local_and_remote_shares_without_losing_receipts",
+          "source": "tests/core_capabilities/retention_boundaries.rs"
+        },
+        {
+          "name": "retention_boundary_tests::completed_sender_cannot_disclose_successor_files_locally_or_remotely",
+          "source": "tests/core_capabilities/retention_boundaries.rs"
+        },
+        {
+          "name": "retention_boundary_tests::local_received_files_remain_bound_to_the_exact_recipient_version",
+          "source": "tests/core_capabilities/retention_boundaries.rs"
         }
       ]
     },
@@ -636,6 +648,16 @@
       "name": "generated image and outbound downloads use the authenticated file endpoint",
       "source": "web/tests/core-capabilities.spec.ts",
       "acceptance": ["AT05", "AT18"]
+    },
+    {
+      "name": "thread deletion waits for every working-area page before submitting choices",
+      "source": "web/tests/core-capabilities.spec.ts",
+      "acceptance": ["AT07", "AT09"]
+    },
+    {
+      "name": "outbound retries reuse an ambiguous request key and a new fetch uses a fresh key",
+      "source": "web/tests/core-capabilities.spec.ts",
+      "acceptance": ["AT10", "AT11"]
     }
   ],
   "commands": {

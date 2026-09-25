@@ -570,6 +570,106 @@ test("deleting a thread requires its file retention choice before controls disap
   expect(errors).toEqual([]);
 });
 
+test("thread deletion waits for every working-area page before submitting choices", async ({
+  page,
+}) => {
+  const { calls, errors } = await core(page);
+  const areas = Array.from({ length: 51 }, (_, i) => ({
+    id: `area-${i}`,
+    workspace_id: "workspace-one",
+    thread_id: "thread-message-one",
+    agent_id: `agent-${i}`,
+    owner: "alice",
+    state: "active",
+    generation: 1,
+    revision: 7,
+    manifest: [],
+  }));
+  let releaseNext!: () => void;
+  const nextPage = new Promise<void>((resolve) => {
+    releaseNext = resolve;
+  });
+  let requestedNext = false;
+  await page.route("**/api/**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname !== "/api/working-areas") return route.fallback();
+    if (url.searchParams.get("cursor") === "after-50") {
+      requestedNext = true;
+      await nextPage;
+      return route.fulfill({
+        json: { items: areas.slice(50), next_cursor: null },
+      });
+    }
+    return route.fulfill({
+      json: { items: areas.slice(0, 50), next_cursor: "after-50" },
+    });
+  });
+  await openThread(page);
+  await page.locator("summary", { hasText: "Delete this thread" }).click();
+  const remove = page.getByRole("button", {
+    name: "Delete thread with these choices",
+    exact: true,
+  });
+  await expect.poll(() => requestedNext).toBe(true);
+  await expect(remove).toBeDisabled();
+  releaseNext();
+  await expect(remove).toBeEnabled();
+  await expect(page.getByText("agent-50 · 0 files · 0 bytes")).toBeVisible();
+  await remove.click();
+  await expect
+    .poll(() => calls.filter((c) => c.path.endsWith("/delete")).length)
+    .toBe(1);
+  const choices = calls.find((c) => c.path.endsWith("/delete"))?.body.files;
+  expect(choices).toEqual(
+    areas.map((a) => ({
+      area_id: a.id,
+      expected_revision: a.revision,
+      choice: "keep",
+      confirmation_id: null,
+    })),
+  );
+  expect(errors).toEqual([]);
+});
+
+test("outbound retries reuse an ambiguous request key and a new fetch uses a fresh key", async ({
+  page,
+}) => {
+  const { errors } = await core(page);
+  const requests: { url: string; idempotency_key: string }[] = [];
+  await page.route("**/api/runs/run-0/outbound", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    requests.push(route.request().postDataJSON());
+    if (requests.length === 1) return route.abort("failed");
+    return route.fulfill({
+      json: {
+        operation_id: `fetch-${requests.length}`,
+        status: "completed",
+        url: requests.at(-1)!.url,
+      },
+    });
+  });
+  await openThread(page);
+  await page
+    .locator("summary", { hasText: "External files and Python packages" })
+    .click();
+  await page.getByLabel("HTTPS URL").fill("https://example.org/current.csv");
+  const fetch = page.getByRole("button", {
+    name: "Request fetch",
+    exact: true,
+  });
+  await fetch.click();
+  await expect(page.getByRole("alert")).toContainText("fetch");
+  await fetch.click();
+  await expect.poll(() => requests.length).toBe(2);
+  await expect(fetch).toBeEnabled();
+  await fetch.click();
+  await expect.poll(() => requests.length).toBe(3);
+  expect(requests[0].url).toBe(requests[2].url);
+  expect(requests[0].idempotency_key).toBe(requests[1].idempotency_key);
+  expect(requests[2].idempotency_key).not.toBe(requests[1].idempotency_key);
+  expect(errors).toEqual([]);
+});
+
 test("generated image and outbound downloads use the authenticated file endpoint", async ({
   page,
 }) => {

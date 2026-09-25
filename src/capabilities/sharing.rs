@@ -60,6 +60,12 @@ pub(crate) async fn share(
 		}
 		return Ok(previous);
 	}
+	if !store.capabilities.0.admission {
+		return Err(Error::Conflict("CAPABILITIES_DISABLED".into()));
+	}
+	if sessions::status(access, area).await?.active_run_id != Some(run.id) {
+		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
+	}
 	if input.recipient.node_id != store.node_id {
 		return super::transfer::prepare(store, access, run, area, input, &digest).await;
 	}
@@ -226,6 +232,16 @@ pub(crate) async fn share(
 			constraints.push(source.clone());
 		}
 	}
+	constraints.push(json!({
+		"kind":"received_scope",
+		"transfer_id":id,
+		"owner":recipient.owner,
+		"agent":crate::domain::qualified_agent(
+			&store.node_id,
+			&input.recipient.agent_id,
+			&input.recipient.agent_version,
+		),
+	}));
 	service::publish(store, access, &mut recipient).await?;
 	let result = json!({"operation_id":id,"snapshot_id":id,"transfer_id":id,"status":"completed","manifest_digest":manifest_digest,"recipient":input.recipient,"receipt":{"id":id,"area_id":recipient.id,"revision":recipient.revision,"files":delivered},"revision":area.revision,"generation":area.generation});
 	records::insert(
