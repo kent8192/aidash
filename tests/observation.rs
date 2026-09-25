@@ -189,7 +189,12 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		.await
 		.unwrap();
 	f.store
-		.message(workspace.id, "review-test", "old message", None)
+		.message(
+			workspace.id,
+			"review-test",
+			"old message",
+			Some("observation-old-message"),
+		)
 		.await
 		.unwrap();
 	let old_message: Uuid = sqlx::query_scalar(
@@ -265,7 +270,7 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 				workspace.id,
 				"review-test",
 				&format!("new message {index}"),
-				None,
+				Some(&format!("observation-new-message-{index}")),
 			)
 			.await
 			.unwrap();

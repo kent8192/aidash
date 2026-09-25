@@ -521,7 +521,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 			run.workspace_id,
 			"alice",
 			"permitted message after rejected events",
-			None,
+			Some("execution-authorization-unrelated-message"),
 		)
 		.await
 		.unwrap();

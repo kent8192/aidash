@@ -130,3 +130,26 @@ Automatic semantic retrieval skips budgets too small to contain provenance.
 
 Agent registration rejects instructions, referenced skills and tool definitions
 that cannot fit the selected model window with output and context reserves.
+
+### Remote run-message recovery
+
+A remote input is reserved at home before admission to the executor ledger.
+`run_message_commit` acknowledges that durable admission with a positive
+`input_seq`, bound immutably to the task, run, key and content. An exact retry
+can promote its existing reservation after an outage, even after reservation
+expiry or task termination; it does not create a new reservation or reopen the
+task. Legacy commits without a sequence still require an active reservation.
+The executor retries promotion from its persisted input before delivery.
+
+Explicit cancellation and failure use `run_message_terminal_transition` with
+`through_seq`, the executor's admitted-input high-water mark. The request stays
+bounded even for large reference-only histories. The home consumes only fences
+with an acknowledged sequence at or below that mark, under the same task lock
+and transaction as the terminal transition. Unknown reservations remain active;
+if they block termination, consumption rolls back too. Legacy key-based terminal
+requests remain supported.
+
+The fence migration backfills well-formed peer-prefixed corrections for active
+home tasks without requiring a local run row. Scoped admission fetches home
+history after authorization preflight, then imports it before allocating the
+new input sequence within the authorization-revalidation transaction.

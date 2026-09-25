@@ -47,6 +47,7 @@ impl IntoResponse for Error {
 	fn into_response(self) -> Response {
 		let transaction_pending = matches!(&self, Self::TransactionPending)
 			|| matches!(&self, Self::Database(error) if error.as_database_error().is_some_and(|e|e.code().as_deref()==Some("55P03")));
+		let run_message_pending = matches!(&self, Self::Database(error) if error.as_database_error().is_some_and(|e|e.code().as_deref()==Some("A3301")));
 		let (status, message) = match &self {
 			Self::Invalid(s) => (StatusCode::BAD_REQUEST, s.clone()),
 			Self::Conflict(s) => (StatusCode::CONFLICT, s.clone()),
@@ -59,6 +60,13 @@ impl IntoResponse for Error {
 			| Self::SemanticUnavailable
 			| Self::OrchestrationUnavailable => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
 			Self::StaleInference => (StatusCode::CONFLICT, self.to_string()),
+			Self::Database(error)
+				if error
+					.as_database_error()
+					.is_some_and(|e| e.code().as_deref() == Some("A3301")) =>
+			{
+				(StatusCode::CONFLICT, "run messages await inference".into())
+			}
 			Self::Database(error)
 				if error
 					.as_database_error()
@@ -81,6 +89,12 @@ impl IntoResponse for Error {
 		if transaction_pending {
 			response.headers_mut().insert(
 				"x-aidash-transaction-pending",
+				axum::http::HeaderValue::from_static("1"),
+			);
+		}
+		if run_message_pending {
+			response.headers_mut().insert(
+				"x-aidash-run-message-pending",
 				axum::http::HeaderValue::from_static("1"),
 			);
 		}
@@ -109,7 +123,10 @@ impl Error {
 					code.starts_with("08")
 						|| matches!(
 							code,
-							"40001" | "40P01" | "53300" | "55P03" | "57P01" | "57P02" | "57P03"
+							"40001"
+								| "40P01" | "53300" | "55P03"
+								| "57P01" | "57P02" | "57P03"
+								| "A3301"
 						)
 				})
 			}

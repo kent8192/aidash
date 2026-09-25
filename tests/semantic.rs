@@ -814,7 +814,12 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 		.await
 		.unwrap();
 	f.store
-		.message(workspace, "human", "Vehicle safety", None)
+		.message(
+			workspace,
+			"human",
+			"Vehicle safety",
+			Some("semantic-vehicle-safety"),
+		)
 		.await
 		.unwrap();
 	let message = f.store.snapshot(workspace).await.unwrap().messages[0].id;
