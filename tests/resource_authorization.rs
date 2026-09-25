@@ -478,7 +478,7 @@ async fn opened_thread_events_retain_their_root_message_read_dependency() {
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	let root_content = "older thread root";
 	f.store
-		.message(workspace, "human", root_content, None)
+		.message(workspace, "human", root_content, Some("thread-root-old"))
 		.await
 		.unwrap();
 	let root: uuid::Uuid = sqlx::query_scalar(
@@ -518,7 +518,12 @@ async fn opened_thread_events_retain_their_root_message_read_dependency() {
 	.unwrap();
 	for index in 0..110 {
 		f.store
-			.message(workspace, "human", &format!("newer message {index}"), None)
+			.message(
+				workspace,
+				"human",
+				&format!("newer message {index}"),
+				Some(&format!("thread-burst-{index}")),
+			)
 			.await
 			.unwrap();
 	}

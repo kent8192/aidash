@@ -196,12 +196,77 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 			&app,
 			&token,
 			"POST",
+			&format!("/api/runs/{}/message", Uuid::new_v4()),
+			json!({"content":"hidden run"})
+		)
+		.await
+		.0,
+		403,
+		"an inaccessible or missing run stays hidden before peer preflight"
+	);
+	let mut concurrent = tokio::task::JoinSet::new();
+	for index in 0..16 {
+		let app = app.clone();
+		let token = token.clone();
+		let run_id = run.id;
+		concurrent.spawn(async move {
+			request(
+				&app,
+				&token,
+				"POST",
+				&format!("/api/runs/{run_id}/message"),
+				json!({"content":format!("parallel scoped message {index}"),"idempotency_key":Uuid::new_v4()}),
+			)
+			.await
+		});
+	}
+	let statuses = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+		let mut statuses = Vec::new();
+		while let Some(result) = concurrent.join_next().await {
+			statuses.push(result.unwrap().0);
+		}
+		statuses
+	})
+	.await
+	.expect("concurrent scoped messages must not exhaust the access pool");
+	assert_eq!(statuses, vec![200; 16]);
+	let replay_key = Uuid::new_v4();
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"POST",
 			&format!("/api/runs/{}/message", run.id),
-			json!({"content":"authorized message"})
+			json!({"content":"authorized message","idempotency_key":replay_key})
 		)
 		.await
 		.0,
 		200
+	);
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/runs/{}/message", run.id),
+			json!({"content":"authorized message","idempotency_key":replay_key})
+		)
+		.await
+		.0,
+		200,
+		"an authorized exact key replay uses the existing ledger row"
+	);
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/runs/{}/message", run.id),
+			json!({"content":"changed content","idempotency_key":replay_key})
+		)
+		.await
+		.0,
+		409
 	);
 	let sender: String = sqlx::query_scalar(
 		&sea_orm::sea_query::Query::select()

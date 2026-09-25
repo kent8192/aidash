@@ -1303,6 +1303,14 @@ pub(crate) fn validate_agent_prompt(
 	references: &[Entry],
 	private_context: &Value,
 ) -> Result<()> {
+	agent_prompt_headroom(config, references, private_context).map(|_| ())
+}
+
+pub(crate) fn agent_prompt_headroom(
+	config: &AgentConfig,
+	references: &[Entry],
+	private_context: &Value,
+) -> Result<usize> {
 	let get = |reference: &EntityRef| {
 		references
 			.iter()
@@ -1334,6 +1342,5 @@ pub(crate) fn validate_agent_prompt(
 		&instructions,
 		&specifications,
 		private_context,
-	)?;
-	Ok(())
+	)
 }

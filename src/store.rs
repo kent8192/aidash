@@ -5,6 +5,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction, postgres::PgPoolOptions};
+use std::future::Future;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -14,7 +15,176 @@ pub struct Store {
 	pub node_id: String,
 	pub semantic_client: reqwest::Client,
 }
+
+#[derive(sqlx::FromRow)]
+pub struct RunInput {
+	pub seq: i64,
+	pub sender: String,
+	pub content: String,
+	pub idempotency_key: String,
+	pub message_id: Option<Uuid>,
+	pub reference_only: bool,
+}
+
+pub(crate) struct RunResponseMessage<'a> {
+	pub run: &'a Run,
+	pub worker: Uuid,
+	pub included_input_seq: i64,
+	pub sender: &'a str,
+	pub content: &'a str,
+	pub key: &'a str,
+	pub track_output: bool,
+}
+
+pub(crate) struct RunMessageDelivery<'a> {
+	pub workspace: Uuid,
+	pub task_id: Uuid,
+	pub run_id: Uuid,
+	pub sender: &'a str,
+	pub content: &'a str,
+	pub input_key: &'a str,
+	pub message_key: &'a str,
+}
+
+pub(crate) struct FencedRunMessageOutput<'a> {
+	pub workspace: Uuid,
+	pub task_id: Uuid,
+	pub run_id: Uuid,
+	pub included_input_seq: i64,
+	pub sender: &'a str,
+	pub content: &'a str,
+	pub key: &'a str,
+}
+
+fn run_input_size(sender: &str, content: &str) -> usize {
+	// The provider receives JSON records, so count escaped content as well as
+	// framing. This is the same conservative byte-based estimate as Context.
+	serde_json::to_string(&json!({"seq":i64::MAX,"sender":sender,"content":content}))
+		.map_or(usize::MAX, |value| crate::context::estimated_tokens(&value))
+}
+
+fn run_input_reference_size(sender: &str, message_id: Uuid) -> usize {
+	serde_json::to_string(&json!({"seq":i64::MAX,"sender":sender,"record":{"kind":"message","id":message_id},"requires_workspace_read":true}))
+		.map_or(usize::MAX, |value| crate::context::estimated_tokens(&value))
+}
+
+fn run_input_context_size(input: &RunInput) -> usize {
+	if input.reference_only {
+		input
+			.message_id
+			.map_or(usize::MAX, |id| run_input_reference_size(&input.sender, id))
+	} else {
+		run_input_size(&input.sender, &input.content)
+	}
+}
+
+enum TerminalRunMessageInputs<'a> {
+	Keys(&'a [String]),
+	Through(i64),
+}
+
 impl Store {
+	async fn ensure_run_response_current_in(
+		&self,
+		tx: &mut Transaction<'_, Postgres>,
+		run_id: Uuid,
+		worker: Uuid,
+		included_input_seq: i64,
+	) -> Result<()> {
+		let valid: Option<Uuid> = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.column(sea_orm::sea_query::Alias::new("id"))
+				.from(sea_orm::sea_query::Alias::new("runs"))
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"id = $1 AND lease_owner = $2 AND lease_until > CURRENT_TIMESTAMP",
+				))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.bind(worker)
+		.fetch_optional(&mut **tx)
+		.await?;
+		if valid.is_none() {
+			return Err(Error::Conflict(
+				"worker lease lost before response effect".into(),
+			));
+		}
+		let stale: bool = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::cust(
+					"EXISTS(SELECT 1 FROM run_inputs WHERE run_id = $1 AND seq > $2)",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.bind(included_input_seq)
+		.fetch_one(&mut **tx)
+		.await?;
+		if stale {
+			return Err(Error::StaleInference);
+		}
+		Ok(())
+	}
+	pub(crate) async fn with_run_response_fence<T, F>(
+		&self,
+		run_id: Uuid,
+		worker: Uuid,
+		included_input_seq: i64,
+		effect: F,
+	) -> Result<T>
+	where
+		F: Future<Output = Result<T>>,
+	{
+		let mut tx = self.pool.begin().await?;
+		self.ensure_run_response_current_in(&mut tx, run_id, worker, included_input_seq)
+			.await?;
+		let result = effect.await?;
+		tx.commit().await?;
+		Ok(result)
+	}
+	pub(crate) async fn response_message_in_run(
+		&self,
+		request: RunResponseMessage<'_>,
+	) -> Result<()> {
+		let RunResponseMessage {
+			run,
+			worker,
+			included_input_seq,
+			sender,
+			content,
+			key,
+			track_output,
+		} = request;
+		let mut tx = self.pool.begin().await?;
+		self.ensure_run_response_current_in(&mut tx, run.id, worker, included_input_seq)
+			.await?;
+		sqlx::query_scalar::<_, String>(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::cust(
+					"set_config('aidash.input_ledger_worker', 'true', true)",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.fetch_one(&mut *tx)
+		.await?;
+		let message = self
+			.message_in(&mut tx, run.workspace_id, sender, content, Some(key))
+			.await?;
+		if track_output {
+			self.record_output_in(
+				&mut tx,
+				Some(run.id),
+				run.workspace_id,
+				"message",
+				message.id,
+			)
+			.await?;
+		}
+		tx.commit().await?;
+		Ok(())
+	}
+
 	// Legacy admission cannot supply durable scoped execution authority.
 	pub(crate) async fn require_legacy_execution(&self, workspace: Uuid) -> Result<()> {
 		let scoped: bool = sqlx::query_scalar(
@@ -694,6 +864,183 @@ impl Store {
 		tx.commit().await?;
 		Ok(t)
 	}
+	/// Consume this remote run's admitted-message fences and perform an explicit
+	/// cancellation or failure while holding the same authoritative task lock.
+	pub async fn transition_remote_run_message_terminal(
+		&self,
+		id: Uuid,
+		revision: i64,
+		owner: &str,
+		next: &str,
+		run_id: Uuid,
+		keys: &[String],
+	) -> Result<Task> {
+		self.transition_remote_run_message_terminal_in(
+			id,
+			revision,
+			owner,
+			next,
+			run_id,
+			TerminalRunMessageInputs::Keys(keys),
+		)
+		.await
+	}
+	pub(crate) async fn transition_remote_run_message_terminal_through(
+		&self,
+		id: Uuid,
+		revision: i64,
+		owner: &str,
+		next: &str,
+		run_id: Uuid,
+		through_seq: i64,
+	) -> Result<Task> {
+		if through_seq < 0 {
+			return Err(Error::Invalid("invalid terminal input sequence".into()));
+		}
+		self.transition_remote_run_message_terminal_in(
+			id,
+			revision,
+			owner,
+			next,
+			run_id,
+			TerminalRunMessageInputs::Through(through_seq),
+		)
+		.await
+	}
+	async fn transition_remote_run_message_terminal_in(
+		&self,
+		id: Uuid,
+		revision: i64,
+		owner: &str,
+		next: &str,
+		run_id: Uuid,
+		inputs: TerminalRunMessageInputs<'_>,
+	) -> Result<Task> {
+		if !matches!(next, "CANCELLED" | "FAILED") {
+			return Err(Error::Invalid(
+				"remote run-message terminal transition must be cancelled or failed".into(),
+			));
+		}
+		let mut tx = self.pool.begin().await?;
+		let task: Task = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
+				.from(sea_orm::sea_query::Alias::new("tasks"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(id)
+		.fetch_one(&mut *tx)
+		.await?;
+		let terminate_unclaimed =
+			task.status == "OPEN" && task.owner.is_none() && matches!(next, "CANCELLED" | "FAILED");
+		if task.owner.as_deref() != Some(owner) && !terminate_unclaimed {
+			return Err(Error::Unauthorized);
+		}
+		if task.revision != revision {
+			return Err(Error::Conflict("task revision changed".into()));
+		}
+		if task.status != next {
+			let before: TaskStatus = serde_json::from_value(json!(task.status))?;
+			let after: TaskStatus = serde_json::from_value(json!(next))
+				.map_err(|_| Error::Invalid("invalid task status".into()))?;
+			if !before.can_transition(&after) {
+				return Err(Error::Conflict(format!(
+					"invalid task transition {} -> {next}",
+					task.status
+				)));
+			}
+		}
+		match inputs {
+			TerminalRunMessageInputs::Keys(keys) => {
+				for key in keys {
+					sqlx::query(
+						&sea_orm::sea_query::Query::update()
+							.table(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+							.value(
+								sea_orm::sea_query::Alias::new("consumed"),
+								sea_orm::sea_query::Expr::cust("TRUE"),
+							)
+							.and_where(sea_orm::sea_query::Expr::cust(
+								"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
+							))
+							.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+					)
+					.bind(id)
+					.bind(run_id)
+					.bind(key)
+					.execute(&mut *tx)
+					.await?;
+				}
+			}
+			TerminalRunMessageInputs::Through(through_seq) => {
+				// Only a durable admission acknowledgement assigns input_seq.
+				// Unadmitted reservations and inputs newer than this snapshot stay
+				// active and cause the task update below to roll back atomically.
+				sqlx::query(
+					&sea_orm::sea_query::Query::update()
+						.table(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+						.value(sea_orm::sea_query::Alias::new("consumed"), true)
+						.and_where(sea_orm::sea_query::Expr::cust(
+							"task_id = $1 AND run_id = $2 AND input_seq <= $3",
+						))
+						.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+				)
+				.bind(id)
+				.bind(run_id)
+				.bind(through_seq)
+				.execute(&mut *tx)
+				.await?;
+			}
+		}
+		if task.status == next {
+			tx.commit().await?;
+			return Ok(task);
+		}
+		// Any concurrently reserved key that was not admitted by this executor is
+		// intentionally left active; gate_remote_task_terminal then rejects this
+		// update instead of losing the correction.
+		let updated: Task = sqlx::query_as(
+			&sea_orm::sea_query::Query::update()
+				.table(sea_orm::sea_query::Alias::new("tasks"))
+				.value(
+					sea_orm::sea_query::Alias::new("status"),
+					sea_orm::sea_query::Expr::cust("$4"),
+				)
+				.value(
+					sea_orm::sea_query::Alias::new("owner"),
+					sea_orm::sea_query::Expr::cust(
+						"CASE WHEN $4 = 'OPEN' THEN NULL ELSE $3 END",
+					),
+				)
+				.value(
+					sea_orm::sea_query::Alias::new("revision"),
+					sea_orm::sea_query::Expr::cust("revision + 1"),
+				)
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"id = $1 AND revision = $2 AND (owner = $3 OR (owner IS NULL AND status = 'OPEN' AND $4 IN ('CANCELLED', 'FAILED')))",
+				))
+				.returning_all()
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(id)
+		.bind(revision)
+		.bind(owner)
+		.bind(next)
+		.fetch_optional(&mut *tx)
+		.await?
+		.ok_or_else(|| Error::Conflict("task revision changed".into()))?;
+		self.event(
+			&mut tx,
+			Some(updated.workspace_id),
+			"task.updated",
+			json!(updated),
+		)
+		.await?;
+		tx.commit().await?;
+		Ok(updated)
+	}
 	/// Explicit operator abandonment preserves the failed outcome and reason
 	/// while allowing the parent to finish using the remaining results.
 	pub async fn abandon_task(&self, id: Uuid, revision: i64, reason: &str) -> Result<Task> {
@@ -775,7 +1122,23 @@ impl Store {
 		key: &str,
 		artifact: &ArtifactInput,
 	) -> Result<Task> {
-		self.complete_from_run(id, owner, key, artifact, None).await
+		self.complete_from_run(id, owner, key, artifact, None, None)
+			.await
+	}
+	pub(crate) async fn complete_remote_run_message(
+		&self,
+		id: Uuid,
+		owner: &str,
+		key: &str,
+		artifact: &ArtifactInput,
+		run_id: Uuid,
+		through_seq: i64,
+	) -> Result<Task> {
+		if through_seq < 0 {
+			return Err(Error::Invalid("invalid terminal input sequence".into()));
+		}
+		self.complete_from_run(id, owner, key, artifact, None, Some((run_id, through_seq)))
+			.await
 	}
 	pub(crate) async fn complete_from_run(
 		&self,
@@ -784,6 +1147,7 @@ impl Store {
 		key: &str,
 		artifact: &ArtifactInput,
 		source_run: Option<Uuid>,
+		remote_run_fence: Option<(Uuid, i64)>,
 	) -> Result<Task> {
 		nonempty(key, "idempotency key")?;
 		artifact.validate()?;
@@ -840,6 +1204,43 @@ impl Store {
             .bind(id).fetch_one(&mut *tx).await?;
 		if unresolved {
 			return Err(Error::Conflict("task has unresolved children".into()));
+		}
+		if let Some((run_id, through_seq)) = remote_run_fence {
+			let unobserved: bool = sqlx::query_scalar(
+				&sea_orm::sea_query::Query::select()
+					.expr(sea_orm::sea_query::Expr::cust(
+						"EXISTS(SELECT 1 FROM remote_run_message_fences WHERE task_id = $1 AND NOT consumed AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) AND (run_id <> $2 OR input_seq IS NULL OR input_seq > $3))",
+					))
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(id)
+			.bind(run_id)
+			.bind(through_seq)
+			.fetch_one(&mut *tx)
+			.await?;
+			if unobserved {
+				return Err(Error::TransactionPending);
+			}
+			// Keep these fences through every corrected output write. Consume them
+			// atomically with terminal completion so an old worker cannot publish
+			// between acknowledgement and task completion.
+			sqlx::query(
+				&sea_orm::sea_query::Query::update()
+					.table(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+					.value(
+						sea_orm::sea_query::Alias::new("consumed"),
+						sea_orm::sea_query::Expr::cust("TRUE"),
+					)
+					.and_where(sea_orm::sea_query::Expr::cust(
+						"task_id = $1 AND run_id = $2 AND NOT consumed AND input_seq <= $3",
+					))
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(id)
+			.bind(run_id)
+			.bind(through_seq)
+			.execute(&mut *tx)
+			.await?;
 		}
 		let a: Artifact = sqlx::query_as(
 			&sea_orm::sea_query::Query::insert()
@@ -1408,11 +1809,1126 @@ impl Store {
 		content: &str,
 		key: Option<&str>,
 	) -> Result<()> {
+		self.message_record(workspace, sender, content, key)
+			.await
+			.map(|_| ())
+	}
+	pub async fn message_record(
+		&self,
+		workspace: Uuid,
+		sender: &str,
+		content: &str,
+		key: Option<&str>,
+	) -> Result<Message> {
 		let mut tx = self.pool.begin().await?;
-		self.message_in(&mut tx, workspace, sender, content, key)
+		let message = self
+			.message_in(&mut tx, workspace, sender, content, key)
+			.await?;
+		tx.commit().await?;
+		Ok(message)
+	}
+	pub(crate) async fn run_message_delivery_record(
+		&self,
+		delivery: RunMessageDelivery<'_>,
+	) -> Result<Message> {
+		let RunMessageDelivery {
+			workspace,
+			task_id,
+			run_id,
+			sender,
+			content,
+			input_key,
+			message_key,
+		} = delivery;
+		let mut tx = self.pool.begin().await?;
+		let task: Task = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
+				.from(sea_orm::sea_query::Alias::new("tasks"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task_id)
+		.fetch_one(&mut *tx)
+		.await?;
+		if task.workspace_id != workspace {
+			return Err(Error::Unauthorized);
+		}
+		let reservation: Option<(Uuid, String, bool, bool, bool)> = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.column(sea_orm::sea_query::Alias::new("run_id"))
+				.column(sea_orm::sea_query::Alias::new("content"))
+				.expr(sea_orm::sea_query::Expr::cust("expires_at IS NULL"))
+				.expr(sea_orm::sea_query::Expr::cust(
+					"expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP",
+				))
+				.column(sea_orm::sea_query::Alias::new("consumed"))
+				.from(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
+				))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task_id)
+		.bind(run_id)
+		.bind(input_key)
+		.fetch_optional(&mut *tx)
+		.await?;
+		let Some((reserved_run, reserved_content, committed, active, consumed)) = reservation
+		else {
+			return Err(Error::Conflict(
+				"remote run message was not reserved at home".into(),
+			));
+		};
+		if reserved_run != run_id || reserved_content != content {
+			return Err(Error::Conflict(
+				"remote run message reservation changed".into(),
+			));
+		}
+		if !active && !consumed {
+			return Err(Error::Conflict(
+				"remote run message reservation expired".into(),
+			));
+		}
+		if !committed
+			&& !consumed
+			&& matches!(
+				task.status.as_str(),
+				"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+			) {
+			return Err(Error::Conflict("home task is terminal".into()));
+		}
+		// The database gate rejects the old home-write path during rolling
+		// upgrades. Only the ledger-backed delivery endpoint sets this marker.
+		sqlx::query_scalar::<_, String>(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::cust(
+					"set_config('aidash.run_message_delivery', 'true', true)",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.fetch_one(&mut *tx)
+		.await?;
+		let message = self
+			.message_in(&mut tx, workspace, sender, content, Some(message_key))
+			.await?;
+		sqlx::query(
+			&sea_orm::sea_query::Query::update()
+				.table(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+				.value(
+					sea_orm::sea_query::Alias::new("expires_at"),
+					sea_orm::sea_query::Expr::cust("NULL"),
+				)
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"task_id = $1 AND run_id = $2 AND idempotency_key = $3 AND content = $4",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task_id)
+		.bind(run_id)
+		.bind(input_key)
+		.bind(content)
+		.execute(&mut *tx)
+		.await?;
+		tx.commit().await?;
+		Ok(message)
+	}
+	/// Reserve home-task lifetime before the executor admits a remote input.
+	/// The task lock orders this operation with every terminal transition.
+	pub async fn reserve_remote_run_message(
+		&self,
+		task_id: Uuid,
+		run_id: Uuid,
+		peer_node: &str,
+		key: &str,
+		content: &str,
+	) -> Result<()> {
+		let mut tx = self.pool.begin().await?;
+		let task: Task = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
+				.from(sea_orm::sea_query::Alias::new("tasks"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task_id)
+		.fetch_one(&mut *tx)
+		.await?;
+		let terminal = matches!(
+			task.status.as_str(),
+			"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+		);
+		let full_message_key = format!("{peer_node}:{task_id}:{key}");
+		let message_exists: bool = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::cust(
+					"EXISTS(SELECT 1 FROM messages WHERE workspace_id = $1 AND idempotency_key = $2 AND sender = $3 AND content = $4)",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task.workspace_id)
+		.bind(&full_message_key)
+		.bind(format!("human@{peer_node}"))
+		.bind(content)
+		.fetch_one(&mut *tx)
+		.await?;
+		let previous: Option<(Uuid, String, bool, bool, bool)> = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.column(sea_orm::sea_query::Alias::new("run_id"))
+				.column(sea_orm::sea_query::Alias::new("content"))
+				.expr(sea_orm::sea_query::Expr::cust("expires_at IS NULL"))
+				.expr(sea_orm::sea_query::Expr::cust(
+					"expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP",
+				))
+				.column(sea_orm::sea_query::Alias::new("consumed"))
+				.from(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"task_id = $1 AND idempotency_key = $2",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task_id)
+		.bind(key)
+		.fetch_optional(&mut *tx)
+		.await?;
+		if let Some((previous_run, previous_content, committed, active, consumed)) = previous {
+			if previous_run != run_id || previous_content != content {
+				return Err(Error::Conflict("run message idempotency key reused".into()));
+			}
+			if terminal {
+				if committed || consumed {
+					return Ok(());
+				}
+				if !message_exists {
+					return Err(Error::Conflict("home task is terminal".into()));
+				}
+				sqlx::query(
+					&sea_orm::sea_query::Query::update()
+						.table(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+						.value(
+							sea_orm::sea_query::Alias::new("expires_at"),
+							sea_orm::sea_query::Expr::cust("NULL"),
+						)
+						.and_where(sea_orm::sea_query::Expr::cust(
+							"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
+						))
+						.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+				)
+				.bind(task_id)
+				.bind(run_id)
+				.bind(key)
+				.execute(&mut *tx)
+				.await?;
+				tx.commit().await?;
+				return Ok(());
+			}
+			if !committed && !active && !terminal {
+				sqlx::query(
+					&sea_orm::sea_query::Query::update()
+						.table(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+						.value(
+							sea_orm::sea_query::Alias::new("expires_at"),
+							sea_orm::sea_query::Expr::cust(
+								"CURRENT_TIMESTAMP + INTERVAL '60 seconds'",
+							),
+						)
+						.and_where(sea_orm::sea_query::Expr::cust(
+							"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
+						))
+						.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+				)
+				.bind(task_id)
+				.bind(run_id)
+				.bind(key)
+				.execute(&mut *tx)
+				.await?;
+			}
+		} else {
+			if terminal && !message_exists {
+				return Err(Error::Conflict("home task is terminal".into()));
+			}
+			sqlx::query(
+				&sea_orm::sea_query::Query::insert()
+					.into_table(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+					.columns([
+						sea_orm::sea_query::Alias::new("task_id"),
+						sea_orm::sea_query::Alias::new("run_id"),
+						sea_orm::sea_query::Alias::new("idempotency_key"),
+						sea_orm::sea_query::Alias::new("content"),
+						sea_orm::sea_query::Alias::new("expires_at"),
+					])
+					.values_panic([
+						sea_orm::sea_query::Expr::cust("$1"),
+						sea_orm::sea_query::Expr::cust("$2"),
+						sea_orm::sea_query::Expr::cust("$3"),
+						sea_orm::sea_query::Expr::cust("$4"),
+						if terminal {
+							sea_orm::sea_query::Expr::cust("NULL")
+						} else {
+							sea_orm::sea_query::Expr::cust(
+								"CURRENT_TIMESTAMP + INTERVAL '60 seconds'",
+							)
+						},
+					])
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(task_id)
+			.bind(run_id)
+			.bind(key)
+			.bind(content)
+			.execute(&mut *tx)
+			.await?;
+		}
+		tx.commit().await?;
+		Ok(())
+	}
+	/// Persist a reservation beyond its short lease, and bind the admitted input
+	/// sequence when one is available. A durable fence remains active until the
+	/// matching run atomically completes or transitions the home task.
+	pub async fn commit_remote_run_message(
+		&self,
+		task_id: Uuid,
+		run_id: Uuid,
+		key: &str,
+		content: &str,
+	) -> Result<()> {
+		self.commit_remote_run_message_with_sequence(task_id, run_id, key, content, None)
+			.await
+	}
+	pub(crate) async fn commit_remote_run_message_with_sequence(
+		&self,
+		task_id: Uuid,
+		run_id: Uuid,
+		key: &str,
+		content: &str,
+		input_seq: Option<i64>,
+	) -> Result<()> {
+		if input_seq.is_some_and(|seq| seq <= 0) {
+			return Err(Error::Invalid("invalid admitted input sequence".into()));
+		}
+		let mut tx = self.pool.begin().await?;
+		let task: Task = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
+				.from(sea_orm::sea_query::Alias::new("tasks"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task_id)
+		.fetch_one(&mut *tx)
+		.await?;
+		let reservation: Option<(String, bool, bool, Option<i64>)> = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.column(sea_orm::sea_query::Alias::new("content"))
+				.expr(sea_orm::sea_query::Expr::cust("expires_at IS NULL"))
+				.expr(sea_orm::sea_query::Expr::cust(
+					"expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP",
+				))
+				.column(sea_orm::sea_query::Alias::new("input_seq"))
+				.from(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"task_id = $1 AND run_id = $2 AND idempotency_key = $3",
+				))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task_id)
+		.bind(run_id)
+		.bind(key)
+		.fetch_optional(&mut *tx)
+		.await?;
+		let Some((reserved_content, committed, active, previous_seq)) = reservation else {
+			return Err(Error::Conflict(
+				"remote run message was not reserved at home".into(),
+			));
+		};
+		if reserved_content != content {
+			return Err(Error::Conflict(
+				"remote run message reservation changed".into(),
+			));
+		}
+		if input_seq
+			.zip(previous_seq)
+			.is_some_and(|(seq, previous)| seq != previous)
+		{
+			return Err(Error::Conflict("run message input sequence changed".into()));
+		}
+		if committed && (input_seq.is_none() || input_seq == previous_seq) {
+			tx.commit().await?;
+			return Ok(());
+		}
+		// A run-bound acknowledgement from the delegated executor describes an
+		// already persisted input, not a new admission. Its exact fence remains
+		// recoverable after expiry or task termination; this never reopens the task.
+		if !committed
+			&& input_seq.is_none()
+			&& (!active
+				|| matches!(
+					task.status.as_str(),
+					"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+				)) {
+			return Err(Error::Conflict(
+				"remote run message reservation expired before admission was committed".into(),
+			));
+		}
+		sqlx::query(
+			&sea_orm::sea_query::Query::update()
+				.table(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+				.value(
+					sea_orm::sea_query::Alias::new("expires_at"),
+					sea_orm::sea_query::Expr::cust("NULL"),
+				)
+				.value(
+					sea_orm::sea_query::Alias::new("input_seq"),
+					sea_orm::sea_query::Expr::cust("COALESCE(input_seq, $5)"),
+				)
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"task_id = $1 AND run_id = $2 AND idempotency_key = $3 AND content = $4",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task_id)
+		.bind(run_id)
+		.bind(key)
+		.bind(content)
+		.bind(input_seq)
+		.execute(&mut *tx)
+		.await?;
+		tx.commit().await?;
+		Ok(())
+	}
+	pub async fn release_remote_run_message(
+		&self,
+		task_id: Uuid,
+		run_id: Uuid,
+		peer_node: &str,
+		keys: &[String],
+	) -> Result<()> {
+		let mut tx = self.pool.begin().await?;
+		// Deletion and task termination must use the same lock order.
+		let task: Task = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
+				.from(sea_orm::sea_query::Alias::new("tasks"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task_id)
+		.fetch_one(&mut *tx)
+		.await?;
+		for key in keys {
+			let full_key = format!("{peer_node}:{task_id}:{key}");
+			sqlx::query(
+				&sea_orm::sea_query::Query::delete()
+					.from_table(sea_orm::sea_query::Alias::new("remote_run_message_fences"))
+					.and_where(sea_orm::sea_query::Expr::cust(
+						"task_id = $1 AND run_id = $2 AND idempotency_key = $3 AND NOT consumed AND (expires_at IS NOT NULL OR input_seq IS NULL) AND NOT EXISTS (SELECT 1 FROM messages WHERE workspace_id = $4 AND idempotency_key = $5)",
+					))
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(task_id)
+			.bind(run_id)
+			.bind(key)
+			.bind(task.workspace_id)
+			.bind(full_key)
+			.execute(&mut *tx)
+			.await?;
+		}
+		tx.commit().await?;
+		Ok(())
+	}
+	pub async fn acknowledge_remote_run_messages(
+		&self,
+		_task_id: Uuid,
+		_run_id: Uuid,
+		_keys: &[String],
+	) -> Result<()> {
+		// Keep the pre-terminal fence even when an older executor reports that
+		// it observed the input. Only an atomic terminal transition can make a
+		// stale legacy worker unable to publish or complete the home task.
+		Ok(())
+	}
+	pub(crate) async fn run_message_output_record(
+		&self,
+		workspace: Uuid,
+		task_id: Uuid,
+		run_id: Uuid,
+		sender: &str,
+		content: &str,
+		key: &str,
+	) -> Result<Message> {
+		let mut tx = self.pool.begin().await?;
+		let task: Task = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
+				.from(sea_orm::sea_query::Alias::new("tasks"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task_id)
+		.fetch_one(&mut *tx)
+		.await?;
+		if task.workspace_id != workspace {
+			return Err(Error::Unauthorized);
+		}
+		if matches!(
+			task.status.as_str(),
+			"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+		) {
+			return Err(Error::Conflict("home task is terminal".into()));
+		}
+		let pending: bool = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::cust(
+					"EXISTS(SELECT 1 FROM remote_run_message_fences WHERE task_id = $1 AND run_id = $2 AND NOT consumed AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP))",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task_id)
+		.bind(run_id)
+		.fetch_one(&mut *tx)
+		.await?;
+		if pending {
+			return Err(Error::TransactionPending);
+		}
+		let message = self
+			.message_in(&mut tx, workspace, sender, content, Some(key))
+			.await?;
+		tx.commit().await?;
+		Ok(message)
+	}
+	/// Publish output from an upgraded remote worker after verifying that its
+	/// inference included every currently admitted correction. Keep the fences
+	/// unconsumed so legacy workers remain unable to publish until terminal state.
+	pub(crate) async fn run_message_output_record_fenced(
+		&self,
+		output: FencedRunMessageOutput<'_>,
+	) -> Result<Message> {
+		let FencedRunMessageOutput {
+			workspace,
+			task_id,
+			run_id,
+			included_input_seq,
+			sender,
+			content,
+			key,
+		} = output;
+		if included_input_seq < 0 {
+			return Err(Error::Invalid("invalid included input sequence".into()));
+		}
+		let mut tx = self.pool.begin().await?;
+		let task: Task = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
+				.from(sea_orm::sea_query::Alias::new("tasks"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task_id)
+		.fetch_one(&mut *tx)
+		.await?;
+		if task.workspace_id != workspace {
+			return Err(Error::Unauthorized);
+		}
+		if matches!(
+			task.status.as_str(),
+			"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+		) {
+			return Err(Error::Conflict("home task is terminal".into()));
+		}
+		let newer_input_pending: bool = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::cust(
+					"EXISTS(SELECT 1 FROM remote_run_message_fences WHERE task_id = $1 AND run_id = $2 AND NOT consumed AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) AND (input_seq IS NULL OR input_seq > $3))",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(task_id)
+		.bind(run_id)
+		.bind(included_input_seq)
+		.fetch_one(&mut *tx)
+		.await?;
+		if newer_input_pending {
+			return Err(Error::TransactionPending);
+		}
+		let _: String = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::cust(
+					"set_config('aidash.input_ledger_worker', 'true', true)",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.fetch_one(&mut *tx)
+		.await?;
+		let message = self
+			.message_in(&mut tx, workspace, sender, content, Some(key))
+			.await?;
+		tx.commit().await?;
+		Ok(message)
+	}
+	pub async fn accept_run_message(
+		&self,
+		run_id: Uuid,
+		sender: &str,
+		content: &str,
+		key: &str,
+		max_input_tokens: usize,
+	) -> Result<()> {
+		let mut tx = self.pool.begin().await?;
+		self.accept_run_message_in(&mut tx, run_id, sender, content, key, max_input_tokens)
 			.await?;
 		tx.commit().await?;
 		Ok(())
+	}
+	pub(crate) async fn accept_run_message_in(
+		&self,
+		tx: &mut Transaction<'_, Postgres>,
+		run_id: Uuid,
+		sender: &str,
+		content: &str,
+		key: &str,
+		max_input_tokens: usize,
+	) -> Result<()> {
+		nonempty(content, "message")?;
+		let run: Run = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
+				.from(sea_orm::sea_query::Alias::new("runs"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.fetch_one(&mut **tx)
+		.await?;
+		let previous: Option<String> = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.column(sea_orm::sea_query::Alias::new("content"))
+				.from(sea_orm::sea_query::Alias::new("run_inputs"))
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"run_id = $1 AND idempotency_key = $2",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.bind(key)
+		.fetch_optional(&mut **tx)
+		.await?;
+		if let Some(old_content) = previous {
+			return if old_content == content {
+				Ok(())
+			} else {
+				Err(Error::Conflict("run message idempotency key reused".into()))
+			};
+		}
+		let task_status: Option<String> = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.column(sea_orm::sea_query::Alias::new("status"))
+				.from(sea_orm::sea_query::Alias::new("tasks"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run.task_id)
+		.fetch_optional(&mut **tx)
+		.await?;
+		if matches!(run.phase.as_str(), "COMPLETED" | "FAILED" | "CANCELLED")
+			|| run.pending["finalizing"] == true
+			|| run.control == "CANCELLED"
+			|| run.pending["terminal_transition"].as_str().is_some()
+			|| task_status.as_deref().is_some_and(|status| {
+				matches!(status, "COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED")
+			}) {
+			return Err(Error::Conflict(
+				"run message was not accepted because the run is completing or terminal".into(),
+			));
+		}
+		if !run.ledger_worker_ready {
+			if run.lease_owner.is_some() {
+				return Err(Error::Conflict(
+					"run is leased by a worker without input ledger fencing".into(),
+				));
+			}
+			sqlx::query(
+				&sea_orm::sea_query::Query::update()
+					.table(sea_orm::sea_query::Alias::new("runs"))
+					.value(
+						sea_orm::sea_query::Alias::new("ledger_worker_ready"),
+						sea_orm::sea_query::Expr::value(true),
+					)
+					.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(run_id)
+			.execute(&mut **tx)
+			.await?;
+		}
+		let (_, used) = self
+			.run_inputs_with_budget_in(tx, run_id, max_input_tokens)
+			.await?;
+		if used.saturating_add(run_input_size(sender, content)) > max_input_tokens {
+			return Err(Error::Invalid(
+				"run messages exceed the selected model's input limit".into(),
+			));
+		}
+		sqlx::query(
+			&sea_orm::sea_query::Query::insert()
+				.into_table(sea_orm::sea_query::Alias::new("run_inputs"))
+				.columns([
+					sea_orm::sea_query::Alias::new("run_id"),
+					sea_orm::sea_query::Alias::new("sender"),
+					sea_orm::sea_query::Alias::new("content"),
+					sea_orm::sea_query::Alias::new("idempotency_key"),
+				])
+				.values_panic([
+					sea_orm::sea_query::Expr::cust("$1"),
+					sea_orm::sea_query::Expr::cust("$2"),
+					sea_orm::sea_query::Expr::cust("$3"),
+					sea_orm::sea_query::Expr::cust("$4"),
+				])
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.bind(sender)
+		.bind(content)
+		.bind(key)
+		.execute(&mut **tx)
+		.await?;
+		if run.home_node == self.node_id {
+			let message = self
+				.message_in(tx, run.workspace_id, sender, content, Some(key))
+				.await?;
+			self.bind_run_input_message_in(tx, run_id, key, message.id)
+				.await?;
+		}
+		Ok(())
+	}
+	async fn run_inputs_in(
+		&self,
+		tx: &mut Transaction<'_, Postgres>,
+		run_id: Uuid,
+	) -> Result<Vec<RunInput>> {
+		Ok(sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.columns([
+					sea_orm::sea_query::Alias::new("seq"),
+					sea_orm::sea_query::Alias::new("sender"),
+					sea_orm::sea_query::Alias::new("content"),
+					sea_orm::sea_query::Alias::new("idempotency_key"),
+					sea_orm::sea_query::Alias::new("message_id"),
+					sea_orm::sea_query::Alias::new("reference_only"),
+				])
+				.from(sea_orm::sea_query::Alias::new("run_inputs"))
+				.and_where(sea_orm::sea_query::Expr::cust("run_id = $1"))
+				.order_by(
+					sea_orm::sea_query::Alias::new("seq"),
+					sea_orm::sea_query::Order::Asc,
+				)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.fetch_all(&mut **tx)
+		.await?)
+	}
+	async fn run_inputs_with_budget_in(
+		&self,
+		tx: &mut Transaction<'_, Postgres>,
+		run_id: Uuid,
+		max_input_tokens: usize,
+	) -> Result<(Vec<RunInput>, usize)> {
+		let mut inputs = self.run_inputs_in(tx, run_id).await?;
+		let mut used = 0_usize;
+		for input in &mut inputs {
+			let full_size = run_input_size(&input.sender, &input.content);
+			if !input.reference_only
+				&& used.saturating_add(full_size) > max_input_tokens
+				&& let Some(message_id) = input.message_id
+			{
+				// The first run-input migration could have backfilled content
+				// before the selected model's limit was available. Reclassify under
+				// the same run lock as admission instead of charging its full size.
+				sqlx::query(
+					&sea_orm::sea_query::Query::update()
+						.table(sea_orm::sea_query::Alias::new("run_inputs"))
+						.value(
+							sea_orm::sea_query::Alias::new("reference_only"),
+							sea_orm::sea_query::Expr::cust("TRUE"),
+						)
+						.and_where(sea_orm::sea_query::Expr::cust(
+							"run_id = $1 AND idempotency_key = $2 AND message_id = $3",
+						))
+						.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+				)
+				.bind(run_id)
+				.bind(&input.idempotency_key)
+				.bind(message_id)
+				.execute(&mut **tx)
+				.await?;
+				input.reference_only = true;
+			}
+			if input.reference_only {
+				let reference_size = input
+					.message_id
+					.map_or(usize::MAX, |id| run_input_reference_size(&input.sender, id));
+				if reference_size > max_input_tokens {
+					return Err(Error::Invalid(
+						"run message reference exceeds the selected model's input limit".into(),
+					));
+				}
+			} else {
+				used = used.saturating_add(run_input_context_size(input));
+			}
+		}
+		Ok((inputs, used))
+	}
+	pub async fn run_inputs(&self, run_id: Uuid) -> Result<Vec<RunInput>> {
+		let mut tx = self.pool.begin().await?;
+		let inputs = self.run_inputs_in(&mut tx, run_id).await?;
+		tx.commit().await?;
+		Ok(inputs)
+	}
+	pub(crate) async fn run_input_sequence(
+		&self,
+		run_id: Uuid,
+		key: &str,
+		content: &str,
+	) -> Result<i64> {
+		use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+		sqlx::query_scalar(
+			&Query::select()
+				.column(Alias::new("seq"))
+				.from(Alias::new("run_inputs"))
+				.and_where(Expr::cust(
+					"run_id = $1 AND idempotency_key = $2 AND content = $3",
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.bind(key)
+		.bind(content)
+		.fetch_optional(&self.pool)
+		.await?
+		.ok_or_else(|| Error::Conflict("run message has no matching durable admission".into()))
+	}
+	pub(crate) async fn run_input_high_watermark(&self, run_id: Uuid) -> Result<i64> {
+		use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+		Ok(sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COALESCE(MAX(seq), 0)"))
+				.from(Alias::new("run_inputs"))
+				.and_where(Expr::cust("run_id = $1"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.fetch_one(&self.pool)
+		.await?)
+	}
+	pub async fn pending_terminal_run_message(&self) -> Result<Option<Run>> {
+		Ok(sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
+				.from(sea_orm::sea_query::Alias::new("runs"))
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"home_node <> $1 AND phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND EXISTS (SELECT 1 FROM run_inputs WHERE run_inputs.run_id = runs.id AND message_id IS NULL AND (delivery_retry_at IS NULL OR delivery_retry_at <= CURRENT_TIMESTAMP))",
+				))
+				.order_by(sea_orm::sea_query::Alias::new("updated_at"), sea_orm::sea_query::Order::Asc)
+				.limit(1)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(&self.node_id)
+		.fetch_optional(&self.pool)
+		.await?)
+	}
+	pub async fn defer_run_message_delivery(&self, run_id: Uuid) -> Result<()> {
+		sqlx::query(
+			&sea_orm::sea_query::Query::update()
+				.table(sea_orm::sea_query::Alias::new("run_inputs"))
+				.value(
+					sea_orm::sea_query::Alias::new("delivery_retry_at"),
+					sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP + INTERVAL '5 seconds'"),
+				)
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"run_id = $1 AND message_id IS NULL",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.execute(&self.pool)
+		.await?;
+		Ok(())
+	}
+	pub async fn bind_run_input_message(
+		&self,
+		run_id: Uuid,
+		key: &str,
+		message_id: Uuid,
+	) -> Result<()> {
+		let mut tx = self.pool.begin().await?;
+		self.bind_run_input_message_in(&mut tx, run_id, key, message_id)
+			.await?;
+		tx.commit().await?;
+		Ok(())
+	}
+	pub async fn import_remote_run_message(
+		&self,
+		run_id: Uuid,
+		key: &str,
+		message: &Message,
+		max_input_tokens: usize,
+	) -> Result<()> {
+		self.import_remote_run_messages(
+			run_id,
+			&[(key.to_owned(), message.clone())],
+			max_input_tokens,
+		)
+		.await
+	}
+	pub async fn import_remote_run_messages(
+		&self,
+		run_id: Uuid,
+		messages: &[(String, Message)],
+		max_input_tokens: usize,
+	) -> Result<()> {
+		let mut tx = self.pool.begin().await?;
+		self.import_remote_run_messages_in(&mut tx, run_id, messages, max_input_tokens)
+			.await?;
+		tx.commit().await?;
+		Ok(())
+	}
+	pub(crate) async fn import_remote_run_messages_in(
+		&self,
+		tx: &mut Transaction<'_, Postgres>,
+		run_id: Uuid,
+		messages: &[(String, Message)],
+		max_input_tokens: usize,
+	) -> Result<()> {
+		if messages.is_empty() {
+			return Ok(());
+		}
+		// Hold the run-row lock for the whole fetched history batch. New admissions
+		// use the same lock, so they cannot split older imports and overtake them.
+		let current: Run = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
+				.from(sea_orm::sea_query::Alias::new("runs"))
+				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.fetch_one(&mut **tx)
+		.await?;
+		for (key, message) in messages {
+			self.import_remote_run_message_in(tx, run_id, &current, key, message, max_input_tokens)
+				.await?;
+		}
+		Ok(())
+	}
+	/// Import the remote home's existing message history before admitting a new
+	/// input, under one run-row lock and transaction so a new sequence cannot
+	/// overtake a pre-ledger correction.
+	pub async fn import_remote_run_messages_and_accept(
+		&self,
+		run_id: Uuid,
+		messages: &[(String, Message)],
+		sender: &str,
+		content: &str,
+		key: &str,
+		max_input_tokens: usize,
+	) -> Result<()> {
+		let mut tx = self.pool.begin().await?;
+		self.import_remote_run_messages_in(&mut tx, run_id, messages, max_input_tokens)
+			.await?;
+		self.accept_run_message_in(&mut tx, run_id, sender, content, key, max_input_tokens)
+			.await?;
+		tx.commit().await?;
+		Ok(())
+	}
+	async fn import_remote_run_message_in(
+		&self,
+		tx: &mut Transaction<'_, Postgres>,
+		run_id: Uuid,
+		current: &Run,
+		key: &str,
+		message: &Message,
+		max_input_tokens: usize,
+	) -> Result<()> {
+		let (inputs, used) = self
+			.run_inputs_with_budget_in(tx, run_id, max_input_tokens)
+			.await?;
+		let previous = inputs.iter().find(|input| input.idempotency_key == key);
+		if previous.is_none()
+			&& (current.pending["finalizing"] == true
+				|| current.pending["terminal_transition"].as_str().is_some()
+				|| current.control == "CANCELLED"
+				|| matches!(current.phase.as_str(), "COMPLETED" | "FAILED" | "CANCELLED"))
+		{
+			return Err(Error::Conflict(
+				"historical run message arrived after finalization".into(),
+			));
+		}
+		let reference_only = previous.is_none()
+			&& used.saturating_add(run_input_size(&message.sender, &message.content))
+				> max_input_tokens;
+		if previous.is_none()
+			&& reference_only
+			&& run_input_reference_size(&message.sender, message.id) > max_input_tokens
+		{
+			return Err(Error::Invalid(
+				"historical run message reference exceeds the selected model's input limit".into(),
+			));
+		}
+		sqlx::query(
+			&sea_orm::sea_query::Query::insert()
+				.into_table(sea_orm::sea_query::Alias::new("run_inputs"))
+				.columns([
+					sea_orm::sea_query::Alias::new("run_id"),
+					sea_orm::sea_query::Alias::new("sender"),
+					sea_orm::sea_query::Alias::new("content"),
+					sea_orm::sea_query::Alias::new("idempotency_key"),
+					sea_orm::sea_query::Alias::new("message_id"),
+					sea_orm::sea_query::Alias::new("reference_only"),
+				])
+				.values_panic([
+					sea_orm::sea_query::Expr::cust("$1"),
+					sea_orm::sea_query::Expr::cust("$2"),
+					sea_orm::sea_query::Expr::cust("$3"),
+					sea_orm::sea_query::Expr::cust("$4"),
+					sea_orm::sea_query::Expr::cust("$5"),
+					sea_orm::sea_query::Expr::cust("$6"),
+				])
+				.on_conflict(
+					sea_orm::sea_query::OnConflict::columns([
+						sea_orm::sea_query::Alias::new("run_id"),
+						sea_orm::sea_query::Alias::new("idempotency_key"),
+					])
+					.do_nothing()
+					.to_owned(),
+				)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.bind(&message.sender)
+		.bind(&message.content)
+		.bind(key)
+		.bind(message.id)
+		.bind(reference_only)
+		.execute(&mut **tx)
+		.await?;
+		let existing: String = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.column(sea_orm::sea_query::Alias::new("content"))
+				.from(sea_orm::sea_query::Alias::new("run_inputs"))
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"run_id = $1 AND idempotency_key = $2",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.bind(key)
+		.fetch_one(&mut **tx)
+		.await?;
+		if existing != message.content {
+			return Err(Error::Conflict("historical run message key reused".into()));
+		}
+		self.bind_run_input_message_in(tx, run_id, key, message.id)
+			.await?;
+		Ok(())
+	}
+
+	async fn bind_run_input_message_in(
+		&self,
+		tx: &mut Transaction<'_, Postgres>,
+		run_id: Uuid,
+		key: &str,
+		message_id: Uuid,
+	) -> Result<()> {
+		let changed = sqlx::query(
+			&sea_orm::sea_query::Query::update()
+				.table(sea_orm::sea_query::Alias::new("run_inputs"))
+				.value(
+					sea_orm::sea_query::Alias::new("message_id"),
+					sea_orm::sea_query::Expr::cust("$3"),
+				)
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"run_id = $1 AND idempotency_key = $2 AND (message_id IS NULL OR message_id = $3)",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run_id)
+		.bind(key)
+		.bind(message_id)
+		.execute(&mut **tx)
+		.await?;
+		if changed.rows_affected() != 1 {
+			return Err(Error::Conflict("run input message binding changed".into()));
+		}
+		Ok(())
+	}
+	pub async fn begin_final_completion(&self, run: &Run, worker: Uuid) -> Result<bool> {
+		let mut tx = self.pool.begin().await?;
+		let current: Run = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
+				.from(sea_orm::sea_query::Alias::new("runs"))
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"id = $1 AND lease_until > CURRENT_TIMESTAMP",
+				))
+				.lock(sea_orm::sea_query::LockType::Update)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run.id)
+		.fetch_optional(&mut *tx)
+		.await?
+		.ok_or_else(|| Error::Conflict("worker lease lost".into()))?;
+		if current.lease_owner != Some(worker)
+			|| current.phase != "TOOL_CALL"
+			|| current.control == "CANCELLED"
+			|| current.pending["terminal_transition"].as_str().is_some()
+		{
+			return Err(Error::Conflict("worker lease lost".into()));
+		}
+		let stale: bool = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::cust(
+					"EXISTS(SELECT 1 FROM run_inputs WHERE run_id = $1 AND seq > $2)",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run.id)
+		.bind(run.observed_input_seq)
+		.fetch_one(&mut *tx)
+		.await?;
+		if stale {
+			return Ok(false);
+		}
+		let changed = sqlx::query(
+			&sea_orm::sea_query::Query::update()
+				.table(sea_orm::sea_query::Alias::new("runs"))
+				.value(
+					sea_orm::sea_query::Alias::new("pending"),
+					sea_orm::sea_query::Expr::cust("pending || '{\"finalizing\":true}'::jsonb"),
+				)
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"id = $1 AND lease_owner = $2 AND lease_until > CURRENT_TIMESTAMP",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(run.id)
+		.bind(worker)
+		.execute(&mut *tx)
+		.await?;
+		if changed.rows_affected() != 1 {
+			return Err(Error::Conflict("worker lease lost".into()));
+		}
+		tx.commit().await?;
+		Ok(true)
 	}
 	pub(crate) async fn message_from_run(
 		&self,
@@ -1760,7 +3276,7 @@ impl Store {
 	}
 	pub async fn lease_run(&self, worker: Uuid, seconds: i32) -> Result<Option<Run>> {
 		// SKIP LOCKED permits independent workers; the token fences stale writers.
-		Ok(sqlx::query_as(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("runs")).value(sea_orm::sea_query::Alias::new("pending"), sea_orm::sea_query::Expr::cust("CASE WHEN lease_owner IS NOT NULL THEN pending || CAST('{\"lease_recovered\":true}' AS JSONB) ELSE pending END")).value(sea_orm::sea_query::Alias::new("lease_owner"), sea_orm::sea_query::Expr::cust("$1")).value(sea_orm::sea_query::Alias::new("lease_until"), sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP + MAKE_INTERVAL(secs => $2)")).value(sea_orm::sea_query::Alias::new("revision"), sea_orm::sea_query::Expr::cust("revision + 1")).and_where(sea_orm::sea_query::Expr::cust("id = (SELECT id FROM runs WHERE NOT phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND control <> 'PAUSED' AND revision < 9223372036854775805 AND (lease_until IS NULL OR lease_until < CURRENT_TIMESTAMP) AND (NOT (pending ? 'retry_at') OR CAST((pending ->> 'retry_at') AS TIMESTAMPTZ) < CURRENT_TIMESTAMP) AND (phase <> 'WAITING' OR control = 'CANCELLED' OR CAST((pending ->> 'wake_at') AS TIMESTAMPTZ) < CURRENT_TIMESTAMP OR EXISTS(SELECT 1 FROM human_requests AS h WHERE CAST(h.id AS TEXT) = runs.pending ->> 'human_request_id' AND h.response IS NOT NULL)) ORDER BY updated_at LIMIT 1 FOR UPDATE SKIP LOCKED)")).returning_all().to_string(sea_orm::sea_query::PostgresQueryBuilder))
+		Ok(sqlx::query_as(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("runs")).value(sea_orm::sea_query::Alias::new("pending"), sea_orm::sea_query::Expr::cust("CASE WHEN lease_owner IS NOT NULL THEN pending || CAST('{\"lease_recovered\":true}' AS JSONB) ELSE pending END")).value(sea_orm::sea_query::Alias::new("lease_owner"), sea_orm::sea_query::Expr::cust("$1")).value(sea_orm::sea_query::Alias::new("lease_until"), sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP + MAKE_INTERVAL(secs => $2)")).value(sea_orm::sea_query::Alias::new("revision"), sea_orm::sea_query::Expr::cust("revision + 1")).value(sea_orm::sea_query::Alias::new("ledger_worker_ready"), sea_orm::sea_query::Expr::value(true)).and_where(sea_orm::sea_query::Expr::cust("id = (SELECT id FROM runs WHERE NOT phase IN ('COMPLETED', 'FAILED', 'CANCELLED') AND control <> 'PAUSED' AND revision < 9223372036854775805 AND (lease_until IS NULL OR lease_until < CURRENT_TIMESTAMP) AND (NOT (pending ? 'retry_at') OR CAST((pending ->> 'retry_at') AS TIMESTAMPTZ) < CURRENT_TIMESTAMP) AND (phase <> 'WAITING' OR control = 'CANCELLED' OR CAST((pending ->> 'wake_at') AS TIMESTAMPTZ) < CURRENT_TIMESTAMP OR EXISTS(SELECT 1 FROM human_requests AS h WHERE CAST(h.id AS TEXT) = runs.pending ->> 'human_request_id' AND h.response IS NOT NULL)) ORDER BY updated_at LIMIT 1 FOR UPDATE SKIP LOCKED) AND set_config('aidash.input_ledger_worker', 'true', true) = 'true'")).returning_all().to_string(sea_orm::sea_query::PostgresQueryBuilder))
             .bind(worker).bind(seconds as f64).fetch_optional(&self.pool).await?)
 	}
 	pub async fn renew_lease(&self, id: Uuid, worker: Uuid, seconds: i32) -> Result<bool> {
@@ -1772,7 +3288,7 @@ impl Store {
 					sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP + MAKE_INTERVAL(secs => $3)"),
 				)
 				.and_where(sea_orm::sea_query::Expr::cust(
-					"id = $1 AND lease_owner = $2 AND lease_until > CURRENT_TIMESTAMP",
+					"id = $1 AND lease_owner = $2 AND lease_until > CURRENT_TIMESTAMP AND set_config('aidash.input_ledger_worker', 'true', true) = 'true'",
 				))
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 		)
@@ -1797,6 +3313,39 @@ impl Store {
 			None
 		};
 		let mut tx = self.pool.begin().await?;
+		if kind == "model.completed" {
+			// Message admission takes this same row lock. A response is durable only
+			// when every accepted input was present in its provider request.
+			let _: Uuid = sqlx::query_scalar(
+				&sea_orm::sea_query::Query::select()
+					.column(sea_orm::sea_query::Alias::new("id"))
+					.from(sea_orm::sea_query::Alias::new("runs"))
+					.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
+					.lock(sea_orm::sea_query::LockType::Update)
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(run.id)
+			.fetch_one(&mut *tx)
+			.await?;
+			let stale: bool = sqlx::query_scalar(
+				&sea_orm::sea_query::Query::select()
+					.expr(sea_orm::sea_query::Expr::cust(
+						"EXISTS(SELECT 1 FROM run_inputs WHERE run_id = $1 AND seq > $2)",
+					))
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(run.id)
+			.bind(
+				pending["included_input_seq"]
+					.as_i64()
+					.unwrap_or(run.observed_input_seq),
+			)
+			.fetch_one(&mut *tx)
+			.await?;
+			if stale {
+				return Err(Error::StaleInference);
+			}
+		}
 		let saved: Run = sqlx::query_as(
 			&sea_orm::sea_query::Query::update()
 				.table(sea_orm::sea_query::Alias::new("runs"))
@@ -1820,10 +3369,14 @@ impl Store {
 					sea_orm::sea_query::Alias::new("error"),
 					sea_orm::sea_query::Expr::cust("$7"),
 				)
-				.value(
-					sea_orm::sea_query::Alias::new("revision"),
-					sea_orm::sea_query::Expr::cust("revision + 1"),
-				)
+			.value(
+				sea_orm::sea_query::Alias::new("revision"),
+				sea_orm::sea_query::Expr::cust("revision + 1"),
+			)
+			.value(
+				sea_orm::sea_query::Alias::new("observed_input_seq"),
+				sea_orm::sea_query::Expr::cust("$9"),
+			)
 				.value(
 					sea_orm::sea_query::Alias::new("updated_at"),
 					sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP"),
@@ -1850,6 +3403,7 @@ impl Store {
 		.bind(run.step)
 		.bind(error)
 		.bind(kind != "model.completed")
+		.bind(run.observed_input_seq)
 		.fetch_optional(&mut *tx)
 		.await?
 		.ok_or_else(|| Error::Conflict("worker lease lost".into()))?;
@@ -2086,6 +3640,17 @@ impl Store {
 				));
 			}
 		};
+		// Control-plane updates are emitted by upgraded code and must remain
+		// available while a pre-upgrade worker lease is fenced by run_inputs.
+		sqlx::query_scalar::<_, String>(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::cust(
+					"set_config('aidash.input_ledger_worker', 'true', true)",
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.fetch_one(&mut **tx)
+		.await?;
 		let r: Run = sqlx::query_as(
 			&sea_orm::sea_query::Query::update()
 				.table(sea_orm::sea_query::Alias::new("runs"))
@@ -2376,27 +3941,15 @@ impl Store {
 		replay_safe: bool,
 	) -> Result<Invocation> {
 		let mut tx = self.pool.begin().await?;
-		let valid: Option<Uuid> = sqlx::query_scalar(
-			&sea_orm::sea_query::Query::select()
-				.expr(sea_orm::sea_query::SimpleExpr::from(
-					sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id")),
-				))
-				.from(sea_orm::sea_query::Alias::new("runs"))
-				.and_where(sea_orm::sea_query::Expr::cust(
-					"id = $1 AND lease_owner = $2 AND lease_until > CURRENT_TIMESTAMP",
-				))
-				.lock(sea_orm::sea_query::LockType::Update)
-				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		self.ensure_run_response_current_in(
+			&mut tx,
+			run.id,
+			worker,
+			run.pending["included_input_seq"]
+				.as_i64()
+				.unwrap_or(run.observed_input_seq),
 		)
-		.bind(run.id)
-		.bind(worker)
-		.fetch_optional(&mut *tx)
 		.await?;
-		if valid.is_none() {
-			return Err(Error::Conflict(
-				"worker lease lost before tool invocation".into(),
-			));
-		}
 		// The bounded call and any prepared workspace-read chunk must survive a
 		// worker crash once the idempotency key becomes durable. Keep this update
 		// in the same transaction as invocation creation.
