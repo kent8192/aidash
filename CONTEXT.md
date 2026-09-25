@@ -28,6 +28,14 @@ The authorized working files associated with one thread and one Agent, available
 
 An explicit, policy-authorized operation that makes selected files available to an identified recipient Agent. It is distinct from access to the sender's whole working area, task delegation, and transfer of credentials or approval grants.
 
+## Shared file snapshot
+
+The selected file contents fixed by a sharing operation. Later source edits do not change this input; the recipient can create a separate working copy. It is distinct from a recovery snapshot retained for cleanup.
+
+## Cross-node file transfer
+
+Delivery of an identified shared file snapshot to an authorized recipient Agent on another node, subject to both nodes' applicable policies. It does not imply access to the sender's filesystem or permission inherited from task delegation.
+
 ## Working-area cleanup
 
 The user-authorized removal of an active Agent working area, either by reversible cleanup or by irreversible working-area deletion. It is distinct from stopping an Interpreter session, deleting a thread, or deleting separately published artifacts.
@@ -50,7 +58,7 @@ A separate Git checkout used to isolate file changes from another checkout. A Wo
 
 ## Interpreter session
 
-A live code execution environment whose variables and import state can persist across invocations while the environment remains alive. Its memory state is distinct from the Agent working area's files.
+A live Python execution environment whose variables and import state can persist across invocations while the environment remains alive. Its memory state is distinct from the Agent working area's files.
 
 ## Idle suspension
 
