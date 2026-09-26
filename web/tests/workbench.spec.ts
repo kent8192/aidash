@@ -226,6 +226,30 @@ for (const [viewport, locale] of [
         });
       if (path === "/api/workbench/versions/managed-agent/1.0.0/incidents")
         return route.fulfill({ json: [] });
+      if (path === "/api/workbench/versions/managed-agent/1.0.0/permissions")
+        return route.fulfill({
+          json: {
+            tenant: "acme",
+            subject: "alice",
+            workspace_id: null,
+            policy_revision: 1,
+            observed_at: "2026-09-25T00:00:00Z",
+            requested_capabilities: [],
+            rows: [
+              {
+                reference: { id: "model", version: "1.0.0" },
+                kind: "model",
+                action: "model.infer",
+                catalog_enabled: true,
+                policy_allowed: true,
+                registry_read_allowed: false,
+                effective_for_component: false,
+              },
+            ],
+            workspace_read: null,
+            note: "Execution permission context",
+          },
+        });
       return route.fulfill({
         status: 404,
         json: { error: "fixture route unavailable" },
@@ -254,6 +278,28 @@ for (const [viewport, locale] of [
         )
         .first(),
     ).toBeVisible();
+    await page
+      .locator(".wb-tabs")
+      .getByRole("button", {
+        name: locale === "ja-JP" ? "ポリシー" : "Policies",
+      })
+      .click();
+    await page.locator(".wb-policy input").nth(0).fill("acme");
+    await page.locator(".wb-policy input").nth(1).fill("alice");
+    await page
+      .getByRole("button", {
+        name:
+          locale === "ja-JP" ? "この条件で権限を確認" : "Check this context",
+      })
+      .click();
+    await expect(
+      page.getByRole("columnheader", {
+        name: locale === "ja-JP" ? "Registry参照" : "Registry read",
+      }),
+    ).toBeVisible();
+    await expect(
+      page.locator(".wb-policy tbody tr").getByRole("cell"),
+    ).toHaveText(["model · model@1.0.0", "model.infer", "✓", "✓", "—", "—"]);
     const widths = await page.evaluate(() => ({
       content: document.documentElement.scrollWidth,
       viewport: window.innerWidth,

@@ -76,6 +76,7 @@ pub struct PermissionRow {
 	pub action: String,
 	pub catalog_enabled: bool,
 	pub policy_allowed: bool,
+	pub registry_read_allowed: Option<bool>,
 	pub effective_for_component: bool,
 }
 
@@ -376,11 +377,29 @@ async fn permission_context(
 		.bind(&reference.version)
 		.fetch_optional(&mut *tx)
 		.await?;
-		let decision = Authorization::evaluate_in_transaction(&mut tx, &input.tenant, &Evaluation {
-			subject: input.subject.clone(), action: action.into(),
-			resource: Resource { tenant: input.tenant.clone(), kind: dependency.kind.clone(), id: reference.id.clone(), attributes: json!({"version":reference.version,"capabilities":dependency.capabilities,"tags":dependency.tags,"languages":dependency.languages,"config":dependency.config}) },
-			environment: json!({"workspace_id":input.workspace_id,"node_id":f.config.node_id,"transport":"api"}),
-		}).await?;
+		let mut evaluation = Evaluation {
+			subject: input.subject.clone(),
+			action: action.into(),
+			resource: Resource {
+				tenant: input.tenant.clone(),
+				kind: dependency.kind.clone(),
+				id: reference.id.clone(),
+				attributes: json!({"version":reference.version,"capabilities":dependency.capabilities,"tags":dependency.tags,"languages":dependency.languages,"config":dependency.config}),
+			},
+			environment: json!({"workspace_id":input.workspace_id,"node_id":f.config.node_id,"transport":"worker"}),
+		};
+		let decision =
+			Authorization::evaluate_in_transaction(&mut tx, &input.tenant, &evaluation).await?;
+		let registry_read_allowed = if action == "agent.execute" {
+			None
+		} else {
+			evaluation.action = "registry.read".into();
+			Some(
+				Authorization::evaluate_in_transaction(&mut tx, &input.tenant, &evaluation)
+					.await?
+					.allowed,
+			)
+		};
 		policy_revision = decision.revision;
 		rows.push(PermissionRow {
 			reference,
@@ -388,7 +407,10 @@ async fn permission_context(
 			action: action.into(),
 			catalog_enabled: catalog_enabled == Some(true),
 			policy_allowed: decision.allowed,
-			effective_for_component: catalog_enabled == Some(true) && decision.allowed,
+			registry_read_allowed,
+			effective_for_component: catalog_enabled == Some(true)
+				&& decision.allowed
+				&& registry_read_allowed.unwrap_or(true),
 		});
 	}
 	let workspace_read = if let Some(workspace_id) = input.workspace_id {
@@ -420,7 +442,7 @@ async fn permission_context(
 						id: workspace_id.to_string(),
 						attributes: json!({"owner":owner,"workspace_id":workspace_id}),
 					},
-					environment: json!({"workspace_id":workspace_id,"node_id":f.config.node_id,"transport":"api"}),
+					environment: json!({"workspace_id":workspace_id,"node_id":f.config.node_id,"transport":"worker"}),
 				},
 			)
 			.await?;
@@ -433,7 +455,7 @@ async fn permission_context(
 		None
 	};
 	tx.commit().await?;
-	Ok(Json(PermissionContext { tenant: input.tenant, subject: input.subject, workspace_id: input.workspace_id, policy_revision, observed_at: Utc::now(), requested_capabilities: entry.capabilities, rows, workspace_read, note: "Component-level decisions for this exact context; task and execution admission require further checks. No universal permission or Trust assessment is implied.".into() }))
+	Ok(Json(PermissionContext { tenant: input.tenant, subject: input.subject, workspace_id: input.workspace_id, policy_revision, observed_at: Utc::now(), requested_capabilities: entry.capabilities, rows, workspace_read, note: "Component-level decisions use the worker execution context and include required Registry reads; task and execution admission require further checks. No universal permission or Trust assessment is implied.".into() }))
 }
 
 fn escape_html(value: &str) -> String {

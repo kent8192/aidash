@@ -151,6 +151,7 @@ type PermissionContext = {
     action: string;
     catalog_enabled: boolean;
     policy_allowed: boolean;
+    registry_read_allowed: boolean | null;
     effective_for_component: boolean;
   }[];
   workspace_read: boolean | null;
@@ -2055,6 +2056,9 @@ export function Workbench({
                   <th>Catalog</th>
                   <th>Policy</th>
                   <th>
+                    {locale === "ja-JP" ? "Registry参照" : "Registry read"}
+                  </th>
+                  <th>
                     {locale === "ja-JP"
                       ? "この部品で有効"
                       : "Effective component"}
@@ -2070,6 +2074,7 @@ export function Workbench({
                     <td>{row.action}</td>
                     <td>{row.catalog_enabled ? "✓" : "—"}</td>
                     <td>{row.policy_allowed ? "✓" : "—"}</td>
+                    <td>{row.registry_read_allowed ? "✓" : "—"}</td>
                     <td>{row.effective_for_component ? "✓" : "—"}</td>
                   </tr>
                 ))}

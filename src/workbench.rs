@@ -403,40 +403,56 @@ async fn list(
 	Extension(actor): Extension<Actor>,
 ) -> Result<Json<Vec<Draft>>> {
 	let mut tx = f.store.pool.begin().await?;
-	let rows: Vec<Draft> = match &actor {
-		Actor::Operator => {
-			sqlx::query_as(
-				&Query::select()
-					.expr(Expr::cust(DRAFT_COLUMNS))
-					.from(Alias::new("agent_drafts"))
-					.order_by(Alias::new("updated_at"), Order::Desc)
-					.limit(100)
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_all(&mut *tx)
-			.await?
-		}
-		Actor::Subject(identity) => {
-			sqlx::query_as(
-				&Query::select()
-					.expr(Expr::cust(DRAFT_COLUMNS))
-					.from(Alias::new("agent_drafts"))
-					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
-					.order_by(Alias::new("updated_at"), Order::Desc)
-					.limit(100)
-					.to_string(PostgresQueryBuilder),
-			)
-			.bind(&identity.tenant)
-			.fetch_all(&mut *tx)
-			.await?
-		}
-	};
 	let mut visible = Vec::new();
-	for row in rows {
-		match authorize(&mut tx, &actor, &row, "agent_draft.read", true).await {
-			Ok(()) => visible.push(row),
-			Err(Error::Forbidden) => {}
-			Err(error) => return Err(error),
+	let mut cursor: Option<(DateTime<Utc>, Uuid)> = None;
+	let tenant = match &actor {
+		Actor::Operator => None,
+		Actor::Subject(identity) => Some(&identity.tenant),
+	};
+	loop {
+		let mut query = Query::select();
+		query
+			.expr(Expr::cust(DRAFT_COLUMNS))
+			.from(Alias::new("agent_drafts"))
+			.order_by(Alias::new("updated_at"), Order::Desc)
+			.order_by(Alias::new("id"), Order::Desc)
+			.limit(100)
+			.cond_where(
+				Condition::any()
+					.add(Expr::expr(Expr::cust("$1::text")).is_null())
+					.add(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1"))),
+			);
+		if cursor.is_some() {
+			query.cond_where(
+				Condition::any()
+					.add(Expr::col(Alias::new("updated_at")).lt(Expr::cust("$2")))
+					.add(
+						Condition::all()
+							.add(Expr::col(Alias::new("updated_at")).eq(Expr::cust("$2")))
+							.add(Expr::col(Alias::new("id")).lt(Expr::cust("$3"))),
+					),
+			);
+		}
+		let sql = query.to_string(PostgresQueryBuilder);
+		let mut select = sqlx::query_as::<_, Draft>(&sql).bind(tenant);
+		if let Some((updated_at, id)) = cursor {
+			select = select.bind(updated_at).bind(id);
+		}
+		let rows = select.fetch_all(&mut *tx).await?;
+		let more = rows.len() == 100;
+		cursor = rows.last().map(|row| (row.updated_at, row.id));
+		for row in rows {
+			match authorize(&mut tx, &actor, &row, "agent_draft.read", true).await {
+				Ok(()) => visible.push(row),
+				Err(Error::Forbidden) => {}
+				Err(error) => return Err(error),
+			}
+			if visible.len() == 100 {
+				break;
+			}
+		}
+		if visible.len() == 100 || !more {
+			break;
 		}
 	}
 	tx.commit().await?;
@@ -518,6 +534,8 @@ async fn validate_content(
 	check_content(&entry, &documents, &draft.release_notes)?;
 	if !documents.is_empty() {
 		entry.config["knowledge_digest"] = json!(digest(&draft.documents));
+	} else if let Some(config) = entry.config.as_object_mut() {
+		config.remove("knowledge_digest");
 	}
 	if let Actor::Subject(identity) = actor {
 		let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
@@ -594,7 +612,7 @@ async fn duplicate(
 	Json(input): Json<RevisionInput>,
 ) -> Result<Json<Draft>> {
 	let mut tx = f.store.pool.begin().await?;
-	let original = load(&mut tx, id, false).await?;
+	let original = load(&mut tx, id, true).await?;
 	authorize(&mut tx, &actor, &original, "agent_draft.read", true).await?;
 	if original.revision != input.expected_revision {
 		return Err(Error::Conflict("draft revision changed".into()));

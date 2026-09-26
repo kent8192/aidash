@@ -455,13 +455,9 @@ impl MigrationTrait for Migration {
 				.drop_table(Table::drop().table(Alias::new(table)).to_owned())
 				.await?;
 		}
-		for (table, name, expression) in super::m20260921_071045_record_constraints::checks(true) {
-			if matches!(name, "registry_agent_config" | "packages_identity") {
-				manager.get_connection().execute_unprepared(&format!(
-					"ALTER TABLE \"{table}\" DROP CONSTRAINT \"{name}\", ADD CONSTRAINT \"{name}\" CHECK (COALESCE(({expression}), false))"
-				)).await?;
-			}
-		}
+		// Keep the expanded Registry/package constraints: immutable versions may
+		// already contain workbench behavior flags. Restoring the old object shape
+		// would reject persisted data and fail the downgrade.
 		Ok(())
 	}
 }

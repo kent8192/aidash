@@ -286,7 +286,7 @@ pub async fn purge_expired(pool: &sqlx::PgPool) -> Result<u64> {
 	let result = sqlx::query(
 		&Query::update()
 			.table(Alias::new("agent_test_sessions"))
-			.value(Alias::new("scenario"), Expr::cust("'{}'::jsonb"))
+			.value(Alias::new("scenario"), Expr::cust("scenario - 'fixtures'"))
 			.value(Alias::new("conversation"), Expr::cust("NULL"))
 			.value(Alias::new("tool_calls"), Expr::cust("NULL"))
 			.value(Alias::new("expired_at"), Expr::current_timestamp())
@@ -948,6 +948,11 @@ async fn simulate(f: &Federation, session_id: Uuid, job: &TestJob) -> Result<Sim
 		input_tokens = input_tokens.saturating_add(response.input_tokens);
 		output_tokens = output_tokens.saturating_add(response.output_tokens);
 		usage_complete &= response.usage_complete;
+		if !response.usage_complete {
+			error =
+				Some("provider usage is incomplete; test token limits cannot be verified".into());
+			break;
+		}
 		if output_tokens > limits.max_output_tokens as u64 {
 			error = Some("test output token limit exceeded by model response".into());
 			break;

@@ -460,52 +460,58 @@ async fn events(
 
 /// Expire copied payloads while keeping source, digest, actor and status data.
 pub async fn purge_expired(pool: &sqlx::PgPool) -> Result<u64> {
-	let rows: Vec<Incident> = sqlx::query_as(
-		&Query::select()
-			.expr(Expr::cust(INCIDENT_COLUMNS))
-			.from(Alias::new("agent_incidents"))
-			.cond_where(
-				Condition::all()
-					.add(Expr::col(Alias::new("status")).eq("resolved"))
-					.add(
-						Expr::col(Alias::new("evidence_expires_at")).lte(Expr::current_timestamp()),
-					)
-					.add(Expr::col(Alias::new("evidence_expired_at")).is_null()),
-			)
-			.limit(100)
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_all(pool)
-	.await?;
 	let mut count = 0;
-	for row in rows {
-		let mut tx = pool.begin().await?;
-		let current = load(&mut tx, row.id, true).await?;
-		if current.status != "resolved"
-			|| current.evidence_expired_at.is_some()
-			|| current.evidence_expires_at.is_none_or(|at| at > Utc::now())
-		{
-			tx.commit().await?;
-			continue;
-		}
-		let mut copies: Vec<EvidenceCopy> = serde_json::from_value(current.evidence)?;
-		for copy in &mut copies {
-			copy.content = None;
-		}
-		sqlx::query(
-			&Query::update()
-				.table(Alias::new("agent_incidents"))
-				.value(Alias::new("evidence"), Expr::cust("$2"))
-				.value(Alias::new("evidence_expired_at"), Expr::current_timestamp())
-				.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+	loop {
+		let rows: Vec<Incident> = sqlx::query_as(
+			&Query::select()
+				.expr(Expr::cust(INCIDENT_COLUMNS))
+				.from(Alias::new("agent_incidents"))
+				.cond_where(
+					Condition::all()
+						.add(Expr::col(Alias::new("status")).eq("resolved"))
+						.add(
+							Expr::col(Alias::new("evidence_expires_at"))
+								.lte(Expr::current_timestamp()),
+						)
+						.add(Expr::col(Alias::new("evidence_expired_at")).is_null()),
+				)
+				.limit(100)
 				.to_string(PostgresQueryBuilder),
 		)
-		.bind(row.id)
-		.bind(serde_json::to_value(copies)?)
-		.execute(&mut *tx)
+		.fetch_all(pool)
 		.await?;
-		tx.commit().await?;
-		count += 1;
+		if rows.is_empty() {
+			break;
+		}
+		for row in rows {
+			let mut tx = pool.begin().await?;
+			let current = load(&mut tx, row.id, true).await?;
+			if current.status != "resolved"
+				|| current.evidence_expired_at.is_some()
+				|| current.evidence_expires_at.is_none_or(|at| at > Utc::now())
+			{
+				tx.commit().await?;
+				continue;
+			}
+			let mut copies: Vec<EvidenceCopy> = serde_json::from_value(current.evidence)?;
+			for copy in &mut copies {
+				copy.content = None;
+			}
+			sqlx::query(
+				&Query::update()
+					.table(Alias::new("agent_incidents"))
+					.value(Alias::new("evidence"), Expr::cust("$2"))
+					.value(Alias::new("evidence_expired_at"), Expr::current_timestamp())
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+					.to_string(PostgresQueryBuilder),
+			)
+			.bind(row.id)
+			.bind(serde_json::to_value(copies)?)
+			.execute(&mut *tx)
+			.await?;
+			tx.commit().await?;
+			count += 1;
+		}
 	}
 	Ok(count)
 }
