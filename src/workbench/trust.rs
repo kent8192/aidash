@@ -118,6 +118,7 @@ pub(super) async fn require_inspection(
 	let Actor::Subject(identity) = actor else {
 		return Ok(());
 	};
+	identity.lock_with_mode(tx, false).await?;
 	let decision = Authorization::evaluate_in_transaction(
 		tx,
 		&identity.tenant,
@@ -419,12 +420,18 @@ async fn permission_context(
 			.into_iter()
 			.map(|reference| (reference, "skill.use")),
 	);
-	components.extend(
-		config
-			.tools
-			.into_iter()
-			.map(|reference| (reference, "tool.invoke")),
-	);
+	for reference in config.tools {
+		let tool =
+			crate::registry::effective_in(&mut tx, &reference.id, &reference.version).await?;
+		if config.allow_task_delegation == Some(false)
+			&& matches!(
+				serde_json::from_value::<crate::tool::ToolConfig>(tool.config)?,
+				crate::tool::ToolConfig::Agent { .. }
+			) {
+			continue;
+		}
+		components.push((reference, "tool.invoke"));
+	}
 	if let Some(cluster) = config.cluster {
 		components.push((cluster, "cluster.execute"));
 	}

@@ -1787,3 +1787,116 @@ async fn review6_compatible_profiles_survive_an_incompatible_backlog(
 	assert_eq!(profiles[0]["id"], "zz-compatible");
 	wb.cleanup().await;
 }
+
+#[rstest::fixture]
+async fn review6_revoked_inspection() -> (Workbench, axum::Router) {
+	let wb = workbench().await;
+	wb.register().await;
+	let authorization = aidash::authorization::Authorization {
+		pool: wb.f.store.pool.clone(),
+	};
+	let actor = authorization.authenticate(&wb.token).await.unwrap();
+	let credential = authorization.credentials("acme").await.unwrap().remove(0);
+	authorization
+		.revoke_credential("acme", credential.id)
+		.await
+		.unwrap();
+	let (routes, _) = aidash::workbench::routes().split_for_parts();
+	let app = axum::Router::new()
+		.nest("/api", routes)
+		.layer(axum::Extension(actor))
+		.with_state(wb.f.clone());
+	(wb, app)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn review6_permission_context_rejects_a_previously_authenticated_revoked_actor(
+	#[future(awt)] review6_revoked_inspection: (Workbench, axum::Router),
+) {
+	let (wb, app) = review6_revoked_inspection;
+	let (status, body) = request(
+		&app,
+		&wb.token,
+		"POST",
+		&format!(
+			"/api/workbench/versions/{}/1.0.0/permissions",
+			wb.draft["entry"]["id"].as_str().unwrap()
+		),
+		json!({"tenant":"acme","subject":"alice"}),
+	)
+	.await;
+	assert_eq!(status, 401, "context: {body}");
+	wb.cleanup().await;
+}
+
+#[rstest::fixture]
+async fn review6_delegation_context(#[default(false)] delegation: bool) -> Workbench {
+	let mut wb = workbench().await;
+	let mut child = wb.draft["entry"].clone();
+	child["id"] = json!("delegated-agent");
+	child["config"]["tools"] = json!([]);
+	assert_eq!(
+		request(
+			&wb.app,
+			&wb.f.config.api_token,
+			"POST",
+			"/api/registry",
+			child
+		)
+		.await
+		.0,
+		200
+	);
+	assert_eq!(request(&wb.app,&wb.f.config.api_token,"POST","/api/registry",json!({"id":"agent-tool","version":"1.0.0","kind":"tool","name":{"en":"Agent Tool"},"description":{"en":"Delegate"},"config":{"transport":"agent","node_id":wb.f.config.node_id,"agent":{"id":"delegated-agent","version":"1.0.0"}}})).await.0,200);
+	let mut entry = wb.draft["entry"].clone();
+	entry["config"]["tools"] = json!([{"id":"agent-tool","version":"1.0.0"}]);
+	entry["config"]["allow_task_delegation"] = json!(delegation);
+	wb.draft = wb
+		.call(
+			"PUT",
+			&wb.path(),
+			json!({"expected_revision":1,"entry":entry}),
+		)
+		.await;
+	wb.call(
+		"POST",
+		&format!("{}/register", wb.path()),
+		json!({"expected_revision":2}),
+	)
+	.await;
+	wb
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn review6_permission_context_respects_agent_tool_behavior_flags(
+	#[case] delegation: bool,
+	#[future(awt)]
+	#[with(delegation)]
+	review6_delegation_context: Workbench,
+) {
+	let wb = review6_delegation_context;
+	let context = wb
+		.call(
+			"POST",
+			&format!(
+				"/api/workbench/versions/{}/1.0.0/permissions",
+				wb.draft["entry"]["id"].as_str().unwrap()
+			),
+			json!({"tenant":"acme","subject":"alice"}),
+		)
+		.await;
+	assert_eq!(
+		context["rows"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|row| row["reference"]["id"] == "agent-tool"),
+		delegation,
+		"context: {context}"
+	);
+	wb.cleanup().await;
+}
