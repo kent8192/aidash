@@ -159,6 +159,12 @@ protocol framing limits. Transfer negotiation advertises the operator's lowered 
 budgets. Configuration and Run admission both enforce reference-set limits;
 lowering a limit never rewrites a published Agent version or deletes originals.
 
+The working-file byte ceiling includes mounted reference and received files.
+Those read-only mounts reserve capacity from the writable `/work` volume and
+from every export, including Shell recovery and persistent Python operations.
+Filling the writable allowance therefore keeps the combined manifest within
+the same ceiling used when publishing results.
+
 ## Files, references, Skills and packages
 
 A working area belongs to an authorized subject, home/workspace/thread and Agent.
