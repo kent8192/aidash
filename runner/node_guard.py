@@ -72,7 +72,7 @@ def volume(pod, name):
 
 def open_file(root, path):
     parts = path.split('/')
-    if len(path) > 1024 or not parts or any(p in ('', '.', '..') for p in parts) or '\\' in path or any(ord(c) < 32 for c in path):
+    if len(path.encode()) > 1024 or not parts or any(p in ('', '.', '..') for p in parts) or '\\' in path or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in path):
         raise ValueError('invalid file path')
     fd = os.open(root, os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -279,7 +279,7 @@ def handle(request):
                 data = file.read(4194304)
             return {'data': base64.b64encode(data).decode()}
         maximum = request['working_bytes']
-        if type(maximum) is not int or not 1 <= maximum <= 1 << 30:
+        if type(maximum) is not int or not 0 <= maximum <= 1 << 30:
             raise ValueError('working quota')
         files, total = [], 0
         for directory, dirs, names in os.walk(root, followlinks=False):

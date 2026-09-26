@@ -92,7 +92,7 @@ fn ordinary(access: &Access, target: &Resource) -> Result<bool> {
 	}
 	Ok(all)
 }
-fn eligible(access: &Access, subject: &str, target: &Resource) -> bool {
+fn eligible(access: &Access, subject: &str, requester: &str, target: &Resource) -> bool {
 	let mut evaluation = access.evaluation(subject, target, "capability.approve");
 	evaluation.environment["transport"] = json!("api");
 	access
@@ -100,11 +100,19 @@ fn eligible(access: &Access, subject: &str, target: &Resource) -> bool {
 		.bundle
 		.subjects
 		.get(subject)
-		.is_some_and(|s| s.enabled && s.kind == SubjectKind::User)
-		&& access.snapshot.bundle.evaluate(&evaluation).allowed
+		.is_some_and(|s| {
+			s.enabled
+				&& s.kind == SubjectKind::User
+				&& (subject == requester || s.attributes["capability_approver"] == true)
+		}) && access.snapshot.bundle.evaluate(&evaluation).allowed
 }
 fn approver(access: &Access, target: &Resource) -> Option<String> {
-	if eligible(access, &access.identity.subject, target) {
+	if eligible(
+		access,
+		&access.identity.subject,
+		&access.identity.subject,
+		target,
+	) {
 		return Some(access.identity.subject.clone());
 	}
 	access
@@ -112,8 +120,30 @@ fn approver(access: &Access, target: &Resource) -> Option<String> {
 		.bundle
 		.subjects
 		.iter()
-		.find(|(id, s)| s.attributes["capability_approver"] == true && eligible(access, id, target))
+		.find(|(id, _)| eligible(access, id, &access.identity.subject, target))
 		.map(|(id, _)| id.clone())
+}
+pub(crate) fn visible(access: &Access, record: &Record) -> Result<bool> {
+	if record.owner == access.identity.subject {
+		return Ok(true);
+	}
+	if record.data["approver"] != access.identity.subject {
+		return Ok(false);
+	}
+	let run: Uuid = serde_json::from_value(record.data["run_id"].clone())?;
+	Ok(record.data["targets"].as_array().is_some_and(|targets| {
+		!targets.is_empty()
+			&& targets.iter().all(|origin| {
+				origin.as_str().is_some_and(|origin| {
+					eligible(
+						access,
+						&access.identity.subject,
+						&record.owner,
+						&resource(access, origin, run),
+					)
+				})
+			})
+	}))
 }
 pub(crate) async fn prepare(
 	store: &Store,
@@ -166,6 +196,7 @@ pub(crate) async fn prepare(
 			&& eligible(
 				access,
 				g.data["approver"].as_str().unwrap_or_default(),
+				&g.owner,
 				&target,
 			)
 	});
@@ -249,7 +280,7 @@ pub(crate) async fn decide(
 	let origin = record.data["targets"][0].as_str().ok_or(Error::Forbidden)?;
 	let target = resource(access, origin, run_id);
 	if record.data["approver"] != access.identity.subject
-		|| !eligible(access, &access.identity.subject, &target)
+		|| !eligible(access, &access.identity.subject, &record.owner, &target)
 	{
 		return Err(Error::NotFound("approval unavailable".into()));
 	}
@@ -384,6 +415,7 @@ pub(crate) async fn authorize(store: &Store, access: &mut Access, record: &Recor
 		if !eligible(
 			access,
 			record.data["approver"].as_str().ok_or(Error::Forbidden)?,
+			&record.owner,
 			&target,
 		) {
 			return Err(Error::Forbidden);

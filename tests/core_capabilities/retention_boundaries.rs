@@ -599,3 +599,49 @@ async fn local_received_files_remain_bound_to_the_exact_recipient_version(
 	);
 	f.c.close().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn occupied_restoration_destination_preserves_both_areas(
+	#[future] recovery_fixture: RecoveryFixture,
+) {
+	let f = Box::pin(recovery_fixture).await;
+	let (status, occupied) = request(&f.c.app, &f.c.token, "POST", &format!("/api/workspaces/{}/threads/{}/agents/research/runs", f.workspace, f.new_thread["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Existing work","description":"Preserve this destination"})).await;
+	assert_eq!(status, 200, "{occupied}");
+	let path = format!(
+		"/api/working-areas/{}/restore",
+		f.area["id"].as_str().unwrap()
+	);
+	let mut input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":f.cleaned["revision"],"snapshot_id":f.cleaned["operation_id"],"thread_id":f.new_thread["id"]});
+	let (status, rejected) = request(&f.c.app, &f.c.token, "POST", &path, input.clone()).await;
+	assert_eq!(status, 409, "{rejected}");
+	assert_eq!(rejected["error"]["code"], "RESTORATION_THREAD_OCCUPIED");
+	let (status, existing) = request(
+		&f.c.app,
+		&f.c.token,
+		"GET",
+		&format!(
+			"/api/working-areas?thread_id={}",
+			f.new_thread["id"].as_str().unwrap()
+		),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{existing}");
+	assert_eq!(
+		existing["items"],
+		json!([occupied]),
+		"restoration cannot replace an existing area"
+	);
+	input["thread_id"] = f.thread["id"].clone();
+	let (status, restored) = request(&f.c.app, &f.c.token, "POST", &path, input).await;
+	assert_eq!(
+		status, 200,
+		"rejected restoration must preserve its snapshot and revision: {restored}"
+	);
+	assert_eq!(
+		restored["manifest"][0]["digest"],
+		f.area["manifest"][0]["digest"]
+	);
+	f.c.close().await;
+}

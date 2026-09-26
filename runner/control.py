@@ -340,6 +340,21 @@ class Runner:
     def pod_name(self, operation):
         return "operation-" + operation
 
+    def writable_bytes(self, record):
+        mounted = sum(file["size"] for file in record["request"]["files"] if file["scope"] != "working")
+        remaining = self.config["working_bytes"] - mounted
+        if remaining < 0:
+            raise Rejected(413, "working quota")
+        return remaining
+
+    def execution_limits(self, record):
+        limits = {k: self.config[k] for k in ('cpu', 'memory_bytes', 'processes', 'temporary_bytes')}
+        # tmpfs capacity is rounded up to a physical page. Export still enforces
+        # the exact remaining aggregate byte budget, including the zero case.
+        page = os.sysconf('SC_PAGE_SIZE')
+        limits['working_bytes'] = max(page, ((self.writable_bytes(record) + page - 1) // page) * page)
+        return limits
+
     def manifest(self, record):
         profile = self.config
         security = {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True,
@@ -372,7 +387,7 @@ class Runner:
         collector = container("collector", ["python", "-I", "/opt/aidash/collector.py", "serve"], "250m", "256Mi", collector_mounts)
         collector["env"].append({"name": "AIDASH_OUTPUT_BYTES", "value": str(profile["output_bytes"])})
         volumes = [{"name": name, "emptyDir": {"medium": "Memory", "sizeLimit": str(size)}} for name, size in (
-            ("work", profile["working_bytes"]), ("references", profile["working_bytes"]),
+            ("work", max(1, self.writable_bytes(record))), ("references", profile["working_bytes"]),
             ("received", profile["working_bytes"]), ("request", 1048576),
             ("temp", profile["temporary_bytes"]), ("control-temp", profile["output_bytes"] * 4 + 1048576))]
         return {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": self.pod_name(record["operation_id"]),
@@ -475,7 +490,7 @@ class Runner:
                 raise RuntimeError("Python environment identity changed")
             cid = statuses["execution"]["containerID"].split("://", 1)[1]
             record = self.update(operation, pod_operation=pod_operation, pod_uid=pod["metadata"]["uid"], container_id=cid)
-            limits = self.guard(record, 'limits', **{k:self.config[k] for k in ('cpu','memory_bytes','processes','working_bytes','temporary_bytes')})
+            limits = self.guard(record, 'limits', **self.execution_limits(record))
             self.update(operation, resource_evidence=limits)
             if pod_operation == operation and not record.get("hydrated"):
                 prepared = json.loads(self.exec_collector(pod_operation, ["prepared"]).stdout)
@@ -532,7 +547,7 @@ class Runner:
                 if not frozen["writer_frozen"]:
                     raise RuntimeError("Python memory no longer live")
             self.update(operation, status="finishing", writer_frozen=memory_live, termination_confirmed=not memory_live)
-            exported = self.guard(record, "export", working_bytes=self.config["working_bytes"])
+            exported = self.guard(record, "export", working_bytes=self.writable_bytes(record))
             directory = self.root / (operation + ".files")
             directory.mkdir(exist_ok=True, mode=0o700)
             for file in exported["files"]:
@@ -571,7 +586,7 @@ class Runner:
     def recover_stopped_shell(self, record):
         if self.guard(record, 'status').get('termination_confirmed') is not True:
             raise RuntimeError('physical termination proof unavailable')
-        exported = self.guard(record, 'export', working_bytes=self.config['working_bytes'])
+        exported = self.guard(record, 'export', working_bytes=self.writable_bytes(record))
         captured = self.guard(record, 'logs')
         operation = record['operation_id']
         directory = self.root / (operation + '.files')
@@ -628,7 +643,7 @@ class Runner:
                 collector = statuses.get("collector", {}).get("state", {})
                 if "running" in execution and "running" in collector and not hydrated:
                     record = self.update(operation, pod_uid=uid, container_id=statuses['execution']['containerID'].split('://',1)[1])
-                    limits = self.guard(record, 'limits', **{k:self.config[k] for k in ('cpu','memory_bytes','processes','working_bytes','temporary_bytes')})
+                    limits = self.guard(record, 'limits', **self.execution_limits(record))
                     self.update(operation, resource_evidence=limits)
                     payload = dict(record["request"], working_bytes=self.config["working_bytes"], processes=self.config["processes"])
                     prepared = json.loads(self.exec_collector(operation, ["prepared"]).stdout)
@@ -663,7 +678,7 @@ class Runner:
                     diagnostic = None
                     if terminal["exitCode"] != 0 and not captured["stdout"]:
                         diagnostic = self.kube(["logs", self.pod_name(operation), "-c", "execution", "--limit-bytes=16384"]).stdout.decode(errors="replace")
-                    exported = json.loads(self.exec_collector(operation, ["export", str(self.config["working_bytes"])], timeout=120).stdout)
+                    exported = json.loads(self.exec_collector(operation, ["export", str(self.writable_bytes(record))], timeout=120).stdout)
                     directory = self.root / (operation + ".files")
                     directory.mkdir(exist_ok=True, mode=0o700)
                     for file in exported["files"]:

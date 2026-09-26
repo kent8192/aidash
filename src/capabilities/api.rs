@@ -616,6 +616,7 @@ async fn approval_list(
         let next_cursor=(rows.len()==51).then(||rows[49].id);
         let mut items=vec![];
         for row in rows.into_iter().take(50) {
+            if !super::approvals::visible(&access, &row)? { continue; }
             let run:Uuid=serde_json::from_value(row.data["run_id"].clone())?;
             // Designated approvers see only the scoped card, never Run output.
             items.push(json!({"id":row.id,"kind":row.kind,"run_id":run,"area_id":row.area_id,"state":if row.state=="pending"&&row.expires_at.is_some_and(|t|t<chrono::Utc::now()){"expired"}else{&row.state},"revision":row.revision,"requester":row.owner,"approver":row.data["approver"],"targets":row.data["targets"],"action":"network.get","expires_at":row.expires_at,"grant_id":row.data["grant_id"]}));

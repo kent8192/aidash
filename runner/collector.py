@@ -41,7 +41,7 @@ def save(path, value):
 def path_parts(value):
     parts = value.split("/")
     if (not value or len(value.encode()) > 1024 or "\\" in value
-            or any(ord(c) < 32 or ord(c) == 127 for c in value)
+            or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in value)
             or any(p in ("", ".", "..") for p in parts)):
         raise ValueError("invalid relative file path")
     return parts

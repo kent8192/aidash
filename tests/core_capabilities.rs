@@ -1508,3 +1508,6 @@ mod reference_dispatch_tests;
 #[cfg(feature = "capability-runtime-tests")]
 #[path = "core_capabilities/publication_storage.rs"]
 mod publication_storage_tests;
+
+#[path = "core_capabilities/review_regressions.rs"]
+mod review_regression_tests;

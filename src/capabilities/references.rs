@@ -14,7 +14,7 @@ use crate::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::{Duration, Utc};
-use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+use sea_orm::sea_query::{Alias, Expr, Order, PostgresQueryBuilder, Query};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -472,6 +472,7 @@ pub(crate) async fn run(
 	store: Store,
 	mut stopping: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
+	let mut cursor = Uuid::nil();
 	loop {
 		if *stopping.borrow() {
 			return Ok(());
@@ -482,12 +483,21 @@ pub(crate) async fn run(
 				.from(Alias::new("core_records"))
 				.and_where(Expr::col(Alias::new("kind")).eq("reference"))
 				.and_where(Expr::col(Alias::new("state")).eq("extracting"))
+				.and_where(Expr::col(Alias::new("id")).gt(Expr::cust("$1")))
+				.order_by(Alias::new("id"), Order::Asc)
 				.limit(8)
 				.to_string(PostgresQueryBuilder),
 		)
+		.bind(cursor)
 		.fetch_all(&store.pool)
 		.await?;
+		if ids.is_empty() {
+			cursor = Uuid::nil();
+		}
 		for id in ids {
+			// Advance even after a revoked identity or a temporary failure so
+			// an older user's uploads cannot monopolize the extraction queue.
+			cursor = id;
 			if let Err(error) = Box::pin(drive(&store, id)).await {
 				tracing::warn!(%id,%error,"reference extraction pending");
 			}

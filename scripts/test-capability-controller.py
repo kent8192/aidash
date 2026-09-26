@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Controller lifecycle regressions independent of cluster availability."""
 import importlib.util
+import contextlib
+import io
+import sys
 import json
 import os
 from pathlib import Path
@@ -14,6 +17,15 @@ controller = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(controller)
 
 
+with patch.dict(os.environ, AIDASH_OUTPUT_BYTES="4096"):
+    spec = importlib.util.spec_from_file_location("collector", Path(__file__).resolve().parents[1] / "runner/collector.py")
+    collector = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(collector)
+spec = importlib.util.spec_from_file_location("node_guard", Path(__file__).resolve().parents[1] / "runner/node_guard.py")
+node_guard = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(node_guard)
+
+
 class ControllerLifecycle(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory(prefix="aidash-controller-test-")
@@ -23,7 +35,9 @@ class ControllerLifecycle(unittest.TestCase):
         self.operation = str(uuid.uuid4())
         self.config = dict(journal=str(self.root), token_env="AIDASH_CONTROLLER_TEST_TOKEN",
                            namespace="test-runner", image="fixture@sha256:" + "a" * 64,
-                           kubectl="unused", kubeconfig="unused", runtime_class="gvisor", node_guard=True)
+                           kubectl="unused", kubeconfig="unused", runtime_class="gvisor", node_guard=True,
+                           cpu=1, memory_bytes=1 << 28, working_bytes=1 << 20,
+                           temporary_bytes=1 << 20, output_bytes=4096)
         self.env = patch.dict(os.environ, AIDASH_CONTROLLER_TEST_TOKEN="fixture-token-" + "0" * 32)
         self.env.start()
         self.addCleanup(self.env.stop)
@@ -95,6 +109,45 @@ class ControllerLifecycle(unittest.TestCase):
                 self.assertEqual(runner.acknowledge(operation, digest), result)
                 self.assertFalse((self.root / (operation + ".inputs")).exists())
                 self.assertFalse((self.root / (operation + ".files")).exists())
+
+
+    def test_readonly_mounts_reserve_the_aggregate_working_budget(self):
+        runner = self.start_controller()
+        for kind in ("shell", "python"):
+            for mounted in (0, 4096, self.config["working_bytes"]):
+                with self.subTest(kind=kind, mounted=mounted):
+                    request = dict(kind=kind, files=[dict(scope="references", size=mounted // 2),
+                                                    dict(scope="received", size=mounted - mounted // 2),
+                                                    dict(scope="working", size=0)])
+                    record = dict(operation_id=self.operation, area_id=str(uuid.uuid4()), epoch=1,
+                                  wire_digest="wire", request=request)
+                    manifest = runner.manifest(record)
+                    volume = next(v for v in manifest["spec"]["volumes"] if v["name"] == "work")
+                    self.assertEqual(int(volume["emptyDir"]["sizeLimit"]), max(1, self.config["working_bytes"] - mounted))
+
+    def test_exporters_reject_control_paths_and_preserve_printable_unicode(self):
+        for index, (name, unsafe) in enumerate((("東京.txt", False), ("space name.txt", False), ("zero\u200bwidth.txt", False), ("bad\x1f.txt", True), ("bad\x7f.txt", True), ("bad\x85.txt", True), ("bad\x9f.txt", True))):
+            with self.subTest(name=repr(name)):
+                work = self.root / f"work-{index}"
+                work.mkdir(exist_ok=True)
+                path = work / name
+                path.write_bytes(b"saved")
+                self.addCleanup(lambda p=path: p.unlink(missing_ok=True))
+                with patch.dict(collector.ROOTS, working=work), patch.object(sys, "argv", ["collector", "export", "4096"]):
+                    if unsafe:
+                        with self.assertRaisesRegex(ValueError, "invalid relative file path"):
+                            collector.export()
+                        with self.assertRaisesRegex(ValueError, "invalid file path"):
+                            with node_guard.open_file(work, name):
+                                pass
+                    else:
+                        output = io.StringIO()
+                        with contextlib.redirect_stdout(output):
+                            collector.export()
+                        self.assertEqual(json.loads(output.getvalue())["files"][0]["path"], name)
+                        with node_guard.open_file(work, name) as file:
+                            self.assertEqual(file.read(), b"saved")
+                path.unlink()
 
 
 if __name__ == "__main__":

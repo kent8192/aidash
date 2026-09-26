@@ -123,11 +123,15 @@ async fn approver_fixture(
 	(c, run, credential["token"].as_str().unwrap().to_owned())
 }
 #[rstest::rstest]
-#[case(false)]
-#[case(true)]
+#[case("none", false)]
+#[case("permission", false)]
+#[case("attribute", false)]
+#[case("permission", true)]
+#[case("attribute", true)]
 #[tokio::test]
 async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
-	#[case] revoke: bool,
+	#[case] withdrawal: &str,
+	#[case] grant: bool,
 	#[future] approver_fixture: (CoreFixture, aidash::domain::Run, String),
 ) {
 	let (mut c, run, bob) = Box::pin(approver_fixture).await;
@@ -141,6 +145,11 @@ async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
 	.await;
 	assert_eq!(status, 200, "{pending}");
 	assert_eq!(pending["approver"], "bob");
+	if grant {
+		let (status,approved)=request(&c.app,&bob,"POST",&format!("/api/capabilities/approvals/{}/decide",pending["approval_id"].as_str().unwrap()),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"choice":"allow_run","targets":["https://example.com"],"expires_at":chrono::Utc::now()+chrono::Duration::minutes(1)})).await;
+		assert_eq!(status, 200, "{approved}");
+		assert!(approved["grant_id"].is_string());
+	}
 	let (_, cards) = request(
 		&c.app,
 		&bob,
@@ -151,8 +160,13 @@ async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
 	.await;
 	assert_eq!(cards["items"][0]["requester"], "alice");
 	assert_eq!(cards["items"][0]["approver"], "bob");
+	let revoke = withdrawal != "none";
 	if revoke {
-		c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-designated-approver","effect":"deny","subjects":{"ids":["bob"]},"actions":["capability.approve"],"resources":{"kinds":["outbound"]}}));
+		if withdrawal == "attribute" {
+			c.policy["subjects"]["bob"]["attributes"] = json!({});
+		} else {
+			c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-designated-approver","effect":"deny","subjects":{"ids":["bob"]},"actions":["capability.approve"],"resources":{"kinds":["outbound"]}}));
+		}
 		assert_eq!(
 			request(
 				&c.app,
@@ -166,6 +180,33 @@ async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
 			200
 		);
 	}
+	let (status, cards) = request(
+		&c.app,
+		&bob,
+		"GET",
+		"/api/capabilities/approvals",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{cards}");
+	assert_eq!(
+		cards["items"].as_array().unwrap().len(),
+		if revoke { 0 } else { 1 + usize::from(grant) },
+		"revoked designated approvers must not see stored cards: {cards}"
+	);
+	let (_, owner_cards) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		"/api/capabilities/approvals",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		owner_cards["items"].as_array().unwrap().len(),
+		1 + usize::from(grant),
+		"owners retain their cards"
+	);
 	let (status,result)=request(&c.app,&bob,"POST",&format!("/api/capabilities/approvals/{}/decide",pending["approval_id"].as_str().unwrap()),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"choice":"allow_run","targets":["https://example.com"],"expires_at":chrono::Utc::now()+chrono::Duration::minutes(1)})).await;
 	if revoke {
 		assert_eq!(status, 404, "{result}");

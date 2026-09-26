@@ -582,7 +582,35 @@ async fn drive(store: &Store, id: Uuid) -> Result<()> {
 async fn withdraw(store: &Store, operation: &Operation) -> Result<()> {
 	// Cancellation narrows an already-authorized operation and remains possible
 	// after its originating credential or source visibility has been revoked.
-	let observed = if operation.state == "prepared" {
+	let mut tx = store.pool.begin().await?;
+	// Keep the normal area-before-operation lock order and recheck committed
+	// state: a stale worker snapshot cannot declare a dispatched writer safe.
+	let area: Area = sqlx::query_as(
+		&sessions::select("core_areas")
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.lock(LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(operation.area_id)
+	.fetch_one(&mut *tx)
+	.await?;
+	let operation: Operation = sqlx::query_as(
+		&sessions::select("core_operations")
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.lock(LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(operation.id)
+	.fetch_one(&mut *tx)
+	.await?;
+	if !matches!(
+		operation.state.as_str(),
+		"prepared" | "submitted" | "running" | "cancelling"
+	) {
+		return Ok(());
+	}
+	let never_dispatched = operation.state == "prepared";
+	let observed = if never_dispatched {
 		json!({"termination_confirmed":true})
 	} else {
 		remote(
@@ -594,7 +622,6 @@ async fn withdraw(store: &Store, operation: &Operation) -> Result<()> {
 		.await?
 	};
 	let stopped = observed["termination_confirmed"] == true;
-	let mut tx = store.pool.begin().await?;
 	sqlx::query(
 		&Query::update()
 			.table(Alias::new("core_operations"))
@@ -605,19 +632,31 @@ async fn withdraw(store: &Store, operation: &Operation) -> Result<()> {
 	)
 	.bind(operation.id)
 	.bind(if stopped { "withdrawn" } else { "cancelling" })
-	.bind(json!({"termination_confirmed":stopped,"error":"AUTHORITY_WITHDRAWN"}))
+	.bind(json!({"termination_confirmed":stopped,"effects_may_have_occurred":!never_dispatched,"error":"AUTHORITY_WITHDRAWN"}))
 	.execute(&mut *tx)
 	.await?;
-	sqlx::query(
-		&Query::update()
-			.table(Alias::new("core_areas"))
-			.value(Alias::new("state"), Expr::val("uncertain"))
-			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
-			.to_string(PostgresQueryBuilder),
-	)
-	.bind(operation.area_id)
-	.execute(&mut *tx)
-	.await?;
+	if area.epoch == operation.epoch
+		&& area.generation == operation.generation
+		&& area.state == "running"
+	{
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("core_areas"))
+				.value(
+					Alias::new("state"),
+					Expr::val(if never_dispatched {
+						"active"
+					} else {
+						"uncertain"
+					}),
+				)
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(operation.area_id)
+		.execute(&mut *tx)
+		.await?;
+	}
 	tx.commit().await?;
 	Ok(())
 }

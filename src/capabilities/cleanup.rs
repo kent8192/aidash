@@ -479,6 +479,31 @@ pub(crate) async fn restore(
 			)
 			.await?;
 	}
+	let occupied: Option<Uuid> = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("core_areas"))
+			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("home_node")).eq(Expr::cust("$2")))
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$3")))
+			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::cust("$4")))
+			.and_where(Expr::col(Alias::new("agent_id")).eq(Expr::cust("$5")))
+			.and_where(Expr::col(Alias::new("owner")).eq(Expr::cust("$6")))
+			.and_where(Expr::col(Alias::new("id")).ne(Expr::cust("$7")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(&area.tenant)
+	.bind(&area.home_node)
+	.bind(area.workspace_id)
+	.bind(input.thread_id)
+	.bind(&area.agent_id)
+	.bind(&area.owner)
+	.bind(area.id)
+	.fetch_optional(&mut **access.tx)
+	.await?;
+	if occupied.is_some() {
+		return Err(Error::Conflict("RESTORATION_THREAD_OCCUPIED".into()));
+	}
 	let snapshot: Vec<FileEntry> = serde_json::from_value(record.data["snapshot"].clone())?;
 	let bytes = snapshot
 		.iter()
@@ -531,7 +556,16 @@ pub(crate) async fn restore(
 	area.thread_id = input.thread_id;
 	area.state = "active".into();
 	service::publish(store, access, &mut area).await?;
-	persist(access, &area).await?;
+	persist(access, &area).await.map_err(|error| match error {
+		Error::Database(ref database)
+			if database.as_database_error().is_some_and(|error| {
+				error.is_unique_violation() && error.constraint() == Some("core_session_identity")
+			}) =>
+		{
+			Error::Conflict("RESTORATION_THREAD_OCCUPIED".into())
+		}
+		error => error,
+	})?;
 	record.state = if retained { "reattached" } else { "restored" }.into();
 	record.expires_at = (!retained).then(Utc::now);
 	if retained {
