@@ -2,7 +2,10 @@
 - Keep verification proportional to the change; expand it only for new changes, failures, or unresolved concerns.
 - Report the outcome, verification evidence, and remaining blockers concisely.
 - `main` tracks the stable release; `develop/x.y.z` tracks version `x.y.z` under development.
-- Name branches `<semantic-prefix>/issue-<issue-number>-<semantic-name>` (for example, `feat/issue-14-shared-workspace`), using prefixes such as `feat`, `fix`, `hotfix`, or `docs`; omit the `issue-<issue-number>-` segment when no Issue applies (for example, `docs/worktree-branch-policy`).
+- Name branches `<semantic-prefix>/issue-<issue-number(s)>-<semantic-name>` (for example, `feat/issue-14-shared-workspace`), using prefixes such as `feat`, `fix`, `hotfix`, or `docs`; join multiple Issue numbers with `and`, and omit the Issue segment when no Issue applies (for example, `docs/worktree-branch-policy`).
+- Keep each branch to one independently reviewable work unit: one functional area in one component and one cohesive implementation or fix pattern. For Issue-driven work, use one Issue per branch by default.
+- Combine Issues in one branch only when they are tightly related in the same area and share context, files, or a common fix. Split unrelated areas or fix patterns, Issues at different severity levels, and changes that would make the branch difficult to review or exceed 400 changed lines.
+- When work in multiple areas depends on a shared API or utility, put the minimal shared foundation on its own branch first; keep each dependent branch focused on applying it in one area, and do not duplicate the shared implementation.
 - Before repository work, create a new task branch and dedicated Git worktree from the intended base, then do the task's inspection, edits, and verification there rather than in the invoking checkout. Use the configured `wtp` tool when available, and verify the worktree root, branch, and status before editing; leave unrelated changes in their original worktree.
 - Use Rust 2024 conventions and `module.rs` with a sibling `module/` directory instead of `module/mod.rs`.
 - Use SeaORM or SeaQuery for all database queries and migrations. Raw SQL is allowed only for DDL that SeaQuery cannot express; document each such exception.
