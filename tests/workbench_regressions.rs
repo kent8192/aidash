@@ -1748,3 +1748,42 @@ async fn version_history_compares_registered_knowledge_to_current_saved_document
 	);
 	wb.cleanup().await;
 }
+
+#[rstest::fixture]
+async fn review6_profile_backlog() -> Workbench {
+	let wb = workbench().await;
+	let result = request(&wb.app,&wb.f.config.api_token,"PUT","/api/workbench/test-profiles/acme/zz-compatible",json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect",wb.endpoint),"credential_env":null,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await;
+	assert_eq!(result.0, 200, "profile: {result:?}");
+	for index in 0..105 {
+		sqlx::query(&Query::insert().into_table(Alias::new("agent_test_profiles")).columns(["tenant","id","revision","enabled","rules"].map(Alias::new)).values_panic([Expr::value("acme"),Expr::cust("$1"),Expr::value(1),Expr::value(true),Expr::cust("$2")]).to_string(PostgresQueryBuilder))
+		.bind(format!("aa-{index:03}"))
+		.bind(json!([{"tool":{"id":"other-tool","version":"1.0.0"},"endpoint":"http://127.0.0.1:9","credential_env":null,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]))
+		.execute(&wb.f.store.pool).await.unwrap();
+	}
+	wb
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn review6_compatible_profiles_survive_an_incompatible_backlog(
+	#[future(awt)] review6_profile_backlog: Workbench,
+) {
+	let wb = review6_profile_backlog;
+	let profiles = wb
+		.call(
+			"GET",
+			&format!(
+				"/api/workbench/test-profiles?tenant=acme&draft_id={}",
+				wb.draft["id"].as_str().unwrap()
+			),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(
+		profiles.as_array().unwrap().len(),
+		1,
+		"profiles: {profiles}"
+	);
+	assert_eq!(profiles[0]["id"], "zz-compatible");
+	wb.cleanup().await;
+}

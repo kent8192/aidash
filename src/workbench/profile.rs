@@ -132,8 +132,9 @@ async fn list(
 	Extension(actor): Extension<Actor>,
 	QueryParams(query): QueryParams<ProfileQuery>,
 ) -> Result<Json<Vec<ProfileSummary>>> {
+	let mut tx = f.store.pool.begin().await?;
 	let mut draft_tools = None;
-	let tenant = match actor {
+	let tenant = match &actor {
 		Actor::Operator => query
 			.tenant
 			.ok_or_else(|| Error::Invalid("tenant is required".into()))?,
@@ -148,54 +149,59 @@ async fn list(
 			let draft_id = query
 				.draft_id
 				.ok_or_else(|| Error::Invalid("draft_id is required".into()))?;
-			let mut tx = f.store.pool.begin().await?;
-			let draft = super::load(&mut tx, draft_id, false).await?;
-			super::authorize(
-				&mut tx,
-				&Actor::Subject(subject.clone()),
-				&draft,
-				"agent_draft.test",
-				true,
-			)
-			.await?;
+			let draft = super::load(&mut tx, draft_id, true).await?;
+			super::authorize(&mut tx, &actor, &draft, "agent_draft.test", true).await?;
 			let config: AgentConfig = serde_json::from_value(draft.entry["config"].clone())?;
 			draft_tools = Some(config.tools);
-			tx.commit().await?;
-			subject.tenant
+			subject.tenant.clone()
 		}
 	};
-	let rows = sqlx::query_as(
-		&Query::select()
+	let mut profiles = Vec::new();
+	let mut cursor: Option<String> = None;
+	loop {
+		let mut query = Query::select();
+		query
 			.expr(Expr::cust(PROFILE_COLUMNS))
 			.from(Alias::new("agent_test_profiles"))
 			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
 			.order_by(Alias::new("id"), Order::Asc)
-			.limit(100)
-			.to_string(PostgresQueryBuilder),
-	)
-	.bind(tenant)
-	.fetch_all(&f.store.pool)
-	.await?;
-	Ok(Json(
-		rows.into_iter()
-			.filter(|row: &TestProfile| {
-				let Some(tools) = &draft_tools else {
-					return true;
-				};
-				if !row.enabled {
-					return false;
-				}
-				serde_json::from_value::<Vec<RealToolRule>>(row.rules.clone()).is_ok_and(|rules| {
+			.limit(100);
+		if draft_tools.is_some() {
+			query.and_where(Expr::col(Alias::new("enabled")).eq(true));
+		}
+		if cursor.is_some() {
+			query.and_where(Expr::col(Alias::new("id")).gt(Expr::cust("$2")));
+		}
+		let sql = query.to_string(PostgresQueryBuilder);
+		let mut select = sqlx::query_as::<_, TestProfile>(&sql).bind(&tenant);
+		if let Some(cursor) = &cursor {
+			select = select.bind(cursor);
+		}
+		let rows = select.fetch_all(&mut *tx).await?;
+		let more = rows.len() == 100;
+		cursor = rows.last().map(|row| row.id.clone());
+		for row in rows {
+			if let Some(tools) = &draft_tools
+				&& !serde_json::from_value::<Vec<RealToolRule>>(row.rules).is_ok_and(|rules| {
 					!rules.is_empty() && rules.iter().all(|rule| tools.contains(&rule.tool))
-				})
-			})
-			.map(|row: TestProfile| ProfileSummary {
+				}) {
+				continue;
+			}
+			profiles.push(ProfileSummary {
 				id: row.id,
 				revision: row.revision,
 				enabled: row.enabled,
-			})
-			.collect(),
-	))
+			});
+			if profiles.len() == 100 {
+				break;
+			}
+		}
+		if profiles.len() == 100 || !more {
+			break;
+		}
+	}
+	tx.commit().await?;
+	Ok(Json(profiles))
 }
 
 #[utoipa::path(put,path="/workbench/test-profiles/{tenant}/{id}",operation_id="workbench_put_test_profile",params(("tenant"=String,Path),("id"=String,Path)),request_body=ProfileInput,responses((status=200,body=TestProfile)),security(("bearer_auth"=[])))]
