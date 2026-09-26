@@ -171,8 +171,8 @@ pub struct AgentConfig {
 impl AgentConfig {
 	pub fn permits_builtin(&self, name: &str) -> bool {
 		match name {
-			"task_create" | "task_assign" => self.allow_task_creation != Some(false),
-			"task_delegate" => self.allow_task_delegation != Some(false),
+			"task_create" => self.allow_task_creation != Some(false),
+			"task_assign" | "task_delegate" => self.allow_task_delegation != Some(false),
 			"memory_write" => self.allow_memory_write != Some(false),
 			"workspace_read" | "workspace_observe" | "workspace_wait" => {
 				self.allow_workspace_retrieval != Some(false)
@@ -1200,6 +1200,29 @@ mod tests {
 	use super::*;
 	fn entry() -> Entry {
 		serde_json::from_value(json!({"id":"research","version":"1.0.0","kind":"skill","name":{"en":"Research","ja":"調査"},"description":{"en":"Research"},"capabilities":["web.search"],"languages":["ja","en"],"config":{"instructions":"Research carefully"}})).unwrap()
+	}
+	#[rstest::fixture]
+	fn behavior_config(
+		#[default(None)] creation: Option<bool>,
+		#[default(None)] delegation: Option<bool>,
+	) -> AgentConfig {
+		serde_json::from_value(json!({"model":{"id":"model","version":"1.0.0"},"allow_task_creation":creation,"allow_task_delegation":delegation})).unwrap()
+	}
+	#[rstest::rstest]
+	#[case(None, None, true, true)]
+	#[case(Some(true), Some(false), true, false)]
+	#[case(Some(false), Some(true), false, true)]
+	#[case(Some(false), Some(false), false, false)]
+	fn task_assignment_obeys_delegation_independently_of_creation(
+		#[case] _creation: Option<bool>,
+		#[case] _delegation: Option<bool>,
+		#[case] creates: bool,
+		#[case] delegates: bool,
+		#[with(_creation, _delegation)] behavior_config: AgentConfig,
+	) {
+		assert_eq!(behavior_config.permits_builtin("task_create"), creates);
+		assert_eq!(behavior_config.permits_builtin("task_delegate"), delegates);
+		assert_eq!(behavior_config.permits_builtin("task_assign"), delegates);
 	}
 	#[rstest::rstest]
 	fn conjunctive_search_and_localization() {

@@ -135,6 +135,7 @@ async fn require_incident(
 	if identity.tenant != incident.tenant {
 		return Err(Error::Forbidden);
 	}
+	identity.lock_with_mode(tx, false).await?;
 	let decision = Authorization::evaluate_in_transaction(tx, &incident.tenant, &Evaluation {
 		subject: identity.subject.clone(), action: action.into(),
 		resource: Resource { tenant: incident.tenant.clone(), kind: "agent_incident".into(), id: incident.id.to_string(), attributes: json!({"agent_id":incident.agent_id,"version":incident.version,"owner":incident.owner,"status":incident.status,"archived":incident.archived}) },

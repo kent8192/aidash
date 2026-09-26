@@ -50,6 +50,22 @@ type Draft = {
   archived: boolean;
   updated_at: string;
 };
+async function loadDraftPages(): Promise<Draft[]> {
+  const drafts: Draft[] = [];
+  let path = "/api/workbench/drafts";
+  for (;;) {
+    const page = await apiFetch<Draft[]>(path);
+    drafts.push(...page);
+    if (page.length < 100) return drafts;
+    const last = page[page.length - 1];
+    const cursor = new URLSearchParams({
+      before_updated_at: last.updated_at,
+      before_id: last.id,
+    });
+    path = `/api/workbench/drafts?${cursor}`;
+  }
+}
+
 type DraftShare = {
   subject: string;
   can_edit: boolean;
@@ -544,7 +560,7 @@ export function Workbench({
   const reload = async () => {
     setLoading(true);
     try {
-      setDrafts(await apiFetch<Draft[]>("/api/workbench/drafts"));
+      setDrafts(await loadDraftPages());
       setError("");
     } catch (cause) {
       setError(String(cause));
@@ -554,7 +570,7 @@ export function Workbench({
   };
   useEffect(() => {
     let active = true;
-    void apiFetch<Draft[]>("/api/workbench/drafts")
+    void loadDraftPages()
       .then((value) => {
         if (active) {
           setDrafts(value);
@@ -570,7 +586,7 @@ export function Workbench({
         if (active) setLoading(false);
       });
     const timer = window.setInterval(() => {
-      void apiFetch<Draft[]>("/api/workbench/drafts")
+      void loadDraftPages()
         .then((value) => {
           if (active) setDrafts(value);
         })

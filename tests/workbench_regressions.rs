@@ -1171,3 +1171,268 @@ async fn creator_prompt_validation_charges_only_enabled_agent_tools(
 	assert_eq!(status, expected, "registration: {body}");
 	wb.cleanup().await;
 }
+
+#[rstest::fixture]
+async fn revoked_incident_workbench() -> (Workbench, axum::Router, Value) {
+	let wb = workbench().await;
+	wb.register().await;
+	let incident = wb
+		.call(
+			"POST",
+			&format!(
+				"/api/workbench/versions/{}/1.0.0/incidents",
+				wb.draft["entry"]["id"].as_str().unwrap()
+			),
+			json!({"severity":"low","owner":"alice","notes":"Original incident"}),
+		)
+		.await;
+	let authorization = aidash::authorization::Authorization {
+		pool: wb.f.store.pool.clone(),
+	};
+	let actor = authorization.authenticate(&wb.token).await.unwrap();
+	let credential = authorization.credentials("acme").await.unwrap().remove(0);
+	authorization
+		.revoke_credential("acme", credential.id)
+		.await
+		.unwrap();
+	let (routes, _) = aidash::workbench::routes().split_for_parts();
+	let app = axum::Router::new()
+		.nest("/api", routes)
+		.layer(axum::Extension(actor))
+		.with_state(wb.f.clone());
+	(wb, app, incident)
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn incident_mutations_reject_a_revoked_authenticated_actor(
+	#[future(awt)] revoked_incident_workbench: (Workbench, axum::Router, Value),
+	#[case] update: bool,
+) {
+	let (wb, app, incident) = revoked_incident_workbench;
+	let path = if update {
+		format!(
+			"/api/workbench/incidents/{}",
+			incident["id"].as_str().unwrap()
+		)
+	} else {
+		format!(
+			"/api/workbench/versions/{}/1.0.0/incidents",
+			wb.draft["entry"]["id"].as_str().unwrap()
+		)
+	};
+	let (status, result) = request(&app, &wb.token, if update {"PUT"} else {"POST"}, &path, if update { json!({"expected_revision":1,"severity":"critical","status":"resolved","owner":"alice","notes":"Must not commit"}) } else { json!({"severity":"critical","owner":"alice","notes":"Must not commit"}) }).await;
+	assert_eq!(status, 401, "stale incident actor: {result}");
+	let (read_status, rows) = request(
+		&wb.app,
+		&wb.f.config.api_token,
+		"GET",
+		&format!(
+			"/api/workbench/versions/{}/1.0.0/incidents",
+			wb.draft["entry"]["id"].as_str().unwrap()
+		),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(read_status, 200, "stored incidents: {rows}");
+	assert_eq!(rows.as_array().unwrap().len(), 1);
+	assert_eq!(rows[0]["notes"], "Original incident");
+	assert_eq!(rows[0]["revision"], 1);
+	wb.cleanup().await;
+}
+
+#[rstest::fixture]
+async fn visible_draft_backlog() -> Workbench {
+	let wb = workbench().await;
+	let timestamp: chrono::DateTime<chrono::Utc> =
+		wb.draft["updated_at"].as_str().unwrap().parse().unwrap();
+	let query = Query::insert()
+		.into_table(Alias::new("agent_drafts"))
+		.columns(
+			[
+				"id",
+				"tenant",
+				"owner",
+				"managed_id",
+				"entry",
+				"documents",
+				"updated_at",
+			]
+			.map(Alias::new),
+		)
+		.values_panic([
+			Expr::cust("$1"),
+			Expr::value("acme"),
+			Expr::value("alice"),
+			Expr::cust("$2"),
+			Expr::cust("$3"),
+			Expr::cust("'[]'::jsonb"),
+			Expr::cust("$4"),
+		])
+		.to_string(PostgresQueryBuilder);
+	for _ in 0..101 {
+		let id = uuid::Uuid::now_v7();
+		let mut entry = wb.draft["entry"].clone();
+		entry["id"] = json!(id);
+		sqlx::query(&query)
+			.bind(id)
+			.bind(id.to_string())
+			.bind(entry)
+			.bind(timestamp)
+			.execute(&wb.f.store.pool)
+			.await
+			.unwrap();
+	}
+	wb
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn draft_pages_reach_older_visible_rows_without_duplicates(
+	#[future(awt)] visible_draft_backlog: Workbench,
+	#[case] operator: bool,
+) {
+	let wb = visible_draft_backlog;
+	let token = if operator {
+		&wb.f.config.api_token
+	} else {
+		&wb.token
+	};
+	let (status, first) =
+		request(&wb.app, token, "GET", "/api/workbench/drafts", Value::Null).await;
+	assert_eq!(status, 200);
+	assert_eq!(first.as_array().unwrap().len(), 100);
+	let last = first.as_array().unwrap().last().unwrap();
+	let mut next = reqwest::Url::parse("http://fixture/api/workbench/drafts").unwrap();
+	next.query_pairs_mut()
+		.append_pair("before_updated_at", last["updated_at"].as_str().unwrap())
+		.append_pair("before_id", last["id"].as_str().unwrap());
+	let (status, second) = request(
+		&wb.app,
+		token,
+		"GET",
+		&format!("{}?{}", next.path(), next.query().unwrap()),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "second page: {second}");
+	assert_eq!(second.as_array().unwrap().len(), 2);
+	assert!(
+		second
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|d| d["id"] == wb.draft["id"])
+	);
+	assert!(
+		second.as_array().unwrap().iter().all(|d| !first
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|f| f["id"] == d["id"]))
+	);
+	for partial in [
+		format!(
+			"/api/workbench/drafts?before_id={}",
+			last["id"].as_str().unwrap()
+		),
+		format!(
+			"/api/workbench/drafts?before_updated_at={}",
+			last["updated_at"].as_str().unwrap().replace('+', "%2B")
+		),
+	] {
+		assert_eq!(
+			request(&wb.app, token, "GET", &partial, Value::Null)
+				.await
+				.0,
+			400
+		);
+	}
+	wb.cleanup().await;
+}
+
+#[rstest::fixture]
+async fn shared_transfer_workbench(#[default(false)] can_edit: bool) -> (Workbench, String) {
+	let wb = workbench().await;
+	wb.call(
+		"POST",
+		&format!("{}/shares", wb.path()),
+		json!({"subject":"bob","can_edit":can_edit,"enabled":true,"include_documents":false}),
+	)
+	.await;
+	let (status, credential) = request(
+		&wb.app,
+		&wb.f.config.api_token,
+		"POST",
+		"/api/authorization/acme/credentials",
+		json!({"subject":"bob"}),
+	)
+	.await;
+	assert_eq!(status, 200);
+	let token = credential["token"].as_str().unwrap().to_owned();
+	(wb, token)
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn transferring_a_shared_draft_does_not_restore_the_former_owner_share(
+	#[case] _can_edit: bool,
+	#[future(awt)]
+	#[with(_can_edit)]
+	shared_transfer_workbench: (Workbench, String),
+) {
+	let (wb, bob) = shared_transfer_workbench;
+	let (status, transferred) = request(
+		&wb.app,
+		&wb.token,
+		"POST",
+		&format!("{}/transfer", wb.path()),
+		json!({"expected_revision":1,"new_owner":"bob"}),
+	)
+	.await;
+	assert_eq!(status, 200, "transfer: {transferred}");
+	let (status, shares) = request(
+		&wb.app,
+		&bob,
+		"GET",
+		&format!("{}/shares", wb.path()),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200);
+	assert_eq!(shares, json!([]));
+	let (status, returned) = request(
+		&wb.app,
+		&bob,
+		"POST",
+		&format!("{}/transfer", wb.path()),
+		json!({"expected_revision":2,"new_owner":"alice"}),
+	)
+	.await;
+	assert_eq!(status, 200, "return transfer: {returned}");
+	assert_eq!(
+		request(&wb.app, &bob, "GET", &wb.path(), Value::Null)
+			.await
+			.0,
+		403
+	);
+	assert_eq!(
+		request(
+			&wb.app,
+			&bob,
+			"PUT",
+			&wb.path(),
+			json!({"expected_revision":3,"entry":wb.draft["entry"],"documents":[]})
+		)
+		.await
+		.0,
+		403
+	);
+	wb.cleanup().await;
+}

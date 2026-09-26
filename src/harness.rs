@@ -1525,7 +1525,13 @@ impl Harness {
 							&& h.created_at + chrono::Duration::minutes(15)
 								<= chrono::Utc::now() =>
 						{
-							json!({"approved":false})
+							store
+								.expire_workbench_approval(id)
+								.await?
+								.response
+								.ok_or_else(|| {
+									Error::Conflict("human request has not been answered".into())
+								})?
 						}
 						None => {
 							return Err(Error::Conflict(

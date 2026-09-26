@@ -857,13 +857,21 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 	cleanup(store, &url, &schema).await;
 }
 
-#[rstest::rstest]
-#[tokio::test]
-async fn managed_external_write_requires_exact_one_call_approval(
-	#[future(awt)]
-	#[from(test_environment)]
-	environment: Arc<TestEnvironment>,
-) {
+struct WriteApproval {
+	store: Store,
+	url: String,
+	schema: String,
+	harness: aidash::harness::Harness,
+	run: Run,
+	first: Uuid,
+	effects: Arc<std::sync::atomic::AtomicUsize>,
+	server: tokio::task::JoinHandle<()>,
+	_environment: Arc<TestEnvironment>,
+}
+
+#[rstest::fixture]
+async fn write_approval(#[default(false)] expired: bool) -> WriteApproval {
+	let environment = test_environment().await;
 	use std::sync::atomic::{AtomicUsize, Ordering};
 	let (store, url, schema) = setup(&environment).await;
 	let effects = Arc::new(AtomicUsize::new(0));
@@ -937,7 +945,7 @@ async fn managed_external_write_requires_exact_one_call_approval(
 	.unwrap();
 	let harness = aidash::harness::Harness { federation: f };
 	harness.worker_once().await.unwrap();
-	let mut run: Run = sqlx::query_as(
+	let run: Run = sqlx::query_as(
 		&sea_orm::sea_query::Query::select()
 			.expr(sea_orm::sea_query::Expr::cust("*"))
 			.from(sea_orm::sea_query::Alias::new("runs"))
@@ -951,22 +959,108 @@ async fn managed_external_write_requires_exact_one_call_approval(
 	.fetch_one(&store.pool)
 	.await
 	.unwrap();
-	assert_eq!(run.phase, "WAITING");
-	assert_eq!(effects.load(Ordering::SeqCst), 0);
 	let first = run.pending["human_request_id"]
 		.as_str()
 		.unwrap()
 		.parse()
 		.unwrap();
-	store
-		.answer(first, json!({"approved":false}))
+	if expired {
+		use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+		let past = chrono::Utc::now() - chrono::Duration::minutes(16);
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("human_requests"))
+				.value(Alias::new("created_at"), Expr::cust("$2"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(first)
+		.bind(past)
+		.execute(&store.pool)
 		.await
 		.unwrap();
+		let mut pending = run.pending.clone();
+		pending["wake_at"] = json!(past);
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("runs"))
+				.value(Alias::new("pending"), Expr::cust("$2"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(run.id)
+		.bind(pending)
+		.execute(&store.pool)
+		.await
+		.unwrap();
+	}
+	WriteApproval {
+		store,
+		url,
+		schema,
+		harness,
+		run,
+		first,
+		effects,
+		server,
+		_environment: environment,
+	}
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn managed_external_write_requires_exact_one_call_approval(
+	#[case] _expired: bool,
+	#[future(awt)]
+	#[with(_expired)]
+	write_approval: WriteApproval,
+) {
+	use std::sync::atomic::Ordering;
+	let WriteApproval {
+		store,
+		url,
+		schema,
+		harness,
+		mut run,
+		first,
+		effects,
+		server,
+		_environment,
+	} = write_approval;
+	assert_eq!(run.phase, "WAITING");
+	assert_eq!(effects.load(Ordering::SeqCst), 0);
+	if !_expired {
+		store
+			.answer(first, json!({"approved":false}))
+			.await
+			.unwrap();
+	}
 	harness.worker_once().await.unwrap();
 	harness.worker_once().await.unwrap();
 	run = store.run(run.id).await.unwrap();
 	assert_eq!(run.pending["cursor"], 1);
 	assert_eq!(effects.load(Ordering::SeqCst), 0);
+	if _expired {
+		let row: HumanRequest = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::cust("*"))
+				.from(sea_orm::sea_query::Alias::new("human_requests"))
+				.and_where(sea_orm::sea_query::Expr::cust("id=$1"))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(first)
+		.fetch_one(&store.pool)
+		.await
+		.unwrap();
+		assert_eq!(row.response, Some(json!({"approved":false,"expired":true})));
+		assert_eq!(row.answered_by.as_deref(), Some("system"));
+		assert!(matches!(
+			store.answer(first, json!({"approved":true})).await,
+			Err(aidash::Error::Conflict(_))
+		));
+	}
 	harness.worker_once().await.unwrap();
 	run = store.run(run.id).await.unwrap();
 	assert_eq!(run.phase, "WAITING");

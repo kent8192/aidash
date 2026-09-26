@@ -27,10 +27,15 @@ const entry = {
   },
 };
 
-async function editableDrafts(page: Page, secondRevision = 7) {
+async function editableDrafts(
+  page: Page,
+  secondRevision = 7,
+  paginated = false,
+) {
   await setup(page, { locale: "en-US" });
   const state = { failRefresh: false };
   const saves: Record<string, unknown>[] = [];
+  const cursors: (string | null)[] = [];
   const drafts = [1, secondRevision].map((revision, index) => ({
     id: `00000000-0000-7000-8000-00000000000${index + 1}`,
     tenant: "acme",
@@ -58,6 +63,18 @@ async function editableDrafts(page: Page, secondRevision = 7) {
         return route.fulfill({
           status: 503,
           json: { error: "refresh failed" },
+        });
+      const cursor = new URL(route.request().url()).searchParams.get(
+        "before_id",
+      );
+      cursors.push(cursor);
+      if (paginated && !cursor)
+        return route.fulfill({
+          json: Array.from({ length: 100 }, (_, index) => ({
+            ...drafts[1],
+            id: `00000000-0000-7000-8000-${String(index + 100).padStart(12, "0")}`,
+            entry: { ...drafts[1].entry, id: `newer-agent-${index}` },
+          })),
         });
       return route.fulfill({ json: drafts });
     }
@@ -92,8 +109,28 @@ async function editableDrafts(page: Page, secondRevision = 7) {
   await expect(page.getByLabel("Additional instructions")).toHaveValue(
     "First draft",
   );
-  return { state, saves };
+  return { state, saves, cursors };
 }
+
+test("Creator opens and edits a focused draft beyond the first page", async ({
+  page,
+}) => {
+  const { saves, cursors } = await editableDrafts(page, 7, true);
+  expect(cursors.slice(0, 2)).toEqual([
+    null,
+    "00000000-0000-7000-8000-000000000199",
+  ]);
+  await expect(page.locator(".wb-picker select").first()).toHaveValue(
+    "managed-agent@1.0.0",
+  );
+  await page.getByLabel("Additional instructions").fill("Edit an older draft");
+  await page
+    .locator(".wb-actions")
+    .getByRole("button", { name: "Save draft", exact: true })
+    .click();
+  await expect.poll(() => saves.length).toBe(1);
+  expect(saves[0].id).toBe("00000000-0000-7000-8000-000000000001");
+});
 
 test("Creator retains dirty edits after a background refresh error", async ({
   page,

@@ -13,7 +13,7 @@ use crate::{
 };
 use axum::{
 	Extension, Json,
-	extract::{Path, State},
+	extract::{Path, Query as ExtractQuery, State},
 };
 use chrono::{DateTime, Utc};
 use sea_orm::sea_query::{Alias, Condition, Expr, OnConflict, Order, PostgresQueryBuilder, Query};
@@ -398,14 +398,29 @@ async fn create(
 	Ok(Json(saved))
 }
 
-#[utoipa::path(get,path="/workbench/drafts",operation_id="workbench_list_drafts",responses((status=200,body=[Draft])),security(("bearer_auth"=[])))]
+#[derive(Debug, Default, Deserialize)]
+struct DraftPage {
+	before_updated_at: Option<DateTime<Utc>>,
+	before_id: Option<Uuid>,
+}
+
+#[utoipa::path(get,path="/workbench/drafts",operation_id="workbench_list_drafts",params(("before_updated_at"=Option<DateTime<Utc>>,Query,description="Timestamp of the last draft on the previous page"),("before_id"=Option<Uuid>,Query,description="ID of the last draft on the previous page; requires before_updated_at")),responses((status=200,body=[Draft])),security(("bearer_auth"=[])))]
 async fn list(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
+	ExtractQuery(page): ExtractQuery<DraftPage>,
 ) -> Result<Json<Vec<Draft>>> {
 	let mut tx = f.store.pool.begin().await?;
 	let mut visible = Vec::new();
-	let mut cursor: Option<(DateTime<Utc>, Uuid)> = None;
+	let mut cursor = match (page.before_updated_at, page.before_id) {
+		(None, None) => None,
+		(Some(updated_at), Some(id)) => Some((updated_at, id)),
+		_ => {
+			return Err(Error::Invalid(
+				"draft cursor requires both timestamp and ID".into(),
+			));
+		}
+	};
 	let tenant = match &actor {
 		Actor::Operator => None,
 		Actor::Subject(identity) => Some(&identity.tenant),
@@ -912,6 +927,19 @@ async fn transfer(
 		return Err(Error::Conflict("draft revision changed".into()));
 	}
 	target_enabled(&f, &draft.tenant, &input.new_owner).await?;
+	// Ownership supersedes a share. Retaining it would restore the former
+	// owner's access after a later transfer.
+	sqlx::query(
+		&Query::delete()
+			.from_table(Alias::new("agent_draft_shares"))
+			.and_where(Expr::col(Alias::new("draft_id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("subject")).eq(Expr::cust("$2")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(id)
+	.bind(&input.new_owner)
+	.execute(&mut *tx)
+	.await?;
 	sqlx::query(
 		&Query::update()
 			.table(Alias::new("agent_drafts"))
