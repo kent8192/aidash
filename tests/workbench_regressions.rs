@@ -1902,6 +1902,72 @@ async fn review6_permission_context_respects_agent_tool_behavior_flags(
 }
 
 #[rstest::fixture]
+async fn review6_audit_tenants() -> (Workbench, Value, Value) {
+	let wb = workbench().await;
+	wb.register().await;
+	assert_eq!(request(&wb.app,&wb.f.config.api_token,"POST","/api/authorization/other",json!({"expected_revision":0,"bundle":{"tenant":"other","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await.0,200);
+	let path = format!(
+		"/api/workbench/versions/{}/1.0.0/incidents",
+		wb.draft["entry"]["id"].as_str().unwrap()
+	);
+	let local = request(
+		&wb.app,
+		&wb.f.config.api_token,
+		"POST",
+		&path,
+		json!({"tenant":"acme","severity":"low","owner":"alice","notes":"Local"}),
+	)
+	.await;
+	let other = request(
+		&wb.app,
+		&wb.f.config.api_token,
+		"POST",
+		&path,
+		json!({"tenant":"other","severity":"low","owner":"alice","notes":"Other"}),
+	)
+	.await;
+	assert_eq!((local.0, other.0), (200, 200));
+	(wb, local.1, other.1)
+}
+
+#[rstest::rstest]
+#[case(Some("acme"), 1)]
+#[case(None, 2)]
+#[tokio::test]
+async fn review6_operator_audit_keeps_incident_history_in_the_selected_tenant(
+	#[future(awt)] review6_audit_tenants: (Workbench, Value, Value),
+	#[case] tenant: Option<&str>,
+	#[case] expected: usize,
+) {
+	let (wb, local, other) = review6_audit_tenants;
+	let path = format!(
+		"/api/workbench/versions/{}/1.0.0/audit{}",
+		wb.draft["entry"]["id"].as_str().unwrap(),
+		tenant.map_or(String::new(), |t| format!("?tenant={t}"))
+	);
+	let (status, page) = request(&wb.app, &wb.f.config.api_token, "GET", &path, Value::Null).await;
+	assert_eq!(status, 200, "audit: {page}");
+	let rows: Vec<_> = page["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.filter(|i| i["source"] == "incident")
+		.collect();
+	assert_eq!(rows.len(), expected, "audit: {page}");
+	assert!(
+		rows.iter()
+			.any(|i| i["details"]["incident_id"] == local["id"])
+	);
+	if tenant.is_some() {
+		assert!(
+			rows.iter()
+				.all(|i| i["details"]["incident_id"] != other["id"])
+		);
+	}
+	wb.cleanup().await;
+}
+
+#[rstest::fixture]
 async fn review6_expired_retention() -> (Workbench, Value) {
 	let wb = workbench().await;
 	wb.register().await;

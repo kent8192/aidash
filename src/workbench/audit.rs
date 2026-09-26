@@ -13,6 +13,7 @@ struct AuditQuery {
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AuditItem {
+	pub id: String,
 	pub source: String,
 	pub kind: String,
 	pub at: DateTime<Utc>,
@@ -56,6 +57,13 @@ async fn audit(
 		}
 	};
 	let mut tx = f.store.pool.begin().await?;
+	let observed_at = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::current_timestamp())
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *tx)
+	.await?;
 	trust::require_inspection(
 		&mut tx,
 		&actor,
@@ -78,13 +86,18 @@ async fn audit(
 			.cond_where(
 				Condition::all()
 					.add(Expr::col(Alias::new("agent_id")).eq(Expr::cust("$1")))
-					.add(Expr::col(Alias::new("version")).eq(Expr::cust("$2"))),
+					.add(Expr::col(Alias::new("version")).eq(Expr::cust("$2")))
+					.add(Expr::col(Alias::new("registered_at")).lte(Expr::cust("$3"))),
 			)
+			.order_by(Alias::new("registered_at"), Order::Desc)
+			.order_by(Alias::new("draft_id"), Order::Desc)
+			.order_by(Alias::new("revision"), Order::Desc)
 			.limit(100)
 			.to_string(PostgresQueryBuilder),
 	)
 	.bind(&id)
 	.bind(&version)
+	.bind(observed_at)
 	.fetch_all(&mut *tx)
 	.await?;
 	for (draft_id, revision, registering_actor, at) in registrations {
@@ -101,6 +114,7 @@ async fn audit(
 			Err(error) => return Err(error),
 		}
 		items.push(AuditItem {
+			id: format!("registry:{draft_id}:{revision:020}"),
 			source: "registry".into(),
 			kind: "registered".into(),
 			at,
@@ -119,18 +133,21 @@ async fn audit(
 				.cond_where(
 					Condition::all()
 						.add(Expr::col(Alias::new("draft_id")).eq(Expr::cust("$1")))
-						.add(Expr::col(Alias::new("revision")).eq(Expr::cust("$2"))),
+						.add(Expr::col(Alias::new("revision")).eq(Expr::cust("$2")))
+						.add(Expr::col(Alias::new("created_at")).lte(Expr::cust("$3"))),
 				)
 				.order_by(Alias::new("created_at"), Order::Desc)
+				.order_by(Alias::new("id"), Order::Desc)
 				.limit(100)
 				.to_string(PostgresQueryBuilder),
 		)
 		.bind(draft_id)
 		.bind(revision)
+		.bind(observed_at)
 		.fetch_all(&mut *tx)
 		.await?;
 		for (session_id, status, at, usage) in sessions {
-			items.push(AuditItem { source: "sandbox".into(), kind: "test".into(), at, actor: None, details: json!({"session_id":session_id,"draft_revision":revision,"status":status,"usage":usage}) });
+			items.push(AuditItem { id: format!("sandbox:{session_id}"), source: "sandbox".into(), kind: "test".into(), at, actor: None, details: json!({"session_id":session_id,"draft_revision":revision,"status":status,"usage":usage}) });
 		}
 	}
 	let may_read_catalog_history = match (&actor, &tenant) {
@@ -170,19 +187,23 @@ async fn audit(
 					Condition::all()
 						.add(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
 						.add(Expr::col(Alias::new("entry_id")).eq(Expr::cust("$2")))
-						.add(Expr::col(Alias::new("entry_version")).eq(Expr::cust("$3"))),
+						.add(Expr::col(Alias::new("entry_version")).eq(Expr::cust("$3")))
+						.add(Expr::col(Alias::new("created_at")).lte(Expr::cust("$4"))),
 				)
 				.order_by(Alias::new("created_at"), Order::Desc)
+				.order_by(Alias::new("revision"), Order::Desc)
 				.limit(100)
 				.to_string(PostgresQueryBuilder),
 		)
 		.bind(tenant)
 		.bind(&id)
 		.bind(&version)
+		.bind(observed_at)
 		.fetch_all(&mut *tx)
 		.await?;
 		for (revision, enabled, actor, at) in history {
 			items.push(AuditItem {
+				id: format!("catalog:{tenant}:{revision:020}"),
 				source: "catalog".into(),
 				kind: "binding_changed".into(),
 				at,
@@ -192,21 +213,25 @@ async fn audit(
 		}
 	}
 	tx.commit().await?;
-	let incidents = incident::list(
-		State(f.clone()),
-		Extension(actor.clone()),
-		Path((id, version)),
+	let incidents = incident::collect(
+		&f,
+		&actor,
+		&id,
+		&version,
+		tenant.as_deref(),
+		Some(observed_at),
 	)
-	.await?
-	.0;
+	.await?;
 	for incident in incidents {
-		let events = match incident::read_events(&f, &actor, incident.id, 100).await {
-			Ok(events) => events,
-			Err(Error::Forbidden) => continue,
-			Err(error) => return Err(error),
-		};
+		let events =
+			match incident::read_events(&f, &actor, incident.id, 100, Some(observed_at)).await {
+				Ok(events) => events,
+				Err(Error::Forbidden) => continue,
+				Err(error) => return Err(error),
+			};
 		for event in events {
 			items.push(AuditItem {
+				id: format!("incident:{:020}", event.id),
 				source: "incident".into(),
 				kind: "incident_changed".into(),
 				at: event.created_at,
@@ -215,8 +240,8 @@ async fn audit(
 			});
 		}
 	}
-	items.sort_by_key(|item| std::cmp::Reverse(item.at));
+	items.sort_by(|left, right| right.at.cmp(&left.at).then_with(|| right.id.cmp(&left.id)));
 	let next_offset = (items.len() > query.offset + 50).then_some(query.offset + 50);
 	let items = items.into_iter().skip(query.offset).take(50).collect();
-	Ok(Json(AuditPage { observed_at: Utc::now(), items, next_offset, source_boundary: "Connected-node Registry, authorized sandbox records, tenant Catalog history and visible incident history, limited to the latest 100 records per source. Other nodes and hidden records are not represented.".into() }))
+	Ok(Json(AuditPage { observed_at, items, next_offset, source_boundary: "Connected-node Registry, authorized sandbox records, tenant Catalog history and visible incident history, bounded by this response observation time and the latest 100 records per source. Authorization is checked again on every page; other nodes and hidden records are not represented.".into() }))
 }

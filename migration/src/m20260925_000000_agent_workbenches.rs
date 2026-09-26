@@ -423,6 +423,16 @@ impl MigrationTrait for Migration {
 					.to_owned(),
 			)
 			.await?;
+		manager
+			.create_index(
+				Index::create()
+					.name("agent_incident_events_incident_id")
+					.table(Alias::new("agent_incident_events"))
+					.col(Alias::new("incident_id"))
+					.col(Alias::new("id"))
+					.to_owned(),
+			)
+			.await?;
 		// SeaQuery does not express PostgreSQL CREATE TRIGGER. These writes must
 		// participate in the same atomic write gate as the Registry.
 		for table in [

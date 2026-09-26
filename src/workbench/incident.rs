@@ -276,21 +276,32 @@ pub(super) async fn list(
 	Extension(actor): Extension<Actor>,
 	Path((id, version)): Path<(String, String)>,
 ) -> Result<Json<Vec<Incident>>> {
+	Ok(Json(collect(&f, &actor, &id, &version, None, None).await?))
+}
+
+pub(super) async fn collect(
+	f: &Federation,
+	actor: &Actor,
+	id: &str,
+	version: &str,
+	selected_tenant: Option<&str>,
+	observed_at: Option<DateTime<Utc>>,
+) -> Result<Vec<Incident>> {
 	let mut tx = f.store.pool.begin().await?;
 	trust::require_inspection(
 		&mut tx,
-		&actor,
+		actor,
 		&EntityRef {
-			id: id.clone(),
-			version: version.clone(),
+			id: id.into(),
+			version: version.into(),
 		},
 	)
 	.await?;
 	let mut visible = Vec::new();
 	let mut cursor: Option<(DateTime<Utc>, Uuid)> = None;
-	let tenant = match &actor {
-		Actor::Operator => None,
-		Actor::Subject(identity) => Some(&identity.tenant),
+	let tenant = match actor {
+		Actor::Operator => selected_tenant,
+		Actor::Subject(identity) => Some(identity.tenant.as_str()),
 	};
 	loop {
 		let mut query = Query::select();
@@ -304,25 +315,31 @@ pub(super) async fn list(
 					.add(Expr::expr(Expr::cust("$3::text")).is_null())
 					.add(Expr::col(Alias::new("tenant")).eq(Expr::cust("$3"))),
 			)
+			.cond_where(
+				Condition::any()
+					.add(Expr::expr(Expr::cust("$4::timestamptz")).is_null())
+					.add(Expr::col(Alias::new("created_at")).lte(Expr::cust("$4"))),
+			)
 			.order_by(Alias::new("created_at"), Order::Desc)
 			.order_by(Alias::new("id"), Order::Desc)
 			.limit(100);
 		if cursor.is_some() {
 			query.cond_where(
 				Condition::any()
-					.add(Expr::col(Alias::new("created_at")).lt(Expr::cust("$4")))
+					.add(Expr::col(Alias::new("created_at")).lt(Expr::cust("$5")))
 					.add(
 						Condition::all()
-							.add(Expr::col(Alias::new("created_at")).eq(Expr::cust("$4")))
-							.add(Expr::col(Alias::new("id")).lt(Expr::cust("$5"))),
+							.add(Expr::col(Alias::new("created_at")).eq(Expr::cust("$5")))
+							.add(Expr::col(Alias::new("id")).lt(Expr::cust("$6"))),
 					),
 			);
 		}
 		let sql = query.to_string(PostgresQueryBuilder);
 		let mut select = sqlx::query_as::<_, Incident>(&sql)
-			.bind(&id)
-			.bind(&version)
-			.bind(tenant);
+			.bind(id)
+			.bind(version)
+			.bind(tenant)
+			.bind(observed_at);
 		if let Some((created_at, incident_id)) = cursor {
 			select = select.bind(created_at).bind(incident_id);
 		}
@@ -330,7 +347,7 @@ pub(super) async fn list(
 		let more = rows.len() == 100;
 		cursor = rows.last().map(|row| (row.created_at, row.id));
 		for row in rows {
-			match require_incident(&mut tx, &actor, &row, "agent_incident.read").await {
+			match require_incident(&mut tx, actor, &row, "agent_incident.read").await {
 				Ok(()) => visible.push(row),
 				Err(Error::Forbidden) => {}
 				Err(error) => return Err(error),
@@ -344,7 +361,7 @@ pub(super) async fn list(
 		}
 	}
 	tx.commit().await?;
-	Ok(Json(visible))
+	Ok(visible)
 }
 
 #[utoipa::path(get,path="/workbench/incidents/{id}",operation_id="workbench_get_incident",params(("id"=Uuid,Path)),responses((status=200,body=Incident)),security(("bearer_auth"=[])))]
@@ -468,7 +485,7 @@ async fn events(
 	Extension(actor): Extension<Actor>,
 	Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<IncidentEvent>>> {
-	let mut events = read_events(&f, &actor, id, 500).await?;
+	let mut events = read_events(&f, &actor, id, 500, None).await?;
 	events.reverse();
 	Ok(Json(events))
 }
@@ -479,6 +496,7 @@ pub(super) async fn read_events(
 	actor: &Actor,
 	id: Uuid,
 	limit: u64,
+	observed_at: Option<DateTime<Utc>>,
 ) -> Result<Vec<IncidentEvent>> {
 	let mut tx = f.store.pool.begin().await?;
 	let incident = load(&mut tx, id, true).await?;
@@ -497,11 +515,17 @@ pub(super) async fn read_events(
 			.expr(Expr::cust("id, incident_id, actor, change, created_at"))
 			.from(Alias::new("agent_incident_events"))
 			.and_where(Expr::col(Alias::new("incident_id")).eq(Expr::cust("$1")))
+			.cond_where(
+				Condition::any()
+					.add(Expr::expr(Expr::cust("$2::timestamptz")).is_null())
+					.add(Expr::col(Alias::new("created_at")).lte(Expr::cust("$2"))),
+			)
 			.order_by(Alias::new("id"), Order::Desc)
 			.limit(limit)
 			.to_string(PostgresQueryBuilder),
 	)
 	.bind(id)
+	.bind(observed_at)
 	.fetch_all(&mut *tx)
 	.await?;
 	tx.commit().await?;
