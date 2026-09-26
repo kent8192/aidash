@@ -356,6 +356,9 @@ async fn permission_context(
 			.into_iter()
 			.map(|reference| (reference, "tool.invoke")),
 	);
+	if let Some(cluster) = config.cluster {
+		components.push((cluster, "cluster.execute"));
+	}
 	let mut rows = Vec::new();
 	let mut policy_revision = 0;
 	for (reference, action) in components {

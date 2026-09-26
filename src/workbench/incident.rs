@@ -285,29 +285,61 @@ pub(super) async fn list(
 		},
 	)
 	.await?;
-	let rows: Vec<Incident> = sqlx::query_as(
-		&Query::select()
+	let mut visible = Vec::new();
+	let mut cursor: Option<(DateTime<Utc>, Uuid)> = None;
+	let tenant = match &actor {
+		Actor::Operator => None,
+		Actor::Subject(identity) => Some(&identity.tenant),
+	};
+	loop {
+		let mut query = Query::select();
+		query
 			.expr(Expr::cust(INCIDENT_COLUMNS))
 			.from(Alias::new("agent_incidents"))
+			.and_where(Expr::col(Alias::new("agent_id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("version")).eq(Expr::cust("$2")))
 			.cond_where(
-				Condition::all()
-					.add(Expr::col(Alias::new("agent_id")).eq(Expr::cust("$1")))
-					.add(Expr::col(Alias::new("version")).eq(Expr::cust("$2"))),
+				Condition::any()
+					.add(Expr::expr(Expr::cust("$3::text")).is_null())
+					.add(Expr::col(Alias::new("tenant")).eq(Expr::cust("$3"))),
 			)
 			.order_by(Alias::new("created_at"), Order::Desc)
-			.limit(100)
-			.to_string(PostgresQueryBuilder),
-	)
-	.bind(&id)
-	.bind(&version)
-	.fetch_all(&mut *tx)
-	.await?;
-	let mut visible = Vec::new();
-	for row in rows {
-		match require_incident(&mut tx, &actor, &row, "agent_incident.read").await {
-			Ok(()) => visible.push(row),
-			Err(Error::Forbidden) => {}
-			Err(error) => return Err(error),
+			.order_by(Alias::new("id"), Order::Desc)
+			.limit(100);
+		if cursor.is_some() {
+			query.cond_where(
+				Condition::any()
+					.add(Expr::col(Alias::new("created_at")).lt(Expr::cust("$4")))
+					.add(
+						Condition::all()
+							.add(Expr::col(Alias::new("created_at")).eq(Expr::cust("$4")))
+							.add(Expr::col(Alias::new("id")).lt(Expr::cust("$5"))),
+					),
+			);
+		}
+		let sql = query.to_string(PostgresQueryBuilder);
+		let mut select = sqlx::query_as::<_, Incident>(&sql)
+			.bind(&id)
+			.bind(&version)
+			.bind(tenant);
+		if let Some((created_at, incident_id)) = cursor {
+			select = select.bind(created_at).bind(incident_id);
+		}
+		let rows = select.fetch_all(&mut *tx).await?;
+		let more = rows.len() == 100;
+		cursor = rows.last().map(|row| (row.created_at, row.id));
+		for row in rows {
+			match require_incident(&mut tx, &actor, &row, "agent_incident.read").await {
+				Ok(()) => visible.push(row),
+				Err(Error::Forbidden) => {}
+				Err(error) => return Err(error),
+			}
+			if visible.len() == 100 {
+				break;
+			}
+		}
+		if visible.len() == 100 || !more {
+			break;
 		}
 	}
 	tx.commit().await?;

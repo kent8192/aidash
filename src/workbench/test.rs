@@ -727,6 +727,104 @@ fn has_unknown_call(calls: &Option<Value>) -> bool {
 		})
 }
 
+async fn prepare_real_dispatch(
+	tx: &mut Transaction<'_, Postgres>,
+	session_id: Uuid,
+	actor: &Actor,
+	pin: &ProfilePin,
+	rule: &profile::RealToolRule,
+	call: &crate::provider::ToolCall,
+) -> Result<(TestSession, reqwest::RequestBuilder)> {
+	let active: Option<String> = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("status"))
+			.from(Alias::new("agent_test_sessions"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.lock(sea_orm::sea_query::LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(session_id)
+	.fetch_optional(&mut **tx)
+	.await?;
+	if active.as_deref() != Some("running") {
+		return Err(Error::Conflict("test was stopped".into()));
+	}
+	if let Actor::Subject(identity) = actor {
+		identity.lock_with_mode(tx, false).await?;
+	}
+	let session = load_session(tx, session_id).await?;
+	let draft = load(tx, session.draft_id, false).await?;
+	authorize(tx, actor, &draft, "agent_draft.test", true).await?;
+	let current = profile::load(tx, &pin.tenant, &pin.id).await?;
+	if !current.enabled
+		|| current.revision != pin.revision
+		|| current.rules != serde_json::to_value(&pin.rules)?
+	{
+		return Err(Error::Conflict(
+			"test profile changed or was disabled".into(),
+		));
+	}
+	for (name, fingerprint) in &pin.credential_fingerprints {
+		if credential_fingerprint(name)? != *fingerprint {
+			return Err(Error::Conflict("test credential changed".into()));
+		}
+	}
+	let client = reqwest::Client::builder()
+		.redirect(reqwest::redirect::Policy::none())
+		.timeout(Duration::from_secs(30))
+		.build()?;
+	let mut request = client
+		.post(&rule.endpoint)
+		.header("idempotency-key", format!("test-{session_id}-{}", call.id))
+		.json(&call.arguments);
+	if let Some(name) = &rule.credential_env {
+		request = request.bearer_auth(crate::config::secret(name)?);
+	}
+	Ok((session, request))
+}
+
+async fn record_pre_dispatch_denial(
+	f: &Federation,
+	session_id: Uuid,
+	call: &crate::provider::ToolCall,
+	error: &Error,
+) -> Result<()> {
+	let mut tx = f.store.pool.begin().await?;
+	let session: TestSession = sqlx::query_as(
+		&Query::select()
+			.expr(Expr::cust(SESSION_COLUMNS))
+			.from(Alias::new("agent_test_sessions"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.lock(sea_orm::sea_query::LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(session_id)
+	.fetch_one(&mut *tx)
+	.await?;
+	let mut recorded = session.tool_calls.unwrap_or_else(|| json!([]));
+	if let Some(pending) = recorded
+		.as_array_mut()
+		.and_then(|calls| calls.last_mut())
+		.filter(|pending| pending["id"] == call.id && pending["outcome"] == "outcome_unknown")
+	{
+		pending["outcome"] = json!("denied");
+		pending["error"] = json!(error.to_string());
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("agent_test_sessions"))
+				.value(Alias::new("tool_calls"), Expr::cust("$2"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(session_id)
+		.bind(recorded)
+		.execute(&mut *tx)
+		.await?;
+	}
+	tx.commit().await?;
+	Ok(())
+}
+
 async fn invoke_real(
 	f: &Federation,
 	session_id: Uuid,
@@ -754,14 +852,12 @@ async fn invoke_real(
 		.map_err(|e| Error::Invalid(e.to_string()))?
 		.validate(&call.arguments)
 		.map_err(|e| Error::Invalid(e.to_string()))?;
-	// Commit the exact pending call before network I/O. A crash after dispatch
-	// leaves outcome_unknown evidence; the worker never retries that call.
+	// Check every dispatch prerequisite before committing pending evidence. The
+	// durable marker still precedes network I/O, so a crash after dispatch cannot
+	// erase an external effect or cause the worker to retry it.
 	let pending = json!({"id":call.id,"name":call.name,"arguments":call.arguments,"outcome":"outcome_unknown","endpoint":rule.endpoint});
 	let mut tx = f.store.pool.begin().await?;
-	let session = load_session(&mut tx, session_id).await?;
-	if session.status != "running" {
-		return Err(Error::Conflict("test was stopped".into()));
-	}
+	let (session, _) = prepare_real_dispatch(&mut tx, session_id, actor, pin, rule, call).await?;
 	let mut calls = session.tool_calls.unwrap_or_else(|| json!([]));
 	calls
 		.as_array_mut()
@@ -787,50 +883,15 @@ async fn invoke_real(
 	// Hold the exact session, identity, policy, draft and profile authority
 	// through dispatch. Stop/revocation/profile changes wait for this boundary.
 	let mut tx = f.store.pool.begin().await?;
-	let active: Option<String> = sqlx::query_scalar(
-		&Query::select()
-			.column(Alias::new("status"))
-			.from(Alias::new("agent_test_sessions"))
-			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
-			.lock(sea_orm::sea_query::LockType::Update)
-			.to_string(PostgresQueryBuilder),
-	)
-	.bind(session_id)
-	.fetch_optional(&mut *tx)
-	.await?;
-	if active.as_deref() != Some("running") {
-		return Err(Error::Conflict("test was stopped".into()));
-	}
-	if let Actor::Subject(identity) = actor {
-		identity.lock_with_mode(&mut tx, false).await?;
-	}
-	let draft = load(&mut tx, session.draft_id, false).await?;
-	authorize(&mut tx, actor, &draft, "agent_draft.test", true).await?;
-	let current = profile::load(&mut tx, &pin.tenant, &pin.id).await?;
-	if !current.enabled
-		|| current.revision != pin.revision
-		|| current.rules != serde_json::to_value(&pin.rules)?
-	{
-		return Err(Error::Conflict(
-			"test profile changed or was disabled".into(),
-		));
-	}
-	for (name, fingerprint) in &pin.credential_fingerprints {
-		if credential_fingerprint(name)? != *fingerprint {
-			return Err(Error::Conflict("test credential changed".into()));
-		}
-	}
-	let client = reqwest::Client::builder()
-		.redirect(reqwest::redirect::Policy::none())
-		.timeout(Duration::from_secs(30))
-		.build()?;
-	let mut request = client
-		.post(&rule.endpoint)
-		.header("idempotency-key", format!("test-{session_id}-{}", call.id))
-		.json(&call.arguments);
-	if let Some(name) = &rule.credential_env {
-		request = request.bearer_auth(crate::config::secret(name)?);
-	}
+	let (_, request) =
+		match prepare_real_dispatch(&mut tx, session_id, actor, pin, rule, call).await {
+			Ok(prepared) => prepared,
+			Err(error) => {
+				tx.rollback().await?;
+				record_pre_dispatch_denial(f, session_id, call, &error).await?;
+				return Err(error);
+			}
+		};
 	let response = request.send().await?;
 	let (result, outcome) = if response.status().is_success() {
 		(crate::response::json(response, 256_000).await?, "real")

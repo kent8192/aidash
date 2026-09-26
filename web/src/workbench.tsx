@@ -535,7 +535,6 @@ export function Workbench({
       setDrafts(await apiFetch<Draft[]>("/api/workbench/drafts"));
       setError("");
     } catch (cause) {
-      setDrafts([]);
       setError(String(cause));
     } finally {
       setLoading(false);
@@ -552,7 +551,6 @@ export function Workbench({
       })
       .catch((cause) => {
         if (active) {
-          setDrafts([]);
           setError(String(cause));
         }
       })
@@ -566,8 +564,6 @@ export function Workbench({
         })
         .catch((cause) => {
           if (active) {
-            setDrafts([]);
-            setEditing(null);
             setError(String(cause));
           }
         });
@@ -1513,6 +1509,7 @@ export function Workbench({
     </section>
   );
   const choose = (value: string) => {
+    if (value === focus) return;
     if (
       dirty &&
       !window.confirm(
@@ -1522,6 +1519,9 @@ export function Workbench({
       )
     )
       return;
+    setDirty(false);
+    setBaseRevision(null);
+    hydratedDraft.current = null;
     select(value);
   };
   const renderEditor = () =>

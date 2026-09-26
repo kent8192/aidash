@@ -975,7 +975,7 @@ pub async fn search(
 ) -> Result<SearchResult> {
 	let mut lease = Lease::begin(store, actor).await?;
 	lease.durable();
-	let result = search_in(store, &mut lease, workspace, input, None).await;
+	let result = search_in(store, &mut lease, workspace, input, None, None).await;
 	lease.finish(result).await
 }
 pub(crate) async fn search_in(
@@ -984,6 +984,7 @@ pub(crate) async fn search_in(
 	workspace: Uuid,
 	input: Search,
 	run: Option<Uuid>,
+	agent_controls: Option<&crate::registry::AgentConfig>,
 ) -> Result<SearchResult> {
 	lease.workspace(workspace, "semantic.search").await?;
 	let index = index(lease.tx(), workspace, false).await?;
@@ -1030,6 +1031,15 @@ pub(crate) async fn search_in(
 	let mut allowed = BTreeMap::new();
 	let mut incomplete = false;
 	for entry in rows {
+		let source: Source = serde_json::from_value(entry.source.clone())?;
+		if agent_controls.is_some_and(|agent| match &source {
+			Source::Memory { .. } => agent.allow_cross_conversation_memory == Some(false),
+			Source::Artifact { .. } | Source::Message { .. } => {
+				agent.allow_workspace_retrieval == Some(false)
+			}
+		}) {
+			continue;
+		}
 		if entry.agent.is_some() && entry.agent != input.agent {
 			continue;
 		}
@@ -1045,10 +1055,7 @@ pub(crate) async fn search_in(
 		if !lease.permits(&entry, "semantic.read").await? {
 			continue;
 		}
-		let Some(text) = lease
-			.source(workspace, &serde_json::from_value(entry.source.clone())?)
-			.await?
-		else {
+		let Some(text) = lease.source(workspace, &source).await? else {
 			continue;
 		};
 		// Source content must still match the bytes used for this point; linked
@@ -1264,7 +1271,13 @@ pub(crate) async fn context_in(
 	run: &crate::domain::Run,
 	query: &str,
 	budget: usize,
+	agent: &crate::registry::AgentConfig,
 ) -> Result<Option<SearchResult>> {
+	if agent.allow_cross_conversation_memory == Some(false)
+		&& agent.allow_workspace_retrieval == Some(false)
+	{
+		return Ok(None);
+	}
 	let configured: Option<Index> = sqlx::query_as(
 		&sea_orm::sea_query::Query::select()
 			.expr(sea_orm::sea_query::SimpleExpr::from(
@@ -1321,6 +1334,7 @@ pub(crate) async fn context_in(
 			max_tokens: budget.min(spec.max_result_tokens),
 		},
 		Some(run.id),
+		Some(agent),
 	)
 	.await
 	.map(Some)

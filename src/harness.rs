@@ -791,6 +791,7 @@ impl Harness {
 						run,
 						&format!("{}\n{}", task.title, task.description),
 						semantic_budget,
+						&agent,
 					)
 					.await;
 					if let Some(semantic) = lease.finish(result).await? {

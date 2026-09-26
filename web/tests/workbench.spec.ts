@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { setup } from "./collaboration-fixture";
 
 const entry = {
@@ -26,6 +26,116 @@ const entry = {
     allow_cross_conversation_memory: false,
   },
 };
+
+async function editableDrafts(page: Page) {
+  await setup(page, { locale: "en-US" });
+  const state = { failRefresh: false };
+  const saves: Record<string, unknown>[] = [];
+  const drafts = [1, 7].map((revision, index) => ({
+    id: `00000000-0000-7000-8000-00000000000${index + 1}`,
+    tenant: "acme",
+    owner: "alice",
+    revision,
+    entry: {
+      ...entry,
+      id: index ? "second-agent" : "managed-agent",
+      config: {
+        ...entry.config,
+        instructions: index ? "Second draft" : "First draft",
+      },
+    },
+    documents: [] as unknown[],
+    release_notes: "",
+    source_id: null,
+    source_version: null,
+    archived: false,
+    updated_at: "2026-09-25T00:00:00Z",
+  }));
+  await page.route("**/api/workbench/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/workbench/drafts") {
+      if (state.failRefresh)
+        return route.fulfill({
+          status: 503,
+          json: { error: "refresh failed" },
+        });
+      return route.fulfill({ json: drafts });
+    }
+    const index = drafts.findIndex(
+      (draft) => path === `/api/workbench/drafts/${draft.id}`,
+    );
+    if (index >= 0 && route.request().method() === "PUT") {
+      const body = route.request().postDataJSON();
+      saves.push({ id: drafts[index].id, ...body });
+      drafts[index] = {
+        ...drafts[index],
+        ...body,
+        revision: drafts[index].revision + 1,
+      };
+      return route.fulfill({ json: drafts[index] });
+    }
+    if (path.endsWith("/test-limits"))
+      return route.fulfill({
+        json: {
+          max_input_bytes: 20000,
+          max_output_tokens: 2048,
+          max_total_tokens: 16384,
+          max_steps: 12,
+          max_duration_secs: 60,
+          max_concurrent: 2,
+          payload_days: 30,
+        },
+      });
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/creator?focus=managed-agent%401.0.0");
+  await expect(page.getByLabel("Additional instructions")).toHaveValue(
+    "First draft",
+  );
+  return { state, saves };
+}
+
+test("Creator retains dirty edits after a background refresh error", async ({
+  page,
+}) => {
+  await page.clock.install();
+  const { state } = await editableDrafts(page);
+  const instructions = page.getByLabel("Additional instructions");
+  await instructions.fill("Keep these unsaved edits");
+  state.failRefresh = true;
+  await page.clock.runFor(10001);
+  await expect(page.getByRole("alert")).toContainText("refresh failed");
+  await expect(instructions).toHaveValue("Keep these unsaved edits");
+  await expect(
+    page
+      .locator(".wb-actions")
+      .getByRole("button", { name: "Save draft", exact: true }),
+  ).toBeEnabled();
+});
+
+test("Creator discards edits and hydrates a selected draft with another revision", async ({
+  page,
+}) => {
+  const { saves } = await editableDrafts(page);
+  const instructions = page.getByLabel("Additional instructions");
+  await instructions.fill("Discard these edits");
+  page.on("dialog", (dialog) => dialog.accept());
+  await page
+    .locator(".wb-picker select")
+    .first()
+    .selectOption("second-agent@1.0.0");
+  await expect(instructions).toHaveValue("Second draft");
+  await instructions.fill("Saved second draft");
+  await page
+    .locator(".wb-actions")
+    .getByRole("button", { name: "Save draft", exact: true })
+    .click();
+  await expect.poll(() => saves.length).toBe(1);
+  expect(saves[0]).toMatchObject({
+    id: "00000000-0000-7000-8000-000000000002",
+    expected_revision: 7,
+  });
+});
 
 for (const [viewport, locale] of [
   [{ width: 1280, height: 960 }, "en-US"],

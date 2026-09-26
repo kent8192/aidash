@@ -805,6 +805,7 @@ impl Guard {
 			&self.run,
 			query,
 			budget,
+			&self.agent,
 		)
 		.await?;
 		if let Some(result) = &result {

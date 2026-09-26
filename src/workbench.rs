@@ -217,6 +217,7 @@ async fn authorize(
 	if identity.tenant != draft.tenant {
 		return Err(Error::Forbidden);
 	}
+	identity.lock_with_mode(tx, false).await?;
 	let shared: Option<(bool, String)> = if shares {
 		sqlx::query_as(
 			&Query::select()

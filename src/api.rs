@@ -289,6 +289,7 @@ fn browser_operator_allowed(method: &Method, path: &str) -> bool {
 		|| path.starts_with("/registry/")
 		|| path.starts_with("/marketplace/")
 		|| path.starts_with("/transactions/")
+		|| path.starts_with("/workbench/")
 		|| matches!(
 			path,
 			"/registry" | "/peers" | "/marketplace" | "/transactions"

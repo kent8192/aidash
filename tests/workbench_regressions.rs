@@ -1,6 +1,7 @@
 mod common;
 
 use aidash::federation::Federation;
+use axum::response::IntoResponse;
 use common::{TestEnvironment, cleanup, request, setup, test_environment};
 use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
@@ -8,11 +9,18 @@ use std::{
 	collections::VecDeque,
 	sync::{
 		Arc,
-		atomic::{AtomicUsize, Ordering},
+		atomic::{AtomicBool, AtomicUsize, Ordering},
 	},
 	time::Duration,
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
+
+#[derive(Default)]
+struct ModelGate {
+	paused: AtomicBool,
+	arrived: Notify,
+	release: Notify,
+}
 
 struct Workbench {
 	_environment: Arc<TestEnvironment>,
@@ -26,6 +34,9 @@ struct Workbench {
 	hits: Arc<AtomicUsize>,
 	server: tokio::task::JoinHandle<()>,
 	endpoint: String,
+	model_gate: Arc<ModelGate>,
+	effect_hits: Arc<AtomicUsize>,
+	effect_reply_invalid: Arc<AtomicBool>,
 }
 
 impl Workbench {
@@ -70,6 +81,33 @@ impl Workbench {
 		panic!("test session did not finish: {started}");
 	}
 
+	async fn operator_finished(&self, started: &Value) -> Value {
+		let mut finished = Value::Null;
+		for _ in 0..200 {
+			let (status, sessions) = request(
+				&self.app,
+				&self.f.config.api_token,
+				"GET",
+				&format!("{}/tests", self.path()),
+				Value::Null,
+			)
+			.await;
+			assert_eq!(status, 200, "sessions: {sessions}");
+			let session = sessions
+				.as_array()
+				.unwrap()
+				.iter()
+				.find(|s| s["id"] == started["id"])
+				.unwrap();
+			if session["status"] != "running" {
+				finished = session.clone();
+				break;
+			}
+			tokio::time::sleep(Duration::from_millis(25)).await;
+		}
+		finished
+	}
+
 	async fn cleanup(self) {
 		self.server.abort();
 		cleanup(self.f, &self.url, &self.schema).await;
@@ -85,25 +123,53 @@ async fn workbench() -> Workbench {
 		json!({"choices":[{"finish_reason":"stop","message":{"content":"Complete"}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
 	])));
 	let hits = Arc::new(AtomicUsize::new(0));
+	let model_gate = Arc::new(ModelGate::default());
+	let gate = model_gate.clone();
+	let effect_hits = Arc::new(AtomicUsize::new(0));
+	let effects = effect_hits.clone();
+	let effect_reply_invalid = Arc::new(AtomicBool::new(false));
+	let corrupt_reply = effect_reply_invalid.clone();
 	let queue = responses.clone();
 	let count = hits.clone();
-	let mock = axum::Router::new().route(
-		"/v1/chat/completions",
-		axum::routing::post(move || {
-			let queue = queue.clone();
-			let count = count.clone();
-			async move {
-				count.fetch_add(1, Ordering::SeqCst);
-				let mut queue = queue.lock().await;
-				let result = if queue.len() > 1 {
-					queue.pop_front().unwrap()
-				} else {
-					queue.front().unwrap().clone()
-				};
-				axum::Json(result)
-			}
-		}),
-	);
+	let mock = axum::Router::new()
+		.route(
+			"/v1/chat/completions",
+			axum::routing::post(move || {
+				let queue = queue.clone();
+				let count = count.clone();
+				let gate = gate.clone();
+				async move {
+					count.fetch_add(1, Ordering::SeqCst);
+					let mut queue = queue.lock().await;
+					let result = if queue.len() > 1 {
+						queue.pop_front().unwrap()
+					} else {
+						queue.front().unwrap().clone()
+					};
+					drop(queue);
+					if gate.paused.load(Ordering::SeqCst) {
+						gate.arrived.notify_one();
+						gate.release.notified().await;
+					}
+					axum::Json(result)
+				}
+			}),
+		)
+		.route(
+			"/test-effect",
+			axum::routing::post(move || {
+				let effects = effects.clone();
+				let corrupt_reply = corrupt_reply.clone();
+				async move {
+					effects.fetch_add(1, Ordering::SeqCst);
+					if corrupt_reply.load(Ordering::SeqCst) {
+						"{".into_response()
+					} else {
+						axum::Json(json!({"ok":true})).into_response()
+					}
+				}
+			}),
+		);
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", listener.local_addr().unwrap());
 	let server = tokio::spawn(async move {
@@ -148,6 +214,9 @@ async fn workbench() -> Workbench {
 		hits,
 		server,
 		endpoint,
+		model_gate,
+		effect_hits,
+		effect_reply_invalid,
 	}
 }
 
@@ -551,5 +620,256 @@ async fn workbench_rollback_preserves_registered_and_packaged_behavior_flags(
 		wb.f.registry.get(&entry.id, &entry.version).await.unwrap(),
 		entry
 	);
+	wb.cleanup().await;
+}
+
+#[rstest::fixture]
+async fn revoked_workbench() -> (Workbench, axum::Router) {
+	let wb = workbench().await;
+	let authorization = aidash::authorization::Authorization {
+		pool: wb.f.store.pool.clone(),
+	};
+	let actor = authorization.authenticate(&wb.token).await.unwrap();
+	let credential = authorization.credentials("acme").await.unwrap().remove(0);
+	authorization
+		.revoke_credential("acme", credential.id)
+		.await
+		.unwrap();
+	// Capture the authenticated actor before revocation, as middleware can do.
+	let (routes, _) = aidash::workbench::routes().split_for_parts();
+	let app = axum::Router::new()
+		.nest("/api", routes)
+		.layer(axum::Extension(actor))
+		.with_state(wb.f.clone());
+	(wb, app)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn draft_mutation_rechecks_the_authenticated_credential_before_commit(
+	#[future(awt)] revoked_workbench: (Workbench, axum::Router),
+) {
+	let (wb, app) = revoked_workbench;
+	let (status, result) = request(&app, &wb.token, "PUT", &wb.path(), json!({"expected_revision":1,"entry":wb.draft["entry"],"documents":[],"release_notes":"Must not commit"})).await;
+	assert_eq!(status, 401, "revoked actor: {result}");
+	let unchanged = request(
+		&wb.app,
+		&wb.f.config.api_token,
+		"GET",
+		&wb.path(),
+		Value::Null,
+	)
+	.await
+	.1;
+	assert_eq!(unchanged["revision"], 1);
+	assert_eq!(unchanged["release_notes"], "");
+	wb.cleanup().await;
+}
+
+#[rstest::fixture]
+async fn clustered_workbench() -> Workbench {
+	let mut wb = workbench().await;
+	wb.register().await;
+	let (status, cluster) = request(&wb.app, &wb.f.config.api_token, "POST", "/api/registry", json!({"id":"fixture-cluster","version":"1.0.0","kind":"cluster","name":{"en":"Fixture cluster"},"description":{"en":"Fixture"},"config":{"coordinator":{"id":wb.draft["entry"]["id"],"version":"1.0.0"}}})).await;
+	assert_eq!(status, 200, "cluster: {cluster}");
+	let mut entry = wb.draft["entry"].clone();
+	entry["version"] = json!("1.0.1");
+	entry["config"]["cluster"] = json!({"id":cluster["id"],"version":cluster["version"]});
+	wb.draft = wb
+		.call(
+			"PUT",
+			&wb.path(),
+			json!({"expected_revision":1,"entry":entry,"documents":[]}),
+		)
+		.await;
+	wb.call(
+		"POST",
+		&format!("{}/register", wb.path()),
+		json!({"expected_revision":2}),
+	)
+	.await;
+	for reference in [
+		json!({"id":wb.draft["entry"]["id"],"version":"1.0.1"}),
+		json!({"id":"fixture-model","version":"1.0.0"}),
+		entry["config"]["cluster"].clone(),
+	] {
+		assert_eq!(
+			request(
+				&wb.app,
+				&wb.f.config.api_token,
+				"POST",
+				"/api/authorization/acme/catalog",
+				json!({"entry":reference,"enabled":true,"expected_revision":0})
+			)
+			.await
+			.0,
+			200
+		);
+	}
+	wb
+}
+
+#[rstest::rstest]
+#[case("cluster.execute")]
+#[case("registry.read")]
+#[tokio::test]
+async fn trust_reports_the_configured_cluster_and_its_execution_dependencies(
+	#[future(awt)] clustered_workbench: Workbench,
+	#[case] denied_action: &str,
+) {
+	let wb = clustered_workbench;
+	assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/authorization/acme", json!({"expected_revision":1,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"cluster-denial","effect":"deny","subjects":{"any":true},"actions":[denied_action],"resources":{"kinds":["cluster"]}}]}})).await.0, 200);
+	let context = wb
+		.call(
+			"POST",
+			&format!(
+				"/api/workbench/versions/{}/1.0.1/permissions",
+				wb.draft["entry"]["id"].as_str().unwrap()
+			),
+			json!({"tenant":"acme","subject":"alice"}),
+		)
+		.await;
+	let cluster = context["rows"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|row| row["kind"] == "cluster")
+		.expect("configured cluster must appear in Trust");
+	assert_eq!(cluster["action"], "cluster.execute");
+	assert_eq!(cluster["catalog_enabled"], true);
+	assert_eq!(
+		cluster["registry_read_allowed"],
+		denied_action != "registry.read"
+	);
+	assert_eq!(
+		cluster["policy_allowed"],
+		denied_action != "cluster.execute"
+	);
+	assert_eq!(cluster["effective_for_component"], false);
+	wb.cleanup().await;
+}
+
+#[rstest::fixture]
+async fn hidden_incident_backlog(#[default(false)] other_tenant: bool) -> (Workbench, Value) {
+	let wb = workbench().await;
+	wb.register().await;
+	let path = format!(
+		"/api/workbench/versions/{}/1.0.0/incidents",
+		wb.draft["entry"]["id"].as_str().unwrap()
+	);
+	let older = wb
+		.call(
+			"POST",
+			&path,
+			json!({"severity":"medium","owner":"alice","notes":"Older authorized incident"}),
+		)
+		.await;
+	if other_tenant {
+		assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/authorization/other", json!({"expected_revision":0,"bundle":{"tenant":"other","subjects":{"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await.0, 200);
+	}
+	let mut hidden = Vec::new();
+	for _ in 0..101 {
+		let (status, incident) = request(&wb.app, &wb.f.config.api_token, "POST", &path, json!({"tenant":if other_tenant {"other"} else {"acme"},"severity":"medium","owner":"bob","notes":"Inaccessible incident"})).await;
+		assert_eq!(status, 200, "incident: {incident}");
+		hidden.push(incident["id"].clone());
+	}
+	if !other_tenant {
+		assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/authorization/acme", json!({"expected_revision":1,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"incident-denial","effect":"deny","subjects":{"any":true},"actions":["agent_incident.read"],"resources":{"kinds":["agent_incident"],"ids":hidden}}]}})).await.0, 200);
+	}
+	(wb, older)
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn incident_list_reaches_older_authorized_rows(
+	#[case] _other_tenant: bool,
+	#[future(awt)]
+	#[with(_other_tenant)]
+	hidden_incident_backlog: (Workbench, Value),
+) {
+	let (wb, older) = hidden_incident_backlog;
+	let visible = wb
+		.call(
+			"GET",
+			&format!(
+				"/api/workbench/versions/{}/1.0.0/incidents",
+				wb.draft["entry"]["id"].as_str().unwrap()
+			),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(visible.as_array().unwrap().len(), 1, "incidents: {visible}");
+	assert_eq!(visible[0]["id"], older["id"]);
+	wb.cleanup().await;
+}
+
+#[rstest::fixture]
+async fn model_waiting_for_real_tool() -> (Workbench, Value) {
+	let wb = workbench().await;
+	*wb.responses.lock().await = VecDeque::from([
+		json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"real-call","function":{"name":"plugin_0","arguments":"{\"action\":\"read\",\"resource\":\"sandbox\"}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
+	]);
+	assert_eq!(request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect",wb.endpoint),"credential_env":null,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
+	wb.model_gate.paused.store(true, Ordering::SeqCst);
+	let session = wb
+		.call(
+			"POST",
+			&format!("{}/tests", wb.path()),
+			json!({"expected_revision":1,"message":"Use the tool","mode":"real","profile_id":"sandbox"}),
+		)
+		.await;
+	tokio::time::timeout(Duration::from_secs(5), wb.model_gate.arrived.notified())
+		.await
+		.expect("model fixture must reach the in-flight boundary");
+	(wb, session)
+}
+
+#[rstest::rstest]
+#[case("profile")]
+#[case("credential")]
+#[case("policy")]
+#[tokio::test]
+async fn pre_dispatch_revocation_is_denied_without_an_unknown_external_outcome(
+	#[future(awt)] model_waiting_for_real_tool: (Workbench, Value),
+	#[case] revoked: &str,
+) {
+	let (wb, started) = model_waiting_for_real_tool;
+	match revoked {
+		"profile" => assert_eq!(request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":1,"enabled":false,"rules":[]})).await.0, 200),
+		"credential" => {
+			let authorization = aidash::authorization::Authorization {pool:wb.f.store.pool.clone()};
+			let credential = authorization.credentials("acme").await.unwrap().remove(0);
+			authorization.revoke_credential("acme", credential.id).await.unwrap();
+		}
+		"policy" => assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/authorization/acme", json!({"expected_revision":1,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"test-denial","effect":"deny","subjects":{"any":true},"actions":["agent_draft.test"],"resources":{"kinds":["agent_draft"]}}]}})).await.0, 200),
+		_ => unreachable!(),
+	}
+	wb.model_gate.release.notify_one();
+	let finished = wb.operator_finished(&started).await;
+	assert_eq!(wb.effect_hits.load(Ordering::SeqCst), 0);
+	assert_eq!(
+		finished["status"], "blocked",
+		"pre-dispatch {revoked}: {finished}"
+	);
+	let calls = finished["tool_calls"].as_array().unwrap();
+	assert_eq!(calls.len(), 1);
+	assert_eq!(calls[0]["outcome"], "denied");
+	wb.cleanup().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn an_unreadable_response_after_dispatch_preserves_the_unknown_external_outcome(
+	#[future(awt)] model_waiting_for_real_tool: (Workbench, Value),
+) {
+	let (wb, started) = model_waiting_for_real_tool;
+	wb.effect_reply_invalid.store(true, Ordering::SeqCst);
+	wb.model_gate.release.notify_one();
+	let finished = wb.operator_finished(&started).await;
+	assert_eq!(wb.effect_hits.load(Ordering::SeqCst), 1);
+	assert_eq!(finished["status"], "outcome_unknown", "session: {finished}");
+	assert_eq!(finished["tool_calls"][0]["outcome"], "outcome_unknown");
 	wb.cleanup().await;
 }
