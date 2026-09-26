@@ -338,7 +338,6 @@ async fn create(
 	Json(mut input): Json<CreateDraft>,
 ) -> Result<Json<Draft>> {
 	let (tenant, owner) = author_identity(&actor, input.tenant.as_deref(), input.owner.as_deref())?;
-	target_enabled(&f, &tenant, &owner).await?;
 	let id = Uuid::now_v7();
 	if !input.entry.id.is_empty() {
 		return Err(Error::Invalid("new draft must leave entry.id empty; use an authorized version flow for existing identities".into()));
@@ -362,6 +361,7 @@ async fn create(
 		archived: false,
 		updated_at: Utc::now(),
 	};
+	target_enabled(&mut tx, &prospective.tenant, &prospective.owner).await?;
 	authorize(&mut tx, &actor, &prospective, "agent_draft.create", false).await?;
 	sqlx::query(
 		&Query::insert()
@@ -607,12 +607,12 @@ fn ref_key(reference: &crate::registry::EntityRef) -> String {
 	format!("{}@{}", reference.id, reference.version)
 }
 
-async fn target_enabled(f: &Federation, tenant: &str, subject: &str) -> Result<()> {
-	let snapshot = (Authorization {
-		pool: f.store.pool.clone(),
-	})
-	.snapshot(tenant)
-	.await?;
+async fn target_enabled(
+	tx: &mut Transaction<'_, Postgres>,
+	tenant: &str,
+	subject: &str,
+) -> Result<()> {
+	let snapshot = Authorization::load_with_mode(tx, tenant, false).await?;
 	if crate::authorization::identity::enabled(&snapshot, subject) {
 		Ok(())
 	} else {
@@ -658,6 +658,7 @@ async fn duplicate(
 		archived: false,
 		updated_at: Utc::now(),
 	};
+	target_enabled(&mut tx, &prospective.tenant, &prospective.owner).await?;
 	authorize(&mut tx, &actor, &prospective, "agent_draft.create", false).await?;
 	sqlx::query(
 		&Query::insert()
@@ -714,7 +715,6 @@ async fn adopt(
 		return Err(Error::Forbidden);
 	}
 	let (tenant, owner) = author_identity(&actor, Some(&input.tenant), Some(&input.owner))?;
-	target_enabled(&f, &tenant, &owner).await?;
 	let mut entry = f.registry.get(&id, &version).await?;
 	if entry.kind != "agent" {
 		return Err(Error::Invalid(
@@ -724,6 +724,7 @@ async fn adopt(
 	let documents = crate::knowledge::load(&f.registry.db, &entry).await?;
 	new_draft_defaults(&mut entry)?;
 	let mut tx = f.store.pool.begin().await?;
+	target_enabled(&mut tx, &tenant, &owner).await?;
 	let existing: Option<Uuid> = sqlx::query_scalar(
 		&Query::select()
 			.column(Alias::new("id"))
@@ -823,7 +824,7 @@ async fn share(
 		));
 	}
 	if input.enabled {
-		target_enabled(&f, &draft.tenant, &input.subject).await?;
+		target_enabled(&mut tx, &draft.tenant, &input.subject).await?;
 	}
 	if input.enabled {
 		sqlx::query(
@@ -928,7 +929,7 @@ async fn transfer(
 	if draft.revision != input.expected_revision {
 		return Err(Error::Conflict("draft revision changed".into()));
 	}
-	target_enabled(&f, &draft.tenant, &input.new_owner).await?;
+	target_enabled(&mut tx, &draft.tenant, &input.new_owner).await?;
 	// Ownership supersedes a share. Retaining it would restore the former
 	// owner's access after a later transfer.
 	sqlx::query(

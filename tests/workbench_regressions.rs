@@ -1900,3 +1900,77 @@ async fn review6_permission_context_respects_agent_tool_behavior_flags(
 	);
 	wb.cleanup().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn review6_operator_transfer_holds_target_eligibility_through_commit(
+	#[future(awt)] workbench: Workbench,
+) {
+	let wb = workbench;
+	let mut barrier = wb.f.store.pool.begin().await.unwrap();
+	sqlx::query(
+		&Query::select()
+			.expr(Expr::cust("PG_ADVISORY_XACT_LOCK(71003201)"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *barrier)
+	.await
+	.unwrap();
+	let app = wb.app.clone();
+	let token = wb.f.config.api_token.clone();
+	let path = format!("{}/transfer", wb.path());
+	let transfer = tokio::spawn(async move {
+		request(
+			&app,
+			&token,
+			"POST",
+			&path,
+			json!({"expected_revision":1,"new_owner":"bob"}),
+		)
+		.await
+	});
+	tokio::time::timeout(Duration::from_secs(5), async {
+		loop {
+			let waiting: bool = sqlx::query_scalar(
+				&Query::select()
+					.expr(Expr::cust(
+						"EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND wait_event='advisory')",
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.bind(&wb.schema)
+			.fetch_one(&wb.f.store.pool)
+			.await
+			.unwrap();
+			if waiting {
+				break;
+			}
+			tokio::time::sleep(Duration::from_millis(10)).await;
+		}
+	})
+	.await
+	.expect("transfer did not reach its commit boundary");
+	let app = wb.app.clone();
+	let token = wb.f.config.api_token.clone();
+	let mut disable = tokio::spawn(async move {
+		request(&app,&token,"POST","/api/authorization/acme",json!({"expected_revision":1,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user","enabled":false}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]}})).await
+	});
+	let early = tokio::time::timeout(Duration::from_millis(200), &mut disable).await;
+	barrier.commit().await.unwrap();
+	let finished_early = early.is_ok();
+	let disabled = match early {
+		Ok(result) => result.unwrap(),
+		Err(_) => disable.await.unwrap(),
+	};
+	let transferred = transfer.await.unwrap();
+	assert!(
+		!finished_early,
+		"target disable crossed the transfer transaction: {disabled:?}"
+	);
+	assert_eq!(
+		(transferred.0, disabled.0),
+		(200, 200),
+		"transfer: {transferred:?}; disable: {disabled:?}"
+	);
+	wb.cleanup().await;
+}

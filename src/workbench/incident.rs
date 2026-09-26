@@ -198,8 +198,8 @@ async fn create(
 ) -> Result<Json<Incident>> {
 	validate(&input.severity, "open", &input.notes, &input.evidence)?;
 	let (tenant, _) = author_identity(&actor, input.tenant.as_deref(), Some(actor_name(&actor)))?;
-	target_enabled(&f, &tenant, &input.owner).await?;
 	let mut tx = f.store.pool.begin().await?;
+	target_enabled(&mut tx, &tenant, &input.owner).await?;
 	let reference = EntityRef { id, version };
 	trust::require_inspection(&mut tx, &actor, &reference).await?;
 	if f.registry
@@ -397,7 +397,7 @@ async fn update(
 	if prior.revision != input.expected_revision {
 		return Err(Error::Conflict("incident revision changed".into()));
 	}
-	target_enabled(&f, &prior.tenant, &input.owner).await?;
+	target_enabled(&mut tx, &prior.tenant, &input.owner).await?;
 	let mut evidence: Vec<EvidenceCopy> = serde_json::from_value(prior.evidence.clone())?;
 	if prior.evidence_expired_at.is_some() && !input.add_evidence.is_empty() {
 		return Err(Error::Conflict(
