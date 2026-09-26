@@ -2,12 +2,13 @@
 use super::*;
 use crate::registry::EntityRef;
 use axum::extract::Query as AxumQuery;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
 struct AuditQuery {
-	#[serde(default)]
-	offset: usize,
+	cursor: Option<String>,
 	tenant: Option<String>,
 }
 
@@ -25,8 +26,33 @@ pub struct AuditItem {
 pub struct AuditPage {
 	pub observed_at: DateTime<Utc>,
 	pub items: Vec<AuditItem>,
-	pub next_offset: Option<usize>,
+	pub next_cursor: Option<String>,
 	pub source_boundary: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AuditCursor {
+	observed_at: DateTime<Utc>,
+	before_at: DateTime<Utc>,
+	before_id: String,
+}
+
+fn decode_cursor(value: &str) -> Result<AuditCursor> {
+	if value.len() > 1024 {
+		return Err(Error::Invalid("audit cursor too large".into()));
+	}
+	let bytes = URL_SAFE_NO_PAD
+		.decode(value)
+		.map_err(|_| Error::Invalid("invalid audit cursor".into()))?;
+	let cursor: AuditCursor = serde_json::from_slice(&bytes)
+		.map_err(|_| Error::Invalid("invalid audit cursor".into()))?;
+	if cursor.before_at > cursor.observed_at
+		|| cursor.before_id.is_empty()
+		|| cursor.before_id.len() > 200
+	{
+		return Err(Error::Invalid("invalid audit cursor boundary".into()));
+	}
+	Ok(cursor)
 }
 
 pub fn routes() -> OpenApiRouter<Federation> {
@@ -40,9 +66,7 @@ async fn audit(
 	Path((id, version)): Path<(String, String)>,
 	AxumQuery(query): AxumQuery<AuditQuery>,
 ) -> Result<Json<AuditPage>> {
-	if query.offset > 10_000 {
-		return Err(Error::Invalid("audit offset too large".into()));
-	}
+	let cursor = query.cursor.as_deref().map(decode_cursor).transpose()?;
 	let tenant = match &actor {
 		Actor::Operator => query.tenant.clone(),
 		Actor::Subject(identity) => {
@@ -57,13 +81,18 @@ async fn audit(
 		}
 	};
 	let mut tx = f.store.pool.begin().await?;
-	let observed_at = sqlx::query_scalar(
-		&Query::select()
-			.expr(Expr::current_timestamp())
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_one(&mut *tx)
-	.await?;
+	let observed_at = match &cursor {
+		Some(cursor) => cursor.observed_at,
+		None => {
+			sqlx::query_scalar(
+				&Query::select()
+					.expr(Expr::current_timestamp())
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_one(&mut *tx)
+			.await?
+		}
+	};
 	trust::require_inspection(
 		&mut tx,
 		&actor,
@@ -241,7 +270,28 @@ async fn audit(
 		}
 	}
 	items.sort_by(|left, right| right.at.cmp(&left.at).then_with(|| right.id.cmp(&left.id)));
-	let next_offset = (items.len() > query.offset + 50).then_some(query.offset + 50);
-	let items = items.into_iter().skip(query.offset).take(50).collect();
-	Ok(Json(AuditPage { observed_at, items, next_offset, source_boundary: "Connected-node Registry, authorized sandbox records, tenant Catalog history and visible incident history, bounded by this response observation time and the latest 100 records per source. Authorization is checked again on every page; other nodes and hidden records are not represented.".into() }))
+	if let Some(cursor) = &cursor {
+		items.retain(|item| {
+			item.at < cursor.before_at
+				|| (item.at == cursor.before_at && item.id < cursor.before_id)
+		});
+	}
+	let more = items.len() > 50;
+	items.truncate(50);
+	let next_cursor = if more {
+		items
+			.last()
+			.map(|item| {
+				serde_json::to_vec(&AuditCursor {
+					observed_at,
+					before_at: item.at,
+					before_id: item.id.clone(),
+				})
+				.map(|bytes| URL_SAFE_NO_PAD.encode(bytes))
+			})
+			.transpose()?
+	} else {
+		None
+	};
+	Ok(Json(AuditPage { observed_at, items, next_cursor, source_boundary: "Connected-node Registry, authorized sandbox records, tenant Catalog history and visible incident history, bounded by the initial observation time and the latest 100 records per source. Authorization is checked again on every page; other nodes and hidden records are not represented.".into() }))
 }

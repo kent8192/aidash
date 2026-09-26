@@ -2017,6 +2017,116 @@ async fn review6_expired_retention_rejects_new_evidence_before_cleanup(
 	wb.cleanup().await;
 }
 
+#[rstest::fixture]
+async fn review6_audit_backlog() -> (Workbench, Value) {
+	let wb = workbench().await;
+	wb.register().await;
+	let incident = wb
+		.call(
+			"POST",
+			&format!(
+				"/api/workbench/versions/{}/1.0.0/incidents",
+				wb.draft["entry"]["id"].as_str().unwrap()
+			),
+			json!({"severity":"low","owner":"alice","notes":"History"}),
+		)
+		.await;
+	let mut insert = Query::insert();
+	insert
+		.into_table(Alias::new("agent_incident_events"))
+		.columns(["incident_id", "actor", "change"].map(Alias::new));
+	for seq in 0..99 {
+		insert.values_panic([
+			Expr::cust("$1"),
+			Expr::value("alice"),
+			Expr::value(json!({"seq":seq})),
+		]);
+	}
+	sqlx::query(&insert.to_string(PostgresQueryBuilder))
+		.bind(
+			incident["id"]
+				.as_str()
+				.unwrap()
+				.parse::<uuid::Uuid>()
+				.unwrap(),
+		)
+		.execute(&wb.f.store.pool)
+		.await
+		.unwrap();
+	(wb, incident)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn review6_audit_cursor_preserves_membership_when_new_events_arrive(
+	#[future(awt)] review6_audit_backlog: (Workbench, Value),
+) {
+	let (wb, incident) = review6_audit_backlog;
+	let path = format!(
+		"/api/workbench/versions/{}/1.0.0/audit",
+		wb.draft["entry"]["id"].as_str().unwrap()
+	);
+	let first = wb.call("GET", &path, Value::Null).await;
+	assert_eq!(first["items"].as_array().unwrap().len(), 50);
+	let cursor = first["next_cursor"]
+		.as_str()
+		.expect("history must provide a stable cursor");
+	let mut insert = Query::insert();
+	insert
+		.into_table(Alias::new("agent_incident_events"))
+		.columns(["incident_id", "actor", "change"].map(Alias::new));
+	for seq in 1000..1020 {
+		insert.values_panic([
+			Expr::cust("$1"),
+			Expr::value("alice"),
+			Expr::value(json!({"seq":seq})),
+		]);
+	}
+	sqlx::query(&insert.to_string(PostgresQueryBuilder))
+		.bind(
+			incident["id"]
+				.as_str()
+				.unwrap()
+				.parse::<uuid::Uuid>()
+				.unwrap(),
+		)
+		.execute(&wb.f.store.pool)
+		.await
+		.unwrap();
+	let second = wb
+		.call("GET", &format!("{path}?cursor={cursor}"), Value::Null)
+		.await;
+	let third = wb
+		.call(
+			"GET",
+			&format!("{path}?cursor={}", second["next_cursor"].as_str().unwrap()),
+			Value::Null,
+		)
+		.await;
+	let pages = [&first, &second, &third];
+	let mut ids = std::collections::HashSet::new();
+	let mut count = 0;
+	for page in pages {
+		assert_eq!(page["observed_at"], first["observed_at"]);
+		for item in page["items"].as_array().unwrap() {
+			assert!(
+				ids.insert(item["id"].as_str().unwrap().to_owned()),
+				"duplicate: {item}"
+			);
+			assert!(
+				item["details"]["change"]["seq"]
+					.as_i64()
+					.is_none_or(|seq| seq < 1000),
+				"new event entered snapshot: {item}"
+			);
+			count += 1;
+		}
+	}
+	assert_eq!(count, 101);
+	assert!(third["next_cursor"].is_null());
+	wb.cleanup().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn review6_operator_transfer_holds_target_eligibility_through_commit(

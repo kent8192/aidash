@@ -688,3 +688,85 @@ for (const change of ["add", "replace", "remove", "unchanged", "cluster"]) {
       await expect(differences).not.toContainText("Private references");
   });
 }
+
+test("Trust audit uses its returned cursor and resets it for a different tenant", async ({
+  page,
+}) => {
+  await page.clock.install();
+  const { errors } = await setup(page, { locale: "en-US" });
+  const reads: URL[] = [];
+  await page.route("**/api/workbench/**", (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    if (path === "/api/workbench/drafts" || path.endsWith("/incidents"))
+      return route.fulfill({ json: [] });
+    if (path === "/api/workbench/versions/managed-agent/1.0.0")
+      return route.fulfill({
+        json: {
+          entry,
+          source_node: "aidash://home",
+          observed_at: "2026-09-25T00:00:00Z",
+          workspaces: [],
+          usage_truncated: false,
+          external_assessment_available: false,
+        },
+      });
+    if (path.endsWith("/audit")) {
+      reads.push(url);
+      const older = url.searchParams.get("cursor") === "fixed-history-cursor";
+      return route.fulfill({
+        json: {
+          observed_at: "2026-09-25T00:00:00Z",
+          items: [
+            {
+              id: older ? "incident:old" : "incident:new",
+              source: "incident",
+              kind: "incident_changed",
+              at: "2026-09-24T00:00:00Z",
+              actor: "alice",
+              details: {
+                label: older ? "Older audit record" : "Latest audit record",
+              },
+            },
+          ],
+          next_cursor: older ? null : "fixed-history-cursor",
+          source_boundary: "Observed history",
+        },
+      });
+    }
+    return route.fulfill({
+      status: 404,
+      json: { error: "fixture route unavailable" },
+    });
+  });
+  await page.goto("/trust?focus=managed-agent%401.0.0");
+  await page
+    .locator(".wb-tabs")
+    .getByRole("button", { name: "Audit", exact: true })
+    .click();
+  await expect(
+    page.getByText('"Latest audit record"', { exact: false }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Next 50" }).click();
+  await expect(
+    page.getByText('"Older audit record"', { exact: false }),
+  ).toBeVisible();
+  expect(reads.at(-1)?.searchParams.get("cursor")).toBe("fixed-history-cursor");
+  expect(reads.every((url) => !url.searchParams.has("offset"))).toBe(true);
+  await page.clock.runFor(10100);
+  expect(reads.at(-1)?.searchParams.get("cursor")).toBe("fixed-history-cursor");
+  await page.getByRole("button", { name: "Latest history" }).click();
+  await expect(
+    page.getByText('"Latest audit record"', { exact: false }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Next 50" }).click();
+  await expect(
+    page.getByText('"Older audit record"', { exact: false }),
+  ).toBeVisible();
+  await page.getByLabel("Tenant").fill("other");
+  await expect
+    .poll(() => reads.at(-1)?.searchParams.get("tenant"))
+    .toBe("other");
+  expect(reads.at(-1)?.searchParams.get("cursor")).toBeNull();
+  expect(errors).toEqual([]);
+});

@@ -177,13 +177,14 @@ type PermissionContext = {
 type AuditPage = {
   observed_at: string;
   items: {
+    id: string;
     source: string;
     kind: string;
     at: string;
     actor: string | null;
     details: Record<string, unknown>;
   }[];
-  next_offset: number | null;
+  next_cursor: string | null;
   source_boundary: string;
 };
 type Mode = "creator" | "trust";
@@ -521,7 +522,7 @@ export function Workbench({
   const [permissionContext, setPermissionContext] =
     useState<PermissionContext | null>(null);
   const [auditPage, setAuditPage] = useState<AuditPage | null>(null);
-  const [auditOffset, setAuditOffset] = useState(0);
+  const [auditCursor, setAuditCursor] = useState<string | null>(null);
   const [testSessions, setTestSessions] = useState<TestSession[]>([]);
   const [registeredVersions, setRegisteredVersions] = useState<
     RegisteredVersion[]
@@ -757,14 +758,14 @@ export function Workbench({
     let active = true;
     queueMicrotask(() => {
       if (active) {
-        setAuditOffset(0);
+        setAuditCursor(null);
         setAuditPage(null);
       }
     });
     return () => {
       active = false;
     };
-  }, [focus]);
+  }, [focus, policyTenant]);
   const inspectedId = inspection?.entry.id;
   const inspectedVersion = inspection?.entry.version;
   useEffect(() => {
@@ -1341,7 +1342,7 @@ export function Workbench({
     )
       return;
     let active = true;
-    const path = `/api/workbench/versions/${encodeURIComponent(selectedAgentId)}/${encodeURIComponent(selectedAgentVersion)}/audit?offset=${auditOffset}${isOperator && policyTenant ? `&tenant=${encodeURIComponent(policyTenant)}` : ""}`;
+    const path = `/api/workbench/versions/${encodeURIComponent(selectedAgentId)}/${encodeURIComponent(selectedAgentVersion)}/audit?${auditCursor ? `cursor=${encodeURIComponent(auditCursor)}&` : ""}${isOperator && policyTenant ? `tenant=${encodeURIComponent(policyTenant)}` : ""}`;
     const read = () => {
       void apiFetch<AuditPage>(path)
         .then((value) => {
@@ -1363,7 +1364,7 @@ export function Workbench({
   }, [
     mode,
     trustTab,
-    auditOffset,
+    auditCursor,
     policyTenant,
     isOperator,
     selectedAgentId,
@@ -2172,8 +2173,8 @@ export function Workbench({
           <p>{new Date(auditPage.observed_at).toLocaleString(locale)}</p>
           {auditPage.items.length ? (
             <ol>
-              {auditPage.items.map((item, index) => (
-                <li key={`${item.source}:${item.at}:${index}`}>
+              {auditPage.items.map((item) => (
+                <li key={item.id}>
                   <strong>
                     {item.source} · {item.kind}
                   </strong>
@@ -2186,10 +2187,15 @@ export function Workbench({
           ) : (
             <p>{t.noAudit}</p>
           )}
-          {auditPage.next_offset !== null && (
+          {auditCursor && (
+            <button type="button" onClick={() => setAuditCursor(null)}>
+              {locale === "ja-JP" ? "最新の履歴" : "Latest history"}
+            </button>
+          )}
+          {auditPage.next_cursor != null && (
             <button
               type="button"
-              onClick={() => setAuditOffset(auditPage.next_offset!)}
+              onClick={() => setAuditCursor(auditPage.next_cursor!)}
             >
               {locale === "ja-JP" ? "次の50件" : "Next 50"}
             </button>
