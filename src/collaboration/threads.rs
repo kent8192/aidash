@@ -5,6 +5,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 pub(crate) async fn get(lease: &mut Lease, workspace: Uuid, id: Uuid) -> Result<ChannelThread> {
+	crate::capabilities::thread_lifecycle::visible(lease.tx(), id).await?;
 	let thread: Option<ChannelThread> = sqlx::query_as(
 		&Query::select()
 			.column(Asterisk)
@@ -75,7 +76,7 @@ pub(crate) async fn create(
 			.await?;
 		return Ok(thread);
 	}
-	Ok(sqlx::query_as(
+	let existing: ChannelThread = sqlx::query_as(
 		&Query::select()
 			.column(Asterisk)
 			.from(Alias::new("channel_threads"))
@@ -86,7 +87,9 @@ pub(crate) async fn create(
 	.bind(workspace)
 	.bind(root)
 	.fetch_one(&mut **lease.tx())
-	.await?)
+	.await?;
+	crate::capabilities::thread_lifecycle::visible(lease.tx(), existing.id).await?;
+	Ok(existing)
 }
 
 pub(crate) async fn reply_thread(lease: &mut Lease, message: Uuid) -> Result<Option<Uuid>> {

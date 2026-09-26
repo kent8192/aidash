@@ -779,3 +779,129 @@ test("shared files can be inspected without leaving the workspace", async ({
   await expect(dialog).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+
+for (const width of [1440, 390]) {
+  test(`remote execution reconciles controls and retries one instruction at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 800 });
+    const { errors } = await setup(page, { subject: true });
+    const grant = {
+      id: "4191ce62-a1a8-42d6-9926-bd32f5e0dc34",
+      task_id: "task-0",
+      node_id: "aidash://remote",
+      agent: { id: "researcher", version: "1.0.0" },
+      expires_at: new Date(Date.now() + 3600000).toISOString(),
+      revoked: false,
+    };
+    const execution = {
+      grant_id: grant.id,
+      admission_id: "829cb342-d2c8-43e4-99c2-0dbe96bc4f70",
+      run_id: "829cb342-d2c8-43e4-99c2-0dbe96bc4f70",
+      phase: "THINKING",
+      control: "ACTIVE",
+      error: null,
+    };
+    let unavailable = false;
+    const messages: { id: string; content: string }[] = [];
+    await page.route("**/api/tasks/task-0/remote-**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path.endsWith("/remote-executions"))
+        return route.fulfill({
+          json: [
+            { grant, execution: unavailable ? null : execution, unavailable },
+          ],
+        });
+      if (path.endsWith("/control")) {
+        const action = route.request().postDataJSON().action;
+        execution.control = {
+          pause: "PAUSED",
+          resume: "ACTIVE",
+          cancel: "CANCELLED",
+        }[action as "pause"];
+        return route.fulfill({ json: execution });
+      }
+      if (path.endsWith("/messages")) {
+        messages.push(route.request().postDataJSON());
+        return messages.length === 1
+          ? route.fulfill({
+              status: 503,
+              json: {
+                error: { message: "Receipt unavailable. Retry to reconcile." },
+              },
+            })
+          : route.fulfill({
+              json: {
+                id: messages[0].id,
+                run_id: execution.run_id,
+                accepted: true,
+              },
+            });
+      }
+      return route.fallback();
+    });
+    await page.goto("/collaboration?channel=workspace-one");
+    await page.getByRole("button", { name: "Tasks and results" }).click();
+    await page
+      .locator(".collab-channel .collab-task")
+      .filter({ hasText: "Collect evidence" })
+      .click();
+    const panel = page.getByRole("region", { name: "Remote execution" });
+    await expect(
+      panel.getByText("aidash://remote", { exact: true }),
+    ).toBeVisible();
+    await panel.getByRole("button", { name: "Pause", exact: true }).click();
+    const resume = panel.getByRole("button", {
+      name: "Recheck authority and resume",
+    });
+    await expect(resume).toBeVisible();
+    await resume.focus();
+    await page.keyboard.press("Enter");
+    await expect(
+      panel.getByRole("button", { name: "Pause", exact: true }),
+    ).toBeVisible();
+    const input = panel.getByLabel("Instruction for the remote Agent");
+    await input.fill("Keep the original source and report the uncertainty.");
+    await panel.getByRole("button", { name: "Send instruction" }).click();
+    await expect(input).toBeDisabled();
+    await expect(panel.getByRole("alert")).toContainText("Receipt unavailable");
+    await panel
+      .getByRole("button", { name: "Retry the same instruction" })
+      .click();
+    await expect(panel.getByRole("status")).toContainText(
+      "Instruction acceptance confirmed",
+    );
+    expect(messages).toHaveLength(2);
+    expect(messages[1]).toEqual(messages[0]);
+    await expect(input).toHaveValue("");
+    unavailable = true;
+    await panel.getByRole("button", { name: "Refresh status" }).click();
+    await expect(
+      panel.getByText("The destination is unavailable.", { exact: false }),
+    ).toBeVisible();
+    unavailable = false;
+    grant.expires_at = "2000-01-01T00:00:00Z";
+    execution.control = "PAUSED";
+    await panel.getByRole("button", { name: "Refresh status" }).click();
+    await expect(panel.getByText("Expired", { exact: false })).toBeVisible();
+    await expect(
+      panel.getByRole("button", { name: "Recheck authority and resume" }),
+    ).toHaveCount(0);
+    await expect(
+      panel.getByRole("button", { name: "Cancel execution" }),
+    ).toBeEnabled();
+    const dialog = page.getByRole("dialog");
+    expect(
+      await dialog.evaluate(
+        (element) => element.scrollWidth <= element.clientWidth,
+      ),
+    ).toBe(true);
+    await panel.getByRole("button", { name: "Cancel execution" }).click();
+    await expect(
+      panel.getByRole("button", { name: "Cancel execution" }),
+    ).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+}

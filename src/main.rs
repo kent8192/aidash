@@ -13,6 +13,13 @@ async fn main() -> Result<()> {
 		)
 		.init();
 	let mode = std::env::args().nth(1).unwrap_or_else(|| "serve".into());
+	if mode == "capability-profile" {
+		println!(
+			"{}",
+			serde_json::to_string_pretty(&aidash::capabilities::Profile::default())?
+		);
+		return Ok(());
+	}
 	if mode == "openapi" {
 		println!(
 			"{}",
@@ -48,6 +55,20 @@ async fn main() -> Result<()> {
 	let (shutdown, stopping) = tokio::sync::watch::channel(false);
 	let mut background = tokio::task::JoinSet::new();
 	let mut workers = tokio::task::JoinSet::new();
+	if std::env::var_os("AIDASH_CAPABILITY_PROFILE").is_some() {
+		// Unconfigured nodes cannot admit core work. Do not reserve extra pools
+		// for idle reconciliation there. An explicitly disabled profile still
+		// starts both workers so rollback can drain work and retain recovery.
+		let f = federation.for_runtime_workers().await?;
+		let operation_stopping = stopping.clone();
+		background.spawn(async move {
+			aidash::capabilities::operations::run(f.store, operation_stopping).await
+		});
+		let f = federation.for_runtime_workers().await?;
+		let transfer_stopping = stopping.clone();
+		background
+			.spawn(async move { aidash::capabilities::transfer::run(f, transfer_stopping).await });
+	}
 	{
 		let pool = federation.store.pool.clone();
 		let mut stopping = stopping.clone();

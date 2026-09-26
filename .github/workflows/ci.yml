@@ -48,7 +48,11 @@ jobs:
       - run: npm run build --prefix web
       - run: npm exec --prefix web -- playwright install --with-deps chromium
       - run: npm run test:graph --prefix web && npm run test:collaboration --prefix web
-      - run: npm run test:ui --prefix web
+      - run: npm run test:ui --prefix web -- --reporter=list,json
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: test-results/browser.json
+      - name: Validate required capability browser journeys
+        run: python3 scripts/core-capability-evidence.py browser web/test-results
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -142,9 +146,35 @@ jobs:
           path: |
             .ignore/platform/aidash-ops-*/
             .ignore/dashboard-deployment-cluster-*.png
+  core-runtime:
+    name: Core capability isolation and recovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain
+      - name: Verify gVisor, real execution and two-node transfer faults
+        run: scripts/test-capability-cluster.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: core-runtime-evidence
+          include-hidden-files: true
+          path: .ignore/core-runtime/*/evidence/
+          if-no-files-found: error
   success:
     name: CI Success
-    needs: [lint, collaboration-ui, rust-tests, acceptance, orchestration]
+    needs:
+      [
+        lint,
+        collaboration-ui,
+        rust-tests,
+        acceptance,
+        orchestration,
+        core-runtime,
+      ]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

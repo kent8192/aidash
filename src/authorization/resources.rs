@@ -151,6 +151,31 @@ impl Access {
 			.await
 	}
 	async fn output_visible(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<bool> {
+		let grants: Vec<Uuid> = sqlx::query_scalar(
+			&Query::select()
+				.column(Alias::new("grant_id"))
+				.from(Alias::new("authorization_remote_outputs"))
+				.and_where(Expr::cust(
+					"workspace_id=$1 AND resource_kind=$2 AND resource_id=$3",
+				))
+				.order_by(Alias::new("grant_id"), Order::Asc)
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(workspace)
+		.bind(kind)
+		.bind(id)
+		.fetch_all(&mut **self.tx)
+		.await?;
+		for grant in grants {
+			let key = (grant, format!("remote:{}", self.authority_context()));
+			if self.checking_reads.insert(key.clone()) {
+				let allowed = Box::pin(self.grant_reads_visible(grant)).await;
+				self.checking_reads.remove(&key);
+				if !allowed? {
+					return Ok(false);
+				}
+			}
+		}
 		let producers: Vec<Uuid> = sqlx::query_scalar(
 			&sea_orm::sea_query::Query::select()
 				.expr(sea_orm::sea_query::SimpleExpr::from(

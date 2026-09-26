@@ -1,3 +1,7 @@
+import {
+  CapabilityConfiguration,
+  emptyCore,
+} from "./capabilities/configuration";
 import { ReferenceName } from "./record-view";
 import { AgentDocuments } from "./agent-documents";
 import type { ReferenceDocument } from "./generated/models";
@@ -295,6 +299,7 @@ export function EntityForm({
   const toolEntries = data.registry.filter((e) => e.kind === "tool");
   const skillEntries = data.registry.filter((e) => e.kind === "skill");
   const [documents, setDocuments] = useState<ReferenceDocument[]>([]);
+  const [core, setCore] = useState(emptyCore);
   const [readingDocuments, setReadingDocuments] = useState(false);
   return (
     <form
@@ -316,6 +321,7 @@ export function EntityForm({
                   skills: d.getAll("skills").map((v) => ref(String(v))),
                   cluster: s("cluster") ? ref(s("cluster")) : null,
                   max_steps: 64,
+                  ...core,
                 }
               : kind === "model"
                 ? {
@@ -369,7 +375,8 @@ export function EntityForm({
           if (
             kind === "agent" &&
             !s("instructions").trim() &&
-            !d.getAll("skills").length
+            !d.getAll("skills").length &&
+            !core.skill_attachments.length
           )
             throw new Error(t("agentNeedsSkill"));
           if (readingDocuments) return;
@@ -496,6 +503,7 @@ export function EntityForm({
                 placeholder={t("additionalInstructionsHelp")}
               />
             </Field>
+            <CapabilityConfiguration value={core} change={setCore} />
             <AgentDocuments
               documents={documents}
               change={setDocuments}

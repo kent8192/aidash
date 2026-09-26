@@ -18,7 +18,7 @@ impl AccessTransaction {
 		Self(Some(transaction))
 	}
 
-	fn is_active(&self) -> bool {
+	pub(super) fn is_active(&self) -> bool {
 		self.0.is_some()
 	}
 
@@ -51,6 +51,7 @@ impl DerefMut for AccessTransaction {
 }
 
 pub(crate) struct Access {
+	pub core_gc_complete: bool,
 	pub(super) remote_read_cache: std::collections::BTreeMap<(Uuid, String), bool>,
 	pub(super) unavailable_peers: std::collections::BTreeSet<String>,
 	pub(super) checking_reads: std::collections::BTreeSet<(Uuid, String)>,
@@ -98,6 +99,7 @@ impl Access {
 		let mut tx = store.pool.begin().await?;
 		let snapshot = identity.lock_with_mode(&mut tx, exclusive).await?;
 		Ok(Self {
+			core_gc_complete: false,
 			remote_read_cache: Default::default(),
 			unavailable_peers: Default::default(),
 			checking_reads: Default::default(),
@@ -127,6 +129,7 @@ impl Access {
 	pub async fn under_lease(lease: &Self) -> Result<Self> {
 		let tx = lease.pool.begin().await?;
 		Ok(Self {
+			core_gc_complete: false,
 			remote_read_cache: Default::default(),
 			unavailable_peers: Default::default(),
 			checking_reads: Default::default(),
@@ -275,6 +278,19 @@ impl Access {
 		}
 		self.record(&records).await?;
 		Ok(allowed)
+	}
+	pub(crate) fn evaluation(
+		&self,
+		subject: &str,
+		resource: &Resource,
+		action: &str,
+	) -> Evaluation {
+		Evaluation {
+			subject: subject.into(),
+			action: action.into(),
+			resource: resource.clone(),
+			environment: self.environment.clone(),
+		}
 	}
 
 	pub(crate) async fn record(&mut self, records: &[(Evaluation, Decision)]) -> Result<()> {

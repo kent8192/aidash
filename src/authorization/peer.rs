@@ -272,7 +272,12 @@ fn mapping_authority_error(error: Error) -> Error {
 		other => other,
 	}
 }
-async fn access(f: &Federation, node: &str, tenant: &str, subject: &str) -> Result<Access> {
+pub(crate) async fn access(
+	f: &Federation,
+	node: &str,
+	tenant: &str,
+	subject: &str,
+) -> Result<Access> {
 	identifier(tenant)?;
 	identifier(subject)?;
 	let mapping: PeerMapping = sqlx::query_as(
@@ -404,8 +409,12 @@ pub(crate) async fn authority_request<T: serde::de::DeserializeOwned>(
 	let response = f
 		.peer_response(node, reqwest::Method::POST, path, Some(body))
 		.await
-		.map_err(|_| Error::External("remote execution authority unavailable".into()))?;
-	match response.status().as_u16() {
+		.map_err(|error| {
+			tracing::warn!(%node,%path,error=%error,"authority request failed");
+			Error::External("remote execution authority unavailable".into())
+		})?;
+	let status = response.status().as_u16();
+	match status {
 		200..=299 => crate::response::json(response, 4_194_304)
 			.await
 			.map_err(|_| Error::External("invalid remote authority response".into())),
@@ -418,8 +427,11 @@ pub(crate) async fn authority_request<T: serde::de::DeserializeOwned>(
 		{
 			Err(Error::TransactionPending)
 		}
-		_ => Err(Error::External(
-			"remote execution authority unavailable".into(),
-		)),
+		_ => {
+			tracing::warn!(%node,%path,status,"authority request rejected");
+			Err(Error::External(
+				"remote execution authority unavailable".into(),
+			))
+		}
 	}
 }

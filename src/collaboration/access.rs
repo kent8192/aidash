@@ -87,6 +87,13 @@ impl Lease {
 		}
 	}
 
+	pub fn access_mut(&mut self) -> Option<&mut Access> {
+		match self {
+			Self::Scoped(access) => Some(access.as_mut()),
+			Self::Operator(_) => None,
+		}
+	}
+
 	pub fn sender(&self) -> String {
 		match self {
 			Self::Scoped(access) => access.identity.subject.clone(),
