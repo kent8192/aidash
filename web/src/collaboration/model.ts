@@ -12,7 +12,12 @@ export const settingsSections = [
   "marketplace",
   "node",
 ] as const;
-export type Destination = "collaboration" | "graph" | "settings";
+export type Destination =
+  | "collaboration"
+  | "graph"
+  | "creator"
+  | "trust"
+  | "settings";
 export type SettingsSection = (typeof settingsSections)[number];
 export type Location = {
   section: Destination;
@@ -44,7 +49,13 @@ export function resolveLocation(pathname: string, search = ""): Location {
     focus: params.focus || "",
     legacy: false,
   };
-  if (name === "collaboration" || name === "graph" || name === "settings") {
+  if (
+    name === "collaboration" ||
+    name === "graph" ||
+    name === "creator" ||
+    name === "trust" ||
+    name === "settings"
+  ) {
     return { ...common, section: name };
   }
   if (name === "mesh") return { ...common, section: "graph", legacy: true };
@@ -64,7 +75,10 @@ export function destination(
 ): string {
   return `/${section}${stringifyQuery({
     channel: context.channel,
-    focus: section === "graph" ? context.focus : undefined,
+    focus:
+      section === "graph" || section === "creator" || section === "trust"
+        ? context.focus
+        : undefined,
     view:
       section === "settings" &&
       settingsSections.includes(context.settings as SettingsSection)

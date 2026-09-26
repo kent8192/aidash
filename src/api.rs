@@ -51,6 +51,7 @@ fn ordinary_routes() -> OpenApiRouter<Federation> {
 		.merge(crate::collaboration::api::routes())
 		.merge(crate::generation::api::routes())
 		.merge(crate::semantic::api::routes())
+		.merge(crate::workbench::routes())
 		.merge(crate::authorization::remote::routes())
 		.routes(routes!(human_answer))
 		.routes(routes!(run_message))
@@ -288,6 +289,7 @@ fn browser_operator_allowed(method: &Method, path: &str) -> bool {
 		|| path.starts_with("/registry/")
 		|| path.starts_with("/marketplace/")
 		|| path.starts_with("/transactions/")
+		|| path.starts_with("/workbench/")
 		|| matches!(
 			path,
 			"/registry" | "/peers" | "/marketplace" | "/transactions"
@@ -2029,7 +2031,7 @@ mod schema_tests {
 				.values()
 				.map(|path| path.as_object().unwrap().len())
 				.sum::<usize>(),
-			77
+			106
 		);
 		for (path, method) in [
 			("/api/workspaces/{id}/threads", "post"),
@@ -2039,6 +2041,12 @@ mod schema_tests {
 			("/api/workspaces/{id}/attachments/{attachment_id}", "get"),
 			("/api/providers/openrouter/models", "get"),
 			("/api/agents/personal", "post"),
+			("/api/workbench/drafts", "post"),
+			("/api/workbench/drafts/{id}", "put"),
+			("/api/workbench/drafts/{id}/register", "post"),
+			("/api/workbench/drafts/{id}/tests", "post"),
+			("/api/workbench/versions/{id}/{version}", "get"),
+			("/api/workbench/versions/{id}/{version}/report", "get"),
 			("/api/skills/import", "post"),
 			("/api/tasks", "get"),
 			("/api/tasks/{id}/remote-grants", "post"),

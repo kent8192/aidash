@@ -857,6 +857,266 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 	cleanup(store, &url, &schema).await;
 }
 
+struct WriteApproval {
+	store: Store,
+	url: String,
+	schema: String,
+	harness: aidash::harness::Harness,
+	run: Run,
+	first: Uuid,
+	effects: Arc<std::sync::atomic::AtomicUsize>,
+	server: tokio::task::JoinHandle<()>,
+	_environment: Arc<TestEnvironment>,
+}
+
+#[rstest::fixture]
+async fn write_approval(
+	#[default(false)] expired: bool,
+	#[default(false)] prior_response: bool,
+) -> WriteApproval {
+	let environment = test_environment().await;
+	use std::sync::atomic::{AtomicUsize, Ordering};
+	let (store, url, schema) = setup(&environment).await;
+	let effects = Arc::new(AtomicUsize::new(0));
+	let counter = effects.clone();
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let server = tokio::spawn(async move {
+		axum::serve(
+			listener,
+			axum::Router::new().route(
+				"/",
+				axum::routing::post(move || {
+					let counter = counter.clone();
+					async move {
+						counter.fetch_add(1, Ordering::SeqCst);
+						axum::Json(json!({"ok":true}))
+					}
+				}),
+			),
+		)
+		.await
+		.unwrap();
+	});
+	let f = federation_for(&store);
+	seed(&f.registry).await;
+	f.registry
+		.register(entry(
+			"tool",
+			"managed-write",
+			json!({"transport":"http","endpoint":endpoint,"credential_env":null,"replay":"unsafe"}),
+		))
+		.await
+		.unwrap();
+	let agent = f.registry.register(entry("agent", "managed-agent", json!({"model":{"id":"model","version":"1.0.0"},"instructions":"Use the selected tool","tools":[{"id":"managed-write","version":"1.0.0"}],"skills":[],"allow_task_creation":false}))).await.unwrap();
+	let workspace = store
+		.create_workspace("Approval", "Check external effects")
+		.await
+		.unwrap();
+	let task = running_task(&store, &agent, workspace.id, None).await;
+	let response = aidash::provider::ModelResponse {
+		tool_calls: (1..=2)
+			.map(|value| aidash::provider::ToolCall {
+				id: value.to_string(),
+				name: "plugin_0".into(),
+				arguments: json!({"value":value}),
+			})
+			.collect(),
+		..Default::default()
+	};
+	sqlx::query(
+		&sea_orm::sea_query::Query::update()
+			.table(sea_orm::sea_query::Alias::new("runs"))
+			.value(
+				sea_orm::sea_query::Alias::new("phase"),
+				sea_orm::sea_query::Expr::value("TOOL_CALL"),
+			)
+			.value(
+				sea_orm::sea_query::Alias::new("pending"),
+				sea_orm::sea_query::Expr::cust("$2"),
+			)
+			.and_where(
+				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("task_id"))
+					.eq(sea_orm::sea_query::Expr::cust("$1")),
+			)
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(task.id)
+	.bind(json!({"response":response,"cursor":0}))
+	.execute(&store.pool)
+	.await
+	.unwrap();
+	let harness = aidash::harness::Harness { federation: f };
+	harness.worker_once().await.unwrap();
+	let run: Run = sqlx::query_as(
+		&sea_orm::sea_query::Query::select()
+			.expr(sea_orm::sea_query::Expr::cust("*"))
+			.from(sea_orm::sea_query::Alias::new("runs"))
+			.and_where(
+				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("task_id"))
+					.eq(sea_orm::sea_query::Expr::cust("$1")),
+			)
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(task.id)
+	.fetch_one(&store.pool)
+	.await
+	.unwrap();
+	let first = run.pending["human_request_id"]
+		.as_str()
+		.unwrap()
+		.parse()
+		.unwrap();
+	if expired {
+		use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+		let past = chrono::Utc::now() - chrono::Duration::minutes(16);
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("human_requests"))
+				.value(Alias::new("created_at"), Expr::cust("$2"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(first)
+		.bind(past)
+		.execute(&store.pool)
+		.await
+		.unwrap();
+		let mut pending = run.pending.clone();
+		pending["wake_at"] = json!(past);
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("runs"))
+				.value(Alias::new("pending"), Expr::cust("$2"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(run.id)
+		.bind(pending)
+		.execute(&store.pool)
+		.await
+		.unwrap();
+	}
+	if prior_response {
+		sqlx::query(
+			&sea_orm::sea_query::Query::update()
+				.table(sea_orm::sea_query::Alias::new("human_requests"))
+				.value(
+					sea_orm::sea_query::Alias::new("response"),
+					sea_orm::sea_query::Expr::cust("$2"),
+				)
+				.value(
+					sea_orm::sea_query::Alias::new("answered_by"),
+					sea_orm::sea_query::Expr::value("human"),
+				)
+				.and_where(sea_orm::sea_query::Expr::cust("id=$1"))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(first)
+		.bind(json!({"approved":true}))
+		.execute(&store.pool)
+		.await
+		.unwrap();
+	}
+	WriteApproval {
+		store,
+		url,
+		schema,
+		harness,
+		run,
+		first,
+		effects,
+		server,
+		_environment: environment,
+	}
+}
+
+#[rstest::rstest]
+#[case(false, false, false)]
+#[case(true, false, false)]
+#[case(true, true, false)]
+#[case(true, false, true)]
+#[tokio::test]
+async fn managed_external_write_requires_exact_one_call_approval(
+	#[case] _expired: bool,
+	#[case] late_answer: bool,
+	#[case] _prior_response: bool,
+	#[future(awt)]
+	#[with(_expired, _prior_response)]
+	write_approval: WriteApproval,
+) {
+	use std::sync::atomic::Ordering;
+	let WriteApproval {
+		store,
+		url,
+		schema,
+		harness,
+		mut run,
+		first,
+		effects,
+		server,
+		_environment,
+	} = write_approval;
+	assert_eq!(run.phase, "WAITING");
+	assert_eq!(effects.load(Ordering::SeqCst), 0);
+	if !_expired {
+		store
+			.answer(first, json!({"approved":false}))
+			.await
+			.unwrap();
+	}
+	if late_answer {
+		let result = store.answer(first, json!({"approved":true})).await.unwrap();
+		assert_eq!(
+			result.response,
+			Some(json!({"approved":false,"expired":true})),
+			"late answer must persist expiry"
+		);
+	}
+	harness.worker_once().await.unwrap();
+	harness.worker_once().await.unwrap();
+	run = store.run(run.id).await.unwrap();
+	assert_eq!(run.pending["cursor"], 1);
+	assert_eq!(effects.load(Ordering::SeqCst), 0);
+	if _expired {
+		let row: HumanRequest = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::cust("*"))
+				.from(sea_orm::sea_query::Alias::new("human_requests"))
+				.and_where(sea_orm::sea_query::Expr::cust("id=$1"))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(first)
+		.fetch_one(&store.pool)
+		.await
+		.unwrap();
+		assert_eq!(row.response, Some(json!({"approved":false,"expired":true})));
+		assert_eq!(row.answered_by.as_deref(), Some("system"));
+		assert!(matches!(
+			store.answer(first, json!({"approved":true})).await,
+			Err(aidash::Error::Conflict(_))
+		));
+	}
+	harness.worker_once().await.unwrap();
+	run = store.run(run.id).await.unwrap();
+	assert_eq!(run.phase, "WAITING");
+	let second = run.pending["human_request_id"]
+		.as_str()
+		.unwrap()
+		.parse()
+		.unwrap();
+	assert_ne!(first, second);
+	store
+		.answer(second, json!({"approved":true}))
+		.await
+		.unwrap();
+	harness.worker_once().await.unwrap();
+	harness.worker_once().await.unwrap();
+	assert_eq!(effects.load(Ordering::SeqCst), 1);
+	server.abort();
+	cleanup(store, &url, &schema).await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn rejected_web_sources_reach_the_agent_without_retrying_or_escaping_allowed_hosts(

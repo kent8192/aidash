@@ -789,6 +789,9 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/entries",
 		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/entries/00000000-0000-0000-0000-000000000002/reindex",
 		"/api/remote",
+		"/api/workbench/drafts",
+		"/api/workbench/adopt",
+		"/api/workbench/versions/legacy-agent/1.0.0/permissions",
 	] {
 		assert_ne!(
 			call(

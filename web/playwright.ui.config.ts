@@ -15,6 +15,7 @@ export default defineConfig({
     "duplicate-labels.spec.ts",
     "openrouter.spec.ts",
     "generation-validation.spec.ts",
+    "workbench.spec.ts",
   ],
   workers: 1,
   retries: 0,

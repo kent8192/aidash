@@ -3843,6 +3843,37 @@ impl Store {
 		tx.commit().await?;
 		Ok(())
 	}
+	pub(crate) async fn expire_workbench_approval(&self, id: Uuid) -> Result<HumanRequest> {
+		use sea_orm::sea_query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
+		let mut tx = self.pool.begin().await?;
+		let request: HumanRequest = sqlx::query_as(
+			&Query::select()
+				.expr(Expr::cust("*"))
+				.from(Alias::new("human_requests"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+				.lock(LockType::Update)
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(id)
+		.fetch_one(&mut *tx)
+		.await?;
+		let result = if request.kind == "APPROVAL_REQUIRED"
+			&& request.created_at + chrono::Duration::minutes(15) <= chrono::Utc::now()
+		{
+			self.answer_in(
+				&mut tx,
+				id,
+				json!({"approved":false,"expired":true}),
+				"system",
+			)
+			.await?
+		} else {
+			request
+		};
+		tx.commit().await?;
+		Ok(result)
+	}
+
 	pub async fn answer(&self, id: Uuid, response: Value) -> Result<HumanRequest> {
 		let mut tx = self.pool.begin().await?;
 		let request = self.answer_in(&mut tx, id, response, "human").await?;
@@ -3873,12 +3904,6 @@ impl Store {
 		.fetch_optional(&mut **tx)
 		.await?
 		.ok_or_else(|| Error::NotFound("human request".into()))?;
-		if let Some(existing) = &old.response {
-			if existing != &response {
-				return Err(Error::Conflict("human request already answered".into()));
-			}
-			return Ok(old);
-		}
 		let run: Run = sqlx::query_as(
 			&sea_orm::sea_query::Query::select()
 				.expr(sea_orm::sea_query::SimpleExpr::from(
@@ -3891,6 +3916,23 @@ impl Store {
 		.bind(old.run_id)
 		.fetch_one(&mut **tx)
 		.await?;
+		let expired = old.kind == "APPROVAL_REQUIRED"
+			&& run.pending["workbench_approval"]["request_id"] == json!(id)
+			&& old.created_at + chrono::Duration::minutes(15) <= chrono::Utc::now();
+		let automatic_expiry = expired && (actor == "system" || old.response.is_none());
+		let (response, actor) = if automatic_expiry {
+			(json!({"approved":false,"expired":true}), "system")
+		} else {
+			(response, actor)
+		};
+		if let Some(existing) = &old.response {
+			if existing == &response {
+				return Ok(old);
+			}
+			if !automatic_expiry {
+				return Err(Error::Conflict("human request already answered".into()));
+			}
+		}
 		if run
 			.pending
 			.get("uncertain_key")

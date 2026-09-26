@@ -48,6 +48,25 @@ async fn main() -> Result<()> {
 	let (shutdown, stopping) = tokio::sync::watch::channel(false);
 	let mut background = tokio::task::JoinSet::new();
 	let mut workers = tokio::task::JoinSet::new();
+	{
+		let pool = federation.store.pool.clone();
+		let mut stopping = stopping.clone();
+		background.spawn(async move {
+			loop {
+				if let Err(error) = aidash::workbench::purge_expired(&pool).await {
+					tracing::warn!(%error, "agent test retention cleanup failed");
+				}
+				if let Err(error) = aidash::workbench::purge_incident_evidence(&pool).await {
+					tracing::warn!(%error, "incident evidence retention cleanup failed");
+				}
+				tokio::select! {
+					_ = tokio::time::sleep(Duration::from_secs(3600)) => {},
+					_ = stopping.changed() => if *stopping.borrow() { break; },
+				}
+			}
+			Ok::<(), aidash::Error>(())
+		});
+	}
 	if config.oidc.is_some() {
 		let f = federation.clone();
 		let stopping = stopping.clone();

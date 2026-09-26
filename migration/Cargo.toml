@@ -14,6 +14,7 @@ sea-orm-migration = { version = "1.1.19", default-features = false, features = [
   "cli",
   "sqlx-postgres",
   "runtime-tokio-rustls",
+  "with-json",
 ] }
 serde_json = "1"
 sha2 = "0.10"

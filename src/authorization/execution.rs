@@ -805,6 +805,7 @@ impl Guard {
 			&self.run,
 			query,
 			budget,
+			&self.agent,
 		)
 		.await?;
 		if let Some(result) = &result {
@@ -932,11 +933,17 @@ impl Guard {
 		for skill in &self.agent.skills {
 			catalog::entry(access, skill, "skill.use").await?;
 		}
+		if self.agent.allow_cross_conversation_memory == Some(false) {
+			return Ok(());
+		}
 		let resource = access.memory_resource(&self.run).await?;
 		access.require(&resource, "memory.read").await
 	}
 
 	pub async fn tool(&self, call: &ToolCall) -> Result<()> {
+		if !self.agent.permits_builtin(&call.name) {
+			return Err(Error::Forbidden);
+		}
 		let mut access = self.access.lock().await;
 		if let Some(index) = call
 			.name
@@ -946,6 +953,9 @@ impl Guard {
 			let reference = self.agent.tools.get(index).ok_or(Error::Forbidden)?;
 			let entry = catalog::entry(&mut access, reference, "tool.invoke").await?;
 			if let ToolConfig::Agent { node_id, agent } = serde_json::from_value(entry.config)? {
+				if self.agent.allow_task_delegation == Some(false) {
+					return Err(Error::Forbidden);
+				}
 				if node_id != self.run.home_node {
 					return Err(Error::Forbidden);
 				}
