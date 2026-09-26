@@ -8,6 +8,10 @@ export AIDASH_SECRET_TEST_QDRANT=local-semantic-vector-fixture-key-0123456789
 export RUSTC_WRAPPER=
 # Each case owns up to two independent twelve-connection pools.
 export RUST_TEST_THREADS="${RUST_TEST_THREADS:-4}"
+# Scoped remote execution polls the full two-node HTTP/worker stack on each
+# integration-test thread. Give that deep async call path room beyond Rust's
+# 2 MiB default, which overflows on Linux in the lost-reply reconciliation case.
+export RUST_MIN_STACK="${RUST_MIN_STACK:-8388608}"
 exec python3 - "$@" <<'PY'
 import json, os, urllib.request, sys
 profile = json.load(open(os.environ['AIDASH_CAPABILITY_PROFILE']))
