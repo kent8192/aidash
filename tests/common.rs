@@ -20,6 +20,19 @@ use uuid::Uuid;
 
 const TEST_QDRANT_TOKEN: &str = "local-semantic-vector-fixture-key-0123456789";
 
+#[allow(dead_code)] // Only upgrade/backfill tests need a targeted rollback.
+pub async fn rollback_from_migration(db: &sea_orm::DatabaseConnection, name: &str) {
+	use migration::MigratorTrait;
+	let migrations = migration::Migrator::migrations();
+	let target = migrations
+		.iter()
+		.position(|migration| migration.name() == name)
+		.expect("rollback target migration must exist");
+	migration::Migrator::down(db, Some((migrations.len() - target) as u32))
+		.await
+		.unwrap();
+}
+
 static TEST_ENVIRONMENT: LazyLock<Mutex<Weak<TestEnvironment>>> =
 	LazyLock::new(|| Mutex::new(Weak::new()));
 

@@ -35,6 +35,7 @@ import {
   History,
   Moon,
   Sun,
+  ShieldCheck,
 } from "lucide-react";
 import aidashLogo from "./assets/brand/aidash-logo.svg?no-inline";
 import aidashLogoOnDark from "./assets/brand/aidash-logo-on-dark.svg?no-inline";
@@ -58,6 +59,7 @@ import {
 import { LocaleContext, useI18n, type Locale } from "./ui";
 import { Channel } from "./collaboration/channel";
 import { Graph } from "./collaboration/graph";
+import { Workbench } from "./workbench";
 import { meshCopy } from "./collaboration/mesh-copy";
 const Configuration = lazy(() =>
   import("./collaboration/settings").then((module) => ({
@@ -88,6 +90,7 @@ import "./style.css";
 import "./collaboration/style.css";
 import "./collaboration/workspace.css";
 import "./collaboration/mesh.css";
+import "./workbench.css";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 1000 } },
@@ -900,6 +903,35 @@ function Dashboard({
               </Link>
             ))}
           </nav>
+          <nav
+            aria-label={
+              locale === "ja-JP" ? "エージェント管理" : "Agent workbenches"
+            }
+          >
+            {(
+              [
+                ["creator", Bot, locale === "ja-JP" ? "Creator" : "Creator"],
+                ["trust", ShieldCheck, "Trust"],
+              ] as const
+            ).map(([name, Icon, label]) => (
+              <Link
+                key={name}
+                to="/$section"
+                params={{ section: name }}
+                search={{
+                  focus:
+                    route.section === name
+                      ? route.focus || undefined
+                      : undefined,
+                }}
+                aria-current={route.section === name ? "page" : undefined}
+                className={`collab-nav ${route.section === name ? "selected" : ""}`}
+              >
+                <Icon size={20} />
+                <span className="rail-label">{label}</span>
+              </Link>
+            ))}
+          </nav>
           {route.section === "graph" && (
             <nav className="collab-graph-links" aria-label={copy.settings}>
               {(
@@ -1208,6 +1240,17 @@ function Dashboard({
                         go("collaboration", { channel })
                       }
                       open={open}
+                    />
+                  )}
+                  {(route.section === "creator" ||
+                    route.section === "trust") && (
+                    <Workbench
+                      key={context ?? ""}
+                      mode={route.section}
+                      data={data}
+                      focus={route.focus}
+                      select={(focus) => go(route.section, { focus })}
+                      switchMode={(section, focus) => go(section, { focus })}
                     />
                   )}
                   {route.section === "settings" &&

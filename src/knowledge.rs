@@ -28,7 +28,7 @@ pub struct PersonalAgent {
 	pub entry: Entry,
 	pub documents: Vec<ReferenceDocument>,
 }
-fn validate(documents: &[ReferenceDocument]) -> Result<()> {
+pub(crate) fn validate(documents: &[ReferenceDocument]) -> Result<()> {
 	if documents.is_empty()
 		|| documents.len() > 8
 		|| documents.iter().map(|d| d.text.len()).sum::<usize>() > 65536
@@ -58,7 +58,7 @@ fn validate(documents: &[ReferenceDocument]) -> Result<()> {
 	}
 	Ok(())
 }
-fn digest(value: &Value) -> String {
+pub(crate) fn digest(value: &Value) -> String {
 	format!("{:x}", Sha256::digest(value.to_string().as_bytes()))
 }
 

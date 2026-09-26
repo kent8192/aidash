@@ -450,14 +450,7 @@ async fn remote_admission_imports_legacy_history_before_new_input(
 		.await
 		.unwrap();
 	let home_db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(home.store.pool.clone());
-	let migrations = Migrator::migrations();
-	let gate = migrations
-		.iter()
-		.position(|m| m.name() == "m20260924_080000_legacy_federated_input_gate")
-		.expect("legacy federated input gate");
-	Migrator::down(&home_db, Some((migrations.len() - gate) as u32))
-		.await
-		.unwrap();
+	common::rollback_from_migration(&home_db, "m20260924_080000_legacy_federated_input_gate").await;
 	let old_key = Uuid::new_v4();
 	home.store
 		.message(
@@ -593,14 +586,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	let home_db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(home.store.pool.clone());
 	// Seed a pre-ledger correction, then make the executor admission hit the
 	// old-worker lease fence. Historical recovery must keep the home reservation.
-	let migrations = Migrator::migrations();
-	let gate = migrations
-		.iter()
-		.position(|m| m.name() == "m20260924_080000_legacy_federated_input_gate")
-		.expect("legacy federated input gate");
-	Migrator::down(&home_db, Some((migrations.len() - gate) as u32))
-		.await
-		.unwrap();
+	common::rollback_from_migration(&home_db, "m20260924_080000_legacy_federated_input_gate").await;
 	let first_key = Uuid::new_v4();
 	home.store
 		.message(
@@ -1078,14 +1064,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 		.await
 		.unwrap();
 	// Historical writes were possible before the new home database gate.
-	let migrations = Migrator::migrations();
-	let gate = migrations
-		.iter()
-		.position(|m| m.name() == "m20260924_080000_legacy_federated_input_gate")
-		.expect("legacy federated input gate");
-	Migrator::down(&home_db, Some((migrations.len() - gate) as u32))
-		.await
-		.unwrap();
+	common::rollback_from_migration(&home_db, "m20260924_080000_legacy_federated_input_gate").await;
 	let legacy_key = Uuid::new_v4();
 	home.store
 		.message(

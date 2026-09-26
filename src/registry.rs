@@ -164,6 +164,30 @@ pub struct AgentConfig {
 	pub cluster: Option<EntityRef>,
 	#[serde(default = "max_steps")]
 	pub max_steps: i32,
+	/// Missing fields preserve the behavior of previously registered versions.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub allow_task_creation: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub allow_task_delegation: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub allow_memory_write: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub allow_workspace_retrieval: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub allow_cross_conversation_memory: Option<bool>,
+}
+impl AgentConfig {
+	pub fn permits_builtin(&self, name: &str) -> bool {
+		match name {
+			"task_create" => self.allow_task_creation != Some(false),
+			"task_assign" | "task_delegate" => self.allow_task_delegation != Some(false),
+			"memory_write" => self.allow_memory_write != Some(false),
+			"workspace_read" | "workspace_observe" | "workspace_wait" => {
+				self.allow_workspace_retrieval != Some(false)
+			}
+			_ => true,
+		}
+	}
 }
 fn max_steps() -> i32 {
 	64
@@ -1011,6 +1035,48 @@ pub(crate) async fn assign_id_in(
 	Ok(())
 }
 
+// Package installation takes the Registry row first, even when inserting the
+// first overlay. Hold that same row before reading an effective configuration.
+pub(crate) async fn effective_in(
+	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	id: &str,
+	version: &str,
+) -> Result<Entry> {
+	use sea_orm::sea_query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
+	let metadata: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("metadata"))
+			.from(Alias::new("registry"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("version")).eq(Expr::cust("$2")))
+			.lock(LockType::Share)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(id)
+	.bind(version)
+	.fetch_optional(&mut **tx)
+	.await?
+	.ok_or_else(|| Error::NotFound(format!("entity {id}@{version}")))?;
+	let mut entry: Entry = serde_json::from_value(metadata)?;
+	let overrides: Option<Value> = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("config"))
+			.from(Alias::new("installations"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("version")).eq(Expr::cust("$2")))
+			.lock(LockType::Share)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(id)
+	.bind(version)
+	.fetch_optional(&mut **tx)
+	.await?;
+	if let Some(overrides) = overrides {
+		overlay_config(&mut entry.config, &overrides)?;
+	}
+	Ok(entry)
+}
+
 pub(crate) async fn register_in(
 	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 	entry: &Entry,
@@ -1195,6 +1261,29 @@ mod tests {
 	fn entry() -> Entry {
 		serde_json::from_value(json!({"id":"research","version":"1.0.0","kind":"skill","name":{"en":"Research","ja":"調査"},"description":{"en":"Research"},"capabilities":["web.search"],"languages":["ja","en"],"config":{"instructions":"Research carefully"}})).unwrap()
 	}
+	#[rstest::fixture]
+	fn behavior_config(
+		#[default(None)] creation: Option<bool>,
+		#[default(None)] delegation: Option<bool>,
+	) -> AgentConfig {
+		serde_json::from_value(json!({"model":{"id":"model","version":"1.0.0"},"allow_task_creation":creation,"allow_task_delegation":delegation})).unwrap()
+	}
+	#[rstest::rstest]
+	#[case(None, None, true, true)]
+	#[case(Some(true), Some(false), true, false)]
+	#[case(Some(false), Some(true), false, true)]
+	#[case(Some(false), Some(false), false, false)]
+	fn task_assignment_obeys_delegation_independently_of_creation(
+		#[case] _creation: Option<bool>,
+		#[case] _delegation: Option<bool>,
+		#[case] creates: bool,
+		#[case] delegates: bool,
+		#[with(_creation, _delegation)] behavior_config: AgentConfig,
+	) {
+		assert_eq!(behavior_config.permits_builtin("task_create"), creates);
+		assert_eq!(behavior_config.permits_builtin("task_delegate"), delegates);
+		assert_eq!(behavior_config.permits_builtin("task_assign"), delegates);
+	}
 	#[rstest::rstest]
 	fn conjunctive_search_and_localization() {
 		let e = entry();
@@ -1347,12 +1436,21 @@ pub(crate) fn agent_prompt_headroom(
 	let mut builtins = crate::tool::builtins();
 	crate::capabilities::tools::add(&mut builtins, &config.core_capabilities);
 	let mut specifications = builtins
-		.values()
-		.map(|t| t.specification())
+		.into_iter()
+		.filter(|(name, _)| config.permits_builtin(name))
+		.map(|(_, tool)| tool.specification())
 		.collect::<Vec<_>>();
 	for (index, tool) in config.tools.iter().enumerate() {
+		let entry = get(tool)?;
+		if config.allow_task_delegation == Some(false)
+			&& matches!(
+				serde_json::from_value::<crate::tool::ToolConfig>(entry.config.clone())?,
+				crate::tool::ToolConfig::Agent { .. }
+			) {
+			continue;
+		}
 		specifications.push(crate::tool::plugin_specification(
-			get(tool)?,
+			entry,
 			&format!("plugin_{index}"),
 		));
 	}

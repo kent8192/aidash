@@ -12,6 +12,203 @@ use testcontainers::{
 };
 use uuid::Uuid;
 
+struct ControlledContext {
+	_environment: std::sync::Arc<TestEnvironment>,
+	f: aidash::federation::Federation,
+	worker: aidash::harness::Harness,
+	url: String,
+	schema: String,
+	captured: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+	model_server: tokio::task::JoinHandle<()>,
+	embedding_server: tokio::task::JoinHandle<()>,
+}
+
+#[rstest::fixture]
+async fn controlled_context(
+	#[default(true)] memory: bool,
+	#[default(true)] workspace_retrieval: bool,
+) -> ControlledContext {
+	use aidash::domain::{ArtifactInput, qualified_agent};
+	let environment = test_environment().await;
+	let (f, url, schema) = common::setup(&environment).await;
+	let app = api::router(f.clone());
+	let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+	let received = captured.clone();
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let model_server = tokio::spawn(async move {
+		axum::serve(listener, Router::new().route("/v1/chat/completions", post(move |Json(body): Json<Value>| {
+			let received = received.clone();
+			async move {
+				let context: Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+				received.lock().unwrap().push(context);
+				Json(json!({"choices":[{"finish_reason":"stop","message":{"content":"Complete"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+			}
+		}))).await.unwrap();
+	});
+	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
+	let mut agent = f.registry.get("research", "1.0.0").await.unwrap();
+	agent.version = "1.0.1".into();
+	agent.config["allow_cross_conversation_memory"] = json!(memory);
+	agent.config["allow_workspace_retrieval"] = json!(workspace_retrieval);
+	f.registry.register(agent).await.unwrap();
+	let owner = qualified_agent(&f.config.node_id, "research", "1.0.1");
+	policy["subjects"][&owner] = json!({"kind":"agent"});
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})
+		)
+		.await
+		.0,
+		200
+	);
+	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let (embedding_endpoint, embedding_server) = embeddings().await;
+	configure(
+		&app,
+		&f.config.api_token,
+		workspace,
+		&spec(&embedding_endpoint, &environment.qdrant_url),
+		0,
+	)
+	.await;
+	assert_eq!(
+		request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/tasks/{task}/claim"),
+			json!({"revision":0,"agent":{"id":"research","version":"1.0.1"}})
+		)
+		.await
+		.0,
+		200
+	);
+	let worker = aidash::harness::Harness {
+		federation: f.for_workers().await.unwrap(),
+	};
+	worker.worker_once().await.unwrap();
+	let artifact = f
+		.store
+		.publish_artifact(
+			task,
+			&owner,
+			"controlled-artifact",
+			&ArtifactInput {
+				kind: "text".into(),
+				name: "Car report".into(),
+				content: json!("A car has a steering wheel."),
+			},
+		)
+		.await
+		.unwrap();
+	let message = f
+		.store
+		.message_record(
+			workspace,
+			"human",
+			"Vehicle safety",
+			Some("controlled-message"),
+		)
+		.await
+		.unwrap();
+	for (key, source) in [
+		(
+			"memory",
+			json!({"kind":"memory","text":"A car carries passengers."}),
+		),
+		("artifact", json!({"kind":"artifact","id":artifact.id})),
+		("message", json!({"kind":"message","id":message.id})),
+	] {
+		let (status, entry) = request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/workspaces/{workspace}/semantic/entries"),
+			json!({"key":key,"expected_revision":0,"source":source,"metadata":{}}),
+		)
+		.await;
+		assert_eq!(status, 200, "source: {entry}");
+	}
+	semantic::worker::sweep(&f.store).await.unwrap();
+	ControlledContext {
+		_environment: environment,
+		f,
+		worker,
+		url,
+		schema,
+		captured,
+		model_server,
+		embedding_server,
+	}
+}
+
+#[rstest::rstest]
+#[case(false, false)]
+#[case(false, true)]
+#[case(true, false)]
+#[case(true, true)]
+#[tokio::test]
+async fn automatic_semantic_context_respects_each_agent_behavior_control(
+	#[case] memory: bool,
+	#[case] workspace_retrieval: bool,
+	#[future(awt)]
+	#[with(memory, workspace_retrieval)]
+	controlled_context: ControlledContext,
+) {
+	let fixture = controlled_context;
+	fixture.worker.worker_once().await.unwrap();
+	let contexts = fixture.captured.lock().unwrap().clone();
+	assert_eq!(
+		contexts.len(),
+		1,
+		"run: {:?}",
+		fixture.f.store.runs().await.unwrap()[0]
+	);
+	let semantic = &contexts[0]["current"]["semantic_memory"];
+	if !memory && !workspace_retrieval {
+		assert!(semantic.is_null(), "disabled retrieval: {semantic}");
+	} else {
+		let mut kinds: Vec<_> = semantic["matches"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.map(|m| m["source"]["kind"].as_str().unwrap())
+			.collect();
+		kinds.sort();
+		let mut expected = Vec::new();
+		if memory {
+			expected.push("memory");
+		}
+		if workspace_retrieval {
+			expected.extend(["artifact", "message"]);
+		}
+		expected.sort();
+		assert_eq!(kinds, expected, "semantic: {semantic}");
+	}
+	fixture.worker.federation.store.pool.close().await;
+	fixture.worker.federation.store.control_pool.close().await;
+	fixture.model_server.abort();
+	fixture.embedding_server.abort();
+	dispose(fixture.f, &fixture.url, &fixture.schema).await;
+}
+
 struct RestartableQdrant {
 	container: ContainerAsync<GenericImage>,
 	endpoint: String,
