@@ -996,35 +996,34 @@ async fn incident_history_keeps_the_latest_events_in_display_order(
 }
 
 #[rstest::fixture]
-async fn trust_run_backlog() -> (Workbench, Value) {
+async fn trust_run_backlog(#[default("workspace.read")] denied_action: &str) -> (Workbench, Value) {
 	let wb = workbench().await;
 	wb.register().await;
-	let visible = wb
-		.call(
-			"POST",
-			"/api/workspaces",
-			json!({"title":"Visible history","goal":"Fixture"}),
-		)
-		.await;
-	let hidden = wb
-		.call(
-			"POST",
-			"/api/workspaces",
-			json!({"title":"Hidden history","goal":"Fixture"}),
-		)
-		.await;
-	let hidden_id = uuid::Uuid::parse_str(hidden["id"].as_str().unwrap()).unwrap();
-	sqlx::query(
-		&Query::update()
-			.table(Alias::new("authorization_workspaces"))
-			.value(Alias::new("owner_subject"), Expr::value("bob"))
-			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
-			.to_string(PostgresQueryBuilder),
-	)
-	.bind(hidden_id)
-	.execute(&wb.f.store.pool)
-	.await
-	.unwrap();
+	let visible =
+		wb.f.store
+			.create_workspace("Visible history", "Fixture")
+			.await
+			.unwrap();
+	let hidden =
+		wb.f.store
+			.create_workspace("Hidden history", "Fixture")
+			.await
+			.unwrap();
+	for workspace in [&visible, &hidden] {
+		let query = Query::insert()
+			.into_table(Alias::new("authorization_workspaces"))
+			.columns(["workspace_id", "tenant", "owner_subject"].map(Alias::new))
+			.values_panic([Expr::cust("$1"), Expr::value("acme"), Expr::value("alice")])
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&query)
+			.bind(workspace.id)
+			.execute(&wb.f.store.pool)
+			.await
+			.unwrap();
+	}
+	let visible = serde_json::to_value(visible).unwrap();
+	let hidden = serde_json::to_value(hidden).unwrap();
+	let mut hidden_runs = Vec::new();
 	for n in 0..502 {
 		let workspace = uuid::Uuid::parse_str(if n == 0 {
 			visible["id"].as_str().unwrap()
@@ -1072,8 +1071,12 @@ async fn trust_run_backlog() -> (Workbench, Value) {
 				Expr::value("COMPLETED"),
 			])
 			.to_string(PostgresQueryBuilder);
+		let run_id = uuid::Uuid::now_v7();
+		if n > 0 {
+			hidden_runs.push(run_id);
+		}
 		sqlx::query(&query)
-			.bind(uuid::Uuid::now_v7())
+			.bind(run_id)
 			.bind(task.id)
 			.bind(workspace)
 			.bind(&wb.f.config.node_id)
@@ -1082,14 +1085,19 @@ async fn trust_run_backlog() -> (Workbench, Value) {
 			.await
 			.unwrap();
 	}
-	assert_eq!(request(&wb.app,&wb.f.config.api_token,"POST","/api/authorization/acme",json!({"expected_revision":1,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"hidden-workspace","effect":"deny","subjects":{"any":true},"actions":["workspace.read"],"resources":{"kinds":["workspace"]},"condition":{"op":"eq","left":{"source":"resource","path":"/owner"},"right":{"source":"literal","value":"bob"}}},{"id":"hidden-run","effect":"deny","subjects":{"any":true},"actions":["run.read"],"resources":{"kinds":["run"]},"condition":{"op":"eq","left":{"source":"resource","path":"/owner"},"right":{"source":"literal","value":"bob"}}}]}})).await.0,200);
+	assert_eq!(request(&wb.app,&wb.f.config.api_token,"POST","/api/authorization/acme",json!({"expected_revision":1,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"hidden-workspace","effect":"deny","subjects":{"any":true},"actions":[denied_action],"resources":{"kinds":[if denied_action == "workspace.read" {"workspace"} else {"run"}],"ids":if denied_action == "workspace.read" {json!([hidden["id"]])} else {json!(hidden_runs)}}}]}})).await.0,200);
 	(wb, visible)
 }
 
 #[rstest::rstest]
+#[case("workspace.read")]
+#[case("run.read")]
 #[tokio::test]
 async fn trust_inspection_reaches_older_runs_in_authorized_workspaces(
-	#[future(awt)] trust_run_backlog: (Workbench, Value),
+	#[case] _denied_action: &str,
+	#[future(awt)]
+	#[with(_denied_action)]
+	trust_run_backlog: (Workbench, Value),
 ) {
 	let (wb, visible) = trust_run_backlog;
 	let inspection = tokio::time::timeout(

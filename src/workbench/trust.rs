@@ -169,7 +169,20 @@ impl InspectionLease {
 	async fn run_visible(&mut self, run: &Run) -> Result<bool> {
 		match self {
 			Self::Operator(_) => Ok(true),
-			Self::Subject(access) => access.run_visible(run).await,
+			Self::Subject(access) => {
+				let result = async {
+					let workspace = access.workspace(run.workspace_id).await?;
+					if !access.decide(&workspace, "workspace.read").await? {
+						return Ok(false);
+					}
+					access.run_visible(run).await
+				}
+				.await;
+				match result {
+					Err(Error::Forbidden) => Ok(false),
+					other => other,
+				}
+			}
 		}
 	}
 

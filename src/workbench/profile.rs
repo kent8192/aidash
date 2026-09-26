@@ -204,12 +204,28 @@ async fn put(
 			));
 		}
 		let cfg: ToolConfig = serde_json::from_value(tool.config)?;
-		match cfg {
-			ToolConfig::Http { endpoint, replay, credential_env } if replay == "read_only" && reqwest::Url::parse(&endpoint).map_err(|_| Error::Invalid("invalid production endpoint".into()))? != url && match &credential_env {
-				Some(production) => rule.credential_env.as_ref().is_some_and(|test| test != production),
-				None => true,
-			} => {},
-			_ => return Err(Error::Invalid("real tests require an HTTP read-only Tool, a separate test endpoint, and separate test credentials".into())),
+		let isolated = match cfg {
+			ToolConfig::Http {
+				endpoint,
+				replay,
+				credential_env,
+			} => {
+				let production = reqwest::Url::parse(&endpoint)
+					.map_err(|_| Error::Invalid("invalid production endpoint".into()))?;
+				replay == "read_only"
+					&& production != url
+					&& match credential_env {
+						Some(production) => rule
+							.credential_env
+							.as_ref()
+							.is_some_and(|test| test != &production),
+						None => true,
+					}
+			}
+			_ => false,
+		};
+		if !isolated {
+			return Err(Error::Invalid("real tests require an HTTP read-only Tool, a separate test endpoint, and separate test credentials".into()));
 		}
 	}
 	let rules = serde_json::to_value(&input.rules)?;
