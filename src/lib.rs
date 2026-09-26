@@ -20,6 +20,7 @@ pub mod skill_import;
 pub mod store;
 pub mod tool;
 pub mod transactions;
+pub mod web_search;
 pub mod workbench;
 
 pub use error::{Error, Result};
