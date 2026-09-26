@@ -15,18 +15,18 @@ Execute each Japanese query with language `ja` and country `JP`, and its English
 
 Each row is two independently graded searches, JA01-JA10 and EN01-EN10. The source criteria guide grading; they are not fabricated expected search results.
 
-| Pair/category | Japanese query | English query | Evidence sought |
-| --- | --- | --- | --- |
-| 01 technical | Python asyncio TaskGroup 例外 キャンセル 公式ドキュメント | Python asyncio TaskGroup exceptions cancellation official documentation | Maintainer documentation describing TaskGroup exception/cancellation behavior, with relevant version context. |
-| 02 technical | JavaScript AbortController fetch 中止 MDN | JavaScript AbortController cancel fetch MDN | Official MDN API documentation explaining cancellation and a source passage that answers the question. |
-| 03 technical | WCAG 2.2 フォーカスが隠れない 最低限 達成基準 | WCAG 2.2 Focus Not Obscured Minimum success criterion | W3C normative/understanding material or its identified authorized translation, matched to the named criterion. |
-| 04 technical | Kubernetes Namespace すべてのリソース 名前空間 公式 | Kubernetes namespaces resources not in a namespace official documentation | Kubernetes documentation distinguishing namespaced and cluster-scoped resources. |
-| 05 general | 気象庁 震度 マグニチュード 違い | Japan Meteorological Agency seismic intensity magnitude difference | Public-agency material distinguishing the concepts, not an unsupported paraphrase. |
-| 06 general | JAXA きぼう 日本実験棟 役割 | JAXA Kibo Japanese Experiment Module purpose | JAXA mission or educational material identifying the module and its functions. |
-| 07 general | UNESCO 世界遺産 登録 基準 | UNESCO World Heritage selection criteria | UNESCO or an identified national commission's authoritative criteria, with the underlying official source where needed. |
-| 08 recent | EVALUATION_DATE 時点 Python 最新 安定版 リリース 公式 | latest stable Python release as of EVALUATION_DATE official | Dated maintainer release evidence that distinguishes stable from prerelease and existed by the cutoff. |
-| 09 recent | EVALUATION_DATE 時点 Rust 最新 安定版 リリース 公式 | latest stable Rust release as of EVALUATION_DATE official | Dated official release evidence, not nightly/beta or a later release. |
-| 10 recent | EVALUATION_DATE 以前30日 気象庁 報道発表 | Japan Meteorological Agency press releases in the 30 days ending EVALUATION_DATE | A dated official release in the window; absence requires inspection of the official archive, not merely zero search matches. |
+| Pair/category | Japanese query                                            | English query                                                                    | Evidence sought                                                                                                              |
+| ------------- | --------------------------------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 01 technical  | Python asyncio TaskGroup 例外 キャンセル 公式ドキュメント | Python asyncio TaskGroup exceptions cancellation official documentation          | Maintainer documentation describing TaskGroup exception/cancellation behavior, with relevant version context.                |
+| 02 technical  | JavaScript AbortController fetch 中止 MDN                 | JavaScript AbortController cancel fetch MDN                                      | Official MDN API documentation explaining cancellation and a source passage that answers the question.                       |
+| 03 technical  | WCAG 2.2 フォーカスが隠れない 最低限 達成基準             | WCAG 2.2 Focus Not Obscured Minimum success criterion                            | W3C normative/understanding material or its identified authorized translation, matched to the named criterion.               |
+| 04 technical  | Kubernetes Namespace すべてのリソース 名前空間 公式       | Kubernetes namespaces resources not in a namespace official documentation        | Kubernetes documentation distinguishing namespaced and cluster-scoped resources.                                             |
+| 05 general    | 気象庁 震度 マグニチュード 違い                           | Japan Meteorological Agency seismic intensity magnitude difference               | Public-agency material distinguishing the concepts, not an unsupported paraphrase.                                           |
+| 06 general    | JAXA きぼう 日本実験棟 役割                               | JAXA Kibo Japanese Experiment Module purpose                                     | JAXA mission or educational material identifying the module and its functions.                                               |
+| 07 general    | UNESCO 世界遺産 登録 基準                                 | UNESCO World Heritage selection criteria                                         | UNESCO or an identified national commission's authoritative criteria, with the underlying official source where needed.      |
+| 08 recent     | EVALUATION_DATE 時点 Python 最新 安定版 リリース 公式     | latest stable Python release as of EVALUATION_DATE official                      | Dated maintainer release evidence that distinguishes stable from prerelease and existed by the cutoff.                       |
+| 09 recent     | EVALUATION_DATE 時点 Rust 最新 安定版 リリース 公式       | latest stable Rust release as of EVALUATION_DATE official                        | Dated official release evidence, not nightly/beta or a later release.                                                        |
+| 10 recent     | EVALUATION_DATE 以前30日 気象庁 報道発表                  | Japan Meteorological Agency press releases in the 30 days ending EVALUATION_DATE | A dated official release in the window; absence requires inspection of the official archive, not merely zero search matches. |
 
 For pair 10 only, explicitly pass an inclusive custom freshness range from 29 days before `EVALUATION_DATE` through that date. For pairs 08-09, do not impose a short date range that could exclude the latest stable release simply because it is older. Correctly interpret a release as-of the cutoff rather than using today's current page uncritically.
 

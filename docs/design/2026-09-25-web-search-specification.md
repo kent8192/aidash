@@ -11,22 +11,22 @@ An authorized Agent can discover public Web sources, read their contents, find p
 
 The [interview record](2026-09-25-web-search.md) preserves the user's answers. The [glossary](../../CONTEXT.md), [architecture ADR](../adr/0001-harness-managed-web-research.md), [evidence/disclosure ADR](../adr/0002-web-evidence-and-query-disclosure.md), [provider ADR](../adr/0003-brave-search-and-direct-source-reading.md), and [provider comparison](2026-09-25-web-search-providers.md) provide the vocabulary and rationale.
 
-| Decision | Settled requirement | Acceptance |
-| --- | --- | --- |
-| Q1 | Search, source reading and cited answers are Harness-managed. | AT01, AT14 |
-| Q2 | Support Japanese/English general and technical research, primary sources and current information. | AT02, AT15, AT20 |
-| Q3 | The node operator owns the paid search account, credentials and costs. | AT07, AT09, AT17 |
-| Q4 | Send search terms/conditions rather than entire conversations or files; nonpublic disclosure is denied by default. | AT04, AT05, AT07 |
-| Q5 | Read public HTML, plain text and text-based PDFs, including user-supplied URLs. No authenticated browser, JavaScript execution or OCR in this scope. | AT06, AT08 |
-| Q6 | Retain bounded evidence with URL, title and retrieval time under Run access/retention rules; cite the relevant statement. | AT13, AT14, AT16 |
-| Q7 | Initial limits: 10 search attempts and 20 page-retrieval attempts per Run, including retries; $20/month of node-wide search/content-service spending. Operators may configure limits; attribute usage to Workspace and Agent. | AT09, AT11, AT12 |
-| Q8 | Nonpublic or unclassified Run context requires approval of the exact outgoing query. Public-only research can run automatically. | AT04, AT05 |
-| Q9 | Bounded provider operational retention is acceptable; model-training reuse of submitted queries is not. No initial Japan-only or zero-retention mandate. | AT17 |
-| Q10 | Select Brave Web Search conditionally, paired with Aidash-controlled source reading. Verify actual account eligibility and price before enabling search. | AT01, AT17 |
-| Q11 | Provide `web_search`, `web_open` and `web_find`; search defaults to 5 results, at most 10; every model-visible response is at most 32 KiB with explicit continuation/truncation. | AT02, AT08, AT13 |
-| Q12 | Explicit failures permit recovery; search/page deadlines are 15/20 seconds, with at most one eligible transient retry. No automatic alternate provider or replay of completed/uncertain external calls. | AT10, AT11, AT12 |
-| Q13 | Exact-request disclosure approval also covers page URLs. An eligible user's explicit request to open a URL supplies that scoped intent without duplicate confirmation. | AT05, AT06 |
-| Q14 | Require deterministic behavioral tests and a recorded live pilot of 10 Japanese and 10 English queries before rollout. Missing evidence remains pending. | AT01-AT21 |
+| Decision | Settled requirement                                                                                                                                                                                                           | Acceptance       |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| Q1       | Search, source reading and cited answers are Harness-managed.                                                                                                                                                                 | AT01, AT14       |
+| Q2       | Support Japanese/English general and technical research, primary sources and current information.                                                                                                                             | AT02, AT15, AT20 |
+| Q3       | The node operator owns the paid search account, credentials and costs.                                                                                                                                                        | AT07, AT09, AT17 |
+| Q4       | Send search terms/conditions rather than entire conversations or files; nonpublic disclosure is denied by default.                                                                                                            | AT04, AT05, AT07 |
+| Q5       | Read public HTML, plain text and text-based PDFs, including user-supplied URLs. No authenticated browser, JavaScript execution or OCR in this scope.                                                                          | AT06, AT08       |
+| Q6       | Retain bounded evidence with URL, title and retrieval time under Run access/retention rules; cite the relevant statement.                                                                                                     | AT13, AT14, AT16 |
+| Q7       | Initial limits: 10 search attempts and 20 page-retrieval attempts per Run, including retries; $20/month of node-wide search/content-service spending. Operators may configure limits; attribute usage to Workspace and Agent. | AT09, AT11, AT12 |
+| Q8       | Nonpublic or unclassified Run context requires approval of the exact outgoing query. Public-only research can run automatically.                                                                                              | AT04, AT05       |
+| Q9       | Bounded provider operational retention is acceptable; model-training reuse of submitted queries is not. No initial Japan-only or zero-retention mandate.                                                                      | AT17             |
+| Q10      | Select Brave Web Search conditionally, paired with Aidash-controlled source reading. Verify actual account eligibility and price before enabling search.                                                                      | AT01, AT17       |
+| Q11      | Provide `web_search`, `web_open` and `web_find`; search defaults to 5 results, at most 10; every model-visible response is at most 32 KiB with explicit continuation/truncation.                                              | AT02, AT08, AT13 |
+| Q12      | Explicit failures permit recovery; search/page deadlines are 15/20 seconds, with at most one eligible transient retry. No automatic alternate provider or replay of completed/uncertain external calls.                       | AT10, AT11, AT12 |
+| Q13      | Exact-request disclosure approval also covers page URLs. An eligible user's explicit request to open a URL supplies that scoped intent without duplicate confirmation.                                                        | AT05, AT06       |
+| Q14      | Require deterministic behavioral tests and a recorded live pilot of 10 Japanese and 10 English queries before rollout. Missing evidence remains pending.                                                                      | AT01-AT21        |
 
 The rest of this document makes those decisions reviewable as one design. Numeric limits not established by Q7/Q11/Q12 are engineering defaults, configurable within tested policy ceilings. They are not claims about already implemented behavior.
 
@@ -44,16 +44,16 @@ Independently authorized `web_open` and `web_find` can work on directly supplied
 
 ## 3. Existing code and integration shape
 
-| Existing boundary | Required extension |
-| --- | --- |
-| `src/registry.rs::AgentConfig` | Add explicit core-capability declarations using the shared #43 shape, with absent fields granting no new capability. Preserve immutable Agent versions. |
-| `src/harness.rs`, `src/tool.rs` | Resolve permitted Web tools alongside built-ins; validate typed inputs, dispatch through durable invocations, and fit complete serialized results within context headroom. |
-| `src/authorization/execution.rs::Guard::tool` | Add explicit Web-tool cases and resource checks. The inspected dispatcher denies unknown built-ins, so schema exposure alone cannot enable them. |
-| `src/store.rs` | Extend existing invocation keys, revision/lease fencing and journals with attempts, approvals, source dependencies and atomic budget reservations. Use SeaORM/SeaQuery. |
-| `src/config.rs` | Reuse `AIDASH_SECRET_*` references; resolve values only inside the provider client. |
-| `src/provider.rs`, `src/context.rs` | Budget schemas, observations and citation references in complete model requests; preserve evidence identity across compaction. |
-| `src/knowledge.rs` | Its inspected PDF path accepts browser-extracted reference text. It is not an existing server-side PDF reader; implement and validate bounded Web PDF extraction separately. |
-| Existing authenticated API, Run controls and dashboard | Add capability states, exact disclosure requests, evidence reads and citations without a second conversation protocol. |
+| Existing boundary                                      | Required extension                                                                                                                                                           |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/registry.rs::AgentConfig`                         | Add explicit core-capability declarations using the shared #43 shape, with absent fields granting no new capability. Preserve immutable Agent versions.                      |
+| `src/harness.rs`, `src/tool.rs`                        | Resolve permitted Web tools alongside built-ins; validate typed inputs, dispatch through durable invocations, and fit complete serialized results within context headroom.   |
+| `src/authorization/execution.rs::Guard::tool`          | Add explicit Web-tool cases and resource checks. The inspected dispatcher denies unknown built-ins, so schema exposure alone cannot enable them.                             |
+| `src/store.rs`                                         | Extend existing invocation keys, revision/lease fencing and journals with attempts, approvals, source dependencies and atomic budget reservations. Use SeaORM/SeaQuery.      |
+| `src/config.rs`                                        | Reuse `AIDASH_SECRET_*` references; resolve values only inside the provider client.                                                                                          |
+| `src/provider.rs`, `src/context.rs`                    | Budget schemas, observations and citation references in complete model requests; preserve evidence identity across compaction.                                               |
+| `src/knowledge.rs`                                     | Its inspected PDF path accepts browser-extracted reference text. It is not an existing server-side PDF reader; implement and validate bounded Web PDF extraction separately. |
+| Existing authenticated API, Run controls and dashboard | Add capability states, exact disclosure requests, evidence reads and citations without a second conversation protocol.                                                       |
 
 Pipeline: authenticated Run authority -> capability/input checks -> disclosure approval where needed -> budget admission -> durable attempt -> provider or isolated reader -> bounded durable result/evidence -> existing Agent context and answer rendering.
 
@@ -65,19 +65,21 @@ All argument objects and nested objects reject unknown properties. All integers 
 
 ### `web_search`
 
-| Argument | Contract |
-| --- | --- |
-| `query` | Required nonblank string; at most 600 Unicode characters and 75 whitespace-separated words, and at most 4 KiB for the serialized input object. The final provider query, including generated domain operators, must also fit. |
-| `language` | Optional `ja` or `en`; otherwise use the Agent's supported preferred language, falling back to `en`. Translate to the provider's documented vocabulary; do not assume every provider uses identical codes. |
-| `country` | Optional supported two-letter country code. Omission uses the configured provider default, currently `US`, and returns the effective setting. Do not infer or send a person's physical location. |
-| `count` | Integer 1-10, default 5. |
-| `page` | Integer 0-9, default 0. A later page is a new external search attempt, subject to all budgets and exact-request approval. |
-| `freshness` | Optional one of `day`, `week`, `month`, `year`, or an object with inclusive ISO dates `from` and `to`; reject reversed ranges. Omission means no date filter. |
-| `include_domains`, `exclude_domains` | Arrays of normalized DNS hostnames, at most 5 in each; reject URLs, ports, wildcards and overlaps. Matching includes the named domain and its subdomains, with DNS-label boundaries. |
+| Argument                             | Contract                                                                                                                                                                                                                      |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `query`                              | Required nonblank string; at most 600 Unicode characters and 75 whitespace-separated words, and at most 4 KiB for the serialized input object. The final provider query, including generated domain operators, must also fit. |
+| `language`                           | Optional `ja` or `en`; otherwise use the Agent's supported preferred language, falling back to `en`. Translate to the provider's documented vocabulary; do not assume every provider uses identical codes.                    |
+| `country`                            | Optional supported two-letter country code. Omission uses the configured provider default, currently `US`, and returns the effective setting. Do not infer or send a person's physical location.                              |
+| `count`                              | Integer 1-10, default 5.                                                                                                                                                                                                      |
+| `page`                               | Integer 0-9, default 0. A later page is a new external search attempt, subject to all budgets and exact-request approval.                                                                                                     |
+| `freshness`                          | Optional one of `day`, `week`, `month`, `year`, or an object with inclusive ISO dates `from` and `to`; reject reversed ranges. Omission means no date filter.                                                                 |
+| `include_domains`, `exclude_domains` | Arrays of normalized DNS hostnames, at most 5 in each; reject URLs, ports, wildcards and overlaps. Matching includes the named domain and its subdomains, with DNS-label boundaries.                                          |
 
 The adapter constructs the final query deterministically using documented domain operators, disables spelling rewrites, requests only Web results, and disables generated answers/rich callbacks and unnecessary decoration. It maps freshness to the provider contract, validates returned URLs, and filters results against requested domains again. Operator-defined domain restrictions also apply independently. Fewer results are acceptable; do not fan out or relax filters to fill the requested count. A timeout, page change, secondary-language query or extra result page cannot become a hidden additional search.
 
 Return a bounded array of source records: `source_id`, original `url`, `title`, plain-text `snippet`, rank and `evidence_state: unread`, plus provider name, search time, effective query/filters, returned/requested counts, filtering/truncation notices and whether more results may be available. Provider dates are optional, carry their supplied meaning, and must not be relabeled as verified publication dates. Source IDs are generated by the Harness, immutable and scoped to the Run; a later discovery does not silently overwrite earlier metadata.
+
+The staged adapter normalizes provider candidates without `source_id`. Before a candidate becomes an Agent-facing source record, the Harness must durably associate it with the Run and assign its immutable ID at that persistence boundary. Reprocessing a recorded candidate must reuse the persisted ID rather than generate another identity. The adapter accepts the supported Agent language preference during request validation, so provider mapping and returned effective-language metadata use the same resolved value.
 
 Relevant provider mapping references: [Web Search API](https://api-dashboard.search.brave.com/api-reference/web/search/post), [search operators](https://api-dashboard.search.brave.com/documentation/resources/search-operators). Pin adapter fixtures to a reviewed contract; send a version header only for a verified supported version. The live pilot must verify Japanese/English mappings, domain matching and date behavior.
 
@@ -109,17 +111,17 @@ Every operation returns `version: 1`, its `operation`, `status`, `data` or `erro
 
 The direct reader uses an isolated extraction process with no credentials, host mounts, process-spawn facility, or network access. A separate restricted fetch component performs permitted network requests; the parser receives only bounded bytes. JavaScript, embedded PDF actions, external entities and subresource loads are not executed. Strip executable HTML and render excerpts as data; content instructions cannot change authority or operate tools.
 
-| Engineering default | Limit/behavior |
-| --- | --- |
-| Search response download | 1 MiB after decompression; excess returns `response_too_large`. |
-| Result fields | Title 512 UTF-8 bytes; snippet 1 KiB; URL 4 KiB. Mark text truncation; reject overlong/unsafe URLs rather than modifying their destination. |
-| Page download | 10 MiB compressed and 10 MiB decompressed, streamed with enforced caps. An incomplete download is a failed read, not a complete PDF/HTML document. |
-| Extracted text | 1 MiB/document; maximum 200 PDF pages; explicit extraction-limit metadata. No OCR; encrypted, scanned-only and unsupported documents have distinct outcomes. |
-| Extraction resources | 1 CPU, 256 MiB RAM, 5 seconds, with a process-tree kill on limit/cancellation. These fit within the total page deadline. |
-| Document working cache | 20 MiB/Run, durable across Worker restarts, idle expiry after 24 hours and removal within 1 hour after Run termination; explicit expired state. Quota exhaustion does not silently evict active data. |
-| Retained observations | At most 200 distinct Web observations and 8 MiB serialized Web observations/Run initially, in addition to the per-response cap; repeated paging cannot accumulate an unlimited archive. |
-| Local open/find work | 2 seconds per operation; local reads remain subject to normal Run step/context limits. |
-| Redirects | At most 3. Each request counts toward page-attempt quota and undergoes network/disclosure checks. |
+| Engineering default      | Limit/behavior                                                                                                                                                                                        |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Search response download | 1 MiB after decompression; excess returns `response_too_large`.                                                                                                                                       |
+| Result fields            | Title 512 UTF-8 bytes; snippet 1 KiB; URL 4 KiB. Mark text truncation; reject overlong/unsafe URLs rather than modifying their destination.                                                           |
+| Page download            | 10 MiB compressed and 10 MiB decompressed, streamed with enforced caps. An incomplete download is a failed read, not a complete PDF/HTML document.                                                    |
+| Extracted text           | 1 MiB/document; maximum 200 PDF pages; explicit extraction-limit metadata. No OCR; encrypted, scanned-only and unsupported documents have distinct outcomes.                                          |
+| Extraction resources     | 1 CPU, 256 MiB RAM, 5 seconds, with a process-tree kill on limit/cancellation. These fit within the total page deadline.                                                                              |
+| Document working cache   | 20 MiB/Run, durable across Worker restarts, idle expiry after 24 hours and removal within 1 hour after Run termination; explicit expired state. Quota exhaustion does not silently evict active data. |
+| Retained observations    | At most 200 distinct Web observations and 8 MiB serialized Web observations/Run initially, in addition to the per-response cap; repeated paging cannot accumulate an unlimited archive.               |
+| Local open/find work     | 2 seconds per operation; local reads remain subject to normal Run step/context limits.                                                                                                                |
+| Redirects                | At most 3. Each request counts toward page-attempt quota and undergoes network/disclosure checks.                                                                                                     |
 
 Readers accept HTML, plain text and text-based PDF according to validated content/type checks. Treat an HTML access-denied page as HTML, not a PDF because its URL ends in `.pdf`. Titles and dates are untrusted metadata; absence stays unknown. Preserve PDF page identities and clearly describe normalized/wrapped line numbering as positions in this snapshot, not the publisher's visual line layout.
 
@@ -173,24 +175,24 @@ Initial additional load controls are one search request/second across the accoun
 
 ### Failures and retry policy
 
-| Condition | Observable result and handling |
-| --- | --- |
-| Valid search/find with no matches | `empty`, with effective filters and a zero count. The Agent may formulate a new permitted request. |
-| Malformed input, unsupported filters or conflicting selector | `invalid_input`, no network call or charge. |
-| Disabled/missing capability or provider configuration | `capability_unavailable`, no network call; show setup detail only to eligible operators. |
-| Policy/source denial or revocation | Deny before the effect/read. Preserve existing Run pause behavior where continuing inference would reuse unauthorized context; never downgrade denial to successful empty results. |
-| Disclosure decision absent/denied/expired | Durable `approval_required`, then `approval_denied`, `approval_expired` or `approval_unavailable` as appropriate. No outbound request occurs. |
-| Unsafe destination or forbidden redirect | `unsafe_url`; no connection to that destination, no internal address in an unprivileged error. |
-| Publisher 403/404/410, auth wall or CAPTCHA | `source_unavailable`, with a bounded status reason; do not retry the same denied page automatically. |
-| Provider 401/403 | `provider_auth`; no retry or alternate credential/provider. Notify eligible operators through existing application state, not a new external messaging channel. |
-| Quota/monetary/observation limit | `budget_exceeded` or `limit_exceeded`, preserving completed work and giving a scoped remaining/reset indication. |
-| HTTP 408/429/500/502/503/504 | At most one retry of the identical authorized request when the deadline, rate limit and budget permit. Otherwise return `rate_limited` or `provider_unavailable`/`source_unavailable`. |
-| No valid response before deadline | `timeout`; dispatch/billing may be uncertain. Do not automatically resend a transport-ambiguous request. |
-| Oversized/malformed upstream response | `response_too_large` or `provider_response_invalid`; no raw body is exposed and no automatic retry. |
-| Unsupported/encrypted/scanned-only document or parser failure | `unsupported_content`, `no_extractable_text` or `parse_failed`; never manufacture text or claim full-page coverage. |
-| Snapshot/cursor unavailable or mismatched | `document_expired`, `invalid_cursor` or a nondisclosing authorization error; no automatic network fetch. |
-| Cancellation | `cancelled`; abort network/parsing and fence late results. Do not claim cancellation reverses an already sent request. |
-| Recovery cannot establish an external outcome | `uncertain` with `outcome_unknown`; retain the attempt debit and permit a separately admitted future operation. |
+| Condition                                                     | Observable result and handling                                                                                                                                                         |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Valid search/find with no matches                             | `empty`, with effective filters and a zero count. The Agent may formulate a new permitted request.                                                                                     |
+| Malformed input, unsupported filters or conflicting selector  | `invalid_input`, no network call or charge.                                                                                                                                            |
+| Disabled/missing capability or provider configuration         | `capability_unavailable`, no network call; show setup detail only to eligible operators.                                                                                               |
+| Policy/source denial or revocation                            | Deny before the effect/read. Preserve existing Run pause behavior where continuing inference would reuse unauthorized context; never downgrade denial to successful empty results.     |
+| Disclosure decision absent/denied/expired                     | Durable `approval_required`, then `approval_denied`, `approval_expired` or `approval_unavailable` as appropriate. No outbound request occurs.                                          |
+| Unsafe destination or forbidden redirect                      | `unsafe_url`; no connection to that destination, no internal address in an unprivileged error.                                                                                         |
+| Publisher 403/404/410, auth wall or CAPTCHA                   | `source_unavailable`, with a bounded status reason; do not retry the same denied page automatically.                                                                                   |
+| Provider 401/403                                              | `provider_auth`; no retry or alternate credential/provider. Notify eligible operators through existing application state, not a new external messaging channel.                        |
+| Quota/monetary/observation limit                              | `budget_exceeded` or `limit_exceeded`, preserving completed work and giving a scoped remaining/reset indication.                                                                       |
+| HTTP 408/429/500/502/503/504                                  | At most one retry of the identical authorized request when the deadline, rate limit and budget permit. Otherwise return `rate_limited` or `provider_unavailable`/`source_unavailable`. |
+| No valid response before deadline                             | `timeout`; dispatch/billing may be uncertain. Do not automatically resend a transport-ambiguous request.                                                                               |
+| Oversized/malformed upstream response                         | `response_too_large` or `provider_response_invalid`; no raw body is exposed and no automatic retry.                                                                                    |
+| Unsupported/encrypted/scanned-only document or parser failure | `unsupported_content`, `no_extractable_text` or `parse_failed`; never manufacture text or claim full-page coverage.                                                                    |
+| Snapshot/cursor unavailable or mismatched                     | `document_expired`, `invalid_cursor` or a nondisclosing authorization error; no automatic network fetch.                                                                               |
+| Cancellation                                                  | `cancelled`; abort network/parsing and fence late results. Do not claim cancellation reverses an already sent request.                                                                 |
+| Recovery cannot establish an external outcome                 | `uncertain` with `outcome_unknown`; retain the attempt debit and permit a separately admitted future operation.                                                                        |
 
 `retryable` means a future properly authorized operation may work; it does not promise another automatic attempt. Respect a valid `Retry-After`, including HTTP dates, within the remaining deadline; a longer delay yields a clear rate-limit result. Without it, use a short bounded backoff. Disable hidden client-library retries. The 15-second search and 20-second page deadlines include admission/rate waiting, DNS/connect/TLS, response streaming, redirects and extraction, after disclosure approval. A redirected request is separately approved when necessary; while waiting, terminate the active external operation and resume through a durable bounded continuation rather than holding a connection. Persist the remaining active-work deadline: approval pauses do not consume it, but approval, redirect and restart cannot reset it or the retry/attempt counters.
 
@@ -226,14 +228,14 @@ Recheck source authority for API reads, cached tool replay, events/SSE, citation
 
 Use additive typed configuration, with new Web capabilities disabled by default. Expose separate capability declarations for the three tools within the shared `core_capabilities` model; published Agent versions remain immutable. Record configuration revisions on operations. Old versions that cannot safely understand new configuration must reject it rather than silently dropping permission fields. Existing Registry integrations and native `http_get` retain their behavior and identities.
 
-| Operator-managed configuration | Required behavior |
-| --- | --- |
-| Provider/account and fixed endpoint | First adapter is Brave Web Search. Model arguments cannot select endpoints, accounts or providers. |
-| Credential reference | `AIDASH_SECRET_*` value supplied through deployment secrets, independently rotatable; no plaintext stored in Agent records. |
-| Contract eligibility record | Account/plan, evidence reference, storage/evaluation rights, no-training scope, retention/termination rules, verification and review dates. Unverified/expired conditions disable new search admission. |
-| Price and budgets | Versioned conservative request rates, recurring charges and effective dates; monthly node limit, Run attempt limits and optional lower scoped caps. |
-| Execution/network profile | Deadlines, response/download/parser/cache/observation caps, account rate limits, publisher restrictions and permitted ports. |
-| Disclosure authority | Trusted classification actions, eligible requester/approver policy and expiring exact-request grants. No model-set classification or approval fields. |
+| Operator-managed configuration      | Required behavior                                                                                                                                                                                       |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Provider/account and fixed endpoint | First adapter is Brave Web Search. Model arguments cannot select endpoints, accounts or providers.                                                                                                      |
+| Credential reference                | `AIDASH_SECRET_*` value supplied through deployment secrets, independently rotatable; no plaintext stored in Agent records.                                                                             |
+| Contract eligibility record         | Account/plan, evidence reference, storage/evaluation rights, no-training scope, retention/termination rules, verification and review dates. Unverified/expired conditions disable new search admission. |
+| Price and budgets                   | Versioned conservative request rates, recurring charges and effective dates; monthly node limit, Run attempt limits and optional lower scoped caps.                                                     |
+| Execution/network profile           | Deadlines, response/download/parser/cache/observation caps, account rate limits, publisher restrictions and permitted ports.                                                                            |
+| Disclosure authority                | Trusted classification actions, eligible requester/approver policy and expiring exact-request grants. No model-set classification or approval fields.                                                   |
 
 Extend existing authenticated Run controls with typed disclosure decisions and authorized evidence/usage reads. Proposed logical endpoints are `GET /api/runs/{run_id}/web/evidence/{evidence_ref}`, `GET /api/runs/{run_id}/web/usage`, and `POST /api/runs/{run_id}/web/disclosures/{request_id}/decision`. Decisions contain the expected revision, request digest and allow/deny outcome; actor/authority comes from authentication. Use the shared #43 approval endpoint instead if it already provides these exact guarantees. Publish actual routes through typed OpenAPI and test them; these routes are proposals, not existing APIs.
 
@@ -247,29 +249,29 @@ Delegation preserves context classifications and originating authority but trans
 
 Use the authenticated API -> Harness -> durable store/evidence boundary with scripted model/provider responses and real PostgreSQL fixtures. Test actual external-effect counts rather than helper-call ordering. For destination restrictions, parsing quotas, cancellation and secret isolation, also exercise the real fetch/extraction boundary in a controlled isolated environment; mocked responses alone do not prove isolation. A test-only private-network fixture must not become a production allow-private-address switch.
 
-| Case | Required observable evidence |
-| --- | --- |
-| AT01 | An enabled Agent with no Registry tools invokes search, opens a result/direct URL, finds a passage and produces a working citation; names are never `plugin_N`. |
-| AT02 | Typed contract rejects malformed/oversized/unknown inputs, invalid dates/domains/selectors and excessive counts before network calls. Japanese multibyte text and JSON escaping stay within limits; mapped filters and returned-source restrictions are preserved. |
-| AT03 | Disabled/unconfigured/denied tools are absent from the model schema and denied on direct invocation; cached source IDs and forged cursors do not bypass authority. |
-| AT04 | Private references, memory, Skills, inherited context, summaries and newly steered input require approval. Compaction and Agent-provided public labels cannot remove that requirement. Verified public-only context can search automatically. |
-| AT05 | Exact query/URL approval permits only the bound operation and eligible bounded retry; edits, account changes, new invocations, another Agent, expiry and revocation do not reuse it. Explicit authenticated URL intent avoids duplicate approval without bypassing policy. |
-| AT06 | Real fetch tests reject internal/metadata targets, encoded addresses, mixed DNS answers, rebinding and forbidden redirects before connection. Redirects recheck disclosure and quotas; no auth, cookie, proxy or Referer leakage occurs. |
-| AT07 | Sentinel credentials are absent from model requests, parser environment, page servers, approvals, results, events, traces and logs, including malicious provider errors and extraction failures. |
-| AT08 | HTML, plain text and text-PDF fixtures produce bounded located text. Oversized/compressed, encrypted, scanned, malformed, slow and script-dependent sources report explicit outcomes; parser process/resource limits are enforced. |
-| AT09 | Parallel Workers cannot exceed remaining money/attempt/observation limits; retries/redirects count; local reads do not spend provider quota. Restart, month rollover, tariff expiry, base fees and uncertain charges preserve correct attribution and admission. |
-| AT10 | Empty search, publisher denial, auth failure, provider outage and limits are distinguishable. The Agent can use a different permitted source or explain failed verification without fabricated current facts. |
-| AT11 | Eligible HTTP failures cause at most one retry within the original deadline, approval and budget. Long `Retry-After`, exhausted limits, transport ambiguity and permanent errors cause no automatic resend or provider switch. |
+| Case | Required observable evidence                                                                                                                                                                                                                                                 |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AT01 | An enabled Agent with no Registry tools invokes search, opens a result/direct URL, finds a passage and produces a working citation; names are never `plugin_N`.                                                                                                              |
+| AT02 | Typed contract rejects malformed/oversized/unknown inputs, invalid dates/domains/selectors and excessive counts before network calls. Japanese multibyte text and JSON escaping stay within limits; mapped filters and returned-source restrictions are preserved.           |
+| AT03 | Disabled/unconfigured/denied tools are absent from the model schema and denied on direct invocation; cached source IDs and forged cursors do not bypass authority.                                                                                                           |
+| AT04 | Private references, memory, Skills, inherited context, summaries and newly steered input require approval. Compaction and Agent-provided public labels cannot remove that requirement. Verified public-only context can search automatically.                                |
+| AT05 | Exact query/URL approval permits only the bound operation and eligible bounded retry; edits, account changes, new invocations, another Agent, expiry and revocation do not reuse it. Explicit authenticated URL intent avoids duplicate approval without bypassing policy.   |
+| AT06 | Real fetch tests reject internal/metadata targets, encoded addresses, mixed DNS answers, rebinding and forbidden redirects before connection. Redirects recheck disclosure and quotas; no auth, cookie, proxy or Referer leakage occurs.                                     |
+| AT07 | Sentinel credentials are absent from model requests, parser environment, page servers, approvals, results, events, traces and logs, including malicious provider errors and extraction failures.                                                                             |
+| AT08 | HTML, plain text and text-PDF fixtures produce bounded located text. Oversized/compressed, encrypted, scanned, malformed, slow and script-dependent sources report explicit outcomes; parser process/resource limits are enforced.                                           |
+| AT09 | Parallel Workers cannot exceed remaining money/attempt/observation limits; retries/redirects count; local reads do not spend provider quota. Restart, month rollover, tariff expiry, base fees and uncertain charges preserve correct attribution and admission.             |
+| AT10 | Empty search, publisher denial, auth failure, provider outage and limits are distinguishable. The Agent can use a different permitted source or explain failed verification without fabricated current facts.                                                                |
+| AT11 | Eligible HTTP failures cause at most one retry within the original deadline, approval and budget. Long `Retry-After`, exhausted limits, transport ambiguity and permanent errors cause no automatic resend or provider switch.                                               |
 | AT12 | Kill Workers before/after dispatch, response storage and completion. Recovered completed results make no request; stored outcomes complete without refetch; unknown outcomes stay uncertain and debited. Stale leases and cancelled operations cannot publish late evidence. |
-| AT13 | Continuation/find use fixed local snapshots, preserve line/page references and honor scope/caps. Expiry, cursor tampering and denied access never trigger hidden network calls. |
-| AT14 | Valid citations open the exact retained fragment. Unread, fabricated, foreign and out-of-range references are rejected; HTML/URL injection is inert. Structural validity is not described as semantic fact verification. |
-| AT15 | Freshness filters, search time, provider dates, publisher dates and fetch time remain distinct. Later source edits/refetches cannot change an earlier citation; stale results do not claim current verification. |
-| AT16 | Revocation and deletion/expiry affect evidence APIs, journals, SSE, derived outputs and caches consistently. Deleted evidence cannot be recreated by replay or late responses. |
-| AT17 | Missing/expired contract evidence, keys, price schedules or incompatible account terms prevent new search calls. Direct page tools remain independently governed. No public list price is treated as proof of a storage-rights entitlement. |
-| AT18 | Old Agent configurations gain no capability, published versions are unchanged, third-party Registry tools still work, and rollback disables admission while preserving authorized data/recovery. |
-| AT19 | UI walkthrough covers setup/denial, public automatic search, exact approval, cancellation during approval, a partial PDF, citations and budget exhaustion, including authorized and unauthorized viewers. |
-| AT20 | Record the live Japanese/English pilot below with actual contract/credential prerequisites met; no fixture result or provider marketing benchmark is substituted. |
-| AT21 | Delegation does not transfer keys or disclosure grants. Compatible scoped remote execution respects both authorities and executing-node budgets; unsupported/legacy paths deny access explicitly. |
+| AT13 | Continuation/find use fixed local snapshots, preserve line/page references and honor scope/caps. Expiry, cursor tampering and denied access never trigger hidden network calls.                                                                                              |
+| AT14 | Valid citations open the exact retained fragment. Unread, fabricated, foreign and out-of-range references are rejected; HTML/URL injection is inert. Structural validity is not described as semantic fact verification.                                                     |
+| AT15 | Freshness filters, search time, provider dates, publisher dates and fetch time remain distinct. Later source edits/refetches cannot change an earlier citation; stale results do not claim current verification.                                                             |
+| AT16 | Revocation and deletion/expiry affect evidence APIs, journals, SSE, derived outputs and caches consistently. Deleted evidence cannot be recreated by replay or late responses.                                                                                               |
+| AT17 | Missing/expired contract evidence, keys, price schedules or incompatible account terms prevent new search calls. Direct page tools remain independently governed. No public list price is treated as proof of a storage-rights entitlement.                                  |
+| AT18 | Old Agent configurations gain no capability, published versions are unchanged, third-party Registry tools still work, and rollback disables admission while preserving authorized data/recovery.                                                                             |
+| AT19 | UI walkthrough covers setup/denial, public automatic search, exact approval, cancellation during approval, a partial PDF, citations and budget exhaustion, including authorized and unauthorized viewers.                                                                    |
+| AT20 | Record the live Japanese/English pilot below with actual contract/credential prerequisites met; no fixture result or provider marketing benchmark is substituted.                                                                                                            |
+| AT21 | Delegation does not transfer keys or disclosure grants. Compatible scoped remote execution respects both authorities and executing-node budgets; unsupported/legacy paths deny access explicitly.                                                                            |
 
 ### Live pilot
 
@@ -281,15 +283,15 @@ Respect the 10-search Run cap by splitting the pilot across authorized Runs and 
 
 ### Evidence status at document handoff
 
-| Evidence | Status |
-| --- | --- |
-| Q1-Q14 product decisions and provider rationale | Recorded and confirmed by the user. |
-| Official provider-document comparison | Performed; architectural recommendation only. |
-| Actual account/contract/storage/no-training/price eligibility | Not verified. |
-| Product implementation and executable schema/API | Brave search adapter and input schema have an initial implementation; Harness exposure, reading, evidence, authorization and accounting remain incomplete. |
-| Behavior, database, network isolation, parser and UI tests | Adapter unit tests and a local HTTP boundary fixture pass; integrated authorization, database, parser and UI tests have not run. |
-| Live 20-query pilot and actual provider latency/cost | Not run. |
-| Production capability enablement | Not performed. |
+| Evidence                                                      | Status                                                                                                                                                     |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Q1-Q14 product decisions and provider rationale               | Recorded and confirmed by the user.                                                                                                                        |
+| Official provider-document comparison                         | Performed; architectural recommendation only.                                                                                                              |
+| Actual account/contract/storage/no-training/price eligibility | Not verified.                                                                                                                                              |
+| Product implementation and executable schema/API              | Brave search adapter and input schema have an initial implementation; Harness exposure, reading, evidence, authorization and accounting remain incomplete. |
+| Behavior, database, network isolation, parser and UI tests    | Adapter unit tests and a local HTTP boundary fixture pass; integrated authorization, database, parser and UI tests have not run.                           |
+| Live 20-query pilot and actual provider latency/cost          | Not run.                                                                                                                                                   |
+| Production capability enablement                              | Not performed.                                                                                                                                             |
 
 ## 11. Delivery, rollout and scope boundaries
 

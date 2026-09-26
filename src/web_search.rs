@@ -84,7 +84,7 @@ impl AccountProfile {
 		let profile: Self = serde_json::from_slice(&std::fs::read(path)?)
 			.map_err(|_| Error::Invalid("invalid web search profile".into()))?;
 		profile.validate_at(now)?;
-		secret(&profile.credential_env)?;
+		search_credential(&profile.credential_env)?;
 		Ok(Some(profile))
 	}
 }
@@ -160,12 +160,15 @@ pub fn search_schema() -> Value {
 #[derive(Debug, Clone)]
 pub struct ValidatedSearch {
 	input: SearchInput,
+	effective_language: Language,
 	pub outbound_query: String,
 	pub effective_freshness: Option<String>,
 }
 
 impl ValidatedSearch {
-	pub fn parse(input: Value) -> Result<Self> {
+	/// The caller supplies the Agent's supported preferred language. An explicit
+	/// argument takes precedence; no supported preference falls back to English.
+	pub fn parse(input: Value, preferred_language: Option<Language>) -> Result<Self> {
 		if serde_json::to_vec(&input)?.len() > 4096 {
 			return Err(Error::Invalid("web search input exceeds 4 KiB".into()));
 		}
@@ -238,6 +241,10 @@ impl ValidatedSearch {
 			));
 		}
 		Ok(Self {
+			effective_language: input
+				.language
+				.or(preferred_language)
+				.unwrap_or(Language::En),
 			input,
 			outbound_query,
 			effective_freshness,
@@ -258,7 +265,7 @@ impl ValidatedSearch {
 		});
 		// The Brave Web Search schema lists both ja and jp; use the standard
 		// ISO 639-1 ja code and verify search quality in the live pilot.
-		body["search_lang"] = json!(match self.input.language.unwrap_or(Language::En) {
+		body["search_lang"] = json!(match self.effective_language {
 			Language::Ja => "ja",
 			Language::En => "en",
 		});
@@ -269,7 +276,9 @@ impl ValidatedSearch {
 	}
 
 	/// Normalize only Web results. Search snippets are discovery hints, not
-	/// evidence that the page itself was read.
+	/// evidence that the page itself was read. These are provider candidates:
+	/// the Harness must persist them under a Run and assign immutable source IDs
+	/// before exposing them as Agent-facing source records.
 	pub fn normalize_response(
 		&self,
 		bytes: &[u8],
@@ -288,14 +297,13 @@ impl ValidatedSearch {
 		{
 			return outcome("error", "provider_response_invalid");
 		}
-		let Some(web) = raw.get("web") else {
-			if raw.get("query").is_none() {
-				return outcome("error", "provider_response_invalid");
-			}
-			return outcome("empty", "no_results");
-		};
-		let Some(results) = web.get("results").and_then(Value::as_array) else {
-			return outcome("error", "provider_response_invalid");
+		let results: &[Value] = match raw.get("web") {
+			Some(web) => match web.get("results").and_then(Value::as_array) {
+				Some(results) => results,
+				None => return outcome("error", "provider_response_invalid"),
+			},
+			None if raw.get("query").is_some() => &[],
+			None => return outcome("error", "provider_response_invalid"),
 		};
 		let mut sources = Vec::<Value>::new();
 		let mut filtered = 0usize;
@@ -350,7 +358,6 @@ impl ValidatedSearch {
 				1024,
 			);
 			sources.push(json!({
-				"source_id": uuid::Uuid::new_v4(),
 				"url": raw_url,
 				"title": title,
 				"snippet": snippet,
@@ -360,15 +367,18 @@ impl ValidatedSearch {
 				"provider_page_fetched": item.get("page_fetched").and_then(Value::as_str).map(|s| bounded(s, 128).0),
 				"truncated": title_cut || snippet_cut
 			}));
+			truncated |= title_cut || snippet_cut;
 		}
 		let mut result = json!({
 			"version": 1,
 			"operation": "web_search",
 			"status": if sources.is_empty() { "empty" } else { "ok" },
+			"limits": {"max_bytes": MAX_MODEL_BYTES, "truncated": truncated, "continuation": null},
+			"data": {
 			"provider": "brave",
 			"searched_at": searched_at,
 			"effective_query": self.outbound_query,
-			"effective_language": self.input.language.unwrap_or(Language::En),
+			"effective_language": self.effective_language,
 			"effective_country": self.input.country.as_deref().unwrap_or("US"),
 			"effective_freshness": self.effective_freshness,
 			"requested_count": self.input.count.unwrap_or(5),
@@ -377,18 +387,24 @@ impl ValidatedSearch {
 			"truncated": truncated,
 			"more_results_available": raw["query"]["more_results_available"].as_bool().unwrap_or(false),
 			"sources": sources
+			}
 		});
 		if result.to_string().len() > MAX_MODEL_BYTES {
 			while result.to_string().len() > MAX_MODEL_BYTES {
-				let Some(sources) = result["sources"].as_array_mut() else {
+				let Some(sources) = result["data"]["sources"].as_array_mut() else {
 					break;
 				};
 				if sources.pop().is_none() {
 					break;
 				}
-				result["truncated"] = json!(true);
+				result["data"]["truncated"] = json!(true);
+				result["limits"]["truncated"] = json!(true);
 			}
-			result["returned_count"] = json!(result["sources"].as_array().map_or(0, Vec::len));
+			let returned_count = result["data"]["sources"].as_array().map_or(0, Vec::len);
+			result["data"]["returned_count"] = json!(returned_count);
+			if returned_count == 0 {
+				result["status"] = json!("empty");
+			}
 		}
 		if result.to_string().len() > MAX_MODEL_BYTES {
 			return outcome("error", "response_too_large");
@@ -416,6 +432,9 @@ fn valid_domain(domain: &str) -> bool {
 }
 
 fn domain_matches(host: &str, domain: &str) -> bool {
+	// DNS absolute names retain their root dot in URL hosts. It must not change
+	// the domain restriction applied to the equivalent relative DNS name.
+	let host = host.trim_end_matches('.');
 	host == domain
 		|| host
 			.strip_suffix(domain)
@@ -456,7 +475,51 @@ fn bounded(value: &str, max: usize) -> (&str, bool) {
 }
 
 fn outcome(status: &str, code: &str) -> Value {
-	json!({"version":1,"operation":"web_search","status":status,"error":{"code":code}})
+	let (explanation, retryable) = match code {
+		"provider_auth" => (
+			"The search provider rejected the configured credential.",
+			false,
+		),
+		"rate_limited" => ("The search provider rate limit was reached.", true),
+		"provider_unavailable" => ("The search provider is temporarily unavailable.", true),
+		"provider_request_rejected" => ("The search provider rejected the request.", false),
+		"provider_response_invalid" => ("The search provider returned an invalid response.", false),
+		"response_too_large" => (
+			"The search response exceeded the configured size limit.",
+			false,
+		),
+		"timeout" => (
+			"The search deadline expired; the provider outcome is unknown.",
+			false,
+		),
+		"transport_error" => (
+			"The search transport failed; the provider outcome is unknown.",
+			false,
+		),
+		"response_stream_error" => (
+			"The search response was interrupted; the provider outcome is unknown.",
+			false,
+		),
+		_ => ("The search operation failed.", false),
+	};
+	json!({
+		"version":1,"operation":"web_search","status":status,
+		"error":{"code":code,"explanation":explanation,"retryable":retryable},
+		"limits":{"max_bytes":MAX_MODEL_BYTES,"truncated":false,"continuation":null}
+	})
+}
+
+fn search_credential(name: &str) -> Result<header::HeaderValue> {
+	let token = secret(name)?;
+	if token.trim().is_empty() {
+		return Err(Error::Invalid(
+			"web search credential is not configured".into(),
+		));
+	}
+	let mut token = header::HeaderValue::from_str(&token)
+		.map_err(|_| Error::Invalid("invalid web search credential".into()))?;
+	token.set_sensitive(true);
+	Ok(token)
 }
 
 fn status_outcome(status: StatusCode) -> Value {
@@ -503,10 +566,7 @@ impl BraveClient {
 		profile: &AccountProfile,
 	) -> Result<Value> {
 		profile.validate_at(Utc::now())?;
-		let token = secret(&profile.credential_env)?;
-		let mut token = header::HeaderValue::from_str(&token)
-			.map_err(|_| Error::Invalid("invalid web search credential".into()))?;
-		token.set_sensitive(true);
+		let token = search_credential(&profile.credential_env)?;
 		self.search_with_token(input, token).await
 	}
 
@@ -557,10 +617,11 @@ impl BraveClient {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use rstest::rstest;
+	use rstest::{fixture, rstest};
 
-	fn account_profile() -> AccountProfile {
-		serde_json::from_value(json!({
+	#[fixture]
+	fn account_profile_json() -> Value {
+		json!({
 			"account_id":"brave-account",
 			"agreement_reference":"approved-contract-record",
 			"verified_by":"operator",
@@ -577,14 +638,175 @@ mod tests {
 			"request_price_micro_usd":5000,
 			"monthly_base_fee_micro_usd":0,
 			"monthly_limit_micro_usd":20_000_000
-		}))
+		})
+	}
+
+	#[fixture]
+	fn account_profile(account_profile_json: Value) -> AccountProfile {
+		serde_json::from_value(account_profile_json).unwrap()
+	}
+
+	#[fixture]
+	fn search_time() -> DateTime<Utc> {
+		"2026-09-25T00:00:00Z".parse().unwrap()
+	}
+
+	#[fixture]
+	fn search_request(
+		#[default(json!({"query":"example"}))] input: Value,
+		#[default(None)] preferred_language: Option<Language>,
+	) -> ValidatedSearch {
+		ValidatedSearch::parse(input, preferred_language).unwrap()
+	}
+
+	#[fixture]
+	fn provider_results(#[default("https://docs.example.com./a")] url: &str
+	) -> Vec<u8> {
+		serde_json::to_vec(&json!({"web":{"results":[{
+			"url":url,"title":"Example","description":"Public discovery hint"
+		}]}}))
 		.unwrap()
 	}
 
 	#[rstest]
-	fn account_admission_requires_current_complete_terms() {
-		let now = "2026-09-25T00:00:00Z".parse().unwrap();
-		let mut profile = account_profile();
+	#[case(json!({"query":"example","include_domains":["example.com"]}), 1)]
+	#[case(json!({"query":"example","exclude_domains":["example.com"]}), 0)]
+	fn absolute_dns_names_obey_domain_filters(
+		#[case] _input: Value,
+		#[case] expected_count: usize,
+		#[with(_input.clone())] search_request: ValidatedSearch,
+		provider_results: Vec<u8>,
+		search_time: DateTime<Utc>,
+	) {
+		let output = search_request.normalize_response(&provider_results, search_time);
+		assert_eq!(output["data"]["returned_count"], expected_count);
+	}
+
+	#[rstest]
+	#[case(json!({"query":"example"}), Some(Language::Ja), "ja")]
+	#[case(json!({"query":"example","language":"en"}), Some(Language::Ja), "en")]
+	#[case(json!({"query":"example","language":"ja"}), Some(Language::En), "ja")]
+	#[case(json!({"query":"example"}), None, "en")]
+	fn search_language_uses_explicit_then_agent_then_english(
+		#[case] _input: Value,
+		#[case] _preferred_language: Option<Language>,
+		#[case] expected_language: &str,
+		#[with(_input.clone(), _preferred_language)] search_request: ValidatedSearch,
+		provider_results: Vec<u8>,
+		search_time: DateTime<Utc>,
+	) {
+		assert_eq!(
+			search_request.provider_body()["search_lang"],
+			expected_language
+		);
+		let output = search_request.normalize_response(&provider_results, search_time);
+		assert_eq!(output["data"]["effective_language"], expected_language);
+	}
+
+	#[rstest]
+	fn provider_candidates_have_no_run_source_identity(
+		search_request: ValidatedSearch,
+		provider_results: Vec<u8>,
+		search_time: DateTime<Utc>,
+	) {
+		let output = search_request.normalize_response(&provider_results, search_time);
+		assert_eq!(output["data"]["sources"].as_array().unwrap().len(), 1);
+		assert!(output["data"]["sources"][0].get("source_id").is_none());
+	}
+
+	struct CredentialEnvironment {
+		profile_path: std::path::PathBuf,
+		profile: AccountProfile,
+	}
+
+	impl Drop for CredentialEnvironment {
+		fn drop(&mut self) {
+			let _ = std::fs::remove_file(&self.profile_path);
+		}
+	}
+
+	#[fixture]
+	fn credential_environment(mut account_profile_json: Value) -> CredentialEnvironment {
+		let now = Utc::now();
+		account_profile_json["verified_at"] = json!(now - chrono::Duration::days(1));
+		account_profile_json["review_after"] = json!(now + chrono::Duration::days(1));
+		account_profile_json["price_effective_at"] = json!(now - chrono::Duration::days(1));
+		account_profile_json["price_review_after"] = json!(now + chrono::Duration::days(1));
+		account_profile_json["credential_env"] = json!("AIDASH_SECRET_BRAVE_TEST_EMPTY");
+		let profile_path =
+			std::env::temp_dir().join(format!("aidash-web-profile-{}.json", uuid::Uuid::new_v4()));
+		// Isolate credentials in a child environment, without process-global mutation.
+		std::fs::write(
+			&profile_path,
+			serde_json::to_vec(&account_profile_json).unwrap(),
+		)
+		.unwrap();
+		CredentialEnvironment {
+			profile_path,
+			profile: serde_json::from_value(account_profile_json).unwrap(),
+		}
+	}
+
+	#[rstest]
+	#[tokio::test]
+	async fn empty_credential_is_unavailable_before_dispatch(
+		credential_environment: CredentialEnvironment,
+		search_request: ValidatedSearch,
+	) {
+		if std::env::var_os("AIDASH_WEB_EMPTY_CREDENTIAL_CHILD").is_none() {
+			let output = std::process::Command::new(std::env::current_exe().unwrap())
+				.args([
+					"--exact",
+					"web_search::tests::empty_credential_is_unavailable_before_dispatch",
+					"--nocapture",
+				])
+				.env("AIDASH_WEB_EMPTY_CREDENTIAL_CHILD", "1")
+				.env(
+					"AIDASH_WEB_SEARCH_PROFILE",
+					&credential_environment.profile_path,
+				)
+				.env("AIDASH_SECRET_BRAVE_TEST_EMPTY", "")
+				.output()
+				.unwrap();
+			assert!(
+				output.status.success(),
+				"{}{}",
+				String::from_utf8_lossy(&output.stdout),
+				String::from_utf8_lossy(&output.stderr)
+			);
+			return;
+		}
+		assert!(AccountProfile::from_env(Utc::now()).is_err());
+		assert!(
+			credential_environment
+				.profile
+				.validate_at(Utc::now())
+				.is_ok()
+		);
+		let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+		listener.set_nonblocking(true).unwrap();
+		let mut client = BraveClient::new().unwrap();
+		client.endpoint =
+			Url::parse(&format!("http://{}/search", listener.local_addr().unwrap())).unwrap();
+		assert!(
+			client
+				.search(&search_request, &credential_environment.profile)
+				.await
+				.is_err()
+		);
+		assert_eq!(
+			listener.accept().unwrap_err().kind(),
+			std::io::ErrorKind::WouldBlock
+		);
+	}
+
+	#[rstest]
+	fn account_admission_requires_current_complete_terms(
+		mut account_profile: AccountProfile,
+		search_time: DateTime<Utc>,
+	) {
+		let now = search_time;
+		let profile = &mut account_profile;
 		assert!(profile.validate_at(now).is_ok());
 		profile.query_training_prohibited = false;
 		assert!(profile.validate_at(now).is_err());
@@ -616,18 +838,21 @@ mod tests {
 	#[case(json!({"query":"rust","country":"ZZ"}), false)]
 	#[case(json!({"query":"rust","unexpected":"value"}), false)]
 	fn validates_search_contract(#[case] input: Value, #[case] accepted: bool) {
-		assert_eq!(ValidatedSearch::parse(input).is_ok(), accepted);
+		assert_eq!(ValidatedSearch::parse(input, None).is_ok(), accepted);
 	}
 
 	#[rstest]
 	fn maps_filters_without_relaxing_them() {
-		let input = ValidatedSearch::parse(json!({
-			"query":"Rust release",
-			"language":"ja",
-			"include_domains":["rust-lang.org","doc.rust-lang.org"],
-			"exclude_domains":["example.net"],
-			"freshness":"month"
-		}))
+		let input = ValidatedSearch::parse(
+			json!({
+				"query":"Rust release",
+				"language":"ja",
+				"include_domains":["rust-lang.org","doc.rust-lang.org"],
+				"exclude_domains":["example.net"],
+				"freshness":"month"
+			}),
+			None,
+		)
 		.unwrap();
 		assert_eq!(
 			input.outbound_query,
@@ -648,9 +873,12 @@ mod tests {
 
 	#[rstest]
 	fn bounds_and_filters_untrusted_provider_metadata() {
-		let input = ValidatedSearch::parse(json!({
-			"query":"example", "include_domains":["example.com"]
-		}))
+		let input = ValidatedSearch::parse(
+			json!({
+				"query":"example", "include_domains":["example.com"]
+			}),
+			None,
+		)
 		.unwrap();
 		let raw = json!({"web":{"results":[
 			{"url":"https://example.com.attacker.test/","title":"Bad"},
@@ -660,11 +888,11 @@ mod tests {
 		let output =
 			input.normalize_response(&serde_json::to_vec(&raw).unwrap(), chrono::Utc::now());
 		assert_eq!(output["status"], "ok");
-		assert_eq!(output["filtered_count"], 2);
-		assert_eq!(output["sources"].as_array().unwrap().len(), 1);
-		assert_eq!(output["sources"][0]["evidence_state"], "unread");
-		assert_eq!(output["sources"][0]["rank"], 2);
-		assert_eq!(output["sources"][0]["truncated"], true);
+		assert_eq!(output["data"]["filtered_count"], 2);
+		assert_eq!(output["data"]["sources"].as_array().unwrap().len(), 1);
+		assert_eq!(output["data"]["sources"][0]["evidence_state"], "unread");
+		assert_eq!(output["data"]["sources"][0]["rank"], 2);
+		assert_eq!(output["data"]["sources"][0]["truncated"], true);
 		assert!(output.to_string().len() <= MAX_MODEL_BYTES);
 	}
 
@@ -682,7 +910,7 @@ mod tests {
 			status_outcome(StatusCode::SERVICE_UNAVAILABLE)["error"]["code"],
 			"provider_unavailable"
 		);
-		let input = ValidatedSearch::parse(json!({"query":"example"})).unwrap();
+		let input = ValidatedSearch::parse(json!({"query":"example"}), None).unwrap();
 		assert_eq!(
 			input.normalize_response(b"not JSON and not a secret", chrono::Utc::now())["error"]["code"],
 			"provider_response_invalid"
@@ -721,13 +949,21 @@ mod tests {
 		});
 		let mut client = BraveClient::new().unwrap();
 		client.endpoint = Url::parse(&format!("http://{addr}/res/v1/web/search")).unwrap();
-		let input = ValidatedSearch::parse(json!({"query":"public fixture"})).unwrap();
+		let input = ValidatedSearch::parse(json!({"query":"public fixture"}), None).unwrap();
 		let output = client
 			.search_with_token(&input, header::HeaderValue::from_static("sentinel-token"))
 			.await
 			.unwrap();
 		server.await.unwrap();
 		assert_eq!(output["error"]["code"], "provider_unavailable");
+		assert_eq!(output["error"]["retryable"], true);
+		assert!(
+			!output["error"]["explanation"]
+				.as_str()
+				.unwrap_or_default()
+				.is_empty()
+		);
+		assert_eq!(output["limits"]["truncated"], false);
 		assert!(!output.to_string().contains("sentinel-token"));
 	}
 }
