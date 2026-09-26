@@ -2,6 +2,14 @@ use super::*;
 use axum::extract::State;
 use sea_orm::sea_query::{LockType, Order};
 
+const MAX_RECIPIENT_VERSIONS_PER_AREA: usize = 50;
+
+fn cap_recipient_versions(versions: &mut Vec<String>) -> bool {
+	let truncated = versions.len() > MAX_RECIPIENT_VERSIONS_PER_AREA;
+	versions.truncate(MAX_RECIPIENT_VERSIONS_PER_AREA);
+	truncated
+}
+
 async fn mapped(f: &Federation, source: &str, description: &Description) -> Result<(Access, Area)> {
 	let mut access = peer::access(
 		f,
@@ -429,13 +437,14 @@ pub(crate) async fn recipient_list(
 		None
 	};
 	let mut items = vec![];
+	let mut versions_truncated = false;
 	for area in rows.into_iter().take(50) {
 		match sessions::authorize(access, &area, "file.receive").await {
 			Ok(()) => {}
 			Err(Error::Forbidden | Error::NotFound(_)) => continue,
 			Err(error) => return Err(error),
 		}
-		let versions: Vec<String> = sqlx::query_scalar(
+		let mut versions: Vec<String> = sqlx::query_scalar(
 			&Query::select()
 				.distinct()
 				.column((Alias::new("r"), Alias::new("agent_version")))
@@ -451,12 +460,15 @@ pub(crate) async fn recipient_list(
 				.and_where(
 					Expr::col((Alias::new("q"), Alias::new("generation"))).eq(Expr::cust("$2")),
 				)
+				.order_by((Alias::new("r"), Alias::new("agent_version")), Order::Asc)
+				.limit((MAX_RECIPIENT_VERSIONS_PER_AREA + 1) as u64)
 				.to_string(PostgresQueryBuilder),
 		)
 		.bind(area.id)
 		.bind(area.generation)
 		.fetch_all(&mut **access.tx)
 		.await?;
+		versions_truncated |= cap_recipient_versions(&mut versions);
 		for version in versions {
 			let subjects = access.subjects.clone();
 			access.subjects.push(crate::domain::qualified_agent(
@@ -491,5 +503,21 @@ pub(crate) async fn recipient_list(
                 }
 		}
 	}
-	Ok(json!({"protocol":"file-transfer/1","items":items,"next_cursor":next_cursor}))
+	Ok(
+		json!({"protocol":"file-transfer/1","items":items,"next_cursor":next_cursor,"versions_truncated":versions_truncated}),
+	)
+}
+
+#[cfg(test)]
+mod recipient_version_tests {
+	use super::{MAX_RECIPIENT_VERSIONS_PER_AREA, cap_recipient_versions};
+
+	#[test]
+	fn recipient_versions_are_capped_and_report_truncation() {
+		for (count, expected_truncated) in [(0, false), (50, false), (51, true)] {
+			let mut versions = (0..count).map(|i| format!("0.0.{i}")).collect::<Vec<_>>();
+			assert_eq!(cap_recipient_versions(&mut versions), expected_truncated);
+			assert_eq!(versions.len(), count.min(MAX_RECIPIENT_VERSIONS_PER_AREA));
+		}
+	}
 }

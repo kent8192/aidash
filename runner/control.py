@@ -205,6 +205,7 @@ class Runner:
                 if session["area_id"] != area or session["status"] != "frozen" or session["manifest"] != self.file_identity(request["files"]):
                     raise Rejected(409, "SESSION_RESET: incompatible live environment")
         size = 0
+        mounted = 0
         identities = set()
         for file in request["files"]:
             if set(file) != {"file_id", "path", "scope", "size", "digest"}:
@@ -216,8 +217,12 @@ class Runner:
                 raise Rejected(400, "invalid input manifest")
             identities.add(file["file_id"])
             size += file["size"]
+            if file["scope"] != "working":
+                mounted += file["size"]
         if size > self.config["working_bytes"]:
             raise Rejected(413, "working quota")
+        if self.config["working_bytes"] - mounted <= 0:
+            raise Rejected(413, "working quota has no writable space")
         # The transport digest binds the complete request independently of the
         # opaque caller digest (which binds its authenticated public request).
         wire_digest = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -346,14 +351,14 @@ class Runner:
     def writable_bytes(self, record):
         mounted = sum(file["size"] for file in record["request"]["files"] if file["scope"] != "working")
         remaining = self.config["working_bytes"] - mounted
-        if remaining < 0:
-            raise Rejected(413, "working quota")
+        if remaining <= 0:
+            raise Rejected(413, "working quota has no writable space")
         return remaining
 
     def execution_limits(self, record):
         limits = {k: self.config[k] for k in ('cpu', 'memory_bytes', 'processes', 'temporary_bytes')}
-        # tmpfs capacity is rounded up to a physical page. Export still enforces
-        # the exact remaining aggregate byte budget, including the zero case.
+        # tmpfs capacity is rounded up to a physical page after admission has
+        # proved that at least one writable byte remains.
         page = os.sysconf('SC_PAGE_SIZE')
         limits['working_bytes'] = max(page, ((self.writable_bytes(record) + page - 1) // page) * page)
         return limits
@@ -390,7 +395,7 @@ class Runner:
         collector = container("collector", ["python", "-I", "/opt/aidash/collector.py", "serve"], "250m", "256Mi", collector_mounts)
         collector["env"].append({"name": "AIDASH_OUTPUT_BYTES", "value": str(profile["output_bytes"])})
         volumes = [{"name": name, "emptyDir": {"medium": "Memory", "sizeLimit": str(size)}} for name, size in (
-            ("work", max(1, self.writable_bytes(record))), ("references", profile["working_bytes"]),
+            ("work", self.writable_bytes(record)), ("references", profile["working_bytes"]),
             ("received", profile["working_bytes"]), ("request", 1048576),
             ("temp", profile["temporary_bytes"]), ("control-temp", profile["output_bytes"] * 4 + 1048576))]
         return {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": self.pod_name(record["operation_id"]),

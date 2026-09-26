@@ -2074,6 +2074,10 @@ mod schema_tests {
 			("/api/file-transfers/{id}", "get"),
 			("/api/references/uploads", "post"),
 			("/api/working-areas/{id}/restore", "post"),
+			(
+				"/api/workspaces/{workspace}/working-areas/{id}/restore/new-thread",
+				"post",
+			),
 			("/api/workspaces/{id}/threads", "post"),
 			("/api/workspaces/{id}/thread-messages", "post"),
 			("/api/workspaces/{id}/message-history", "get"),

@@ -748,6 +748,12 @@ export function ThreadCapabilities({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [agent, setAgent] = useState("");
+  const pendingEnqueue = useRef<{ signature: string; key: string } | undefined>(
+    undefined,
+  );
+  const pendingSteer = useRef<{ signature: string; key: string } | undefined>(
+    undefined,
+  );
   const query = useQuery({
     queryKey: ["core-areas", workspace, thread],
     queryFn: async ({ signal }) => {
@@ -800,6 +806,17 @@ export function ThreadCapabilities({
     } finally {
       setBusy(false);
     }
+  };
+  const enqueueRun = async (path: string, input: Record<string, unknown>) => {
+    const signature = JSON.stringify([path, input]);
+    if (pendingEnqueue.current?.signature !== signature)
+      pendingEnqueue.current = { signature, key: crypto.randomUUID() };
+    await post(path, {
+      ...input,
+      idempotency_key: pendingEnqueue.current.key,
+    });
+    pendingEnqueue.current = undefined;
+    setPrompt("");
   };
   const availableAgents = agents.filter((e) => !area || e.id === area.agent_id);
   const effectiveAgent = availableAgents.some(
@@ -864,23 +881,20 @@ export function ThreadCapabilities({
                   target?.id === area.agent_id ? target.version : undefined;
                 if (!version)
                   throw new Error("Select an available Agent version");
-                await post(`/working-areas/${area.id}/queue`, {
-                  idempotency_key: crypto.randomUUID(),
+                await enqueueRun(`/working-areas/${area.id}/queue`, {
                   agent_version: version,
                   title: prompt.slice(0, 80),
                   description: prompt,
                 });
               } else if (target)
-                await post(
+                await enqueueRun(
                   `/workspaces/${workspace}/threads/${thread}/agents/${encodeURIComponent(target.id)}/runs`,
                   {
-                    idempotency_key: crypto.randomUUID(),
                     agent_version: target.version,
                     title: prompt.slice(0, 80),
                     description: prompt,
                   },
                 );
-              setPrompt("");
             })
           }
         >
@@ -899,11 +913,23 @@ export function ThreadCapabilities({
               disabled={busy || !prompt.trim()}
               onClick={() =>
                 void act(async () => {
+                  const expectedRunId = session.data!.active_run_id!;
+                  const signature = JSON.stringify([
+                    area.id,
+                    expectedRunId,
+                    prompt,
+                  ]);
+                  if (pendingSteer.current?.signature !== signature)
+                    pendingSteer.current = {
+                      signature,
+                      key: crypto.randomUUID(),
+                    };
                   await post(`/working-areas/${area.id}/steer`, {
-                    idempotency_key: crypto.randomUUID(),
-                    expected_run_id: session.data!.active_run_id,
+                    idempotency_key: pendingSteer.current.key,
+                    expected_run_id: expectedRunId,
                     content: prompt,
                   });
+                  pendingSteer.current = undefined;
                   setPrompt("");
                 })
               }

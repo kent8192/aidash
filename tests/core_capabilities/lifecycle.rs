@@ -386,6 +386,66 @@ async fn thread_run_waiting_behind_deletion_cannot_create_an_area(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn thread_run_rejects_a_hundredth_queued_run(#[future] capability_fixture: CoreFixture) {
+	let c = Box::pin(capability_fixture).await;
+	let workspace = c.f.store.task(c.task).await.unwrap().workspace_id;
+	let root = source(&c, workspace, "Bound thread run queue admission").await;
+	let (status, thread) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/threads"),
+		json!({"root_message_id":root}),
+	)
+	.await;
+	assert_eq!(status, 200, "{thread}");
+	let thread_id: Uuid = serde_json::from_value(thread["id"].clone()).unwrap();
+	let (status, area) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/threads/{thread_id}/agents/research/runs"),
+		json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"First run","description":"Create the area"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{area}");
+	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
+	for index in 0..99 {
+		let (status, queued) = request(
+			&c.app,
+			&c.token,
+			"POST",
+			&format!("/api/working-areas/{area_id}/queue"),
+			json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":format!("Queued run {index}"),"description":format!("Run {index}")}),
+		)
+		.await;
+		assert_eq!(status, 200, "run {index}: {queued}");
+	}
+	let (status, rejected) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/threads/{thread_id}/agents/research/runs"),
+		json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Overflow run","description":"Must not create run 101"}),
+	)
+	.await;
+	assert_eq!(status, 409, "{rejected}");
+	assert_eq!(rejected["error"]["code"], "QUEUE_LIMIT");
+	let (status, session) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!("/api/working-areas/{area_id}/session"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{session}");
+	assert_eq!(session["queue"].as_array().unwrap().len(), 100);
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn deleted_thread_retains_files_and_restores_only_into_a_new_authorized_thread(
 	#[future] capability_fixture: CoreFixture,
 ) {

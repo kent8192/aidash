@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export RUSTC_WRAPPER=
+export RUST_MIN_STACK="${RUST_MIN_STACK:-8388608}"
 # These immutable, local-only credentials are inherited when Cargo starts each
 # test binary; dynamically mapped service endpoints come from TestEnvironment.
 export AIDASH_SECRET_TEST_PEER=local-peer-regression-test-token-0123456789

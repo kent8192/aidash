@@ -331,6 +331,71 @@ async fn restore_rechecks_current_quota_and_administrator_policy(
 	f.c.close().await;
 }
 
+#[rstest::rstest]
+#[tokio::test]
+async fn restoring_into_a_new_thread_rolls_back_message_and_thread_when_restore_fails(
+	#[future] recovery_fixture: RecoveryFixture,
+) {
+	let mut f = Box::pin(recovery_fixture).await;
+	let count = |table: &'static str| {
+		Query::select()
+			.expr(Expr::cust("count(*)"))
+			.from(Alias::new(table))
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder)
+	};
+	let message_query = count("messages");
+	let thread_query = count("channel_threads");
+	let messages_before: i64 = sqlx::query_scalar(&message_query)
+		.bind(f.workspace)
+		.fetch_one(&f.c.f.store.pool)
+		.await
+		.unwrap();
+	let threads_before: i64 = sqlx::query_scalar(&thread_query)
+		.bind(f.workspace)
+		.fetch_one(&f.c.f.store.pool)
+		.await
+		.unwrap();
+	let mut profile = (*f.c.f.store.capabilities.0).clone();
+	profile.working_bytes = 1;
+	f.c.f.store.capabilities = Runtime::new(profile).unwrap();
+	f.c.app = aidash::api::router(f.c.f.clone());
+	let path = format!(
+		"/api/workspaces/{}/working-areas/{}/restore/new-thread",
+		f.workspace,
+		f.area["id"].as_str().unwrap()
+	);
+	let (status, rejected) = request(
+		&f.c.app,
+		&f.c.token,
+		"POST",
+		&path,
+		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":f.cleaned["revision"],"snapshot_id":f.cleaned["operation_id"],"content":"Restore into a new thread"}),
+	)
+	.await;
+	assert_eq!(status, 409, "{rejected}");
+	assert_eq!(rejected["error"]["code"], "WORKING_QUOTA");
+	let messages_after: i64 = sqlx::query_scalar(&message_query)
+		.bind(f.workspace)
+		.fetch_one(&f.c.f.store.pool)
+		.await
+		.unwrap();
+	let threads_after: i64 = sqlx::query_scalar(&thread_query)
+		.bind(f.workspace)
+		.fetch_one(&f.c.f.store.pool)
+		.await
+		.unwrap();
+	assert_eq!(
+		messages_after, messages_before,
+		"orphan root message was committed"
+	);
+	assert_eq!(
+		threads_after, threads_before,
+		"orphan destination thread was committed"
+	);
+	f.c.close().await;
+}
+
 #[rstest::fixture]
 fn sharing_generation_fixture(
 	#[future] recovery_fixture: RecoveryFixture,

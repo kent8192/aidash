@@ -123,7 +123,21 @@ fn approver(access: &Access, target: &Resource) -> Option<String> {
 		.find(|(id, _)| eligible(access, id, &access.identity.subject, target))
 		.map(|(id, _)| id.clone())
 }
-pub(crate) fn visible(access: &Access, record: &Record) -> Result<bool> {
+async fn approval_run_context(access: &mut Access, id: Uuid) -> Result<Run> {
+	let run: Run = sqlx::query_as(
+		&sessions::select("runs")
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(id)
+	.fetch_optional(&mut **access.tx)
+	.await?
+	.ok_or_else(|| Error::NotFound("approval unavailable".into()))?;
+	let workspace = access.workspace(run.workspace_id).await?;
+	access.context = workspace.attributes.clone();
+	Ok(run)
+}
+pub(crate) async fn visible(access: &mut Access, record: &Record) -> Result<bool> {
 	if record.owner == access.identity.subject {
 		return Ok(true);
 	}
@@ -131,19 +145,27 @@ pub(crate) fn visible(access: &Access, record: &Record) -> Result<bool> {
 		return Ok(false);
 	}
 	let run: Uuid = serde_json::from_value(record.data["run_id"].clone())?;
-	Ok(record.data["targets"].as_array().is_some_and(|targets| {
-		!targets.is_empty()
-			&& targets.iter().all(|origin| {
-				origin.as_str().is_some_and(|origin| {
-					eligible(
-						access,
-						&access.identity.subject,
-						&record.owner,
-						&resource(access, origin, run),
-					)
-				})
-			})
-	}))
+	approval_run_context(access, run).await?;
+	let Some(targets) = record.data["targets"]
+		.as_array()
+		.filter(|items| !items.is_empty())
+	else {
+		return Ok(false);
+	};
+	for origin in targets {
+		let Some(origin) = origin.as_str() else {
+			return Ok(false);
+		};
+		if !eligible(
+			access,
+			&access.identity.subject,
+			&record.owner,
+			&resource(access, origin, run),
+		) {
+			return Ok(false);
+		}
+	}
+	Ok(true)
 }
 pub(crate) async fn prepare(
 	store: &Store,
@@ -277,6 +299,7 @@ pub(crate) async fn decide(
 		return Ok(result);
 	}
 	let run_id: Uuid = serde_json::from_value(record.data["run_id"].clone())?;
+	let run = approval_run_context(access, run_id).await?;
 	let origin = record.data["targets"][0].as_str().ok_or(Error::Forbidden)?;
 	let target = resource(access, origin, run_id);
 	if record.data["approver"] != access.identity.subject
@@ -290,14 +313,6 @@ pub(crate) async fn decide(
 	{
 		return Err(Error::Conflict("APPROVAL_STALE_OR_EXPIRED".into()));
 	}
-	let run: Run = sqlx::query_as(
-		&sessions::select("runs")
-			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
-			.to_string(PostgresQueryBuilder),
-	)
-	.bind(run_id)
-	.fetch_one(&mut **access.tx)
-	.await?;
 	if run.control == "CANCELLED"
 		|| matches!(run.phase.as_str(), "COMPLETED" | "CANCELLED" | "FAILED")
 	{

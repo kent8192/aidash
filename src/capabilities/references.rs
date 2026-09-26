@@ -473,6 +473,7 @@ pub(crate) async fn run(
 	mut stopping: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
 	let mut cursor = Uuid::nil();
+	let mut receipt_cursor = Uuid::nil();
 	loop {
 		if *stopping.borrow() {
 			return Ok(());
@@ -508,12 +509,17 @@ pub(crate) async fn run(
 				.from(Alias::new("core_records"))
 				.and_where(Expr::col(Alias::new("kind")).eq("reference"))
 				.and_where(Expr::cust("data->'receipt_pending' = 'true'::jsonb"))
+				.and_where(Expr::col(Alias::new("id")).gt(Expr::cust("$1")))
+				.order_by(Alias::new("id"), Order::Asc)
 				.limit(8)
 				.to_string(PostgresQueryBuilder),
 		)
+		.bind(receipt_cursor)
 		.fetch_all(&store.pool)
 		.await?;
+		receipt_cursor = next_receipt_cursor(&receipts);
 		for (id, data) in receipts {
+			// The page cursor already advanced, so an ack failure cannot pin it.
 			let operation: Uuid = serde_json::from_value(data["operation_id"].clone())?;
 			if operations::remote(
 				&store,
@@ -540,5 +546,29 @@ pub(crate) async fn run(
 			}
 		}
 		tokio::select! {_=stopping.changed()=>{},_=tokio::time::sleep(std::time::Duration::from_millis(500))=>{}}
+	}
+}
+
+fn next_receipt_cursor(receipts: &[(Uuid, Value)]) -> Uuid {
+	receipts.last().map_or_else(Uuid::nil, |(id, _)| *id)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::next_receipt_cursor;
+	use serde_json::json;
+	use uuid::Uuid;
+
+	#[test]
+	fn receipt_batches_advance_past_failed_rows_and_restart_after_the_end() {
+		let first = Uuid::from_u128(1);
+		let second = Uuid::from_u128(2);
+		let third = Uuid::from_u128(3);
+		let page = vec![(first, json!({})), (second, json!({}))];
+		let cursor = next_receipt_cursor(&page);
+		assert_eq!(cursor, second, "the cursor advances despite ack failures");
+		let next_page = vec![(third, json!({}))];
+		assert_eq!(next_receipt_cursor(&next_page), third);
+		assert_eq!(next_receipt_cursor(&[]), Uuid::nil());
 	}
 }

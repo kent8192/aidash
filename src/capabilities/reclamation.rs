@@ -99,18 +99,27 @@ async fn reclaim(store: &Store, id: Uuid) -> Result<()> {
 					None,
 				)
 				.await?;
-				if observed["termination_confirmed"] != true {
+				let undispatched_absent =
+					observed["status"] == "absent" && record.data["dispatch_pending"] == true;
+				if observed["termination_confirmed"] != true && !undispatched_absent {
 					return Err(Error::Conflict("EXTRACTOR_STOP_PENDING".into()));
 				}
-				let original: FileEntry = serde_json::from_value(record.data["original"].clone())?;
-				let digest = crate::registry::digest(&json!(["extract/1", id, original]));
-				operations::remote(
-					store,
-					reqwest::Method::POST,
-					&format!("/v1/operations/{operation}/ack"),
-					Some(json!({"digest":digest})),
-				)
-				.await?;
+				if undispatched_absent {
+					// This committed intent was never submitted to the runner, so a
+					// verified absence is terminal and needs no acknowledgement.
+					record.data["dispatch_pending"] = json!(false);
+				} else {
+					let original: FileEntry =
+						serde_json::from_value(record.data["original"].clone())?;
+					let digest = crate::registry::digest(&json!(["extract/1", id, original]));
+					operations::remote(
+						store,
+						reqwest::Method::POST,
+						&format!("/v1/operations/{operation}/ack"),
+						Some(json!({"digest":digest})),
+					)
+					.await?;
+				}
 				record.data["runner_released"] = json!(true);
 			}
 			if !removing && !matches!(record.state.as_str(), "ready" | "extracting") {

@@ -143,6 +143,7 @@ async function core(page: Page) {
       request.method() === "POST" &&
       (path.startsWith("/api/working-areas/") ||
         path.startsWith("/api/runs/") ||
+        path.includes("/restore/new-thread") ||
         path.startsWith("/api/capabilities/") ||
         path.startsWith("/api/file-transfers/") ||
         path.endsWith("/delete") ||
@@ -205,6 +206,8 @@ async function core(page: Page) {
       if (path.endsWith("/reconcile")) receipt = true;
       if (path.endsWith("/deletion-confirmation"))
         return send({ confirmation_id: "confirm-seven", revision: 7 });
+      if (path.endsWith("/restore/new-thread"))
+        return send({ thread: { id: "restored-thread" }, area: managed });
       if (path.endsWith("/cleanup")) {
         managed.state =
           body.choice === "recoverable"
@@ -526,18 +529,23 @@ test("narrow keyboard cleanup keeps default, separates confirmation and restores
   ).toBeVisible();
   await page.getByRole("button", { name: "Restore into a new thread" }).click();
   await expect
-    .poll(() => calls.filter((c) => c.path.endsWith("/restore")).length)
+    .poll(
+      () => calls.filter((c) => c.path.endsWith("/restore/new-thread")).length,
+    )
     .toBe(1);
-  expect(
-    calls.find((c) => c.path.endsWith("/restore"))?.body.thread_id,
-  ).not.toBe(managed.thread_id);
+  const restore = calls.find((c) => c.path.endsWith("/restore/new-thread"));
+  expect(restore?.body.thread_id).toBeUndefined();
+  expect(restore?.body.content).toBe("Restore retained working files");
   await retention.selectOption("irreversible");
+  const review = page.getByRole("button", {
+    name: "Review deletion",
+    exact: true,
+  });
+  await expect(review).toBeEnabled();
   await expect(
     page.getByRole("button", { name: "Confirm irreversible deletion" }),
   ).toHaveCount(0);
-  await page
-    .getByRole("button", { name: "Review deletion", exact: true })
-    .focus();
+  await review.focus();
   await page.keyboard.press("Enter");
   await expect(
     page.getByText("Permanently delete 2 files for researcher.", {
@@ -695,6 +703,71 @@ test("outbound retries reuse an ambiguous request key and a new fetch uses a fre
   await fetch.click();
   await expect.poll(() => requests.length).toBe(3);
   expect(requests[0].url).toBe(requests[2].url);
+  expect(requests[0].idempotency_key).toBe(requests[1].idempotency_key);
+  expect(requests[2].idempotency_key).not.toBe(requests[1].idempotency_key);
+  expect(errors).toEqual([]);
+});
+
+test("thread run retries reuse an ambiguous idempotency key and changed prompts get a new key", async ({
+  page,
+}) => {
+  const { errors } = await core(page);
+  const requests: Record<string, unknown>[] = [];
+  await page.route("**/api/working-areas*", (route) =>
+    route.fulfill({ json: { items: [], next_cursor: null } }),
+  );
+  await page.route(
+    "**/api/workspaces/*/threads/*/agents/*/runs",
+    async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      requests.push(route.request().postDataJSON());
+      if (requests.length === 1) return route.abort("failed");
+      return route.fulfill({ json: { id: "new-area" } });
+    },
+  );
+  await openThread(page);
+  await page.getByLabel("Agent to run").selectOption("researcher@1.0.0");
+  const prompt = page.getByLabel("Next instruction");
+  const start = page.getByRole("button", { name: "Start work", exact: true });
+  await prompt.fill("First instruction");
+  await start.click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  await start.click();
+  await expect.poll(() => requests.length).toBe(2);
+  await prompt.fill("Changed instruction");
+  await expect(start).toBeEnabled();
+  await start.click();
+  await expect.poll(() => requests.length).toBe(3);
+  expect(requests[0].idempotency_key).toBe(requests[1].idempotency_key);
+  expect(requests[2].idempotency_key).not.toBe(requests[1].idempotency_key);
+  expect(errors).toEqual([]);
+});
+
+test("steering retries reuse an ambiguous key and changed prompts get a new key", async ({
+  page,
+}) => {
+  const { errors } = await core(page);
+  const requests: Record<string, unknown>[] = [];
+  await page.route("**/api/working-areas/area-one/steer", async (route) => {
+    requests.push(route.request().postDataJSON());
+    if (requests.length === 1) return route.abort("failed");
+    return route.fulfill({ json: { status: "queued" } });
+  });
+  await openThread(page);
+  const prompt = page.getByLabel("Next instruction");
+  const steer = page.getByRole("button", {
+    name: "Steer active Run",
+    exact: true,
+  });
+  await prompt.fill("Keep the original request");
+  await steer.click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  await steer.click();
+  await expect.poll(() => requests.length).toBe(2);
+  await prompt.fill("Use a changed request");
+  await steer.click();
+  await expect.poll(() => requests.length).toBe(3);
+  expect(requests[0].expected_run_id).toBe("run-0");
   expect(requests[0].idempotency_key).toBe(requests[1].idempotency_key);
   expect(requests[2].idempotency_key).not.toBe(requests[1].idempotency_key);
   expect(errors).toEqual([]);

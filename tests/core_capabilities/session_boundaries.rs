@@ -90,6 +90,97 @@ async fn same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runn
 	c.close().await;
 }
 
+#[rstest::rstest]
+#[tokio::test]
+async fn predecessor_run_cannot_read_files_after_its_successor_becomes_active(
+	#[future] capability_fixture: CoreFixture,
+) {
+	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+	let c = Box::pin(capability_fixture).await;
+	let predecessor = admit(&c).await;
+	let message = source(
+		&c,
+		predecessor.workspace_id,
+		"Successor-only current file\n",
+	)
+	.await;
+	let (status, materialized) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/runs/{}/files/materialize", predecessor.id),
+		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"path":"current.txt","source":{"kind":"message","message_id":message}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{materialized}");
+	let (_, area) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!("/api/runs/{}/working-area", predecessor.id),
+		Value::Null,
+	)
+	.await;
+	let file_id = area["manifest"][0]["file_id"].clone();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("runs"))
+			.value(Alias::new("phase"), "COMPLETED")
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(predecessor.id)
+	.execute(&c.f.store.pool)
+	.await
+	.unwrap();
+	let input = json!({"file_id":file_id,"representation":"text"});
+	let (status, latest) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/runs/{}/files/read", predecessor.id),
+		input.clone(),
+	)
+	.await;
+	assert_eq!(
+		status, 200,
+		"the latest completed run remains readable: {latest}"
+	);
+	let (status, queued) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/working-areas/{}/queue", area["id"].as_str().unwrap()),
+		json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Successor","description":"Read the current session"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{queued}");
+	let successor: Uuid = serde_json::from_value(
+		queued["queue"].as_array().unwrap().last().unwrap()["run_id"].clone(),
+	)
+	.unwrap();
+	let (status, denied) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/runs/{}/files/read", predecessor.id),
+		input.clone(),
+	)
+	.await;
+	assert_eq!(status, 404, "{denied}");
+	let (status, current) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/runs/{successor}/files/read"),
+		input,
+	)
+	.await;
+	assert_eq!(status, 200, "{current}");
+	assert_eq!(current["content"], "Successor-only current file\n");
+	c.close().await;
+}
+
 #[rstest::fixture]
 async fn approver_fixture(
 	#[future(awt)] test_environment: Arc<TestEnvironment>,
@@ -256,5 +347,74 @@ async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
 		assert_eq!(grant["requester"], "alice");
 		assert_eq!(grant["approver"], "bob");
 	}
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn approval_list_and_decision_restore_the_request_workspace_context(
+	#[future] approver_fixture: (CoreFixture, aidash::domain::Run, String),
+) {
+	let (c, run, bob) = Box::pin(approver_fixture).await;
+	let mut policy = c.policy.clone();
+	let policies = policy["policies"].as_array_mut().unwrap();
+	policies.retain(|rule| rule["id"] != "approvable-outbound");
+	policies.push(json!({
+		"id":"outbound-request",
+		"effect":"allow",
+		"subjects":{"any":true},
+		"actions":["capability.request"],
+		"resources":{"kinds":["outbound"]}
+	}));
+	policies.push(json!({
+		"id":"workspace-bound-approver",
+		"effect":"allow",
+		"subjects":{"ids":["bob"]},
+		"actions":["capability.approve"],
+		"resources":{"kinds":["outbound"]},
+		"condition":{"op":"eq","left":{"source":"resource","path":"/workspace_id"},"right":{"source":"literal","value":run.workspace_id}}
+	}));
+	let (status, updated) = request(
+		&c.app,
+		&c.f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":4,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{updated}");
+	let (status, pending) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/runs/{}/outbound", run.id),
+		json!({"idempotency_key":Uuid::new_v4(),"url":"https://example.com/"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{pending}");
+	assert_eq!(pending["approver"], "bob");
+	let (status, cards) = request(
+		&c.app,
+		&bob,
+		"GET",
+		"/api/capabilities/approvals",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{cards}");
+	assert_eq!(cards["items"][0]["requester"], "alice");
+	let (status, decision) = request(
+		&c.app,
+		&bob,
+		"POST",
+		&format!(
+			"/api/capabilities/approvals/{}/decide",
+			pending["approval_id"].as_str().unwrap()
+		),
+		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"choice":"allow_once"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{decision}");
+	assert_eq!(decision["state"], "approved");
 	c.close().await;
 }

@@ -110,6 +110,9 @@ pub(crate) async fn invoke(
 	) {
 		available(&area)?;
 	}
+	if matches!(name, "file_read" | "file_search") {
+		sessions::require_current_run(access, &area, run).await?;
+	}
 	let mut result = match name {
 		"python_install" => {
 			super::packages::prepare(

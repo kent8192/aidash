@@ -67,6 +67,7 @@ pub fn routes() -> OpenApiRouter<Federation> {
 		.routes(routes!(cleanup_reconcile))
 		.routes(routes!(deletion_confirmation))
 		.routes(routes!(restore))
+		.routes(routes!(restore_new_thread))
 		.layer(axum::extract::DefaultBodyLimit::max(6 * 1024 * 1024))
 		.layer(axum::middleware::from_fn(super::errors::http))
 }
@@ -620,7 +621,7 @@ async fn approval_list(
         let next_cursor=(rows.len()==51).then(||rows[49].id);
         let mut items=vec![];
         for row in rows.into_iter().take(50) {
-            if !super::approvals::visible(&access, &row)? { continue; }
+			if !super::approvals::visible(&mut access, &row).await? { continue; }
             let run:Uuid=serde_json::from_value(row.data["run_id"].clone())?;
             // Designated approvers see only the scoped card, never Run output.
             items.push(json!({"id":row.id,"kind":row.kind,"run_id":run,"area_id":row.area_id,"state":if row.state=="pending"&&row.expires_at.is_some_and(|t|t<chrono::Utc::now()){"expired"}else{&row.state},"revision":row.revision,"requester":row.owner,"approver":row.data["approver"],"targets":row.data["targets"],"action":"network.get","expires_at":row.expires_at,"grant_id":row.data["grant_id"]}));
@@ -937,6 +938,55 @@ async fn restore(
 	let mut access = access(&f, actor).await?;
 	let result = super::cleanup::restore(&f.store, &mut access, id, input).await;
 	access.finish(result).await.map(Json)
+}
+
+#[utoipa::path(post,path="/workspaces/{workspace}/working-areas/{id}/restore/new-thread",operation_id="core_restore_new_thread",params(("workspace"=Uuid,Path),("id"=Uuid,Path)),request_body=super::cleanup::RestoreNewThread,responses((status=200,description="Created a thread and restored the working area")),security(("bearer_auth"=[])))]
+async fn restore_new_thread(
+	State(f): State<Federation>,
+	Extension(actor): Extension<Actor>,
+	Path((workspace, id)): Path<(Uuid, Uuid)>,
+	Json(input): Json<super::cleanup::RestoreNewThread>,
+) -> Result<Json<Value>> {
+	let mut lease =
+		crate::collaboration::access::Lease::begin_message_create(&f.store, actor, workspace)
+			.await?;
+	let result = async {
+		let message = crate::collaboration::threads::post(
+			&f.store,
+			&mut lease,
+			workspace,
+			crate::collaboration::ChannelMessageInput {
+				content: input.content,
+				thread_id: None,
+				idempotency_key: input.idempotency_key,
+				attachment_ids: vec![],
+			},
+		)
+		.await?;
+		let thread = crate::collaboration::threads::create(
+			&f.store,
+			&mut lease,
+			workspace,
+			message.message.id,
+		)
+		.await?;
+		let access = lease.access_mut().ok_or(Error::Forbidden)?;
+		let area = super::cleanup::restore(
+			&f.store,
+			access,
+			id,
+			super::cleanup::Restore {
+				idempotency_key: input.idempotency_key,
+				expected_revision: input.expected_revision,
+				snapshot_id: input.snapshot_id,
+				thread_id: thread.id,
+			},
+		)
+		.await?;
+		Ok(json!({"thread":thread,"area":area}))
+	}
+	.await;
+	lease.finish(result).await.map(Json)
 }
 
 #[utoipa::path(get,path="/file-transfers/{id}",operation_id="file_transfer_status",params(("id"=Uuid,Path)),responses((status=200,body=TransferStatus)),security(("bearer_auth"=[])))]

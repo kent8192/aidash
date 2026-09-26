@@ -4,8 +4,10 @@ use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 
 struct ExtractionFixture {
 	c: CoreFixture,
+	record_id: Uuid,
 	path: String,
 	operation: Uuid,
+	original_file: Uuid,
 	expected: &'static str,
 	expected_runner: &'static str,
 }
@@ -82,14 +84,17 @@ fn extraction_lifecycle_fixture(
 		.unwrap();
 		let operation: Uuid = serde_json::from_value(data["operation_id"].clone()).unwrap();
 		let original = data["original"].clone();
+		let original_file: Uuid =
+			serde_json::from_value(data["original"]["file_id"].clone()).unwrap();
 		let digest = aidash::registry::digest(&json!(["extract/1", id, original]));
 		let disabled = case.starts_with("disabled");
 		let mut expected_runner = "absent";
 		if case != "disabled_undispatched" {
 			let health = runner(&c, reqwest::Method::GET, "/v1/health", None).await;
 			data["instance"] = health["instance"].clone();
-			data["dispatch_pending"] = json!(case == "disabled_intent");
-			if case != "disabled_intent" {
+			let undispatched = matches!(case, "disabled_intent" | "revoked_intent");
+			data["dispatch_pending"] = json!(undispatched);
+			if !undispatched {
 				let staged = matches!(case, "cancelled" | "disabled_staged");
 				let files = if staged {
 					json!([{"file_id":original["file_id"],"path":"original","scope":"references","size":original["size"],"digest":original["digest"]}])
@@ -165,6 +170,19 @@ fn extraction_lifecycle_fixture(
 			.execute(&c.f.store.pool)
 			.await
 			.unwrap();
+			if case == "revoked_intent" {
+				sqlx::query(
+					&Query::update()
+						.table(Alias::new("core_records"))
+						.value(Alias::new("state"), "revoked")
+						.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+						.to_string(PostgresQueryBuilder),
+				)
+				.bind(id)
+				.execute(&c.f.store.pool)
+				.await
+				.unwrap();
+			}
 		}
 		if disabled {
 			let mut profile = (*c.f.store.capabilities.0).clone();
@@ -174,8 +192,10 @@ fn extraction_lifecycle_fixture(
 		}
 		ExtractionFixture {
 			c,
+			record_id: id,
 			path,
 			operation,
+			original_file,
 			expected: if case == "truncated" {
 				"output_limit"
 			} else if disabled {
@@ -186,6 +206,68 @@ fn extraction_lifecycle_fixture(
 			expected_runner,
 		}
 	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn revoked_undispatched_extraction_intent_releases_its_original_object(
+	#[with("revoked_intent")]
+	#[future]
+	extraction_lifecycle_fixture: ExtractionFixture,
+) {
+	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+	let f = Box::pin(extraction_lifecycle_fixture).await;
+	let (stop, rx) = tokio::sync::watch::channel(false);
+	let worker = tokio::spawn(aidash::capabilities::operations::run(
+		f.c.f.store.clone(),
+		rx,
+	));
+	let query = Query::select()
+		.columns([Alias::new("state"), Alias::new("data")])
+		.from(Alias::new("core_records"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+		.to_string(PostgresQueryBuilder);
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(90);
+	loop {
+		let (state, data): (String, Value) = sqlx::query_as(&query)
+			.bind(f.record_id)
+			.fetch_one(&f.c.f.store.pool)
+			.await
+			.unwrap();
+		if state == "revoked" && data["runner_released"] == true && data["objects_released"] == true
+		{
+			assert_eq!(data["dispatch_pending"], false);
+			break;
+		}
+		assert!(tokio::time::Instant::now() < deadline, "{state}: {data}");
+		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+	}
+	let object: Option<Uuid> = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("core_objects"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(f.original_file)
+	.fetch_optional(&f.c.f.store.pool)
+	.await
+	.unwrap();
+	assert!(object.is_none(), "revoked original object remained owned");
+	assert!(!f.c.root.join(f.original_file.simple().to_string()).exists());
+	assert_eq!(
+		runner(
+			&f.c,
+			reqwest::Method::GET,
+			&format!("/v1/operations/{}", f.operation),
+			None
+		)
+		.await["status"],
+		"absent"
+	);
+	stop.send(true).unwrap();
+	worker.await.unwrap().unwrap();
+	f.c.close().await;
 }
 
 #[rstest::rstest]

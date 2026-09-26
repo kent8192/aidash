@@ -114,7 +114,7 @@ class ControllerLifecycle(unittest.TestCase):
     def test_readonly_mounts_reserve_the_aggregate_working_budget(self):
         runner = self.start_controller()
         for kind in ("shell", "python"):
-            for mounted in (0, 4096, self.config["working_bytes"]):
+            for mounted in (0, 4096, self.config["working_bytes"] - 1):
                 with self.subTest(kind=kind, mounted=mounted):
                     request = dict(kind=kind, files=[dict(scope="references", size=mounted // 2),
                                                     dict(scope="received", size=mounted - mounted // 2),
@@ -123,7 +123,23 @@ class ControllerLifecycle(unittest.TestCase):
                                   wire_digest="wire", request=request)
                     manifest = runner.manifest(record)
                     volume = next(v for v in manifest["spec"]["volumes"] if v["name"] == "work")
-                    self.assertEqual(int(volume["emptyDir"]["sizeLimit"]), max(1, self.config["working_bytes"] - mounted))
+                    self.assertEqual(int(volume["emptyDir"]["sizeLimit"]), self.config["working_bytes"] - mounted)
+
+        mounted = self.config["working_bytes"]
+        files = [dict(file_id=str(uuid.uuid4()), path=f"input-{scope}.txt", scope=scope,
+                      size=mounted // 2, digest="a" * 64)
+                 for scope in ("references", "received")]
+        record = dict(operation_id=self.operation, area_id=str(uuid.uuid4()), epoch=1,
+                      wire_digest="wire", request=dict(kind="shell", files=files))
+        with self.assertRaisesRegex(controller.Rejected, "no writable space"):
+            runner.writable_bytes(record)
+        request = dict(operation_id=self.operation, area_id=record["area_id"], epoch=1,
+                       digest="caller", kind="shell", code="print('ok')", seconds=5,
+                       files=files)
+        runner.config["maximum_seconds"] = 60
+        with self.assertRaisesRegex(controller.Rejected, "no writable space"):
+            runner.accept(request)
+        self.assertEqual(json.loads(runner.path(self.operation).read_text())["status"], "accepted")
 
     def test_exporters_reject_control_paths_and_preserve_printable_unicode(self):
         for index, (name, unsafe) in enumerate((("東京.txt", False), ("space name.txt", False), ("zero\u200bwidth.txt", False), ("bad\x1f.txt", True), ("bad\x7f.txt", True), ("bad\x85.txt", True), ("bad\x9f.txt", True))):

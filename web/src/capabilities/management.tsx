@@ -73,28 +73,18 @@ export function AreaLifecycle({ area }: { area: Managed }) {
             disabled={busy}
             onClick={() =>
               void act(async () => {
-                const created = await post<{ message: { id: string } }>(
-                  `/workspaces/${area.workspace_id}/thread-messages`,
+                const restored = await post<{ thread: { id: string } }>(
+                  `/workspaces/${area.workspace_id}/working-areas/${area.area_id}/restore/new-thread`,
                   {
                     idempotency_key: crypto.randomUUID(),
+                    expected_revision: area.revision,
+                    snapshot_id: area.snapshot_id,
                     content: ja
                       ? "保存済み作業ファイルの復元"
                       : "Restore retained working files",
-                    thread_id: null,
-                    attachment_ids: [],
                   },
                 );
-                const destination = await post<{ id: string }>(
-                  `/workspaces/${area.workspace_id}/threads`,
-                  { root_message_id: created.message.id },
-                );
-                await post(`/working-areas/${area.area_id}/restore`, {
-                  idempotency_key: crypto.randomUUID(),
-                  expected_revision: area.revision,
-                  snapshot_id: area.snapshot_id,
-                  thread_id: destination.id,
-                });
-                setThread(destination.id);
+                setThread(restored.thread.id);
               })
             }
           >

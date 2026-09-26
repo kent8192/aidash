@@ -34,6 +34,14 @@ pub struct Restore {
 	pub snapshot_id: Uuid,
 	pub thread_id: Uuid,
 }
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RestoreNewThread {
+	pub idempotency_key: Uuid,
+	pub expected_revision: i64,
+	pub snapshot_id: Uuid,
+	pub content: String,
+}
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ManagedArea {
 	pub area_id: Uuid,

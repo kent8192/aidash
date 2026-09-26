@@ -96,7 +96,7 @@ pub(crate) async fn authorize_sources(
 			Some("received_scope") => {
 				let owner = source["owner"].as_str().ok_or(Error::Forbidden)?;
 				let agent = source["agent"].as_str().ok_or(Error::Forbidden)?;
-				if access.subjects.iter().any(|s| s != owner && s != agent) {
+				if !received_scope_matches(&access.subjects, owner, agent) {
 					return Err(Error::Forbidden);
 				}
 			}
@@ -104,6 +104,10 @@ pub(crate) async fn authorize_sources(
 		}
 	}
 	Ok(())
+}
+fn received_scope_matches(subjects: &[String], owner: &str, agent: &str) -> bool {
+	subjects.first().map(String::as_str) == Some(owner)
+		&& subjects.last().map(String::as_str) == Some(agent)
 }
 pub(crate) async fn for_run(access: &mut Access, run: &Run) -> Result<Area> {
 	let (id, generation): (Uuid, i64) = sqlx::query_as(
@@ -126,6 +130,30 @@ pub(crate) async fn for_run(access: &mut Access, run: &Run) -> Result<Area> {
 		return Err(Error::Forbidden);
 	}
 	Ok(area)
+}
+/// File tools act on the current session only. A completed predecessor still
+/// maps to the same Area row, whose manifest may already belong to a successor.
+pub(crate) async fn require_current_run(access: &mut Access, area: &Area, run: &Run) -> Result<()> {
+	let current: Option<Uuid> = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("run_id"))
+			.from(Alias::new("core_runs"))
+			.and_where(Expr::col(Alias::new("area_id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("generation")).eq(Expr::cust("$2")))
+			.and_where(Expr::col(Alias::new("initialized")).eq(true))
+			.order_by(Alias::new("sequence"), Order::Desc)
+			.limit(1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(area.id)
+	.bind(area.generation)
+	.fetch_optional(&mut **access.tx)
+	.await?;
+	if current == Some(run.id) {
+		Ok(())
+	} else {
+		Err(Error::NotFound("working area unavailable".into()))
+	}
 }
 /// Revalidate retained context without taking a mutation lock held across a tool's transaction.
 pub(crate) async fn context_authority(access: &mut Access, run: &Run) -> Result<()> {
@@ -316,7 +344,11 @@ pub(crate) async fn admit(
 	}
 	// Queuing cannot mutate mounts or capture discovered Skills while an earlier
 	// Run owns the session. Pin them exactly once when this Run becomes active.
-	let initialized = area.state == "active" && status(access, &area).await?.queue.is_empty();
+	let queue = status(access, &area).await?.queue;
+	if queue.len() >= 100 {
+		return Err(Error::Conflict("QUEUE_LIMIT".into()));
+	}
+	let initialized = area.state == "active" && queue.is_empty();
 	if initialized {
 		super::references::pin(store, access, &mut area, config).await?;
 		super::skills::pin(store, access, run_id, &area, config).await?;
@@ -540,4 +572,32 @@ pub(crate) async fn cache(
 	.execute(&mut **access.tx)
 	.await?;
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::received_scope_matches;
+
+	#[test]
+	fn received_scope_allows_delegation_ancestors_and_checks_both_endpoints() {
+		assert!(received_scope_matches(
+			&[
+				"alice".into(),
+				"aidash://source/parent@1.0.0".into(),
+				"aidash://target/reader@1.1.0".into(),
+			],
+			"alice",
+			"aidash://target/reader@1.1.0",
+		));
+		assert!(!received_scope_matches(
+			&["mallory".into(), "aidash://target/reader@1.1.0".into()],
+			"alice",
+			"aidash://target/reader@1.1.0",
+		));
+		assert!(!received_scope_matches(
+			&["alice".into(), "aidash://target/other@1.1.0".into()],
+			"alice",
+			"aidash://target/reader@1.1.0",
+		));
+	}
 }
