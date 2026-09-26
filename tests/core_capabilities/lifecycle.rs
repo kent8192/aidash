@@ -151,6 +151,128 @@ async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_object
 	worker.await.unwrap().unwrap();
 	c.close().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
+	#[future] capability_fixture: CoreFixture,
+) {
+	use sea_orm::sea_query::{Alias, Asterisk, Expr, PostgresQueryBuilder, Query};
+	let c = Box::pin(capability_fixture).await;
+	let workspace = c.f.store.task(c.task).await.unwrap().workspace_id;
+	let root = source(&c, workspace, "Delete a thread with many areas").await;
+	let (status, thread) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/threads"),
+		json!({"root_message_id":root}),
+	)
+	.await;
+	assert_eq!(status, 200, "{thread}");
+	let thread_id: Uuid = serde_json::from_value(thread["id"].clone()).unwrap();
+	let (status, area) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/threads/{thread_id}/agents/research/runs"),
+		json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Thread-bound work","description":"Exercise bounded area pagination"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{area}");
+	let base_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
+	let base: aidash::capabilities::contracts::Area = sqlx::query_as(
+		&Query::select()
+			.column(Asterisk)
+			.from(Alias::new("core_areas"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(base_id)
+	.fetch_one(&c.f.store.pool)
+	.await
+	.unwrap();
+	for index in 0..100 {
+		let mut extra = base.clone();
+		extra.id = Uuid::new_v4();
+		extra.agent_id = format!("thread-delete-fixture-{index}");
+		let query = Query::insert()
+			.into_table(Alias::new("core_areas"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"home_node",
+					"workspace_id",
+					"thread_id",
+					"agent_id",
+					"owner",
+					"generation",
+					"revision",
+					"epoch",
+					"state",
+					"manifest",
+					"constraints",
+					"next_sequence",
+				]
+				.map(Alias::new),
+			)
+			.values_panic((1..=14).map(|index| Expr::cust(format!("${index}"))))
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&query)
+			.bind(extra.id)
+			.bind(extra.tenant)
+			.bind(extra.home_node)
+			.bind(extra.workspace_id)
+			.bind(extra.thread_id)
+			.bind(extra.agent_id)
+			.bind(extra.owner)
+			.bind(extra.generation)
+			.bind(extra.revision)
+			.bind(extra.epoch)
+			.bind(extra.state)
+			.bind(extra.manifest)
+			.bind(extra.constraints)
+			.bind(extra.next_sequence)
+			.execute(&c.f.store.pool)
+			.await
+			.unwrap();
+	}
+	let areas: Vec<(Uuid, i64)> = sqlx::query_as(
+		&Query::select()
+			.columns([Alias::new("id"), Alias::new("revision")])
+			.from(Alias::new("core_areas"))
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::cust("$2")))
+			.and_where(Expr::col(Alias::new("owner")).eq(Expr::cust("$3")))
+			.order_by(Alias::new("id"), sea_orm::sea_query::Order::Asc)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(workspace)
+	.bind(thread_id)
+	.bind("alice")
+	.fetch_all(&c.f.store.pool)
+	.await
+	.unwrap();
+	assert_eq!(areas.len(), 101);
+	let files = areas
+		.iter()
+		.map(|(id, revision)| json!({"area_id":id,"expected_revision":revision,"choice":"keep"}))
+		.collect::<Vec<_>>();
+	let (status, deleted) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/threads/{thread_id}/delete"),
+		json!({"idempotency_key":Uuid::new_v4(),"files":files}),
+	)
+	.await;
+	assert_eq!(status, 200, "{deleted}");
+	assert_eq!(deleted["state"], "deleted");
+	assert_eq!(deleted["file_operations"].as_array().unwrap().len(), 101);
+	c.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn deleted_thread_retains_files_and_restores_only_into_a_new_authorized_thread(

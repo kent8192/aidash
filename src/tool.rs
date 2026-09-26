@@ -266,8 +266,9 @@ impl Tool for PluginTool {
 					serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
 				input.parent_id.get_or_insert(ctx.run.task_id);
 				let task = ctx.home.create_task(&format!("{key}:task"), &input).await?;
+				let delegation_key = format!("{key}:delegate");
 				Ok(
-					json!({"task":task,"delegation":ctx.home.delegate(task.id,node_id,agent).await?}),
+					json!({"task":task,"delegation":ctx.home.delegate_with_key(&delegation_key,task.id,node_id,agent).await?}),
 				)
 			}
 		}
@@ -397,7 +398,7 @@ impl Tool for Builtin {
 					.map_err(|e| Error::Invalid(e.to_string()))?;
 				Ok(json!(
 					ctx.home
-						.delegate(id, required(&input, "node_id")?, &agent)
+						.delegate_with_key(key, id, required(&input, "node_id")?, &agent)
 						.await?
 				))
 			}

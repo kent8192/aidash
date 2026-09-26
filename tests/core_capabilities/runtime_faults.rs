@@ -321,6 +321,54 @@ async fn disabled_admission_stops_live_work_and_keeps_files_for_explicit_restart
 
 #[rstest::rstest]
 #[tokio::test]
+async fn profile_drift_still_cancels_an_active_operation(#[future] runtime_fixture: CoreFixture) {
+	let mut c = Box::pin(runtime_fixture).await;
+	let run = admit(&c).await;
+	let (stop, rx) = tokio::sync::watch::channel(false);
+	let worker = tokio::spawn(aidash::capabilities::operations::run(c.f.store.clone(), rx));
+	let (status, operation) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/runs/{}/shell", run.id),
+		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"command":"printf started; sleep 30"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{operation}");
+	operation_until(
+		&c,
+		run.id,
+		"shell",
+		&operation["operation_id"],
+		&["running"],
+	)
+	.await;
+	stop.send(true).unwrap();
+	worker.await.unwrap().unwrap();
+
+	let mut disabled = (*c.f.store.capabilities.0).clone();
+	disabled.admission = false;
+	disabled.working_bytes -= 1;
+	c.f.store.capabilities = Runtime::new(disabled).unwrap();
+	c.app = aidash::api::router(c.f.clone());
+	let (stop, rx) = tokio::sync::watch::channel(false);
+	let worker = tokio::spawn(aidash::capabilities::operations::run(c.f.store.clone(), rx));
+	let cancelled = operation_until(
+		&c,
+		run.id,
+		"shell",
+		&operation["operation_id"],
+		&["cancelled"],
+	)
+	.await;
+	assert_eq!(cancelled["termination_confirmed"], true, "{cancelled}");
+	stop.send(true).unwrap();
+	worker.await.unwrap().unwrap();
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn cleanup_waits_for_proven_shell_stop_and_fences_delayed_writes(
 	#[future] runtime_fixture: CoreFixture,
 ) {

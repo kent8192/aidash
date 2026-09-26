@@ -1,6 +1,9 @@
 //! Scoped home effects share the source authority lease and retry journal.
 use super::*;
-use crate::domain::{ArtifactInput, NewTask};
+use crate::{
+	domain::{ArtifactInput, NewTask},
+	registry::EntityRef,
+};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,13 +44,16 @@ pub(crate) async fn handle(
 		}
 		let task = access.task_read(bound.task_id).await?;
 		let owner = qualified_agent(node, &d.inspection.agent.id, &d.inspection.agent.version);
+		if input.operation == "delegate" && input.data["key"].as_str().is_none() {
+			return Err(Error::Invalid("missing command key".into()));
+		}
 		let mutation = matches!(
 			input.operation.as_str(),
 			"claim"
 				| "transition"
 				| "run_message_terminal_transition"
 				| "run_message_complete"
-				| "artifact" | "create_task"
+				| "artifact" | "create_task" | "delegate"
 				| "message" | "run_message_output"
 				| "event"
 		);
@@ -98,6 +104,7 @@ pub(crate) async fn handle(
 			"artifact" => Some("artifact_publish"),
 			"message" => Some("workspace_message"),
 			"create_task" => Some("task_create"),
+			"delegate" => Some("task_delegate"),
 			_ => None,
 		} {
 			let resource = access.resource("tool", format!("builtin:{tool}"), json!({}));
@@ -267,6 +274,38 @@ pub(crate) async fn handle(
 				)
 				.await?;
 				json!(result)
+			}
+			"delegate" => {
+				let id: Uuid = serde_json::from_value(data["task_id"].clone())?;
+				let child = access.task_read(id).await?;
+				if child.workspace_id != task.workspace_id
+					|| child.parent_id != Some(task.id)
+					|| child.created_by != owner
+					|| child.owner.is_some()
+					|| child.status != "OPEN"
+				{
+					return Err(Error::Forbidden);
+				}
+				let created_by_grant: bool = sqlx::query_scalar(
+					&Query::select()
+						.expr(Expr::cust("EXISTS (SELECT 1 FROM authorization_remote_outputs WHERE grant_id=$1 AND resource_kind='task' AND resource_id=$2)"))
+						.to_string(PostgresQueryBuilder),
+				)
+				.bind(input.grant_id)
+				.bind(child.id)
+				.fetch_one(&mut **access.tx)
+				.await?;
+				if !created_by_grant || field(data, "node_id")? != f.config.node_id {
+					return Err(Error::Forbidden);
+				}
+				let agent: EntityRef = serde_json::from_value(data["agent"].clone())?;
+				json!(crate::authorization::execution::delegate_in(
+					&f,
+					&mut access,
+					child.id,
+					&agent,
+				)
+				.await?)
 			}
 			"message" | "run_message_output" => {
 				let resource = access.workspace(task.workspace_id).await?;

@@ -42,6 +42,40 @@ pub(crate) async fn prepare(
 ) -> Result<Value> {
 	prepare_kind(store, access, run, area, input, "shell", json!({})).await
 }
+
+fn package_files(extra: &Value) -> Result<Vec<FileEntry>> {
+	Ok(serde_json::from_value(
+		extra.get("package_files").cloned().unwrap_or(json!([])),
+	)?)
+}
+
+async fn request_files(
+	access: &mut Access,
+	run: Uuid,
+	area: &Area,
+	package_files: Vec<FileEntry>,
+) -> Result<Vec<FileEntry>> {
+	let mut files = service::files(area)?;
+	files.extend(super::skills::mounted(access, run).await?);
+	files.extend(package_files);
+	Ok(files)
+}
+
+fn request_size(files: &[FileEntry]) -> Result<u64> {
+	files.iter().try_fold(0_u64, |total, file| {
+		total
+			.checked_add(file.size)
+			.ok_or_else(|| Error::Conflict("WORKING_QUOTA_EXCEEDED".into()))
+	})
+}
+
+fn validate_request_size(store: &Store, files: &[FileEntry]) -> Result<()> {
+	if request_size(files)? > store.capabilities.0.working_bytes {
+		return Err(Error::Conflict("WORKING_QUOTA_EXCEEDED".into()));
+	}
+	Ok(())
+}
+
 pub(crate) async fn prepare_kind(
 	store: &Store,
 	access: &mut Access,
@@ -94,6 +128,8 @@ pub(crate) async fn prepare_kind(
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
 	sessions::authorize(access, area, "file.write").await?;
+	let files = request_files(access, run.id, area, package_files(&extra)?).await?;
+	validate_request_size(store, &files)?;
 	verified_health(store, kind == "code_interpreter").await?;
 	if matches!(kind, "shell" | "python_install") {
 		super::python::release(
@@ -449,26 +485,42 @@ async fn drive(store: &Store, id: Uuid) -> Result<()> {
 		if area.epoch != operation.epoch || area.generation != operation.generation || area.revision != operation.revision {
 			return Err(Error::Forbidden);
 		}
-		let config = service::settings(&mut access, &run).await?;
-		if !config.core_capabilities.permits(&operation.kind) { return Err(Error::Forbidden); }
-		access.require(&access.resource("tool", format!("builtin:{}", operation.kind), json!({})), "tool.invoke").await?;
-		if operation.kind == "python_install" {
+		let cancelling = !store.capabilities.0.admission
+			|| operation.state == "cancelling"
+			|| run.control == "CANCELLED"
+			|| matches!(run.phase.as_str(), "COMPLETED" | "FAILED" | "CANCELLED");
+		if !cancelling {
+			let config = service::settings(&mut access, &run).await?;
+			if !config.core_capabilities.permits(&operation.kind) {
+				return Err(Error::Forbidden);
+			}
+			access.require(&access.resource("tool", format!("builtin:{}", operation.kind), json!({})), "tool.invoke").await?;
+		}
+		if !cancelling && operation.kind == "python_install" {
 			let request: super::packages::Install = serde_json::from_value(operation.input["package_request"].clone())?;
 			super::packages::authorize(store, &mut access, &run, &area, &request.wheels).await?;
 		}
-		let health = verified_health(store, operation.kind == "code_interpreter").await?;
-		let instance = health["instance"].as_str().ok_or_else(|| Error::External("invalid runner identity".into()))?;
-		if operation.runner_instance.as_deref().is_some_and(|old| old != instance) {
-			operation.state = "uncertain".into(); operation.result = json!({"error":"runner journal identity changed"});
-			set_area(&mut access, area.id, "uncertain", area.epoch).await?;
-			return persist(&mut access, &operation).await;
-		}
-		let cancelling = !store.capabilities.0.admission || operation.state == "cancelling" || run.control == "CANCELLED" || matches!(run.phase.as_str(), "COMPLETED" | "FAILED" | "CANCELLED");
 		if cancelling && operation.state == "prepared" {
 			operation.state = "cancelled".into();
 			operation.result = json!({"termination_confirmed":true,"effects_may_have_occurred":false});
 			set_area(&mut access, area.id, "active", area.epoch).await?;
 			if operation.kind == "code_interpreter" { super::python::completed(&mut access,&area,&operation,&json!({"writer_frozen":false})).await?; }
+			return persist(&mut access, &operation).await;
+		}
+		let health = if cancelling {
+			remote(store, reqwest::Method::GET, "/v1/health", None).await?
+		} else {
+			verified_health(store, operation.kind == "code_interpreter").await?
+		};
+		let instance = health["instance"].as_str().ok_or_else(|| Error::External("invalid runner identity".into()))?;
+		let identity_changed = if cancelling {
+			operation.runner_instance.as_deref() != Some(instance)
+		} else {
+			operation.runner_instance.as_deref().is_some_and(|old| old != instance)
+		};
+		if identity_changed {
+			operation.state = "uncertain".into(); operation.result = json!({"error":"runner journal identity changed"});
+			set_area(&mut access, area.id, "uncertain", area.epoch).await?;
 			return persist(&mut access, &operation).await;
 		}
 		if operation.state == "prepared" {
@@ -484,10 +536,15 @@ async fn drive(store: &Store, id: Uuid) -> Result<()> {
 			operation.state = "cancelling".into();
 			remote(store, reqwest::Method::POST, &format!("/v1/operations/{id}/cancel"), None).await?
 		} else if operation.result["dispatch_pending"] == true {
-			let mut files = vec![];
-			for file in service::files(&area)?.into_iter().chain(super::skills::mounted(&mut access,run.id).await?).chain(super::packages::inputs(&operation)?) {
-				files.push(json!({"file_id":file.file_id,"path":file.path,"digest":file.digest,"scope":file.scope,"size":file.size}));
+			let files = request_files(&mut access, run.id, &area, super::packages::inputs(&operation)?).await?;
+			if validate_request_size(store, &files).is_err() {
+				operation.state = "failed".into();
+				operation.result = json!({"error":{"code":"WORKING_QUOTA_EXCEEDED","message":"Mounted working files exceed the configured quota."},"termination_confirmed":true,"effects_may_have_occurred":false,"runner_acknowledged":true});
+				set_area(&mut access, area.id, "active", area.epoch).await?;
+				if operation.kind == "code_interpreter" { super::python::completed(&mut access,&area,&operation,&json!({"writer_frozen":false})).await?; }
+				return persist(&mut access, &operation).await;
 			}
+			let files = files.into_iter().map(|file| json!({"file_id":file.file_id,"path":file.path,"digest":file.digest,"scope":file.scope,"size":file.size})).collect::<Vec<_>>();
 			let mut input = json!({"operation_id":operation.id,"area_id":area.id,"epoch":operation.epoch,"digest":operation.digest,
 				"kind":if operation.kind=="code_interpreter"{"python"}else{"shell"},"code":operation.input["command"],"seconds":operation.input["seconds"],"files":files});
 			if operation.kind=="code_interpreter" {input["session_id"]=operation.input["session_id"].clone();}

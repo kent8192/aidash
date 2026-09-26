@@ -338,7 +338,10 @@ export function OriginalReferences({
                   `/references/${reference.reference_id}/commit`,
                 );
               }
-              if (current === generation.current) await query.refetch();
+              if (current === generation.current) {
+                uploadKey.current = undefined;
+                await query.refetch();
+              }
             } catch (e) {
               setError(String(e));
             } finally {

@@ -1,5 +1,11 @@
 mod common;
-use aidash::{api, domain::qualified_agent, federation::Federation, harness::Harness};
+use aidash::{
+	api,
+	domain::{NewTask, qualified_agent},
+	federation::{Federation, Home},
+	harness::Harness,
+	registry::EntityRef,
+};
 use axum::{
 	Json, Router,
 	body::{Body, to_bytes},
@@ -336,6 +342,83 @@ async fn scoped_remote_worker_finishes_at_home_and_retries_keep_one_execution(
 	let (status, replay) = request(&p.aa, &p.token, "POST", &p.activation(), json!({})).await;
 	assert_eq!(status, 200, "{replay}");
 	assert_eq!(replay["phase"], "COMPLETED");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn scoped_remote_agent_can_delegate_its_created_child_to_the_home_node(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let run = p.run().await;
+	let home = Home::new(p.b.clone(), run);
+	let child = home
+		.create_task(
+			"scoped-child-create",
+			&NewTask {
+				title: "Scoped delegated child".into(),
+				description: "Created under a remote run and delegated home".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: Some(p.task),
+			},
+		)
+		.await
+		.unwrap();
+	let agent = EntityRef {
+		id: "research".into(),
+		version: "1.0.0".into(),
+	};
+	let delegation = home
+		.delegate_with_key(
+			"scoped-child-delegate",
+			child.id,
+			&p.a.config.node_id,
+			&agent,
+		)
+		.await
+		.unwrap();
+	assert_eq!(delegation.task_id, child.id);
+	assert_eq!(delegation.node_id, p.a.config.node_id);
+	assert_eq!(delegation.agent_id, agent.id);
+	assert_eq!(delegation.agent_version, agent.version);
+	assert!(delegation.delivered);
+
+	let rows: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(Alias::new("runs"))
+			.and_where(Expr::col(Alias::new("task_id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("home_node")).eq(Expr::cust("$2")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(child.id)
+	.bind(&p.a.config.node_id)
+	.fetch_one(&p.a.store.pool)
+	.await
+	.unwrap();
+	assert_eq!(rows, 1, "a retry must not create a second delegated Run");
+	let replay = home
+		.delegate_with_key(
+			"scoped-child-delegate",
+			child.id,
+			&p.a.config.node_id,
+			&agent,
+		)
+		.await
+		.unwrap();
+	assert_eq!(replay.task_id, child.id);
+	assert_eq!(
+		p.a.store
+			.runs()
+			.await
+			.unwrap()
+			.into_iter()
+			.filter(|run| run.task_id == child.id && run.home_node == p.a.config.node_id)
+			.count(),
+		1
+	);
 	p.close().await;
 }
 

@@ -119,7 +119,8 @@ class Runner:
     def verify_freeze(self):
         operation = str(uuid.uuid4())
         record = {"operation_id": operation, "area_id": str(uuid.uuid4()), "epoch": 1,
-                  "wire_digest": "freeze-admission-probe/1", "request": {"kind": "python"}}
+                  "wire_digest": "freeze-admission-probe/1",
+                  "request": {"kind": "python", "files": []}}
         manifest = self.manifest(record)
         manifest["spec"]["containers"][0]["command"] = ["python", "-u", "-c", "import time; from pathlib import Path\nwhile True: Path('/work/tick').write_text(str(time.monotonic())); time.sleep(.01)"]
         self.kube(["create", "-f", "-"], json.dumps(manifest).encode())

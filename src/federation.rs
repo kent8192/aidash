@@ -1304,6 +1304,19 @@ impl Home {
 		node: &str,
 		agent: &EntityRef,
 	) -> Result<Delegation> {
+		let key = format!(
+			"run:{}:task:{}:node:{}:agent:{}@{}",
+			self.run.id, task_id, node, agent.id, agent.version
+		);
+		self.delegate_with_key(&key, task_id, node, agent).await
+	}
+	pub async fn delegate_with_key(
+		&self,
+		key: &str,
+		task_id: Uuid,
+		node: &str,
+		agent: &EntityRef,
+	) -> Result<Delegation> {
 		if let Some(authority) = &self.authority {
 			return authority
 				.delegate(&self.federation, &self.run, task_id, node, agent)
@@ -1318,7 +1331,7 @@ impl Home {
 		} else {
 			self.command(
 				"delegate",
-				json!({"task_id":task_id,"node_id":node,"agent":agent}),
+				json!({"key":key,"task_id":task_id,"node_id":node,"agent":agent}),
 			)
 			.await
 		}
