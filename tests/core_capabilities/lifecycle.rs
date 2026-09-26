@@ -1,6 +1,6 @@
 use super::*;
 
-async fn wait_for_channel_thread_lock_waiters(pool: &sqlx::PgPool, minimum: i64) {
+pub(super) async fn wait_for_channel_thread_lock_waiters(pool: &sqlx::PgPool, minimum: i64) {
 	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let query = Query::select()
 		.expr(Expr::cust("count(*)"))

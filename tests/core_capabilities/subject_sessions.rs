@@ -222,3 +222,124 @@ async fn completed_run_cannot_materialize_into_its_successor_but_current_run_can
 	);
 	f.c.close().await;
 }
+
+#[rstest::fixture]
+async fn delegated_thread_child(#[future] shared_thread: SharedThread) -> (SharedThread, Uuid) {
+	let mut f = Box::pin(shared_thread).await;
+	let mut entry = f.c.f.registry.get("research", "1.1.0").await.unwrap();
+	entry.id = "reviewer".into();
+	assert_eq!(
+		request(
+			&f.c.app,
+			&f.c.f.config.api_token,
+			"POST",
+			"/api/registry",
+			json!(entry)
+		)
+		.await
+		.0,
+		200
+	);
+	f.c.policy["subjects"]
+		[aidash::domain::qualified_agent(&f.c.f.config.node_id, "reviewer", "1.1.0")] =
+		json!({"kind":"agent"});
+	assert_eq!(
+		request(
+			&f.c.app,
+			&f.c.f.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":2,"bundle":f.c.policy})
+		)
+		.await
+		.0,
+		200
+	);
+	assert_eq!(
+		request(
+			&f.c.app,
+			&f.c.f.config.api_token,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"entry":{"id":"reviewer","version":"1.1.0"},"expected_revision":0,"enabled":true})
+		)
+		.await
+		.0,
+		200
+	);
+	let parent = f.c.f.store.run(f.runs[1]).await.unwrap();
+	let (status, child) = request(
+		&f.c.app,
+		&f.bob,
+		"POST",
+		&format!("/api/workspaces/{}/tasks", f.workspace),
+		json!({"title":"Child","description":"Inherit Bob's live thread","parent_id":parent.task_id}),
+	)
+	.await;
+	assert_eq!(status, 200, "{child}");
+	let id = serde_json::from_value(child["id"].clone()).unwrap();
+	(f, id)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn inherited_child_admission_waits_for_deletion_and_rechecks_tombstone(
+	#[future] delegated_thread_child: (SharedThread, Uuid),
+) {
+	use sea_orm::sea_query::LockType;
+	let (f, child) = Box::pin(delegated_thread_child).await;
+	let mut blocker = f.c.f.store.pool.begin().await.unwrap();
+	let _: Uuid = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("channel_threads"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.lock(LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(f.thread)
+	.fetch_one(&mut *blocker)
+	.await
+	.unwrap();
+	let app = f.c.app.clone();
+	let token = f.c.token.clone();
+	let path = format!(
+		"/api/workspaces/{}/threads/{}/delete",
+		f.workspace, f.thread
+	);
+	let input = json!({"idempotency_key":Uuid::new_v4(),"files":[{"area_id":f.areas[0]["id"],"expected_revision":f.areas[0]["revision"],"choice":"keep"}]});
+	let deleting = tokio::spawn(async move { request(&app, &token, "POST", &path, input).await });
+	super::lifecycle_tests::wait_for_channel_thread_lock_waiters(&f.c.f.store.pool, 1).await;
+	let app = f.c.app.clone();
+	let token = f.bob.clone();
+	let path = format!("/api/tasks/{child}/delegate");
+	let input = json!({"node_id":f.c.f.config.node_id,"agent":{"id":"reviewer","version":"1.1.0"}});
+	let child_path = path.clone();
+	let child_input = input.clone();
+	let admitting = tokio::spawn(async move { request(&app, &token, "POST", &path, input).await });
+	super::lifecycle_tests::wait_for_channel_thread_lock_waiters(&f.c.f.store.pool, 2).await;
+	blocker.commit().await.unwrap();
+	let (status, deleted) = deleting.await.unwrap();
+	assert_eq!(status, 200, "{deleted}");
+	let (status, denied) = admitting.await.unwrap();
+	assert_eq!(status, 404, "{denied}");
+	assert_eq!(
+		request(&f.c.app, &f.bob, "POST", &child_path, child_input)
+			.await
+			.0,
+		404,
+		"a child must also be denied after deletion has already committed"
+	);
+	let areas: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::col(Alias::new("id")).count())
+			.from(Alias::new("core_areas"))
+			.and_where(Expr::col(Alias::new("agent_id")).eq("reviewer"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&f.c.f.store.pool)
+	.await
+	.unwrap();
+	assert_eq!(areas, 0);
+	f.c.close().await;
+}

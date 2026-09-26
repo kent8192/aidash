@@ -265,3 +265,89 @@ async fn stale_extraction_credentials_do_not_starve_later_uploads(
 	);
 	c.close().await;
 }
+
+#[rstest::fixture]
+async fn full_mount_fixture(
+	#[future] capability_fixture: CoreFixture,
+) -> (CoreFixture, aidash::domain::Run) {
+	let mut c = Box::pin(capability_fixture).await;
+	let run = admit(&c).await;
+	let skills: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("data"))
+			.from(Alias::new("core_records"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.fetch_one(&c.f.store.pool)
+	.await
+	.unwrap();
+	let mut profile = (*c.f.store.capabilities.0).clone();
+	profile.working_bytes = skills
+		.as_array()
+		.unwrap()
+		.iter()
+		.flat_map(|skill| skill["files"].as_array().unwrap())
+		.map(|file| file["size"].as_u64().unwrap())
+		.sum();
+	assert!(profile.working_bytes > 1);
+	c.f.store.capabilities = Runtime::new(profile).unwrap();
+	c.app = aidash::api::router(c.f.clone());
+	(c, run)
+}
+
+#[rstest::rstest]
+#[case(0, "WORKING_QUOTA_EXCEEDED")]
+#[case(1, "RUNTIME_UNAVAILABLE")]
+#[tokio::test]
+async fn mounted_skills_require_writable_capacity_before_operation_commit(
+	#[future] full_mount_fixture: (CoreFixture, aidash::domain::Run),
+	#[case] writable_bytes: u64,
+	#[case] expected_error: &str,
+) {
+	let (mut c, run) = Box::pin(full_mount_fixture).await;
+	let mut profile = (*c.f.store.capabilities.0).clone();
+	profile.working_bytes += writable_bytes;
+	c.f.store.capabilities = Runtime::new(profile).unwrap();
+	c.app = aidash::api::router(c.f.clone());
+	let (status, denied) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/runs/{}/shell", run.id),
+		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"command":"printf must-not-run"}),
+	)
+	.await;
+	assert_eq!(status, 409, "{denied}");
+	assert!(
+		denied["error"]["code"]
+			.as_str()
+			.unwrap()
+			.starts_with(expected_error),
+		"{denied}"
+	);
+	let (_, area) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!("/api/runs/{}/working-area", run.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(area["state"], "active");
+	let count: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::col(Alias::new("id")).count())
+			.from(Alias::new("core_operations"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&c.f.store.pool)
+	.await
+	.unwrap();
+	assert_eq!(
+		count, 0,
+		"rejected admission must not leave a durable dispatch intent"
+	);
+	c.close().await;
+}

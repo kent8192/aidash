@@ -95,13 +95,20 @@ fn request_validation_failure(
 		));
 	}
 	let exceeds_quota = match request_size(files) {
-		Ok(size) => size > store.capabilities.0.working_bytes,
+		Ok(size) => {
+			size > store.capabilities.0.working_bytes
+				|| files
+					.iter()
+					.filter(|file| !matches!(file.scope, FileScope::Working))
+					.map(|file| file.size)
+					.sum::<u64>() >= store.capabilities.0.working_bytes
+		}
 		Err(_) => true,
 	};
 	if exceeds_quota {
 		return Some((
 			"WORKING_QUOTA_EXCEEDED",
-			"Mounted working files exceed the configured quota.",
+			"Mounted files exceed the configured quota or leave no writable capacity.",
 		));
 	}
 	None

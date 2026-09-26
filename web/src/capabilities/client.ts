@@ -46,6 +46,7 @@ export async function download(
   const parts: Uint8Array<ArrayBuffer>[] = [];
   let offset: number | null = 0;
   let file: CoreFile | undefined;
+  let bytes = 0;
   while (offset !== null) {
     const page: { file: CoreFile; data: string; next_offset: number | null } =
       await apiFetch(`/api${path}?offset=${offset}`);
@@ -53,12 +54,20 @@ export async function download(
     if (
       file.file_id !== page.file.file_id ||
       file.digest !== page.file.digest ||
-      file.size > 100 * 1024 * 1024
+      file.size !== page.file.size ||
+      !Number.isSafeInteger(file.size) ||
+      file.size < 0
     )
-      throw new Error("File changed or exceeds download limit");
-    parts.push(Uint8Array.from(atob(page.data), (c) => c.charCodeAt(0)));
-    if (page.next_offset !== null && page.next_offset <= offset)
+      throw new Error("File changed or has an invalid size");
+    const chunk = Uint8Array.from(atob(page.data), (c) => c.charCodeAt(0));
+    bytes += chunk.length;
+    if (
+      bytes > file.size ||
+      (page.next_offset !== null &&
+        (page.next_offset !== bytes || page.next_offset <= offset))
+    )
       throw new Error("Invalid download continuation");
+    parts.push(chunk);
     offset = page.next_offset;
   }
   if (!file) throw new Error("File unavailable");

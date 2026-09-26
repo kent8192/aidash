@@ -515,7 +515,7 @@ test("located search, progressive Skills, denied approval and uncertain transfer
 test("narrow keyboard cleanup keeps default, separates confirmation and restores retained files", async ({
   page,
 }, info) => {
-  const { calls, managed, errors } = await core(page);
+  const { calls, errors } = await core(page);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/settings?view=workingFiles");
   const retention = page.getByLabel("Retention choice");
@@ -875,6 +875,86 @@ test("generated image and outbound downloads use the authenticated file endpoint
   );
   expect(downloads.filter((path) => path.includes("display-one"))).toHaveLength(
     2,
+  );
+  expect(errors).toEqual([]);
+});
+
+test("working file downloads above 100 MiB preserve all chunks and integrity", async ({
+  page,
+}) => {
+  test.setTimeout(60000);
+  const { createHash } = await import("node:crypto");
+  const { stat } = await import("node:fs/promises");
+  const { errors } = await core(page);
+  const chunk = Buffer.alloc(4 * 1024 * 1024, 0x61);
+  const hash = createHash("sha256");
+  for (let i = 0; i < 25; i++) hash.update(chunk);
+  hash.update(chunk.subarray(0, 1));
+  const file = {
+    file_id: "large-file",
+    path: "large.bin",
+    digest: hash.digest("hex"),
+    size: 100 * 1024 * 1024 + 1,
+    media_type: "application/octet-stream",
+    scope: "working",
+  };
+  const offsets: number[] = [];
+  await page.route("**/api/**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/core-operations"))
+      return route.fulfill({
+        json: {
+          items: [
+            {
+              operation_id: "large-operation",
+              area_id: "area-one",
+              kind: "code_interpreter",
+              status: "completed",
+              displays: [file],
+            },
+          ],
+          next_cursor: null,
+        },
+      });
+    if (url.pathname.endsWith("/python/poll"))
+      return route.fulfill({
+        json: {
+          operation_id: "large-operation",
+          area_id: "area-one",
+          kind: "code_interpreter",
+          status: "completed",
+          displays: [file],
+        },
+      });
+    if (url.pathname.endsWith("/files/large-file/download")) {
+      const offset = Number(url.searchParams.get("offset"));
+      offsets.push(offset);
+      const part = chunk.subarray(
+        0,
+        Math.min(chunk.length, file.size - offset),
+      );
+      return route.fulfill({
+        json: {
+          file,
+          data: part.toString("base64"),
+          next_offset:
+            offset + part.length === file.size ? null : offset + part.length,
+        },
+      });
+    }
+    return route.fallback();
+  });
+  await openThread(page);
+  await page.locator("summary", { hasText: "Shell · Python" }).click();
+  const pending = page.waitForEvent("download");
+  await page
+    .getByRole("button", { name: "Download output", exact: true })
+    .click();
+  const result = await pending;
+  expect(result.suggestedFilename()).toBe("large.bin");
+  expect((await stat((await result.path())!)).size).toBe(file.size);
+  expect(offsets).toEqual(
+    Array.from({ length: 26 }, (_, i) => i * chunk.length),
   );
   expect(errors).toEqual([]);
 });

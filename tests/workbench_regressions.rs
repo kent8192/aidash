@@ -609,7 +609,7 @@ async fn workbench_rollback_preserves_registered_and_packaged_behavior_flags(
 			.await
 			.unwrap();
 	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(wb.f.store.pool.clone());
-	common::rollback_from_migration(&db, "m20260925_150000_agent_workbenches").await;
+	common::rollback_from_migration(&db, "m20260925_000000_agent_workbenches").await;
 	assert_eq!(
 		wb.f.registry.get(&entry.id, &entry.version).await.unwrap(),
 		entry
@@ -1745,6 +1745,42 @@ async fn version_history_compares_registered_knowledge_to_current_saved_document
 	assert_eq!(
 		versions[0]["entry"]["config"]["knowledge_digest"] == expected,
 		change == "unchanged"
+	);
+	wb.cleanup().await;
+}
+
+#[rstest::fixture]
+async fn published_workbench() -> (Workbench, Value, Value) {
+	let wb = workbench().await;
+	let registered = wb.register().await;
+	let draft = wb.call("GET", &wb.path(), Value::Null).await;
+	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(wb.f.store.pool.clone());
+	common::rollback_from_migration(&db, "m20260925_140000_core_working_files").await;
+	(wb, registered, draft)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn upgrade_preserves_published_workbench_identity_and_existing_data(
+	#[future(awt)] published_workbench: (Workbench, Value, Value),
+) {
+	use migration::MigratorTrait;
+	let (wb, registered, draft) = published_workbench;
+	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(wb.f.store.pool.clone());
+	let applied = migration::Migrator::get_applied_migrations(&db)
+		.await
+		.unwrap();
+	assert_eq!(
+		applied.last().unwrap().name(),
+		"m20260925_000000_agent_workbenches"
+	);
+	migration::Migrator::up(&db, None).await.unwrap();
+	assert_eq!(wb.call("GET", &wb.path(), Value::Null).await, draft);
+	let entry: aidash::registry::Entry =
+		serde_json::from_value(registered["entry"].clone()).unwrap();
+	assert_eq!(
+		wb.f.registry.get(&entry.id, &entry.version).await.unwrap(),
+		entry
 	);
 	wb.cleanup().await;
 }

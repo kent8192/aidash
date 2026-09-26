@@ -291,6 +291,13 @@ async fn admit(
 		return Err(Error::Invalid("executor must be an agent".into()));
 	}
 	access.require(&task_resource, "task.execute").await?;
+	let config = serde_json::from_value(entry.config.clone())?;
+	// Lock and recheck the inherited thread before claim_in allocates an event.
+	// Deletion takes the thread row before that event lock as well.
+	let thread = crate::capabilities::sessions::prepare_admission(
+		&f.store, access, &task, &config, &agent.id,
+	)
+	.await?;
 	let claimed = f
 		.store
 		.claim_in(
@@ -377,12 +384,7 @@ async fn admit(
 		.await?;
 	}
 	crate::capabilities::sessions::admit(
-		&f.store,
-		access,
-		&task,
-		run_id,
-		&serde_json::from_value(entry.config.clone())?,
-		&agent.id,
+		&f.store, access, &task, run_id, thread, &config, &agent.id,
 	)
 	.await?;
 	Ok(claimed)

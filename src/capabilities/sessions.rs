@@ -189,16 +189,15 @@ pub(crate) async fn context_authority(access: &mut Access, run: &Run) -> Result<
 	}
 	Ok(())
 }
-pub(crate) async fn admit(
+pub(crate) async fn prepare_admission(
 	store: &Store,
 	access: &mut Access,
 	task: &Task,
-	run_id: Uuid,
 	config: &AgentConfig,
 	agent_id: &str,
-) -> Result<()> {
+) -> Result<Option<Uuid>> {
 	if !config.core_capabilities.enabled() {
-		return Ok(());
+		return Ok(None);
 	}
 	if !store.capabilities.0.admission {
 		return Err(Error::Conflict("CAPABILITIES_DISABLED: enable the operator execution profile before admitting core work".into()));
@@ -275,6 +274,36 @@ pub(crate) async fn admit(
 			"SESSION_DEPENDENCY_CYCLE: ancestor limit exceeded".into(),
 		));
 	}
+	// Serialize inherited as well as explicit sessions with conversation deletion.
+	// Standalone tasks have no channel_threads row, but still check tombstones.
+	let _channel: Option<Uuid> = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("channel_threads"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$2")))
+			.lock(LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(thread)
+	.bind(task.workspace_id)
+	.fetch_optional(&mut **access.tx)
+	.await?;
+	super::thread_lifecycle::visible(&mut access.tx, thread).await?;
+	Ok(Some(thread))
+}
+pub(crate) async fn admit(
+	store: &Store,
+	access: &mut Access,
+	task: &Task,
+	run_id: Uuid,
+	thread: Option<Uuid>,
+	config: &AgentConfig,
+	agent_id: &str,
+) -> Result<()> {
+	let Some(thread) = thread else {
+		return Ok(());
+	};
 	sqlx::query(
 		&Query::insert()
 			.into_table(Alias::new("core_areas"))

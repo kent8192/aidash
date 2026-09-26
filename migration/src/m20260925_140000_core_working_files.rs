@@ -5,21 +5,10 @@ pub struct Migration;
 fn a(s: &str) -> Alias {
 	Alias::new(s)
 }
-async fn replace_agent_checks(m: &SchemaManager<'_>, core: bool) -> Result<(), DbErr> {
-	for (table, name, expression) in
-		super::m20260921_071045_record_constraints::checks_extended(true, core)
-	{
-		if matches!(name, "registry_agent_config" | "packages_identity") {
-			// SeaQuery cannot replace CHECK constraints on an existing table.
-			m.get_connection().execute_unprepared(&format!("ALTER TABLE \"{table}\" DROP CONSTRAINT \"{name}\", ADD CONSTRAINT \"{name}\" CHECK (COALESCE(({expression}), false))")).await?;
-		}
-	}
-	Ok(())
-}
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
 	async fn up(&self, m: &SchemaManager) -> Result<(), DbErr> {
-		replace_agent_checks(m, true).await?;
+		// The published workbench migration already extends Agent/package checks.
 		let mut areas = Table::create();
 		areas
 			.table(a("core_areas"))
@@ -268,8 +257,7 @@ impl MigrationTrait for Migration {
 				));
 			}
 		}
-		// This also rejects rollback while immutable Agent versions use new fields.
-		replace_agent_checks(m, false).await?;
+		// Preserve the published workbench checks and immutable Agent versions.
 		for table in [
 			"core_records",
 			"core_operations",
