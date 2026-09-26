@@ -9,12 +9,21 @@ use crate::{
 	tool::{PluginTool, Tool, ToolConfig, ToolContext, builtins},
 };
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use uuid::Uuid;
 
 const POST_TOOL_CONTEXT_RESERVE: usize = 4096;
 const TOOL_EVENT_RESERVE: usize = 512;
 const RUN_MESSAGE_SUMMARY_OUTPUT_LIMIT: u32 = 2048;
+
+struct SelectedTool {
+	tool: Arc<dyn Tool>,
+	writes: bool,
+	config_digest: Option<String>,
+	approval_configuration: Value,
+	lease: Option<sqlx::Transaction<'static, sqlx::Postgres>>,
+}
 
 enum WorkspaceReadFit {
 	Skip,
@@ -409,6 +418,53 @@ impl Harness {
 		}
 		Ok(tools)
 	}
+	async fn selected_tool(&self, agent: &AgentConfig, name: &str) -> Result<Option<SelectedTool>> {
+		let Some(index) = name
+			.strip_prefix("plugin_")
+			.and_then(|value| value.parse::<usize>().ok())
+		else {
+			return Ok(agent
+				.permits_builtin(name)
+				.then(|| builtins().remove(name))
+				.flatten()
+				.map(|tool| SelectedTool {
+					tool,
+					writes: false,
+					config_digest: None,
+					approval_configuration: Value::Null,
+					lease: None,
+				}));
+		};
+		let Some(reference) = agent.tools.get(index) else {
+			return Ok(None);
+		};
+		let mut tx = self.federation.store.pool.begin().await?;
+		let entry =
+			crate::registry::effective_in(&mut tx, &reference.id, &reference.version).await?;
+		let config: ToolConfig = serde_json::from_value(entry.config.clone())?;
+		if matches!(config, ToolConfig::Agent { .. }) && agent.allow_task_delegation == Some(false)
+		{
+			return Ok(None);
+		}
+		let writes = matches!(&config, ToolConfig::Http { replay, .. } | ToolConfig::Mcp { replay, .. } if replay != "read_only");
+		let config_digest = Some(format!(
+			"{:x}",
+			Sha256::digest(serde_json::to_vec(&entry.config)?)
+		));
+		Ok(Some(SelectedTool {
+			approval_configuration: entry.config.clone(),
+			tool: Arc::new(PluginTool {
+				entry,
+				alias: name.into(),
+				config,
+				client: self.federation.client.clone(),
+			}),
+			writes,
+			config_digest,
+			lease: Some(tx),
+		}))
+	}
+
 	async fn publish_model_text(
 		&self,
 		home: &Home,
@@ -1313,8 +1369,14 @@ impl Harness {
 					}
 				}
 				let call = &call;
-				let tools = self.tools(&agent).await?;
-				let Some(tool) = tools.get(&call.name) else {
+				let Some(SelectedTool {
+					tool,
+					writes,
+					config_digest,
+					approval_configuration,
+					lease,
+				}) = self.selected_tool(&agent, &call.name).await?
+				else {
 					return self
 						.tool_error(
 							run,
@@ -1347,62 +1409,60 @@ impl Harness {
 						.strip_prefix("plugin_")
 						.and_then(|value| value.parse::<usize>().ok())
 					&& let Some(reference) = agent.tools.get(index)
+					&& writes
 				{
-					let entry = self
-						.federation
-						.registry
-						.get(&reference.id, &reference.version)
-						.await?;
-					let config: ToolConfig = serde_json::from_value(entry.config)?;
-					let writes = matches!(config, ToolConfig::Http { ref replay, .. } | ToolConfig::Mcp { ref replay, .. } if replay != "read_only");
-					if writes {
-						let decision = &run.pending["workbench_approval_result"];
-						if decision["key"] == key && decision["call"] == json!(call) {
-							if decision["approved"] != true
-								|| decision["expires_at"]
-									.as_str()
-									.and_then(|value| {
-										value.parse::<chrono::DateTime<chrono::Utc>>().ok()
-									})
-									.is_none_or(|expiry| expiry <= chrono::Utc::now())
-							{
-								return self
-									.tool_error(
-										run,
-										token,
-										call,
-										cursor,
-										"external write approval was denied or expired".into(),
-									)
-									.await;
-							}
-						} else {
-							let prompt = format!(
-								"Approve this exact external tool action once? Tool: {}@{}; call: {}",
-								reference.id,
-								reference.version,
-								serde_json::to_string(call)?
-							);
-							let request = store
-								.human_request(
+					let decision = &run.pending["workbench_approval_result"];
+					if decision["key"] == key
+						&& decision["call"] == json!(call)
+						&& decision["tool_config_digest"] == json!(config_digest)
+					{
+						if decision["approved"] != true
+							|| decision["expires_at"]
+								.as_str()
+								.and_then(|value| {
+									value.parse::<chrono::DateTime<chrono::Utc>>().ok()
+								})
+								.is_none_or(|expiry| expiry <= chrono::Utc::now())
+						{
+							return self
+								.tool_error(
 									run,
-									"APPROVAL_REQUIRED",
-									&prompt,
-									&format!("{key}:workbench-approval"),
+									token,
+									call,
+									cursor,
+									"external write approval was denied or expired".into(),
 								)
-								.await?;
-							run.pending["workbench_approval"] =
-								json!({"key":key,"call":call,"request_id":request.id});
-							run.pending["human_request_id"] = json!(request.id);
-							run.pending["resume_phase"] = json!("TOOL_CALL");
-							run.pending["wake_at"] =
-								json!(request.created_at + chrono::Duration::minutes(15));
-							run.phase = "WAITING".into();
-							store
-								.save_run(run, token, "run.waiting_for_tool_approval")
-								.await?;
-							return Ok(());
+								.await;
 						}
+					} else {
+						let prompt = format!(
+							"Approve this exact external tool action once? Tool: {}@{}; connection: {}; call: {}",
+							reference.id,
+							reference.version,
+							approval_configuration,
+							serde_json::to_string(call)?
+						);
+						let request = store
+							.human_request(
+								run,
+								"APPROVAL_REQUIRED",
+								&prompt,
+								&format!(
+									"{key}:workbench-approval:{}",
+									config_digest.as_deref().unwrap_or("builtin")
+								),
+							)
+							.await?;
+						run.pending["workbench_approval"] = json!({"key":key,"call":call,"request_id":request.id,"tool_config_digest":config_digest});
+						run.pending["human_request_id"] = json!(request.id);
+						run.pending["resume_phase"] = json!("TOOL_CALL");
+						run.pending["wake_at"] =
+							json!(request.created_at + chrono::Duration::minutes(15));
+						run.phase = "WAITING".into();
+						store
+							.save_run(run, token, "run.waiting_for_tool_approval")
+							.await?;
+						return Ok(());
 					}
 				}
 				let invocation = store
@@ -1443,6 +1503,9 @@ impl Harness {
 				};
 				if invocation.status != "COMPLETED" {
 					store.invocation_finish(run, token, &key, &output).await?;
+				}
+				if let Some(lease) = lease {
+					lease.commit().await?;
 				}
 				let event = json!({"kind":"tool","call":call,"result":output});
 				record_message_read(&mut context, &event);
@@ -1537,7 +1600,7 @@ impl Harness {
 					if run.pending["workbench_approval"]["request_id"] == json!(id) {
 						let approval = run.pending["workbench_approval"].clone();
 						run.pending["workbench_approval_result"] = json!({
-							"key":approval["key"],"call":approval["call"],
+							"key":approval["key"],"call":approval["call"],"tool_config_digest":approval["tool_config_digest"],
 							"approved":response.get("approved") == Some(&json!(true)),
 							"expires_at":h.created_at + chrono::Duration::minutes(15)
 						});

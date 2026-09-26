@@ -857,6 +857,13 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 	cleanup(store, &url, &schema).await;
 }
 
+#[derive(Default)]
+struct WriteEffectGate {
+	paused: std::sync::atomic::AtomicBool,
+	arrived: tokio::sync::Notify,
+	release: tokio::sync::Notify,
+}
+
 struct WriteApproval {
 	store: Store,
 	url: String,
@@ -865,6 +872,7 @@ struct WriteApproval {
 	run: Run,
 	first: Uuid,
 	effects: Arc<std::sync::atomic::AtomicUsize>,
+	gate: Arc<WriteEffectGate>,
 	server: tokio::task::JoinHandle<()>,
 	_environment: Arc<TestEnvironment>,
 }
@@ -879,6 +887,8 @@ async fn write_approval(
 	let (store, url, schema) = setup(&environment).await;
 	let effects = Arc::new(AtomicUsize::new(0));
 	let counter = effects.clone();
+	let gate = Arc::new(WriteEffectGate::default());
+	let dispatch_gate = gate.clone();
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", listener.local_addr().unwrap());
 	let server = tokio::spawn(async move {
@@ -888,8 +898,13 @@ async fn write_approval(
 				"/",
 				axum::routing::post(move || {
 					let counter = counter.clone();
+					let gate = dispatch_gate.clone();
 					async move {
 						counter.fetch_add(1, Ordering::SeqCst);
+						if gate.paused.load(Ordering::SeqCst) {
+							gate.arrived.notify_one();
+							gate.release.notified().await;
+						}
 						axum::Json(json!({"ok":true}))
 					}
 				}),
@@ -1026,6 +1041,7 @@ async fn write_approval(
 		run,
 		first,
 		effects,
+		gate,
 		server,
 		_environment: environment,
 	}
@@ -1054,6 +1070,7 @@ async fn managed_external_write_requires_exact_one_call_approval(
 		mut run,
 		first,
 		effects,
+		gate: _,
 		server,
 		_environment,
 	} = write_approval;
@@ -2566,4 +2583,103 @@ async fn remote_workspace_snapshot_pages_large_accumulated_artifacts(
 	server.abort();
 	cleanup(worker_store, &worker_url, &worker_schema).await;
 	cleanup(home, &url, &schema).await;
+}
+
+#[rstest::fixture]
+async fn review6_approved_installed_write() -> (WriteApproval, String) {
+	let wb = write_approval(false, false).await;
+	let f = &wb.harness.federation;
+	let package = f
+		.registry
+		.publish(
+			&f.store.pool,
+			aidash::registry::Package {
+				entity: f.registry.get("managed-write", "1.0.0").await.unwrap(),
+				author: "Fixture".into(),
+				permissions: vec![],
+				dependencies: vec![],
+			},
+		)
+		.await
+		.unwrap();
+	wb.store
+		.answer(wb.first, json!({"approved":true}))
+		.await
+		.unwrap();
+	wb.harness.worker_once().await.unwrap();
+	(wb, package.digest)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn review6_tool_installation_waits_for_the_invoked_configuration(
+	#[future(awt)] review6_approved_installed_write: (WriteApproval, String),
+) {
+	use std::sync::atomic::Ordering;
+	let (wb, digest) = review6_approved_installed_write;
+	wb.gate.paused.store(true, Ordering::SeqCst);
+	let f = wb.harness.federation.clone();
+	let worker = tokio::spawn(async move {
+		aidash::harness::Harness { federation: f }
+			.worker_once()
+			.await
+	});
+	tokio::time::timeout(
+		std::time::Duration::from_secs(5),
+		wb.gate.arrived.notified(),
+	)
+	.await
+	.unwrap();
+	let f = wb.harness.federation.clone();
+	let mut install = tokio::spawn(async move {
+		f.registry
+			.install(
+				&f.store.pool,
+				"managed-write",
+				"1.0.0",
+				&digest,
+				json!({"replay":"read_only"}),
+			)
+			.await
+	});
+	let early = tokio::time::timeout(std::time::Duration::from_millis(200), &mut install).await;
+	wb.gate.paused.store(false, Ordering::SeqCst);
+	wb.gate.release.notify_one();
+	let finished_early = early.is_ok();
+	match early {
+		Ok(result) => result.unwrap().unwrap(),
+		Err(_) => install.await.unwrap().unwrap(),
+	};
+	worker.await.unwrap().unwrap();
+	assert!(!finished_early, "installation changed across invocation");
+	assert_eq!(wb.effects.load(Ordering::SeqCst), 1);
+	wb.server.abort();
+	cleanup(wb.store, &wb.url, &wb.schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn review6_changed_tool_configuration_requires_a_new_exact_approval(
+	#[future(awt)] review6_approved_installed_write: (WriteApproval, String),
+) {
+	use std::sync::atomic::Ordering;
+	let (wb, digest) = review6_approved_installed_write;
+	let f = &wb.harness.federation;
+	f.registry
+		.install(
+			&f.store.pool,
+			"managed-write",
+			"1.0.0",
+			&digest,
+			json!({"replay":"idempotent"}),
+		)
+		.await
+		.unwrap();
+	wb.harness.worker_once().await.unwrap();
+	let run = wb.store.run(wb.run.id).await.unwrap();
+	assert_eq!(wb.effects.load(Ordering::SeqCst), 0, "run: {run:?}");
+	assert_eq!(run.phase, "WAITING");
+	assert_ne!(run.pending["human_request_id"], json!(wb.first));
+	wb.server.abort();
+	cleanup(wb.store, &wb.url, &wb.schema).await;
 }
