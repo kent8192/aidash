@@ -2,7 +2,7 @@
   "schema": "aidash-core-evidence/1",
   "issues": [46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56],
   "prerequisites": [38],
-  "specification": "docs/superpowers/specs/2026-09-25-harness-capabilities-design.md",
+  "operations": "docs/operations/core-capabilities.md",
   "requirements": {
     "R01": {
       "description": "File search, Code interpreter, Shell, Apply patch, and Skills are Harness-managed. Only enabled capabilities appear to the model, and dispatch rejects disabled capabilities even if called by name.",
