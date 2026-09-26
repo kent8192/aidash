@@ -84,6 +84,7 @@ type Registration = {
   behavioral_tested: boolean;
 };
 type RegisteredVersion = {
+  draft_knowledge_digest?: string | null;
   entry: AgentEntry;
   draft_revision: number | null;
   registered_by: string | null;
@@ -124,7 +125,7 @@ type TestSession = {
   revision: number;
   status: string;
   scenario: Record<string, unknown>;
-  conversation: { role: string; content: string }[] | null;
+  conversation: { role: string; content: unknown }[] | null;
   tool_calls: Record<string, unknown>[] | null;
   usage: Record<string, unknown>;
   error: string | null;
@@ -368,6 +369,7 @@ function split(value: string): string[] {
 function versionDifferences(
   draft: AgentEntry,
   registered: AgentEntry,
+  draftKnowledgeDigest: string | null,
 ): string[] {
   const fields: [string, unknown, unknown][] = [
     ["Profile", draft.name, registered.name],
@@ -378,6 +380,12 @@ function versionDifferences(
     ["Model", draft.config.model, registered.config.model],
     ["Skills", draft.config.skills, registered.config.skills],
     ["Tools", draft.config.tools, registered.config.tools],
+    ["Cluster", draft.config.cluster, registered.config.cluster],
+    [
+      "Private references",
+      draftKnowledgeDigest,
+      registered.config.knowledge_digest ?? null,
+    ],
     ["Instructions", draft.config.instructions, registered.config.instructions],
     [
       "Workspace behavior",
@@ -526,6 +534,26 @@ export function Workbench({
   const [testProfiles, setTestProfiles] = useState<TestProfile[]>([]);
   const [testLimits, setTestLimits] = useState<TestLimits | null>(null);
   const [continueFrom, setContinueFrom] = useState<string | null>(null);
+  const [pendingTestId, setPendingTestId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!pendingTestId) return;
+    const session = testSessions.find((item) => item.id === pendingTestId);
+    if (!session || session.status === "running") return;
+    let active = true;
+    queueMicrotask(() => {
+      if (active) {
+        setContinueFrom(
+          session.status === "completed" && !session.expired_at
+            ? session.id
+            : null,
+        );
+        setPendingTestId(null);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [testSessions, pendingTestId]);
   const isOperator = data.access.kind === "operator";
   useBlocker({
     disabled: !dirty,
@@ -782,6 +810,7 @@ export function Workbench({
           setTestProfiles([]);
           setTestLimits(null);
           setContinueFrom(null);
+          setPendingTestId(null);
         }
       });
       return;
@@ -822,6 +851,7 @@ export function Workbench({
     queueMicrotask(() => {
       if (active) {
         setContinueFrom(null);
+        setPendingTestId(null);
         setTestProfileId("");
         setTestMode("simulated");
       }
@@ -1149,7 +1179,12 @@ export function Workbench({
         },
       );
       setTestSessions((previous) => [session, ...previous]);
-      setContinueFrom(session.id);
+      setContinueFrom(
+        session.status === "completed" && !session.expired_at
+          ? session.id
+          : null,
+      );
+      setPendingTestId(session.status === "running" ? session.id : null);
       setTestInput((pending) => (pending === submittedMessage ? "" : pending));
       setCreatorTab("test");
     } catch (cause) {
@@ -1172,6 +1207,7 @@ export function Workbench({
         previous.map((item) => (item.id === stopped.id ? stopped : item)),
       );
       if (continueFrom === stopped.id) setContinueFrom(null);
+      if (pendingTestId === stopped.id) setPendingTestId(null);
     } catch (cause) {
       setError(String(cause));
     }
@@ -1364,9 +1400,11 @@ export function Workbench({
           {locale === "ja-JP" ? "ツールモード" : "Tool mode"}
           <select
             value={testMode}
+            disabled={!!pendingTestId}
             onChange={(event) => {
               setTestMode(event.target.value as "simulated" | "real");
               setContinueFrom(null);
+              setPendingTestId(null);
             }}
           >
             <option value="simulated">
@@ -1386,9 +1424,11 @@ export function Workbench({
               : "Test connection profile"}
             <select
               value={testProfileId}
+              disabled={!!pendingTestId}
               onChange={(event) => {
                 setTestProfileId(event.target.value);
                 setContinueFrom(null);
+                setPendingTestId(null);
               }}
             >
               <option value="">
@@ -1418,8 +1458,10 @@ export function Workbench({
         </small>
         <button
           type="button"
+          disabled={!!pendingTestId}
           onClick={() => {
             setContinueFrom(null);
+            setPendingTestId(null);
             setTestInput("");
           }}
         >
@@ -1449,6 +1491,7 @@ export function Workbench({
                   {session.status === "completed" && !session.expired_at && (
                     <button
                       type="button"
+                      disabled={!!pendingTestId}
                       onClick={() => {
                         setContinueFrom(session.id);
                         setTestMode(
@@ -1478,7 +1521,9 @@ export function Workbench({
                     <div className="wb-chat">
                       {session.conversation?.map((part, index) => (
                         <p key={index} className={part.role}>
-                          {part.content}
+                          {typeof part.content === "string"
+                            ? part.content
+                            : JSON.stringify(part.content, null, 2)}
                         </p>
                       ))}
                     </div>
@@ -1526,7 +1571,7 @@ export function Workbench({
               !testProfiles.some((profile) => profile.id === testProfileId)) ||
             testSessions.some(
               (session) =>
-                session.id === continueFrom && session.status === "running",
+                session.id === pendingTestId && session.status === "running",
             )
           }
           onClick={() => void runTest()}
@@ -2453,6 +2498,8 @@ export function Workbench({
                               {versionDifferences(
                                 current.entry,
                                 selectedRegisteredVersion.entry,
+                                selectedRegisteredVersion.draft_knowledge_digest ??
+                                  null,
                               ).join(", ") ||
                                 (locale === "ja-JP" ? "なし" : "None")}
                             </p>

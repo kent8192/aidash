@@ -870,7 +870,10 @@ struct WriteApproval {
 }
 
 #[rstest::fixture]
-async fn write_approval(#[default(false)] expired: bool) -> WriteApproval {
+async fn write_approval(
+	#[default(false)] expired: bool,
+	#[default(false)] prior_response: bool,
+) -> WriteApproval {
 	let environment = test_environment().await;
 	use std::sync::atomic::{AtomicUsize, Ordering};
 	let (store, url, schema) = setup(&environment).await;
@@ -994,6 +997,27 @@ async fn write_approval(#[default(false)] expired: bool) -> WriteApproval {
 		.await
 		.unwrap();
 	}
+	if prior_response {
+		sqlx::query(
+			&sea_orm::sea_query::Query::update()
+				.table(sea_orm::sea_query::Alias::new("human_requests"))
+				.value(
+					sea_orm::sea_query::Alias::new("response"),
+					sea_orm::sea_query::Expr::cust("$2"),
+				)
+				.value(
+					sea_orm::sea_query::Alias::new("answered_by"),
+					sea_orm::sea_query::Expr::value("human"),
+				)
+				.and_where(sea_orm::sea_query::Expr::cust("id=$1"))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(first)
+		.bind(json!({"approved":true}))
+		.execute(&store.pool)
+		.await
+		.unwrap();
+	}
 	WriteApproval {
 		store,
 		url,
@@ -1008,13 +1032,17 @@ async fn write_approval(#[default(false)] expired: bool) -> WriteApproval {
 }
 
 #[rstest::rstest]
-#[case(false)]
-#[case(true)]
+#[case(false, false, false)]
+#[case(true, false, false)]
+#[case(true, true, false)]
+#[case(true, false, true)]
 #[tokio::test]
 async fn managed_external_write_requires_exact_one_call_approval(
 	#[case] _expired: bool,
+	#[case] late_answer: bool,
+	#[case] _prior_response: bool,
 	#[future(awt)]
-	#[with(_expired)]
+	#[with(_expired, _prior_response)]
 	write_approval: WriteApproval,
 ) {
 	use std::sync::atomic::Ordering;
@@ -1036,6 +1064,14 @@ async fn managed_external_write_requires_exact_one_call_approval(
 			.answer(first, json!({"approved":false}))
 			.await
 			.unwrap();
+	}
+	if late_answer {
+		let result = store.answer(first, json!({"approved":true})).await.unwrap();
+		assert_eq!(
+			result.response,
+			Some(json!({"approved":false,"expired":true})),
+			"late answer must persist expiry"
+		);
 	}
 	harness.worker_once().await.unwrap();
 	harness.worker_once().await.unwrap();

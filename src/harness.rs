@@ -1519,25 +1519,20 @@ impl Harness {
 					.bind(id)
 					.fetch_one(&store.pool)
 					.await?;
-					let response = match h.response {
-						Some(response) => response,
-						None if run.pending["workbench_approval"]["request_id"] == json!(id)
-							&& h.created_at + chrono::Duration::minutes(15)
-								<= chrono::Utc::now() =>
-						{
-							store
-								.expire_workbench_approval(id)
-								.await?
-								.response
-								.ok_or_else(|| {
-									Error::Conflict("human request has not been answered".into())
-								})?
-						}
-						None => {
-							return Err(Error::Conflict(
-								"human request has not been answered".into(),
-							));
-						}
+					let response = if run.pending["workbench_approval"]["request_id"] == json!(id)
+						&& h.created_at + chrono::Duration::minutes(15) <= chrono::Utc::now()
+					{
+						store
+							.expire_workbench_approval(id)
+							.await?
+							.response
+							.ok_or_else(|| {
+								Error::Conflict("human request has not been answered".into())
+							})?
+					} else {
+						h.response.ok_or_else(|| {
+							Error::Conflict("human request has not been answered".into())
+						})?
 					};
 					if run.pending["workbench_approval"]["request_id"] == json!(id) {
 						let approval = run.pending["workbench_approval"].clone();

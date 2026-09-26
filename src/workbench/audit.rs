@@ -192,33 +192,26 @@ async fn audit(
 		}
 	}
 	tx.commit().await?;
-	let incidents = incident::list(State(f.clone()), Extension(actor), Path((id, version)))
-		.await?
-		.0;
+	let incidents = incident::list(
+		State(f.clone()),
+		Extension(actor.clone()),
+		Path((id, version)),
+	)
+	.await?
+	.0;
 	for incident in incidents {
-		let events: Vec<(String, Value, DateTime<Utc>)> = sqlx::query_as(
-			&Query::select()
-				.columns([
-					Alias::new("actor"),
-					Alias::new("change"),
-					Alias::new("created_at"),
-				])
-				.from(Alias::new("agent_incident_events"))
-				.and_where(Expr::col(Alias::new("incident_id")).eq(Expr::cust("$1")))
-				.order_by(Alias::new("created_at"), Order::Desc)
-				.limit(100)
-				.to_string(PostgresQueryBuilder),
-		)
-		.bind(incident.id)
-		.fetch_all(&f.store.pool)
-		.await?;
-		for (actor, change, at) in events {
+		let events = match incident::read_events(&f, &actor, incident.id, 100).await {
+			Ok(events) => events,
+			Err(Error::Forbidden) => continue,
+			Err(error) => return Err(error),
+		};
+		for event in events {
 			items.push(AuditItem {
 				source: "incident".into(),
 				kind: "incident_changed".into(),
-				at,
-				actor: Some(actor),
-				details: json!({"incident_id":incident.id,"change":change}),
+				at: event.created_at,
+				actor: Some(event.actor),
+				details: json!({"incident_id":incident.id,"change":event.change}),
 			});
 		}
 	}

@@ -49,6 +49,53 @@ pub struct ProfileSummary {
 
 const PROFILE_COLUMNS: &str = "tenant, id, revision, enabled, rules, updated_at";
 
+pub(super) fn validate_real_rule(rule: &RealToolRule, tool: &crate::registry::Entry) -> Result<()> {
+	config::validate_endpoint(&rule.endpoint)?;
+	let url = reqwest::Url::parse(&rule.endpoint)
+		.map_err(|_| Error::Invalid("invalid test endpoint".into()))?;
+	if url.scheme() != "https"
+		&& !matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
+	{
+		return Err(Error::Invalid(
+			"test endpoints require HTTPS except on loopback".into(),
+		));
+	}
+	if let Some(name) = &rule.credential_env {
+		config::secret(name)?;
+	}
+
+	if tool.kind != "tool" {
+		return Err(Error::Invalid(
+			"test profile references a non-Tool Registry entry".into(),
+		));
+	}
+	let cfg: ToolConfig = serde_json::from_value(tool.config.clone())?;
+	let isolated = match cfg {
+		ToolConfig::Http {
+			endpoint,
+			replay,
+			credential_env,
+		} => {
+			let production = reqwest::Url::parse(&endpoint)
+				.map_err(|_| Error::Invalid("invalid production endpoint".into()))?;
+			replay == "read_only"
+				&& production != url
+				&& match credential_env {
+					Some(production) => rule
+						.credential_env
+						.as_ref()
+						.is_some_and(|test| test != &production),
+					None => true,
+				}
+		}
+		_ => false,
+	};
+	if !isolated {
+		return Err(Error::Invalid("real tests require an HTTP read-only Tool, a separate test endpoint, and separate test credentials".into()));
+	}
+	Ok(())
+}
+
 pub fn routes() -> OpenApiRouter<Federation> {
 	OpenApiRouter::new()
 		.routes(routes!(list))
@@ -184,49 +231,8 @@ async fn put(
 				"real-tool rules need unique Tools and bounded action/resource allowlists".into(),
 			));
 		}
-		config::validate_endpoint(&rule.endpoint)?;
-		let url = reqwest::Url::parse(&rule.endpoint)
-			.map_err(|_| Error::Invalid("invalid test endpoint".into()))?;
-		if url.scheme() != "https"
-			&& !matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
-		{
-			return Err(Error::Invalid(
-				"test endpoints require HTTPS except on loopback".into(),
-			));
-		}
-		if let Some(name) = &rule.credential_env {
-			config::secret(name)?;
-		}
 		let tool = f.registry.get(&rule.tool.id, &rule.tool.version).await?;
-		if tool.kind != "tool" {
-			return Err(Error::Invalid(
-				"test profile references a non-Tool Registry entry".into(),
-			));
-		}
-		let cfg: ToolConfig = serde_json::from_value(tool.config)?;
-		let isolated = match cfg {
-			ToolConfig::Http {
-				endpoint,
-				replay,
-				credential_env,
-			} => {
-				let production = reqwest::Url::parse(&endpoint)
-					.map_err(|_| Error::Invalid("invalid production endpoint".into()))?;
-				replay == "read_only"
-					&& production != url
-					&& match credential_env {
-						Some(production) => rule
-							.credential_env
-							.as_ref()
-							.is_some_and(|test| test != &production),
-						None => true,
-					}
-			}
-			_ => false,
-		};
-		if !isolated {
-			return Err(Error::Invalid("real tests require an HTTP read-only Tool, a separate test endpoint, and separate test credentials".into()));
-		}
+		validate_real_rule(rule, &tool)?;
 	}
 	let rules = serde_json::to_value(&input.rules)?;
 	let mut tx = f.store.pool.begin().await?;

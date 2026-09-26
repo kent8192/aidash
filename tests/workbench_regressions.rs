@@ -35,6 +35,7 @@ struct Workbench {
 	server: tokio::task::JoinHandle<()>,
 	endpoint: String,
 	model_gate: Arc<ModelGate>,
+	effect_gate: Arc<ModelGate>,
 	effect_hits: Arc<AtomicUsize>,
 	effect_reply_invalid: Arc<AtomicBool>,
 }
@@ -125,6 +126,8 @@ async fn workbench() -> Workbench {
 	let hits = Arc::new(AtomicUsize::new(0));
 	let model_gate = Arc::new(ModelGate::default());
 	let gate = model_gate.clone();
+	let effect_gate = Arc::new(ModelGate::default());
+	let dispatch_gate = effect_gate.clone();
 	let effect_hits = Arc::new(AtomicUsize::new(0));
 	let effects = effect_hits.clone();
 	let effect_reply_invalid = Arc::new(AtomicBool::new(false));
@@ -160,8 +163,13 @@ async fn workbench() -> Workbench {
 			axum::routing::post(move || {
 				let effects = effects.clone();
 				let corrupt_reply = corrupt_reply.clone();
+				let gate = dispatch_gate.clone();
 				async move {
 					effects.fetch_add(1, Ordering::SeqCst);
+					if gate.paused.load(Ordering::SeqCst) {
+						gate.arrived.notify_one();
+						gate.release.notified().await;
+					}
 					if corrupt_reply.load(Ordering::SeqCst) {
 						"{".into_response()
 					} else {
@@ -215,6 +223,7 @@ async fn workbench() -> Workbench {
 		server,
 		endpoint,
 		model_gate,
+		effect_gate,
 		effect_hits,
 		effect_reply_invalid,
 	}
@@ -806,20 +815,41 @@ async fn incident_list_reaches_older_authorized_rows(
 }
 
 #[rstest::fixture]
-async fn model_waiting_for_real_tool() -> (Workbench, Value) {
+async fn model_waiting_for_real_tool(#[default(false)] shared: bool) -> (Workbench, Value) {
 	let wb = workbench().await;
 	*wb.responses.lock().await = VecDeque::from([
 		json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"real-call","function":{"name":"plugin_0","arguments":"{\"action\":\"read\",\"resource\":\"sandbox\"}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
 	]);
 	assert_eq!(request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect",wb.endpoint),"credential_env":null,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
-	wb.model_gate.paused.store(true, Ordering::SeqCst);
-	let session = wb
-		.call(
+	let token = if shared {
+		wb.call(
 			"POST",
-			&format!("{}/tests", wb.path()),
-			json!({"expected_revision":1,"message":"Use the tool","mode":"real","profile_id":"sandbox"}),
+			&format!("{}/shares", wb.path()),
+			json!({"subject":"bob","can_edit":true,"enabled":true,"include_documents":false}),
 		)
 		.await;
+		let (_, credential) = request(
+			&wb.app,
+			&wb.f.config.api_token,
+			"POST",
+			"/api/authorization/acme/credentials",
+			json!({"subject":"bob"}),
+		)
+		.await;
+		credential["token"].as_str().unwrap().to_owned()
+	} else {
+		wb.token.clone()
+	};
+	wb.model_gate.paused.store(true, Ordering::SeqCst);
+	let (status, session) = request(
+		&wb.app,
+		&token,
+		"POST",
+		&format!("{}/tests", wb.path()),
+		json!({"expected_revision":1,"message":"Use the tool","mode":"real","profile_id":"sandbox"}),
+	)
+	.await;
+	assert_eq!(status, 200, "session: {session}");
 	tokio::time::timeout(Duration::from_secs(5), wb.model_gate.arrived.notified())
 		.await
 		.expect("model fixture must reach the in-flight boundary");
@@ -1433,6 +1463,288 @@ async fn transferring_a_shared_draft_does_not_restore_the_former_owner_share(
 		.await
 		.0,
 		403
+	);
+	wb.cleanup().await;
+}
+
+#[rstest::rstest]
+#[case("share")]
+#[case("transfer")]
+#[case("archive")]
+#[case("documents")]
+#[tokio::test]
+async fn draft_authority_changes_wait_for_a_shared_real_dispatch(
+	#[future(awt)]
+	#[with(true)]
+	model_waiting_for_real_tool: (Workbench, Value),
+	#[case] change: &str,
+) {
+	let (wb, started) = model_waiting_for_real_tool;
+	wb.effect_gate.paused.store(true, Ordering::SeqCst);
+	wb.model_gate.paused.store(false, Ordering::SeqCst);
+	wb.model_gate.release.notify_one();
+	tokio::time::timeout(Duration::from_secs(5), wb.effect_gate.arrived.notified())
+		.await
+		.unwrap();
+	let (method, path, body) = match change {
+		"share" => (
+			"POST",
+			format!("{}/shares", wb.path()),
+			json!({"subject":"bob","can_edit":true,"enabled":false,"include_documents":false}),
+		),
+		"transfer" => (
+			"POST",
+			format!("{}/transfer", wb.path()),
+			json!({"expected_revision":1,"new_owner":"bob"}),
+		),
+		"archive" => (
+			"POST",
+			format!("{}/archive", wb.path()),
+			json!({"expected_revision":1,"archived":true}),
+		),
+		"documents" => (
+			"PUT",
+			wb.path(),
+			json!({"expected_revision":1,"entry":wb.draft["entry"],"documents":[{"name":"new.txt","media_type":"text/plain","text":"Updated references"}]}),
+		),
+		_ => unreachable!(),
+	};
+	let app = wb.app.clone();
+	let token = wb.f.config.api_token.clone();
+	let mut mutation =
+		tokio::spawn(async move { request(&app, &token, method, &path, body).await });
+	let early = tokio::time::timeout(Duration::from_millis(200), &mut mutation).await;
+	wb.effect_gate.paused.store(false, Ordering::SeqCst);
+	wb.effect_gate.release.notify_one();
+	let finished_early = early.is_ok();
+	let result = match early {
+		Ok(result) => result.unwrap(),
+		Err(_) => mutation.await.unwrap(),
+	};
+	let finished = wb.operator_finished(&started).await;
+	assert!(
+		!finished_early,
+		"{change} committed across the real dispatch lease: {result:?}"
+	);
+	assert_eq!(result.0, 200, "mutation: {result:?}");
+	assert_eq!(
+		wb.effect_hits.load(Ordering::SeqCst),
+		1,
+		"session: {finished}"
+	);
+	assert!(
+		matches!(finished["status"].as_str(), Some("blocked" | "failed")),
+		"session: {finished}"
+	);
+	wb.cleanup().await;
+}
+
+#[rstest::fixture]
+async fn installed_tool_waiting_for_dispatch() -> (Workbench, Value, String) {
+	let (wb, started) = model_waiting_for_real_tool(false).await;
+	let entry = wb.f.registry.get("fixture-tool", "1.0.0").await.unwrap();
+	let package =
+		wb.f.registry
+			.publish(
+				&wb.f.store.pool,
+				aidash::registry::Package {
+					entity: entry,
+					author: "Fixture".into(),
+					permissions: vec![],
+					dependencies: vec![],
+				},
+			)
+			.await
+			.unwrap();
+	wb.f.registry
+		.install(
+			&wb.f.store.pool,
+			"fixture-tool",
+			"1.0.0",
+			&package.digest,
+			json!({}),
+		)
+		.await
+		.unwrap();
+	(wb, started, package.digest)
+}
+
+#[rstest::rstest]
+#[case("endpoint")]
+#[case("replay")]
+#[case("credential")]
+#[tokio::test]
+async fn real_dispatch_rejects_effective_tool_isolation_changes(
+	#[future(awt)] installed_tool_waiting_for_dispatch: (Workbench, Value, String),
+	#[case] change: &str,
+) {
+	let (wb, started, digest) = installed_tool_waiting_for_dispatch;
+	let overlay = match change {
+		"endpoint" => json!({"endpoint":format!("{}/test-effect",wb.endpoint)}),
+		"replay" => json!({"replay":"unsafe"}),
+		"credential" => json!({"credential_env":"AIDASH_SECRET_TEST_PEER"}),
+		_ => unreachable!(),
+	};
+	wb.f.registry
+		.install(&wb.f.store.pool, "fixture-tool", "1.0.0", &digest, overlay)
+		.await
+		.unwrap();
+	wb.model_gate.paused.store(false, Ordering::SeqCst);
+	wb.model_gate.release.notify_one();
+	let finished = wb.operator_finished(&started).await;
+	assert_eq!(
+		wb.effect_hits.load(Ordering::SeqCst),
+		0,
+		"isolation changed: {finished}"
+	);
+	assert_eq!(finished["status"], "blocked", "session: {finished}");
+	assert_eq!(finished["tool_calls"][0]["outcome"], "denied");
+	wb.cleanup().await;
+}
+
+#[rstest::fixture]
+async fn incident_audit_workbench() -> (Workbench, Value) {
+	let wb = workbench().await;
+	wb.register().await;
+	let incident = wb
+		.call(
+			"POST",
+			&format!(
+				"/api/workbench/versions/{}/1.0.0/incidents",
+				wb.draft["entry"]["id"].as_str().unwrap()
+			),
+			json!({"severity":"low","owner":"alice","notes":"Initial"}),
+		)
+		.await;
+	assert_eq!(request(&wb.app,&wb.f.config.api_token,"POST","/api/authorization/acme",json!({"expected_revision":1,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"hidden-incident","effect":"deny","subjects":{"any":true},"actions":["agent_incident.read"],"resources":{"kinds":["agent_incident"]},"condition":{"op":"eq","left":{"source":"resource","path":"/owner"},"right":{"source":"literal","value":"bob"}}}]}})).await.0,200);
+	(wb, incident)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn audit_rechecks_incident_visibility_before_returning_event_history(
+	#[future(awt)] incident_audit_workbench: (Workbench, Value),
+) {
+	let (wb, incident) = incident_audit_workbench;
+	let id: uuid::Uuid = incident["id"].as_str().unwrap().parse().unwrap();
+	let mut change = wb.f.store.pool.begin().await.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("agent_incidents"))
+			.value(Alias::new("owner"), Expr::value("bob"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(id)
+	.execute(&mut *change)
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("agent_incident_events"))
+			.columns(["incident_id", "actor", "change"].map(Alias::new))
+			.values_panic([Expr::cust("$1"), Expr::value("bob"), Expr::cust("$2")])
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(id)
+	.bind(json!({"private":"hidden after owner change"}))
+	.execute(&mut *change)
+	.await
+	.unwrap();
+	let app = wb.app.clone();
+	let token = wb.token.clone();
+	let path = format!(
+		"/api/workbench/versions/{}/1.0.0/audit",
+		wb.draft["entry"]["id"].as_str().unwrap()
+	);
+	let mut audit =
+		tokio::spawn(async move { request(&app, &token, "GET", &path, Value::Null).await });
+	let early = tokio::time::timeout(Duration::from_millis(200), &mut audit).await;
+	change.commit().await.unwrap();
+	assert!(
+		early.is_err(),
+		"audit did not hold the incident visibility boundary: {early:?}"
+	);
+	let (status, page) = audit.await.unwrap();
+	assert_eq!(status, 200, "audit: {page}");
+	assert!(
+		page["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|item| item["source"] != "incident"),
+		"audit: {page}"
+	);
+	wb.cleanup().await;
+}
+
+#[rstest::fixture]
+async fn registered_document_workbench(#[default("replace")] change: &str) -> Workbench {
+	let mut wb = workbench().await;
+	let documents = if change == "add" {
+		json!([])
+	} else {
+		json!([{"name":"notes.txt","media_type":"text/plain","text":"Original references"}])
+	};
+	wb.draft = wb
+		.call(
+			"PUT",
+			&wb.path(),
+			json!({"expected_revision":1,"entry":wb.draft["entry"],"documents":documents}),
+		)
+		.await;
+	wb.call(
+		"POST",
+		&format!("{}/register", wb.path()),
+		json!({"expected_revision":2}),
+	)
+	.await;
+	let documents = if change == "remove" {
+		json!([])
+	} else if change == "unchanged" {
+		documents
+	} else {
+		json!([{"name":"notes.txt","media_type":"text/plain","text":"Updated references"}])
+	};
+	wb.draft = wb
+		.call(
+			"PUT",
+			&wb.path(),
+			json!({"expected_revision":2,"entry":wb.draft["entry"],"documents":documents}),
+		)
+		.await;
+	wb
+}
+
+#[rstest::rstest]
+#[case("add")]
+#[case("replace")]
+#[case("remove")]
+#[case("unchanged")]
+#[tokio::test]
+async fn version_history_compares_registered_knowledge_to_current_saved_documents(
+	#[case] change: &str,
+	#[future(awt)]
+	#[with(change)]
+	registered_document_workbench: Workbench,
+) {
+	use sha2::{Digest, Sha256};
+	let wb = registered_document_workbench;
+	let versions = wb
+		.call("GET", &format!("{}/versions", wb.path()), Value::Null)
+		.await;
+	let expected = if change == "remove" {
+		Value::Null
+	} else {
+		json!(format!(
+			"{:x}",
+			Sha256::digest(wb.draft["documents"].to_string().as_bytes())
+		))
+	};
+	assert_eq!(versions[0]["draft_knowledge_digest"], expected);
+	assert_eq!(
+		versions[0]["entry"]["config"]["knowledge_digest"] == expected,
+		change == "unchanged"
 	);
 	wb.cleanup().await;
 }

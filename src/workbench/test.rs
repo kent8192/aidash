@@ -755,7 +755,12 @@ async fn prepare_real_dispatch(
 		identity.lock_with_mode(tx, false).await?;
 	}
 	let session = load_session(tx, session_id).await?;
-	let draft = load(tx, session.draft_id, false).await?;
+	let draft = load(tx, session.draft_id, true).await?;
+	if draft.archived || draft.revision != session.revision {
+		return Err(Error::Conflict(
+			"draft revision changed or is archived".into(),
+		));
+	}
 	authorize(tx, actor, &draft, "agent_draft.test", true).await?;
 	let current = profile::load(tx, &pin.tenant, &pin.id).await?;
 	if !current.enabled
@@ -771,6 +776,12 @@ async fn prepare_real_dispatch(
 			return Err(Error::Conflict("test credential changed".into()));
 		}
 	}
+	let tool = crate::registry::effective_in(tx, &rule.tool.id, &rule.tool.version).await?;
+	profile::validate_real_rule(rule, &tool)?;
+	jsonschema::validator_for(&tool.schema)
+		.map_err(|e| Error::Invalid(e.to_string()))?
+		.validate(&call.arguments)
+		.map_err(|e| Error::Invalid(e.to_string()))?;
 	let client = reqwest::Client::builder()
 		.redirect(reqwest::redirect::Policy::none())
 		.timeout(Duration::from_secs(30))
@@ -849,11 +860,6 @@ async fn invoke_real(
 	{
 		return Err(Error::Forbidden);
 	}
-	let tool = f.registry.get(&rule.tool.id, &rule.tool.version).await?;
-	jsonschema::validator_for(&tool.schema)
-		.map_err(|e| Error::Invalid(e.to_string()))?
-		.validate(&call.arguments)
-		.map_err(|e| Error::Invalid(e.to_string()))?;
 	// Check every dispatch prerequisite before committing pending evidence. The
 	// durable marker still precedes network I/O, so a crash after dispatch cannot
 	// erase an external effect or cause the worker to retry it.

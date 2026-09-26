@@ -3857,8 +3857,7 @@ impl Store {
 		.bind(id)
 		.fetch_one(&mut *tx)
 		.await?;
-		let result = if request.response.is_none()
-			&& request.kind == "APPROVAL_REQUIRED"
+		let result = if request.kind == "APPROVAL_REQUIRED"
 			&& request.created_at + chrono::Duration::minutes(15) <= chrono::Utc::now()
 		{
 			self.answer_in(
@@ -3905,12 +3904,6 @@ impl Store {
 		.fetch_optional(&mut **tx)
 		.await?
 		.ok_or_else(|| Error::NotFound("human request".into()))?;
-		if let Some(existing) = &old.response {
-			if existing != &response {
-				return Err(Error::Conflict("human request already answered".into()));
-			}
-			return Ok(old);
-		}
 		let run: Run = sqlx::query_as(
 			&sea_orm::sea_query::Query::select()
 				.expr(sea_orm::sea_query::SimpleExpr::from(
@@ -3923,6 +3916,23 @@ impl Store {
 		.bind(old.run_id)
 		.fetch_one(&mut **tx)
 		.await?;
+		let expired = old.kind == "APPROVAL_REQUIRED"
+			&& run.pending["workbench_approval"]["request_id"] == json!(id)
+			&& old.created_at + chrono::Duration::minutes(15) <= chrono::Utc::now();
+		let automatic_expiry = expired && (actor == "system" || old.response.is_none());
+		let (response, actor) = if automatic_expiry {
+			(json!({"approved":false,"expired":true}), "system")
+		} else {
+			(response, actor)
+		};
+		if let Some(existing) = &old.response {
+			if existing == &response {
+				return Ok(old);
+			}
+			if !automatic_expiry {
+				return Err(Error::Conflict("human request already answered".into()));
+			}
+		}
 		if run
 			.pending
 			.get("uncertain_key")

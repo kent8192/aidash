@@ -463,33 +463,44 @@ async fn events(
 	Extension(actor): Extension<Actor>,
 	Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<IncidentEvent>>> {
+	let mut events = read_events(&f, &actor, id, 500).await?;
+	events.reverse();
+	Ok(Json(events))
+}
+
+/// Read event history while holding current incident and authorization leases.
+pub(super) async fn read_events(
+	f: &Federation,
+	actor: &Actor,
+	id: Uuid,
+	limit: u64,
+) -> Result<Vec<IncidentEvent>> {
 	let mut tx = f.store.pool.begin().await?;
-	let incident = load(&mut tx, id, false).await?;
+	let incident = load(&mut tx, id, true).await?;
 	trust::require_inspection(
 		&mut tx,
-		&actor,
+		actor,
 		&EntityRef {
 			id: incident.agent_id.clone(),
 			version: incident.version.clone(),
 		},
 	)
 	.await?;
-	require_incident(&mut tx, &actor, &incident, "agent_incident.read").await?;
-	let mut events: Vec<IncidentEvent> = sqlx::query_as(
+	require_incident(&mut tx, actor, &incident, "agent_incident.read").await?;
+	let events: Vec<IncidentEvent> = sqlx::query_as(
 		&Query::select()
 			.expr(Expr::cust("id, incident_id, actor, change, created_at"))
 			.from(Alias::new("agent_incident_events"))
 			.and_where(Expr::col(Alias::new("incident_id")).eq(Expr::cust("$1")))
 			.order_by(Alias::new("id"), Order::Desc)
-			.limit(500)
+			.limit(limit)
 			.to_string(PostgresQueryBuilder),
 	)
 	.bind(id)
 	.fetch_all(&mut *tx)
 	.await?;
-	events.reverse();
 	tx.commit().await?;
-	Ok(Json(events))
+	Ok(events)
 }
 
 /// Expire copied payloads while keeping source, digest, actor and status data.

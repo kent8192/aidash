@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 import { setup } from "./collaboration-fixture";
 
@@ -109,7 +110,7 @@ async function editableDrafts(
   await expect(page.getByLabel("Additional instructions")).toHaveValue(
     "First draft",
   );
-  return { state, saves, cursors };
+  return { state, saves, cursors, drafts };
 }
 
 test("Creator opens and edits a focused draft beyond the first page", async ({
@@ -493,5 +494,197 @@ for (const [viewport, locale] of [
     }));
     expect(widths.content).toBeLessThanOrEqual(widths.viewport);
     expect(errors).toEqual([]);
+  });
+}
+
+function behavioralSession(
+  draft: { id: string; revision: number },
+  status: string,
+) {
+  return {
+    id: "00000000-0000-7000-8000-000000000099",
+    draft_id: draft.id,
+    revision: draft.revision,
+    status,
+    scenario: { mode: "simulated", profile_id: null },
+    conversation: [{ role: "user", content: "First test" }],
+    tool_calls: [],
+    usage: {},
+    error: null,
+    created_at: "2026-09-25T00:00:00Z",
+    expires_at: "2026-10-25T00:00:00Z",
+    expired_at: null,
+  };
+}
+
+for (const status of [
+  "blocked",
+  "failed",
+  "timed_out",
+  "outcome_unknown",
+  "completed",
+]) {
+  test(`Creator retries a ${status} behavioral session with the correct continuation`, async ({
+    page,
+  }) => {
+    await page.clock.install();
+    const { drafts } = await editableDrafts(page);
+    const posts: Record<string, unknown>[] = [];
+    const sessions: ReturnType<typeof behavioralSession>[] = [];
+    await page.route(
+      `**/api/workbench/drafts/${drafts[0].id}/tests`,
+      async (route) => {
+        if (route.request().method() === "GET")
+          return route.fulfill({ json: sessions });
+        posts.push(route.request().postDataJSON());
+        const session = behavioralSession(drafts[0], "running");
+        sessions.unshift(session);
+        return route.fulfill({ json: session });
+      },
+    );
+    await page
+      .locator(".wb-tabs")
+      .getByRole("button", { name: "Test", exact: true })
+      .click();
+    const input = page.getByPlaceholder("Test message…");
+    const send = page
+      .locator(".wb-test-compose")
+      .getByRole("button", { name: "Test", exact: true });
+    await input.fill("First test");
+    await send.click();
+    await expect.poll(() => posts.length).toBe(1);
+    await input.fill("Retry test");
+    await expect(send).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "Reset conversation" }),
+    ).toBeDisabled();
+    await expect(page.getByLabel("Tool mode")).toBeDisabled();
+    sessions[0].status = status;
+    await page.clock.runFor(2600);
+    await expect(send).toBeEnabled();
+    await send.click();
+    await expect.poll(() => posts.length).toBe(2);
+    expect(posts[1].continue_from).toBe(
+      status === "completed" ? sessions[1].id : null,
+    );
+  });
+}
+
+test("Creator renders object-valued Tool conversation content", async ({
+  page,
+}) => {
+  const { drafts } = await editableDrafts(page);
+  const session = {
+    ...behavioralSession(drafts[0], "completed"),
+    conversation: [
+      { role: "tool", content: { rows: [{ title: "Tool result" }], count: 1 } },
+    ],
+  };
+  await page.route(`**/api/workbench/drafts/${drafts[0].id}/tests`, (route) =>
+    route.fulfill({ json: [session] }),
+  );
+  await page.reload();
+  await page
+    .locator(".wb-tabs")
+    .getByRole("button", { name: "Test", exact: true })
+    .click();
+  await expect(page.locator(".wb-chat .tool")).toContainText(
+    '"title": "Tool result"',
+  );
+  await expect(page.getByPlaceholder("Test message…")).toBeVisible();
+});
+
+for (const change of ["add", "replace", "remove", "unchanged", "cluster"]) {
+  test(`Creator version differences include ${change} private reference or cluster state`, async ({
+    page,
+  }) => {
+    const { drafts } = await editableDrafts(page);
+    const previous = [
+      { name: "notes.txt", media_type: "text/plain", text: "元の参考資料" },
+    ];
+    const documents = change === "add" ? [] : previous;
+    const digest = documents.length
+      ? createHash("sha256")
+          .update(
+            JSON.stringify(
+              documents.map(({ media_type, name, text }) => ({
+                media_type,
+                name,
+                text,
+              })),
+            ),
+          )
+          .digest("hex")
+      : undefined;
+    const registered = {
+      ...drafts[0].entry,
+      config: { ...drafts[0].entry.config, knowledge_digest: digest },
+    };
+    drafts[0].documents =
+      change === "remove"
+        ? []
+        : change === "replace"
+          ? [{ ...previous[0], text: "Updated references" }]
+          : previous;
+    Object.assign(drafts[0].entry.config, {
+      knowledge_digest: digest,
+      cluster:
+        change === "cluster"
+          ? { id: "execution-cluster", version: "1.0.0" }
+          : null,
+    });
+    await page.route(
+      `**/api/workbench/drafts/${drafts[0].id}/versions`,
+      (route) =>
+        route.fulfill({
+          json: [
+            {
+              entry: registered,
+              draft_knowledge_digest: drafts[0].documents.length
+                ? createHash("sha256")
+                    .update(
+                      JSON.stringify(
+                        (
+                          drafts[0].documents as {
+                            media_type: string;
+                            name: string;
+                            text: string;
+                          }[]
+                        ).map(({ media_type, name, text }) => ({
+                          media_type,
+                          name,
+                          text,
+                        })),
+                      ),
+                    )
+                    .digest("hex")
+                : null,
+              registered_at: "2026-09-25T00:00:00Z",
+              registered_by: "alice",
+              behavioral_tested: false,
+              release_notes: "",
+              source_id: null,
+              source_version: null,
+            },
+          ],
+        }),
+    );
+    await page.reload();
+    await page
+      .locator(".wb-tabs")
+      .getByRole("button", { name: "Versions", exact: true })
+      .click();
+    const differences = page
+      .locator(".wb-version-detail p")
+      .filter({ hasText: "Differences from saved draft" });
+    await expect(differences).toContainText(
+      change === "cluster"
+        ? "Cluster"
+        : change === "unchanged"
+          ? "None"
+          : "Private references",
+    );
+    if (change === "cluster")
+      await expect(differences).not.toContainText("Private references");
   });
 }

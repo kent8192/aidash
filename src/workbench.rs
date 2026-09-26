@@ -133,6 +133,8 @@ pub struct Registration {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RegisteredVersion {
 	pub entry: Entry,
+	/// Digest of the currently saved draft documents, independent of Registry state.
+	pub draft_knowledge_digest: Option<String>,
 	pub draft_revision: Option<i64>,
 	pub registered_by: Option<String>,
 	pub registered_at: Option<DateTime<Utc>>,
@@ -1070,9 +1072,15 @@ async fn versions(
 	.bind(managed_id)
 	.fetch_all(&mut *tx)
 	.await?;
+	let draft_knowledge_digest = draft
+		.documents
+		.as_array()
+		.filter(|docs| !docs.is_empty())
+		.map(|_| digest(&draft.documents));
 	let mut versions = Vec::new();
 	for row in rows {
 		versions.push(RegisteredVersion {
+			draft_knowledge_digest: draft_knowledge_digest.clone(),
 			entry: f.registry.get(managed_id, &row.version).await?,
 			draft_revision: Some(row.revision),
 			registered_by: Some(row.actor),
@@ -1090,6 +1098,7 @@ async fn versions(
 			.any(|item| &item.entry.version == source_version)
 	{
 		versions.push(RegisteredVersion {
+			draft_knowledge_digest: draft_knowledge_digest.clone(),
 			entry: f.registry.get(managed_id, source_version).await?,
 			draft_revision: None,
 			registered_by: None,

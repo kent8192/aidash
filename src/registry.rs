@@ -1022,6 +1022,48 @@ pub(crate) async fn assign_id_in(
 	Ok(())
 }
 
+// Package installation takes the Registry row first, even when inserting the
+// first overlay. Hold that same row before reading an effective configuration.
+pub(crate) async fn effective_in(
+	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	id: &str,
+	version: &str,
+) -> Result<Entry> {
+	use sea_orm::sea_query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
+	let metadata: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("metadata"))
+			.from(Alias::new("registry"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("version")).eq(Expr::cust("$2")))
+			.lock(LockType::Share)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(id)
+	.bind(version)
+	.fetch_optional(&mut **tx)
+	.await?
+	.ok_or_else(|| Error::NotFound(format!("entity {id}@{version}")))?;
+	let mut entry: Entry = serde_json::from_value(metadata)?;
+	let overrides: Option<Value> = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("config"))
+			.from(Alias::new("installations"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("version")).eq(Expr::cust("$2")))
+			.lock(LockType::Share)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(id)
+	.bind(version)
+	.fetch_optional(&mut **tx)
+	.await?;
+	if let Some(overrides) = overrides {
+		overlay_config(&mut entry.config, &overrides)?;
+	}
+	Ok(entry)
+}
+
 pub(crate) async fn register_in(
 	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 	entry: &Entry,
