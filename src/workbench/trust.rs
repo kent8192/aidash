@@ -141,6 +141,98 @@ pub(super) async fn require_inspection(
 	}
 }
 
+// Inspection and contained resource checks share one audit allocation lease.
+// Opening another audited transaction while this one is live would wait on
+// the inspection's own advisory lock.
+enum InspectionLease {
+	Operator(Transaction<'static, Postgres>),
+	Subject(Box<Access>),
+}
+
+impl InspectionLease {
+	async fn begin(f: &Federation, actor: &Actor) -> Result<Self> {
+		match actor {
+			Actor::Operator => Ok(Self::Operator(f.store.pool.begin().await?)),
+			Actor::Subject(identity) => Ok(Self::Subject(Box::new(
+				Access::begin(&f.store, identity).await?,
+			))),
+		}
+	}
+
+	fn tx(&mut self) -> &mut Transaction<'static, Postgres> {
+		match self {
+			Self::Operator(tx) => tx,
+			Self::Subject(access) => &mut access.tx,
+		}
+	}
+
+	async fn run_visible(&mut self, run: &Run) -> Result<bool> {
+		match self {
+			Self::Operator(_) => Ok(true),
+			Self::Subject(access) => access.run_visible(run).await,
+		}
+	}
+
+	async fn finish(self, inspection: Inspection) -> Result<Inspection> {
+		match self {
+			Self::Operator(tx) => {
+				tx.commit().await?;
+				Ok(inspection)
+			}
+			Self::Subject(access) => (*access).finish(Ok(inspection)).await,
+		}
+	}
+}
+
+async fn visible_runs(lease: &mut InspectionLease, reference: &EntityRef) -> Result<Vec<Run>> {
+	let mut visible = Vec::new();
+	let mut cursor: Option<(DateTime<Utc>, Uuid)> = None;
+	loop {
+		let mut query = Query::select();
+		query
+			.expr(Expr::cust("*"))
+			.from(Alias::new("runs"))
+			.and_where(Expr::col(Alias::new("agent_id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("agent_version")).eq(Expr::cust("$2")))
+			.order_by(Alias::new("updated_at"), Order::Desc)
+			.order_by(Alias::new("id"), Order::Desc)
+			.limit(501);
+		if cursor.is_some() {
+			query.cond_where(
+				Condition::any()
+					.add(Expr::col(Alias::new("updated_at")).lt(Expr::cust("$3")))
+					.add(
+						Condition::all()
+							.add(Expr::col(Alias::new("updated_at")).eq(Expr::cust("$3")))
+							.add(Expr::col(Alias::new("id")).lt(Expr::cust("$4"))),
+					),
+			);
+		}
+		let sql = query.to_string(PostgresQueryBuilder);
+		let mut select = sqlx::query_as::<_, Run>(&sql)
+			.bind(&reference.id)
+			.bind(&reference.version);
+		if let Some((updated_at, id)) = cursor {
+			select = select.bind(updated_at).bind(id);
+		}
+		let rows = select.fetch_all(&mut **lease.tx()).await?;
+		let more = rows.len() == 501;
+		cursor = rows.last().map(|run| (run.updated_at, run.id));
+		for run in rows {
+			if lease.run_visible(&run).await? {
+				visible.push(run);
+			}
+			if visible.len() == 501 {
+				break;
+			}
+		}
+		if visible.len() == 501 || !more {
+			break;
+		}
+	}
+	Ok(visible)
+}
+
 #[utoipa::path(get,path="/workbench/versions/{id}/{version}",operation_id="workbench_inspect_version",params(("id"=String,Path),("version"=String,Path)),responses((status=200,body=Inspection)),security(("bearer_auth"=[])))]
 async fn inspect(
 	State(f): State<Federation>,
@@ -148,53 +240,17 @@ async fn inspect(
 	Path((id, version)): Path<(String, String)>,
 ) -> Result<Json<Inspection>> {
 	let reference = EntityRef { id, version };
-	let mut tx = f.store.pool.begin().await?;
-	require_inspection(&mut tx, &actor, &reference).await?;
+	let mut lease = InspectionLease::begin(&f, &actor).await?;
+	require_inspection(lease.tx(), &actor, &reference).await?;
 	let entry = f.registry.get(&reference.id, &reference.version).await?;
 	if entry.kind != "agent" {
 		return Err(Error::NotFound("agent version".into()));
 	}
-	let runs: Vec<Run> = sqlx::query_as(
-		&Query::select()
-			.expr(Expr::cust("*"))
-			.from(Alias::new("runs"))
-			.cond_where(
-				Condition::all()
-					.add(Expr::col(Alias::new("agent_id")).eq(Expr::cust("$1")))
-					.add(Expr::col(Alias::new("agent_version")).eq(Expr::cust("$2"))),
-			)
-			.order_by(Alias::new("updated_at"), Order::Desc)
-			.limit(501)
-			.to_string(PostgresQueryBuilder),
-	)
-	.bind(&reference.id)
-	.bind(&reference.version)
-	.fetch_all(&mut *tx)
-	.await?;
+	let runs = visible_runs(&mut lease, &reference).await?;
 	let truncated = runs.len() > 500;
 	let mut uses: std::collections::BTreeMap<Uuid, WorkspaceUse> = Default::default();
-	match &actor {
-		Actor::Operator => {
-			for run in runs.into_iter().take(500) {
-				add_use(&mut tx, &mut uses, &run).await?;
-			}
-		}
-		Actor::Subject(identity) => {
-			let mut access = Access::begin(&f.store, identity).await?;
-			let result = async {
-				let mut visible = Vec::new();
-				for run in runs.into_iter().take(500) {
-					if access.run_visible(&run).await? {
-						visible.push(run);
-					}
-				}
-				Ok(visible)
-			}
-			.await;
-			for run in access.finish(result).await? {
-				add_use(&mut tx, &mut uses, &run).await?;
-			}
-		}
+	for run in runs.into_iter().take(500) {
+		add_use(lease.tx(), &mut uses, &run).await?;
 	}
 	let mut test_evidence = Vec::new();
 	let mut test_evidence_truncated = false;
@@ -212,11 +268,11 @@ async fn inspect(
 	)
 	.bind(&reference.id)
 	.bind(&reference.version)
-	.fetch_all(&mut *tx)
+	.fetch_all(&mut **lease.tx())
 	.await?;
 	for (draft_id, revision) in registrations {
-		let draft = load(&mut tx, draft_id, false).await?;
-		match authorize(&mut tx, &actor, &draft, "agent_draft.read", true).await {
+		let draft = load(lease.tx(), draft_id, false).await?;
+		match authorize(lease.tx(), &actor, &draft, "agent_draft.read", true).await {
 			Ok(()) => {}
 			Err(Error::Forbidden) => continue,
 			Err(error) => return Err(error),
@@ -244,7 +300,7 @@ async fn inspect(
 		)
 		.bind(draft_id)
 		.bind(revision)
-		.fetch_all(&mut *tx)
+		.fetch_all(&mut **lease.tx())
 		.await?;
 		test_evidence_truncated = sessions.len() > 100;
 		for session in sessions.into_iter().take(100) {
@@ -265,8 +321,7 @@ async fn inspect(
 			});
 		}
 	}
-	tx.commit().await?;
-	Ok(Json(Inspection {
+	let inspection = Inspection {
 		entry,
 		source_node: f.config.node_id,
 		observed_at: Utc::now(),
@@ -275,7 +330,8 @@ async fn inspect(
 		test_evidence,
 		test_evidence_truncated,
 		external_assessment_available: false,
-	}))
+	};
+	lease.finish(inspection).await.map(Json)
 }
 
 async fn add_use(

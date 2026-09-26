@@ -27,11 +27,11 @@ const entry = {
   },
 };
 
-async function editableDrafts(page: Page) {
+async function editableDrafts(page: Page, secondRevision = 7) {
   await setup(page, { locale: "en-US" });
   const state = { failRefresh: false };
   const saves: Record<string, unknown>[] = [];
-  const drafts = [1, 7].map((revision, index) => ({
+  const drafts = [1, secondRevision].map((revision, index) => ({
     id: `00000000-0000-7000-8000-00000000000${index + 1}`,
     tenant: "acme",
     owner: "alice",
@@ -136,6 +136,46 @@ test("Creator discards edits and hydrates a selected draft with another revision
     expected_revision: 7,
   });
 });
+
+for (const revision of [1, 7]) {
+  test(`Creator confirms query-only Back navigation at revision ${revision}`, async ({
+    page,
+  }) => {
+    await editableDrafts(page, revision);
+    const picker = page.locator(".wb-picker select").first();
+    const instructions = page.getByLabel("Additional instructions");
+    await picker.selectOption("second-agent@1.0.0");
+    await expect(instructions).toHaveValue("Second draft");
+    await instructions.fill("Keep the second draft edits");
+    let accept = false;
+    let confirmations = 0;
+    page.on("dialog", async (dialog) => {
+      confirmations += 1;
+      if (accept) await dialog.accept();
+      else await dialog.dismiss();
+    });
+    await page.goBack();
+    await expect(picker).toHaveValue("second-agent@1.0.0");
+    await expect(instructions).toHaveValue("Keep the second draft edits");
+    expect(confirmations).toBe(1);
+    accept = true;
+    await page.goBack();
+    await expect(picker).toHaveValue("managed-agent@1.0.0");
+    await expect(instructions).toHaveValue("First draft");
+    expect(confirmations).toBe(2);
+    await instructions.fill("Keep the first draft edits");
+    accept = false;
+    await page.goForward();
+    await expect(picker).toHaveValue("managed-agent@1.0.0");
+    await expect(instructions).toHaveValue("Keep the first draft edits");
+    expect(confirmations).toBe(3);
+    accept = true;
+    await page.goForward();
+    await expect(picker).toHaveValue("second-agent@1.0.0");
+    await expect(instructions).toHaveValue("Second draft");
+    expect(confirmations).toBe(4);
+  });
+}
 
 for (const [viewport, locale] of [
   [{ width: 1280, height: 960 }, "en-US"],

@@ -58,6 +58,7 @@ struct TestJob {
 	tool_references: Vec<EntityRef>,
 	limits: TestLimits,
 	context_window: usize,
+	agent_max_steps: i32,
 	model_provider: std::sync::Arc<dyn crate::provider::ModelProvider>,
 	request: ModelRequest,
 	initial_conversation: Vec<Value>,
@@ -618,6 +619,7 @@ async fn start(
 				tool_references,
 				limits,
 				context_window,
+				agent_max_steps: config.max_steps,
 				model_provider,
 				request,
 				initial_conversation: conversation,
@@ -936,6 +938,7 @@ async fn simulate(f: &Federation, session_id: Uuid, job: &TestJob) -> Result<Sim
 		tool_references,
 		limits,
 		context_window,
+		agent_max_steps,
 		model_provider,
 		..
 	} = job;
@@ -947,7 +950,7 @@ async fn simulate(f: &Federation, session_id: Uuid, job: &TestJob) -> Result<Sim
 	let mut usage_complete = true;
 	let mut status = "blocked";
 	let mut error = None;
-	for _ in 0..limits.max_steps {
+	for _ in 0..limits.max_steps.min(*agent_max_steps) {
 		let still_running: bool = sqlx::query_scalar(
 			&Query::select()
 				.expr(Expr::cust("status = 'running'"))

@@ -1351,12 +1351,21 @@ pub(crate) fn agent_prompt_headroom(
 	instructions.push_str("\nAdditional user instructions:\n");
 	instructions.push_str(&config.instructions);
 	let mut specifications = crate::tool::builtins()
-		.values()
-		.map(|t| t.specification())
+		.into_iter()
+		.filter(|(name, _)| config.permits_builtin(name))
+		.map(|(_, tool)| tool.specification())
 		.collect::<Vec<_>>();
 	for (index, tool) in config.tools.iter().enumerate() {
+		let entry = get(tool)?;
+		if config.allow_task_delegation == Some(false)
+			&& matches!(
+				serde_json::from_value::<crate::tool::ToolConfig>(entry.config.clone())?,
+				crate::tool::ToolConfig::Agent { .. }
+			) {
+			continue;
+		}
 		specifications.push(crate::tool::plugin_specification(
-			get(tool)?,
+			entry,
 			&format!("plugin_{index}"),
 		));
 	}

@@ -474,18 +474,19 @@ async fn events(
 	)
 	.await?;
 	require_incident(&mut tx, &actor, &incident, "agent_incident.read").await?;
-	let events = sqlx::query_as(
+	let mut events: Vec<IncidentEvent> = sqlx::query_as(
 		&Query::select()
 			.expr(Expr::cust("id, incident_id, actor, change, created_at"))
 			.from(Alias::new("agent_incident_events"))
 			.and_where(Expr::col(Alias::new("incident_id")).eq(Expr::cust("$1")))
-			.order_by(Alias::new("id"), Order::Asc)
+			.order_by(Alias::new("id"), Order::Desc)
 			.limit(500)
 			.to_string(PostgresQueryBuilder),
 	)
 	.bind(id)
 	.fetch_all(&mut *tx)
 	.await?;
+	events.reverse();
 	tx.commit().await?;
 	Ok(Json(events))
 }

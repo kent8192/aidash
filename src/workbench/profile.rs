@@ -205,7 +205,7 @@ async fn put(
 		}
 		let cfg: ToolConfig = serde_json::from_value(tool.config)?;
 		match cfg {
-			ToolConfig::Http { endpoint, replay, credential_env } if replay == "read_only" && endpoint != rule.endpoint && match &credential_env {
+			ToolConfig::Http { endpoint, replay, credential_env } if replay == "read_only" && reqwest::Url::parse(&endpoint).map_err(|_| Error::Invalid("invalid production endpoint".into()))? != url && match &credential_env {
 				Some(production) => rule.credential_env.as_ref().is_some_and(|test| test != production),
 				None => true,
 			} => {},

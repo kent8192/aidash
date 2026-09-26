@@ -514,15 +514,27 @@ export function Workbench({
   useBlocker({
     disabled: !dirty,
     enableBeforeUnload: false,
-    shouldBlockFn: ({ current, next }) =>
-      dirty &&
-      current.pathname !== next.pathname &&
-      !skipRouteBlock.current &&
-      !window.confirm(
-        locale === "ja-JP"
-          ? "未保存の変更を破棄しますか？"
-          : "Discard unsaved changes?",
-      ),
+    shouldBlockFn: ({ current, next }) => {
+      if (
+        !dirty ||
+        skipRouteBlock.current ||
+        (current.pathname === next.pathname &&
+          current.search.focus === next.search.focus)
+      )
+        return false;
+      if (
+        !window.confirm(
+          locale === "ja-JP"
+            ? "未保存の変更を破棄しますか？"
+            : "Discard unsaved changes?",
+        )
+      )
+        return true;
+      setDirty(false);
+      setBaseRevision(null);
+      hydratedDraft.current = null;
+      return false;
+    },
   });
   const models = data.registry.filter((entry) => entry.kind === "model");
   const skills = data.registry.filter((entry) => entry.kind === "skill");
@@ -1509,21 +1521,9 @@ export function Workbench({
     </section>
   );
   const choose = (value: string) => {
-    if (value === focus) return;
-    if (
-      dirty &&
-      !window.confirm(
-        locale === "ja-JP"
-          ? "未保存の変更を破棄しますか？"
-          : "Discard unsaved changes?",
-      )
-    )
-      return;
-    setDirty(false);
-    setBaseRevision(null);
-    hydratedDraft.current = null;
-    select(value);
+    if (value !== focus) select(value);
   };
+
   const renderEditor = () =>
     !editing ? null : (
       <div className="wb-stack">

@@ -873,3 +873,293 @@ async fn an_unreadable_response_after_dispatch_preserves_the_unknown_external_ou
 	assert_eq!(finished["tool_calls"][0]["outcome"], "outcome_unknown");
 	wb.cleanup().await;
 }
+
+#[rstest::fixture]
+async fn production_endpoint_workbench() -> Workbench {
+	let wb = workbench().await;
+	assert_eq!(request(&wb.app, &wb.f.config.api_token, "POST", "/api/registry", json!({"id":"production-tool","version":"1.0.0","kind":"tool","name":{"en":"Production"},"description":{"en":"Fixture"},"config":{"transport":"http","endpoint":"https://example.com/api","credential_env":null,"replay":"read_only"}})).await.0, 200);
+	wb
+}
+
+#[rstest::rstest]
+#[case("https://EXAMPLE.com/api", 400)]
+#[case("https://example.com:443/api", 400)]
+#[case("https://example.com/other/../api", 400)]
+#[case("https://example.com/test", 200)]
+#[tokio::test]
+async fn real_test_profiles_require_a_distinct_canonical_destination(
+	#[future(awt)] production_endpoint_workbench: Workbench,
+	#[case] endpoint: &str,
+	#[case] expected: u16,
+) {
+	let wb = production_endpoint_workbench;
+	let (status, body) = request(&wb.app, &wb.f.config.api_token, "PUT", "/api/workbench/test-profiles/acme/canonical", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"production-tool","version":"1.0.0"},"endpoint":endpoint,"credential_env":null,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await;
+	assert_eq!(status, expected, "profile: {body}");
+	wb.cleanup().await;
+}
+
+#[rstest::fixture]
+async fn one_step_workbench() -> Workbench {
+	let mut wb = workbench().await;
+	let mut entry = wb.draft["entry"].clone();
+	entry["config"]["max_steps"] = json!(1);
+	wb.draft = wb
+		.call(
+			"PUT",
+			&wb.path(),
+			json!({"expected_revision":1,"entry":entry,"documents":[]}),
+		)
+		.await;
+	*wb.responses.lock().await = VecDeque::from([
+		json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"first-step","function":{"name":"plugin_0","arguments":"{}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
+		json!({"choices":[{"finish_reason":"stop","message":{"content":"Complete"}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
+	]);
+	wb
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn behavioral_evidence_cannot_exceed_the_draft_agents_step_limit(
+	#[future(awt)] one_step_workbench: Workbench,
+) {
+	let wb = one_step_workbench;
+	let session = wb.finished(json!({"expected_revision":2,"message":"Use the tool","fixtures":{"plugin_0":{"status":"success","response":{"ok":true}}}})).await;
+	assert_eq!(session["status"], "blocked", "session: {session}");
+	assert_eq!(wb.hits.load(Ordering::SeqCst), 1);
+	let registration = wb
+		.call(
+			"POST",
+			&format!("{}/register", wb.path()),
+			json!({"expected_revision":2}),
+		)
+		.await;
+	assert_eq!(registration["behavioral_tested"], false);
+	wb.cleanup().await;
+}
+
+#[rstest::fixture]
+async fn incident_event_backlog() -> (Workbench, Value) {
+	let wb = workbench().await;
+	wb.register().await;
+	let incident = wb
+		.call(
+			"POST",
+			&format!(
+				"/api/workbench/versions/{}/1.0.0/incidents",
+				wb.draft["entry"]["id"].as_str().unwrap()
+			),
+			json!({"severity":"medium","owner":"alice","notes":"History"}),
+		)
+		.await;
+	let query = Query::insert()
+		.into_table(Alias::new("agent_incident_events"))
+		.columns(["incident_id", "actor", "change"].map(Alias::new))
+		.values_panic([Expr::cust("$1"), Expr::value("alice"), Expr::cust("$2")])
+		.to_string(PostgresQueryBuilder);
+	for n in 0..501 {
+		sqlx::query(&query)
+			.bind(uuid::Uuid::parse_str(incident["id"].as_str().unwrap()).unwrap())
+			.bind(json!({"sequence":n}))
+			.execute(&wb.f.store.pool)
+			.await
+			.unwrap();
+	}
+	(wb, incident)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn incident_history_keeps_the_latest_events_in_display_order(
+	#[future(awt)] incident_event_backlog: (Workbench, Value),
+) {
+	let (wb, incident) = incident_event_backlog;
+	let events = wb
+		.call(
+			"GET",
+			&format!(
+				"/api/workbench/incidents/{}/events",
+				incident["id"].as_str().unwrap()
+			),
+			Value::Null,
+		)
+		.await;
+	let events = events.as_array().unwrap();
+	assert_eq!(events.len(), 500);
+	assert_eq!(events.first().unwrap()["change"]["sequence"], 1);
+	assert_eq!(events.last().unwrap()["change"]["sequence"], 500);
+	assert!(
+		events
+			.windows(2)
+			.all(|rows| rows[0]["id"].as_i64().unwrap() < rows[1]["id"].as_i64().unwrap())
+	);
+	wb.cleanup().await;
+}
+
+#[rstest::fixture]
+async fn trust_run_backlog() -> (Workbench, Value) {
+	let wb = workbench().await;
+	wb.register().await;
+	let visible = wb
+		.call(
+			"POST",
+			"/api/workspaces",
+			json!({"title":"Visible history","goal":"Fixture"}),
+		)
+		.await;
+	let hidden = wb
+		.call(
+			"POST",
+			"/api/workspaces",
+			json!({"title":"Hidden history","goal":"Fixture"}),
+		)
+		.await;
+	let hidden_id = uuid::Uuid::parse_str(hidden["id"].as_str().unwrap()).unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("authorization_workspaces"))
+			.value(Alias::new("owner_subject"), Expr::value("bob"))
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(hidden_id)
+	.execute(&wb.f.store.pool)
+	.await
+	.unwrap();
+	for n in 0..502 {
+		let workspace = uuid::Uuid::parse_str(if n == 0 {
+			visible["id"].as_str().unwrap()
+		} else {
+			hidden["id"].as_str().unwrap()
+		})
+		.unwrap();
+		let task =
+			wb.f.store
+				.create_task(
+					workspace,
+					&aidash::domain::NewTask {
+						title: "History".into(),
+						description: "Fixture".into(),
+						requirements: json!({}),
+						dependencies: vec![],
+						parent_id: None,
+					},
+					"alice",
+					None,
+				)
+				.await
+				.unwrap();
+		let query = Query::insert()
+			.into_table(Alias::new("runs"))
+			.columns(
+				[
+					"id",
+					"task_id",
+					"workspace_id",
+					"home_node",
+					"agent_id",
+					"agent_version",
+					"phase",
+				]
+				.map(Alias::new),
+			)
+			.values_panic([
+				Expr::cust("$1"),
+				Expr::cust("$2"),
+				Expr::cust("$3"),
+				Expr::cust("$4"),
+				Expr::cust("$5"),
+				Expr::value("1.0.0"),
+				Expr::value("COMPLETED"),
+			])
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&query)
+			.bind(uuid::Uuid::now_v7())
+			.bind(task.id)
+			.bind(workspace)
+			.bind(&wb.f.config.node_id)
+			.bind(wb.draft["entry"]["id"].as_str().unwrap())
+			.execute(&wb.f.store.pool)
+			.await
+			.unwrap();
+	}
+	assert_eq!(request(&wb.app,&wb.f.config.api_token,"POST","/api/authorization/acme",json!({"expected_revision":1,"bundle":{"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"hidden-workspace","effect":"deny","subjects":{"any":true},"actions":["workspace.read"],"resources":{"kinds":["workspace"]},"condition":{"op":"eq","left":{"source":"resource","path":"/owner"},"right":{"source":"literal","value":"bob"}}},{"id":"hidden-run","effect":"deny","subjects":{"any":true},"actions":["run.read"],"resources":{"kinds":["run"]},"condition":{"op":"eq","left":{"source":"resource","path":"/owner"},"right":{"source":"literal","value":"bob"}}}]}})).await.0,200);
+	(wb, visible)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn trust_inspection_reaches_older_runs_in_authorized_workspaces(
+	#[future(awt)] trust_run_backlog: (Workbench, Value),
+) {
+	let (wb, visible) = trust_run_backlog;
+	let inspection = tokio::time::timeout(
+		Duration::from_secs(20),
+		wb.call(
+			"GET",
+			&format!(
+				"/api/workbench/versions/{}/1.0.0",
+				wb.draft["entry"]["id"].as_str().unwrap()
+			),
+			Value::Null,
+		),
+	)
+	.await
+	.expect("Trust inspection must not wait on its own audit lease");
+	assert_eq!(
+		inspection["workspaces"].as_array().unwrap().len(),
+		1,
+		"inspection: {inspection}"
+	);
+	assert_eq!(inspection["workspaces"][0]["workspace_id"], visible["id"]);
+	assert_eq!(inspection["usage_truncated"], false);
+	wb.cleanup().await;
+}
+
+#[rstest::fixture]
+async fn oversized_agent_tool_workbench() -> Workbench {
+	let wb = workbench().await;
+	wb.register().await;
+	assert_eq!(request(&wb.app,&wb.f.config.api_token,"POST","/api/registry",json!({"id":"oversized-agent-tool","version":"1.0.0","kind":"tool","name":{"en":"Delegate"},"description":{"en":"Fixture"},"schema":{"type":"object","description":"A".repeat(180_000)},"config":{"transport":"agent","node_id":wb.f.config.node_id,"agent":{"id":wb.draft["entry"]["id"],"version":"1.0.0"}}})).await.0,200);
+	wb
+}
+
+#[rstest::rstest]
+#[case(false, 200)]
+#[case(true, 400)]
+#[tokio::test]
+async fn creator_prompt_validation_charges_only_enabled_agent_tools(
+	#[future(awt)] oversized_agent_tool_workbench: Workbench,
+	#[case] delegation: bool,
+	#[case] expected: u16,
+) {
+	let wb = oversized_agent_tool_workbench;
+	let mut entry = wb.draft["entry"].clone();
+	entry["config"]["tools"] = json!([{"id":"oversized-agent-tool","version":"1.0.0"}]);
+	entry["config"]["allow_task_delegation"] = json!(delegation);
+	entry["version"] = json!("1.0.1");
+	let saved = wb
+		.call(
+			"PUT",
+			&wb.path(),
+			json!({"expected_revision":1,"entry":entry,"documents":[]}),
+		)
+		.await;
+	let validation = wb
+		.call(
+			"POST",
+			&format!("{}/validate", wb.path()),
+			json!({"expected_revision":saved["revision"]}),
+		)
+		.await;
+	assert_eq!(validation["valid"], !delegation, "validation: {validation}");
+	let (status, body) = request(
+		&wb.app,
+		&wb.token,
+		"POST",
+		&format!("{}/register", wb.path()),
+		json!({"expected_revision":saved["revision"]}),
+	)
+	.await;
+	assert_eq!(status, expected, "registration: {body}");
+	wb.cleanup().await;
+}
