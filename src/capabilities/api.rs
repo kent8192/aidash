@@ -10,7 +10,7 @@ use axum::{
 	Extension, Json,
 	extract::{Path, Query as QueryInput, State},
 };
-use sea_orm::sea_query::{Alias, Expr, Order, PostgresQueryBuilder};
+use sea_orm::sea_query::{Alias, Expr, LockType, Order, PostgresQueryBuilder};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -467,6 +467,22 @@ async fn thread_run(
 ) -> Result<Json<Area>> {
 	let mut access = access(&f, actor).await?;
 	let result = async {
+		let channel: crate::collaboration::ChannelThread = sqlx::query_as(
+			&sessions::select("channel_threads")
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+				.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$2")))
+				.lock(LockType::Update)
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(thread)
+		.bind(workspace)
+		.fetch_optional(&mut **access.tx)
+		.await?
+		.ok_or_else(|| Error::NotFound("thread unavailable".into()))?;
+		// Thread deletion takes this same row lock before writing its tombstone.
+		// Recheck visibility after acquiring it so a run cannot commit behind a
+		// delete that already passed its final area page.
+		super::thread_lifecycle::visible(&mut access.tx, thread).await?;
 		let digest =
 			crate::registry::digest(&json!(["thread_run", workspace, thread, agent, input]));
 		if let Some(previous) =
@@ -475,18 +491,6 @@ async fn thread_run(
 			let id = serde_json::from_value(previous["area_id"].clone())?;
 			return sessions::load(&mut access, id).await;
 		}
-		super::thread_lifecycle::visible(&mut access.tx, thread).await?;
-		let channel: crate::collaboration::ChannelThread = sqlx::query_as(
-			&sessions::select("channel_threads")
-				.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
-				.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$2")))
-				.to_string(PostgresQueryBuilder),
-		)
-		.bind(thread)
-		.bind(workspace)
-		.fetch_optional(&mut **access.tx)
-		.await?
-		.ok_or_else(|| Error::NotFound("thread unavailable".into()))?;
 		access
 			.workspace_record(workspace, "message", channel.root_message_id)
 			.await?;

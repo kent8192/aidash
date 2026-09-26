@@ -365,6 +365,36 @@ test("capability setup attaches a direct Skill and failed-extraction original to
     offset: 0,
     data: Buffer.from("%PDF-broken").toString("base64"),
   });
+  await config
+    .getByRole("checkbox", { name: "Direct Skills", exact: true })
+    .uncheck();
+  await config
+    .getByRole("checkbox", { name: "Search and read files", exact: true })
+    .uncheck();
+  await config
+    .getByRole("checkbox", { name: "Direct Skills", exact: true })
+    .check();
+  await config
+    .getByRole("checkbox", { name: "Search and read files", exact: true })
+    .check();
+  await config.getByLabel("New immutable version").fill("1.2.0");
+  await config
+    .getByRole("button", { name: "Save a new version", exact: true })
+    .focus();
+  await page.keyboard.press("Enter");
+  await expect(
+    config.getByText(
+      "Saved 1.2.0. It becomes available after catalog approval.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  expect(saved).toMatchObject({
+    new_version: "1.2.0",
+    core_capabilities: { files: true, skills: true },
+    skill_attachments: [],
+    skill_roots: [],
+    reference_attachments: [],
+  });
   await page.screenshot({
     path: info.outputPath("capability-setup.png"),
     fullPage: true,

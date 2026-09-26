@@ -69,9 +69,47 @@ fn request_size(files: &[FileEntry]) -> Result<u64> {
 	})
 }
 
-fn validate_request_size(store: &Store, files: &[FileEntry]) -> Result<()> {
-	if request_size(files)? > store.capabilities.0.working_bytes {
-		return Err(Error::Conflict("WORKING_QUOTA_EXCEEDED".into()));
+fn has_input_path_collision(files: &[FileEntry]) -> bool {
+	let mut seen = std::collections::BTreeSet::new();
+	for file in files {
+		let scope = match &file.scope {
+			FileScope::Working => 0,
+			FileScope::References => 1,
+			FileScope::Received => 2,
+		};
+		if !seen.insert((scope, file.path.as_str())) {
+			return true;
+		}
+	}
+	false
+}
+
+fn request_validation_failure(
+	store: &Store,
+	files: &[FileEntry],
+) -> Option<(&'static str, &'static str)> {
+	if has_input_path_collision(files) {
+		return Some((
+			"INPUT_PATH_COLLISION",
+			"Mounted input files contain a duplicate path in the same scope.",
+		));
+	}
+	let exceeds_quota = match request_size(files) {
+		Ok(size) => size > store.capabilities.0.working_bytes,
+		Err(_) => true,
+	};
+	if exceeds_quota {
+		return Some((
+			"WORKING_QUOTA_EXCEEDED",
+			"Mounted working files exceed the configured quota.",
+		));
+	}
+	None
+}
+
+fn validate_request_inputs(store: &Store, files: &[FileEntry]) -> Result<()> {
+	if let Some((code, _)) = request_validation_failure(store, files) {
+		return Err(Error::Conflict(code.into()));
 	}
 	Ok(())
 }
@@ -129,7 +167,7 @@ pub(crate) async fn prepare_kind(
 	}
 	sessions::authorize(access, area, "file.write").await?;
 	let files = request_files(access, run.id, area, package_files(&extra)?).await?;
-	validate_request_size(store, &files)?;
+	validate_request_inputs(store, &files)?;
 	verified_health(store, kind == "code_interpreter").await?;
 	if matches!(kind, "shell" | "python_install") {
 		super::python::release(
@@ -407,6 +445,12 @@ pub(crate) async fn verified_health(store: &Store, python: bool) -> Result<Value
 			)
 		})?;
 	let limits = &health["probe"]["resources"];
+	let working_bytes_valid = health["probe"]["physical_page_size"]
+		.as_u64()
+		.and_then(|page| rounded_working_bytes(p.working_bytes, page))
+		.map_or(limits["working_bytes"] == p.working_bytes, |expected| {
+			limits["working_bytes"].as_u64() == Some(expected)
+		});
 	if health["protocol"] != "aidash-runner/1"
 		|| health["verified"] != true
 		|| health["image"] != runner.image
@@ -416,7 +460,7 @@ pub(crate) async fn verified_health(store: &Store, python: bool) -> Result<Value
 		|| limits["memory_bytes"] != p.memory_bytes
 		|| limits["swap_bytes"] != 0
 		|| limits["processes"] != p.processes
-		|| limits["working_bytes"] != p.working_bytes
+		|| !working_bytes_valid
 		|| limits["temporary_bytes"] != p.temporary_bytes
 	{
 		return Err(Error::Conflict(
@@ -424,6 +468,16 @@ pub(crate) async fn verified_health(store: &Store, python: bool) -> Result<Value
 		));
 	}
 	Ok(health)
+}
+
+fn rounded_working_bytes(working_bytes: u64, page_size: u64) -> Option<u64> {
+	if page_size == 0 {
+		return None;
+	}
+	let pages = working_bytes
+		.checked_add(page_size - 1)?
+		.checked_div(page_size)?;
+	Some(pages.checked_mul(page_size)?.max(page_size))
 }
 
 pub(crate) async fn remote(
@@ -537,9 +591,9 @@ async fn drive(store: &Store, id: Uuid) -> Result<()> {
 			remote(store, reqwest::Method::POST, &format!("/v1/operations/{id}/cancel"), None).await?
 		} else if operation.result["dispatch_pending"] == true {
 			let files = request_files(&mut access, run.id, &area, super::packages::inputs(&operation)?).await?;
-			if validate_request_size(store, &files).is_err() {
+			if let Some((code, message)) = request_validation_failure(store, &files) {
 				operation.state = "failed".into();
-				operation.result = json!({"error":{"code":"WORKING_QUOTA_EXCEEDED","message":"Mounted working files exceed the configured quota."},"termination_confirmed":true,"effects_may_have_occurred":false,"runner_acknowledged":true});
+				operation.result = json!({"error":{"code":code,"message":message},"termination_confirmed":true,"effects_may_have_occurred":false,"runner_acknowledged":true});
 				set_area(&mut access, area.id, "active", area.epoch).await?;
 				if operation.kind == "code_interpreter" { super::python::completed(&mut access,&area,&operation,&json!({"writer_frozen":false})).await?; }
 				return persist(&mut access, &operation).await;
@@ -935,5 +989,41 @@ async fn execution_loop(
 			tracing::warn!(%error, "runner receipt acknowledgement pending");
 		}
 		tokio::select! { _ = stopping.changed() => {}, _ = tokio::time::sleep(std::time::Duration::from_millis(300)) => {} }
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn file(scope: FileScope, path: &str) -> FileEntry {
+		FileEntry {
+			file_id: Uuid::new_v4(),
+			path: path.into(),
+			digest: "digest".into(),
+			size: 1,
+			media_type: "text/plain".into(),
+			scope,
+			provenance: Value::Null,
+		}
+	}
+
+	#[test]
+	fn rejects_duplicate_mounted_paths_within_a_scope() {
+		assert!(has_input_path_collision(&[
+			file(FileScope::References, "_skills/one/SKILL.md"),
+			file(FileScope::References, "_skills/one/SKILL.md"),
+		]));
+		assert!(!has_input_path_collision(&[
+			file(FileScope::References, "shared.txt"),
+			file(FileScope::Working, "shared.txt"),
+		]));
+	}
+
+	#[test]
+	fn accepts_runner_page_rounding_for_working_limits() {
+		assert_eq!(rounded_working_bytes(4097, 4096), Some(8192));
+		assert_eq!(rounded_working_bytes(0, 4096), Some(4096));
+		assert_eq!(rounded_working_bytes(4097, 0), None);
 	}
 }

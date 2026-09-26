@@ -12,7 +12,8 @@ import sys
 import tempfile
 
 report = {"kernel": platform.release(), "python": platform.python_version(), "uid": os.getuid(),
-          "process_limit": resource.getrlimit(resource.RLIMIT_NPROC)[1]}
+          "process_limit": resource.getrlimit(resource.RLIMIT_NPROC)[1],
+          "physical_page_size": os.sysconf("SC_PAGE_SIZE")}
 report["service_account_absent"] = not Path("/var/run/secrets/kubernetes.io/serviceaccount/token").exists()
 report["host_sockets_absent"] = not any(Path(path).exists() for path in (
     "/var/run/docker.sock", "/run/containerd/containerd.sock", "/run/podman/podman.sock"))

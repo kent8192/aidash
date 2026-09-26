@@ -1,5 +1,27 @@
 use super::*;
 
+async fn wait_for_channel_thread_lock_waiters(pool: &sqlx::PgPool, minimum: i64) {
+	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+	let query = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("pg_stat_activity"))
+		.and_where(Expr::col(Alias::new("wait_event_type")).eq("Lock"))
+		.and_where(Expr::col(Alias::new("query")).like("%channel_threads%"))
+		.to_string(PostgresQueryBuilder);
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+	loop {
+		let waiting: i64 = sqlx::query_scalar(&query).fetch_one(pool).await.unwrap();
+		if waiting >= minimum {
+			return;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"expected {minimum} thread lock waiters; found {waiting}"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+	}
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_objects(
@@ -270,6 +292,95 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 	assert_eq!(status, 200, "{deleted}");
 	assert_eq!(deleted["state"], "deleted");
 	assert_eq!(deleted["file_operations"].as_array().unwrap().len(), 101);
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn thread_run_waiting_behind_deletion_cannot_create_an_area(
+	#[future] capability_fixture: CoreFixture,
+) {
+	use sea_orm::sea_query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
+	let c = Box::pin(capability_fixture).await;
+	let workspace = c.f.store.task(c.task).await.unwrap().workspace_id;
+	let root = source(&c, workspace, "Serialize run creation with deletion").await;
+	let (status, thread) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/threads"),
+		json!({"root_message_id":root}),
+	)
+	.await;
+	assert_eq!(status, 200, "{thread}");
+	let thread_id: Uuid = serde_json::from_value(thread["id"].clone()).unwrap();
+
+	// Hold the serialization row while the delete request queues first. The
+	// later run request must wait behind it, then observe the committed tombstone.
+	let mut blocker = c.f.store.pool.begin().await.unwrap();
+	let lock_thread = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("channel_threads"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+		.lock(LockType::Update)
+		.to_string(PostgresQueryBuilder);
+	let locked: Uuid = sqlx::query_scalar(&lock_thread)
+		.bind(thread_id)
+		.fetch_one(&mut *blocker)
+		.await
+		.unwrap();
+	assert_eq!(locked, thread_id);
+
+	let delete_app = c.app.clone();
+	let delete_token = c.token.clone();
+	let delete_path = format!("/api/workspaces/{workspace}/threads/{thread_id}/delete");
+	let deleting = tokio::spawn(async move {
+		request(
+			&delete_app,
+			&delete_token,
+			"POST",
+			&delete_path,
+			json!({"idempotency_key":Uuid::new_v4(),"files":[]}),
+		)
+		.await
+	});
+	wait_for_channel_thread_lock_waiters(&c.f.store.pool, 1).await;
+
+	let run_app = c.app.clone();
+	let run_token = c.token.clone();
+	let run_path = format!("/api/workspaces/{workspace}/threads/{thread_id}/agents/research/runs");
+	let creating = tokio::spawn(async move {
+		request(
+			&run_app,
+			&run_token,
+			"POST",
+			&run_path,
+			json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Must not run","description":"The thread is being deleted"}),
+		)
+		.await
+	});
+	wait_for_channel_thread_lock_waiters(&c.f.store.pool, 2).await;
+	blocker.commit().await.unwrap();
+
+	let (delete_status, deleted) = deleting.await.unwrap();
+	assert_eq!(delete_status, 200, "{deleted}");
+	assert_eq!(deleted["state"], "deleted");
+	let (run_status, failure) = creating.await.unwrap();
+	assert_eq!(run_status, 404, "{failure}");
+
+	let count_query = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("core_areas"))
+		.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+		.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::cust("$2")))
+		.to_string(PostgresQueryBuilder);
+	let areas: i64 = sqlx::query_scalar(&count_query)
+		.bind(workspace)
+		.bind(thread_id)
+		.fetch_one(&c.f.store.pool)
+		.await
+		.unwrap();
+	assert_eq!(areas, 0, "a tombstoned thread cannot gain a new area");
 	c.close().await;
 }
 

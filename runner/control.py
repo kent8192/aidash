@@ -107,6 +107,8 @@ class Runner:
                 report = json.loads(base64.b64decode(record["stdout"]))
                 if ("gvisor" not in report["kernel"].lower() or report["uid"] == 0
                         or report["process_limit"] != self.config["processes"]
+                        or not isinstance(report.get("physical_page_size"), int)
+                        or report["physical_page_size"] <= 0
                         or not all(report["egress_denied"].values())):
                     raise RuntimeError("isolation evidence does not match the execution profile")
                 self.verified = True

@@ -100,15 +100,23 @@ export function CapabilityConfiguration({
             <input
               type="checkbox"
               checked={value.core_capabilities[key as keyof Flags]}
-              onChange={(e) =>
+              onChange={(e) => {
+                const capability = key as keyof Flags;
+                const enabled = e.target.checked;
                 change({
                   ...value,
+                  ...(capability === "skills" && !enabled
+                    ? { skill_attachments: [], skill_roots: [] }
+                    : {}),
+                  ...(capability === "files" && !enabled
+                    ? { reference_attachments: [] }
+                    : {}),
                   core_capabilities: {
                     ...value.core_capabilities,
-                    [key]: e.target.checked,
+                    [capability]: enabled,
                   },
-                })
-              }
+                });
+              }}
             />
             {label}
           </label>

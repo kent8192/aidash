@@ -58,7 +58,6 @@ pub(crate) async fn delete(
 	if let Some(cached) = sessions::cached(access, input.idempotency_key, &digest).await? {
 		return Ok(cached);
 	}
-	visible(&mut access.tx, thread).await?;
 	let channel: crate::collaboration::ChannelThread = sqlx::query_as(
 		&sessions::select("channel_threads")
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
@@ -71,6 +70,7 @@ pub(crate) async fn delete(
 	.fetch_optional(&mut **access.tx)
 	.await?
 	.ok_or_else(|| Error::NotFound("thread unavailable".into()))?;
+	visible(&mut access.tx, thread).await?;
 	access
 		.workspace_record(workspace, "message", channel.root_message_id)
 		.await?;
