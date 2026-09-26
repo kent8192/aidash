@@ -1435,6 +1435,9 @@ impl Harness {
 								.await;
 						}
 					} else {
+						if let Some(guard) = guard {
+							guard.action("human.request", "run", run.id).await?;
+						}
 						let prompt = format!(
 							"Approve this exact external tool action once? Tool: {}@{}; connection: {}; call: {}",
 							reference.id,

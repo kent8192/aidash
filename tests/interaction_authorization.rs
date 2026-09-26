@@ -2,6 +2,7 @@ mod common;
 use aidash::{
 	api,
 	domain::{Run, qualified_agent},
+	federation::Federation,
 };
 use common::*;
 use common::{TestEnvironment, test_environment};
@@ -609,5 +610,139 @@ async fn cluster_conversations_recheck_approval_at_worker_boundaries(
 	assert_eq!(run.control, "PAUSED");
 	assert_eq!(run.phase, "READY");
 	assert_eq!(f.store.task(task).await.unwrap().status, "CLAIMED");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::fixture]
+async fn review6_denied_write_approval() -> (
+	Federation,
+	String,
+	String,
+	Uuid,
+	std::sync::Arc<TestEnvironment>,
+) {
+	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+	let environment = test_environment().await;
+	let (f, url, schema) = setup(&environment).await;
+	let app = api::router(f.clone());
+	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let mut entry = f.registry.get("research", "1.0.0").await.unwrap();
+	entry.version = "1.0.1".into();
+	entry.config["allow_task_creation"] = json!(false);
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/registry",
+			serde_json::to_value(entry).unwrap()
+		)
+		.await
+		.0,
+		200
+	);
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"entry":{"id":"research","version":"1.0.1"},"enabled":true,"expected_revision":0})
+		)
+		.await
+		.0,
+		200
+	);
+	policy["subjects"][qualified_agent(&f.config.node_id, "research", "1.0.1")] =
+		json!({"kind":"agent"});
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-human","effect":"deny","subjects":{"any":true},"actions":["human.request"],"resources":{"kinds":["run"]}}));
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	let (status,created)=request(&app,&token,"POST","/api/conversations",json!({"title":"Managed write","goal":"Use approved tool","target":{"id":"research","version":"1.0.1"},"target_kind":"agent"})).await;
+	assert_eq!(status, 200, "conversation: {created}");
+	let workspace = created["workspace"]["id"]
+		.as_str()
+		.unwrap()
+		.parse::<Uuid>()
+		.unwrap();
+	let run: Run = sqlx::query_as(
+		&Query::select()
+			.expr(Expr::cust("*"))
+			.from(Alias::new("runs"))
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(workspace)
+	.fetch_one(&f.store.pool)
+	.await
+	.unwrap();
+	let response = aidash::provider::ModelResponse {
+		tool_calls: vec![aidash::provider::ToolCall {
+			id: "write".into(),
+			name: "plugin_0".into(),
+			arguments: json!({"value":"private"}),
+		}],
+		..Default::default()
+	};
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("runs"))
+			.value(Alias::new("phase"), Expr::value("TOOL_CALL"))
+			.value(Alias::new("pending"), Expr::cust("$2"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.bind(json!({"response":response,"cursor":0}))
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	(f, url, schema, run.id, environment)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn review6_automatic_write_approval_requires_human_request_permission(
+	#[future(awt)] review6_denied_write_approval: (
+		Federation,
+		String,
+		String,
+		Uuid,
+		std::sync::Arc<TestEnvironment>,
+	),
+) {
+	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+	let (f, url, schema, run_id, _environment) = review6_denied_write_approval;
+	aidash::harness::Harness {
+		federation: f.clone(),
+	}
+	.worker_once()
+	.await
+	.unwrap();
+	let count: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(Alias::new("human_requests"))
+			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(run_id)
+	.fetch_one(&f.store.pool)
+	.await
+	.unwrap();
+	assert_eq!(
+		count, 0,
+		"denied human interaction must not persist the private approval prompt"
+	);
 	cleanup(f, &url, &schema).await;
 }
