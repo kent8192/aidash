@@ -399,7 +399,12 @@ async fn update(
 	}
 	target_enabled(&mut tx, &prior.tenant, &input.owner).await?;
 	let mut evidence: Vec<EvidenceCopy> = serde_json::from_value(prior.evidence.clone())?;
-	if prior.evidence_expired_at.is_some() && !input.add_evidence.is_empty() {
+	if (prior.evidence_expired_at.is_some()
+		|| prior
+			.evidence_expires_at
+			.is_some_and(|expiry| expiry <= Utc::now()))
+		&& !input.add_evidence.is_empty()
+	{
 		return Err(Error::Conflict(
 			"expired evidence cannot be revived; open a new incident".into(),
 		));

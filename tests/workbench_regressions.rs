@@ -1901,6 +1901,56 @@ async fn review6_permission_context_respects_agent_tool_behavior_flags(
 	wb.cleanup().await;
 }
 
+#[rstest::fixture]
+async fn review6_expired_retention() -> (Workbench, Value) {
+	let wb = workbench().await;
+	wb.register().await;
+	let incident = wb
+		.call(
+			"POST",
+			&format!(
+				"/api/workbench/versions/{}/1.0.0/incidents",
+				wb.draft["entry"]["id"].as_str().unwrap()
+			),
+			json!({"severity":"low","owner":"alice","notes":"Expired"}),
+		)
+		.await;
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("agent_incidents"))
+			.value(Alias::new("status"), Expr::value("resolved"))
+			.value(Alias::new("evidence_expires_at"), Expr::cust("$2"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(
+		incident["id"]
+			.as_str()
+			.unwrap()
+			.parse::<uuid::Uuid>()
+			.unwrap(),
+	)
+	.bind(chrono::Utc::now() - chrono::Duration::hours(1))
+	.execute(&wb.f.store.pool)
+	.await
+	.unwrap();
+	(wb, incident)
+}
+
+#[rstest::rstest]
+#[case("resolved")]
+#[case("open")]
+#[tokio::test]
+async fn review6_expired_retention_rejects_new_evidence_before_cleanup(
+	#[future(awt)] review6_expired_retention: (Workbench, Value),
+	#[case] status: &str,
+) {
+	let (wb, incident) = review6_expired_retention;
+	let (code,body) = request(&wb.app,&wb.token,"PUT",&format!("/api/workbench/incidents/{}",incident["id"].as_str().unwrap()),json!({"expected_revision":1,"severity":"low","status":status,"owner":"alice","notes":"Must not revive","add_evidence":[{"title":"Late","content":"new secret"}]})).await;
+	assert_eq!(code, 409, "incident: {body}");
+	wb.cleanup().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn review6_operator_transfer_holds_target_eligibility_through_commit(
