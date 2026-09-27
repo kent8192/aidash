@@ -30,3 +30,5 @@ pub mod api_schema;
 pub(crate) mod response;
 
 pub mod knowledge;
+
+pub mod http;

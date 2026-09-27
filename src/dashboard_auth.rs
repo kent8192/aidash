@@ -73,16 +73,10 @@ fn required_config(f: &Federation) -> Result<&OidcConfig> {
 	))
 }
 
-fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-	headers
-		.get(header::COOKIE)?
-		.to_str()
-		.ok()?
-		.split(';')
-		.find_map(|item| {
-			let (key, value) = item.trim().split_once('=')?;
-			(key == name).then_some(value)
-		})
+fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+	axum_extra::extract::CookieJar::from_headers(headers)
+		.get(name)
+		.map(|cookie| cookie.value().to_owned())
 }
 
 fn secure_cookie(config: &OidcConfig) -> bool {
@@ -105,17 +99,15 @@ fn set_cookie(
 	http_only: bool,
 	max_age: i64,
 ) -> Result<()> {
-	let mut cookie = format!(
-		"{}={}; Path=/; SameSite=Lax; Max-Age={max_age}",
-		cookie_name(name, config),
-		value
-	);
-	if secure_cookie(config) {
-		cookie.push_str("; Secure");
-	}
-	if http_only {
-		cookie.push_str("; HttpOnly");
-	}
+	use axum_extra::extract::cookie::{Cookie, SameSite};
+	let cookie = Cookie::build((cookie_name(name, config), value.to_owned()))
+		.path("/")
+		.same_site(SameSite::Lax)
+		.max_age(time::Duration::seconds(max_age))
+		.secure(secure_cookie(config))
+		.http_only(http_only)
+		.build()
+		.to_string();
 	response.headers_mut().append(
 		header::SET_COOKIE,
 		cookie
@@ -283,9 +275,8 @@ async fn login(
 ) -> Result<Response> {
 	let config = required_config(&f)?;
 	let destination = return_path(query.return_to.as_deref())?;
-	let browser = cookie_value(&headers, &cookie_name(LOGIN_COOKIE, config))
-		.map(str::to_owned)
-		.unwrap_or_else(random_secret);
+	let browser =
+		cookie_value(&headers, &cookie_name(LOGIN_COOKIE, config)).unwrap_or_else(random_secret);
 	let callback = format!("{}/auth/callback", config.public_origin);
 	let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
 	let state = CsrfToken::new_random();
@@ -886,7 +877,7 @@ async fn callback(
 		.await?
 		.ok_or(Error::Unauthorized)?;
 	if transaction.expires_at <= Utc::now()
-		|| transaction.browser_hash != digest(browser)
+		|| transaction.browser_hash != digest(&browser)
 		|| transaction.callback_uri != format!("{}/auth/callback", config.public_origin)
 	{
 		return Err(Error::Unauthorized);
@@ -969,7 +960,7 @@ async fn callback(
 			.and_where(Expr::col(table("token_hash")).eq(Expr::cust("$1")))
 			.to_string(PostgresQueryBuilder);
 		sqlx::query(&revoke)
-			.bind(digest(previous))
+			.bind(digest(&previous))
 			.execute(&mut *tx)
 			.await?;
 	}
@@ -1057,7 +1048,7 @@ async fn session_record_from_headers(
 		.and_where(Expr::col(table("token_hash")).eq(Expr::cust("$1")))
 		.to_string(PostgresQueryBuilder);
 	let session: BrowserSession = sqlx::query_as(&query)
-		.bind(digest(secret))
+		.bind(digest(&secret))
 		.fetch_optional(&f.store.pool)
 		.await?
 		.ok_or(Error::Unauthorized)?;
@@ -2196,4 +2187,71 @@ pub fn routes() -> Router<Federation> {
 		.route("/logout", post(logout))
 		.route("/logout-all", post(logout_all))
 		.route("/backchannel-logout", post(backchannel_logout))
+}
+
+#[cfg(test)]
+mod cookie_tests {
+	use super::*;
+
+	#[test]
+	fn browser_cookies_preserve_security_attributes_and_multiple_cookie_headers() {
+		for (origin, secure, name) in [
+			("https://aidash.example", true, "__Host-aidash-session"),
+			("http://localhost:8080", false, "aidash-session"),
+		] {
+			let config = OidcConfig {
+				issuer: origin.into(),
+				client_id: "fixture".into(),
+				client_secret: "fixture".into(),
+				public_origin: origin.into(),
+				keycloak_admin_url: origin.into(),
+				status_client_id: "fixture".into(),
+				status_client_secret: "fixture".into(),
+				session_absolute_seconds: 3600,
+				session_idle_seconds: 600,
+			};
+			let mut response = Response::new(axum::body::Body::empty());
+			set_cookie(
+				&mut response,
+				SESSION_COOKIE,
+				"session-value",
+				&config,
+				true,
+				3600,
+			)
+			.unwrap();
+			let cookie = axum_extra::extract::cookie::Cookie::parse(
+				response.headers()[header::SET_COOKIE].to_str().unwrap(),
+			)
+			.unwrap();
+			assert_eq!(cookie.name(), name);
+			assert_eq!(cookie.path(), Some("/"));
+			assert_eq!(cookie.domain(), None);
+			assert_eq!(cookie.secure().unwrap_or(false), secure);
+			assert_eq!(cookie.http_only(), Some(true));
+			assert_eq!(
+				cookie.same_site(),
+				Some(axum_extra::extract::cookie::SameSite::Lax)
+			);
+			assert_eq!(cookie.max_age().unwrap().whole_seconds(), 3600);
+			let mut headers = HeaderMap::new();
+			headers.append(header::COOKIE, "unrelated=value".parse().unwrap());
+			headers.append(
+				header::COOKIE,
+				format!("{name}=session-value").parse().unwrap(),
+			);
+			assert_eq!(
+				cookie_value(&headers, name).as_deref(),
+				Some("session-value")
+			);
+			let mut response = Response::new(axum::body::Body::empty());
+			clear_cookie(&mut response, SESSION_COOKIE, &config, true).unwrap();
+			let cookie = axum_extra::extract::cookie::Cookie::parse(
+				response.headers()[header::SET_COOKIE].to_str().unwrap(),
+			)
+			.unwrap();
+			assert_eq!(cookie.max_age().unwrap().whole_seconds(), 0);
+			assert_eq!(cookie.name(), name);
+		}
+	}
 }

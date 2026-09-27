@@ -24,6 +24,19 @@ use std::sync::{
 use tower::ServiceExt;
 use uuid::Uuid;
 
+fn oidc_router(federation: aidash::federation::Federation) -> Router {
+	api::router_with_settings(
+		federation,
+		aidash::http::Settings {
+			auth_burst: 10000,
+			..Default::default()
+		},
+	)
+	.layer(axum::Extension(axum::extract::ConnectInfo(
+		"127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+	)))
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins(
@@ -115,7 +128,7 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins(
 		.execute(&federation.store.pool)
 		.await
 		.unwrap();
-	let app = api::router(federation.clone());
+	let app = oidc_router(federation.clone());
 	let first_app = app.clone();
 	let first_request = tokio::spawn(async move {
 		first_app
@@ -212,7 +225,7 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins(
 	// A full browser queue must be rejected before contacting an uncached issuer.
 	federation.config.oidc.as_mut().unwrap().issuer =
 		"http://127.0.0.1:1/realms/unavailable".into();
-	let denied = api::router(federation.clone())
+	let denied = oidc_router(federation.clone())
 		.oneshot(
 			Request::builder()
 				.uri("/auth/login")
@@ -351,13 +364,13 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		.execute(&federation.store.pool)
 		.await
 		.unwrap();
-	let app = api::router(federation.clone());
+	let app = oidc_router(federation.clone());
 	let mut changed_issuer = federation.clone();
 	changed_issuer.config.oidc.as_mut().unwrap().issuer =
 		"http://127.0.0.1:18099/realms/other".into();
 	assert_eq!(
 		call(
-			&api::router(changed_issuer),
+			&oidc_router(changed_issuer),
 			"GET",
 			"/auth/session",
 			true,
@@ -1246,7 +1259,7 @@ async fn older_negative_status_cannot_revoke_a_newer_valid_session(
 		.execute(&federation.store.pool)
 		.await
 		.unwrap();
-	let app = api::router(federation.clone());
+	let app = oidc_router(federation.clone());
 	let old_app = app.clone();
 	let old = tokio::spawn(async move {
 		call(

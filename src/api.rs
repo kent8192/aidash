@@ -22,6 +22,8 @@ use axum::{
 	},
 	routing::{get, post},
 };
+use axum_extra::extract::WithRejection;
+use axum_valid::Valid;
 use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -73,7 +75,17 @@ fn ordinary_routes() -> OpenApiRouter<Federation> {
 		.routes(routes!(task_create))
 		.routes(routes!(message_create))
 		.routes(routes!(events))
-		.routes(routes!(stream))
+		.merge(
+			OpenApiRouter::new()
+				.routes(routes!(stream))
+				.route_layer(middleware::from_fn(
+					|Extension(slots): Extension<crate::http::SseSlots>,
+					 request: Request,
+					 next: Next| async move {
+						crate::http::sse_admission(State(slots), request, next).await
+					},
+				)),
+		)
 }
 
 pub fn openapi() -> utoipa::openapi::OpenApi {
@@ -101,6 +113,10 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
 }
 
 pub fn router(f: Federation) -> Router {
+	router_with_settings(f, crate::http::Settings::default())
+}
+
+pub fn router_with_settings(f: Federation, settings: crate::http::Settings) -> Router {
 	let (api, _) = ordinary_routes().split_for_parts();
 	let (transactions, _) = crate::transactions::api::routes()
 		.merge(crate::orchestration::routes())
@@ -113,7 +129,13 @@ pub fn router(f: Federation) -> Router {
 			"/dashboard",
 			crate::dashboard_auth::admin_routes().route_layer(middleware::from_fn(operator_only)),
 		);
-	let api = api.route_layer(middleware::from_fn_with_state(f.clone(), api_auth));
+	let api = crate::http::rate_limit(
+		api,
+		crate::http::ActorKey,
+		settings.actor_burst,
+		settings.actor_period,
+	)
+	.route_layer(middleware::from_fn_with_state(f.clone(), api_auth));
 	let federation = Router::new()
 		.route("/discover", post(peer_discover))
 		.route("/discover/{id}/{version}", get(peer_agent))
@@ -179,12 +201,27 @@ pub fn router(f: Federation) -> Router {
 		.route("/control", post(peer_control))
 		.merge(crate::capabilities::transfer::routes())
 		.route_layer(middleware::from_fn_with_state(f.clone(), node_visibility))
-		.merge(crate::transactions::api::peer_routes())
-		.route_layer(middleware::from_fn_with_state(f.clone(), peer_auth));
+		.merge(crate::transactions::api::peer_routes());
+	let federation = crate::http::rate_limit(
+		federation,
+		crate::http::PeerKey,
+		settings.peer_burst,
+		settings.peer_period,
+	)
+	.route_layer(middleware::from_fn_with_state(f.clone(), peer_auth));
+	let auth = crate::http::rate_limit(
+		crate::dashboard_auth::routes(),
+		tower_governor::key_extractor::PeerIpKeyExtractor,
+		settings.auth_burst,
+		settings.auth_period,
+	);
+	let slots = crate::http::SseSlots(std::sync::Arc::new(tokio::sync::Semaphore::new(
+		settings.sse_connections,
+	)));
 	let web = tower_http::services::ServeDir::new(&f.config.web_dir).not_found_service(
 		tower_http::services::ServeFile::new(format!("{}/index.html", f.config.web_dir)),
 	);
-	Router::new()
+	let router = Router::new()
 		.route("/health", get(health))
 		.route("/api/openapi.json", get(|| async { Json(openapi()) }))
 		.route(
@@ -193,17 +230,20 @@ pub fn router(f: Federation) -> Router {
 		)
 		.nest("/api", api)
 		.nest("/federation/v0.1", federation)
-		.nest("/auth", crate::dashboard_auth::routes())
+		.nest("/auth", auth)
 		.fallback_service(web)
-		.layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
-		.with_state(f)
+		.layer(axum::extract::DefaultBodyLimit::max(
+			crate::http::BODY_LIMIT,
+		))
+		.layer(Extension(slots))
+		.with_state(f);
+	crate::http::protect(router, &settings)
 }
-fn bearer(headers: &HeaderMap) -> Option<&str> {
+fn bearer(headers: &HeaderMap) -> Option<String> {
+	use axum_extra::headers::{Authorization, HeaderMapExt, authorization::Bearer};
 	headers
-		.get("authorization")?
-		.to_str()
-		.ok()?
-		.strip_prefix("Bearer ")
+		.typed_get::<Authorization<Bearer>>()
+		.map(|value| value.token().to_owned())
 }
 
 #[utoipa::path(get,path="/session",operation_id="session",responses((status=200,body=SessionResponse)),security(("bearer_auth"=[])))]
@@ -241,13 +281,13 @@ async fn api_auth(
 		.contains_key(axum::http::header::AUTHORIZATION)
 	{
 		let token = bearer(request.headers()).ok_or(Error::Unauthorized)?;
-		if same_secret(token, &f.config.api_token) {
+		if same_secret(&token, &f.config.api_token) {
 			Actor::Operator
 		} else {
 			Authorization {
 				pool: f.store.pool.clone(),
 			}
-			.authenticate(token)
+			.authenticate(&token)
 			.await?
 		}
 	} else {
@@ -336,7 +376,11 @@ fn scoped(f: &Federation, actor: Actor) -> Option<Workspaces> {
 		}),
 	}
 }
-async fn peer_auth(State(f): State<Federation>, request: Request, next: Next) -> Result<Response> {
+async fn peer_auth(
+	State(f): State<Federation>,
+	mut request: Request,
+	next: Next,
+) -> Result<Response> {
 	let headers = request.headers();
 	if headers
 		.get("x-aidash-protocol")
@@ -346,8 +390,10 @@ async fn peer_auth(State(f): State<Federation>, request: Request, next: Next) ->
 		return Err(Error::Invalid("unsupported federation protocol".into()));
 	}
 	let node = peer_node(headers)?;
-	f.authenticate_peer(node, bearer(headers).ok_or(Error::Unauthorized)?)
+	f.authenticate_peer(node, &bearer(headers).ok_or(Error::Unauthorized)?)
 		.await?;
+	let peer = crate::http::AuthenticatedPeer(node.to_owned());
+	request.extensions_mut().insert(peer);
 	Ok(next.run(request).await)
 }
 pub(crate) fn peer_node(headers: &HeaderMap) -> Result<&str> {
@@ -590,17 +636,22 @@ async fn skill_import(
 ) -> Result<Json<crate::skill_import::ImportResult>> {
 	Ok(Json(crate::skill_import::import(request).await?))
 }
-#[derive(Deserialize, Serialize, utoipa::ToSchema)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema, validator::Validate)]
 #[serde(deny_unknown_fields)]
 struct WorkspaceInput {
+	#[validate(custom(function = "crate::http::nonblank"))]
 	title: String,
+	#[validate(custom(function = "crate::http::nonblank"))]
 	goal: String,
 }
 #[utoipa::path(post, path = "/workspaces", operation_id = "workspace_create", request_body = WorkspaceInput, responses((status = 200, body = Workspace)), security(("bearer_auth" = [])))]
 async fn workspace_create(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
-	Json(input): Json<WorkspaceInput>,
+	WithRejection(Valid(Json(input)), _): WithRejection<
+		Valid<Json<WorkspaceInput>>,
+		crate::http::InputRejection,
+	>,
 ) -> Result<Json<Workspace>> {
 	if let Some(scope) = scoped(&f, actor) {
 		return Ok(Json(scope.create(&input.title, &input.goal).await?));

@@ -207,3 +207,6 @@ Run `scripts/test-rust.sh --coverage` to produce `coverage/rust.lcov` locally (r
 Package installation overlays the supplied node-local configuration onto the entity configuration, validates it, and publishes the effective immutable Registry version atomically with the installation record. Changing an installed configuration requires a new version.
 
 Third-party attribution for the adapted context compaction code is in [LICENSE](LICENSE).
+
+HTTP request logging, admission limits, SSE capacity, and the optional Prometheus
+listener are documented in [HTTP protection and observability](docs/operations/http-observability.md).

@@ -35,6 +35,10 @@ async fn main() -> Result<()> {
 		));
 	}
 	let config = Config::from_env()?;
+	let http_settings = aidash::http::Settings::from_env()?;
+	let metrics = metrics_exporter_prometheus::PrometheusBuilder::new()
+		.install_recorder()
+		.map_err(|error| aidash::Error::External(format!("metrics recorder: {error}")))?;
 	let store = Store::connect(&config.database_url, config.node_id.clone()).await?;
 	if mode == "migrate" {
 		return Ok(());
@@ -55,6 +59,33 @@ async fn main() -> Result<()> {
 	let (shutdown, stopping) = tokio::sync::watch::channel(false);
 	let mut background = tokio::task::JoinSet::new();
 	let mut workers = tokio::task::JoinSet::new();
+	if let Ok(address) = std::env::var("AIDASH_METRICS_LISTEN") {
+		let address: std::net::SocketAddr = address
+			.parse()
+			.map_err(|_| aidash::Error::Invalid("invalid AIDASH_METRICS_LISTEN".into()))?;
+		let listener = tokio::net::TcpListener::bind(address).await?;
+		let mut metrics_stopping = stopping.clone();
+		background.spawn(async move {
+			let router = axum::Router::new().route(
+				"/metrics",
+				axum::routing::get(move || async move {
+					(
+						[(
+							axum::http::header::CONTENT_TYPE,
+							"text/plain; version=0.0.4; charset=utf-8",
+						)],
+						metrics.render(),
+					)
+				}),
+			);
+			axum::serve(listener, router)
+				.with_graceful_shutdown(async move {
+					aidash::lifecycle::stopped(&mut metrics_stopping).await
+				})
+				.await?;
+			Ok::<(), aidash::Error>(())
+		});
+	}
 	if std::env::var_os("AIDASH_CAPABILITY_PROFILE").is_some() {
 		// Unconfigured nodes cannot admit core work. Do not reserve extra pools
 		// for idle reconciliation there. An explicitly disabled profile still
@@ -149,11 +180,13 @@ async fn main() -> Result<()> {
 		tracing::info!(node=%config.node_id,listen=%config.listen,"Aidash node started");
 		let mut stopping = stopping.clone();
 		http.spawn(async move {
-			axum::serve(listener, api::router(federation))
-				.with_graceful_shutdown(
-					async move { aidash::lifecycle::stopped(&mut stopping).await },
-				)
-				.await
+			axum::serve(
+				listener,
+				api::router_with_settings(federation, http_settings)
+					.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+			)
+			.with_graceful_shutdown(async move { aidash::lifecycle::stopped(&mut stopping).await })
+			.await
 		});
 	} else {
 		tracing::info!(node=%config.node_id,"Aidash worker started");

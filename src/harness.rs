@@ -250,6 +250,7 @@ impl Harness {
 		else {
 			return Ok(false);
 		};
+		let _active = crate::http::ActiveExecution::begin();
 		let result = {
 			let work = self.advance(&mut run, token, &mut visibility);
 			tokio::pin!(work);
@@ -269,6 +270,7 @@ impl Harness {
 			}
 		};
 		visibility.resume(store).await?;
+		metrics::counter!("aidash_worker_steps_total", "outcome" => if result.is_ok() { "success" } else { "error" }).increment(1);
 		if let Err(e) = result {
 			let id = match run_id(store, token).await {
 				Ok(id) => id,
@@ -292,6 +294,7 @@ impl Harness {
 				current.pending["retry_at"] =
 					json!(chrono::Utc::now() + chrono::Duration::seconds(1));
 				store.save_run(&current, token, "run.retrying").await?;
+				metrics::counter!("aidash_worker_retries_total").increment(1);
 			} else if current.pending.get("terminal_transition").is_some() {
 				// Delivery is durable and unbounded; never retry the failed tool
 				// just because its home node has not acknowledged terminal state.
@@ -311,6 +314,7 @@ impl Harness {
 				);
 				current.error = Some(e.to_string());
 				store.save_run(&current, token, "run.retrying").await?;
+				metrics::counter!("aidash_worker_retries_total").increment(1);
 			} else {
 				let target = if current.control == "CANCELLED" {
 					"CANCELLED"
