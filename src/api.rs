@@ -49,6 +49,7 @@ fn ordinary_routes() -> OpenApiRouter<Federation> {
 	OpenApiRouter::new()
 		.merge(administration)
 		.merge(crate::collaboration::api::routes())
+		.merge(crate::capabilities::api::routes())
 		.merge(crate::generation::api::routes())
 		.merge(crate::semantic::api::routes())
 		.merge(crate::workbench::routes())
@@ -148,10 +149,35 @@ pub fn router(f: Federation) -> Router {
 			"/scoped/execution/admissions/{id}/verify",
 			post(crate::authorization::peer::admission::verify),
 		)
+		.route(
+			"/scoped/execution/grants/activation",
+			post(crate::authorization::remote::execution::activation_binding),
+		)
+		.route(
+			"/scoped/execution/admissions/{id}/activate",
+			post(crate::authorization::peer::admission::activate),
+		)
+		.route(
+			"/scoped/execution/commands",
+			post(crate::authorization::remote::execution::commands::handle),
+		)
+		.route(
+			"/scoped/execution/status",
+			post(crate::authorization::peer::admission::status),
+		)
+		.route(
+			"/scoped/execution/admissions/{id}/control",
+			post(crate::authorization::peer::admission::control),
+		)
+		.route(
+			"/scoped/execution/admissions/{id}/messages",
+			post(crate::authorization::peer::admission::message),
+		)
 		.route("/offers", post(peer_offer))
 		.route("/workspace", post(peer_workspace))
 		.route("/observe", get(peer_observe))
 		.route("/control", post(peer_control))
+		.merge(crate::capabilities::transfer::routes())
 		.route_layer(middleware::from_fn_with_state(f.clone(), node_visibility))
 		.merge(crate::transactions::api::peer_routes())
 		.route_layer(middleware::from_fn_with_state(f.clone(), peer_auth));
@@ -2026,14 +2052,32 @@ mod schema_tests {
 			document["components"]["schemas"]["GenerationPolicy"]["properties"]["spec"].is_object()
 		);
 		let paths = document["paths"].as_object().unwrap();
-		assert_eq!(
-			paths
-				.values()
-				.map(|path| path.as_object().unwrap().len())
-				.sum::<usize>(),
-			106
-		);
+		// Operation IDs are the client-generation boundary. Additive routes
+		// must not collide, while existing management routes remain required.
+		let mut operation_ids = std::collections::BTreeSet::new();
+		for path in paths.values() {
+			for operation in path.as_object().unwrap().values() {
+				if let Some(id) = operation["operationId"].as_str() {
+					assert!(operation_ids.insert(id), "duplicate operation ID: {id}");
+				}
+			}
+		}
 		for (path, method) in [
+			("/api/working-areas", "get"),
+			("/api/working-files", "get"),
+			("/api/runs/{id}/files/read", "post"),
+			("/api/runs/{id}/files/search", "post"),
+			("/api/runs/{id}/shell", "post"),
+			("/api/runs/{id}/python", "post"),
+			("/api/runs/{id}/patch", "post"),
+			("/api/runs/{id}/files/share", "post"),
+			("/api/file-transfers/{id}", "get"),
+			("/api/references/uploads", "post"),
+			("/api/working-areas/{id}/restore", "post"),
+			(
+				"/api/workspaces/{workspace}/working-areas/{id}/restore/new-thread",
+				"post",
+			),
 			("/api/workspaces/{id}/threads", "post"),
 			("/api/workspaces/{id}/thread-messages", "post"),
 			("/api/workspaces/{id}/message-history", "get"),

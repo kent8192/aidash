@@ -3,7 +3,7 @@ pub(crate) mod access;
 pub mod api;
 mod attachments;
 mod history;
-mod threads;
+pub(crate) mod threads;
 
 use crate::domain::Message;
 use chrono::{DateTime, Utc};

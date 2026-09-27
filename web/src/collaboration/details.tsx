@@ -1,3 +1,4 @@
+import { RemoteExecutions } from "./remote-executions";
 import { ReferenceName } from "../record-view";
 import { RecordView } from "../record-view";
 import { useRef, useState } from "react";
@@ -240,6 +241,9 @@ export function OperationsDialog({
                   <h2>{task.title}</h2>
                   <p>{task.description}</p>
                   <Badge value={task.status} />
+                  {data.access.kind === "subject" && (
+                    <RemoteExecutions task={task.id} />
+                  )}
                   <dl>
                     <dt>{t("owner")}</dt>
                     <dd>{task.owner ?? t("noAssignment")}</dd>

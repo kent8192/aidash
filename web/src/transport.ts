@@ -74,7 +74,12 @@ export async function authenticatedFetch(
     }
     if (response.status === 403)
       throw new ApiError(messages.accessDenied, response.status);
-    throw new ApiError(data.error ?? response.statusText, response.status);
+    throw new ApiError(
+      typeof data.error === "string"
+        ? data.error
+        : (data.error?.message ?? response.statusText),
+      response.status,
+    );
   }
   return response;
 }

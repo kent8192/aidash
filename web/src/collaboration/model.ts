@@ -2,6 +2,7 @@
 export const primaryDestinations = ["collaboration", "graph"] as const;
 export const settingsSections = [
   "agents",
+  "workingFiles",
   "registry",
   "clusters",
   "generation",

@@ -7,6 +7,7 @@ export default defineConfig({
   testDir: "./tests",
   testMatch: [
     "collaboration.spec.ts",
+    "core-capabilities.spec.ts",
     "mesh-graph.spec.ts",
     "agent-graph.spec.ts",
     "agent-skills.spec.ts",

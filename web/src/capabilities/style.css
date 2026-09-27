@@ -1,0 +1,110 @@
+.core-panel {
+  border: 1px solid var(--border, #d8dce3);
+  border-radius: 10px;
+  margin: 12px 0;
+  padding: 14px;
+  min-width: 0;
+}
+.workspace-thread-panel:has(> .core-panel) {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.workspace-thread-panel:has(> .core-panel) > .collab-conversation-view {
+  height: min(55vh, 480px);
+  min-height: 320px;
+}
+.workspace-thread-panel > .core-panel {
+  margin: 12px;
+}
+.core-panel h2,
+.core-panel h3 {
+  margin: 4px 0 10px;
+}
+.core-panel small,
+.core-config small {
+  display: block;
+  color: var(--muted, #69717e);
+  overflow-wrap: anywhere;
+}
+.core-inline,
+.core-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.core-panel fieldset,
+.core-config fieldset {
+  margin: 10px 0;
+}
+.core-panel pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 280px;
+  overflow: auto;
+  font-size: 12px;
+  background: var(--surface-alt, #f5f6f8);
+  padding: 10px;
+}
+.core-panel article {
+  border-top: 1px solid var(--border, #d8dce3);
+  padding: 12px 0;
+}
+.core-panel table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.core-panel td,
+.core-panel th {
+  text-align: left;
+  padding: 7px;
+  border-bottom: 1px solid var(--border, #d8dce3);
+  overflow-wrap: anywhere;
+}
+.core-panel dd {
+  margin-left: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.core-panel textarea {
+  width: 100%;
+  min-height: 75px;
+}
+.core-panel button {
+  min-height: 32px;
+}
+.core-panel summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.core-panel .core-warning {
+  padding: 10px;
+  border-left: 3px solid #c8832e;
+}
+.core-files {
+  max-height: 340px;
+  overflow: auto;
+}
+.core-panel [role="alert"] {
+  color: var(--danger, #b63838);
+}
+.core-panel img {
+  max-width: 100%;
+}
+@media (max-width: 650px) {
+  .core-inline > input,
+  .core-inline > select {
+    width: 100%;
+  }
+  .core-panel {
+    padding: 10px;
+  }
+}
+.core-display {
+  margin: 1rem 0;
+}
+.core-display img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}

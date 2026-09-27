@@ -1,0 +1,679 @@
+{
+  "schema": "aidash-core-evidence/1",
+  "issues": [46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56],
+  "prerequisites": [38],
+  "operations": "docs/operations/core-capabilities.md",
+  "requirements": {
+    "R01": {
+      "description": "File search, Code interpreter, Shell, Apply patch, and Skills are Harness-managed. Only enabled capabilities appear to the model, and dispatch rejects disabled capabilities even if called by name.",
+      "acceptance": ["AT01", "AT02"]
+    },
+    "R02": {
+      "description": "Working files belong to a thread and Agent, survive successive Runs in that scope, and are not implicitly shared with other Agents or threads. Current authorization still applies.",
+      "acceptance": ["AT03", "AT04"]
+    },
+    "R03": {
+      "description": "The dedicated Interpreter uses Python. Variables and imports survive while its environment is alive; idle environments stop automatically. Recreation explicitly resets memory without deleting saved files or replaying historical code.",
+      "acceptance": ["AT05", "AT06"]
+    },
+    "R04": {
+      "description": "At goal completion and during thread deletion, offer an explicit cleanup choice. No answer, goal completion, or idle suspension is not consent to delete files.",
+      "acceptance": ["AT07"]
+    },
+    "R05": {
+      "description": "Separate “整理する（復元可能）” from “作業ファイルを削除する（復元不可）”. The former verifies a time-limited recovery snapshot before removing active files; the latter additionally confirms deletion of active files and Harness-managed recovery copies. Neither silently deletes originals, published artifacts, or independently shared copies.",
+      "acceptance": ["AT08", "AT09"]
+    },
+    "R06": {
+      "description": "Route additional-permission requests to the original requester if eligible, otherwise to a designated eligible approver. Delegation preserves requester identity. An upper-policy denial cannot be approved away.",
+      "acceptance": ["AT10"]
+    },
+    "R07": {
+      "description": "Default approval to one invocation. An approver may explicitly grant a bounded, expiring scope for the same Run and Agent. Grants do not pass to delegated Agents or subsequent Runs; expiry and revocation apply to subsequent actions.",
+      "acceptance": ["AT11", "AT12"]
+    },
+    "R08": {
+      "description": "Discover directory-based Skills from authorized locations using progressive disclosure. Loading a Skill does not execute scripts or grant permissions. Registry Skill records are unnecessary for new attachments.",
+      "acceptance": ["AT13", "AT14"]
+    },
+    "R09": {
+      "description": "Search and patch stay within authorized file boundaries. Search is bounded; conflicting patches do not silently overwrite files.",
+      "acceptance": ["AT15", "AT16"]
+    },
+    "R10": {
+      "description": "Shell, Python, and dependency installation have enforced filesystem, process, network, time, and resource boundaries. Implementing a capability never enables it for all Agents.",
+      "acceptance": ["AT02", "AT17", "AT18"]
+    },
+    "R11": {
+      "description": "An Agent may explicitly share selected files with an identified recipient without per-transfer human approval when both disclosure and receipt are permitted. Shared contents are fixed at sharing time; editing a recipient copy cannot modify the source.",
+      "acceptance": ["AT19", "AT20"]
+    },
+    "R12": {
+      "description": "Include authorized cross-node file transfer. Verify identity, both nodes' policy, integrity, and durable receipt; recover retries without presenting partial files or silently substituting newer source contents.",
+      "acceptance": ["AT21", "AT22"]
+    },
+    "R13": {
+      "description": "New reference uploads retain original bytes and extracted text. Authorized execution uses working copies, not an editable stored original. Existing text-only references require re-upload to obtain missing originals.",
+      "acceptance": ["AT23", "AT24"]
+    },
+    "R14": {
+      "description": "Agents may install additional Python libraries into their own environment from permitted sources. Apply ordinary sandbox and approval rules; do not alter the host or another Agent's environment.",
+      "acceptance": ["AT25"]
+    },
+    "R15": {
+      "description": "User service credentials stay in dedicated integrations, outside Agent-controlled Shell/Python and dependency-build processes. Do not inherit infrastructure credentials or expose secret values in model context, results, or logs.",
+      "acceptance": ["AT18", "AT26"]
+    },
+    "R16": {
+      "description": "Preserve immutable Agent versions, existing references and third-party integrations. Migration must not silently remove a Skill, rewrite a published Agent, or grant new capabilities.",
+      "acceptance": ["AT24", "AT27"]
+    },
+    "R17": {
+      "description": "Keep durable invocation history and recovery. Completed effects return stored results on retry; an attempted unsafe effect with unknown outcome must not be blindly repeated.",
+      "acceptance": ["AT06", "AT22", "AT28"]
+    },
+    "R18": {
+      "description": "Follow Codex-style queue/steer behavior for a thread's ordinary Agent execution; retain Run leases as Worker coordination. Do not add automatic concurrent branches and merge UI merely to answer same-thread follow-up messages.",
+      "acceptance": ["AT03", "AT29"]
+    }
+  },
+  "acceptance": {
+    "AT01": {
+      "description": "An Agent with enabled core capabilities and no Registry tools/Skills can discover, read, run Python, run Shell, patch and load a Skill; core names never become `plugin_N`.",
+      "tests": [
+        {
+          "name": "journey_tests::harness_journey_keeps_core_names_state_and_integration_secrets_separate",
+          "source": "tests/core_capabilities/journey.rs"
+        },
+        {
+          "name": "capabilities::tools::tests::executable_contracts_are_derived_and_disabled_by_default",
+          "source": "src/capabilities/tools.rs"
+        },
+        {
+          "name": "capabilities::management::tests::management_schema_has_typed_results_and_distinct_recipient_contracts",
+          "source": "src/capabilities/management.rs"
+        },
+        {
+          "name": "capabilities::tools::tests::output_envelope_schema_accepts_the_serialized_wire_contract",
+          "source": "src/capabilities/tools.rs"
+        }
+      ]
+    },
+    "AT02": {
+      "description": "Disabled tools are absent from the model schema and denied on direct dispatch. Missing runner/isolation support fails closed, with no host-execution fallback.",
+      "tests": [
+        {
+          "name": "capabilities::tools::tests::executable_contracts_are_derived_and_disabled_by_default",
+          "source": "src/capabilities/tools.rs"
+        },
+        {
+          "name": "shell_never_falls_back_to_the_host",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "configuration_tests::subject_configuration_creates_an_immutable_version_without_catalog_grants",
+          "source": "tests/core_capabilities/configuration.rs"
+        }
+      ]
+    },
+    "AT03": {
+      "description": "Follow-up Runs in the same thread/Agent retain files and execute in admitted order. A steer targets the active Run without starting another. Other Agents/threads still progress concurrently.",
+      "tests": [
+        {
+          "name": "queued_runs_keep_order_and_cancellation_bypasses_queue",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "session_boundary_tests::same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runnable",
+          "source": "tests/core_capabilities/session_boundaries.rs"
+        },
+        {
+          "name": "subject_session_tests::same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_scoped",
+          "source": "tests/core_capabilities/subject_sessions.rs"
+        }
+      ]
+    },
+    "AT04": {
+      "description": "Another Agent, tenant or lesser-authorized requester cannot read prior files, cached context or Interpreter variables. Changed authority/version recreates the environment and keeps denied files inaccessible.",
+      "tests": [
+        {
+          "name": "files_preserve_unicode_revision_and_source_authority",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "reference_original_is_private_located_and_unchanged_by_python",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "session_boundary_tests::same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runnable",
+          "source": "tests/core_capabilities/session_boundaries.rs"
+        },
+        {
+          "name": "subject_session_tests::completed_run_cannot_materialize_into_its_successor_but_current_run_can",
+          "source": "tests/core_capabilities/subject_sessions.rs"
+        }
+      ]
+    },
+    "AT05": {
+      "description": "Python variables/imports persist between calls in a live session. First use, idle reset and environment loss have explicit identity/reset behavior; saved files remain available when authorized.",
+      "tests": [
+        {
+          "name": "isolated_python_preserves_heap_and_requires_reset_acknowledgement",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "runtime_fault_tests::idle_heap_is_physically_stopped_without_deleting_saved_files",
+          "source": "tests/core_capabilities/runtime_faults.rs"
+        }
+      ]
+    },
+    "AT06": {
+      "description": "Kill the Worker or Interpreter between execution and result persistence. A known finished result is recovered; an unprovable effect becomes uncertain and historical code is not replayed.",
+      "tests": [
+        {
+          "name": "isolated_shell_survives_worker_restart_and_confirms_descendant_cancellation",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "isolated_python_preserves_heap_and_requires_reset_acknowledgement",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "runtime_fault_tests::python_timeout_exports_prior_files_and_requires_new_memory_ack",
+          "source": "tests/core_capabilities/runtime_faults.rs"
+        }
+      ]
+    },
+    "AT07": {
+      "description": "Goal completion and thread deletion offer the correct cleanup choices. Ignoring the prompt and idle shutdown leave working files intact.",
+      "tests": [
+        {
+          "name": "lifecycle_tests::deleted_thread_retains_files_and_restores_only_into_a_new_authorized_thread",
+          "source": "tests/core_capabilities/lifecycle.rs"
+        },
+        {
+          "name": "runtime_fault_tests::idle_heap_is_physically_stopped_without_deleting_saved_files",
+          "source": "tests/core_capabilities/runtime_faults.rs"
+        },
+        {
+          "name": "subject_session_tests::same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_scoped",
+          "source": "tests/core_capabilities/subject_sessions.rs"
+        }
+      ]
+    },
+    "AT08": {
+      "description": "Reversible cleanup verifies the snapshot before removing files. Inject a snapshot failure and observe no data loss. Restore before expiry recovers exact file digests, not memory or approval grants.",
+      "tests": [
+        {
+          "name": "cleanup_restores_exact_bytes_and_fences_old_runs_and_confirmations",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "lifecycle_tests::failed_snapshot_preserves_active_files_and_interrupted_delete_is_reconcilable",
+          "source": "tests/core_capabilities/lifecycle.rs"
+        },
+        {
+          "name": "retention_boundary_tests::keep_converts_the_existing_recovery_snapshot_to_retained_storage",
+          "source": "tests/core_capabilities/retention_boundaries.rs"
+        },
+        {
+          "name": "retention_boundary_tests::restore_rechecks_current_quota_and_administrator_policy",
+          "source": "tests/core_capabilities/retention_boundaries.rs"
+        }
+      ]
+    },
+    "AT09": {
+      "description": "Irreversible deletion requires separate confirmation, removes managed working/recovery copies, fences late writes, and preserves unrelated originals/artifacts/shared copies. Partial deletion is not reported as success. Retained files remain manageable after thread deletion.",
+      "tests": [
+        {
+          "name": "runtime_fault_tests::cleanup_waits_for_proven_shell_stop_and_fences_delayed_writes",
+          "source": "tests/core_capabilities/runtime_faults.rs"
+        },
+        {
+          "name": "lifecycle_tests::failed_snapshot_preserves_active_files_and_interrupted_delete_is_reconcilable",
+          "source": "tests/core_capabilities/lifecycle.rs"
+        },
+        {
+          "name": "journey_tests::harness_journey_keeps_core_names_state_and_integration_secrets_separate",
+          "source": "tests/core_capabilities/journey.rs"
+        }
+      ]
+    },
+    "AT10": {
+      "description": "Requester-first routing falls back only to an eligible designated approver. A delegation chain preserves the requester. No approver or an upper-policy denial blocks the action.",
+      "tests": [
+        {
+          "name": "approvals_bind_invocations_and_never_override_upper_denials",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "session_boundary_tests::designated_approver_is_rechecked_and_preserves_the_original_requester",
+          "source": "tests/core_capabilities/session_boundaries.rs"
+        }
+      ]
+    },
+    "AT11": {
+      "description": "Allow-once binds one invocation. Explicit Run grants are action/target/Agent scoped, expire at Run end or recorded time, and do not carry into the next Run or child Agent.",
+      "tests": [
+        {
+          "name": "reusable_grants_require_explicit_scope_and_revocation_withdraws_reuse",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "approvals_bind_invocations_and_never_override_upper_denials",
+          "source": "tests/core_capabilities.rs"
+        }
+      ]
+    },
+    "AT12": {
+      "description": "Revoke policy/grants before dispatch and while background network work exists. Subsequent activity is denied, relevant channels are withdrawn, and unsafe effects are not retroactively claimed undone.",
+      "tests": [
+        {
+          "name": "network_tests::revocation_withdraws_a_real_pending_https_channel_and_does_not_replay_it",
+          "source": "tests/core_capabilities/network.rs"
+        },
+        {
+          "name": "runtime_fault_tests::disabled_admission_stops_live_work_and_keeps_files_for_explicit_restart",
+          "source": "tests/core_capabilities/runtime_faults.rs"
+        }
+      ]
+    },
+    "AT13": {
+      "description": "Skill discovery supplies bounded metadata; activation supplies the selected manifest and on-demand files. Loading instructions never executes bundled scripts.",
+      "tests": [
+        {
+          "name": "direct_skills_are_pinned_and_loaded_progressively",
+          "source": "tests/core_capabilities.rs"
+        }
+      ]
+    },
+    "AT14": {
+      "description": "Skill name collisions require unambiguous identities. Changed content cannot substitute bytes behind a pinned digest. Path escape and unauthorized host discovery fail.",
+      "tests": [
+        {
+          "name": "direct_skills_are_pinned_and_loaded_progressively",
+          "source": "tests/core_capabilities.rs"
+        }
+      ]
+    },
+    "AT15": {
+      "description": "File search/read enforce ACLs, scopes, byte/result budgets, valid continuation and provenance. Pagination detects revision changes. Malformed regex and non-extractable inputs fail explicitly.",
+      "tests": [
+        {
+          "name": "files_preserve_unicode_revision_and_source_authority",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "reference_limit_tests::isolated_extraction_reports_limits_without_losing_authorized_original",
+          "source": "tests/core_capabilities/reference_limits.rs"
+        },
+        {
+          "name": "content_limit_tests::lowered_content_limits_bound_reads_search_patches_uploads_and_shares",
+          "source": "tests/core_capabilities/content_limits.rs"
+        },
+        {
+          "name": "content_limit_tests::oversized_search_matches_fail_explicitly_instead_of_repeating_an_empty_cursor",
+          "source": "tests/core_capabilities/content_limits.rs"
+        },
+        {
+          "name": "content_limit_tests::binary_search_reports_unavailable_text_while_path_search_remains_usable",
+          "source": "tests/core_capabilities/content_limits.rs"
+        }
+      ]
+    },
+    "AT16": {
+      "description": "Patches support add/update/delete and reject stale revision/digest or hunk conflicts without overwrite. Inject mid-commit failure and observe reconciliation before any partial revision becomes visible.",
+      "tests": [
+        {
+          "name": "patches_publish_all_files_or_keep_the_previous_revision",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "lifecycle_tests::interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_objects",
+          "source": "tests/core_capabilities/lifecycle.rs"
+        },
+        {
+          "name": "publication_storage_tests::unchanged_exports_reuse_objects_and_superseded_working_bytes_are_reclaimed",
+          "source": "tests/core_capabilities/publication_storage.rs"
+        }
+      ]
+    },
+    "AT17": {
+      "description": "Real sandbox probes cannot access forbidden host paths, sockets, other Agent areas or metadata services. CPU/memory/process/disk/time limits and process-group cancellation are measurably enforced.",
+      "tests": [
+        {
+          "name": "runtime_fault_tests::sandbox_cpu_and_memory_limits_are_enforced_under_load",
+          "source": "tests/core_capabilities/runtime_faults.rs"
+        },
+        {
+          "name": "isolated_shell_survives_worker_restart_and_confirms_descendant_cancellation",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "runtime_fault_tests::shell_output_saturation_is_bounded_and_control_stays_usable",
+          "source": "tests/core_capabilities/runtime_faults.rs"
+        },
+        {
+          "name": "content_limit_tests::lowered_content_limits_bound_reads_search_patches_uploads_and_shares",
+          "source": "tests/core_capabilities/content_limits.rs"
+        },
+        {
+          "name": "capabilities::limits::tests::defaults_and_lower_content_limits_preserve_wire_ceilings",
+          "source": "src/capabilities/limits.rs"
+        },
+        {
+          "name": "network_tests::broker_response_budget_uses_the_operator_profile_and_retains_no_partial_artifact",
+          "source": "tests/core_capabilities/network.rs"
+        },
+        {
+          "name": "capabilities::limits::tests::working_quota_cannot_exceed_runner_export_ceiling",
+          "source": "src/capabilities/limits.rs"
+        }
+      ],
+      "admission_probe": "runner/probe.py and runner/node_guard.py: executed in the pinned gVisor image; verify direct egress, metadata, host sockets, filesystem, non-root, resource ceilings and physical writer freeze/termination."
+    },
+    "AT18": {
+      "description": "Runner startup, Shell, Python and package-build processes contain no inherited infrastructure/service secrets. Agent code cannot call the privileged runner control API or bypass egress policy.",
+      "tests": [
+        {
+          "name": "journey_tests::harness_journey_keeps_core_names_state_and_integration_secrets_separate",
+          "source": "tests/core_capabilities/journey.rs"
+        },
+        {
+          "name": "package_tests::approved_wheel_installs_offline_with_hashes_and_explicit_memory_reset",
+          "source": "tests/core_capabilities/packages.rs"
+        },
+        {
+          "name": "network_tests::real_https_redirects_stay_inside_the_grant_and_private_dns_is_denied",
+          "source": "tests/core_capabilities/network.rs"
+        }
+      ],
+      "admission_probe": "runner/probe.py and runner/node_guard.py: executed in the pinned gVisor image; verify direct egress, metadata, host sockets, filesystem, non-root, resource ceilings and physical writer freeze/termination."
+    },
+    "AT19": {
+      "description": "A permitted Agent-initiated share completes without unnecessary human approval and records explicit sender, recipient, files and authority. Denied disclosure/receipt is blocked.",
+      "tests": [
+        {
+          "name": "local_shares_are_fixed_recipient_owned_copies",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "transfer_tests::transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible",
+          "source": "tests/core_capabilities/transfer.rs"
+        },
+        {
+          "name": "retention_boundary_tests::local_share_requires_the_version_admitted_in_the_current_generation",
+          "source": "tests/core_capabilities/retention_boundaries.rs"
+        },
+        {
+          "name": "retention_boundary_tests::rollback_blocks_new_local_and_remote_shares_without_losing_receipts",
+          "source": "tests/core_capabilities/retention_boundaries.rs"
+        },
+        {
+          "name": "retention_boundary_tests::completed_sender_cannot_disclose_successor_files_locally_or_remotely",
+          "source": "tests/core_capabilities/retention_boundaries.rs"
+        },
+        {
+          "name": "retention_boundary_tests::local_received_files_remain_bound_to_the_exact_recipient_version",
+          "source": "tests/core_capabilities/retention_boundaries.rs"
+        }
+      ]
+    },
+    "AT20": {
+      "description": "Source edits after sharing do not alter received bytes. Recipient edits do not alter source or shared manifest. Cleanup and shared snapshots cannot be confused.",
+      "tests": [
+        {
+          "name": "local_shares_are_fixed_recipient_owned_copies",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "journey_tests::harness_journey_keeps_core_names_state_and_integration_secrets_separate",
+          "source": "tests/core_capabilities/journey.rs"
+        }
+      ]
+    },
+    "AT21": {
+      "description": "Two authorized nodes transfer exact file contents with integrity checks and durable receipt. Wrong node/Agent, missing scoped protocol, denied egress/disclosure and quota excess are rejected.",
+      "tests": [
+        {
+          "name": "transfer_tests::remote_snapshot_survives_source_edit_and_lost_final_receipt",
+          "source": "tests/core_capabilities/transfer.rs"
+        },
+        {
+          "name": "transfer_tests::corrupted_first_chunk_and_quota_exhaustion_never_publish_files",
+          "source": "tests/core_capabilities/transfer.rs"
+        },
+        {
+          "name": "scoped_remote_worker_finishes_at_home_and_retries_keep_one_execution",
+          "source": "tests/scoped_remote_execution.rs"
+        }
+      ]
+    },
+    "AT22": {
+      "description": "Drop a chunk, corrupt bytes, revoke during transfer and lose the final ACK. No partial file becomes visible, retry uses the original snapshot, and a committed receipt prevents duplicate delivery.",
+      "tests": [
+        {
+          "name": "transfer_tests::chunks_resume_out_of_order_after_both_servers_restart_without_duplicate_visibility",
+          "source": "tests/core_capabilities/transfer.rs"
+        },
+        {
+          "name": "transfer_tests::transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible",
+          "source": "tests/core_capabilities/transfer.rs"
+        },
+        {
+          "name": "transfer_tests::remote_snapshot_survives_source_edit_and_lost_final_receipt",
+          "source": "tests/core_capabilities/transfer.rs"
+        },
+        {
+          "name": "peer_outage_and_both_node_restarts_reconcile_one_scoped_execution",
+          "source": "tests/scoped_remote_execution.rs"
+        },
+        {
+          "name": "lost_home_effect_reply_reconciles_without_duplicate_effects",
+          "source": "tests/scoped_remote_execution.rs"
+        }
+      ]
+    },
+    "AT23": {
+      "description": "A new reference keeps original bytes and located extracted text. Python edits a working copy; original digest stays unchanged. Limits and unsupported extraction are explicit.",
+      "tests": [
+        {
+          "name": "reference_original_is_private_located_and_unchanged_by_python",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "reference_limit_tests::isolated_extraction_reports_limits_without_losing_authorized_original",
+          "source": "tests/core_capabilities/reference_limits.rs"
+        },
+        {
+          "name": "content_limit_tests::lowered_content_limits_bound_reads_search_patches_uploads_and_shares",
+          "source": "tests/core_capabilities/content_limits.rs"
+        },
+        {
+          "name": "reference_limit_tests::reference_configuration_enforces_aggregate_and_lowered_limits_without_rewriting_versions",
+          "source": "tests/core_capabilities/reference_limits.rs"
+        },
+        {
+          "name": "extraction_lifecycle_tests::extraction_releases_terminal_runner_payloads_and_rollback_starts_no_new_parser",
+          "source": "tests/core_capabilities/extraction_lifecycle.rs"
+        },
+        {
+          "name": "upload_bound_tests::tiny_upload_chunks_allocate_nothing_and_full_chunks_remain_idempotent",
+          "source": "tests/core_capabilities/upload_bounds.rs"
+        },
+        {
+          "name": "upload_bound_tests::reference_names_cannot_create_dot_segment_mounts",
+          "source": "tests/core_capabilities/upload_bounds.rs"
+        },
+        {
+          "name": "reference_dispatch_tests::extraction_requires_current_runner_limits_and_respects_lower_output_budget",
+          "source": "tests/core_capabilities/reference_dispatch.rs"
+        }
+      ]
+    },
+    "AT24": {
+      "description": "Existing text-only references and immutable Agent versions remain valid without fabricated originals. Removing reference access prevents further use, including through a previously warm session.",
+      "tests": [
+        {
+          "name": "working_files_require_explicit_agent_settings",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "reference_original_is_private_located_and_unchanged_by_python",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "seaorm_migrations_round_trip_a_fresh_schema",
+          "source": "tests/migrations.rs"
+        },
+        {
+          "name": "reference_limit_tests::reference_configuration_enforces_aggregate_and_lowered_limits_without_rewriting_versions",
+          "source": "tests/core_capabilities/reference_limits.rs"
+        }
+      ]
+    },
+    "AT25": {
+      "description": "A permitted package install changes only the Agent environment and records resolved dependencies. Denied sources, insufficient quota, timeout and authenticated-source secret injection fail clearly.",
+      "tests": [
+        {
+          "name": "package_tests::approved_wheel_installs_offline_with_hashes_and_explicit_memory_reset",
+          "source": "tests/core_capabilities/packages.rs"
+        },
+        {
+          "name": "package_tests::package_overlay_publication_survives_process_death_before_swap_and_during_cleanup",
+          "source": "tests/core_capabilities/packages.rs"
+        }
+      ]
+    },
+    "AT26": {
+      "description": "A dedicated integration can perform an authorized authenticated fixture operation without returning its credential to the model, sandbox, output or journal.",
+      "tests": [
+        {
+          "name": "journey_tests::harness_journey_keeps_core_names_state_and_integration_secrets_separate",
+          "source": "tests/core_capabilities/journey.rs"
+        }
+      ]
+    },
+    "AT27": {
+      "description": "Legacy Registry Skills and external tools still execute with their previous identities and authority; migration or feature enablement creates no implicit grants.",
+      "tests": [
+        {
+          "name": "journey_tests::harness_journey_keeps_core_names_state_and_integration_secrets_separate",
+          "source": "tests/core_capabilities/journey.rs"
+        },
+        {
+          "name": "direct_skills_are_pinned_and_loaded_progressively",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "configuration_tests::subject_configuration_creates_an_immutable_version_without_catalog_grants",
+          "source": "tests/core_capabilities/configuration.rs"
+        },
+        {
+          "name": "working_files_require_explicit_agent_settings",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "seaorm_migrations_round_trip_a_fresh_schema",
+          "source": "tests/migrations.rs"
+        }
+      ]
+    },
+    "AT28": {
+      "description": "Completed invocations return stored outcomes. Request-key reuse with different inputs conflicts. Stale Worker epochs cannot write after takeover; unconfirmed live writers block replacement and cleanup.",
+      "tests": [
+        {
+          "name": "isolated_shell_survives_worker_restart_and_confirms_descendant_cancellation",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "runtime_fault_tests::cleanup_waits_for_proven_shell_stop_and_fences_delayed_writes",
+          "source": "tests/core_capabilities/runtime_faults.rs"
+        },
+        {
+          "name": "lifecycle_tests::interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_objects",
+          "source": "tests/core_capabilities/lifecycle.rs"
+        },
+        {
+          "name": "publication_storage_tests::stale_and_rejected_receipts_cannot_starve_new_terminal_payload_acknowledgement",
+          "source": "tests/core_capabilities/publication_storage.rs"
+        }
+      ]
+    },
+    "AT29": {
+      "description": "Stop/approval/steer controls remain usable while work is queued. A parent/child session-dependency cycle fails explicitly; background processes cannot survive past their enforced execution/grant boundary unnoticed.",
+      "tests": [
+        {
+          "name": "queued_runs_keep_order_and_cancellation_bypasses_queue",
+          "source": "tests/core_capabilities.rs"
+        },
+        {
+          "name": "session_boundary_tests::same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runnable",
+          "source": "tests/core_capabilities/session_boundaries.rs"
+        },
+        {
+          "name": "runtime_fault_tests::shell_output_saturation_is_bounded_and_control_stays_usable",
+          "source": "tests/core_capabilities/runtime_faults.rs"
+        }
+      ]
+    }
+  },
+  "browser_tests": [
+    {
+      "name": "queue, steer and stop remain usable; stale Python requires explicit acknowledgement",
+      "source": "web/tests/core-capabilities.spec.ts",
+      "acceptance": ["AT03", "AT05", "AT29"]
+    },
+    {
+      "name": "located search, progressive Skills, denied approval and uncertain transfer show actionable state",
+      "source": "web/tests/core-capabilities.spec.ts",
+      "acceptance": ["AT10", "AT13", "AT15", "AT22"]
+    },
+    {
+      "name": "narrow keyboard cleanup keeps default, separates confirmation and restores retained files",
+      "source": "web/tests/core-capabilities.spec.ts",
+      "acceptance": ["AT07", "AT08", "AT09"]
+    },
+    {
+      "name": "deleting a thread requires its file retention choice before controls disappear",
+      "source": "web/tests/core-capabilities.spec.ts",
+      "acceptance": ["AT07", "AT09"]
+    },
+    {
+      "name": "capability setup attaches a direct Skill and failed-extraction original to a new immutable version",
+      "source": "web/tests/core-capabilities.spec.ts",
+      "acceptance": ["AT02", "AT13", "AT23", "AT24"]
+    },
+    {
+      "name": "generated image and outbound downloads use the authenticated file endpoint",
+      "source": "web/tests/core-capabilities.spec.ts",
+      "acceptance": ["AT05", "AT18"]
+    },
+    {
+      "name": "thread deletion waits for every working-area page before submitting choices",
+      "source": "web/tests/core-capabilities.spec.ts",
+      "acceptance": ["AT07", "AT09"]
+    },
+    {
+      "name": "outbound retries reuse an ambiguous request key and a new fetch uses a fresh key",
+      "source": "web/tests/core-capabilities.spec.ts",
+      "acceptance": ["AT10", "AT11"]
+    }
+  ],
+  "commands": {
+    "runtime": "scripts/test-capability-cluster.sh",
+    "rust": "scripts/test-rust.sh",
+    "browser": "npm run build --prefix web && npm run test:ui --prefix web",
+    "lint": "trunk check --all --no-fix --no-progress"
+  },
+  "evidence_policy": "This mapping is not a passed result. The gate records outcomes, missing/failed assertions, commit, source fingerprint, architecture and verified runtime image/probe. Browser fixtures verify interaction behavior. Real storage/process/network evidence comes from runtime and scoped two-node suites. Every deployment needs its own isolation admission.",
+  "deployment_tests": [
+    {
+      "command": "python3 scripts/test-capability-recovery.py PRIVATE EVIDENCE CONTROLLER_PID",
+      "source": "scripts/test-capability-recovery.py",
+      "result": "runner-recovery.json",
+      "acceptance": ["AT17", "AT28"],
+      "required": true
+    }
+  ]
+}
