@@ -15,8 +15,12 @@ use axum::{
 	Json, Router,
 	extract::{Form, Path, Query as QueryParams, State},
 	http::{HeaderMap, Method, header},
-	response::{IntoResponse, Redirect, Response},
+	response::Redirect,
 	routing::{get, post},
+};
+use axum_extra::extract::{
+	CookieJar,
+	cookie::{Cookie, SameSite},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Duration, Utc};
@@ -73,18 +77,6 @@ fn required_config(f: &Federation) -> Result<&OidcConfig> {
 	))
 }
 
-fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-	headers
-		.get(header::COOKIE)?
-		.to_str()
-		.ok()?
-		.split(';')
-		.find_map(|item| {
-			let (key, value) = item.trim().split_once('=')?;
-			(key == name).then_some(value)
-		})
-}
-
 fn secure_cookie(config: &OidcConfig) -> bool {
 	config.public_origin.starts_with("https://")
 }
@@ -97,52 +89,26 @@ fn cookie_name(base: &str, config: &OidcConfig) -> String {
 	}
 }
 
-fn set_cookie(
-	response: &mut Response,
+fn browser_cookie(
 	name: &str,
 	value: &str,
 	config: &OidcConfig,
 	http_only: bool,
 	max_age: i64,
-) -> Result<()> {
-	let mut cookie = format!(
-		"{}={}; Path=/; SameSite=Lax; Max-Age={max_age}",
-		cookie_name(name, config),
-		value
-	);
-	if secure_cookie(config) {
-		cookie.push_str("; Secure");
-	}
-	if http_only {
-		cookie.push_str("; HttpOnly");
-	}
-	response.headers_mut().append(
-		header::SET_COOKIE,
-		cookie
-			.parse()
-			.map_err(|_| Error::External("invalid session cookie".into()))?,
-	);
-	Ok(())
+) -> Cookie<'static> {
+	Cookie::build((cookie_name(name, config), value.to_owned()))
+		.path("/")
+		.same_site(SameSite::Lax)
+		.max_age(time::Duration::seconds(max_age))
+		.secure(secure_cookie(config))
+		.http_only(http_only)
+		.build()
 }
 
-fn clear_cookie(
-	response: &mut Response,
-	name: &str,
-	config: &OidcConfig,
-	http_only: bool,
-) -> Result<()> {
-	set_cookie(response, name, "", config, http_only, 0)
-}
-
-fn no_store(response: &mut Response) {
-	response.headers_mut().insert(
-		header::CACHE_CONTROL,
-		"no-store".parse().expect("static header"),
-	);
-	response.headers_mut().insert(
-		header::REFERRER_POLICY,
-		"no-referrer".parse().expect("static header"),
-	);
+fn cleared_session_cookies(jar: CookieJar, config: &OidcConfig) -> CookieJar {
+	// Explicit expiry cookies also clear cookies absent from the request jar.
+	jar.add(browser_cookie(SESSION_COOKIE, "", config, true, 0))
+		.add(browser_cookie(CSRF_COOKIE, "", config, false, 0))
 }
 
 fn oidc_http_client() -> Result<openidconnect::reqwest::Client> {
@@ -278,13 +244,14 @@ struct LoginTransaction {
 
 async fn login(
 	State(f): State<Federation>,
-	headers: HeaderMap,
+	jar: CookieJar,
 	QueryParams(query): QueryParams<LoginQuery>,
-) -> Result<Response> {
+) -> Result<(CookieJar, Redirect)> {
 	let config = required_config(&f)?;
 	let destination = return_path(query.return_to.as_deref())?;
-	let browser = cookie_value(&headers, &cookie_name(LOGIN_COOKIE, config))
-		.map(str::to_owned)
+	let browser = jar
+		.get(&cookie_name(LOGIN_COOKIE, config))
+		.map(|cookie| cookie.value().to_owned())
 		.unwrap_or_else(random_secret);
 	let callback = format!("{}/auth/callback", config.public_origin);
 	let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
@@ -390,10 +357,10 @@ async fn login(
 		)
 		.set_pkce_challenge(challenge)
 		.url();
-	let mut response = Redirect::temporary(url.as_str()).into_response();
-	set_cookie(&mut response, LOGIN_COOKIE, &browser, config, true, 300)?;
-	no_store(&mut response);
-	Ok(response)
+	Ok((
+		jar.add(browser_cookie(LOGIN_COOKIE, &browser, config, true, 300)),
+		Redirect::temporary(url.as_str()),
+	))
 }
 
 #[derive(Deserialize)]
@@ -869,12 +836,14 @@ async fn refresh_identity(f: Federation, identity: Identity) {
 
 async fn callback(
 	State(f): State<Federation>,
-	headers: HeaderMap,
+	jar: CookieJar,
 	QueryParams(query): QueryParams<CallbackQuery>,
-) -> Result<Response> {
+) -> Result<(CookieJar, Redirect)> {
 	let config = required_config(&f)?;
-	let browser =
-		cookie_value(&headers, &cookie_name(LOGIN_COOKIE, config)).ok_or(Error::Unauthorized)?;
+	let browser = jar
+		.get(&cookie_name(LOGIN_COOKIE, config))
+		.map(|cookie| cookie.value().to_owned())
+		.ok_or(Error::Unauthorized)?;
 	let deleted = Query::delete()
 		.from_table(table("dashboard_login_transactions"))
 		.and_where(Expr::col(table("state_hash")).eq(Expr::cust("$1")))
@@ -886,7 +855,7 @@ async fn callback(
 		.await?
 		.ok_or(Error::Unauthorized)?;
 	if transaction.expires_at <= Utc::now()
-		|| transaction.browser_hash != digest(browser)
+		|| transaction.browser_hash != digest(&browser)
 		|| transaction.callback_uri != format!("{}/auth/callback", config.public_origin)
 	{
 		return Err(Error::Unauthorized);
@@ -959,7 +928,10 @@ async fn callback(
 	let secret = random_secret();
 	let csrf = random_secret();
 	let mut tx = f.store.pool.begin().await?;
-	if let Some(previous) = cookie_value(&headers, &cookie_name(SESSION_COOKIE, config)) {
+	if let Some(previous) = jar
+		.get(&cookie_name(SESSION_COOKIE, config))
+		.map(|cookie| cookie.value().to_owned())
+	{
 		let revoke = Query::update()
 			.table(table("dashboard_sessions"))
 			.value(
@@ -969,7 +941,7 @@ async fn callback(
 			.and_where(Expr::col(table("token_hash")).eq(Expr::cust("$1")))
 			.to_string(PostgresQueryBuilder);
 		sqlx::query(&revoke)
-			.bind(digest(previous))
+			.bind(digest(&previous))
 			.execute(&mut *tx)
 			.await?;
 	}
@@ -1006,25 +978,22 @@ async fn callback(
 		.execute(&mut *tx)
 		.await?;
 	tx.commit().await?;
-	let mut response = Redirect::to(&transaction.return_to).into_response();
-	set_cookie(
-		&mut response,
-		SESSION_COOKIE,
-		&secret,
-		config,
-		true,
-		config.session_absolute_seconds,
-	)?;
-	set_cookie(
-		&mut response,
-		CSRF_COOKIE,
-		&csrf,
-		config,
-		false,
-		config.session_absolute_seconds,
-	)?;
-	no_store(&mut response);
-	Ok(response)
+	let jar = jar
+		.add(browser_cookie(
+			SESSION_COOKIE,
+			&secret,
+			config,
+			true,
+			config.session_absolute_seconds,
+		))
+		.add(browser_cookie(
+			CSRF_COOKIE,
+			&csrf,
+			config,
+			false,
+			config.session_absolute_seconds,
+		));
+	Ok((jar, Redirect::to(&transaction.return_to)))
 }
 
 #[derive(FromRow)]
@@ -1037,13 +1006,12 @@ pub struct BrowserSession {
 	pub revoked_at: Option<DateTime<Utc>>,
 }
 
-async fn session_record_from_headers(
-	f: &Federation,
-	headers: &HeaderMap,
-) -> Result<BrowserSession> {
+async fn session_record_from_jar(f: &Federation, jar: &CookieJar) -> Result<BrowserSession> {
 	let config = required_config(f)?;
-	let secret =
-		cookie_value(headers, &cookie_name(SESSION_COOKIE, config)).ok_or(Error::Unauthorized)?;
+	let secret = jar
+		.get(&cookie_name(SESSION_COOKIE, config))
+		.map(|cookie| cookie.value().to_owned())
+		.ok_or(Error::Unauthorized)?;
 	let query = Query::select()
 		.columns([
 			table("id"),
@@ -1057,7 +1025,7 @@ async fn session_record_from_headers(
 		.and_where(Expr::col(table("token_hash")).eq(Expr::cust("$1")))
 		.to_string(PostgresQueryBuilder);
 	let session: BrowserSession = sqlx::query_as(&query)
-		.bind(digest(secret))
+		.bind(digest(&secret))
 		.fetch_optional(&f.store.pool)
 		.await?
 		.ok_or(Error::Unauthorized)?;
@@ -1071,7 +1039,11 @@ async fn session_record_from_headers(
 }
 
 pub async fn session_from_headers(f: &Federation, headers: &HeaderMap) -> Result<BrowserSession> {
-	let session = session_record_from_headers(f, headers).await?;
+	session_from_jar(f, &CookieJar::from_headers(headers)).await
+}
+
+async fn session_from_jar(f: &Federation, jar: &CookieJar) -> Result<BrowserSession> {
+	let session = session_record_from_jar(f, jar).await?;
 	let identity_query = Query::select()
 		.columns([
 			table("id"),
@@ -1229,8 +1201,8 @@ struct SessionView {
 	mappings: Vec<MappingView>,
 }
 
-async fn session_info(State(f): State<Federation>, headers: HeaderMap) -> Result<Response> {
-	let session = session_from_headers(&f, &headers).await?;
+async fn session_info(State(f): State<Federation>, jar: CookieJar) -> Result<Json<SessionView>> {
+	let session = session_from_jar(&f, &jar).await?;
 	let query = Query::select()
 		.columns([table("id"), table("tenant"), table("subject")])
 		.from(table("dashboard_mappings"))
@@ -1251,7 +1223,7 @@ async fn session_info(State(f): State<Federation>, headers: HeaderMap) -> Result
 		.bind(session.identity_id)
 		.fetch_optional(&f.store.pool)
 		.await?;
-	let mut response = Json(SessionView {
+	Ok(Json(SessionView {
 		id: session.id,
 		operator: operator.is_some(),
 		mappings: mappings
@@ -1262,10 +1234,7 @@ async fn session_info(State(f): State<Federation>, headers: HeaderMap) -> Result
 				subject: row.subject,
 			})
 			.collect(),
-	})
-	.into_response();
-	no_store(&mut response);
-	Ok(response)
+	}))
 }
 
 #[derive(FromRow, Serialize)]
@@ -1313,24 +1282,25 @@ async fn latest_registration(f: &Federation, identity_id: Uuid) -> Result<Option
 		.await?)
 }
 
-async fn registration_status(State(f): State<Federation>, headers: HeaderMap) -> Result<Response> {
-	let session = session_from_headers(&f, &headers).await?;
-	let mut response = Json(
+async fn registration_status(
+	State(f): State<Federation>,
+	jar: CookieJar,
+) -> Result<Json<Option<Registration>>> {
+	let session = session_from_jar(&f, &jar).await?;
+	Ok(Json(
 		latest_registration(&f, session.identity_id)
 			.await?
 			.map(Registration::with_effective_status),
-	)
-	.into_response();
-	no_store(&mut response);
-	Ok(response)
+	))
 }
 
 async fn registration_create(
 	State(f): State<Federation>,
 	headers: HeaderMap,
+	jar: CookieJar,
 ) -> Result<Json<Registration>> {
 	let config = required_config(&f)?;
-	let session = session_from_headers(&f, &headers).await?;
+	let session = session_from_jar(&f, &jar).await?;
 	if !csrf_allowed(config, &headers, &session, &Method::POST) {
 		return Err(Error::Forbidden);
 	}
@@ -1972,9 +1942,13 @@ pub fn admin_routes() -> Router<Federation> {
 		.route("/mappings/{id}/disable", post(admin_disable_mapping))
 }
 
-async fn logout(State(f): State<Federation>, headers: HeaderMap) -> Result<Response> {
+async fn logout(
+	State(f): State<Federation>,
+	headers: HeaderMap,
+	jar: CookieJar,
+) -> Result<(CookieJar, axum::http::StatusCode)> {
 	let config = required_config(&f)?;
-	let session = session_record_from_headers(&f, &headers).await?;
+	let session = session_record_from_jar(&f, &jar).await?;
 	if !csrf_allowed(config, &headers, &session, &Method::POST) {
 		return Err(Error::Forbidden);
 	}
@@ -1990,19 +1964,19 @@ async fn logout(State(f): State<Federation>, headers: HeaderMap) -> Result<Respo
 		.bind(session.id)
 		.execute(&f.store.pool)
 		.await?;
-	let mut response = axum::http::StatusCode::NO_CONTENT.into_response();
-	clear_cookie(&mut response, SESSION_COOKIE, config, true)?;
-	clear_cookie(&mut response, CSRF_COOKIE, config, false)?;
-	no_store(&mut response);
-	Ok(response)
+	Ok((
+		cleared_session_cookies(jar, config),
+		axum::http::StatusCode::NO_CONTENT,
+	))
 }
 
 async fn activity(
 	State(f): State<Federation>,
 	headers: HeaderMap,
+	jar: CookieJar,
 ) -> Result<axum::http::StatusCode> {
 	let config = required_config(&f)?;
-	let session = session_from_headers(&f, &headers).await?;
+	let session = session_from_jar(&f, &jar).await?;
 	if !csrf_allowed(config, &headers, &session, &Method::POST) {
 		return Err(Error::Forbidden);
 	}
@@ -2018,9 +1992,13 @@ async fn activity(
 	Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
-async fn logout_all(State(f): State<Federation>, headers: HeaderMap) -> Result<Response> {
+async fn logout_all(
+	State(f): State<Federation>,
+	headers: HeaderMap,
+	jar: CookieJar,
+) -> Result<(CookieJar, axum::http::StatusCode)> {
 	let config = required_config(&f)?;
-	let session = session_record_from_headers(&f, &headers).await?;
+	let session = session_record_from_jar(&f, &jar).await?;
 	if !csrf_allowed(config, &headers, &session, &Method::POST) {
 		return Err(Error::Forbidden);
 	}
@@ -2036,11 +2014,10 @@ async fn logout_all(State(f): State<Federation>, headers: HeaderMap) -> Result<R
 		.bind(session.identity_id)
 		.execute(&f.store.pool)
 		.await?;
-	let mut response = axum::http::StatusCode::NO_CONTENT.into_response();
-	clear_cookie(&mut response, SESSION_COOKIE, config, true)?;
-	clear_cookie(&mut response, CSRF_COOKIE, config, false)?;
-	no_store(&mut response);
-	Ok(response)
+	Ok((
+		cleared_session_cookies(jar, config),
+		axum::http::StatusCode::NO_CONTENT,
+	))
 }
 
 #[derive(Deserialize)]
@@ -2196,4 +2173,80 @@ pub fn routes() -> Router<Federation> {
 		.route("/logout", post(logout))
 		.route("/logout-all", post(logout_all))
 		.route("/backchannel-logout", post(backchannel_logout))
+}
+
+#[cfg(test)]
+mod cookie_tests {
+	use super::*;
+	use axum::response::IntoResponse;
+
+	#[test]
+	fn browser_cookies_preserve_security_attributes_and_multiple_cookie_headers() {
+		for (origin, secure, name) in [
+			("https://aidash.example", true, "__Host-aidash-session"),
+			("http://localhost:8080", false, "aidash-session"),
+		] {
+			let config = OidcConfig {
+				issuer: origin.into(),
+				client_id: "fixture".into(),
+				client_secret: "fixture".into(),
+				public_origin: origin.into(),
+				keycloak_admin_url: origin.into(),
+				status_client_id: "fixture".into(),
+				status_client_secret: "fixture".into(),
+				session_absolute_seconds: 3600,
+				session_idle_seconds: 600,
+			};
+			let response = (
+				CookieJar::new().add(browser_cookie(
+					SESSION_COOKIE,
+					"session-value",
+					&config,
+					true,
+					3600,
+				)),
+				(),
+			)
+				.into_response();
+			let cookie = response
+				.headers()
+				.get_all(header::SET_COOKIE)
+				.iter()
+				.map(|header| Cookie::parse(header.to_str().unwrap()).unwrap())
+				.find(|cookie| cookie.name() == name)
+				.unwrap();
+			assert_eq!(cookie.name(), name);
+			assert_eq!(cookie.path(), Some("/"));
+			assert_eq!(cookie.domain(), None);
+			assert_eq!(cookie.secure().unwrap_or(false), secure);
+			assert_eq!(cookie.http_only(), Some(true));
+			assert_eq!(
+				cookie.same_site(),
+				Some(axum_extra::extract::cookie::SameSite::Lax)
+			);
+			assert_eq!(cookie.max_age().unwrap().whole_seconds(), 3600);
+			let mut headers = HeaderMap::new();
+			headers.append(header::COOKIE, "unrelated=value".parse().unwrap());
+			headers.append(
+				header::COOKIE,
+				format!("{name}=session-value").parse().unwrap(),
+			);
+			assert_eq!(
+				CookieJar::from_headers(&headers)
+					.get(name)
+					.map(|cookie| cookie.value()),
+				Some("session-value")
+			);
+			let response = (cleared_session_cookies(CookieJar::new(), &config), ()).into_response();
+			let cookie = response
+				.headers()
+				.get_all(header::SET_COOKIE)
+				.iter()
+				.map(|header| Cookie::parse(header.to_str().unwrap()).unwrap())
+				.find(|cookie| cookie.name() == name)
+				.unwrap();
+			assert_eq!(cookie.max_age().unwrap().whole_seconds(), 0);
+			assert_eq!(cookie.name(), name);
+		}
+	}
 }

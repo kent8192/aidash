@@ -76,7 +76,24 @@ sqlx = { version = "0.8.6", default-features = false, features = [
 ] }
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["fs", "trace"] }
+tower = { version = "0.5", features = ["util", "limit", "load-shed"] }
+tower-http = { version = "0.6.7", features = [
+  "fs",
+  "trace",
+  "request-id",
+  "sensitive-headers",
+  "timeout",
+  "limit",
+  "set-header",
+] }
+tower_governor = { version = "0.8", default-features = false, features = ["axum"] }
+axum-extra = { version = "0.12", features = ["typed-header", "cookie"] }
+axum-valid = { version = "0.25", default-features = false, features = ["json", "validator"] }
+validator = { version = "0.20", features = ["derive"] }
+axum-prometheus = "0.10.1"
+metrics = "0.24"
+time = "0.3"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 utoipa = { version = "5.5.0", features = ["axum_extras", "chrono", "uuid"] }
@@ -87,7 +104,7 @@ uuid = { version = "1", features = ["v4", "v7", "serde"] }
 rstest = "0.26.1"
 testcontainers = { version = "0.27.3", features = ["docker-compose"] }
 tokio = { version = "1", features = ["test-util"] }
-tower = { version = "0.5", features = ["util"] }
+axum-test = "18.7"
 
 [profile.dev]
 debug = 1

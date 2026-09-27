@@ -242,29 +242,31 @@ async fn installation_reconfiguration_keeps_manifest_and_events_idempotent(
 	);
 	let mut invalid = json!(package);
 	invalid["dependecies"] = json!([]);
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			"/api/marketplace",
-			invalid
-		)
-		.await
-		.0,
-		422
+	// Standard Json extractor rejections are text, not JSON API envelopes.
+	let rejected = axum_test::TestServer::new(app.clone())
+		.unwrap()
+		.post("/api/marketplace")
+		.authorization_bearer(&f.config.api_token)
+		.json(&invalid)
+		.await;
+	rejected.assert_status_unprocessable_entity();
+	assert!(
+		rejected
+			.text()
+			.contains("Failed to deserialize the JSON body")
 	);
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			path,
-			json!({"digest":published["digest"],"configuration":{}})
-		)
-		.await
-		.0,
-		422
+	// Standard Json extractor rejections are text, not JSON API envelopes.
+	let rejected = axum_test::TestServer::new(app.clone())
+		.unwrap()
+		.post(path)
+		.authorization_bearer(&f.config.api_token)
+		.json(&json!({"digest":published["digest"],"configuration":{}}))
+		.await;
+	rejected.assert_status_unprocessable_entity();
+	assert!(
+		rejected
+			.text()
+			.contains("Failed to deserialize the JSON body")
 	);
 	cleanup(f, &url, &schema).await;
 }

@@ -78,17 +78,18 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 		.as_array_mut()
 		.unwrap()
 		.push(json!({"kind":"external_tool","endpoint":"http://127.0.0.1:9/effect"}));
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			"/api/transactions",
-			external
-		)
-		.await
-		.0,
-		422
+	// Standard Json extractor rejections are text, not JSON API envelopes.
+	let rejected = axum_test::TestServer::new(app.clone())
+		.unwrap()
+		.post("/api/transactions")
+		.authorization_bearer(&f.config.api_token)
+		.json(&external)
+		.await;
+	rejected.assert_status_unprocessable_entity();
+	assert!(
+		rejected
+			.text()
+			.contains("Failed to deserialize the JSON body")
 	);
 	assert_eq!(
 		f.store.workspace(workspace.id).await.unwrap().state,

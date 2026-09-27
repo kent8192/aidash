@@ -706,17 +706,18 @@ async fn stored_message_author_controls_visibility_and_forged_authorship_is_reje
 	.await;
 	let bob = bob["token"].as_str().unwrap();
 	let path = format!("/api/workspaces/{workspace}/messages");
-	assert_eq!(
-		request(
-			&app,
-			bob,
-			"POST",
-			&path,
-			json!({"content":"bob-private","sender":"alice"})
-		)
-		.await
-		.0,
-		422
+	// Standard Json extractor rejections are text, not JSON API envelopes.
+	let rejected = axum_test::TestServer::new(app.clone())
+		.unwrap()
+		.post(&path)
+		.authorization_bearer(bob)
+		.json(&json!({"content":"bob-private","sender":"alice"}))
+		.await;
+	rejected.assert_status_unprocessable_entity();
+	assert!(
+		rejected
+			.text()
+			.contains("Failed to deserialize the JSON body")
 	);
 	assert_eq!(
 		request(&app, bob, "POST", &path, json!({"content":"bob-private"}))

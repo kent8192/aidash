@@ -102,14 +102,22 @@ impl ModelProvider for OpenRouterProvider {
 		if let Some(name) = &self.config.credential_env {
 			call = call.bearer_auth(secret(name)?);
 		}
+		let started = std::time::Instant::now();
 		let response = call.send().await?;
+		metrics::histogram!("aidash_model_response_headers_seconds")
+			.record(started.elapsed().as_secs_f64());
 		if !response.status().is_success() {
 			return Err(Error::External(format!(
 				"OpenRouter provider returned {}",
 				response.status()
 			)));
 		}
-		parse_openai(crate::response::json(response, 1_048_576).await?)
+		let result = parse_openai(crate::response::json(response, 1_048_576).await?)?;
+		metrics::counter!("aidash_model_tokens_total", "direction" => "input")
+			.increment(result.input_tokens);
+		metrics::counter!("aidash_model_tokens_total", "direction" => "output")
+			.increment(result.output_tokens);
+		Ok(result)
 	}
 }
 
