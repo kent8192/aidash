@@ -27,8 +27,8 @@ use chrono::{DateTime, Duration, Utc};
 use futures_util::{StreamExt, stream};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
 use openidconnect::{
-	AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce, PkceCodeChallenge,
-	PkceCodeVerifier, RedirectUrl, TokenResponse,
+	AuthType, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce,
+	PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, TokenResponse,
 	core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
 };
 use sea_orm::sea_query::{
@@ -204,11 +204,17 @@ fn decoding_key(keys: &JwkSet, kid: &str) -> Result<DecodingKey> {
 struct Configuration {
 	enabled: bool,
 	login_url: Option<&'static str>,
+	provider: &'static str,
 }
 
 async fn configuration(State(f): State<Federation>) -> Json<Configuration> {
 	Json(Configuration {
 		enabled: f.config.oidc.is_some(),
+		provider: if f.config.oidc.as_ref().is_none_or(OidcConfig::is_google) {
+			"google"
+		} else {
+			"keycloak"
+		},
 		login_url: f.config.oidc.as_ref().map(|_| "/auth/login"),
 	})
 }
@@ -478,6 +484,12 @@ async fn account_valid(
 	let config = required_config(f)?;
 	if issuer != config.issuer {
 		return Err(Error::Forbidden);
+	}
+	// Google has no Keycloak-style service-account user status endpoint.
+	// Authentication is verified at login; local disablement, mappings and
+	// session expiry remain authoritative throughout the session and execution.
+	if config.is_google() {
+		return Ok(());
 	}
 	let now = Utc::now();
 	if last_valid_at.is_some_and(|time| time > now - Duration::seconds(STATUS_FRESH_SECONDS)) {
@@ -834,6 +846,57 @@ async fn refresh_identity(f: Federation, identity: Identity) {
 	}
 }
 
+async fn exchange_identity(
+	config: &OidcConfig,
+	metadata: CoreProviderMetadata,
+	transaction: &LoginTransaction,
+	code: String,
+) -> Result<(String, Option<String>)> {
+	let http_client = oidc_http_client()?;
+	let client = CoreClient::from_provider_metadata(
+		metadata,
+		ClientId::new(config.client_id.clone()),
+		Some(ClientSecret::new(config.client_secret.clone())),
+	)
+	.set_redirect_uri(
+		RedirectUrl::new(transaction.callback_uri.clone()).map_err(|_| Error::Unauthorized)?,
+	);
+	let client = client.set_auth_type(if config.is_google() {
+		AuthType::RequestBody
+	} else {
+		AuthType::BasicAuth
+	});
+	let token_response = client
+		.exchange_code(AuthorizationCode::new(code))
+		.map_err(|_| Error::Unauthorized)?
+		.set_pkce_verifier(PkceCodeVerifier::new(transaction.pkce_verifier.clone()))
+		.request_async(&http_client)
+		.await
+		.map_err(|_| Error::Unauthorized)?;
+	let id_token = token_response.id_token().ok_or(Error::Unauthorized)?;
+	let claims = id_token
+		.claims(
+			&client.id_token_verifier(),
+			&Nonce::new(transaction.nonce.clone()),
+		)
+		.map_err(|_| Error::Unauthorized)?;
+	let subject = claims.subject().as_str().to_owned();
+	// The ID token has already passed the library's signature, issuer, audience,
+	// time and nonce checks. Its optional provider sid is used only for scoped
+	// back-channel session revocation, never for identity or authority.
+	let id_token_text = id_token.to_string();
+	let payload = id_token_text.split('.').nth(1).ok_or(Error::Unauthorized)?;
+	let payload = URL_SAFE_NO_PAD
+		.decode(payload)
+		.map_err(|_| Error::Unauthorized)?;
+	let payload: Value = serde_json::from_slice(&payload).map_err(|_| Error::Unauthorized)?;
+	let provider_sid = payload
+		.get("sid")
+		.and_then(Value::as_str)
+		.map(str::to_owned);
+	Ok((subject, provider_sid))
+}
+
 async fn callback(
 	State(f): State<Federation>,
 	jar: CookieJar,
@@ -860,42 +923,11 @@ async fn callback(
 	{
 		return Err(Error::Unauthorized);
 	}
-	let http_client = oidc_http_client()?;
 	let metadata = provider_metadata(config).await?;
-	let client = CoreClient::from_provider_metadata(
-		metadata,
-		ClientId::new(config.client_id.clone()),
-		Some(ClientSecret::new(config.client_secret.clone())),
-	)
-	.set_redirect_uri(
-		RedirectUrl::new(transaction.callback_uri.clone()).map_err(|_| Error::Unauthorized)?,
-	);
-	let token_response = client
-		.exchange_code(AuthorizationCode::new(query.code))
-		.map_err(|_| Error::Unauthorized)?
-		.set_pkce_verifier(PkceCodeVerifier::new(transaction.pkce_verifier))
-		.request_async(&http_client)
-		.await
-		.map_err(|_| Error::Unauthorized)?;
-	let id_token = token_response.id_token().ok_or(Error::Unauthorized)?;
-	let claims = id_token
-		.claims(&client.id_token_verifier(), &Nonce::new(transaction.nonce))
-		.map_err(|_| Error::Unauthorized)?;
-	let subject = claims.subject().as_str();
-	// The ID token has already passed the library's signature, issuer, audience,
-	// time and nonce checks. Its optional provider sid is used only for scoped
-	// back-channel session revocation, never for identity or authority.
-	let id_token_text = id_token.to_string();
-	let payload = id_token_text.split('.').nth(1).ok_or(Error::Unauthorized)?;
-	let payload = URL_SAFE_NO_PAD
-		.decode(payload)
-		.map_err(|_| Error::Unauthorized)?;
-	let payload: Value = serde_json::from_slice(&payload).map_err(|_| Error::Unauthorized)?;
-	let provider_sid = payload
-		.get("sid")
-		.and_then(Value::as_str)
-		.map(str::to_owned);
-	if !keycloak_enabled(&f, config, subject).await? {
+	let (subject, provider_sid) =
+		exchange_identity(config, metadata, &transaction, query.code).await?;
+	let subject = subject.as_str();
+	if !config.is_google() && !keycloak_enabled(&f, config, subject).await? {
 		return Err(Error::Forbidden);
 	}
 	let identity_id = Uuid::new_v4();
@@ -1472,7 +1504,7 @@ async fn admin_restore_identity(
 		));
 	}
 	let check_started_at = Utc::now();
-	if !keycloak_enabled(&f, config, &identity.subject).await? {
+	if !config.is_google() && !keycloak_enabled(&f, config, &identity.subject).await? {
 		return Err(Error::Forbidden);
 	}
 	let update = Query::update()
@@ -2248,5 +2280,102 @@ mod cookie_tests {
 			assert_eq!(cookie.max_age().unwrap().whole_seconds(), 0);
 			assert_eq!(cookie.name(), name);
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use openidconnect::{
+		PrivateSigningKey,
+		core::{CoreJsonWebKeySet, CoreRsaPrivateSigningKey},
+	};
+	use serde_json::json;
+
+	#[tokio::test]
+	async fn google_code_exchange_posts_credentials_and_verifies_identity() {
+		// A disposable fixture key, never used outside these protocol tests.
+		let pem = include_str!("../tests/fixtures/oidc/signing-test-only.pem");
+		let signing = CoreRsaPrivateSigningKey::from_pem(pem, None).unwrap();
+		let der = base64::engine::general_purpose::STANDARD
+			.decode(
+				pem.lines()
+					.filter(|line| !line.starts_with("-----"))
+					.collect::<String>(),
+			)
+			.unwrap();
+		let key = jsonwebtoken::EncodingKey::from_rsa_der(&der);
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let endpoint = format!("http://{}", listener.local_addr().unwrap());
+		let fixture = Router::new().route("/token", post(move |headers: HeaderMap, Form(form): Form<HashMap<String, String>>| {
+			let key = key.clone();
+			async move {
+				assert!(!headers.contains_key(header::AUTHORIZATION));
+				assert_eq!(form["client_id"], "google-web-client");
+				assert_eq!(form["client_secret"], "test-secret");
+				assert_eq!(form["grant_type"], "authorization_code");
+				assert_eq!(form["redirect_uri"], "https://aidash.example/auth/callback");
+				assert_eq!(form["code_verifier"], "test-pkce-verifier");
+				let now = Utc::now().timestamp();
+				let mut claims = json!({"iss":"https://accounts.google.com", "aud":"google-web-client", "sub":"google-subject", "iat":now, "exp":now+3600, "nonce":"test-nonce"});
+				match form["code"].as_str() {
+					"bad-nonce" => claims["nonce"] = json!("other-nonce"),
+					"bad-audience" => claims["aud"] = json!("other-client"),
+					"bad-issuer" => claims["iss"] = json!("https://other.example"),
+					"expired" => claims["exp"] = json!(now-3600),
+					_ => {},
+				}
+				let token = jsonwebtoken::encode(&jsonwebtoken::Header::new(Algorithm::RS256), &claims, &key).unwrap();
+				Json(json!({"access_token":"fixture-access", "token_type":"Bearer", "id_token":token}))
+			}
+		}));
+		let server = tokio::spawn(async move { axum::serve(listener, fixture).await.unwrap() });
+		let metadata: CoreProviderMetadata = serde_json::from_value(json!({
+			"issuer":"https://accounts.google.com",
+			"authorization_endpoint":"https://accounts.google.com/o/oauth2/v2/auth",
+			"token_endpoint":format!("{endpoint}/token"),
+			"jwks_uri":format!("{endpoint}/jwks"),
+			"response_types_supported":["code"], "subject_types_supported":["public"],
+			"id_token_signing_alg_values_supported":["RS256"],
+			"token_endpoint_auth_methods_supported":["client_secret_post"]
+		}))
+		.unwrap();
+		let metadata =
+			metadata.set_jwks(CoreJsonWebKeySet::new(vec![signing.as_verification_key()]));
+		let config = OidcConfig {
+			issuer: "https://accounts.google.com".into(),
+			client_id: "google-web-client".into(),
+			client_secret: "test-secret".into(),
+			public_origin: "https://aidash.example".into(),
+			keycloak_admin_url: String::new(),
+			status_client_id: String::new(),
+			status_client_secret: String::new(),
+			session_absolute_seconds: 43200,
+			session_idle_seconds: 1800,
+		};
+		let transaction = LoginTransaction {
+			browser_hash: vec![],
+			nonce: "test-nonce".into(),
+			pkce_verifier: "test-pkce-verifier".into(),
+			return_to: "/".into(),
+			callback_uri: "https://aidash.example/auth/callback".into(),
+			expires_at: Utc::now() + Duration::minutes(5),
+		};
+		assert_eq!(
+			exchange_identity(&config, metadata.clone(), &transaction, "valid".into())
+				.await
+				.unwrap(),
+			("google-subject".into(), None)
+		);
+		for code in ["bad-nonce", "bad-audience", "bad-issuer", "expired"] {
+			assert!(
+				matches!(
+					exchange_identity(&config, metadata.clone(), &transaction, code.into()).await,
+					Err(Error::Unauthorized)
+				),
+				"{code}"
+			);
+		}
+		server.abort();
 	}
 }

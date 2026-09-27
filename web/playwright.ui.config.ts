@@ -6,6 +6,7 @@ const baseURL = `http://127.0.0.1:${port}`;
 export default defineConfig({
   testDir: "./tests",
   testMatch: [
+    "google-auth.spec.ts",
     "collaboration.spec.ts",
     "core-capabilities.spec.ts",
     "mesh-graph.spec.ts",

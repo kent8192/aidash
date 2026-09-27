@@ -2,6 +2,8 @@ use crate::{Error, Result};
 use serde::Serialize;
 use std::{env, net::SocketAddr};
 
+pub(crate) const GOOGLE_OIDC_ISSUER: &str = "https://accounts.google.com";
+
 #[derive(Clone)]
 pub struct Config {
 	pub node_id: String,
@@ -29,7 +31,15 @@ pub struct OidcConfig {
 }
 
 impl OidcConfig {
+	pub fn is_google(&self) -> bool {
+		self.issuer == GOOGLE_OIDC_ISSUER
+	}
+
 	pub fn from_env() -> Result<Option<Self>> {
+		Self::from_values(|key| env::var(key).ok())
+	}
+
+	fn from_values(value: impl Fn(&str) -> Option<String>) -> Result<Option<Self>> {
 		let keys = [
 			"AIDASH_OIDC_ISSUER",
 			"AIDASH_OIDC_CLIENT_ID",
@@ -39,30 +49,45 @@ impl OidcConfig {
 			"AIDASH_OIDC_STATUS_CLIENT_ID",
 			"AIDASH_OIDC_STATUS_CLIENT_SECRET",
 		];
-		let present = keys.iter().any(|key| env::var(key).is_ok());
+		let present = keys.iter().any(|key| value(key).is_some());
 		if !present {
 			return Ok(None);
 		}
 		let required = |key: &str| {
-			env::var(key)
-				.ok()
+			value(key)
 				.filter(|value| !value.trim().is_empty())
 				.ok_or_else(|| {
 					Error::Invalid(format!("{key} is required when dashboard OIDC is enabled"))
 				})
 		};
-		let issuer = required(keys[0])?;
+		let issuer = value(keys[0]).unwrap_or_else(|| GOOGLE_OIDC_ISSUER.into());
+		let google = issuer == GOOGLE_OIDC_ISSUER;
 		let client_id = required(keys[1])?;
 		let client_secret = required(keys[2])?;
 		let public_origin = required(keys[3])?;
-		let keycloak_admin_url = required(keys[4])?;
-		let status_client_id = required(keys[5])?;
-		let status_client_secret = required(keys[6])?;
+		let keycloak_admin_url = if google {
+			String::new()
+		} else {
+			required(keys[4])?
+		};
+		let status_client_id = if google {
+			String::new()
+		} else {
+			required(keys[5])?
+		};
+		let status_client_secret = if google {
+			String::new()
+		} else {
+			required(keys[6])?
+		};
 		for (label, value) in [
 			("AIDASH_OIDC_ISSUER", &issuer),
 			("AIDASH_OIDC_PUBLIC_ORIGIN", &public_origin),
 			("AIDASH_OIDC_KEYCLOAK_ADMIN_URL", &keycloak_admin_url),
 		] {
+			if google && label == "AIDASH_OIDC_KEYCLOAK_ADMIN_URL" {
+				continue;
+			}
 			let url = reqwest::Url::parse(value)
 				.map_err(|_| Error::Invalid(format!("invalid {label}")))?;
 			let secure = url.scheme() == "https";
@@ -85,7 +110,7 @@ impl OidcConfig {
 			));
 		}
 		let lifetime = |key: &str, default: i64| -> Result<i64> {
-			let value = env::var(key).ok().map_or(Ok(default), |value| {
+			let value = value(key).map_or(Ok(default), |value| {
 				value
 					.parse::<i64>()
 					.map_err(|_| Error::Invalid(format!("invalid {key}")))
@@ -251,9 +276,53 @@ pub(crate) fn same_secret(a: &str, b: &str) -> bool {
 mod tests {
 	use super::*;
 	#[rstest::rstest]
-	fn oidc_public_origin_uses_canonical_origin_serialization() {
-		let origin = reqwest::Url::parse("https://example.com:443/").unwrap();
-		assert_eq!(origin.origin().ascii_serialization(), "https://example.com");
+	fn google_oidc_needs_only_web_client_credentials_and_origin() {
+		let values = [
+			(
+				"AIDASH_OIDC_CLIENT_ID",
+				"web-client.apps.googleusercontent.com",
+			),
+			("AIDASH_OIDC_CLIENT_SECRET", "secret"),
+			("AIDASH_OIDC_PUBLIC_ORIGIN", "https://example.com:443/"),
+		];
+		let read = |key: &str| {
+			values
+				.iter()
+				.find(|(name, _)| *name == key)
+				.map(|(_, v)| v.to_string())
+		};
+		let config = OidcConfig::from_values(read).unwrap().unwrap();
+		assert_eq!(config.issuer, "https://accounts.google.com");
+		assert_eq!(config.public_origin, "https://example.com");
+		assert!(OidcConfig::from_values(|_| None).unwrap().is_none());
+		for missing in [
+			"AIDASH_OIDC_CLIENT_ID",
+			"AIDASH_OIDC_CLIENT_SECRET",
+			"AIDASH_OIDC_PUBLIC_ORIGIN",
+		] {
+			assert!(
+				OidcConfig::from_values(|key| if key == missing { None } else { read(key) })
+					.is_err()
+			);
+		}
+		for (key, value) in [
+			("AIDASH_OIDC_PUBLIC_ORIGIN", "https://example.com/path"),
+			("AIDASH_OIDC_PUBLIC_ORIGIN", "http://example.com"),
+			(
+				"AIDASH_OIDC_ISSUER",
+				"https://accounts.google.com.attacker.example",
+			),
+			("AIDASH_OIDC_SESSION_IDLE_SECONDS", "43201"),
+		] {
+			assert!(
+				OidcConfig::from_values(|name| if name == key {
+					Some(value.into())
+				} else {
+					read(name)
+				})
+				.is_err()
+			);
+		}
 	}
 
 	#[rstest::rstest]

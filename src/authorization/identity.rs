@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
-type IdentityValidity = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+type IdentityValidity = (String, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
 
 /// Constructed only after authenticating a bearer token. Never deserialize this
 /// from a request body, query parameter or peer-provided identity claim.
@@ -273,7 +273,11 @@ impl SubjectIdentity {
 			}
 			let validity: Option<IdentityValidity> = sqlx::query_as(
 				&Query::select()
-					.columns([Alias::new("last_valid_at"), Alias::new("disabled_at")])
+					.columns([
+						Alias::new("issuer"),
+						Alias::new("last_valid_at"),
+						Alias::new("disabled_at"),
+					])
 					.from(Alias::new("dashboard_identities"))
 					.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
 					.lock(LockType::Share)
@@ -282,10 +286,14 @@ impl SubjectIdentity {
 			.bind(identity_id)
 			.fetch_optional(&mut **tx)
 			.await?;
-			let Some((Some(last_valid_at), None)) = validity else {
+			let Some((issuer, Some(last_valid_at), None)) = validity else {
 				return Err(Error::Forbidden);
 			};
-			if last_valid_at <= Utc::now() - Duration::minutes(15) {
+			// Google validates identity at login and has no service-account status
+			// endpoint. Local revocation above still applies to every provider.
+			if issuer != crate::config::GOOGLE_OIDC_ISSUER
+				&& last_valid_at <= Utc::now() - Duration::minutes(15)
+			{
 				return Err(Error::IdentityStatusUnavailable);
 			}
 		}
