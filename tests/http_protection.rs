@@ -20,6 +20,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		federation.clone(),
 		Settings {
 			actor_burst: 1,
+			actor_period: Duration::from_secs(60),
 			..Default::default()
 		},
 	))
@@ -39,6 +40,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 		.await;
 	limited_response.assert_status_too_many_requests();
 	assert!(limited_response.headers().contains_key("x-request-id"));
+	assert_eq!(limited_response.headers()["cache-control"], "no-store");
 	// Exhausting the authenticated budget must not change unauthenticated errors.
 	limited
 		.get("/api/session")
@@ -52,7 +54,64 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 			..Default::default()
 		},
 	);
-	let server = TestServer::new(app.clone()).unwrap();
+	let server = TestServer::new(
+		app.clone()
+			.layer(axum::Extension(axum::extract::ConnectInfo(
+				"127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+			))),
+	)
+	.unwrap();
+	for (path, status) in [("/api/session", 401), ("/auth/config", 200)] {
+		let response = server.get(path).await;
+		assert_eq!(response.status_code().as_u16(), status);
+		assert_eq!(response.headers()["cache-control"], "no-store");
+		assert_eq!(response.headers()["referrer-policy"], "no-referrer");
+	}
+	let peer_denied = server
+		.post("/federation/v0.1/discover")
+		.add_header("x-aidash-protocol", aidash::config::PROTOCOL_VERSION)
+		.json(&json!({}))
+		.await;
+	peer_denied.assert_status_unauthorized();
+	assert_eq!(peer_denied.headers()["cache-control"], "no-store");
+	assert_eq!(peer_denied.headers()["referrer-policy"], "no-referrer");
+	let public = server.get("/api/openapi.json").await;
+	public.assert_status_ok();
+	assert!(!public.headers().contains_key("cache-control"));
+	let static_response = server.get("/assets/missing.js").await;
+	assert!(!static_response.headers().contains_key("cache-control"));
+	let session = server
+		.get("/api/session")
+		.authorization_bearer("operator-execution-fixture")
+		.await;
+	session.assert_status_ok();
+	assert_eq!(session.headers()["cache-control"], "no-store");
+	assert_eq!(session.headers()["referrer-policy"], "no-referrer");
+	let invalid_conversation = server.post("/api/conversations").authorization_bearer("operator-execution-fixture")
+        .json(&json!({"title":" ", "goal":" ", "target":{"id":"missing", "version":"1.0.0"}, "target_kind":"agent"})).await;
+	invalid_conversation.assert_status_bad_request();
+	assert_eq!(
+		invalid_conversation.json::<serde_json::Value>()["error"],
+		"invalid request fields: goal, title"
+	);
+	for (body, content_type, status) in [
+		("{", "application/json", 400),
+		("{}", "application/json", 422),
+		("{}", "text/plain", 415),
+	] {
+		let response = server
+			.post("/api/workspaces")
+			.authorization_bearer("operator-execution-fixture")
+			.bytes(body.into())
+			.content_type(content_type)
+			.await;
+		assert_eq!(response.status_code().as_u16(), status);
+		assert_eq!(
+			response.json::<serde_json::Value>()["error"],
+			"invalid JSON request"
+		);
+	}
+
 	let invalid = server
 		.post("/api/workspaces")
 		.authorization_bearer("operator-execution-fixture")
@@ -61,7 +120,7 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	invalid.assert_status_bad_request();
 	assert_eq!(
 		invalid.json::<serde_json::Value>()["error"],
-		"title and goal must not be blank"
+		"invalid request fields: title"
 	);
 	server
 		.post("/api/workspaces")
@@ -124,4 +183,11 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	drop(limited);
 	drop(app);
 	common::cleanup(federation, &url, &schema).await;
+}
+
+#[tokio::test]
+#[should_panic(expected = "Deserializing response from Json")]
+async fn json_test_helper_does_not_hide_malformed_responses() {
+	let app = axum::Router::new().route("/broken", axum::routing::get(|| async { "not JSON" }));
+	common::request(&app, "fixture", "GET", "/broken", serde_json::Value::Null).await;
 }

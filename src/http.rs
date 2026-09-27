@@ -292,25 +292,50 @@ pub(crate) async fn sse_admission(
 	Response::from_parts(parts, Body::from_stream(stream))
 }
 
-// Preserve the API error envelope without reflecting input values in errors.
-pub(crate) struct InputRejection(
-	axum_valid::ValidRejection<axum::extract::rejection::JsonRejection>,
-);
-impl From<axum_valid::ValidRejection<axum::extract::rejection::JsonRejection>> for InputRejection {
-	fn from(error: axum_valid::ValidRejection<axum::extract::rejection::JsonRejection>) -> Self {
-		Self(error)
-	}
-}
-impl IntoResponse for InputRejection {
-	fn into_response(self) -> Response {
-		match self.0 {
-			axum_valid::ValidationRejection::Valid(_) => {
-				crate::Error::Invalid("title and goal must not be blank".into()).into_response()
+/// Application JSON boundary: validation details never echo submitted values.
+pub(crate) struct ValidatedJson<T>(pub T);
+
+impl<S, T> axum::extract::FromRequest<S> for ValidatedJson<T>
+where
+	S: Send + Sync,
+	T: serde::de::DeserializeOwned + validator::Validate,
+{
+	type Rejection = Response;
+	async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
+		match axum_valid::Valid::<axum::Json<T>>::from_request(request, state).await {
+			Ok(axum_valid::Valid(axum::Json(value))) => Ok(Self(value)),
+			Err(axum_valid::ValidationRejection::Valid(errors)) => {
+				let mut fields: Vec<_> =
+					errors.errors().keys().map(|field| field.as_ref()).collect();
+				fields.sort_unstable();
+				Err(
+					crate::Error::Invalid(format!("invalid request fields: {}", fields.join(", ")))
+						.into_response(),
+				)
 			}
-			axum_valid::ValidationRejection::Inner(error) => error.into_response(),
+			Err(axum_valid::ValidationRejection::Inner(error)) => Err((
+				error.status(),
+				axum::Json(serde_json::json!({"error": "invalid JSON request"})),
+			)
+				.into_response()),
 		}
 	}
 }
+
+/// Apply the same privacy policy to successful and rejected private responses.
+pub(crate) fn private_responses<S: Clone + Send + Sync + 'static>(router: Router<S>) -> Router<S> {
+	use tower_http::set_header::SetResponseHeaderLayer;
+	router
+		.layer(SetResponseHeaderLayer::overriding(
+			header::CACHE_CONTROL,
+			HeaderValue::from_static("no-store"),
+		))
+		.layer(SetResponseHeaderLayer::overriding(
+			header::REFERRER_POLICY,
+			HeaderValue::from_static("no-referrer"),
+		))
+}
+
 pub(crate) fn nonblank(value: &str) -> Result<(), validator::ValidationError> {
 	if value.trim().is_empty() {
 		Err(validator::ValidationError::new("nonblank"))

@@ -1,12 +1,15 @@
 mod common;
 
 use aidash::api;
-use axum::Router;
-use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
+use axum_test::TestServer;
+use common::{
+	TestEnvironment, bootstrap_with_server as bootstrap, cleanup, request_json as request, setup,
+	test_environment,
+};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-async fn workspace(app: &Router, token: &str, title: &str) -> String {
+async fn workspace(app: &TestServer, token: &str, title: &str) -> String {
 	let (status, value) = request(
 		app,
 		token,
@@ -20,7 +23,7 @@ async fn workspace(app: &Router, token: &str, title: &str) -> String {
 }
 
 async fn post(
-	app: &Router,
+	app: &TestServer,
 	token: &str,
 	workspace: &str,
 	content: &str,
@@ -37,7 +40,7 @@ async fn post(
 	.await
 }
 
-async fn thread(app: &Router, token: &str, workspace: &str, root: &str) -> (u16, Value) {
+async fn thread(app: &TestServer, token: &str, workspace: &str, root: &str) -> (u16, Value) {
 	request(
 		app,
 		token,
@@ -48,7 +51,7 @@ async fn thread(app: &Router, token: &str, workspace: &str, root: &str) -> (u16,
 	.await
 }
 
-async fn history(app: &Router, token: &str, workspace: &str, query: &str) -> (u16, Value) {
+async fn history(app: &TestServer, token: &str, workspace: &str, query: &str) -> (u16, Value) {
 	request(
 		app,
 		token,
@@ -68,7 +71,7 @@ async fn channel_threads_survive_new_router_and_do_not_become_tasks(
 ) {
 	let (f, url, schema) = setup(&_test_environment).await;
 	let token = f.config.api_token.clone();
-	let app = api::router(f.clone());
+	let app = TestServer::new(api::router(f.clone())).unwrap();
 	let workspace = workspace(&app, &token, "Threads").await;
 	let (status, root) = post(&app, &token, &workspace, "A question", None, Uuid::new_v4()).await;
 	assert_eq!(status, 200, "{root}");
@@ -87,7 +90,7 @@ async fn channel_threads_survive_new_router_and_do_not_become_tasks(
 	.await;
 	assert_eq!(status, 200, "{reply}");
 	assert_eq!(reply["thread_id"], thread_id);
-	let restarted = api::router(f.clone());
+	let restarted = TestServer::new(api::router(f.clone())).unwrap();
 	let (status, channel) = history(&restarted, &token, &workspace, "limit=20").await;
 	assert_eq!(status, 200, "{channel}");
 	assert_eq!(channel["messages"].as_array().unwrap().len(), 1);
@@ -126,7 +129,7 @@ async fn duplicate_message_reuses_id_but_changed_thread_or_content_conflicts(
 ) {
 	let (f, url, schema) = setup(&_test_environment).await;
 	let token = f.config.api_token.clone();
-	let app = api::router(f.clone());
+	let app = TestServer::new(api::router(f.clone())).unwrap();
 	let workspace = workspace(&app, &token, "Idempotency").await;
 	let key = Uuid::new_v4();
 	let (status, first) = post(&app, &token, &workspace, "Original", None, key).await;
@@ -157,7 +160,7 @@ async fn threads_and_cursors_cannot_cross_workspace_boundaries(
 ) {
 	let (f, url, schema) = setup(&_test_environment).await;
 	let token = f.config.api_token.clone();
-	let app = api::router(f.clone());
+	let app = TestServer::new(api::router(f.clone())).unwrap();
 	let a = workspace(&app, &token, "A").await;
 	let b = workspace(&app, &token, "B").await;
 	let (status, root) = post(&app, &token, &a, "Private to A", None, Uuid::new_v4()).await;
@@ -197,7 +200,7 @@ async fn message_history_pages_without_duplicates_and_validates_inputs(
 ) {
 	let (f, url, schema) = setup(&_test_environment).await;
 	let token = f.config.api_token.clone();
-	let app = api::router(f.clone());
+	let app = TestServer::new(api::router(f.clone())).unwrap();
 	let workspace = workspace(&app, &token, "Paging").await;
 	for content in ["first", "second", "third"] {
 		let (status, value) = post(&app, &token, &workspace, content, None, Uuid::new_v4()).await;
@@ -218,15 +221,14 @@ async fn message_history_pages_without_duplicates_and_validates_inputs(
 	}
 	let blank = post(&app, &token, &workspace, "   ", None, Uuid::new_v4()).await;
 	assert_eq!(blank.0, 400);
-	let spoof = request(
-		&app,
-		&token,
-		"POST",
-		&format!("/api/workspaces/{workspace}/thread-messages"),
-		json!({"content":"spoof","sender":"admin","idempotency_key":Uuid::new_v4()}),
-	)
-	.await;
-	assert_eq!(spoof.0, 422);
+	// Axum's standard Json extractor rejects unknown fields with a text response.
+	let spoof = app
+		.post(&format!("/api/workspaces/{workspace}/thread-messages"))
+		.authorization_bearer(&token)
+		.json(&json!({"content":"spoof","sender":"admin","idempotency_key":Uuid::new_v4()}))
+		.await;
+	spoof.assert_status_unprocessable_entity();
+	assert!(spoof.text().contains("unknown field `sender`"));
 	cleanup(f, &url, &schema).await;
 }
 
@@ -239,7 +241,7 @@ async fn concurrent_identical_submissions_create_one_message(
 ) {
 	let (f, url, schema) = setup(&_test_environment).await;
 	let token = f.config.api_token.clone();
-	let app = api::router(f.clone());
+	let app = TestServer::new(api::router(f.clone())).unwrap();
 	let workspace = workspace(&app, &token, "Concurrent").await;
 	let key = Uuid::new_v4();
 	let (a, b) = tokio::join!(
@@ -263,7 +265,7 @@ async fn scoped_history_filters_records_and_rechecks_root_and_post_authority(
 ) {
 	let (f, url, schema) = setup(&_test_environment).await;
 	let operator = f.config.api_token.clone();
-	let app = api::router(f.clone());
+	let app = TestServer::new(api::router(f.clone())).unwrap();
 	let foreign = workspace(&app, &operator, "Operator-owned").await;
 	let (mut policy, alice, task) = bootstrap(&f, &app, "http://127.0.0.1:1").await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id.to_string();

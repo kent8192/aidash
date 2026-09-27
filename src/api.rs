@@ -1,3 +1,4 @@
+use crate::http::ValidatedJson;
 use crate::{
 	Error, Result,
 	api_schema::*,
@@ -22,8 +23,6 @@ use axum::{
 	},
 	routing::{get, post},
 };
-use axum_extra::extract::WithRejection;
-use axum_valid::Valid;
 use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -228,9 +227,12 @@ pub fn router_with_settings(f: Federation, settings: crate::http::Settings) -> R
 			"/.well-known/aidash",
 			get(identity).layer(middleware::from_fn_with_state(f.clone(), node_visibility)),
 		)
-		.nest("/api", api)
-		.nest("/federation/v0.1", federation)
-		.nest("/auth", auth)
+		.nest("/api", crate::http::private_responses(api))
+		.nest(
+			"/federation/v0.1",
+			crate::http::private_responses(federation),
+		)
+		.nest("/auth", crate::http::private_responses(auth))
 		.fallback_service(web)
 		.layer(axum::extract::DefaultBodyLimit::max(
 			crate::http::BODY_LIMIT,
@@ -306,12 +308,7 @@ async fn api_auth(
 		actor
 	};
 	request.extensions_mut().insert(actor);
-	let mut response = next.run(request).await;
-	response.headers_mut().insert(
-		axum::http::header::CACHE_CONTROL,
-		axum::http::HeaderValue::from_static("no-store"),
-	);
-	Ok(response)
+	Ok(next.run(request).await)
 }
 
 fn browser_operator_allowed(method: &Method, path: &str) -> bool {
@@ -648,10 +645,7 @@ struct WorkspaceInput {
 async fn workspace_create(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
-	WithRejection(Valid(Json(input)), _): WithRejection<
-		Valid<Json<WorkspaceInput>>,
-		crate::http::InputRejection,
-	>,
+	ValidatedJson(input): ValidatedJson<WorkspaceInput>,
 ) -> Result<Json<Workspace>> {
 	if let Some(scope) = scoped(&f, actor) {
 		return Ok(Json(scope.create(&input.title, &input.goal).await?));
@@ -822,10 +816,12 @@ async fn task_abandon(
 	f.notify.notify_waiters();
 	Ok(Json(task))
 }
-#[derive(Deserialize, Serialize, utoipa::ToSchema)]
+#[derive(Deserialize, Serialize, utoipa::ToSchema, validator::Validate)]
 #[serde(deny_unknown_fields)]
 struct ConversationInput {
+	#[validate(custom(function = "crate::http::nonblank"))]
 	title: String,
+	#[validate(custom(function = "crate::http::nonblank"))]
 	goal: String,
 	target: EntityRef,
 	target_kind: String,
@@ -834,7 +830,7 @@ struct ConversationInput {
 async fn conversation_create(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
-	Json(input): Json<ConversationInput>,
+	ValidatedJson(input): ValidatedJson<ConversationInput>,
 ) -> Result<Json<ConversationResponse>> {
 	if let Actor::Subject(identity) = actor {
 		return Ok(Json(

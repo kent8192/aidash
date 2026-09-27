@@ -56,9 +56,23 @@ sensitive for compatible diagnostic output. This does not redact arbitrary
 application logs. Existing OIDC/session validation and CSRF policy remain in
 force; bearer and cookie parsing use `axum-extra`.
 
-Workspace input validation uses `axum-valid` and `validator`, rejecting blank
-`title` or `goal` with the existing JSON error envelope before reaching storage.
-Storage validation remains in place for non-HTTP callers.
+Private API, federation and auth route groups apply `Cache-Control: no-store` and
+`Referrer-Policy: no-referrer` outside their authentication/rate-limit layers,
+including authentication and permission failures. Static assets and the public
+OpenAPI document do not inherit this policy. CookieJar extracts cookies once per
+handler and serializes response deltas; cookie names and security attributes
+remain centrally defined.
+
+Workspace and conversation inputs share `ValidatedJson<T>`, backed by `axum-valid`
+and `validator`. Blank title/goal fields return 400 with a JSON `error` containing
+sorted field names, never submitted values. JSON extraction failures retain their
+400/413/415/422 status with the generic JSON error `invalid JSON request`.
+Outer HTTP body-limit rejection still uses its middleware response. Storage and
+authorization validation remain in place for non-HTTP callers.
+
+Semantic search has a separate process-wide two-request concurrency layer shared
+across router instances. A third search waits for a slot; this layer does not
+load-shed. The outer HTTP response-start deadline still applies while waiting.
 
 ## SSE and execution
 
@@ -106,7 +120,13 @@ traces are deferred to a separate change.
 
 ```sh
 cargo test --lib http::tests
-cargo test --test http_protection --test dashboard_oidc --test authorization
+cargo test --lib cookie_tests
+cargo test --lib admission_tests
+cargo test --test http_protection --test dashboard_oidc --test authorization --test channel_threads --test semantic
 ```
 
 Integration tests use the disposable service fixture in `tests/fixtures/compose.yaml`.
+
+Ordinary JSON tests use `axum-test` through the shared request helpers. Non-JSON
+responses fail parsing immediately, except for explicit bodyless HTTP responses.
+SSE body lifetime and sensitive-header tests retain direct Tower requests.

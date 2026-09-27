@@ -7,6 +7,10 @@ use axum::{
 };
 use utoipa_axum::{router::OpenApiRouter, routes};
 
+// Keep the process-wide capacity across router construction, clones and nodes.
+static SEARCH_ADMISSION: std::sync::LazyLock<tower::limit::GlobalConcurrencyLimitLayer> =
+	std::sync::LazyLock::new(|| tower::limit::GlobalConcurrencyLimitLayer::new(2));
+
 pub fn routes() -> OpenApiRouter<Federation> {
 	OpenApiRouter::new()
 		.merge(
@@ -19,7 +23,11 @@ pub fn routes() -> OpenApiRouter<Federation> {
 		.routes(routes!(put, entries))
 		.routes(routes!(delete))
 		.routes(routes!(reindex))
-		.routes(routes!(search))
+		.merge(
+			OpenApiRouter::new()
+				.routes(routes!(search))
+				.route_layer(SEARCH_ADMISSION.clone()),
+		)
 		.routes(routes!(history))
 }
 #[utoipa::path(post,path="/workspaces/{workspace}/semantic/index",operation_id="semantic_configure",params(("workspace"=Uuid,Path)),request_body=ConfigureIndex,responses((status=200,body=Index)),security(("bearer_auth"=[])))]
@@ -102,13 +110,6 @@ async fn search(
 	Path(workspace): Path<Uuid>,
 	Json(input): Json<Search>,
 ) -> Result<Json<SearchResult>> {
-	// Reserve effect/audit capacity independently from API revokers waiting on
-	// this search's credential and policy lease.
-	static SEARCH_CAPACITY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
-	let _permit = SEARCH_CAPACITY
-		.acquire()
-		.await
-		.expect("search capacity stays open");
 	let worker = f.for_workers().await?;
 	let result = service::search(&worker.store, &actor, workspace, input).await;
 	worker.store.pool.close().await;
@@ -190,4 +191,79 @@ async fn cleanup(
 		points,
 		collections,
 	}))
+}
+
+#[cfg(test)]
+mod admission_tests {
+	use super::SEARCH_ADMISSION;
+	use axum::{Router, body::Body, http::Request, routing::get};
+	use std::{sync::Arc, time::Duration};
+	use tower::ServiceExt;
+
+	#[tokio::test]
+	async fn search_routes_share_two_slots_wait_and_release_on_cancellation() {
+		let started = Arc::new(tokio::sync::Semaphore::new(0));
+		let make_router = || {
+			let started = started.clone();
+			Router::new()
+				.route(
+					"/search",
+					get(move || {
+						let started = started.clone();
+						async move {
+							started.add_permits(1);
+							std::future::pending::<()>().await;
+							"never"
+						}
+					}),
+				)
+				.route_layer(SEARCH_ADMISSION.clone())
+		};
+		let request = || {
+			Request::builder()
+				.uri("/search")
+				.body(Body::empty())
+				.unwrap()
+		};
+		let first = tokio::spawn(make_router().oneshot(request()));
+		let second = tokio::spawn(make_router().oneshot(request()));
+		started.acquire_many(2).await.unwrap().forget();
+		let independent = Router::new()
+			.route("/search", get(|| async { "ready" }))
+			.route_layer(SEARCH_ADMISSION.clone())
+			.route("/other", get(|| async { "unlimited" }));
+		assert_eq!(
+			independent
+				.clone()
+				.oneshot(
+					Request::builder()
+						.uri("/other")
+						.body(Body::empty())
+						.unwrap()
+				)
+				.await
+				.unwrap()
+				.status(),
+			200
+		);
+		let waiting = independent.oneshot(request());
+		tokio::pin!(waiting);
+		assert!(
+			tokio::time::timeout(Duration::from_millis(30), &mut waiting)
+				.await
+				.is_err()
+		);
+		first.abort();
+		assert!(first.await.unwrap_err().is_cancelled());
+		assert_eq!(
+			tokio::time::timeout(Duration::from_secs(1), waiting)
+				.await
+				.unwrap()
+				.unwrap()
+				.status(),
+			200
+		);
+		second.abort();
+		assert!(second.await.unwrap_err().is_cancelled());
+	}
 }

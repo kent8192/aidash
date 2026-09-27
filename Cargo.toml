@@ -87,7 +87,7 @@ tower-http = { version = "0.6.7", features = [
   "set-header",
 ] }
 tower_governor = { version = "0.8", default-features = false, features = ["axum"] }
-axum-extra = { version = "0.12", features = ["typed-header", "cookie", "with-rejection"] }
+axum-extra = { version = "0.12", features = ["typed-header", "cookie"] }
 axum-valid = { version = "0.25", default-features = false, features = ["json", "validator"] }
 validator = { version = "0.20", features = ["derive"] }
 axum-prometheus = "0.10.1"

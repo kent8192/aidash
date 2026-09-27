@@ -2,7 +2,8 @@ use aidash::{
 	config::Config, domain::qualified_agent, federation::Federation, registry::Registry,
 	store::Store,
 };
-use axum::{Router, body::Body, http::Request};
+use axum::Router;
+use axum_test::TestServer;
 use serde_json::{Value, json};
 use sqlx::{
 	Connection, Executor,
@@ -15,7 +16,6 @@ use std::{
 };
 use testcontainers::compose::DockerCompose;
 use tokio::sync::Mutex;
-use tower::ServiceExt;
 use uuid::Uuid;
 
 const TEST_QDRANT_TOKEN: &str = "local-semantic-vector-fixture-key-0123456789";
@@ -146,27 +146,39 @@ pub async fn request(
 	path: &str,
 	value: Value,
 ) -> (u16, Value) {
-	let response = app
-		.clone()
-		.oneshot(
-			Request::builder()
-				.method(method)
-				.uri(path)
-				.header("authorization", format!("Bearer {token}"))
-				.header("content-type", "application/json")
-				.body(Body::from(value.to_string()))
-				.unwrap(),
-		)
-		.await
-		.unwrap();
-	let status = response.status().as_u16();
-	let bytes = axum::body::to_bytes(response.into_body(), 1_048_576)
-		.await
-		.unwrap();
-	(
-		status,
-		serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+	request_json(
+		&TestServer::new(app.clone()).expect("test server"),
+		token,
+		method,
+		path,
+		value,
 	)
+	.await
+}
+
+#[allow(dead_code)]
+pub async fn request_json(
+	server: &TestServer,
+	token: &str,
+	method: &str,
+	path: &str,
+	value: Value,
+) -> (u16, Value) {
+	let response = server
+		.method(method.parse().expect("HTTP method"), path)
+		.authorization_bearer(token)
+		.json(&value)
+		.await;
+	let status = response.status_code();
+	if method == "HEAD" || matches!(status.as_u16(), 204 | 205 | 304) {
+		assert!(
+			response.as_bytes().is_empty(),
+			"bodyless response for {method} {path}"
+		);
+		(status.as_u16(), Value::Null)
+	} else {
+		(status.as_u16(), response.json())
+	}
 }
 
 #[allow(dead_code)] // Shared fixtures are used by different integration-test binaries.
@@ -256,10 +268,24 @@ pub fn policy(node: &str) -> Value {
 
 #[allow(dead_code)]
 pub async fn bootstrap(f: &Federation, app: &Router, endpoint: &str) -> (Value, String, Uuid) {
+	bootstrap_with_server(
+		f,
+		&TestServer::new(app.clone()).expect("test server"),
+		endpoint,
+	)
+	.await
+}
+
+#[allow(dead_code)]
+pub async fn bootstrap_with_server(
+	f: &Federation,
+	app: &TestServer,
+	endpoint: &str,
+) -> (Value, String, Uuid) {
 	let operator = &f.config.api_token;
 	let policy = policy(&f.config.node_id);
 	assert_eq!(
-		request(
+		request_json(
 			app,
 			operator,
 			"POST",
@@ -289,12 +315,12 @@ pub async fn bootstrap(f: &Federation, app: &Router, endpoint: &str) -> (Value, 
 	] {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});
 		assert_eq!(
-			request(app, operator, "POST", "/api/registry", entry)
+			request_json(app, operator, "POST", "/api/registry", entry)
 				.await
 				.0,
 			200
 		);
-		let (status, response) = request(
+		let (status, response) = request_json(
 			app,
 			operator,
 			"POST",
@@ -304,7 +330,7 @@ pub async fn bootstrap(f: &Federation, app: &Router, endpoint: &str) -> (Value, 
 		.await;
 		assert_eq!(status, 200, "catalog admission: {response}");
 	}
-	let (status, credential) = request(
+	let (status, credential) = request_json(
 		app,
 		operator,
 		"POST",
@@ -314,7 +340,7 @@ pub async fn bootstrap(f: &Federation, app: &Router, endpoint: &str) -> (Value, 
 	.await;
 	assert_eq!(status, 200);
 	let token = credential["token"].as_str().unwrap().to_owned();
-	let (status, workspace) = request(
+	let (status, workspace) = request_json(
 		app,
 		&token,
 		"POST",
@@ -323,7 +349,7 @@ pub async fn bootstrap(f: &Federation, app: &Router, endpoint: &str) -> (Value, 
 	)
 	.await;
 	assert_eq!(status, 200);
-	let (status, task) = request(
+	let (status, task) = request_json(
 		app,
 		&token,
 		"POST",

@@ -276,6 +276,39 @@ async fn call(
 		.await
 		.unwrap();
 	let status = response.status().as_u16();
+	assert_eq!(
+		response
+			.headers()
+			.get("cache-control")
+			.map(|value| value.to_str().unwrap()),
+		Some("no-store"),
+		"{method} {path}: {status}"
+	);
+	assert_eq!(
+		response.headers()["referrer-policy"],
+		"no-referrer",
+		"{path}"
+	);
+	if path == "/auth/logout" && status == 204 {
+		let cookies: Vec<_> = response
+			.headers()
+			.get_all("set-cookie")
+			.iter()
+			.map(|header| {
+				axum_extra::extract::cookie::Cookie::parse(header.to_str().unwrap()).unwrap()
+			})
+			.collect();
+		assert_eq!(cookies.len(), 2);
+		for name in ["aidash-session", "aidash-csrf"] {
+			let cookie = cookies.iter().find(|cookie| cookie.name() == name).unwrap();
+			assert_eq!(cookie.max_age().unwrap().whole_seconds(), 0);
+			assert_eq!(cookie.path(), Some("/"));
+			assert_eq!(
+				cookie.http_only().unwrap_or(false),
+				name == "aidash-session"
+			);
+		}
+	}
 	let bytes = axum::body::to_bytes(response.into_body(), 1_048_576)
 		.await
 		.unwrap();
@@ -803,7 +836,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		"/api/workspaces/00000000-0000-0000-0000-000000000001/semantic/entries/00000000-0000-0000-0000-000000000002/reindex",
 		"/api/remote",
 		"/api/workbench/drafts",
-		"/api/workbench/adopt",
+		"/api/workbench/agents/legacy-agent/1.0.0/adopt",
 		"/api/workbench/versions/legacy-agent/1.0.0/permissions",
 	] {
 		assert_ne!(
