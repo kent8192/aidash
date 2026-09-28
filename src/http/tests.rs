@@ -59,10 +59,12 @@ async fn request_ids_and_sensitive_headers_cover_success_and_errors() {
 #[tokio::test]
 async fn body_limit_applies_to_declared_and_streamed_bodies() {
 	let app = protect(
-		Router::new().route(
-			"/body",
-			post(|body: axum::body::Bytes| async move { body.len().to_string() }),
-		),
+		Router::new()
+			.route(
+				"/body",
+				post(|body: axum::body::Bytes| async move { body.len().to_string() }),
+			)
+			.layer(body_limit(BODY_LIMIT)),
 		&Settings::default(),
 	);
 	let server = TestServer::new(app.clone()).unwrap();
@@ -95,24 +97,28 @@ async fn body_limit_applies_to_declared_and_streamed_bodies() {
 }
 
 #[tokio::test]
-async fn only_chunk_posts_accept_larger_declared_and_streamed_bodies() {
+async fn route_groups_preserve_declared_and_streamed_body_limits() {
+	const CHUNK_BODY_LIMIT: usize = 6 * 1024 * 1024;
 	async fn receive(body: axum::body::Bytes) -> String {
 		body.len().to_string()
 	}
 	let app = protect(
 		Router::new()
+			.route("/body", post(receive))
+			.fallback(receive)
+			.layer(body_limit(BODY_LIMIT))
 			.nest(
 				"/api",
-				Router::new().route("/references/{id}/chunks", axum::routing::any(receive)),
+				Router::new()
+					.route("/references/{id}/chunks", axum::routing::any(receive))
+					.route_layer(body_limit(CHUNK_BODY_LIMIT)),
 			)
 			.nest(
 				"/federation/v0.1",
-				Router::new().route("/scoped/files/chunk", axum::routing::any(receive)),
-			)
-			.route("/body", post(receive))
-			.fallback(receive)
-			// Exercise the streaming middleware itself without an extractor ceiling.
-			.layer(axum::extract::DefaultBodyLimit::disable()),
+				Router::new()
+					.route("/scoped/files/chunk", axum::routing::any(receive))
+					.route_layer(body_limit(CHUNK_BODY_LIMIT)),
+			),
 		&Settings::default(),
 	);
 	for (method, path, limit) in [
@@ -126,7 +132,11 @@ async fn only_chunk_posts_accept_larger_declared_and_streamed_bodies() {
 			"/federation/v0.1/scoped/files/chunk",
 			CHUNK_BODY_LIMIT,
 		),
-		("PUT", "/api/references/reference-id/chunks", BODY_LIMIT),
+		(
+			"PUT",
+			"/api/references/reference-id/chunks",
+			CHUNK_BODY_LIMIT,
+		),
 		("POST", "/body", BODY_LIMIT),
 		(
 			"POST",

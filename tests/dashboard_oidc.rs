@@ -319,21 +319,24 @@ async fn call(
 }
 
 #[rstest::rstest]
+#[case::keycloak("http://127.0.0.1:18099/realms/test")]
+#[case::google("https://accounts.google.com")]
 #[tokio::test]
 async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
+	#[case] issuer: &str,
 	#[future(awt)]
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	let (mut federation, url, schema) = common::setup(&_test_environment).await;
 	federation.config.oidc = Some(OidcConfig {
-		issuer: "http://127.0.0.1:18099/realms/test".into(),
+		issuer: issuer.into(),
 		client_id: "aidash".into(),
 		client_secret: "test-secret".into(),
 		public_origin: "http://127.0.0.1:8080".into(),
-		keycloak_admin_url: "http://127.0.0.1:18099/admin/realms/test".into(),
-		status_client_id: "status".into(),
-		status_client_secret: "status-secret".into(),
+		keycloak_admin_url: String::new(),
+		status_client_id: String::new(),
+		status_client_secret: String::new(),
 		session_absolute_seconds: 43_200,
 		session_idle_seconds: 1_800,
 	});
@@ -360,7 +363,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&insert_identity)
 		.bind(identity_id)
-		.bind("http://127.0.0.1:18099/realms/test")
+		.bind(issuer)
 		.bind("keycloak-user-1")
 		.execute(&federation.store.pool)
 		.await
@@ -397,6 +400,22 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		.execute(&federation.store.pool)
 		.await
 		.unwrap();
+	// Google sessions must survive the old 15-minute Keycloak status deadline.
+	if issuer == "https://accounts.google.com" {
+		let stale = Query::update()
+			.table(Alias::new("dashboard_identities"))
+			.value(
+				Alias::new("last_valid_at"),
+				Expr::cust("clock_timestamp()-interval '1 day'"),
+			)
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&stale)
+			.bind(identity_id)
+			.execute(&federation.store.pool)
+			.await
+			.unwrap();
+	}
 	let app = oidc_router(federation.clone());
 	let mut changed_issuer = federation.clone();
 	changed_issuer.config.oidc.as_mut().unwrap().issuer =
@@ -1018,7 +1037,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 	for index in 0..205 {
 		sqlx::query(&insert_identity)
 			.bind(Uuid::new_v4())
-			.bind("http://127.0.0.1:18099/realms/test")
+			.bind(issuer)
 			.bind(format!("paged-{index:03}"))
 			.execute(&federation.store.pool)
 			.await

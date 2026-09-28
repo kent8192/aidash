@@ -218,7 +218,7 @@ test("subject dashboard completes a conversation and clears revoked access", asy
       {},
     );
     await expect(
-      page.getByRole("button", { name: "Sign in with Keycloak" }),
+      page.getByRole("button", { name: "Sign in with Google" }),
     ).toBeVisible({
       timeout: 15000,
     });
