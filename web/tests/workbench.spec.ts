@@ -133,6 +133,21 @@ test("Creator opens and edits a focused draft beyond the first page", async ({
   expect(saves[0].id).toBe("00000000-0000-7000-8000-000000000001");
 });
 
+test("Register has one release-notes editor", async ({ page }) => {
+  await editableDrafts(page);
+  await page
+    .getByRole("navigation", { name: "Creator" })
+    .getByRole("button", { name: "Register in Registry" })
+    .click();
+  const notes = page.getByRole("textbox", {
+    name: "Release notes",
+    exact: true,
+  });
+  await expect(notes).toHaveCount(1);
+  await notes.fill("Ready for registration");
+  await expect(notes).toHaveValue("Ready for registration");
+});
+
 test("Creator retains dirty edits after a background refresh error", async ({
   page,
 }) => {
