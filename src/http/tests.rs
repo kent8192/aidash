@@ -358,7 +358,7 @@ async fn actor_limits_share_routes_but_separate_tenants() {
 async fn login_limit_uses_peer_address_and_ignores_forwarded_headers() {
 	let app = rate_limit(
 		Router::new().route("/login", get(|| async { "ok" })),
-		tower_governor::key_extractor::PeerIpKeyExtractor,
+		AuthKey(Vec::new()),
 		1,
 		Duration::from_secs(60),
 	);
@@ -367,6 +367,9 @@ async fn login_limit_uses_peer_address_and_ignores_forwarded_headers() {
 		request
 			.headers_mut()
 			.insert("x-forwarded-for", forwarded.parse().unwrap());
+		request
+			.headers_mut()
+			.insert("x-real-ip", forwarded.parse().unwrap());
 		request.extensions_mut().insert(axum::extract::ConnectInfo(
 			peer.parse::<std::net::SocketAddr>().unwrap(),
 		));

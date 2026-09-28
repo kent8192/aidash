@@ -1,9 +1,13 @@
 """Activity/admission races using private temporary host state."""
 
 from contextlib import ExitStack
+import bz2
+import hashlib
+import io
 import json
 from pathlib import Path
 import sys
+import tarfile
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -124,6 +128,173 @@ class HostTests(unittest.TestCase):
         ):
             self.assertFalse(host.seal()["sealed"])
         self.assertFalse((self.directory / "run/sealed").exists())
+
+    def test_health_reclaims_only_superseded_images_and_keeps_live_pods(self):
+        prefix = "us-central1-docker.pkg.dev/fixture/aidash/"
+        old_app, old_sandbox, current_app, current_sandbox, observer = (
+            prefix + kind + "@sha256:" + digest * 64
+            for kind, digest in (
+                ("app", "a"),
+                ("sandbox", "b"),
+                ("app", "c"),
+                ("sandbox", "d"),
+                ("observer", "e"),
+            )
+        )
+        unrelated = "example/other@sha256:" + "f" * 64
+        docker = {
+            old_app,
+            old_sandbox,
+            current_app,
+            current_sandbox,
+            observer,
+            unrelated,
+        }
+        containerd = {old_sandbox, current_sandbox, unrelated}
+        live = [old_sandbox]
+        for name, value in {
+            "release": {
+                "source_sha": "a" * 40,
+                "images": {
+                    "app": current_app,
+                    "sandbox": current_sandbox,
+                    "observer": observer,
+                },
+            },
+            "profile": {"runner": {"endpoint": "http://fixture"}},
+            "identity": {"runner": "fixture-token"},
+        }.items():
+            (self.directory / (name + ".json")).write_text(json.dumps(value))
+
+        def command(*args, **kwargs):
+            if args[:3] == ("docker", "image", "ls"):
+                return "\n".join(docker).encode()
+            if args[:3] == ("docker", "image", "rm"):
+                self.assertNotIn("--force", args)
+                docker.remove(args[-1])
+                return b""
+            if args[:5] == ("ctr", "-n", "k8s.io", "images", "list"):
+                return "\n".join(containerd).encode()
+            if args[:5] == ("ctr", "-n", "k8s.io", "images", "rm"):
+                containerd.remove(args[-1])
+                return b""
+            if args[0] == "kubectl":
+                return json.dumps(
+                    {
+                        "items": [
+                            {"spec": {"containers": [{"image": image}]}}
+                            for image in live
+                        ]
+                    }
+                ).encode()
+            self.fail(f"unexpected host command: {args}")
+
+        with (
+            patch.object(host, "command", command),
+            patch.object(
+                host,
+                "request",
+                return_value=b'{"verified":true,"python_verified":true}',
+            ),
+            patch.object(host, "observe", return_value=self.snapshot),
+        ):
+            self.assertTrue(host.health()["ready"])
+            self.assertEqual(
+                docker, {current_app, current_sandbox, observer, unrelated}
+            )
+            self.assertEqual(containerd, {old_sandbox, current_sandbox, unrelated})
+            live.clear()
+            self.assertTrue(host.health()["ready"])
+            self.assertEqual(containerd, {current_sandbox, unrelated})
+
+
+class RuntimeTests(unittest.TestCase):
+    def test_retained_runtime_upgrades_repairs_and_restarts_only_when_changed(self):
+        with TemporaryDirectory() as temporary, ExitStack() as context:
+            root = Path(temporary)
+
+            def path(value, *parts):
+                value = Path(value, *parts)
+                return (
+                    root / str(value).lstrip("/")
+                    if value.is_absolute() and not value.is_relative_to(root)
+                    else value
+                )
+
+            original_symlink = Path.symlink_to
+            context.enter_context(
+                patch.object(
+                    Path,
+                    "symlink_to",
+                    lambda link, target, **kwargs: original_symlink(
+                        link, path(target), **kwargs
+                    ),
+                )
+            )
+            context.enter_context(patch.object(host, "Path", path))
+            context.enter_context(patch.object(host, "ROOT", root / "data"))
+            context.enter_context(patch.object(host, "RUN", root / "run"))
+            calls = context.enter_context(
+                patch.object(host, "command", return_value=b"")
+            )
+            files = {
+                "runsc": b"updated runsc",
+                "containerd-shim-runsc-v1": b"updated shim",
+                "gvisor-bin/gvisor_sentry": b"updated sidecar",
+            }
+            archive = io.BytesIO()
+            with tarfile.open(fileobj=archive, mode="w") as tar:
+                for name, data in files.items():
+                    member = tarfile.TarInfo(name)
+                    member.size = len(data)
+                    tar.addfile(member, io.BytesIO(data))
+            compressed = bz2.compress(archive.getvalue())
+            k3s = b"updated k3s"
+            context.enter_context(
+                patch.object(host, "K3S_SHA", hashlib.sha256(k3s).hexdigest())
+            )
+            context.enter_context(
+                patch.object(host, "GVISOR_SHA", hashlib.sha256(compressed).hexdigest())
+            )
+            download = context.enter_context(
+                patch.object(
+                    host,
+                    "request",
+                    side_effect=lambda url: k3s if url.endswith("/k3s") else compressed,
+                )
+            )
+            for name in ("k3s", *files):
+                destination = path("/usr/local/bin") / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(b"old runtime")
+            host.configure_runtime()
+            self.assertEqual(path("/usr/local/bin/k3s").read_bytes(), k3s)
+            for name, data in files.items():
+                self.assertEqual((path("/usr/local/bin") / name).read_bytes(), data)
+            calls.assert_any_call("systemctl", "restart", "k3s", timeout=240)
+            calls.reset_mock()
+            download.reset_mock()
+            host.configure_runtime()
+            download.assert_not_called()
+            self.assertFalse(
+                any(
+                    call.args[:3] == ("systemctl", "restart", "k3s")
+                    for call in calls.call_args_list
+                )
+            )
+            # Missing sidecars and drifted containerd configuration must also
+            # be repaired on a retained VM, even with an intact runsc binary.
+            path("/usr/local/bin/gvisor-bin/gvisor_sentry").unlink()
+            path("/etc/containerd/runsc.toml").write_text("stale configuration")
+            host.configure_runtime()
+            self.assertEqual(
+                path("/usr/local/bin/gvisor-bin/gvisor_sentry").read_bytes(),
+                files["gvisor-bin/gvisor_sentry"],
+            )
+            self.assertNotEqual(
+                path("/etc/containerd/runsc.toml").read_text(), "stale configuration"
+            )
+            calls.assert_any_call("systemctl", "restart", "k3s", timeout=240)
 
 
 if __name__ == "__main__":

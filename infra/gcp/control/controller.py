@@ -176,6 +176,27 @@ def requests(config, event, name, state):
     for identity, entry in state.get("environments", {}).items():
         if entry["desired"] == "destroyed" or identity == "test" or entry.get("fork"):
             continue
+        if entry["sequence"] == sequence:
+            # An accepted workflow-run retry belongs to its original source,
+            # even when the followed branch advanced during the failed build.
+            candidates.append(
+                dict(
+                    common,
+                    environment=identity,
+                    action="update",
+                    **{
+                        key: entry.get(key, "")
+                        for key in (
+                            "sha",
+                            "source_ref",
+                            "source_repo",
+                            "fork",
+                            "approved_sha",
+                        )
+                    },
+                )
+            )
+            continue
         try:
             current = source(config, identity, entry["source_ref"])
         except Refused:
@@ -217,7 +238,13 @@ def prepare(config, store):
                     )
 
                 changed, entry = store.mutate(accept)
-                if changed and build_needed(entry):
+                if (
+                    entry
+                    and (changed or entry["sequence"] == request["sequence"])
+                    and build_needed(entry)
+                ):
+                    # Re-running a failed workflow keeps its run ID. Re-emit
+                    # pending builds without changing the accepted generation.
                     prepared.update(
                         build=True, sha=entry["sha"], source_repo=entry["source_repo"]
                     )

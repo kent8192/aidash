@@ -6,6 +6,7 @@ import re
 SHA = re.compile(r"[0-9a-f]{40}")
 ENVIRONMENT = re.compile(r"(?:develop|test|pr-[1-9][0-9]*)")
 DEVELOP = re.compile(r"develop/[0-9]+\.[0-9]+\.[0-9]+")
+IMAGE_KINDS = ("app", "postgres", "sandbox", "observer", "nats", "qdrant")
 PREVIEW = re.compile(
     r"/preview (up|stop|destroy)(?: (spot|normal))?(?: ([0-9a-f]{40}))?"
 )
@@ -173,7 +174,9 @@ def attach_release(state, identity, generation, release):
         return result, False
     if release["source_sha"] != entry["sha"]:
         raise Refused("Build source does not match current authorized intent")
-    for name in ("app", "postgres", "sandbox", "observer"):
+    if set(release["images"]) != set(IMAGE_KINDS):
+        raise Refused("Release must contain exactly the supported runtime images")
+    for name in IMAGE_KINDS:
         if not re.fullmatch(
             r"us-central1-docker\.pkg\.dev/[a-z0-9-]+/aidash/[a-z0-9-]+@sha256:[a-f0-9]{64}",
             release["images"].get(name, ""),

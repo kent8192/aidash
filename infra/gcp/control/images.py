@@ -8,8 +8,16 @@ from pathlib import Path
 import re
 import subprocess
 
+from policy import IMAGE_KINDS
+
 ROOT = Path(__file__).resolve().parents[3]
-KINDS = ("app", "postgres", "sandbox", "observer")
+KINDS = IMAGE_KINDS
+# Reviewed linux/amd64 manifests; auxiliary services follow the same archive
+# publication path as source builds and never pull mutable tags on a host.
+AUXILIARY_IMAGES = {
+    "nats": "nats:2.12.15-alpine@sha256:e01e9f09c03f60a8ded4785444ec4c5b2fd18a773b8b874daeefeff559119316",
+    "qdrant": "qdrant/qdrant:v1.19.1@sha256:0699e7733a6fa7fa7f6b95dcbed84ebb04584110da525cdfdef9f305c4f57738",
+}
 
 
 def main():
@@ -36,32 +44,47 @@ def main():
             raise SystemExit(
                 "Selected source does not contain the required Google login integration"
             )
-        file, context, target = {
-            "app": (ROOT / "Dockerfile", args.source, ["--target", "runtime"]),
-            "postgres": (ROOT / "deploy/postgres/Dockerfile", args.source, []),
-            "sandbox": (ROOT / "runner/Dockerfile", args.source / "runner", []),
-            "observer": (
-                ROOT / "infra/gcp/observer/Dockerfile",
-                ROOT / "infra/gcp/observer",
-                [],
-            ),
-        }[args.kind]
+        if (
+            args.kind == "app"
+            and "AIDASH_AUTH_TRUSTED_PROXY_IPS"
+            not in (args.source / "src/http.rs").read_text()
+        ):
+            raise SystemExit(
+                "Selected source does not support trusted-proxy authentication rate limits"
+            )
         tag = f"aidash-{args.kind}:{args.sha}"
-        subprocess.run(
-            [
-                "docker",
-                "build",
-                "--platform",
-                "linux/amd64",
-                "--file",
-                str(file),
-                "--tag",
-                tag,
-                *target,
-                str(context),
-            ],
-            check=True,
-        )
+        if args.kind in AUXILIARY_IMAGES:
+            source = AUXILIARY_IMAGES[args.kind]
+            subprocess.run(
+                ["docker", "pull", "--platform", "linux/amd64", source], check=True
+            )
+            subprocess.run(["docker", "tag", source, tag], check=True)
+        else:
+            file, context, target = {
+                "app": (ROOT / "Dockerfile", args.source, ["--target", "runtime"]),
+                "postgres": (ROOT / "deploy/postgres/Dockerfile", args.source, []),
+                "sandbox": (ROOT / "runner/Dockerfile", args.source / "runner", []),
+                "observer": (
+                    ROOT / "infra/gcp/observer/Dockerfile",
+                    ROOT / "infra/gcp/observer",
+                    [],
+                ),
+            }[args.kind]
+            subprocess.run(
+                [
+                    "docker",
+                    "build",
+                    "--platform",
+                    "linux/amd64",
+                    "--file",
+                    str(file),
+                    "--tag",
+                    tag,
+                    *target,
+                    str(context),
+                ],
+                check=True,
+            )
         subprocess.run(
             [
                 "docker",
@@ -77,7 +100,7 @@ def main():
         registry = "us-central1-docker.pkg.dev/" + config["project_id"] + "/aidash"
         release = {"source_sha": args.sha, "images": {}}
         for kind in KINDS:
-            target = f"{registry}/{kind}:{args.sha}-{os.environ['GITHUB_RUN_ID']}"
+            target = f"{registry}/{kind}:{args.sha}-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
             digest_file = args.directory / f"{kind}.digest"
             subprocess.run(
                 [

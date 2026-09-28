@@ -76,6 +76,27 @@ class LifecycleTests(unittest.TestCase):
         self.assertFalse(accepted)
         self.assertEqual(state, new)
 
+    def test_release_requires_immutable_auxiliary_images(self):
+        state = self.apply({}, self.request())
+        images = {
+            name: f"us-central1-docker.pkg.dev/fixture/aidash/{name}@sha256:{'a' * 64}"
+            for name in ("app", "postgres", "sandbox", "observer", "nats", "qdrant")
+        }
+        release = {"source_sha": "a" * 40, "images": images}
+        self.assertTrue(attach_release(state, "test", 1, release)[1])
+        for name in ("nats", "qdrant"):
+            for invalid in (None, f"{name}:latest"):
+                with self.subTest(name=name, image=invalid):
+                    candidate = dict(images)
+                    if invalid is None:
+                        del candidate[name]
+                    else:
+                        candidate[name] = invalid
+                    with self.assertRaises(Refused):
+                        attach_release(
+                            state, "test", 1, dict(release, images=candidate)
+                        )
+
     def test_preserve_manual_normal_override_on_update_and_resume(self):
         request = self.request(identity="pr-12", mode="normal")
         request["source_ref"] = "pr/12"

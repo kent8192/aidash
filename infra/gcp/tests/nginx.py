@@ -24,7 +24,9 @@ def inside():
         def do_GET(self):
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(b"{}")
+            self.wfile.write(
+                json.dumps({"client_ip": self.headers.get("X-Real-IP")}).encode()
+            )
 
         def do_POST(self):
             self.rfile.read(int(self.headers.get("Content-Length", 0)))
@@ -46,6 +48,14 @@ def inside():
     Path("/run/aidash/serving").touch(mode=0o644)
     subprocess.run(["nginx", "-t"], check=True)
     subprocess.run(["nginx"], check=True)
+    Path("/tmp/Caddyfile").write_text(
+        "http://127.0.0.1:8090 {\n reverse_proxy 127.0.0.1:8088\n}\n"
+    )
+    caddy = subprocess.Popen(
+        ["caddy", "run", "--config", "/tmp/Caddyfile", "--adapter", "caddyfile"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
     def call(path, data=None, port=8088):
         with urllib.request.urlopen(
@@ -68,6 +78,34 @@ def inside():
         raise AssertionError(("in-flight cleanup did not finish", observed))
 
     try:
+        for _ in range(50):
+            try:
+                call("/health", port=8090)
+                break
+            except urllib.error.URLError:
+                time.sleep(0.1)
+        else:
+            raise AssertionError("Caddy fixture did not start")
+        for address in ("127.0.0.2", "127.0.0.3"):
+            client = HTTPConnection(
+                "127.0.0.1", 8090, timeout=10, source_address=(address, 0)
+            )
+            try:
+                client.request(
+                    "GET",
+                    "/auth/config",
+                    headers={
+                        "X-Forwarded-For": "198.51.100.1",
+                        "X-Real-IP": "198.51.100.2",
+                        "Forwarded": "for=198.51.100.3",
+                    },
+                )
+                response = client.getresponse()
+                assert response.status == 200
+                identity = json.load(response)
+                assert identity["client_ip"] == address, identity
+            finally:
+                client.close()
         assert activity() == {"inflight": 0, "last_active": 0}
         call("/health")
         call("/api/runs/example/shell/poll", b"{}")
@@ -144,11 +182,13 @@ def inside():
         finally:
             client.close()
         print(
-            "Nginx: polling excluded; API/federation writes and slow bodies counted; admission closed and reopened"
+            "Caddy/Nginx: client IPs preserved and spoofed headers replaced; polling excluded; API/federation writes and slow bodies counted; admission closed and reopened"
         )
     finally:
         print(Path("/var/log/nginx/error.log").read_text()[-2000:])
         release.set()
+        caddy.terminate()
+        caddy.wait(timeout=10)
         server.shutdown()
         subprocess.run(["nginx", "-s", "quit"], check=False)
 
@@ -174,7 +214,7 @@ if __name__ == "__main__":
                 "ubuntu:24.04",
                 "bash",
                 "-euc",
-                "apt-get update -qq && apt-get install -y -qq --no-install-recommends nginx libnginx-mod-http-lua lua-cjson python3 >/dev/null && python3 /checks/tests/nginx.py",
+                "apt-get update -qq && apt-get install -y -qq --no-install-recommends nginx libnginx-mod-http-lua lua-cjson caddy python3 >/dev/null && python3 /checks/tests/nginx.py",
             ],
             check=True,
             timeout=600,

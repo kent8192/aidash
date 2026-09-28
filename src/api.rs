@@ -215,7 +215,7 @@ pub fn router_with_settings(f: Federation, settings: crate::http::Settings) -> R
 	.route_layer(middleware::from_fn_with_state(f.clone(), peer_auth));
 	let auth = crate::http::rate_limit(
 		crate::dashboard_auth::routes().layer(body_limit),
-		tower_governor::key_extractor::PeerIpKeyExtractor,
+		crate::http::AuthKey(settings.auth_trusted_proxy_ips.clone()),
 		settings.auth_burst,
 		settings.auth_period,
 	);

@@ -3,9 +3,9 @@
 
 import argparse
 import base64
-import bz2
 import fcntl
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -17,7 +17,7 @@ import tarfile
 import time
 import urllib.request
 
-from policy import idle_due, meaningful_request
+from policy import IMAGE_KINDS, idle_due, meaningful_request
 
 ROOT = Path("/var/lib/aidash")
 BUNDLE = Path(__file__).resolve().parent
@@ -135,8 +135,31 @@ def mount_data():
             destination.symlink_to(source, target_is_directory=True)
 
 
+def runtime_file(path, data, mode=0o600):
+    """Install atomically and report whether a service restart is needed."""
+    path = Path(path)
+    data = data.encode() if isinstance(data, str) else data
+    if (
+        path.is_file()
+        and path.read_bytes() == data
+        and path.stat().st_mode & 0o777 == mode
+    ):
+        return False
+    private(path, data, mode)
+    return True
+
+
+def binary_matches(path, checksum):
+    return (
+        path.is_file()
+        and path.stat().st_mode & 0o777 == 0o755
+        and hashlib.sha256(path.read_bytes()).hexdigest() == checksum
+    )
+
+
 def configure_runtime():
-    if not Path("/usr/local/bin/k3s").exists():
+    changed = False
+    if not binary_matches(Path("/usr/local/bin/k3s"), K3S_SHA):
         private(
             "/usr/local/bin/k3s",
             checked_download(
@@ -145,16 +168,41 @@ def configure_runtime():
             ),
             0o755,
         )
-    if not Path("/usr/local/bin/runsc").exists():
+        changed = True
+    receipt = Path("/usr/local/share/aidash/gvisor.json")
+    installed = json.loads(receipt.read_text()) if receipt.exists() else {}
+    files = installed.get("files", {})
+    if not (
+        installed.get("archive_sha") == GVISOR_SHA
+        and {"runsc", "containerd-shim-runsc-v1"} <= files.keys()
+        and all(
+            not Path(name).is_absolute()
+            and ".." not in Path(name).parts
+            and binary_matches(Path("/usr/local/bin") / name, checksum)
+            for name, checksum in files.items()
+        )
+    ):
         data = checked_download(
             f"https://storage.googleapis.com/gvisor/releases/release/{GVISOR_VERSION}/x86_64/gvisor.tar.bz2",
             GVISOR_SHA,
         )
-        archive = RUN / "gvisor.tar"
-        private(archive, bz2.decompress(data))
-        with tarfile.open(archive) as tar:
-            tar.extractall("/usr/local/bin", filter="data")
-    private(
+        files = {}
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:bz2") as tar:
+            for member in tar.getmembers():
+                if Path(member.name).is_absolute() or ".." in Path(member.name).parts:
+                    raise RuntimeError("invalid runtime archive path")
+                if member.isdir():
+                    continue
+                if not member.isfile():
+                    raise RuntimeError("runtime archive must contain regular files")
+                content = tar.extractfile(member).read()
+                private(Path("/usr/local/bin") / member.name, content, 0o755)
+                files[member.name] = hashlib.sha256(content).hexdigest()
+        if not {"runsc", "containerd-shim-runsc-v1"} <= files.keys():
+            raise RuntimeError("incomplete runtime archive")
+        private(receipt, json.dumps({"archive_sha": GVISOR_SHA, "files": files}))
+        changed = True
+    changed |= runtime_file(
         "/etc/rancher/k3s/config.yaml",
         """disable:
   - traefik
@@ -168,7 +216,7 @@ kubelet-arg:
   - container-log-max-files=2
 """,
     )
-    private(
+    changed |= runtime_file(
         ROOT / "k3s/agent/etc/containerd/config-v3.toml.tmpl",
         """{{ template "base" . }}
 [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runsc]
@@ -178,7 +226,7 @@ TypeUrl = "io.containerd.runsc.v1.options"
 ConfigPath = "/etc/containerd/runsc.toml"
 """,
     )
-    private(
+    changed |= runtime_file(
         "/etc/containerd/runsc.toml",
         'root = "/run/containerd/runsc"\n[runsc_config]\nplatform = "systrap"\n',
     )
@@ -190,7 +238,7 @@ ConfigPath = "/etc/containerd/runsc.toml"
     )
     if not Path("/usr/bin/runsc").exists():
         Path("/usr/bin/runsc").symlink_to("/usr/local/bin/runsc")
-    private(
+    changed |= runtime_file(
         "/etc/systemd/system/k3s.service",
         """[Unit]
 Description=Aidash single-node Kubernetes
@@ -209,7 +257,8 @@ WantedBy=multi-user.target
 """,
     )
     command("systemctl", "daemon-reload")
-    command("systemctl", "enable", "--now", "k3s", timeout=240)
+    command("systemctl", "enable", "k3s")
+    command("systemctl", "restart" if changed else "start", "k3s", timeout=240)
     command(
         "kubectl",
         "--kubeconfig",
@@ -314,6 +363,7 @@ def configuration(host):
         AIDASH_ENDPOINT="https://" + host["hostname"],
         AIDASH_LISTEN="127.0.0.1:18080",
         AIDASH_PROBE_LISTEN="127.0.0.1:18081",
+        AIDASH_AUTH_TRUSTED_PROXY_IPS="127.0.0.1",
         AIDASH_OIDC_ISSUER="https://accounts.google.com",
         AIDASH_OIDC_PUBLIC_ORIGIN="https://" + host["hostname"],
         AIDASH_CAPABILITY_PROFILE=str(ROOT / "profile.json"),
@@ -521,13 +571,13 @@ WantedBy=multi-user.target
     )
     replace_container(
         "aidash-nats",
-        "nats:2.12-alpine",
+        release["images"]["nats"],
         ["-v", f"{ROOT}/nats:/data"],
         ["-js", "-sd", "/data", "--addr", "127.0.0.1"],
     )
     replace_container(
         "aidash-qdrant",
-        "qdrant/qdrant:v1.19.1",
+        release["images"]["qdrant"],
         ["--env-file", str(RUN / "qdrant.env"), "-v", f"{ROOT}/qdrant:/qdrant/storage"],
         [],
     )
@@ -732,6 +782,60 @@ def seal(force=False, idle_only=False):
     return {"sealed": True}
 
 
+def prune_release_images(release):
+    current = set(release["images"].values())
+    registry = release["images"]["app"].rsplit("/", 1)[0]
+
+    def superseded(image, kinds):
+        return image not in current and any(
+            re.fullmatch(
+                re.escape(f"{registry}/{kind}@sha256:") + r"[a-f0-9]{64}", image
+            )
+            for kind in kinds
+        )
+
+    images = (
+        command(
+            "docker",
+            "image",
+            "ls",
+            "--digests",
+            "--format",
+            "{{.Repository}}@{{.Digest}}",
+        )
+        .decode()
+        .splitlines()
+    )
+    for image in sorted(set(images)):
+        if superseded(image, IMAGE_KINDS):
+            # No force: Docker retains images still referenced by a container.
+            command("docker", "image", "rm", image, check=False)
+    pods = json.loads(
+        command(
+            "kubectl",
+            "--kubeconfig",
+            "/etc/rancher/k3s/k3s.yaml",
+            "get",
+            "pods",
+            "--all-namespaces",
+            "-o",
+            "json",
+        )
+    )
+    in_use = {
+        container["image"]
+        for pod in pods["items"]
+        for kind in ("containers", "initContainers", "ephemeralContainers")
+        for container in pod["spec"].get(kind, [])
+    }
+    images = (
+        command("ctr", "-n", "k8s.io", "images", "list", "-q").decode().splitlines()
+    )
+    for image in images:
+        if image not in in_use and superseded(image, ("sandbox",)):
+            command("ctr", "-n", "k8s.io", "images", "rm", image, check=False)
+
+
 def health():
     release = json.loads((ROOT / "release.json").read_text())
     profile = json.loads((ROOT / "profile.json").read_text())
@@ -743,6 +847,10 @@ def health():
     # Missing/incompatible observer schema blocks readiness, rather than silently
     # deploying an environment that can never meet the idle-stop contract.
     observe()
+    # Collect only obsolete Aidash digests after application, observer and
+    # Runner readiness succeeded. Keep current observer/sandbox images even
+    # when no container uses them yet; live Pods retain their pinned images.
+    prune_release_images(release)
     return {"ready": True, "source_sha": release["source_sha"], "runner_verified": True}
 
 

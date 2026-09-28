@@ -323,6 +323,65 @@ class ReconcileTests(unittest.TestCase):
                 self.assertNotIn(("start", "test"), self.calls)
                 self.assertFalse(any(call[0] == "bootstrap" for call in self.calls))
 
+    def test_retry_rebuilds_pending_intent_without_overwriting_a_newer_request(self):
+        with TemporaryDirectory() as directory:
+            event = Path(directory) / "event.json"
+            event.write_text(
+                json.dumps(
+                    {
+                        "inputs": {
+                            "environment": "test",
+                            "action": "create",
+                            "source_ref": "main",
+                        }
+                    }
+                )
+            )
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "GITHUB_EVENT_PATH": str(event),
+                        "GITHUB_EVENT_NAME": "workflow_dispatch",
+                        "GITHUB_ACTOR": "fixture",
+                        "GITHUB_RUN_ID": "2",
+                        "GITHUB_OUTPUT": str(Path(directory) / "outputs"),
+                        "RUNNER_TEMP": directory,
+                    },
+                ),
+                patch.object(controller, "permission"),
+                patch.object(
+                    controller,
+                    "source",
+                    return_value={
+                        "sha": SHA,
+                        "source_ref": "main",
+                        "source_repo": CONFIG["repository"],
+                    },
+                ) as source,
+            ):
+                destination = Path(directory) / "aidash-request.json"
+                controller.prepare(CONFIG, self.store)
+                accepted = deepcopy(self.store.state)
+                original = json.loads(destination.read_text())
+                self.assertTrue(original["build"])
+                # The source branch can move between workflow attempts; retry
+                # the accepted SHA/generation, without accepting a new intent.
+                source.return_value = dict(source.return_value, sha="b" * 40)
+                controller.prepare(CONFIG, self.store)
+                self.assertEqual(json.loads(destination.read_text()), original)
+                self.assertEqual(self.store.state, accepted)
+                self.store.state = transition(
+                    self.store.state,
+                    {"environment": "test", "action": "stop", "sequence": 3},
+                    "unused",
+                    1,
+                )[0]
+                stopped = deepcopy(self.store.state)
+                controller.prepare(CONFIG, self.store)
+                self.assertFalse(json.loads(destination.read_text())["build"])
+                self.assertEqual(self.store.state, stopped)
+
     def test_accepted_stop_fences_an_older_create_before_any_apply(self):
         self.request()
         self.request(action="stop")

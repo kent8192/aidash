@@ -65,12 +65,28 @@ write-collaborator authorization for that exact SHA; a retained approval covers
 resuming the same SHA, never a later commit. Actions/comments require repository
 write, maintain or admin permission. No workflow posts PR comments.
 
+All six service images are digest-addressed in the private registry. NATS and
+Qdrant use reviewed upstream linux/amd64 digests in `control/images.py`, pass
+through the same build-archive/publisher boundary and appear in the release
+manifest. Retried workflows re-emit a pending build for the accepted SHA and
+generation; newer stop/destroy requests still fence it. Attempt-specific publish
+tags and replaceable workflow artifacts allow recovery from partial publication.
+
+Bootstrap compares installed K3s and all gVisor binaries with the pinned hashes,
+repairs or upgrades retained installations, and restarts K3s when binaries or
+runtime configuration changed. After readiness succeeds, host health checks
+remove obsolete Aidash image digests. They preserve the current observer and
+sandbox images, images used by Pods/containers and unrelated repositories.
+
 Runtime SAs can read image/bundle artifacts and only their own runtime secret.
 They do not receive DNS or deployment credentials. Only ports 80/443 are public;
 SSH uses IAP. Database, probe, proxy-control and Runner endpoints are loopback
 only. Sandbox Pods retain deny-all networking and no host credentials. The
 existing Runner must prove isolation and Python freeze/termination at startup
 before an environment is declared ready.
+Authentication throttling trusts only the loopback Nginx peer's `X-Real-IP`.
+Caddy replaces client-supplied forwarding headers with its socket client address,
+and Nginx overwrites `X-Real-IP`; separate clients therefore keep separate budgets.
 
 ## Initial configuration
 
@@ -83,10 +99,9 @@ configured. The project is never inferred from a developer's `gcloud` default.
    example `gcloud auth application-default login`. Select `develop_branch`.
 2. Put this implementation on the repository's default branch (`main`) through
    the normal review process. Select a deployable source containing Google OAuth,
-   the existing runtime contract and successful `ci.yml` for its **exact SHA**.
-   The implementation base `dcede2adb3403fb281c1efaf3c889870521457b5` does not
-   contain the separately developed Google integration; the app build explicitly
-   refuses sources missing it. `main` being the trusted automation branch does
+   trusted-proxy authentication rate limits, the existing runtime contract and
+   successful `ci.yml` for its **exact SHA**. The app build explicitly refuses
+   sources missing either HTTP integration. `main` being the trusted automation branch does
    not create a main production environment.
 3. Copy `bootstrap/terraform.example.tfvars` to the ignored
    `bootstrap/terraform.tfvars` and fill the project/bucket IDs. Use Terraform

@@ -73,6 +73,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gcp-request-${{ github.run_id }}
+          overwrite: true
           path: ${{ runner.temp }}/aidash-request.json
           retention-days: 1
 
@@ -84,7 +85,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [app, postgres, sandbox, observer]
+        image: [app, postgres, sandbox, observer, nats, qdrant]
     permissions:
       contents: read
     steps:
@@ -107,6 +108,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gcp-image-${{ matrix.image }}-${{ github.run_id }}
+          overwrite: true
           path: ${{ runner.temp }}/images/*.tar
           retention-days: 1
           compression-level: 1
@@ -148,6 +150,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gcp-release-${{ github.run_id }}
+          overwrite: true
           path: ${{ runner.temp }}/images/release.json
           retention-days: 1
 
