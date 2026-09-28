@@ -157,7 +157,7 @@ python3 scripts/cluster_acceptance.py --kubeconfig /path/to/k3s.kubeconfig \
 ```
 
 The runner requires an explicit kubeconfig and creates a unique namespace. It
-executes the two-node research golden path using local OpenAI/Anthropic protocol
+executes the two-node research golden path using local OpenRouter-compatible protocol
 fixtures, kills a worker after an effect, scales server/worker replicas, rolls
 every Deployment, stops and resumes workers, and checks stable identities,
 original task/run/artifact IDs and three unique external effects. It checks the
