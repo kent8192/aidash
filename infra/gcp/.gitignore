@@ -1,0 +1,10 @@
+config.json
+*.tfplan
+**/*.tfplan
+**/*.auto.tfvars.json
+**/terraform.tfstate*
+**/crash.log
+**/.terraform/
+runtime-secret.json
+**/terraform.tfvars
+bootstrap/backend.tf

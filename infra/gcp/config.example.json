@@ -1,0 +1,10 @@
+{
+  "project_id": "your-aidash-project",
+  "state_bucket": "your-aidash-project-tfstate",
+  "release_bucket": "your-aidash-project-releases",
+  "deploy_service_account": "aidash-deploy@your-aidash-project.iam.gserviceaccount.com",
+  "cloudflare_zone_id": "replace-with-the-existing-aidash-run-zone-id",
+  "domain": "aidash.run",
+  "repository": "kent8192/aidash",
+  "develop_branch": "develop/0.1.0"
+}

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+install -d -m 700 /opt/aidash/bootstrap
+python3 - <<'PY'
+import hashlib, json, os, pathlib, tarfile, urllib.request
+root = pathlib.Path('/opt/aidash/bootstrap')
+request = urllib.request.Request('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token', headers={'Metadata-Flavor': 'Google'})
+with urllib.request.urlopen(request, timeout=15) as response:
+    token = json.load(response)['access_token']
+request = urllib.request.Request('https://storage.googleapis.com/${bucket}/${object}', headers={'Authorization': 'Bearer ' + token})
+with urllib.request.urlopen(request, timeout=120) as response:
+    data = response.read(16 * 1024 * 1024)
+if hashlib.sha256(data).hexdigest() != '${sha256}':
+    raise SystemExit('bootstrap bundle checksum mismatch')
+archive = root / 'bundle.tar.gz'
+archive.write_bytes(data)
+with tarfile.open(archive) as tar:
+    for item in tar.getmembers():
+        if not item.isfile() or pathlib.PurePosixPath(item.name).is_absolute() or '..' in pathlib.PurePosixPath(item.name).parts:
+            raise SystemExit('invalid bootstrap archive member')
+    tar.extractall(root, filter='data')
+configuration = {'project': '${project}', 'hostname': '${hostname}', 'secret': '${secret}'}
+(root / 'host.json').write_text(json.dumps(configuration))
+PY
+exec /usr/bin/python3 /opt/aidash/bootstrap/host.py install

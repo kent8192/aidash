@@ -1,0 +1,204 @@
+name: GCP environments
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [create, resume, stop, destroy]
+        required: true
+      environment:
+        type: choice
+        options: [develop, test, pr]
+        required: true
+      source_ref:
+        description: "Test branch/SHA; blank resume keeps its pinned SHA"
+        type: string
+      pr_number:
+        description: "Required for environment=pr"
+        type: string
+      vm_mode:
+        type: choice
+        options: [default, spot, normal]
+        description: "Default preserves the existing mode; new test/PR defaults to Spot"
+      approved_sha:
+        description: "Full reviewed head SHA required for a fork PR"
+        type: string
+      force:
+        description: "Explicitly permit interrupting active work for this operation"
+        type: boolean
+        default: false
+  issue_comment:
+    types: [created]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  schedule:
+    - cron: "3-58/5 * * * *"
+
+permissions:
+  contents: read
+
+# No workflow-wide concurrency group: GitHub may discard pending runs in such
+# groups. Intent is first recorded using GCS compare-and-swap. Applies use a
+# separate durable lock; a superseded build cannot overwrite newer intent.
+jobs:
+  prepare:
+    if: vars.GCP_ENVIRONMENTS_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      id-token: write
+    outputs:
+      build: ${{ steps.prepare.outputs.build }}
+      sha: ${{ steps.prepare.outputs.sha }}
+      source_repo: ${{ steps.prepare.outputs.source_repo }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      AIDASH_GCP_CONFIG: ${{ vars.AIDASH_GCP_CONFIG }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - id: prepare
+        run: python3 infra/gcp/control/controller.py prepare
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gcp-request-${{ github.run_id }}
+          path: ${{ runner.temp }}/aidash-request.json
+          retention-days: 1
+
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [app, postgres, sandbox, observer]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ needs.prepare.outputs.source_repo }}
+          ref: ${{ needs.prepare.outputs.sha }}
+          path: source
+          persist-credentials: false
+      - name: Build inside Docker without cloud credentials
+        env:
+          SOURCE_SHA: ${{ needs.prepare.outputs.sha }}
+          IMAGE_KIND: ${{ matrix.image }}
+        run: python3 trusted/infra/gcp/control/images.py build --kind "$IMAGE_KIND" --sha "$SOURCE_SHA" --source "$GITHUB_WORKSPACE/source" --directory "$RUNNER_TEMP/images"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gcp-image-${{ matrix.image }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/images/*.tar
+          retention-days: 1
+          compression-level: 1
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AIDASH_GCP_CONFIG: ${{ vars.AIDASH_GCP_CONFIG }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: gcp-image-*-${{ github.run_id }}
+          path: ${{ runner.temp }}/images
+          merge-multiple: true
+      - run: sudo apt-get update -qq && sudo apt-get install -y skopeo
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_PUBLISH_SERVICE_ACCOUNT }}
+          token_format: access_token
+      - name: Authenticate the archive publisher
+        env:
+          REGISTRY_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: printf '%s' "$REGISTRY_TOKEN" | skopeo login -u oauth2accesstoken --password-stdin us-central1-docker.pkg.dev
+      - name: Publish immutable image digests without running the images
+        env:
+          SOURCE_SHA: ${{ needs.prepare.outputs.sha }}
+        run: python3 infra/gcp/control/images.py publish --sha "$SOURCE_SHA" --directory "$RUNNER_TEMP/images"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gcp-release-${{ github.run_id }}
+          path: ${{ runner.temp }}/images/release.json
+          retention-days: 1
+
+  apply:
+    needs: [prepare, build, publish]
+    if: always() && needs.prepare.result == 'success' && (needs.prepare.outputs.build != 'true' || needs.publish.result == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      AIDASH_GCP_CONFIG: ${{ vars.AIDASH_GCP_CONFIG }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_DNS_API_TOKEN }}
+      AIDASH_RUNTIME_DEVELOP: ${{ secrets.GCP_DEVELOP_RUNTIME_CONFIG }}
+      AIDASH_RUNTIME_TEST: ${{ secrets.GCP_TEST_RUNTIME_CONFIG }}
+      AIDASH_RUNTIME_PR: ${{ secrets.GCP_PR_RUNTIME_CONFIG }}
+      TF_IN_AUTOMATION: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.14.8
+          terraform_wrapper: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        if: needs.prepare.outputs.build == 'true'
+        with:
+          pattern: gcp-request-${{ github.run_id }}
+          path: ${{ runner.temp }}/request
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        if: needs.prepare.outputs.build == 'true'
+        with:
+          name: gcp-release-${{ github.run_id }}
+          path: ${{ runner.temp }}/release
+      - name: Reconcile the latest durable intent
+        env:
+          HAS_BUILD: ${{ needs.prepare.outputs.build }}
+        run: |
+          if [ "$HAS_BUILD" = true ]; then
+            python3 infra/gcp/control/controller.py finish --request "$RUNNER_TEMP/request/gcp-request-$GITHUB_RUN_ID/aidash-request.json" --release "$RUNNER_TEMP/release/release.json"
+          else
+            python3 infra/gcp/control/controller.py reconcile
+          fi
