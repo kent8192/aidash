@@ -1616,3 +1616,6 @@ async fn restoring_the_same_peer_during_a_barrier_does_not_restore_transaction_t
 	a.cleanup().await;
 	b.cleanup().await;
 }
+
+#[path = "transaction_protocol/listing.rs"]
+mod listing;

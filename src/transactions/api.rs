@@ -9,6 +9,7 @@ use axum::{
 	routing::{get, post},
 };
 use chrono::{DateTime, Utc};
+use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
@@ -108,14 +109,27 @@ async fn list(
 		}
 		let rows: Vec<Status> = query.fetch_all(&f.store.control_pool).await?;
 		let exhausted = rows.len() < 200;
-		for row in rows {
+		// Bound concurrent live checks (and their retained authority transactions),
+		// while yielding in database order so visibility filtering preserves the cursor.
+		let mut checked = stream::iter(rows.into_iter().map(|row| {
+			let f = &f;
+			let actor = &actor;
+			async move {
+				let result = if let Actor::Subject(identity) = &actor {
+					authority::manage(f, identity, &row, "transaction.read").await
+				} else {
+					Ok(())
+				};
+				(row, result)
+			}
+		}))
+		.buffered(8);
+		while let Some((row, result)) = checked.next().await {
 			cursor = Some((row.created_at, row.id));
-			if let Actor::Subject(identity) = &actor {
-				match authority::manage(&f, identity, &row, "transaction.read").await {
-					Ok(()) => {}
-					Err(Error::Forbidden | Error::Unauthorized | Error::NotFound(_)) => continue,
-					Err(error) => return Err(error),
-				}
+			match result {
+				Ok(()) => {}
+				Err(Error::Forbidden | Error::Unauthorized | Error::NotFound(_)) => continue,
+				Err(error) => return Err(error),
 			}
 			visible.push(row);
 			if visible.len() == 200 {

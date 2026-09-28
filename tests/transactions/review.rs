@@ -127,6 +127,12 @@ async fn authorization_submission_and_abort_work_with_one_control_connection(
 			"new and retried submission must not require another control slot: {body}"
 		);
 	}
+	let (status, rows) = request(&app, &token, "GET", "/api/transactions", Value::Null).await;
+	assert_eq!(
+		status, 200,
+		"listing must work with one control connection: {rows}"
+	);
+	assert_eq!(rows.as_array().unwrap().len(), 1);
 	let (status, body) = request(
 		&app,
 		&token,
