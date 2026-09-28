@@ -1,0 +1,685 @@
+.wb-page.wb-trust-page {
+  --wb-bg: #090f1b;
+  --wb-card: #101b29;
+  --wb-line: #223047;
+  --wb-muted: #a3b1ca;
+  --wb-violet: #6653ed;
+  padding: 20px 20px 36px;
+}
+.wb-trust-page .wb-header h1 {
+  font-size: 24px;
+}
+.wb-trust-page .wb-header p {
+  font-size: 12px;
+  line-height: 1.6;
+}
+.wb-trust-page .wb-description {
+  margin-top: 5px;
+}
+.wb-trust-page .wb-hero-icon {
+  background: #173f38;
+  border-color: #23534a;
+}
+.wb-trust-page .wb-picker {
+  margin: 8px 0 14px;
+}
+.wb-trust-page .wb-picker label {
+  max-width: 360px;
+}
+.wb-trust-page .wb-tabs button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 11px 15px;
+}
+.trust-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  align-items: start;
+  gap: 14px;
+}
+.trust-main,
+.trust-rail {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+.trust-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+.trust-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: stretch;
+}
+.trust-overview .wb-card {
+  padding: 14px;
+  border-radius: 10px;
+  box-shadow: none;
+}
+.trust-overview h2 {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0 0 13px;
+  line-height: 1.4;
+  gap: 9px;
+}
+.trust-overview h2 svg {
+  color: #8582ff;
+  flex-shrink: 0;
+}
+.trust-overview p {
+  font-size: 12px;
+  line-height: 1.55;
+  margin: 8px 0;
+}
+.trust-overview small,
+.trust-overview time {
+  font-size: 10px;
+  color: var(--wb-muted);
+  overflow-wrap: anywhere;
+}
+.trust-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.trust-metric h2 {
+  margin: 0;
+  color: #afbdd8;
+  font-size: 11px;
+}
+.trust-metric strong {
+  font-size: 19px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.trust-metric:last-child strong {
+  font-size: 15px;
+}
+.trust-card {
+  display: flex;
+  flex-direction: column;
+}
+.trust-card-body {
+  flex: 1;
+  min-width: 0;
+}
+.trust-overview .trust-large {
+  color: #d8d8fc;
+  font-size: 23px;
+  font-weight: 600;
+  margin: 6px 0;
+}
+.trust-large span {
+  font-size: 13px;
+  color: var(--wb-muted);
+}
+.trust-overview .trust-caption {
+  font-size: 10px;
+  margin-top: 12px;
+}
+.wb-trust-page .trust-facts {
+  display: block;
+  padding: 0;
+  margin: 0;
+  font-size: 11px;
+}
+.trust-facts > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid #233047;
+}
+.trust-facts dt {
+  color: var(--wb-muted);
+  flex-shrink: 0;
+}
+.trust-facts dd {
+  margin: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.trust-overview .trust-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.trust-list > li {
+  border-bottom: 1px solid #233047;
+  padding: 9px 0;
+  min-width: 0;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.trust-list > li:last-child,
+.trust-facts > div:last-child {
+  border: 0;
+}
+.trust-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.trust-row > span:first-child,
+.trust-row > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.trust-badge {
+  display: inline-block;
+  border-radius: 7px;
+  padding: 3px 8px;
+  font-size: 10px;
+  white-space: nowrap;
+  color: #b6c2da;
+  background: #202e45;
+}
+.trust-badge.success {
+  color: #66dfb0;
+  background: #103b32;
+}
+.trust-badge.danger {
+  color: #ff7895;
+  background: #3e1c30;
+}
+.trust-badge.warning {
+  color: #eed176;
+  background: #3e351c;
+}
+.trust-overview .trust-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: transparent;
+  border: 0;
+  color: #aaa1ff;
+  padding: 0;
+  margin-top: 15px;
+  align-self: flex-start;
+  font-size: 11px;
+  text-align: left;
+}
+.trust-overview .trust-link:hover {
+  color: #dad5ff;
+  text-decoration: underline;
+}
+.trust-unassessed {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  padding: 12px 0;
+  color: #8582ff;
+}
+.trust-matrix {
+  grid-column: span 2;
+}
+.trust-table-wrap {
+  overflow-x: auto;
+}
+.trust-table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 10px;
+}
+.trust-table-wrap th {
+  color: var(--wb-muted);
+  font-weight: 500;
+}
+.trust-table-wrap td,
+.trust-table-wrap th {
+  padding: 8px 5px;
+  border-bottom: 1px solid var(--wb-line);
+}
+.trust-table-wrap td {
+  overflow-wrap: anywhere;
+}
+.trust-table-wrap small {
+  display: block;
+  margin-top: 3px;
+}
+.trust-overview meter {
+  width: 100%;
+  height: 12px;
+  accent-color: #62dba4;
+}
+.trust-rail .trust-card h2 {
+  font-size: 14px;
+}
+.trust-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+@media (max-width: 1200px) {
+  .trust-overview {
+    grid-template-columns: minmax(0, 1fr) 250px;
+  }
+  .trust-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .trust-card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 950px) {
+  .trust-overview {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .trust-rail {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 600px) {
+  .trust-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .trust-card-grid,
+  .trust-rail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .trust-matrix {
+    grid-column: auto;
+  }
+  .wb-page.wb-trust-page {
+    padding: 16px 12px 28px;
+  }
+}
+/* Shared detail surfaces retain the factual inspection workflow. */
+.wb-trust-page .wb-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.trust-detail-layout {
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr) 280px;
+}
+.trust-detail-main {
+  min-width: 0;
+}
+.trust-detail-main .wb-card {
+  padding: 20px;
+  box-shadow: none;
+}
+.trust-detail-main h2 {
+  font-size: 15px;
+}
+.trust-detail-main h2 svg {
+  color: #8582ff;
+}
+.trust-detail-main p {
+  font-size: 12px;
+}
+.trust-detail-main .wb-policy-table {
+  border: 1px solid var(--wb-line);
+  border-radius: 8px;
+}
+.trust-detail-main .wb-policy table {
+  font-size: 11px;
+}
+.trust-detail-main .wb-policy td {
+  overflow-wrap: anywhere;
+}
+.trust-detail-main .wb-policy th {
+  background: #152134;
+  padding: 12px 8px;
+}
+.trust-detail-main .wb-policy > button {
+  justify-self: start;
+  background: #5141cc;
+}
+.trust-incident-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 0.65fr);
+  gap: 12px;
+  align-items: start;
+}
+.trust-filter-bar {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  gap: 10px;
+}
+.trust-detail-main .wb-incidents article {
+  border: 1px solid var(--wb-line);
+  border-radius: 8px;
+  padding: 14px;
+  background: #0d1623;
+}
+.trust-detail-main .wb-incidents article button {
+  margin: 12px 6px 0 0;
+  font-size: 11px;
+}
+.trust-detail-main .wb-incidents article p {
+  white-space: pre-wrap;
+}
+.trust-detail-main .wb-incidents article small {
+  overflow-wrap: anywhere;
+}
+.trust-detail-main .wb-incidents ul {
+  font-size: 11px;
+  color: var(--wb-muted);
+  padding: 10px 0 0 16px;
+}
+.trust-detail-main .wb-audit ol {
+  list-style: none;
+  padding: 0 0 0 18px;
+  border-left: 2px solid #5141cc;
+}
+.trust-detail-main .wb-audit li {
+  padding: 16px 0;
+}
+.trust-detail-main .wb-audit time,
+.trust-detail-main .wb-audit small {
+  display: block;
+  margin: 7px 0;
+  font-size: 11px;
+}
+.trust-detail-main .wb-audit strong {
+  font-size: 13px;
+}
+.trust-detail-main .wb-audit details {
+  background: #0c1420;
+  padding: 10px;
+  border: 1px solid var(--wb-line);
+  border-radius: 7px;
+}
+.trust-detail-main summary {
+  color: #b6adff;
+  cursor: pointer;
+  font-size: 12px;
+}
+.trust-audit-pagination {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 18px;
+  font-size: 12px;
+}
+@media (max-width: 1250px) {
+  .trust-incident-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 950px) {
+  .trust-detail-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 600px) {
+  .trust-filter-bar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .trust-detail-main .wb-card {
+    padding: 14px;
+  }
+}
+.trust-policy-stack,
+.trust-audit-stack {
+  display: grid;
+  gap: 14px;
+}
+.trust-policy-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.trust-policy-metrics > section {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.trust-policy-metrics svg {
+  color: #8880ff;
+  flex-shrink: 0;
+}
+.trust-policy-metrics span {
+  font-size: 12px;
+  color: var(--wb-muted);
+}
+.trust-policy-metrics strong {
+  display: block;
+  margin-top: 7px;
+  font-size: 22px;
+}
+.wb-trust-page .trust-context-fields {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.trust-detail-main .trust-context-form > button {
+  justify-self: end;
+}
+.trust-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  min-height: 230px;
+  padding: 32px 20px;
+  gap: 12px;
+  color: #a7a0fa;
+}
+.trust-empty-state h3 {
+  color: var(--wb-text);
+  font-size: 17px;
+  font-weight: 550;
+  margin: 8px 0 0;
+}
+.trust-empty-state p {
+  margin: 0;
+  max-width: 530px;
+  line-height: 1.7;
+}
+.trust-empty-icon {
+  display: inline-flex;
+  padding: 16px;
+  border: 1px solid var(--wb-line);
+  border-radius: 50%;
+  background: #162035;
+}
+.trust-panel-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.trust-panel-heading label {
+  flex: 0 1 200px;
+}
+.trust-audit-pagination {
+  justify-content: space-between;
+  border-top: 1px solid var(--wb-line);
+  padding-top: 16px;
+}
+.trust-detail-main .trust-timeline {
+  max-height: 520px;
+  overflow: auto;
+}
+.trust-detail-main .trust-timeline li {
+  padding: 7px 0;
+  border: 0;
+}
+.trust-timeline button {
+  width: 100%;
+  text-align: left;
+}
+.trust-timeline button[aria-pressed="true"] {
+  border-color: #8678f5;
+  background: #222941;
+}
+.trust-event-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.trust-event-title svg {
+  color: #9d93ff;
+}
+.trust-event-details pre {
+  background: #0b1320;
+  border: 1px solid var(--wb-line);
+  border-radius: 8px;
+  padding: 16px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.trust-event-details .trust-empty-state {
+  min-height: 190px;
+}
+.trust-certifications > .wb-card {
+  text-align: center;
+  padding-bottom: 35px;
+}
+.trust-certifications > .wb-card .trust-empty-state {
+  min-height: 330px;
+}
+.trust-certifications > .wb-card .trust-empty-icon {
+  padding: 28px;
+}
+.trust-evidence-links {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+.trust-evidence-links > .wb-card {
+  display: flex;
+  flex-direction: column;
+}
+.trust-evidence-links > .wb-card > svg {
+  color: #9d93ff;
+}
+.trust-evidence-links h3 {
+  font-size: 14px;
+  margin: 16px 0 0;
+}
+.trust-evidence-links p {
+  flex: 1;
+  line-height: 1.7;
+}
+.wb-trust-page .trust-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #aaa1ff;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin-top: 14px;
+  font-size: 12px;
+}
+.wb-trust-page .trust-link:hover {
+  color: #dad5ff;
+  text-decoration: underline;
+}
+.trust-evidence-inputs {
+  border: 1px solid var(--wb-line);
+  padding: 12px;
+  border-radius: 8px;
+}
+.trust-evidence-inputs[open] summary {
+  margin-bottom: 12px;
+}
+.trust-evidence-inputs label + label {
+  margin-top: 12px;
+}
+.trust-detail-layout .trust-rail h2,
+.trust-detail-layout .trust-rail h3 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.trust-detail-layout .trust-rail h2 {
+  font-size: 14px;
+}
+.trust-detail-layout .trust-rail h3 {
+  font-size: 12px;
+  margin: 20px 0 8px;
+}
+.trust-detail-layout .trust-rail svg {
+  color: #a69ffd;
+  flex-shrink: 0;
+}
+.trust-detail-layout .trust-rail p {
+  font-size: 12px;
+  line-height: 1.65;
+}
+.trust-detail-layout .trust-rail .trust-large {
+  color: #c1baf9;
+  font-size: 24px;
+  margin: 8px 0 16px;
+}
+.trust-detail-layout .trust-rail small {
+  font-size: 11px;
+}
+@media (min-width: 1150px) {
+  .trust-incident-layout {
+    grid-template-columns: minmax(0, 1.25fr) minmax(245px, 0.9fr);
+  }
+}
+@media (max-width: 700px) {
+  .wb-trust-page .trust-context-fields,
+  .trust-evidence-links {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .trust-panel-heading {
+    flex-wrap: wrap;
+  }
+  .trust-policy-metrics > section {
+    flex-direction: column;
+    align-items: start;
+    gap: 8px;
+  }
+}
+
+.collab-workspace.wide .collab-main:has(.wb-trust-page) {
+  padding: 0;
+  background: #090f1b;
+}
+
+.wb-trust-page .wb-picker label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 450px;
+}
+.wb-trust-page .wb-picker select {
+  flex: 1;
+}
+.wb-trust-page .wb-header {
+  margin-bottom: 12px;
+}
+.trust-detail-main .trust-timeline button {
+  display: block;
+}
+.trust-metric h2 {
+  min-height: 28px;
+}
+@media (max-width: 600px) {
+  .wb-trust-page .wb-picker label {
+    display: grid;
+    width: 100%;
+  }
+}
+.wb-trust-page .wb-policy tbody tr,
+.wb-trust-page .wb-policy td {
+  background: var(--wb-card);
+  color: var(--wb-text);
+}
+.wb-trust-page .wb-policy tbody tr:hover td {
+  background: #152134;
+}
+.wb-trust-page .wb-policy th,
+.wb-trust-page .wb-policy td {
+  font-size: 11px;
+}

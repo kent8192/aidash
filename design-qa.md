@@ -160,3 +160,9 @@ available. These are future data capabilities, not fabricated indicators.
 - [x] Correct visual findings and recheck responsive and Japanese states.
 - [x] Complete relevant unit/UI checks, lint and production build.
 - [x] Leave a local sample-data preview and record validation boundaries.
+
+## Trust Workbench follow-up
+
+See [Trust Workbench design QA](design/trust-workbench/qa.md) for the approved
+Overview/detail-tab implementation, regression checks and pending authenticated
+real-data verification. This follow-up does not change the Graph View QA above.

@@ -449,8 +449,8 @@ for (const [viewport, locale] of [
         name: locale === "ja-JP" ? "調査エージェント" : "Managed researcher",
       }),
     ).toBeVisible();
-    await expect(page.locator(".wb-trust-layout")).toBeVisible();
-    await expect(page.getByText("Research ·", { exact: false })).toBeVisible();
+    await expect(page.locator(".trust-overview")).toBeVisible();
+    await expect(page.getByText("Research", { exact: true })).toBeVisible();
     await page
       .locator(".wb-tabs")
       .getByRole("button", {
@@ -462,7 +462,7 @@ for (const [viewport, locale] of [
         .getByText(
           locale === "ja-JP"
             ? /Trust評価・認証は行いません/
-            : /Trust assessments and certification are unavailable/,
+            : /Trust assessments and certification await/,
         )
         .first(),
     ).toBeVisible();
@@ -487,7 +487,13 @@ for (const [viewport, locale] of [
     ).toBeVisible();
     await expect(
       page.locator(".wb-policy tbody tr").getByRole("cell"),
-    ).toHaveText(["model · model@1.0.0", "model.infer", "✓", "✓", "—", "—"]);
+    ).toHaveText([
+      "model · model@1.0.0",
+      "model.infer",
+      ...(locale === "ja-JP"
+        ? ["許可", "許可", "制限", "制限"]
+        : ["Allowed", "Allowed", "Restricted", "Restricted"]),
+    ]);
     const widths = await page.evaluate(() => ({
       content: document.documentElement.scrollWidth,
       viewport: window.innerWidth,
@@ -686,5 +692,198 @@ for (const change of ["add", "replace", "remove", "unchanged", "cluster"]) {
     );
     if (change === "cluster")
       await expect(differences).not.toContainText("Private references");
+  });
+}
+
+for (const width of [1280, 390]) {
+  test(`Trust detail tabs support audit inspection and incident filtering at ${width}`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 960 });
+    const { errors } = await setup(page, { locale: "en-US" });
+    const records = [
+      {
+        id: "open-report",
+        revision: 1,
+        severity: "high",
+        status: "open",
+        archived: false,
+        owner: "alice",
+        notes: "Investigate tool access",
+        evidence: [],
+        created_at: "2026-09-25T00:00:00Z",
+        evidence_expired_at: null,
+      },
+      {
+        id: "resolved-report",
+        revision: 2,
+        severity: "low",
+        status: "resolved",
+        archived: false,
+        owner: "bob",
+        notes: "Resolved configuration report",
+        evidence: [],
+        created_at: "2026-09-24T00:00:00Z",
+        evidence_expired_at: null,
+      },
+    ];
+    const auditOffsets: string[] = [];
+    await page.route("**/api/workbench/**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === "/api/workbench/drafts")
+        return route.fulfill({ json: [] });
+      if (url.pathname.endsWith("/managed-agent/1.0.0"))
+        return route.fulfill({
+          json: {
+            entry,
+            source_node: "aidash://home",
+            observed_at: "2026-09-25T00:00:00Z",
+            workspaces: [],
+            test_evidence: [],
+            usage_truncated: false,
+            external_assessment_available: false,
+          },
+        });
+      if (url.pathname.endsWith("/audit")) {
+        const offset = url.searchParams.get("offset") ?? "0";
+        auditOffsets.push(offset);
+        return route.fulfill({
+          json: {
+            observed_at: "2026-09-25T00:00:00Z",
+            source_boundary: "Connected node",
+            items:
+              offset === "0"
+                ? [
+                    {
+                      source: "registry",
+                      kind: "agent_registered",
+                      at: "2026-09-25T00:00:00Z",
+                      actor: "alice",
+                      details: {
+                        version: "1.0.0",
+                        evidence_marker: "registration evidence",
+                      },
+                    },
+                  ]
+                : [],
+            next_offset: offset === "0" ? 50 : null,
+          },
+        });
+      }
+      if (url.pathname.endsWith("/incidents"))
+        return route.fulfill({ json: records });
+      return route.fulfill({
+        status: 404,
+        json: { error: "fixture route unavailable" },
+      });
+    });
+    await page.goto("/trust?focus=managed-agent%401.0.0");
+    await expect(page.locator(".trust-overview")).toBeVisible();
+    await page.screenshot({
+      path: testInfo.outputPath("overview.png"),
+      fullPage: true,
+    });
+    await page.locator(".trust-matrix").scrollIntoViewIfNeeded();
+    await page.screenshot({
+      path: testInfo.outputPath("overview-details.png"),
+      fullPage: true,
+    });
+    const tabs = page.locator(".wb-tabs");
+    await tabs.getByRole("button", { name: "Audit", exact: true }).click();
+    await expect(
+      page.getByText("No event selected", { exact: true }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: /agent_registered/ }).click();
+    await expect(page.locator(".trust-event-details pre")).toContainText(
+      "registration evidence",
+    );
+    await page.screenshot({
+      path: testInfo.outputPath("audit.png"),
+      fullPage: true,
+    });
+    await page.getByRole("button", { name: "Next 50", exact: true }).click();
+    await expect(
+      page.getByText("No visible audit records", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Next 50", exact: true }),
+    ).toBeDisabled();
+    await expect(
+      page.getByText("No event selected", { exact: true }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Back to latest", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: /agent_registered/ }),
+    ).toBeVisible();
+    expect(auditOffsets).toContain("50");
+    await tabs
+      .getByRole("button", { name: "Certifications", exact: true })
+      .click();
+    await expect(
+      page.getByRole("heading", {
+        name: "External certification is unavailable",
+      }),
+    ).toBeVisible();
+    await page.screenshot({
+      path: testInfo.outputPath("certifications.png"),
+      fullPage: true,
+    });
+    await page
+      .getByRole("button", { name: "Go to Policies", exact: true })
+      .click();
+    await expect(
+      page.getByRole("heading", {
+        name: "Choose a context to inspect permissions",
+      }),
+    ).toBeVisible();
+    await page.screenshot({
+      path: testInfo.outputPath("policies.png"),
+      fullPage: true,
+    });
+    await tabs.getByRole("button", { name: "Incidents", exact: true }).click();
+    await page
+      .getByRole("combobox", { name: "Status", exact: true })
+      .selectOption("open");
+    await expect(
+      page.getByText("Investigate tool access", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Resolved configuration report", { exact: true }),
+    ).toHaveCount(0);
+    await page
+      .getByLabel("Search reports", { exact: true })
+      .fill("not present");
+    await expect(
+      page.getByText("No reports match these filters."),
+    ).toBeVisible();
+    await page.getByLabel("Search reports", { exact: true }).fill("");
+    await expect(
+      page.getByRole("button", { name: "Record incident", exact: true }),
+    ).toBeDisabled();
+    await page
+      .getByLabel("Notes", { exact: true })
+      .fill("Regression test note");
+    await expect(
+      page.getByRole("button", { name: "Record incident", exact: true }),
+    ).toBeEnabled();
+    await page.getByText("Evidence (optional)", { exact: true }).click();
+    await page
+      .getByLabel("Evidence title (optional)", { exact: true })
+      .fill("Evidence without content");
+    await expect(
+      page.getByRole("button", { name: "Record incident", exact: true }),
+    ).toBeDisabled();
+    await page.screenshot({
+      path: testInfo.outputPath("incidents.png"),
+      fullPage: true,
+    });
+    const dimensions = await page.evaluate(() => ({
+      content: document.documentElement.scrollWidth,
+      viewport: innerWidth,
+    }));
+    expect(dimensions.content).toBeLessThanOrEqual(dimensions.viewport);
+    expect(errors).toEqual([]);
   });
 }
