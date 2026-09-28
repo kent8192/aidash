@@ -8,6 +8,12 @@ use std::time::Duration;
 use uuid::Uuid;
 
 pub async fn status(f: &Federation, id: Uuid) -> Result<Status> {
+	status_with(&f.store.control_pool, id).await
+}
+pub(super) async fn status_with<'e>(
+	executor: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+	id: Uuid,
+) -> Result<Status> {
 	sqlx::query_as(
 		&sea_orm::sea_query::Query::select()
 			.expr(sea_orm::sea_query::SimpleExpr::from(
@@ -18,7 +24,7 @@ pub async fn status(f: &Federation, id: Uuid) -> Result<Status> {
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(id)
-	.fetch_optional(&f.store.control_pool)
+	.fetch_optional(executor)
 	.await?
 	.ok_or_else(|| Error::NotFound("transaction".into()))
 }
@@ -53,13 +59,28 @@ pub(super) async fn submit_bound(
 	manifest: &Manifest,
 	origin: Option<&super::authority::Origin>,
 ) -> Result<Status> {
+	let mut tx = f.store.control_pool.begin().await?;
+	let stored = submit_in(f, manifest, origin, &mut tx).await?;
+	super::fault::cut(manifest.id, "coordinator.submit.before").await?;
+	tx.commit().await?;
+	super::fault::cut(manifest.id, "coordinator.submit.after").await?;
+	f.notify.notify_waiters();
+	Ok(stored)
+}
+
+pub(super) async fn submit_in(
+	f: &Federation,
+	manifest: &Manifest,
+	origin: Option<&super::authority::Origin>,
+	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<Status> {
 	manifest.validate()?;
 	if manifest.coordinator != f.config.node_id {
 		return Err(Error::Invalid("submit to the named coordinator".into()));
 	}
-	match status(f, manifest.id).await {
+	match status_with(&mut **tx, manifest.id).await {
 		Ok(existing) => {
-			super::authority::match_origin(f, manifest.id, origin).await?;
+			super::authority::match_origin_with(&mut **tx, manifest.id, origin).await?;
 			if existing.digest != manifest.digest()? || existing.manifest != json!(manifest) {
 				return Err(Error::Conflict(
 					"transaction ID already has another immutable manifest".into(),
@@ -90,14 +111,13 @@ pub(super) async fn submit_bound(
 					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 			)
 			.bind(&node.node_id)
-			.fetch_one(&f.store.control_pool)
+			.fetch_one(&mut **tx)
 			.await?;
 			if !allowed {
 				return Err(Error::Forbidden);
 			}
 		}
 	}
-	let mut tx = f.store.control_pool.begin().await?;
 	let inserted = sqlx::query(
 		&sea_orm::sea_query::Query::insert()
 			.into_table(sea_orm::sea_query::Alias::new("atomic_coordinators"))
@@ -121,7 +141,7 @@ pub(super) async fn submit_bound(
 	.bind(manifest.id)
 	.bind(manifest.digest()?)
 	.bind(json!(manifest))
-	.execute(&mut *tx)
+	.execute(&mut **tx)
 	.await?
 	.rows_affected();
 	let stored: Status = sqlx::query_as(
@@ -134,7 +154,7 @@ pub(super) async fn submit_bound(
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(manifest.id)
-	.fetch_one(&mut *tx)
+	.fetch_one(&mut **tx)
 	.await?;
 	if stored.digest != manifest.digest()? || stored.manifest != json!(manifest) {
 		return Err(Error::Conflict(
@@ -143,7 +163,7 @@ pub(super) async fn submit_bound(
 	}
 	if inserted == 1 {
 		if let Some(origin) = origin {
-			super::authority::bind(&mut tx, "atomic_subjects", manifest.id, &json!(origin)).await?;
+			super::authority::bind(tx, "atomic_subjects", manifest.id, &json!(origin)).await?;
 		}
 		for node in &manifest.participants {
 			sqlx::query(
@@ -161,11 +181,11 @@ pub(super) async fn submit_bound(
 			)
 			.bind(manifest.id)
 			.bind(&node.node_id)
-			.execute(&mut *tx)
+			.execute(&mut **tx)
 			.await?;
 		}
 		history(
-			&mut tx,
+			tx,
 			manifest.id,
 			"coordinator",
 			"PENDING",
@@ -173,11 +193,7 @@ pub(super) async fn submit_bound(
 		)
 		.await?;
 	}
-	super::fault::cut(manifest.id, "coordinator.submit.before").await?;
-	tx.commit().await?;
-	super::fault::cut(manifest.id, "coordinator.submit.after").await?;
-	super::authority::match_origin(f, manifest.id, origin).await?;
-	f.notify.notify_waiters();
+	super::authority::match_origin_with(&mut **tx, manifest.id, origin).await?;
 	Ok(stored)
 }
 pub(crate) async fn remote<T: DeserializeOwned>(

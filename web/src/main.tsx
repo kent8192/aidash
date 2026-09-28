@@ -1267,7 +1267,7 @@ function Dashboard({
                   )}
                   {route.section === "settings" &&
                     route.settings !== "transactions" &&
-                    route.settings !== "authorization" && (
+                    (route.settings !== "authorization" || !operator) && (
                       <Suspense
                         fallback={<p role="status">{copy.processing}</p>}
                       >

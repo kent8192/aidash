@@ -85,23 +85,48 @@ async fn list(
 				.to_owned(),
 		));
 	}
-	let sql = select.to_string(PostgresQueryBuilder);
-	let mut query = sqlx::query_as(&sql);
-	if let Actor::Subject(identity) = &actor {
-		query = query.bind(&identity.tenant).bind(&identity.subject);
-	}
-	let rows: Vec<Status> = query.fetch_all(&f.store.control_pool).await?;
+	// Scan bounded pages in a stable order until the visible page is full.
+	select.order_by((Alias::new("c"), Alias::new("id")), Order::Desc);
 	let mut visible = Vec::new();
-	for row in rows {
+	let mut cursor: Option<(DateTime<Utc>, Uuid)> = None;
+	loop {
+		let mut page = select.clone();
+		if cursor.is_some() {
+			page.and_where(Expr::cust(if matches!(actor, Actor::Subject(_)) {
+				"(c.created_at < $3 OR (c.created_at = $3 AND c.id < $4))"
+			} else {
+				"(c.created_at < $1 OR (c.created_at = $1 AND c.id < $2))"
+			}));
+		}
+		let sql = page.to_string(PostgresQueryBuilder);
+		let mut query = sqlx::query_as(&sql);
 		if let Actor::Subject(identity) = &actor {
-			match authority::manage(&f, identity, &row, "transaction.read").await {
-				Ok(()) => {}
-				Err(Error::Forbidden | Error::Unauthorized | Error::NotFound(_)) => continue,
-				Err(error) => return Err(error),
+			query = query.bind(&identity.tenant).bind(&identity.subject);
+		}
+		if let Some((created, id)) = cursor {
+			query = query.bind(created).bind(id);
+		}
+		let rows: Vec<Status> = query.fetch_all(&f.store.control_pool).await?;
+		let exhausted = rows.len() < 200;
+		for row in rows {
+			cursor = Some((row.created_at, row.id));
+			if let Actor::Subject(identity) = &actor {
+				match authority::manage(&f, identity, &row, "transaction.read").await {
+					Ok(()) => {}
+					Err(Error::Forbidden | Error::Unauthorized | Error::NotFound(_)) => continue,
+					Err(error) => return Err(error),
+				}
+			}
+			visible.push(row);
+			if visible.len() == 200 {
+				break;
 			}
 		}
-		visible.push(row);
+		if exhausted || visible.len() == 200 {
+			break;
+		}
 	}
+
 	Ok(Json(visible))
 }
 #[utoipa::path(get,path="/transactions/{id}",operation_id="transaction_details",params(("id"=Uuid,Path)),responses((status=200,body=TransactionDetails)),security(("bearer_auth"=[])))]
@@ -172,29 +197,40 @@ async fn participants(State(f): State<Federation>) -> Result<Json<Vec<LocalStatu
 		.await?,
 	))
 }
-#[utoipa::path(get,path="/transactions/trust",operation_id="transaction_trust_list",responses((status=200,body=[TransactionTrust])),security(("bearer_auth"=[])))]
-async fn trust_list(State(f): State<Federation>) -> Result<Json<Vec<TransactionTrust>>> {
-	Ok(Json(
-		sqlx::query_as(
-			&sea_orm::sea_query::Query::select()
-				.expr(sea_orm::sea_query::SimpleExpr::from(
-					sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("node_id")),
-				))
-				.expr(sea_orm::sea_query::SimpleExpr::from(
-					sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("enabled")),
-				))
-				.from(sea_orm::sea_query::Alias::new("atomic_peer_trust"))
-				.order_by_expr(
-					sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
-						sea_orm::sea_query::Alias::new("node_id"),
-					)),
-					sea_orm::sea_query::Order::Asc,
-				)
-				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
-		)
-		.fetch_all(&f.store.control_pool)
-		.await?,
-	))
+#[utoipa::path(get,path="/transactions/trust",operation_id="transaction_trust_list",responses((status=200,body=[TrustChange])),security(("bearer_auth"=[])))]
+async fn trust_list(State(f): State<Federation>) -> Result<Json<Vec<TrustChange>>> {
+	let rows: Vec<TransactionTrust> = sqlx::query_as(
+		&sea_orm::sea_query::Query::select()
+			.expr(sea_orm::sea_query::SimpleExpr::from(
+				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("node_id")),
+			))
+			.expr(sea_orm::sea_query::SimpleExpr::from(
+				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("enabled")),
+			))
+			.from(sea_orm::sea_query::Alias::new("atomic_peer_trust"))
+			.order_by_expr(
+				sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+					sea_orm::sea_query::Alias::new("node_id"),
+				)),
+				sea_orm::sea_query::Order::Asc,
+			)
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.fetch_all(&f.store.control_pool)
+	.await?;
+	let mut result = Vec::with_capacity(rows.len());
+	for trust in rows {
+		let pending_transactions = if trust.enabled {
+			Vec::new()
+		} else {
+			authority::pending_peer(&f, &trust.node_id).await?
+		};
+		result.push(TrustChange {
+			trust,
+			pending_transactions,
+		});
+	}
+	Ok(Json(result))
 }
 #[derive(Serialize, utoipa::ToSchema)]
 struct TrustChange {

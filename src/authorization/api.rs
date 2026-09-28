@@ -108,7 +108,9 @@ async fn credentials(
 	Query(page): Query<crate::api_schema::PageQuery>,
 ) -> Result<Json<Vec<Credential>>> {
 	Ok(Json(
-		service(f).credentials_page(&tenant, page.offset).await?,
+		control_service(f)
+			.credentials_page(&tenant, page.offset)
+			.await?,
 	))
 }
 #[derive(Serialize, utoipa::ToSchema)]
@@ -123,7 +125,9 @@ async fn revoke_credential(
 	State(f): State<Federation>,
 	Path((tenant, id)): Path<(String, Uuid)>,
 ) -> Result<(axum::http::StatusCode, Json<CredentialRevocation>)> {
-	let credential = service(f.clone()).revoke_credential(&tenant, id).await?;
+	let credential = control_service(f.clone())
+		.revoke_credential(&tenant, id)
+		.await?;
 	let pending_transactions =
 		crate::transactions::authority::pending(&f, &tenant, Some(id)).await?;
 	let status = if pending_transactions.is_empty() {
@@ -160,6 +164,10 @@ fn page_size() -> i64 {
 	100
 }
 fn service(f: Federation) -> Authorization {
+	Authorization { pool: f.store.pool }
+}
+
+fn control_service(f: Federation) -> Authorization {
 	Authorization {
 		pool: f.store.control_pool,
 	}
@@ -170,7 +178,7 @@ async fn snapshot(
 	State(f): State<Federation>,
 	Path(tenant): Path<String>,
 ) -> Result<Json<Snapshot>> {
-	Ok(Json(service(f).snapshot(&tenant).await?))
+	Ok(Json(control_service(f).snapshot(&tenant).await?))
 }
 #[derive(Serialize, utoipa::ToSchema)]
 struct PolicyReplacement {
@@ -184,7 +192,7 @@ async fn replace(
 	Path(tenant): Path<String>,
 	Json(input): Json<AuthorizationUpdate>,
 ) -> Result<(axum::http::StatusCode, Json<PolicyReplacement>)> {
-	let snapshot = service(f.clone())
+	let snapshot = control_service(f.clone())
 		.replace(&tenant, input.expected_revision, input.bundle, "operator")
 		.await?;
 	let pending_transactions = crate::transactions::authority::pending(&f, &tenant, None).await?;
@@ -216,7 +224,7 @@ async fn evaluate(
 	Path(tenant): Path<String>,
 	Json(input): Json<Evaluation>,
 ) -> Result<Json<Decision>> {
-	Ok(Json(service(f).evaluate(&tenant, &input).await?))
+	Ok(Json(control_service(f).evaluate(&tenant, &input).await?))
 }
 #[utoipa::path(post, path = "/authorization/{tenant}/simulate", operation_id = "authorization_simulate", params(("tenant" = String, Path)), request_body = Evaluation, responses((status = 200, body = Decision)), security(("bearer_auth" = [])))]
 async fn simulate(
@@ -224,7 +232,7 @@ async fn simulate(
 	Path(tenant): Path<String>,
 	Json(input): Json<Evaluation>,
 ) -> Result<Json<Decision>> {
-	Ok(Json(service(f).simulate(&tenant, &input).await?))
+	Ok(Json(control_service(f).simulate(&tenant, &input).await?))
 }
 #[utoipa::path(get, path = "/authorization/{tenant}/revisions", operation_id = "authorization_revisions", params(("tenant" = String, Path), AuthorizationPage), responses((status = 200, body = [Value])), security(("bearer_auth" = [])))]
 async fn revisions(

@@ -126,6 +126,13 @@ async fn binding<T: serde::de::DeserializeOwned>(
 	table: &str,
 	id: Uuid,
 ) -> Result<Option<T>> {
+	binding_with(&f.store.control_pool, table, id).await
+}
+async fn binding_with<'e, T: serde::de::DeserializeOwned>(
+	executor: impl sqlx::Executor<'e, Database = Postgres>,
+	table: &str,
+	id: Uuid,
+) -> Result<Option<T>> {
 	let value: Option<Value> = sqlx::query_scalar(
 		&Query::select()
 			.column(Alias::new("binding"))
@@ -134,15 +141,19 @@ async fn binding<T: serde::de::DeserializeOwned>(
 			.to_string(PostgresQueryBuilder),
 	)
 	.bind(id)
-	.fetch_optional(&f.store.control_pool)
+	.fetch_optional(executor)
 	.await?;
 	value
 		.map(serde_json::from_value)
 		.transpose()
 		.map_err(Into::into)
 }
-pub(super) async fn match_origin(f: &Federation, id: Uuid, origin: Option<&Origin>) -> Result<()> {
-	let stored: Option<Origin> = binding(f, "atomic_subjects", id).await?;
+pub(super) async fn match_origin_with<'e>(
+	executor: impl sqlx::Executor<'e, Database = Postgres>,
+	id: Uuid,
+	origin: Option<&Origin>,
+) -> Result<()> {
+	let stored: Option<Origin> = binding_with(executor, "atomic_subjects", id).await?;
 	if stored.as_ref() != origin {
 		return Err(Error::Forbidden);
 	}
@@ -348,8 +359,8 @@ pub(super) async fn preflight(f: &Federation, caller: &str, input: &Preflight) -
 	{
 		return Err(Error::Forbidden);
 	}
-	let _visibility = gate::ReadLease::begin(&f.store).await?;
 	let mut access = mapped(f, input).await?;
+	gate::read_in(&mut access.tx).await?;
 	let result = async {
 		checks(&mut access, input, "transaction.submit").await?;
 		let binding = Binding {
@@ -422,10 +433,10 @@ pub(super) async fn submit(
 	if let Err(error) = result {
 		return access.finish(Err(error)).await;
 	}
-	match coordinator::status(f, manifest.id).await {
+	match coordinator::status_with(&mut **access.tx, manifest.id).await {
 		Ok(existing) => {
 			let result = async {
-				match_origin(f, manifest.id, Some(&origin)).await?;
+				match_origin_with(&mut **access.tx, manifest.id, Some(&origin)).await?;
 				if existing.digest != manifest.digest()? {
 					return Err(Error::Conflict("transaction manifest is immutable".into()));
 				}
@@ -437,8 +448,8 @@ pub(super) async fn submit(
 		Err(Error::NotFound(_)) => {}
 		Err(error) => return access.finish(Err(error)).await,
 	}
-	let lease = gate::ReadLease::begin(&f.store).await?;
 	let result = async {
+		gate::read_in(&mut access.tx).await?;
 		for node in &manifest.participants {
 			let input = request(manifest, &origin, &node.node_id)?;
 			if node.node_id == f.config.node_id {
@@ -465,14 +476,16 @@ pub(super) async fn submit(
 				.await?;
 			}
 		}
-		Ok(())
+		// Commit preflights and the coordinator together under the same visibility
+		// and authority locks, without a second control-pool checkout.
+		let stored = coordinator::submit_in(f, manifest, Some(&origin), &mut access.tx).await?;
+		super::fault::cut(manifest.id, "coordinator.submit.before").await?;
+		Ok(stored)
 	}
 	.await;
-	// Preflights must be durable before recovery can observe the coordinator.
-	// This is not admission; every new reservation checks live authority again.
-	access.finish(result).await?;
-	let stored = coordinator::submit_bound(f, manifest, Some(&origin)).await?;
-	drop(lease);
+	let stored = access.finish(result).await?;
+	super::fault::cut(manifest.id, "coordinator.submit.after").await?;
+	f.notify.notify_waiters();
 	Ok(stored)
 }
 
@@ -621,10 +634,19 @@ pub(super) async fn manage(
 	}
 	let manifest: Manifest = serde_json::from_value(state.manifest.clone())?;
 	let mut access = access(f, &Origin::from(identity)).await?;
+	// Live read checks are repeated by dashboard polling; mutation decisions stay audited.
+	access.audit = action != "transaction.read";
 	let result = async {
 		source_checks(&mut access, &manifest, &origin, "transaction.read").await?;
 		if action != "transaction.read" {
-			let resource = access.resource("transaction", state.id, json!({}));
+			let resource = access.resource(
+				"transaction",
+				state.id,
+				json!({
+					"coordinator": manifest.coordinator,
+					"participants": manifest.participants.iter().map(|p| &p.node_id).collect::<Vec<_>>()
+				}),
+			);
 			access.require(&resource, action).await?;
 		}
 		for node in &manifest.participants {
@@ -659,6 +681,7 @@ pub(super) async fn read_access(f: &Federation, caller: &str, input: &Preflight)
 		return Err(Error::Forbidden);
 	}
 	let mut access = mapped(f, input).await?;
+	access.audit = false;
 	if Origin::from(&access.identity) != bound.local {
 		return Err(Error::Forbidden);
 	}

@@ -215,7 +215,15 @@ export function TransactionsPage({
                     ))}
                   </select>
                 </Field>
-                <button disabled={busy}>{t("transactionGrant")}</button>
+                <button
+                  disabled={
+                    busy ||
+                    !!trust.data?.find((grant) => grant.node_id === peer.trim())
+                      ?.pending_transactions?.length
+                  }
+                >
+                  {t("transactionGrant")}
+                </button>
               </form>
             </div>
             {!trust.isError &&
@@ -225,18 +233,41 @@ export function TransactionsPage({
                     <strong>
                       <ReferenceName id={grant.node_id} />
                     </strong>
-                    <Badge value={grant.enabled ? "ENABLED" : "DISABLED"} />
+                    <Badge
+                      value={
+                        grant.pending_transactions?.length
+                          ? "PENDING"
+                          : grant.enabled
+                            ? "ENABLED"
+                            : "DISABLED"
+                      }
+                    />
+                    {!!grant.pending_transactions?.length && (
+                      <p className="notice" role="status">
+                        {t("transactionRevocationPending")}{" "}
+                        {grant.pending_transactions.join(", ")}
+                      </p>
+                    )}
                   </div>
                   <button
                     disabled={busy}
                     onClick={() =>
                       void mutate(() =>
-                        transactionTrust({ ...grant, enabled: !grant.enabled }),
+                        transactionTrust({
+                          node_id: grant.node_id,
+                          enabled:
+                            !grant.enabled &&
+                            !grant.pending_transactions?.length,
+                        }),
                       )
                     }
                   >
                     {t(
-                      grant.enabled ? "transactionRevoke" : "transactionGrant",
+                      grant.pending_transactions?.length
+                        ? "transactionCheckRevocation"
+                        : grant.enabled
+                          ? "transactionRevoke"
+                          : "transactionGrant",
                     )}
                   </button>
                 </div>

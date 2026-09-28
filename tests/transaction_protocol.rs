@@ -1244,6 +1244,41 @@ async fn mapped_transaction_admission_and_revocation(
 		return;
 	}
 	assert_eq!(status, 202, "{body}");
+	if revocation == "lost_reply" {
+		use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+		let query = Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(Alias::new("authorization_decisions"))
+			.to_string(PostgresQueryBuilder);
+		let before_a: i64 = sqlx::query_scalar(&query)
+			.fetch_one(&a.f.store.pool)
+			.await
+			.unwrap();
+		let before_b: i64 = sqlx::query_scalar(&query)
+			.fetch_one(&b.f.store.pool)
+			.await
+			.unwrap();
+		for _ in 0..2 {
+			let (status, rows) =
+				common::request(&app_a, &token_a, "GET", "/api/transactions", Value::Null).await;
+			assert_eq!(status, 200, "{rows}");
+			assert_eq!(rows[0]["id"], json!(manifest.id));
+		}
+		assert_eq!(
+			sqlx::query_scalar::<_, i64>(&query)
+				.fetch_one(&a.f.store.pool)
+				.await
+				.unwrap(),
+			before_a
+		);
+		assert_eq!(
+			sqlx::query_scalar::<_, i64>(&query)
+				.fetch_one(&b.f.store.pool)
+				.await
+				.unwrap(),
+			before_b
+		);
+	}
 	steps(
 		&a,
 		manifest.id,
@@ -1304,6 +1339,24 @@ async fn mapped_transaction_admission_and_revocation(
 				"an unknown durable admission cannot acknowledge complete revocation: {body}"
 			);
 			assert_eq!(body["pending_transactions"], json!([manifest.id]));
+			let (status, trust) = a
+				.request(
+					reqwest::Method::POST,
+					"/api/transactions/trust",
+					Some(json!({"node_id":b.f.config.node_id,"enabled":false})),
+				)
+				.await;
+			assert_eq!(status, 202, "{trust}");
+			assert_eq!(trust["pending_transactions"], json!([manifest.id]));
+			let (_, trusts) = a.get("/api/transactions/trust").await;
+			let pending_trust = trusts
+				.as_array()
+				.unwrap()
+				.iter()
+				.find(|r| r["node_id"] == b.f.config.node_id)
+				.unwrap();
+			assert_eq!(pending_trust["pending_transactions"], json!([manifest.id]));
+
 			assert_eq!(
 				common::request(&app_a, &token_a, "GET", "/api/transactions", Value::Null)
 					.await
@@ -1365,6 +1418,14 @@ async fn mapped_transaction_admission_and_revocation(
 			common::request(&app_a, &a.f.config.api_token, "POST", &path, Value::Null).await;
 		assert_eq!(status, 200, "{body}");
 		assert_eq!(body["pending_transactions"], json!([]));
+		let (_, trusts) = a.get("/api/transactions/trust").await;
+		let trust = trusts
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|r| r["node_id"] == b.f.config.node_id)
+			.unwrap();
+		assert_eq!(trust["pending_transactions"], json!([]));
 	}
 	for (node, workspace) in [(&a, wa), (&b, wb)] {
 		assert_eq!(

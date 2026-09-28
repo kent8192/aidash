@@ -577,5 +577,6 @@
   "toolManualRemoteAgent": "Enter a remote agent reference",
   "toolChooseRemoteAgent": "Choose a discovered agent",
   "toolRemoteAgentReference": "Remote agent reference",
+  "transactionCheckRevocation": "Check revocation",
   "transactionRevocationPending": "New admissions are denied after revocation. Some previously issued admission attempts still need a durable result; revocation remains pending until they are reconciled."
 }
