@@ -110,6 +110,7 @@ async function editableDrafts(
   await expect(page.getByLabel("Additional instructions")).toHaveValue(
     "First draft",
   );
+  await page.getByText("Select & manage drafts", { exact: true }).click();
   return { state, saves, cursors, drafts };
 }
 
@@ -546,6 +547,7 @@ for (const status of [
       .locator(".wb-tabs")
       .getByRole("button", { name: "Test", exact: true })
       .click();
+    await page.getByLabel("Tool mode").selectOption("simulated");
     const input = page.getByPlaceholder("Test message…");
     const send = page
       .locator(".wb-test-compose")
@@ -686,5 +688,128 @@ for (const change of ["add", "replace", "remove", "unchanged", "cluster"]) {
     );
     if (change === "cluster")
       await expect(differences).not.toContainText("Private references");
+  });
+}
+
+test("Creator preserves unsaved edits across all five tabs and invalidates validation", async ({
+  page,
+}) => {
+  const { drafts } = await editableDrafts(page);
+  const registered: Record<string, unknown>[] = [];
+  await page.route(
+    `**/api/workbench/drafts/${drafts[0].id}/validate`,
+    async (route) => {
+      const { expected_revision } = route.request().postDataJSON();
+      await route.fulfill({
+        json: {
+          draft_id: drafts[0].id,
+          revision: expected_revision,
+          valid: true,
+          message: "Draft structure validated",
+        },
+      });
+    },
+  );
+  await page.route(
+    `**/api/workbench/drafts/${drafts[0].id}/register`,
+    async (route) => {
+      registered.push(route.request().postDataJSON());
+      await route.fulfill({
+        json: {
+          draft_id: drafts[0].id,
+          revision: drafts[0].revision,
+          entry: drafts[0].entry,
+          behavioral_tested: false,
+        },
+      });
+    },
+  );
+  const tabs = page.locator(".wb-tabs");
+  await page
+    .getByLabel("Additional instructions")
+    .fill("Keep these instructions while reviewing the draft");
+  for (const name of [
+    "Build",
+    "Test",
+    "Versions",
+    "Register in Registry",
+    "Overview",
+  ]) {
+    await tabs.getByRole("button", { name, exact: true }).click();
+    await expect(
+      tabs.getByRole("button", { name, exact: true }),
+    ).toHaveAttribute("aria-current", "page");
+    if (name === "Test") {
+      await expect(page.getByLabel("Tool mode")).toHaveValue("real");
+      await expect(page.locator(".wb-test-compose button")).toBeDisabled();
+    }
+    if (name === "Versions")
+      await expect(
+        page.getByText("Register your first version to view history"),
+      ).toBeVisible();
+    if (name === "Register in Registry")
+      await expect(
+        page.locator(".wb-register-layout .wb-primary"),
+      ).toBeDisabled();
+  }
+  await expect(page.getByLabel("Additional instructions")).toHaveValue(
+    "Keep these instructions while reviewing the draft",
+  );
+  await page
+    .locator(".wb-actions")
+    .getByRole("button", {
+      name: "Save draft + Technical validation",
+      exact: true,
+    })
+    .click();
+  await tabs
+    .getByRole("button", { name: "Register in Registry", exact: true })
+    .click();
+  await expect(page.locator(".wb-register-layout .wb-primary")).toBeEnabled();
+  await page
+    .getByLabel("Release notes", { exact: true })
+    .fill("Changed after validation");
+  await expect(page.locator(".wb-register-layout .wb-primary")).toBeDisabled();
+  await expect(page.locator(".wb-validation-status")).toContainText(
+    "This draft has not been validated.",
+  );
+  expect(registered).toEqual([]);
+  await page
+    .locator(".wb-actions")
+    .getByRole("button", {
+      name: "Save draft + Technical validation",
+      exact: true,
+    })
+    .click();
+  await page.locator(".wb-register-layout .wb-primary").click();
+  await expect.poll(() => registered.length).toBe(1);
+  expect(registered[0]).toEqual({ expected_revision: drafts[0].revision });
+});
+
+for (const width of [1280, 900, 390]) {
+  test(`Creator tab layouts stay within the viewport at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 960 });
+    await editableDrafts(page);
+    await page.getByText("Select & manage drafts", { exact: true }).click();
+    for (const name of [
+      "Build",
+      "Test",
+      "Versions",
+      "Register in Registry",
+      "Overview",
+    ]) {
+      await page
+        .locator(".wb-tabs")
+        .getByRole("button", { name, exact: true })
+        .click();
+      const dimensions = await page.evaluate(() => ({
+        width: document.documentElement.scrollWidth,
+        viewport: window.innerWidth,
+      }));
+      expect(dimensions.width, name).toBeLessThanOrEqual(dimensions.viewport);
+      await expect(page.locator(".wb-layout")).toBeVisible();
+    }
   });
 }

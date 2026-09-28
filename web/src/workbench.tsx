@@ -2,6 +2,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker } from "@tanstack/react-router";
 import {
   Bot,
+  Blocks,
+  Database,
+  FlaskConical,
+  History,
+  Link2,
+  Settings2,
+  Send,
+  Wrench,
+  Zap,
+  BookOpen,
+  Clock3,
   CheckCircle2,
   CircleAlert,
   FileText,
@@ -366,12 +377,12 @@ function split(value: string): string[] {
     ),
   ];
 }
-function versionDifferences(
+function versionFields(
   draft: AgentEntry,
   registered: AgentEntry,
   draftKnowledgeDigest: string | null,
-): string[] {
-  const fields: [string, unknown, unknown][] = [
+): [string, unknown, unknown][] {
+  return [
     ["Profile", draft.name, registered.name],
     ["Description", draft.description, registered.description],
     ["Capabilities", draft.capabilities, registered.capabilities],
@@ -409,7 +420,13 @@ function versionDifferences(
       },
     ],
   ];
-  return fields
+}
+function versionDifferences(
+  draft: AgentEntry,
+  registered: AgentEntry,
+  draftKnowledgeDigest: string | null,
+): string[] {
+  return versionFields(draft, registered, draftKnowledgeDigest)
     .filter(
       ([, current, previous]) =>
         JSON.stringify(current) !== JSON.stringify(previous),
@@ -529,7 +546,7 @@ export function Workbench({
   const [selectedVersion, setSelectedVersion] = useState("");
   const [testInput, setTestInput] = useState("");
   const [fixtures, setFixtures] = useState("{}");
-  const [testMode, setTestMode] = useState<"simulated" | "real">("simulated");
+  const [testMode, setTestMode] = useState<"simulated" | "real">("real");
   const [testProfileId, setTestProfileId] = useState("");
   const [testProfiles, setTestProfiles] = useState<TestProfile[]>([]);
   const [testLimits, setTestLimits] = useState<TestLimits | null>(null);
@@ -853,7 +870,7 @@ export function Workbench({
         setContinueFrom(null);
         setPendingTestId(null);
         setTestProfileId("");
-        setTestMode("simulated");
+        setTestMode("real");
       }
     });
     return () => {
@@ -1160,7 +1177,9 @@ export function Workbench({
     setBusy(true);
     setError("");
     try {
-      const parsed = JSON.parse(fixtures) as Record<string, unknown>;
+      const parsed = (
+        testMode === "simulated" ? JSON.parse(fixtures) : {}
+      ) as Record<string, unknown>;
       if (!parsed || Array.isArray(parsed) || typeof parsed !== "object")
         throw new Error("Fixtures must be a JSON object");
       const session = await apiFetch<TestSession>(
@@ -1186,7 +1205,7 @@ export function Workbench({
       );
       setPendingTestId(session.status === "running" ? session.id : null);
       setTestInput((pending) => (pending === submittedMessage ? "" : pending));
-      setCreatorTab("test");
+      if (creatorTab !== "overview") setCreatorTab("test");
     } catch (cause) {
       setError(
         cause instanceof ApiError && cause.status === 409
@@ -1369,9 +1388,8 @@ export function Workbench({
     selectedAgentId,
     selectedAgentVersion,
   ]);
-  const testPanel = (
-    <section className="wb-card wb-test">
-      <h2>{t.test}</h2>
+  const testConfiguration = (
+    <div className="wb-test-configuration">
       <p>
         {testMode === "real"
           ? locale === "ja-JP"
@@ -1446,6 +1464,44 @@ export function Workbench({
       {testMode === "real" && !testProfiles.length && (
         <p className="wb-alert">{t.setup}</p>
       )}
+      {testMode === "simulated" && (
+        <details>
+          <summary>
+            {locale === "ja-JP"
+              ? "明示的な模擬ツール応答"
+              : "Explicit simulated tool responses"}
+          </summary>
+          <label>
+            {locale === "ja-JP"
+              ? "模擬ツール応答（名前 → status / response のJSON）"
+              : "Simulated tool fixtures (name → status / response JSON)"}
+            <textarea
+              rows={3}
+              spellCheck={false}
+              value={fixtures}
+              onChange={(event) => setFixtures(event.target.value)}
+            />
+          </label>
+        </details>
+      )}
+    </div>
+  );
+  const testPanel = (
+    <section className="wb-card wb-test">
+      <h2>
+        <FlaskConical size={18} />
+        {locale === "ja-JP" ? "テストサンドボックス" : "Test sandbox"}
+      </h2>
+      {creatorTab === "overview" && (
+        <details className="wb-test-config">
+          <summary>
+            {locale === "ja-JP"
+              ? "テスト環境と上限"
+              : "Test environment & limits"}
+          </summary>
+          {testConfiguration}
+        </details>
+      )}
       <div className="wb-test-options">
         <small>
           {continueFrom
@@ -1472,11 +1528,24 @@ export function Workbench({
         <div className="wb-test-log">
           {testSessions.length ? (
             testSessions.map((session) => (
-              <article className="wb-test-session" key={session.id}>
+              <article
+                className="wb-test-session"
+                id={`test-${session.id}`}
+                key={session.id}
+              >
                 <header>
                   <strong>
                     r{session.revision} · {session.status}
                   </strong>
+                  <small>
+                    {session.scenario.mode === "real"
+                      ? locale === "ja-JP"
+                        ? "実接続"
+                        : "Real connection"
+                      : locale === "ja-JP"
+                        ? "模擬ツール"
+                        : "Simulated tools"}
+                  </small>
                   <time>
                     {new Date(session.created_at).toLocaleString(locale)}
                   </time>
@@ -1537,23 +1606,21 @@ export function Workbench({
               </article>
             ))
           ) : (
-            <p>{t.noTests}</p>
+            <div className="wb-test-empty">
+              <FlaskConical size={36} />
+              <h3>
+                {locale === "ja-JP"
+                  ? "テスト会話を開始"
+                  : "Start a test conversation"}
+              </h3>
+              <p>{t.noTests}</p>
+            </div>
           )}
         </div>
       </div>
-      <label>
-        {locale === "ja-JP"
-          ? "模擬ツール応答（名前 → status / response のJSON）"
-          : "Simulated tool fixtures (name → status / response JSON)"}
-        <textarea
-          rows={3}
-          spellCheck={false}
-          value={fixtures}
-          onChange={(event) => setFixtures(event.target.value)}
-        />
-      </label>
       <div className="wb-test-compose">
         <textarea
+          aria-label={locale === "ja-JP" ? "テストメッセージ" : "Test message"}
           rows={2}
           value={testInput}
           placeholder={
@@ -1587,8 +1654,8 @@ export function Workbench({
 
   const renderEditor = () =>
     !editing ? null : (
-      <div className="wb-stack">
-        <section className="wb-card">
+      <div className="wb-editor-grid">
+        <section className="wb-card wb-profile wb-span">
           <h2>
             <Bot size={18} /> {t.profile}
           </h2>
@@ -1660,25 +1727,17 @@ export function Workbench({
                 }
               />
             </label>
-            <label className="wb-span">
-              {t.capabilities}
-              <input
-                value={editing.capabilities.join(", ")}
-                onChange={(event) =>
-                  change((value) => {
-                    value.capabilities = split(event.target.value);
-                  })
-                }
-              />
-            </label>
           </div>
         </section>
-        <section className="wb-card">
-          <h2>{t.build}</h2>
+        <section className="wb-card wb-instructions wb-span">
+          <h2>
+            <FileText size={18} />
+            {t.instructions}
+          </h2>
           <label>
             {t.instructions}
             <textarea
-              rows={7}
+              rows={4}
               value={editing.config.instructions}
               onChange={(event) =>
                 change((value) => {
@@ -1687,7 +1746,30 @@ export function Workbench({
               }
             />
           </label>
-          <div className="wb-fields">
+        </section>
+        <section className="wb-card wb-capabilities">
+          <h2>
+            <Zap size={18} />
+            {t.capabilities.split("（")[0].split(" (")[0]}
+          </h2>
+          <label className="wb-span">
+            {t.capabilities}
+            <input
+              value={editing.capabilities.join(", ")}
+              onChange={(event) =>
+                change((value) => {
+                  value.capabilities = split(event.target.value);
+                })
+              }
+            />
+          </label>
+        </section>
+        <section className="wb-card wb-model">
+          <h2>
+            <Blocks size={18} />
+            {t.model}
+          </h2>
+          <div className="wb-model-field">
             <label>
               {t.model}
               <select
@@ -1706,6 +1788,15 @@ export function Workbench({
                   })
                 }
               >
+                {!models.some(
+                  (model) => refKey(model) === refKey(editing.config.model),
+                ) && (
+                  <option value={refKey(editing.config.model)} disabled>
+                    {editing.config.model.id
+                      ? `${refKey(editing.config.model)} · ${locale === "ja-JP" ? "利用不可" : "Unavailable"}`
+                      : t.noModel}
+                  </option>
+                )}
                 {models.map((model) => (
                   <option
                     key={`${model.id}@${model.version}`}
@@ -1716,24 +1807,23 @@ export function Workbench({
                 ))}
               </select>
             </label>
-            <label>
-              {t.maxSteps}
-              <input
-                type="number"
-                min={1}
-                max={1000}
-                value={editing.config.max_steps}
-                onChange={(event) =>
-                  change((value) => {
-                    value.config.max_steps = Number(event.target.value);
-                  })
-                }
-              />
-            </label>
           </div>
+        </section>
+        <section className="wb-card wb-integrations">
+          <h2>
+            <Link2 size={18} />
+            {t.tools} &amp; {t.skills}
+          </h2>
           <div className="wb-checklist">
             <fieldset>
               <legend>{t.skills}</legend>
+              {!skills.length && (
+                <p>
+                  {locale === "ja-JP"
+                    ? "利用可能なSkillがありません。"
+                    : "No available skills."}
+                </p>
+              )}
               {skills.map((skill) => (
                 <label key={refKey(skill)}>
                   <input
@@ -1760,6 +1850,13 @@ export function Workbench({
             </fieldset>
             <fieldset>
               <legend>{t.tools}</legend>
+              {!tools.length && (
+                <p>
+                  {locale === "ja-JP"
+                    ? "利用可能なツールがありません。"
+                    : "No available tools."}
+                </p>
+              )}
               {tools.map((tool) => (
                 <label key={refKey(tool)}>
                   <input
@@ -1786,24 +1883,13 @@ export function Workbench({
             </fieldset>
           </div>
         </section>
-        <section className="wb-card wb-behavior">
+        <section className="wb-card wb-behavior wb-memory">
           <h2>
-            {locale === "ja-JP"
-              ? "ワークスペースでの動作"
-              : "Workspace behavior"}
+            <Database size={18} />
+            {locale === "ja-JP" ? "メモリとコンテキスト" : "Memory & context"}
           </h2>
           {(
             [
-              [
-                "allow_task_creation",
-                locale === "ja-JP"
-                  ? "タスクの自動作成"
-                  : "Automatic task creation",
-              ],
-              [
-                "allow_task_delegation",
-                locale === "ja-JP" ? "自動委任" : "Automatic delegation",
-              ],
               [
                 "allow_memory_write",
                 locale === "ja-JP"
@@ -1837,13 +1923,62 @@ export function Workbench({
               {title}
             </label>
           ))}
+        </section>
+        <section className="wb-card wb-behavior wb-span">
+          <h2>
+            <Settings2 size={18} />
+            {locale === "ja-JP"
+              ? "ワークスペースでの動作"
+              : "Workspace behavior"}
+          </h2>
+          {(
+            [
+              [
+                "allow_task_creation",
+                locale === "ja-JP"
+                  ? "タスクの自動作成"
+                  : "Automatic task creation",
+              ],
+              [
+                "allow_task_delegation",
+                locale === "ja-JP" ? "自動委任" : "Automatic delegation",
+              ],
+            ] as const
+          ).map(([key, title]) => (
+            <label key={key}>
+              <input
+                type="checkbox"
+                checked={editing.config[key] === true}
+                onChange={(event) =>
+                  change((value) => {
+                    value.config[key] = event.target.checked;
+                  })
+                }
+              />
+              {title}
+            </label>
+          ))}
+          <label>
+            {t.maxSteps}
+            <input
+              type="number"
+              min={1}
+              max={1000}
+              value={editing.config.max_steps}
+              onChange={(event) =>
+                change((value) => {
+                  value.config.max_steps = Number(event.target.value);
+                })
+              }
+            />
+          </label>{" "}
           <p>
             {locale === "ja-JP"
               ? "ここで許可しても、既存の権限ポリシーは広がりません。"
               : "These settings never expand existing permissions."}
           </p>
         </section>
-        <section className="wb-card">
+        <section className="wb-card wb-documents wb-span">
           <h2>
             <FileText size={18} /> {t.docs}
           </h2>
@@ -2201,10 +2336,27 @@ export function Workbench({
     </section>
   );
 
+  const validationCurrent =
+    !!current &&
+    !dirty &&
+    validation?.draft_id === current.id &&
+    validation.revision === current.revision;
+  const referenceName = (ref: Ref) => {
+    const entry = data.registry.find(
+      (item) => item.id === ref.id && item.version === ref.version,
+    );
+    return entry ? `${label(entry, locale)} · ${ref.version}` : refKey(ref);
+  };
+  const formatComparison = (value: unknown) =>
+    typeof value === "string"
+      ? value || "—"
+      : value == null
+        ? "—"
+        : JSON.stringify(value, null, 2);
   const heroEntry = mode === "creator" ? editing : selectedAgent;
   const heroIcon = heroEntry ? profile(heroEntry).icon : undefined;
   return (
-    <main className="wb-page">
+    <main className={`wb-page ${mode === "creator" ? "wb-creator" : ""}`}>
       <div className="wb-header">
         <div className="wb-identity">
           <span className="wb-hero-icon" aria-hidden="true">
@@ -2227,6 +2379,13 @@ export function Workbench({
                   ? label(selectedAgent, locale)
                   : "Trust Workbench"}
             </h1>
+            {mode === "creator" && editing && (
+              <p className="wb-hero-description">
+                {editing.description[locale.slice(0, 2)] ||
+                  editing.description.en ||
+                  ""}
+              </p>
+            )}
             <p>
               {mode === "creator" && current
                 ? `${t.draft} · ${current.tenant} / ${current.owner} · r${current.revision}`
@@ -2256,7 +2415,7 @@ export function Workbench({
                 className="wb-primary"
                 type="button"
                 disabled={busy}
-                onClick={() => void act("register")}
+                onClick={() => setCreatorTab("register")}
               >
                 {dirty ? `${t.save} + ${t.register}` : t.register}
               </button>
@@ -2293,84 +2452,96 @@ export function Workbench({
       )}
       {mode === "creator" ? (
         <>
-          <div className="wb-picker">
-            <label>
-              {t.select}
-              <select
-                value={current ? focus : ""}
-                onChange={(event) => choose(event.target.value)}
-              >
-                <option value="">{t.new}</option>
-                {drafts.map((draft) => (
-                  <option
-                    key={draft.id}
-                    value={`${draft.entry.id}@${draft.entry.version}`}
-                  >
-                    {label(draft.entry, locale)} · {draft.entry.version} · r
-                    {draft.revision}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {isOperator && (
-              <>
-                <label>
-                  {t.operatorTenant}
-                  <input
-                    value={tenant}
-                    onChange={(event) => setTenant(event.target.value)}
-                  />
-                </label>
-                <label>
-                  {t.operatorOwner}
-                  <input
-                    value={owner}
-                    onChange={(event) => setOwner(event.target.value)}
-                  />
-                </label>
-              </>
-            )}
-            <button
-              type="button"
-              disabled={busy || !models.length}
-              onClick={() => void create()}
-            >
-              {t.create}
-            </button>
-            <button type="button" onClick={() => void reload()}>
-              {t.refresh}
-            </button>
-          </div>
-          {isOperator && agents.length > 0 && (
+          <details
+            className="wb-draft-management"
+            open={current ? undefined : true}
+          >
+            <summary>
+              {locale === "ja-JP"
+                ? "下書きの選択・管理"
+                : "Select & manage drafts"}
+            </summary>
             <div className="wb-picker">
               <label>
-                {locale === "ja-JP"
-                  ? "既存エージェントを割り当て"
-                  : "Assign existing agent"}
+                {t.select}
                 <select
-                  value={adoptRef}
-                  onChange={(event) => setAdoptRef(event.target.value)}
+                  value={current ? focus : ""}
+                  onChange={(event) => choose(event.target.value)}
                 >
-                  <option value="">{t.select}</option>
-                  {agents.map((agent) => (
+                  <option value="">{t.new}</option>
+                  {drafts.map((draft) => (
                     <option
-                      key={`${agent.id}@${agent.version}`}
-                      value={`${agent.id}@${agent.version}`}
+                      key={draft.id}
+                      value={`${draft.entry.id}@${draft.entry.version}`}
                     >
-                      {label(agent, locale)} · {agent.version}
+                      {label(draft.entry, locale)} · {draft.entry.version} · r
+                      {draft.revision}
                     </option>
                   ))}
                 </select>
               </label>
+              {isOperator && (
+                <>
+                  <label>
+                    {t.operatorTenant}
+                    <input
+                      value={tenant}
+                      onChange={(event) => setTenant(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    {t.operatorOwner}
+                    <input
+                      value={owner}
+                      onChange={(event) => setOwner(event.target.value)}
+                    />
+                  </label>
+                </>
+              )}
               <button
                 type="button"
-                disabled={busy || !adoptRef || !tenant || !owner}
-                onClick={() => void adoptLegacy()}
+                disabled={busy || !models.length}
+                onClick={() => void create()}
               >
-                {locale === "ja-JP" ? "Creatorに割り当て" : "Assign to Creator"}
+                {t.create}
+              </button>
+              <button type="button" onClick={() => void reload()}>
+                {t.refresh}
               </button>
             </div>
-          )}
+            {isOperator && agents.length > 0 && (
+              <div className="wb-picker">
+                <label>
+                  {locale === "ja-JP"
+                    ? "既存エージェントを割り当て"
+                    : "Assign existing agent"}
+                  <select
+                    value={adoptRef}
+                    onChange={(event) => setAdoptRef(event.target.value)}
+                  >
+                    <option value="">{t.select}</option>
+                    {agents.map((agent) => (
+                      <option
+                        key={`${agent.id}@${agent.version}`}
+                        value={`${agent.id}@${agent.version}`}
+                      >
+                        {label(agent, locale)} · {agent.version}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  disabled={busy || !adoptRef || !tenant || !owner}
+                  onClick={() => void adoptLegacy()}
+                >
+                  {locale === "ja-JP"
+                    ? "Creatorに割り当て"
+                    : "Assign to Creator"}
+                </button>
+              </div>
+            )}
+          </details>
           {!models.length && (
             <p className="wb-notice" role="status">
               {t.noModels}
@@ -2384,153 +2555,357 @@ export function Workbench({
             <>
               <nav className="wb-tabs" aria-label="Creator">
                 <button
+                  aria-current={creatorTab === "overview" ? "page" : undefined}
                   className={creatorTab === "overview" ? "active" : ""}
                   onClick={() => setCreatorTab("overview")}
                 >
-                  {t.overview}
+                  <BookOpen size={16} /> {t.overview}
                 </button>
                 <button
+                  aria-current={creatorTab === "build" ? "page" : undefined}
                   className={creatorTab === "build" ? "active" : ""}
                   onClick={() => setCreatorTab("build")}
                 >
-                  {t.build}
+                  <Blocks size={16} /> {t.build}
                 </button>
                 <button
+                  aria-current={creatorTab === "test" ? "page" : undefined}
                   className={creatorTab === "test" ? "active" : ""}
                   onClick={() => setCreatorTab("test")}
                 >
-                  {t.test}
+                  <FlaskConical size={16} /> {t.test}
                 </button>
                 <button
+                  aria-current={creatorTab === "versions" ? "page" : undefined}
                   className={creatorTab === "versions" ? "active" : ""}
                   onClick={() => setCreatorTab("versions")}
                 >
-                  {t.versions}
+                  <History size={16} /> {t.versions}
                 </button>
                 <button
+                  aria-current={creatorTab === "register" ? "page" : undefined}
                   className={creatorTab === "register" ? "active" : ""}
                   onClick={() => setCreatorTab("register")}
                 >
-                  {t.register}
+                  <Send size={16} /> {t.register}
                 </button>
               </nav>
               <div
-                className={`wb-layout ${creatorTab === "overview" ? "overview" : "single"}`}
+                className={`wb-layout ${creatorTab === "overview" ? "overview" : "single"} wb-tab-${creatorTab}`}
               >
                 <div>
                   {(creatorTab === "overview" || creatorTab === "build") &&
                     renderEditor()}
-                  {creatorTab === "test" && testPanel}
-                  {creatorTab === "versions" && (
-                    <div className="wb-stack">
+                  {creatorTab === "test" && (
+                    <div className="wb-test-layout">
                       <section className="wb-card">
-                        <h2>{t.registeredVersion}</h2>
-                        {registeredVersions.map((version) => (
-                          <button
-                            key={version.entry.version}
-                            type="button"
-                            aria-pressed={
-                              selectedRegisteredVersion?.entry.version ===
-                              version.entry.version
-                            }
-                            onClick={() =>
-                              setSelectedVersion(version.entry.version)
-                            }
-                          >
-                            {version.entry.version} ·{" "}
-                            {version.draft_revision === null
-                              ? locale === "ja-JP"
-                                ? "既存版"
-                                : "Legacy"
-                              : `r${version.draft_revision}`}
-                          </button>
-                        ))}
-                        {!registeredVersions.length && <p>{t.noVersions}</p>}
-                        {selectedRegisteredVersion && (
-                          <div className="wb-version-detail">
-                            <p>
-                              {selectedRegisteredVersion.entry.id}@
-                              {selectedRegisteredVersion.entry.version}
-                            </p>
-                            <p>
-                              {selectedRegisteredVersion.registered_at
-                                ? new Date(
-                                    selectedRegisteredVersion.registered_at,
-                                  ).toLocaleString(locale)
-                                : locale === "ja-JP"
-                                  ? "登録時刻は記録されていません"
-                                  : "Registration time unavailable"}{" "}
-                              · {selectedRegisteredVersion.registered_by ?? "—"}
-                            </p>
-                            <p>
-                              {selectedRegisteredVersion.release_notes ||
-                                (locale === "ja-JP"
-                                  ? "リリースノートなし"
-                                  : "No release notes")}
-                            </p>
-                            <p>
-                              {selectedRegisteredVersion.behavioral_tested ===
-                              true
-                                ? locale === "ja-JP"
-                                  ? "登録時に完了済みの動作テストあり"
-                                  : "Completed behavioral test at registration"
-                                : selectedRegisteredVersion.behavioral_tested ===
-                                    false
-                                  ? locale === "ja-JP"
-                                    ? "登録時に完了済みの動作テストなし"
-                                    : "No completed behavioral test at registration"
-                                  : locale === "ja-JP"
-                                    ? "既存版のテスト情報なし"
-                                    : "Legacy test provenance unavailable"}
-                            </p>
-                            {selectedRegisteredVersion.source_id && (
-                              <p>
-                                {locale === "ja-JP" ? "元の版" : "Source"}:{" "}
-                                {selectedRegisteredVersion.source_id}@
-                                {selectedRegisteredVersion.source_version}
-                              </p>
-                            )}
+                        <h2>
+                          <Settings2 size={18} />
+                          {locale === "ja-JP"
+                            ? "テスト環境"
+                            : "Test environment"}
+                        </h2>
+                        {testConfiguration}
+                      </section>
+                      {testPanel}
+                      <aside className="wb-stack">
+                        <section className="wb-card">
+                          <h2>
+                            <Wrench size={18} />
+                            {locale === "ja-JP"
+                              ? "ツール実行"
+                              : "Tool activity"}
+                          </h2>
+                          {testSessions[0]?.tool_calls?.length ? (
+                            <pre className="wb-json">
+                              {JSON.stringify(
+                                testSessions[0].tool_calls,
+                                null,
+                                2,
+                              )}
+                            </pre>
+                          ) : (
                             <p>
                               {locale === "ja-JP"
-                                ? "保存済み下書きとの差分"
-                                : "Differences from saved draft"}
-                              :{" "}
-                              {versionDifferences(
-                                current.entry,
-                                selectedRegisteredVersion.entry,
-                                selectedRegisteredVersion.draft_knowledge_digest ??
-                                  null,
-                              ).join(", ") ||
-                                (locale === "ja-JP" ? "なし" : "None")}
+                                ? "表示できる実行記録はありません。"
+                                : "No tool activity available."}
                             </p>
+                          )}
+                        </section>
+                        <section className="wb-card">
+                          <h2>
+                            <Zap size={18} />
+                            {locale === "ja-JP" ? "使用量" : "Usage"}
+                          </h2>
+                          {testSessions[0] ? (
+                            <pre className="wb-json">
+                              {JSON.stringify(testSessions[0].usage, null, 2)}
+                            </pre>
+                          ) : (
+                            <p>
+                              {locale === "ja-JP" ? "未実行" : "No run yet"}
+                            </p>
+                          )}
+                        </section>
+                        <section className="wb-card">
+                          <h2>
+                            <History size={18} />
+                            {locale === "ja-JP" ? "テスト履歴" : "Test history"}
+                          </h2>
+                          {!testSessions.length && <p>{t.noTests}</p>}
+                          {testSessions.map((session) => (
+                            <a
+                              className="wb-history-item"
+                              key={session.id}
+                              href={`#test-${session.id}`}
+                            >
+                              <strong>
+                                r{session.revision} · {session.status}
+                              </strong>
+                              <time>
+                                {new Date(session.created_at).toLocaleString(
+                                  locale,
+                                )}
+                              </time>
+                            </a>
+                          ))}
+                        </section>
+                      </aside>
+                    </div>
+                  )}
+                  {creatorTab === "versions" && (
+                    <div className="wb-stack">
+                      <div className="wb-versions-layout">
+                        <section className="wb-card wb-version-list">
+                          <h2>
+                            <History size={18} />
+                            {t.versions}
+                          </h2>
+                          {registeredVersions.map((version) => (
                             <button
+                              key={version.entry.version}
                               type="button"
+                              aria-pressed={
+                                selectedRegisteredVersion?.entry.version ===
+                                version.entry.version
+                              }
                               onClick={() =>
-                                switchMode(
-                                  "trust",
-                                  `${selectedRegisteredVersion.entry.id}@${selectedRegisteredVersion.entry.version}`,
-                                )
+                                setSelectedVersion(version.entry.version)
                               }
                             >
-                              {t.trust}
+                              {version.entry.version} ·{" "}
+                              {version.draft_revision === null
+                                ? locale === "ja-JP"
+                                  ? "既存版"
+                                  : "Legacy"
+                                : `r${version.draft_revision}`}
                             </button>
-                          </div>
-                        )}
-                        <p>
-                          {locale === "ja-JP"
-                            ? "同じIDの新しい版は「Registryに登録」で版番号を変更して作成します。"
-                            : "For a new version under this ID, edit the version in Register in Registry."}
-                        </p>
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void duplicateDraft()}
-                        >
-                          {locale === "ja-JP"
-                            ? "新しいIDに複製"
-                            : "Duplicate with new ID"}
-                        </button>
-                      </section>
+                          ))}
+                          {!registeredVersions.length && <p>{t.noVersions}</p>}
+                        </section>
+                        <section className="wb-card wb-version-compare">
+                          <h2>
+                            <History size={18} />
+                            {locale === "ja-JP"
+                              ? "版履歴と差分"
+                              : "Version history & comparison"}
+                          </h2>
+                          <label>
+                            {t.registeredVersion}
+                            <select
+                              disabled={!registeredVersions.length}
+                              value={
+                                selectedRegisteredVersion?.entry.version ?? ""
+                              }
+                              onChange={(event) =>
+                                setSelectedVersion(event.target.value)
+                              }
+                            >
+                              {!registeredVersions.length && (
+                                <option value="">
+                                  {locale === "ja-JP"
+                                    ? "版を選択"
+                                    : "Select a version"}
+                                </option>
+                              )}
+                              {registeredVersions.map((version) => (
+                                <option
+                                  key={version.entry.version}
+                                  value={version.entry.version}
+                                >
+                                  {version.entry.version}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <p>
+                            {locale === "ja-JP"
+                              ? "保存済み下書きとの比較"
+                              : "Compared with saved draft"}{" "}
+                            · r{current.revision}
+                            {dirty ? ` · ${t.dirty}` : ""}
+                          </p>
+                          {selectedRegisteredVersion ? (
+                            <div className="wb-comparison-scroll">
+                              <table className="wb-comparison">
+                                <thead>
+                                  <tr>
+                                    <th>
+                                      {locale === "ja-JP" ? "項目" : "Field"}
+                                    </th>
+                                    <th>
+                                      {selectedRegisteredVersion.entry.version}
+                                    </th>
+                                    <th>{t.draft}</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {versionFields(
+                                    current.entry,
+                                    selectedRegisteredVersion.entry,
+                                    selectedRegisteredVersion.draft_knowledge_digest ??
+                                      null,
+                                  ).map(
+                                    ([name, draftValue, registeredValue]) => (
+                                      <tr
+                                        key={name}
+                                        className={
+                                          JSON.stringify(draftValue) !==
+                                          JSON.stringify(registeredValue)
+                                            ? "changed"
+                                            : ""
+                                        }
+                                      >
+                                        <th scope="row">{name}</th>
+                                        <td>
+                                          <pre>
+                                            {formatComparison(registeredValue)}
+                                          </pre>
+                                        </td>
+                                        <td>
+                                          <pre>
+                                            {formatComparison(draftValue)}
+                                          </pre>
+                                        </td>
+                                      </tr>
+                                    ),
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : (
+                            <div className="wb-test-empty">
+                              <History size={36} />
+                              <h3>
+                                {locale === "ja-JP"
+                                  ? "最初の版を登録すると履歴が表示されます"
+                                  : "Register your first version to view history"}
+                              </h3>
+                              <p>{t.noVersions}</p>
+                            </div>
+                          )}
+                        </section>
+                        <section className="wb-card">
+                          <h2>
+                            <FileText size={18} />
+                            {locale === "ja-JP"
+                              ? "版の詳細"
+                              : "Version details"}
+                          </h2>
+                          {selectedRegisteredVersion && (
+                            <div className="wb-version-detail">
+                              <p>
+                                {selectedRegisteredVersion.entry.id}@
+                                {selectedRegisteredVersion.entry.version}
+                              </p>
+                              <p>
+                                {selectedRegisteredVersion.registered_at
+                                  ? new Date(
+                                      selectedRegisteredVersion.registered_at,
+                                    ).toLocaleString(locale)
+                                  : locale === "ja-JP"
+                                    ? "登録時刻は記録されていません"
+                                    : "Registration time unavailable"}{" "}
+                                ·{" "}
+                                {selectedRegisteredVersion.registered_by ?? "—"}
+                              </p>
+                              <p>
+                                {selectedRegisteredVersion.release_notes ||
+                                  (locale === "ja-JP"
+                                    ? "リリースノートなし"
+                                    : "No release notes")}
+                              </p>
+                              <p>
+                                {selectedRegisteredVersion.behavioral_tested ===
+                                true
+                                  ? locale === "ja-JP"
+                                    ? "登録時に完了済みの動作テストあり"
+                                    : "Completed behavioral test at registration"
+                                  : selectedRegisteredVersion.behavioral_tested ===
+                                      false
+                                    ? locale === "ja-JP"
+                                      ? "登録時に完了済みの動作テストなし"
+                                      : "No completed behavioral test at registration"
+                                    : locale === "ja-JP"
+                                      ? "既存版のテスト情報なし"
+                                      : "Legacy test provenance unavailable"}
+                              </p>
+                              {selectedRegisteredVersion.source_id && (
+                                <p>
+                                  {locale === "ja-JP" ? "元の版" : "Source"}:{" "}
+                                  {selectedRegisteredVersion.source_id}@
+                                  {selectedRegisteredVersion.source_version}
+                                </p>
+                              )}
+                              <p>
+                                {locale === "ja-JP"
+                                  ? "保存済み下書きとの差分"
+                                  : "Differences from saved draft"}
+                                :{" "}
+                                {versionDifferences(
+                                  current.entry,
+                                  selectedRegisteredVersion.entry,
+                                  selectedRegisteredVersion.draft_knowledge_digest ??
+                                    null,
+                                ).join(", ") ||
+                                  (locale === "ja-JP" ? "なし" : "None")}
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  switchMode(
+                                    "trust",
+                                    `${selectedRegisteredVersion.entry.id}@${selectedRegisteredVersion.entry.version}`,
+                                  )
+                                }
+                              >
+                                {t.trust}
+                              </button>
+                            </div>
+                          )}
+                          {!selectedRegisteredVersion && (
+                            <p>
+                              {locale === "ja-JP"
+                                ? "版が選択されていません。"
+                                : "No version selected."}
+                            </p>
+                          )}
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void duplicateDraft()}
+                          >
+                            {locale === "ja-JP"
+                              ? "新しいIDに複製"
+                              : "Duplicate with new ID"}
+                          </button>
+                          <p>
+                            {locale === "ja-JP"
+                              ? "同じIDの新しい版は「Registryに登録」で版番号を変更して作成します。"
+                              : "For a new version under this ID, edit the version in Register in Registry."}
+                          </p>
+                        </section>
+                      </div>
                       {canManageDraft && (
                         <section className="wb-card">
                           <h2>
@@ -2659,40 +3034,105 @@ export function Workbench({
                     </div>
                   )}
                   {creatorTab === "register" && (
-                    <section className="wb-card">
-                      <h2>{t.register}</h2>
-                      <label>
-                        {t.version}
-                        <input
-                          value={editing?.version ?? ""}
-                          onChange={(event) =>
-                            change((value) => {
-                              value.version = event.target.value;
-                            })
+                    <div className="wb-register-layout">
+                      <section className="wb-card">
+                        <h2>
+                          <Send size={18} />
+                          {t.register}
+                        </h2>
+                        <label>
+                          {t.version}
+                          <input
+                            value={editing?.version ?? ""}
+                            onChange={(event) =>
+                              change((value) => {
+                                value.version = event.target.value;
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          {t.release}
+                          <textarea
+                            rows={4}
+                            value={releaseNotes}
+                            onChange={(event) => {
+                              setReleaseNotes(event.target.value);
+                              setDirty(true);
+                            }}
+                          />
+                        </label>
+                        <p>{t.permission}</p>
+                        <button
+                          className="wb-primary"
+                          type="button"
+                          disabled={
+                            busy || !validationCurrent || !validation?.valid
                           }
-                        />
-                      </label>
-                      <label>
-                        {t.release}
-                        <textarea
-                          rows={4}
-                          value={releaseNotes}
-                          onChange={(event) => {
-                            setReleaseNotes(event.target.value);
-                            setDirty(true);
-                          }}
-                        />
-                      </label>
-                      <p>{t.permission}</p>
-                      <button
-                        className="wb-primary"
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void act("register")}
-                      >
-                        {dirty ? `${t.save} + ${t.register}` : t.register}
-                      </button>
-                    </section>
+                          onClick={() => void act("register")}
+                        >
+                          {dirty ? `${t.save} + ${t.register}` : t.register}
+                        </button>
+                      </section>
+                      <section className="wb-card">
+                        <h2>
+                          <FileText size={18} />
+                          {locale === "ja-JP"
+                            ? "登録内容の確認"
+                            : "Review draft"}
+                        </h2>
+                        <dl className="wb-summary-list">
+                          <div>
+                            <dt>{t.profile}</dt>
+                            <dd>{editing ? label(editing, locale) : "—"}</dd>
+                          </div>
+                          <div>
+                            <dt>{t.model}</dt>
+                            <dd>
+                              {editing?.config.model.id
+                                ? referenceName(editing.config.model)
+                                : t.noModel}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>{t.tools}</dt>
+                            <dd>
+                              {editing?.config.tools
+                                .map(referenceName)
+                                .join(", ") || "—"}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>{t.skills}</dt>
+                            <dd>
+                              {editing?.config.skills
+                                .map(referenceName)
+                                .join(", ") || "—"}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>{t.docs}</dt>
+                            <dd>{documents.length}</dd>
+                          </div>
+                          <div>
+                            <dt>{t.version}</dt>
+                            <dd>{editing?.version || "—"}</dd>
+                          </div>
+                        </dl>
+                        <p>
+                          {locale === "ja-JP"
+                            ? "登録するとRegistryに変更不可の版が作成されます。"
+                            : "Registration creates an immutable version in the Registry."}
+                        </p>
+                        {(!validationCurrent || !validation?.valid) && (
+                          <p>
+                            {locale === "ja-JP"
+                              ? "下書きを保存して技術検証を実行してください。"
+                              : "Save and validate the draft before registering."}
+                          </p>
+                        )}
+                      </section>
+                    </div>
                   )}
                 </div>
                 {creatorTab === "overview" && testPanel}
@@ -2710,33 +3150,145 @@ export function Workbench({
                     <div className="wb-side-content">
                       <section className="wb-card">
                         <h2>
-                          <CheckCircle2 size={18} /> {t.validate}
+                          <ShieldCheck size={18} />
+                          {t.validate}
                         </h2>
-                        <p>
-                          {validation?.revision === current.revision
-                            ? validation.message
-                            : t.noTests}
-                        </p>
-                      </section>
-                      <section className="wb-card">
-                        <h2>{t.dependencies}</h2>
-                        <p>{editing?.config.model.id || t.noModel}</p>
-                        <p>
-                          {editing?.config.skills.length ?? 0} Skills ·{" "}
-                          {editing?.config.tools.length ?? 0} {t.tools}
-                        </p>
+                        <div
+                          className={`wb-validation-status ${validationCurrent ? (validation?.valid ? "valid" : "invalid") : ""}`}
+                        >
+                          {validationCurrent && validation?.valid ? (
+                            <CheckCircle2 size={24} />
+                          ) : (
+                            <CircleAlert size={24} />
+                          )}
+                          <p>
+                            {validationCurrent
+                              ? validation?.message
+                              : locale === "ja-JP"
+                                ? "この下書きの技術検証は未実施です。"
+                                : "This draft has not been validated."}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void act("validate")}
+                        >
+                          {t.validate}
+                        </button>
                       </section>
                       <section className="wb-card">
                         <h2>
-                          <ShieldCheck size={18} /> {t.policies}
+                          <Blocks size={18} />
+                          {t.dependencies}
                         </h2>
-                        <p>{t.permission}</p>
+                        <ul className="wb-dependencies">
+                          {editing?.config.model.id && (
+                            <li>
+                              <Blocks size={18} />
+                              <span>
+                                {referenceName(editing.config.model)}
+                                <small>{t.model}</small>
+                              </span>
+                            </li>
+                          )}
+                          {editing?.config.tools.map((ref) => (
+                            <li key={`tool-${refKey(ref)}`}>
+                              <Wrench size={18} />
+                              <span>
+                                {referenceName(ref)}
+                                <small>{t.tools}</small>
+                              </span>
+                            </li>
+                          ))}
+                          {editing?.config.skills.map((ref) => (
+                            <li key={`skill-${refKey(ref)}`}>
+                              <BookOpen size={18} />
+                              <span>
+                                {referenceName(ref)}
+                                <small>{t.skills}</small>
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                        {!editing?.config.model.id && <p>{t.noModel}</p>}
                       </section>
                       <section className="wb-card">
-                        <h2>{t.version}</h2>
-                        <p>
-                          {editing?.version} · r{baseRevision}
-                        </p>
+                        <h2>
+                          <ShieldCheck size={18} />
+                          {locale === "ja-JP"
+                            ? "要求する能力"
+                            : "Requested capabilities"}
+                        </h2>
+                        <div className="wb-tags">
+                          {editing?.capabilities.map((capability) => (
+                            <span key={capability}>{capability}</span>
+                          ))}
+                        </div>
+                        {!editing?.capabilities.length && (
+                          <p>
+                            {locale === "ja-JP" ? "未設定" : "None selected"}
+                          </p>
+                        )}
+                        <p>{t.permission}</p>
+                      </section>
+                      {creatorTab === "register" && (
+                        <section className="wb-card">
+                          <h2>
+                            <FlaskConical size={18} />
+                            {locale === "ja-JP"
+                              ? "動作テスト"
+                              : "Behavioral test"}
+                          </h2>
+                          <p>
+                            {!dirty &&
+                            testSessions.some(
+                              (session) =>
+                                session.revision === current.revision &&
+                                session.status === "completed",
+                            )
+                              ? locale === "ja-JP"
+                                ? "現在の版のテスト実行記録があります。"
+                                : "A completed test run exists for this revision."
+                              : t.noTests}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => setCreatorTab("test")}
+                          >
+                            {t.test}
+                          </button>
+                          <p>{t.noAssessment}</p>
+                        </section>
+                      )}
+                      <section className="wb-card">
+                        <h2>
+                          <Clock3 size={18} />
+                          {t.version}
+                        </h2>
+                        <dl className="wb-summary-list">
+                          <div>
+                            <dt>{t.version}</dt>
+                            <dd>
+                              {editing?.version} · r{baseRevision}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>{t.owner}</dt>
+                            <dd>{current.owner}</dd>
+                          </div>
+                          <div>
+                            <dt>
+                              {locale === "ja-JP" ? "最終更新" : "Last updated"}
+                            </dt>
+                            <dd>
+                              {new Date(current.updated_at).toLocaleString(
+                                locale,
+                              )}
+                            </dd>
+                          </div>
+                        </dl>
+                        <h3>{t.release}</h3>
                         <p>{releaseNotes || "—"}</p>
                       </section>
                     </div>
