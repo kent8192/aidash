@@ -16,12 +16,14 @@ use std::{
 	},
 	time::Duration,
 };
-use tower::{ServiceBuilder, limit::GlobalConcurrencyLimitLayer, load_shed::LoadShedLayer};
+use tower::{
+	ServiceBuilder, ServiceExt, limit::GlobalConcurrencyLimitLayer, load_shed::LoadShedLayer,
+};
 use tower_governor::{
 	GovernorError, GovernorLayer, governor::GovernorConfigBuilder, key_extractor::KeyExtractor,
 };
 use tower_http::{
-	limit::RequestBodyLimitLayer,
+	limit::RequestBodyLimit,
 	request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
 	sensitive_headers::{SetSensitiveRequestHeadersLayer, SetSensitiveResponseHeadersLayer},
 	timeout::TimeoutLayer,
@@ -29,6 +31,34 @@ use tower_http::{
 };
 
 pub const BODY_LIMIT: usize = 1024 * 1024;
+// A 4 MiB file chunk is base64-encoded inside a JSON envelope.
+const CHUNK_BODY_LIMIT: usize = 6 * 1024 * 1024;
+
+async fn limit_body(request: Request, next: Next) -> Response {
+	// Use the matched route, not a client-controlled path prefix, so ordinary
+	// requests and fallbacks retain the smaller bound, including streamed bodies.
+	let limit = match (
+		request.method(),
+		request
+			.extensions()
+			.get::<MatchedPath>()
+			.map(MatchedPath::as_str),
+	) {
+		(
+			&axum::http::Method::POST,
+			Some("/api/references/{id}/chunks" | "/federation/v0.1/scoped/files/chunk"),
+		) => CHUNK_BODY_LIMIT,
+		_ => BODY_LIMIT,
+	};
+	let service = RequestBodyLimit::new(
+		next.map_request(|request: axum::http::Request<_>| request.map(Body::new)),
+		limit,
+	);
+	match service.oneshot(request).await {
+		Ok(response) => response.map(Body::new),
+		Err(error) => match error {},
+	}
+}
 
 #[derive(Clone, Debug)]
 pub struct Settings {
@@ -200,7 +230,7 @@ where
 		))
 		.build();
 	router
-		.layer(RequestBodyLimitLayer::new(BODY_LIMIT))
+		.layer(middleware::from_fn(limit_body))
 		.layer(
 			ServiceBuilder::new()
 				.layer(SetRequestIdLayer::new(request_id.clone(), MakeRequestUuid))

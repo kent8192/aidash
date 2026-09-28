@@ -94,6 +94,79 @@ async fn body_limit_applies_to_declared_and_streamed_bodies() {
 	assert!(response.headers().contains_key("x-request-id"));
 }
 
+#[tokio::test]
+async fn only_chunk_posts_accept_larger_declared_and_streamed_bodies() {
+	async fn receive(body: axum::body::Bytes) -> String {
+		body.len().to_string()
+	}
+	let app = protect(
+		Router::new()
+			.nest(
+				"/api",
+				Router::new().route("/references/{id}/chunks", axum::routing::any(receive)),
+			)
+			.nest(
+				"/federation/v0.1",
+				Router::new().route("/scoped/files/chunk", axum::routing::any(receive)),
+			)
+			.route("/body", post(receive))
+			.fallback(receive)
+			// Exercise the streaming middleware itself without an extractor ceiling.
+			.layer(axum::extract::DefaultBodyLimit::disable()),
+		&Settings::default(),
+	);
+	for (method, path, limit) in [
+		(
+			"POST",
+			"/api/references/reference-id/chunks",
+			CHUNK_BODY_LIMIT,
+		),
+		(
+			"POST",
+			"/federation/v0.1/scoped/files/chunk",
+			CHUNK_BODY_LIMIT,
+		),
+		("PUT", "/api/references/reference-id/chunks", BODY_LIMIT),
+		("POST", "/body", BODY_LIMIT),
+		(
+			"POST",
+			"/api/references/reference-id/chunks/extra",
+			BODY_LIMIT,
+		),
+		(
+			"POST",
+			"/federation/v0.1/scoped/files/chunk/extra",
+			BODY_LIMIT,
+		),
+	] {
+		for declared in [true, false] {
+			for (size, status) in [(limit, 200), (limit + 1, 413)] {
+				let mut request = Request::builder().method(method).uri(path);
+				let body = if declared {
+					request = request.header(header::CONTENT_LENGTH, size);
+					Body::from(vec![b'x'; size])
+				} else {
+					Body::from_stream(futures_util::stream::iter([
+						Ok::<_, std::io::Error>(axum::body::Bytes::from(vec![b'x'; size - 1])),
+						Ok(axum::body::Bytes::from_static(b"x")),
+					]))
+				};
+				let response = app
+					.clone()
+					.oneshot(request.body(body).unwrap())
+					.await
+					.unwrap();
+				assert_eq!(
+					response.status(),
+					status,
+					"{method} {path}, declared={declared}, size={size}"
+				);
+				assert!(response.headers().contains_key("x-request-id"));
+			}
+		}
+	}
+}
+
 #[tokio::test(start_paused = true)]
 async fn timeout_releases_shared_admission_and_remains_observable() {
 	let settings = Settings {

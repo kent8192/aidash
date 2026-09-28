@@ -22,8 +22,12 @@ No cluster-wide quota or automatic request retry is introduced.
 Burst settings accept 1–100000; refill intervals accept 1–3600000 milliseconds. Invalid limits fail startup. `api::router` uses
 the defaults; applications embedding Aidash can use `api::router_with_settings`.
 The executable validates and loads these environment settings. The body limit is
-1 MiB for both standard extractors and streaming body reads. A streamed body
-reports a size-limit error when consumed; it is not eagerly buffered.
+1 MiB for both standard extractors and streaming body reads. The two file-chunk
+POST routes (`/api/references/{id}/chunks` and
+`/federation/v0.1/scoped/files/chunk`) allow 6 MiB so a 4 MiB chunk fits after
+base64 encoding and JSON framing. Other methods, routes and unmatched paths keep
+the 1 MiB limit. A streamed body reports a size-limit error when consumed; it is
+not eagerly buffered.
 
 Global overload and SSE capacity exhaustion return **503** with `Retry-After: 1`.
 Rate limiting returns **429** with `Retry-After`. An HTTP response-start timeout
