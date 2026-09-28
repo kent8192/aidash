@@ -16,6 +16,68 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	environment: Arc<common::TestEnvironment>,
 ) {
 	let (federation, url, schema) = common::setup(&environment).await;
+	let auth = api::router_with_settings(
+		federation.clone(),
+		Settings {
+			auth_burst: 1,
+			auth_period: Duration::from_secs(60),
+			auth_trusted_proxy_ips: vec!["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()],
+			..Default::default()
+		},
+	);
+	for (peer, client, expected) in [
+		("127.0.0.1:1", "198.51.100.1", 200),
+		("127.0.0.1:2", "198.51.100.1", 429),
+		("127.0.0.1:3", "198.51.100.2", 200),
+		("[::1]:1", "2001:db8::1", 200),
+		("[::1]:2", "2001:db8::1", 429),
+		("[::1]:3", "2001:db8::2", 200),
+		("10.0.0.1:1", "198.51.100.3", 200),
+		("10.0.0.1:2", "198.51.100.4", 429),
+		("127.0.0.1:4", "198.51.100.5, 198.51.100.6", 200),
+		("127.0.0.1:5", "invalid", 429),
+	] {
+		let response = auth
+			.clone()
+			.oneshot(
+				Request::builder()
+					.uri("/auth/config")
+					.extension(axum::extract::ConnectInfo(
+						peer.parse::<std::net::SocketAddr>().unwrap(),
+					))
+					.header("x-real-ip", client)
+					.body(Body::empty())
+					.unwrap(),
+			)
+			.await
+			.unwrap();
+		assert_eq!(
+			response.status().as_u16(),
+			expected,
+			"peer={peer}, client={client}"
+		);
+	}
+	let repeated_header = auth
+		.clone()
+		.oneshot(
+			Request::builder()
+				.uri("/auth/config")
+				.extension(axum::extract::ConnectInfo(
+					"127.0.0.1:6".parse::<std::net::SocketAddr>().unwrap(),
+				))
+				.header("x-real-ip", "198.51.100.7")
+				.header("x-real-ip", "198.51.100.8")
+				.body(Body::empty())
+				.unwrap(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		repeated_header.status(),
+		429,
+		"repeated headers must use the exhausted peer budget"
+	);
+	drop(auth);
 	let limited = TestServer::new(api::router_with_settings(
 		federation.clone(),
 		Settings {

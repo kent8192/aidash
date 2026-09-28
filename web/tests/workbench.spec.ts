@@ -32,8 +32,9 @@ async function editableDrafts(
   page: Page,
   secondRevision = 7,
   paginated = false,
+  subject = false,
 ) {
-  await setup(page, { locale: "en-US" });
+  await setup(page, { locale: "en-US", subject });
   const state = { failRefresh: false };
   const saves: Record<string, unknown>[] = [];
   const cursors: (string | null)[] = [];
@@ -132,6 +133,21 @@ test("Creator opens and edits a focused draft beyond the first page", async ({
     .click();
   await expect.poll(() => saves.length).toBe(1);
   expect(saves[0].id).toBe("00000000-0000-7000-8000-000000000001");
+});
+
+test("Register has one release-notes editor", async ({ page }) => {
+  await editableDrafts(page);
+  await page
+    .getByRole("navigation", { name: "Creator" })
+    .getByRole("button", { name: "Register in Registry" })
+    .click();
+  const notes = page.getByRole("textbox", {
+    name: "Release notes",
+    exact: true,
+  });
+  await expect(notes).toHaveCount(1);
+  await notes.fill("Ready for registration");
+  await expect(notes).toHaveValue("Ready for registration");
 });
 
 test("Creator retains dirty edits after a background refresh error", async ({
@@ -694,7 +710,7 @@ for (const change of ["add", "replace", "remove", "unchanged", "cluster"]) {
 test("Creator preserves unsaved edits across all five tabs and invalidates validation", async ({
   page,
 }) => {
-  const { drafts } = await editableDrafts(page);
+  const { drafts, saves } = await editableDrafts(page);
   const registered: Record<string, unknown>[] = [];
   await page.route(
     `**/api/workbench/drafts/${drafts[0].id}/validate`,
@@ -728,6 +744,13 @@ test("Creator preserves unsaved edits across all five tabs and invalidates valid
   await page
     .getByLabel("Additional instructions")
     .fill("Keep these instructions while reviewing the draft");
+  await page
+    .locator(".wb-actions")
+    .getByRole("button", { name: "Review registration", exact: true })
+    .click();
+  await expect(page.locator(".wb-register-layout")).toBeVisible();
+  expect(saves).toEqual([]);
+  expect(registered).toEqual([]);
   for (const name of [
     "Build",
     "Test",
@@ -750,7 +773,7 @@ test("Creator preserves unsaved edits across all five tabs and invalidates valid
     if (name === "Register in Registry")
       await expect(
         page.locator(".wb-register-layout .wb-primary"),
-      ).toBeDisabled();
+      ).toBeEnabled();
   }
   await expect(page.getByLabel("Additional instructions")).toHaveValue(
     "Keep these instructions while reviewing the draft",
@@ -769,7 +792,7 @@ test("Creator preserves unsaved edits across all five tabs and invalidates valid
   await page
     .getByLabel("Release notes", { exact: true })
     .fill("Changed after validation");
-  await expect(page.locator(".wb-register-layout .wb-primary")).toBeDisabled();
+  await expect(page.locator(".wb-register-layout .wb-primary")).toBeEnabled();
   await expect(page.locator(".wb-validation-status")).toContainText(
     "This draft has not been validated.",
   );
@@ -786,7 +809,7 @@ test("Creator preserves unsaved edits across all five tabs and invalidates valid
   expect(registered[0]).toEqual({ expected_revision: drafts[0].revision });
 });
 
-for (const width of [1280, 900, 390]) {
+for (const width of [1280, 900, 640, 600, 541, 390]) {
   test(`Creator tab layouts stay within the viewport at ${width}px`, async ({
     page,
   }) => {
@@ -810,6 +833,93 @@ for (const width of [1280, 900, 390]) {
       }));
       expect(dimensions.width, name).toBeLessThanOrEqual(dimensions.viewport);
       await expect(page.locator(".wb-layout")).toBeVisible();
+      if (width <= 640 && (name === "Overview" || name === "Build")) {
+        const sizes = await page
+          .locator(".wb-editor-grid")
+          .evaluate((element) => ({
+            width: element.getBoundingClientRect().width,
+            cards: [...element.querySelectorAll(":scope > .wb-span")].map(
+              (card) => card.getBoundingClientRect().width,
+            ),
+          }));
+        for (const card of sizes.cards)
+          expect(Math.abs(card - sizes.width)).toBeLessThan(2);
+      }
+      const colors = await page.locator(".wb-creator").evaluate((element) => ({
+        surface: getComputedStyle(element).backgroundColor,
+        card: getComputedStyle(element.querySelector(".wb-card")!)
+          .backgroundColor,
+        primary: getComputedStyle(element.querySelector(".wb-primary")!)
+          .backgroundColor,
+      }));
+      expect(colors.surface).toBe("rgb(245, 247, 243)");
+      expect(colors.card).toBe("rgb(255, 255, 255)");
+      expect(colors.primary).toBe("rgb(69, 107, 75)");
     }
+  });
+}
+
+for (const attemptValidation of [false, true]) {
+  test(`Creator registers a read/register-only draft after advisory validation attempted=${attemptValidation}`, async ({
+    page,
+  }) => {
+    const { drafts } = await editableDrafts(page, 7, false, true);
+    const registrations: Record<string, unknown>[] = [];
+    let writes = 0;
+    let validations = 0;
+    await page.route(
+      `**/api/workbench/drafts/${drafts[0].id}`,
+      async (route) => {
+        if (route.request().method() === "PUT") writes++;
+        await route.fulfill({
+          status: 403,
+          json: { error: "agent_draft.write denied" },
+        });
+      },
+    );
+    await page.route(
+      `**/api/workbench/drafts/${drafts[0].id}/validate`,
+      async (route) => {
+        validations++;
+        await route.fulfill({
+          status: 403,
+          json: { error: "agent_draft.write denied" },
+        });
+      },
+    );
+    await page.route(
+      `**/api/workbench/drafts/${drafts[0].id}/register`,
+      async (route) => {
+        registrations.push(route.request().postDataJSON());
+        await route.fulfill({
+          json: {
+            draft_id: drafts[0].id,
+            revision: drafts[0].revision,
+            entry: drafts[0].entry,
+            behavioral_tested: false,
+          },
+        });
+      },
+    );
+    if (attemptValidation) {
+      await page
+        .locator(".wb-actions")
+        .getByRole("button", { name: "Technical validation", exact: true })
+        .click();
+      await expect(page.getByRole("alert")).toContainText(
+        "Your current permissions do not allow this operation.",
+      );
+    }
+    await page
+      .locator(".wb-actions")
+      .getByRole("button", { name: "Review registration", exact: true })
+      .click();
+    const register = page.locator(".wb-register-layout .wb-primary");
+    await expect(register).toBeEnabled();
+    await register.click();
+    await expect.poll(() => registrations.length).toBe(1);
+    expect(registrations[0]).toEqual({ expected_revision: drafts[0].revision });
+    expect(writes).toBe(0);
+    expect(validations).toBe(attemptValidation ? 1 : 0);
   });
 }

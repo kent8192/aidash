@@ -1,7 +1,9 @@
 # Creator Workbench visual specification
 
 The Overview follows `overview-reference.jpg`. The user approved the four-tab
-ImageGen board in `approved-tabs.png` on 2026-09-28.
+ImageGen board in `approved-tabs.png` on 2026-09-28. The board defines the
+page compositions. At the user's subsequent request, PR #69 supersedes its dark
+palette with Aidash's shared white, sage, and green design across every tab.
 
 - Overview: compact profile and configuration cards, conversation sandbox, and
   a factual validation/dependency/version rail.
@@ -17,8 +19,11 @@ The existing icon library and Aidash assets are reused. User profile icons remai
 user data. The global application navigation is preserved.
 
 Registration is Registry admission, not Marketplace publication or external
-certification. The registration action requires a successful technical validation
-of the current saved revision. Editing invalidates the displayed validation.
+certification. Technical validation is advisory, and editing invalidates its displayed result.
+Registration checks the current saved revision on the server, preserving access
+for principals with read/register permission but without draft write permission.
+The header's "Review registration" button is navigation only; the Register page
+performs registration (and saves pending edits when necessary).
 The sandbox defaults to a real isolated connection; an unconfigured connection
 cannot send. The existing explicit simulated-tool mode remains available and is
 clearly labeled. Real mode submits no simulated tool fixtures.

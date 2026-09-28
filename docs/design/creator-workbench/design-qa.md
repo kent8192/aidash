@@ -8,6 +8,13 @@ final result: blocked
 - `docs/design/creator-workbench/approved-tabs.png` — four-tab design board approved
   by the user on 2026-09-28.
 
+## Integration with PR #69
+
+At the user's request, the shared white/sage/green design from merged PR #69
+supersedes the original board's dark palette. Trust JSX and the shared stylesheet
+are preserved from develop; Creator-specific grids extend that stylesheet.
+The 541–640px breakpoint now retains full-width editor cards.
+
 ## Implementation
 
 - Branch: `feat/creator-workbench-tabs`.
@@ -35,8 +42,8 @@ final result: blocked
 - Spacing/layout: Overview three-column composition and distinct Build, Test,
   Versions, and Register grids are implemented. Automated viewport overflow checks
   pass, but these do not replace visual comparison.
-- Colors/tokens: Creator-scoped navy backgrounds, blue-gray borders, and violet
-  accents follow the supplied references; perceptual review remains pending.
+- Colors/tokens: Creator-scoped white/sage surfaces and green
+  accents inherit the shared design from #69; perceptual review remains pending.
 - Image fidelity: existing Aidash branding, library icons, and actual user profile
   data are retained. No generated person or sample-agent art is embedded as data.
 - Copy/content: API-derived content, explicit empty states, technical validation,
@@ -46,9 +53,10 @@ final result: blocked
 
 - API schema regenerated from this checkout; production build passed.
 - TypeScript, ESLint, and Prettier passed on the final changes.
-- Workbench browser regression suite: 25 passed, including registration validation,
-  unsaved edits across all five tabs, real-mode defaults, retry/continuation,
-  version differences, save/conflict navigation, and responsive widths.
+- Workbench browser regression suite: 31 passed, including register-only access,
+  advisory validation invalidation, unsaved edits across all five tabs, real-mode defaults, retry/continuation,
+  version differences, save/conflict navigation, shared theme colors, and responsive
+  widths (including 541, 600, and 640px card spans).
 - Regression responses are test fixtures only; they are not product data or live
   visual acceptance evidence.
 - Live-browser console review and end-to-end save/test/register: pending access.

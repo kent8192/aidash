@@ -6,18 +6,19 @@ No cluster-wide quota or automatic request retry is introduced.
 
 ## Configuration
 
-| Variable                      | Default | Meaning                                                                            |
-| ----------------------------- | ------- | ---------------------------------------------------------------------------------- |
-| `AIDASH_HTTP_TIMEOUT_SECONDS` | `30`    | Deadline until the response headers are returned (1–3600 seconds)                  |
-| `AIDASH_HTTP_CONCURRENCY`     | `128`   | Shared in-flight response futures (1–65536)                                        |
-| `AIDASH_SSE_CONNECTIONS`      | `128`   | Active SSE response bodies (1–65536)                                               |
-| `AIDASH_AUTH_RATE_BURST`      | `30`    | `/auth/*` burst per socket peer IP; refill one request every 2 seconds             |
-| `AIDASH_API_RATE_BURST`       | `120`   | Authenticated API burst per tenant/subject, or operator; refill 10 requests/second |
-| `AIDASH_PEER_RATE_BURST`      | `240`   | Federation burst per authenticated node; refill 20 requests/second                 |
-| `AIDASH_AUTH_RATE_PERIOD_MS`  | `2000`  | Refill interval per auth request                                                   |
-| `AIDASH_API_RATE_PERIOD_MS`   | `100`   | Refill interval per API request                                                    |
-| `AIDASH_PEER_RATE_PERIOD_MS`  | `50`    | Refill interval per federation request                                             |
-| `AIDASH_METRICS_LISTEN`       | unset   | Optional separate Prometheus listener, for example `127.0.0.1:9090`                |
+| Variable                        | Default | Meaning                                                                            |
+| ------------------------------- | ------- | ---------------------------------------------------------------------------------- |
+| `AIDASH_HTTP_TIMEOUT_SECONDS`   | `30`    | Deadline until the response headers are returned (1–3600 seconds)                  |
+| `AIDASH_HTTP_CONCURRENCY`       | `128`   | Shared in-flight response futures (1–65536)                                        |
+| `AIDASH_SSE_CONNECTIONS`        | `128`   | Active SSE response bodies (1–65536)                                               |
+| `AIDASH_AUTH_RATE_BURST`        | `30`    | `/auth/*` burst per socket peer IP; refill one request every 2 seconds             |
+| `AIDASH_API_RATE_BURST`         | `120`   | Authenticated API burst per tenant/subject, or operator; refill 10 requests/second |
+| `AIDASH_PEER_RATE_BURST`        | `240`   | Federation burst per authenticated node; refill 20 requests/second                 |
+| `AIDASH_AUTH_RATE_PERIOD_MS`    | `2000`  | Refill interval per auth request                                                   |
+| `AIDASH_AUTH_TRUSTED_PROXY_IPS` | unset   | Comma-separated exact proxy IPs allowed to provide a single `X-Real-IP`            |
+| `AIDASH_API_RATE_PERIOD_MS`     | `100`   | Refill interval per API request                                                    |
+| `AIDASH_PEER_RATE_PERIOD_MS`    | `50`    | Refill interval per federation request                                             |
+| `AIDASH_METRICS_LISTEN`         | unset   | Optional separate Prometheus listener, for example `127.0.0.1:9090`                |
 
 Burst settings accept 1–100000; refill intervals accept 1–3600000 milliseconds. Invalid limits fail startup. `api::router` uses
 the defaults; applications embedding Aidash can use `api::router_with_settings`.
@@ -40,10 +41,16 @@ Governor state is shared across router clones and routes, and stale keys are
 pruned every 1024 requests. Multiple replicas have independent budgets.
 
 `/auth/*` uses the TCP peer address supplied by
-`into_make_service_with_connect_info::<SocketAddr>()`. It deliberately ignores
-`Forwarded`, `X-Forwarded-For` and `X-Real-IP`. Behind a proxy this groups clients
-by proxy address. Configure the burst and refill interval for that topology; trusting forwarded
-addresses requires a separately reviewed trusted-proxy policy. Embedded servers
+`into_make_service_with_connect_info::<SocketAddr>()`. By default it ignores all
+forwarded headers. To preserve separate client budgets behind a trusted reverse
+proxy, set `AIDASH_AUTH_TRUSTED_PROXY_IPS` to its exact socket IPs. Only those peers
+may provide `X-Real-IP`, which must contain exactly one IPv4 or IPv6 address.
+Missing, malformed or repeated headers fall back to the socket peer. `Forwarded`
+and `X-Forwarded-For` remain ignored. The trusted proxy must overwrite incoming
+`X-Real-IP`, and application ports must be restricted to that proxy. The GCP
+Caddy/Nginx stack configures this for its loopback-only application listener;
+Caddy derives identity from its client connection and Nginx replaces `X-Real-IP`.
+Embedded servers
 must also provide connect info; in-process tests can add `Extension(ConnectInfo(SocketAddr))`.
 
 ## Logs and request IDs
