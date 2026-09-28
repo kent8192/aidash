@@ -852,6 +852,9 @@ async fn exchange_identity(
 	transaction: &LoginTransaction,
 	code: String,
 ) -> Result<(String, Option<String>)> {
+	if config.is_google() {
+		return exchange_google_identity(config, &metadata, transaction, &code).await;
+	}
 	let http_client = oidc_http_client()?;
 	let client = CoreClient::from_provider_metadata(
 		metadata,
@@ -861,11 +864,7 @@ async fn exchange_identity(
 	.set_redirect_uri(
 		RedirectUrl::new(transaction.callback_uri.clone()).map_err(|_| Error::Unauthorized)?,
 	);
-	let client = client.set_auth_type(if config.is_google() {
-		AuthType::RequestBody
-	} else {
-		AuthType::BasicAuth
-	});
+	let client = client.set_auth_type(AuthType::BasicAuth);
 	let token_response = client
 		.exchange_code(AuthorizationCode::new(code))
 		.map_err(|_| Error::Unauthorized)?
@@ -895,6 +894,74 @@ async fn exchange_identity(
 		.and_then(Value::as_str)
 		.map(str::to_owned);
 	Ok((subject, provider_sid))
+}
+
+async fn exchange_google_identity(
+	config: &OidcConfig,
+	metadata: &CoreProviderMetadata,
+	transaction: &LoginTransaction,
+	code: &str,
+) -> Result<(String, Option<String>)> {
+	#[derive(Deserialize)]
+	struct TokenResponse {
+		id_token: String,
+	}
+	#[derive(Deserialize)]
+	struct Claims {
+		sub: String,
+		nonce: String,
+		#[serde(rename = "iat")]
+		_issued_at: i64,
+		sid: Option<String>,
+	}
+	// Google also issues `iss=accounts.google.com`, which the OIDC library's
+	// URL-typed issuer cannot deserialize. Verify the original JWT with the
+	// existing JWT library; never rewrite its signed payload.
+	let response = oidc_http_client()?
+		.post(
+			metadata
+				.token_endpoint()
+				.as_ref()
+				.ok_or(Error::Unauthorized)?
+				.url()
+				.clone(),
+		)
+		.form(&[
+			("grant_type", "authorization_code"),
+			("code", code),
+			("client_id", config.client_id.as_str()),
+			("client_secret", config.client_secret.as_str()),
+			("redirect_uri", transaction.callback_uri.as_str()),
+			("code_verifier", transaction.pkce_verifier.as_str()),
+		])
+		.send()
+		.await
+		.map_err(|_| Error::Unauthorized)?
+		.error_for_status()
+		.map_err(|_| Error::Unauthorized)?
+		.bytes()
+		.await
+		.map_err(|_| Error::Unauthorized)?;
+	let tokens: TokenResponse =
+		serde_json::from_slice(&response).map_err(|_| Error::Unauthorized)?;
+	let header = decode_header(&tokens.id_token).map_err(|_| Error::Unauthorized)?;
+	let keys: JwkSet = serde_json::from_value(serde_json::to_value(metadata.jwks())?)?;
+	let key = keys
+		.find(header.kid.as_deref().ok_or(Error::Unauthorized)?)
+		.ok_or(Error::Unauthorized)?;
+	let key = DecodingKey::from_jwk(key).map_err(|_| Error::Unauthorized)?;
+	let mut validation = Validation::new(Algorithm::RS256);
+	validation.set_issuer(&["https://accounts.google.com", "accounts.google.com"]);
+	validation.set_audience(&[&config.client_id]);
+	validation.set_required_spec_claims(&["iss", "aud", "exp", "sub"]);
+	validation.leeway = 0;
+	let claims = decode::<Claims>(&tokens.id_token, &key, &validation)
+		.map_err(|_| Error::Unauthorized)?
+		.claims;
+	if !crate::config::same_secret(&claims.nonce, &transaction.nonce) {
+		return Err(Error::Unauthorized);
+	}
+	Ok((claims.sub, claims.sid))
 }
 
 async fn callback(
@@ -2296,7 +2363,11 @@ mod tests {
 	async fn google_code_exchange_posts_credentials_and_verifies_identity() {
 		// A disposable fixture key, never used outside these protocol tests.
 		let pem = include_str!("../tests/fixtures/oidc/signing-test-only.pem");
-		let signing = CoreRsaPrivateSigningKey::from_pem(pem, None).unwrap();
+		let signing = CoreRsaPrivateSigningKey::from_pem(
+			pem,
+			Some(openidconnect::JsonWebKeyId::new("fixture-key".into())),
+		)
+		.unwrap();
 		let der = base64::engine::general_purpose::STANDARD
 			.decode(
 				pem.lines()
@@ -2317,15 +2388,29 @@ mod tests {
 				assert_eq!(form["redirect_uri"], "https://aidash.example/auth/callback");
 				assert_eq!(form["code_verifier"], "test-pkce-verifier");
 				let now = Utc::now().timestamp();
-				let mut claims = json!({"iss":"https://accounts.google.com", "aud":"google-web-client", "sub":"google-subject", "iat":now, "exp":now+3600, "nonce":"test-nonce"});
-				match form["code"].as_str() {
+				let (issuer, code) = match form["code"].strip_prefix("bare-") {
+					Some(code) => ("accounts.google.com", code),
+					None => ("https://accounts.google.com", form["code"].as_str()),
+				};
+				let mut claims = json!({"iss":issuer, "aud":"google-web-client", "sub":"google-subject", "iat":now, "exp":now+3600, "nonce":"test-nonce"});
+				match code {
 					"bad-nonce" => claims["nonce"] = json!("other-nonce"),
 					"bad-audience" => claims["aud"] = json!("other-client"),
 					"bad-issuer" => claims["iss"] = json!("https://other.example"),
+					"http-issuer" => claims["iss"] = json!("http://accounts.google.com"),
+					"suffix-issuer" => claims["iss"] = json!("https://accounts.google.com.evil.example"),
 					"expired" => claims["exp"] = json!(now-3600),
+					"missing-nonce" => { claims.as_object_mut().unwrap().remove("nonce"); },
+					"missing-expiry" => { claims.as_object_mut().unwrap().remove("exp"); },
 					_ => {},
 				}
-				let token = jsonwebtoken::encode(&jsonwebtoken::Header::new(Algorithm::RS256), &claims, &key).unwrap();
+				let mut header = jsonwebtoken::Header::new(Algorithm::RS256);
+				header.kid = Some("fixture-key".into());
+				let mut token = jsonwebtoken::encode(&header, &claims, &key).unwrap();
+				if code == "bad-signature" {
+					let signature = token.rfind('.').unwrap() + 1;
+					token.replace_range(signature.., &URL_SAFE_NO_PAD.encode([0u8; 256]));
+				}
 				Json(json!({"access_token":"fixture-access", "token_type":"Bearer", "id_token":token}))
 			}
 		}));
@@ -2361,20 +2446,39 @@ mod tests {
 			callback_uri: "https://aidash.example/auth/callback".into(),
 			expires_at: Utc::now() + Duration::minutes(5),
 		};
-		assert_eq!(
-			exchange_identity(&config, metadata.clone(), &transaction, "valid".into())
+		for prefix in ["", "bare-"] {
+			assert_eq!(
+				exchange_identity(
+					&config,
+					metadata.clone(),
+					&transaction,
+					format!("{prefix}valid")
+				)
 				.await
 				.unwrap(),
-			("google-subject".into(), None)
-		);
-		for code in ["bad-nonce", "bad-audience", "bad-issuer", "expired"] {
-			assert!(
-				matches!(
-					exchange_identity(&config, metadata.clone(), &transaction, code.into()).await,
-					Err(Error::Unauthorized)
-				),
-				"{code}"
+				("google-subject".into(), None)
 			);
+			for failure in [
+				"bad-nonce",
+				"bad-audience",
+				"bad-issuer",
+				"http-issuer",
+				"suffix-issuer",
+				"expired",
+				"missing-nonce",
+				"missing-expiry",
+				"bad-signature",
+			] {
+				let code = format!("{prefix}{failure}");
+				assert!(
+					matches!(
+						exchange_identity(&config, metadata.clone(), &transaction, code.clone())
+							.await,
+						Err(Error::Unauthorized)
+					),
+					"{code}"
+				);
+			}
 		}
 		server.abort();
 	}

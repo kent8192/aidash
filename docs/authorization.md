@@ -10,6 +10,15 @@ The caller selects `x-aidash-context: mapping:<mapping-id>` or `operator` for ea
 
 OIDC-origin execution stores an immutable run origin and rechecks its underlying nonexportable credential, mapping, external identity validity and subject policy at execution boundaries. Logging out of Aidash does not cancel admitted work. For legacy Keycloak deployments, an outage beyond the 15-minute validity deadline pauses work; a fresh successful status check can resume only work waiting for that outage and only while all local authority remains valid. A definite Keycloak disablement revokes browser sessions and requires an operator identity restore followed by an authorized manual run resumption. Google identities are authenticated at sign-in and governed by local authority thereafter; Google has no equivalent service-account account-status lookup, so Google account changes do not automatically pause work or revoke existing sessions. Session expiry and local mapping, operator-grant and credential revocation still apply. Identity restore for Google is a local operator action and does not attest to current Google account status; a new session still requires Google authentication. Existing Bearer-origin work retains its credential semantics.
 
+### Switching issuers
+
+Issuer changes require a maintenance window and a coordinated stop/start. This applies to Keycloak-to-Google migration and rollback. A rolling restart is unsafe: each server and worker refreshes active identities, and a process using a different issuer disables those identities and revokes their sessions.
+
+1. Block dashboard sign-in and stop every Aidash server and worker sharing the database. Confirm that no process remains on the old configuration, including standalone workers and replicas on other nodes.
+2. Update the issuer and its required credentials consistently across all replicas. Restart them only after all old processes have stopped, then reopen dashboard sign-in.
+3. Have users sign in with the new provider and explicitly approve their mappings or operator grants. Identity records, grants and mappings are not linked by email or transferred between issuers. Old-issuer sessions lose access, and work that depends on the old identity can pause.
+4. If mixed configurations already disabled an identity, first complete the coordinated restart. Use the operator Bearer recovery credential to restore the affected identity through `POST /api/dashboard/identities/{id}/restore`. Revoked sessions require a fresh sign-in; paused work requires an authorized manual resumption.
+
 ## Management API
 
 | Method | Path                                                  | Behavior                                                                  |
