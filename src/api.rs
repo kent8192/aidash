@@ -50,7 +50,6 @@ fn ordinary_routes() -> OpenApiRouter<Federation> {
 	OpenApiRouter::new()
 		.merge(administration)
 		.merge(crate::collaboration::api::routes())
-		.merge(crate::capabilities::api::routes())
 		.merge(crate::generation::api::routes())
 		.merge(crate::semantic::api::routes())
 		.merge(crate::workbench::routes())
@@ -85,6 +84,8 @@ fn ordinary_routes() -> OpenApiRouter<Federation> {
 					},
 				)),
 		)
+		.layer(crate::http::body_limit(crate::http::BODY_LIMIT))
+		.merge(crate::capabilities::api::routes())
 }
 
 pub fn openapi() -> utoipa::openapi::OpenApi {
@@ -116,6 +117,7 @@ pub fn router(f: Federation) -> Router {
 }
 
 pub fn router_with_settings(f: Federation, settings: crate::http::Settings) -> Router {
+	let body_limit = crate::http::body_limit(crate::http::BODY_LIMIT);
 	let (api, _) = ordinary_routes().split_for_parts();
 	let (transactions, _) = crate::transactions::api::routes()
 		.merge(crate::orchestration::routes())
@@ -123,10 +125,12 @@ pub fn router_with_settings(f: Federation, settings: crate::http::Settings) -> R
 		.split_for_parts();
 	let api = api
 		.route_layer(middleware::from_fn_with_state(f.clone(), node_visibility))
-		.merge(transactions)
+		.merge(transactions.layer(body_limit))
 		.nest(
 			"/dashboard",
-			crate::dashboard_auth::admin_routes().route_layer(middleware::from_fn(operator_only)),
+			crate::dashboard_auth::admin_routes()
+				.route_layer(middleware::from_fn(operator_only))
+				.layer(body_limit),
 		);
 	let api = crate::http::rate_limit(
 		api,
@@ -198,9 +202,10 @@ pub fn router_with_settings(f: Federation, settings: crate::http::Settings) -> R
 		.route("/workspace", post(peer_workspace))
 		.route("/observe", get(peer_observe))
 		.route("/control", post(peer_control))
+		.layer(body_limit)
 		.merge(crate::capabilities::transfer::routes())
 		.route_layer(middleware::from_fn_with_state(f.clone(), node_visibility))
-		.merge(crate::transactions::api::peer_routes());
+		.merge(crate::transactions::api::peer_routes().layer(body_limit));
 	let federation = crate::http::rate_limit(
 		federation,
 		crate::http::PeerKey,
@@ -209,7 +214,7 @@ pub fn router_with_settings(f: Federation, settings: crate::http::Settings) -> R
 	)
 	.route_layer(middleware::from_fn_with_state(f.clone(), peer_auth));
 	let auth = crate::http::rate_limit(
-		crate::dashboard_auth::routes(),
+		crate::dashboard_auth::routes().layer(body_limit),
 		tower_governor::key_extractor::PeerIpKeyExtractor,
 		settings.auth_burst,
 		settings.auth_period,
@@ -227,16 +232,14 @@ pub fn router_with_settings(f: Federation, settings: crate::http::Settings) -> R
 			"/.well-known/aidash",
 			get(identity).layer(middleware::from_fn_with_state(f.clone(), node_visibility)),
 		)
+		.fallback_service(web)
+		.layer(body_limit)
 		.nest("/api", crate::http::private_responses(api))
 		.nest(
 			"/federation/v0.1",
 			crate::http::private_responses(federation),
 		)
 		.nest("/auth", crate::http::private_responses(auth))
-		.fallback_service(web)
-		.layer(axum::extract::DefaultBodyLimit::max(
-			crate::http::BODY_LIMIT,
-		))
 		.layer(Extension(slots))
 		.with_state(f);
 	crate::http::protect(router, &settings)

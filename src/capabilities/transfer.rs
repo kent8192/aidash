@@ -314,7 +314,7 @@ pub fn routes() -> axum::Router<Federation> {
 		.route("/scoped/files/commit", post(receiver::commit))
 		.route("/scoped/files/status", post(receiver::status))
 		.route("/scoped/files/recipients", post(receiver::recipients))
-		.layer(axum::extract::DefaultBodyLimit::max(6 * 1024 * 1024))
+		.layer(crate::http::body_limit(6 * 1024 * 1024))
 }
 
 fn receipt_matches(description: &Description, response: &Value) -> bool {

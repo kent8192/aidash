@@ -87,6 +87,51 @@ async fn production_router_enforces_auth_validation_rate_and_sse_resume(
 	session.assert_status_ok();
 	assert_eq!(session.headers()["cache-control"], "no-store");
 	assert_eq!(session.headers()["referrer-policy"], "no-referrer");
+	// Route composition must preserve the default limit and the larger file
+	// payload limit, including rejections that happen before extraction.
+	for (method, path, limit) in [
+		("GET", "/health", 1 << 20),
+		("GET", "/assets/missing.js", 1 << 20),
+		("GET", "/api/openapi.json", 1 << 20),
+		("GET", "/auth/config", 1 << 20),
+		("GET", "/api/dashboard/registrations", 1 << 20),
+		("POST", "/api/transactions", 1 << 20),
+		("POST", "/api/workspaces", 1 << 20),
+		("POST", "/api/references/uploads", 6 << 20),
+	] {
+		let response = server
+			.method(method.parse().unwrap(), path)
+			.authorization_bearer("operator-execution-fixture")
+			.add_header(axum::http::header::CONTENT_LENGTH, (limit + 1).to_string())
+			.bytes(vec![b' '; limit + 1].into())
+			.await;
+		assert_eq!(response.status_code(), 413, "{method} {path}");
+		assert!(response.headers().contains_key("x-request-id"));
+	}
+	for (path, limit) in [
+		("/api/workspaces", 1 << 20),
+		("/api/references/uploads", 6 << 20),
+	] {
+		let body = Body::from_stream(futures_util::stream::iter([
+			Ok::<_, std::io::Error>(axum::body::Bytes::from(vec![b' '; limit])),
+			Ok(axum::body::Bytes::from_static(b"{}")),
+		]));
+		let response = app
+			.clone()
+			.oneshot(
+				Request::builder()
+					.method("POST")
+					.uri(path)
+					.header("authorization", "Bearer operator-execution-fixture")
+					.header("content-type", "application/json")
+					.body(body)
+					.unwrap(),
+			)
+			.await
+			.unwrap();
+		assert_eq!(response.status(), 413, "{path}");
+		assert!(response.headers().contains_key("x-request-id"));
+	}
 	let invalid_conversation = server.post("/api/conversations").authorization_bearer("operator-execution-fixture")
         .json(&json!({"title":" ", "goal":" ", "target":{"id":"missing", "version":"1.0.0"}, "target_kind":"agent"})).await;
 	invalid_conversation.assert_status_bad_request();
