@@ -2863,17 +2863,21 @@ export function Workbench({
                             </dd>
                           </div>
                         </dl>
-                        <label>
-                          {t.release}
-                          <textarea
-                            rows={3}
-                            value={releaseNotes}
-                            onChange={(event) => {
-                              setReleaseNotes(event.target.value);
-                              setDirty(true);
-                            }}
-                          />
-                        </label>
+                        {creatorTab === "register" ? (
+                          <p>{releaseNotes || "—"}</p>
+                        ) : (
+                          <label>
+                            {t.release}
+                            <textarea
+                              rows={3}
+                              value={releaseNotes}
+                              onChange={(event) => {
+                                setReleaseNotes(event.target.value);
+                                setDirty(true);
+                              }}
+                            />
+                          </label>
+                        )}
                       </section>
                     </div>
                   </aside>
