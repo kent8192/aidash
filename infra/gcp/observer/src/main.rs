@@ -235,9 +235,30 @@ async fn observe(database_url: &str) -> Result<Value, Error> {
 		last_work_completed =
 			last_work_completed.max(row.try_get::<Option<f64>>("", "completed")?.unwrap_or(0.0));
 	}
+	// core_records has no completion timestamp. Return durable receipt IDs so
+	// the host can start a full idle interval when a completion is first seen,
+	// even if the transfer began and finished between observations. Retries and
+	// object reclamation do not turn an existing receipt into new activity.
+	let completed_transfers = waiting_ids(
+		&tx,
+		"core_records",
+		Condition::any()
+			.add(
+				Expr::col(Alias::new("kind"))
+					.eq("transfer_out")
+					.and(Expr::col(Alias::new("state")).eq("delivered")),
+			)
+			.add(
+				Expr::col(Alias::new("kind"))
+					.eq("transfer_in")
+					.and(Expr::col(Alias::new("state")).eq("committed")),
+			)
+			.into(),
+	)
+	.await?;
 	tx.rollback().await?;
 	Ok(
-		json!({"protocol":"aidash-infra-activity/1", "busy":busy.values().any(|n| *n > 0), "counts":busy, "last_work_completed":last_work_completed}),
+		json!({"protocol":"aidash-infra-activity/1", "busy":busy.values().any(|n| *n > 0), "counts":busy, "last_work_completed":last_work_completed, "completed_transfers":completed_transfers}),
 	)
 }
 
@@ -354,6 +375,48 @@ mod tests {
 			observe(&url).await?["last_work_completed"]
 				.as_f64()
 				.unwrap() > 1_000_000_000.0
+		);
+		for (id, kind, state) in [
+			(
+				"00000000-0000-0000-0000-000000000001",
+				"transfer_out",
+				"delivered",
+			),
+			(
+				"00000000-0000-0000-0000-000000000002",
+				"transfer_in",
+				"committed",
+			),
+			(
+				"00000000-0000-0000-0000-000000000003",
+				"reference",
+				"committed",
+			),
+			(
+				"00000000-0000-0000-0000-000000000004",
+				"transfer_out",
+				"blocked",
+			),
+		] {
+			let insert = Query::insert()
+				.into_table(Alias::new("core_records"))
+				.columns(["id", "kind", "state"].map(Alias::new))
+				.values([
+					Expr::val(id).cast_as(Alias::new("uuid")),
+					Expr::val(kind).into(),
+					Expr::val(state).into(),
+				])?
+				.to_owned();
+			database.execute(DbBackend::Postgres.build(&insert)).await?;
+		}
+		let snapshot = observe(&url).await?;
+		assert_eq!(snapshot["busy"], false);
+		assert_eq!(
+			serde_json::from_value::<HashSet<String>>(snapshot["completed_transfers"].clone())?,
+			HashSet::from([
+				"00000000-0000-0000-0000-000000000001".into(),
+				"00000000-0000-0000-0000-000000000002".into(),
+			])
 		);
 		let insert = Query::insert()
 			.into_table(Alias::new("core_operations"))

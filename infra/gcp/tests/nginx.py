@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify admission and in-flight accounting in disposable Ubuntu/Nginx."""
 
+from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -8,6 +9,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -26,7 +28,11 @@ def inside():
 
         def do_POST(self):
             self.rfile.read(int(self.headers.get("Content-Length", 0)))
-            if self.path == "/api/tasks":
+            if self.path in {
+                "/api/tasks",
+                "/federation/v0.1/scoped/files/commit",
+                "/federation/v0.1/transactions/prepare",
+            }:
                 entered.set()
                 if not release.wait(10):
                     raise RuntimeError("fixture request was not released")
@@ -50,41 +56,95 @@ def inside():
     def activity():
         return call("/activity", port=8089)
 
+    def wait_inflight(expected):
+        # A response can reach the client before Nginx's log/connection cleanup.
+        # Wait for that phase while requiring any held upstream to stay counted.
+        for _ in range(50):
+            observed = activity()
+            assert observed["inflight"] >= expected, observed
+            if observed["inflight"] == expected:
+                return observed
+            time.sleep(0.1)
+        raise AssertionError(("in-flight cleanup did not finish", observed))
+
     try:
         assert activity() == {"inflight": 0, "last_active": 0}
         call("/health")
         call("/api/runs/example/shell/poll", b"{}")
         call("/api/runs/example/python/poll", b"{}")
+        call("/federation/v0.1/observe")
+        for path in [
+            "/federation/v0.1/discover",
+            "/federation/v0.1/workspace",
+            "/federation/v0.1/scoped/files/status",
+            "/federation/v0.1/scoped/execution/status",
+            "/federation/v0.1/scoped/execution/admissions/id/verify",
+        ]:
+            call(path, b"{}")
         assert activity() == {"inflight": 0, "last_active": 0}, "polling must stay idle"
-        failures = []
+        for path in [
+            "/api/tasks",
+            "/federation/v0.1/scoped/files/commit",
+            "/federation/v0.1/transactions/prepare",
+        ]:
+            entered.clear()
+            release.clear()
+            failures = []
 
-        def submit():
+            def submit(path=path, failures=failures):
+                try:
+                    call(path, b"{}")
+                except Exception as error:
+                    failures.append(error)
+
+            thread = threading.Thread(target=submit)
+            thread.start()
+            assert entered.wait(5)
+            assert activity()["inflight"] == 1, (
+                "an uncommitted request must block stopping"
+            )
+            call("/admission/close", b"", port=8089)
             try:
-                call("/api/tasks", b"{}")
-            except Exception as error:
-                failures.append(error)
-
-        thread = threading.Thread(target=submit)
-        thread.start()
-        assert entered.wait(5)
-        assert activity()["inflight"] == 1, "an uncommitted request must block stopping"
-        call("/admission/close", b"", port=8089)
+                call(path, b"{}")
+                raise AssertionError("closed admission accepted a new request")
+            except urllib.error.HTTPError as error:
+                assert error.code == 503
+                error.read()
+                error.close()
+            wait_inflight(1)
+            release.set()
+            thread.join(10)
+            assert not thread.is_alive() and not failures
+            observed = wait_inflight(0)
+            assert observed["inflight"] == 0 and observed["last_active"] > 0
+            call("/admission/open", b"", port=8089)
+            call("/api/runs/example/python/poll", b"{}")
+            assert activity() == observed
+        # Access-phase accounting must begin before a slow body is buffered.
+        client = HTTPConnection("127.0.0.1", 8088, timeout=10)
         try:
-            call("/api/tasks", b"{}")
-            raise AssertionError("closed admission accepted a new request")
-        except urllib.error.HTTPError as error:
-            assert error.code == 503
-        assert activity()["inflight"] == 1
-        release.set()
-        thread.join(10)
-        assert not thread.is_alive() and not failures
-        observed = activity()
-        assert observed["inflight"] == 0 and observed["last_active"] > 0
-        call("/admission/open", b"", port=8089)
-        call("/api/runs/example/python/poll", b"{}")
-        assert activity() == observed
+            client.putrequest("POST", "/federation/v0.1/scoped/files/chunk")
+            client.putheader("Content-Length", "2")
+            client.endheaders()
+            client.send(b"{")
+            for _ in range(50):
+                if activity()["inflight"] == 1:
+                    break
+                time.sleep(0.1)
+            else:
+                raise AssertionError("slow federation body was not counted")
+            call("/admission/close", b"", port=8089)
+            assert activity()["inflight"] == 1
+            client.send(b"}")
+            response = client.getresponse()
+            assert response.status == 200
+            response.read()
+            wait_inflight(0)
+            call("/admission/open", b"", port=8089)
+        finally:
+            client.close()
         print(
-            "Nginx: polling excluded; uncommitted requests counted; admission closed and reopened"
+            "Nginx: polling excluded; API/federation writes and slow bodies counted; admission closed and reopened"
         )
     finally:
         print(Path("/var/log/nginx/error.log").read_text()[-2000:])

@@ -30,6 +30,7 @@ class HostTests(unittest.TestCase):
             protocol="aidash-infra-activity/1",
             busy=False,
             counts={"runs": 0, "database_work": 0},
+            completed_transfers=[],
         )
 
     def record_previous(self, observed_at, busy):
@@ -49,6 +50,22 @@ class HostTests(unittest.TestCase):
         self.record_previous(9800, False)
         with patch.object(host, "snapshot", return_value=self.snapshot):
             self.assertEqual(host.observe()["last_active"], 10000)
+
+    def test_transfer_completed_between_samples_renews_idle_once(self):
+        self.record_previous(9990, False)
+        self.snapshot["completed_transfers"] = [
+            "delivered-outbound",
+            "committed-inbound",
+        ]
+        with patch.object(host, "snapshot", side_effect=lambda: dict(self.snapshot)):
+            observed = host.observe()
+            self.assertEqual(observed["last_active"], 10000)
+            self.assertEqual(observed["last_work_completed"], 10000)
+            with patch.object(host.time, "time", return_value=10030):
+                self.assertEqual(host.observe()["last_active"], 10000)
+            self.snapshot["completed_transfers"] = []
+            with patch.object(host.time, "time", return_value=10060):
+                self.assertEqual(host.observe()["last_active"], 10000)
 
     def test_idle_database_maintenance_does_not_keep_a_host_alive(self):
         self.record_previous(9990, False)

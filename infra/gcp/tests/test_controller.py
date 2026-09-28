@@ -1,9 +1,12 @@
 """Exercise complete reconciliation with cloud boundaries replaced, not the policy."""
 
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack, contextmanager
 from copy import deepcopy
+import json
+import os
 from pathlib import Path
 import sys
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
@@ -19,6 +22,7 @@ CONFIG = {"repository": "kent8192/aidash"}
 class MemoryStore:
     def __init__(self):
         self.state = {"environments": {}}
+        self.locked = False
 
     def read(self, key):
         return deepcopy(self.state), "1"
@@ -27,8 +31,15 @@ class MemoryStore:
         self.state, value = callback(deepcopy(self.state))
         return value
 
-    def lock(self):
-        return nullcontext()
+    @contextmanager
+    def lock(self, wait_seconds=0):
+        if self.locked:
+            raise RuntimeError("lifecycle lock is busy")
+        self.locked = True
+        try:
+            yield
+        finally:
+            self.locked = False
 
 
 class CloudFixture:
@@ -252,6 +263,58 @@ class ReconcileTests(unittest.TestCase):
                 self.reconcile()
         self.assertNotIn(("stop", "test"), self.calls)
         self.assertEqual(self.store.state["environments"]["test"]["desired"], "running")
+
+    def test_stop_cannot_be_accepted_during_a_create_apply(self):
+        self.request()
+        original = self.cloud.apply
+        attempts = []
+        with TemporaryDirectory() as directory:
+            event = Path(directory) / "event.json"
+            event.write_text(
+                json.dumps({"inputs": {"environment": "test", "action": "stop"}})
+            )
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "GITHUB_EVENT_PATH": str(event),
+                        "GITHUB_EVENT_NAME": "workflow_dispatch",
+                        "GITHUB_ACTOR": "fixture",
+                        "GITHUB_RUN_ID": "2",
+                        "RUNNER_TEMP": directory,
+                    },
+                ),
+                patch.object(controller, "permission", return_value=None),
+            ):
+
+                def racing_apply(*args, **kwargs):
+                    before = deepcopy(self.store.state)
+                    with self.assertRaisesRegex(RuntimeError, "lifecycle lock is busy"):
+                        controller.prepare(CONFIG, self.store)
+                    self.assertEqual(self.store.state, before)
+                    attempts.append(True)
+                    original(*args, **kwargs)
+
+                with patch.object(self.cloud, "apply", racing_apply):
+                    self.reconcile()
+                self.assertTrue(attempts)
+                controller.prepare(CONFIG, self.store)
+                self.assertEqual(
+                    self.store.state["environments"]["test"]["desired"], "stopped"
+                )
+                self.cloud.plans.clear()
+                self.calls.clear()
+                self.reconcile()
+                self.assertEqual(self.cloud.status["test"], "TERMINATED")
+                self.assertNotIn(("start", "test"), self.calls)
+                self.assertNotIn(("bootstrap", "test"), self.calls)
+
+    def test_accepted_stop_fences_an_older_create_before_any_apply(self):
+        self.request()
+        self.request(action="stop")
+        self.reconcile()
+        self.assertFalse(self.cloud.plans)
+        self.assertFalse(self.calls)
 
 
 if __name__ == "__main__":

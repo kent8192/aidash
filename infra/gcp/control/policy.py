@@ -51,7 +51,7 @@ def validate_request(request):
 
 
 def transition(state, request, incarnation, now):
-    """Accept intent immediately, separately from expensive builds and applies.
+    """Accept intent under the lifecycle lock, before building a release.
 
     Sequence is a trusted GitHub run ID, not an issue-comment field. Tombstones
     retain it so old reruns cannot resurrect a retired environment.
@@ -191,11 +191,21 @@ def meaningful_request(method, path, status):
         return False
     if method == "GET":
         return path in {"/auth/login", "/auth/callback"}
-    if method not in {"POST", "PUT", "PATCH", "DELETE"} or not path.startswith("/api/"):
+    if method not in {"POST", "PUT", "PATCH", "DELETE"} or not path.startswith(
+        ("/api/", "/federation/v0.1/")
+    ):
         return False
     if re.fullmatch(r"/api/runs/[^/]+/(shell|python)/poll", path):
         return False
     if path.startswith(("/api/peer/", "/api/metrics", "/api/state", "/api/session")):
+        return False
+    # The peer protocol also uses POST for discovery, verification and polling.
+    if re.fullmatch(
+        r"/federation/v0\.1/(discover|workspace|scoped/discover|scoped/registry/verify|"
+        r"scoped/execution/(inspect|status|grants/(verify|snapshot|describe|activation)|"
+        r"admissions/[^/]+/verify)|scoped/files/(negotiate|describe|status|recipients))",
+        path,
+    ):
         return False
     return True
 

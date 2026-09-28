@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -88,18 +89,24 @@ class Store:
         raise RuntimeError("lifecycle state changed repeatedly; retry the operation")
 
     @contextmanager
-    def lock(self):
+    def lock(self, wait_seconds=0):
         key = "lifecycle/apply.lock"
-        try:
-            generation = self.write(
-                key, {"run_id": os.environ.get("GITHUB_RUN_ID", "local")}, "0"
-            )
-        except urllib.error.HTTPError as error:
-            if error.code == 412:
-                raise RuntimeError(
-                    "another apply owns the lock; the durable request will be reconciled later"
-                ) from error
-            raise
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            try:
+                generation = self.write(
+                    key, {"run_id": os.environ.get("GITHUB_RUN_ID", "local")}, "0"
+                )
+                break
+            except urllib.error.HTTPError as error:
+                if error.code != 412:
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(
+                        "lifecycle lock is busy; retry after its owner finishes"
+                    ) from error
+                time.sleep(min(5, remaining))
         try:
             yield
         finally:

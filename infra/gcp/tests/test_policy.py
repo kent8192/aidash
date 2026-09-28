@@ -136,12 +136,21 @@ class LifecycleTests(unittest.TestCase):
             ("GET", "/health"),
             ("POST", "/api/runs/id/shell/poll"),
             ("POST", "/api/runs/id/python/poll"),
+            ("GET", "/federation/v0.1/observe"),
+            ("POST", "/federation/v0.10/scoped/files/chunk"),
+            ("POST", "/federation/v0.1/discover"),
+            ("POST", "/federation/v0.1/workspace"),
+            ("POST", "/federation/v0.1/scoped/files/status"),
+            ("POST", "/federation/v0.1/scoped/execution/status"),
+            ("POST", "/federation/v0.1/scoped/execution/admissions/id/verify"),
         ]:
             self.assertFalse(meaningful_request(method, path, 200))
         for method, path in [
             ("GET", "/auth/callback"),
             ("POST", "/api/runs/id/python"),
             ("PATCH", "/api/tasks/id"),
+            ("POST", "/federation/v0.1/scoped/files/commit"),
+            ("POST", "/federation/v0.1/transactions/prepare"),
         ]:
             self.assertTrue(meaningful_request(method, path, 200))
         self.assertFalse(meaningful_request("POST", "/api/tasks", 401))

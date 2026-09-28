@@ -1,7 +1,7 @@
 # GCP staging and test environments
 
-This implements the [accepted design](../../docs/design/2026-09-27-gcp-deployment.md)
-using Terraform, a trusted GitHub Actions controller, and infrastructure-side
+This provisions nonproduction GCP environments using Terraform, a trusted
+GitHub Actions controller, and infrastructure-side
 activity observation. Application and Runner business logic are unchanged.
 No production environment or always-running management VM is created.
 
@@ -177,9 +177,14 @@ On the PR, an authorized collaborator can write exactly one of:
 
 For Actions use `environment=pr`, `pr_number=N`, and `approved_sha` for a new fork
 head. The illustrative fork SHA above must be replaced with the actual hash.
-No environment is created by opening a PR alone. Commands and completed builds
-store durable intent before acquiring the apply lock. If another apply owns the
-lock, a later scheduled reconciliation processes that intent. Inspect Actions
+No environment is created by opening a PR alone. Command acceptance and cloud
+reconciliation share a durable lock, so an older apply cannot create/start a VM
+after a newer stop/destroy request has been accepted. Intake waits up to 450
+seconds for the lock; if that expires, the command has not been accepted and the
+Actions run fails. Retry after the lock owner finishes. Locks are never stolen.
+Builds run outside the lock and attach only to their accepted generation. A later
+scheduled reconciliation can process accepted intent or a completed build if its
+immediate apply job finds the lock busy. Inspect Actions
 logs and `lifecycle/state.json` in the private state bucket for ready/pending/
 interrupted/failed state, source and digests. A build artifact alone is not proof
 of a successful deployment.
@@ -191,8 +196,12 @@ in-flight writes not yet visible in PostgreSQL. Polling, health checks, reading,
 scrolling and unsent drafts do not renew the deadline. A host timer samples
 durable work every minute. The read-only observer covers Runs, leases, capability
 operations, verification, generation, transactions and active transfers; Runner
-journals cover uncertain physical writers. Completed work and explicit resume
-renew the idle deadline. Pure human-input/approval waits may idle; approval
+journals cover uncertain physical writers. Federation writes, including bodies
+still being uploaded, block sealing and successful completion renews activity.
+Completed work and explicit resume renew the idle deadline. Transfer receipts
+have no completion timestamp: a newly observed inbound/outbound completion starts
+a full idle hour at observation time, and subsequent samples of that receipt do
+not extend it. Pure human-input/approval waits may idle; approval
 expiration remains wall-clock based.
 
 Before stop/update, the controller closes proxy admission, freezes application
@@ -221,8 +230,8 @@ idle timer can automatically resume a stopped VM.
   Secret Manager secret using secure file/stdin input, then explicitly resume
   with `force=true` to reinstall configuration. Changing a GitHub seed secret
   affects newly created environment secrets, not already populated secrets.
-- **Abandoned apply lock:** read `lifecycle/apply.lock`, inspect its GitHub run
-  and confirm that no apply still runs before removing that exact GCS generation.
+- **Abandoned lifecycle lock:** read `lifecycle/apply.lock`, inspect its GitHub run
+  and confirm that no intake or reconciliation still runs before removing that exact GCS generation.
   Locks are never stolen on a timeout. Preserve `lifecycle/state.json`, including
   tombstones; deleting it loses stale-run fencing. Terraform's own backend lock
   is separate and also requires proving the owner has stopped before recovery.
@@ -256,12 +265,9 @@ explicit startup gates. Backups and production availability are deferred.
 
 ## Cost and external references
 
-The [accepted cost worksheet](../../docs/design/2026-09-28-gcp-host-cost-estimate.md)
-uses 60 normal + 60 Spot VM-hours/month, 90 GiB retained disks and ephemeral IPv4:
-approximately JPY 3,571 for that subtotal at JPY 160/USD. An additional stopped
-30 GiB PR adds about JPY 480/month. This is a dated estimate, not measured usage
-or a cap. Add registry/bundle/state storage, traffic, secrets, logs, applicable
-Actions charges and tax to the combined JPY 10,000 target; LLM/API costs are separate.
+The combined budget target is JPY 10,000/month, including VM runtime, retained
+disks, IPv4, registry/bundle/state storage, traffic, secrets, logs, applicable
+Actions charges and tax; LLM/API costs are separate. This target is not a billing cap.
 Retained images/bundles are not automatically expired because stopped environments
 must remain resumable. Periodically remove only versions no longer referenced by
 desired/applied lifecycle state. Review billing and artifact growth explicitly.

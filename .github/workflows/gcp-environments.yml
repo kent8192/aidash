@@ -39,8 +39,8 @@ permissions:
   contents: read
 
 # No workflow-wide concurrency group: GitHub may discard pending runs in such
-# groups. Intent is first recorded using GCS compare-and-swap. Applies use a
-# separate durable lock; a superseded build cannot overwrite newer intent.
+# groups. Intent acceptance and applies share a durable GCS lock, with state
+# updated using compare-and-swap. Builds cannot overwrite a newer generation.
 jobs:
   prepare:
     if: vars.GCP_ENVIRONMENTS_ENABLED == 'true'

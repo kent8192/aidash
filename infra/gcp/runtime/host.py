@@ -671,6 +671,13 @@ def observe():
         if (ROOT / "activity.json").exists()
         else {}
     )
+    # Transfers have durable receipts but no database completion timestamp.
+    # First observation is conservative: never shorten the post-transfer hour.
+    if set(result["completed_transfers"]) - set(
+        previous.get("completed_transfers", [])
+    ):
+        result["last_work_completed"] = max(result.get("last_work_completed", 0), now)
+        last = max(last, result["last_work_completed"])
     # Completion starts a fresh hour. An observation gap is unknown activity,
     # so it also starts a new interval rather than causing immediate shutdown.
     if active or previous.get("busy") or now - previous.get("observed_at", 0) > 120:

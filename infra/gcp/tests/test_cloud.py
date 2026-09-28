@@ -6,9 +6,51 @@ import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "control"))
-from cloud import Terraform
+from cloud import Store, Terraform
+
+
+class LockTests(unittest.TestCase):
+    def test_busy_lock_waits_without_stealing_then_releases_only_its_generation(self):
+        store = Store("fixture")
+        with (
+            patch.object(
+                store,
+                "write",
+                side_effect=[HTTPError("", 412, "busy", {}, None), "owned-generation"],
+            ) as write,
+            patch.object(store, "call") as call,
+            patch("cloud.time.monotonic", return_value=0),
+            patch("cloud.time.sleep") as sleep,
+        ):
+            with store.lock(wait_seconds=10):
+                call.assert_not_called()
+            sleep.assert_called_once_with(5)
+            self.assertEqual(
+                [item.args[2] for item in write.call_args_list], ["0", "0"]
+            )
+            call.assert_called_once_with(
+                "DELETE",
+                "storage/v1/b/fixture/o/lifecycle%2Fapply.lock?ifGenerationMatch=owned-generation",
+            )
+
+    def test_expired_wait_never_deletes_someone_elses_lock(self):
+        store = Store("fixture")
+        with (
+            patch.object(
+                store, "write", side_effect=HTTPError("", 412, "busy", {}, None)
+            ),
+            patch.object(store, "call") as call,
+            patch("cloud.time.monotonic", side_effect=[0, 10]),
+            patch("cloud.time.sleep") as sleep,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "lifecycle lock is busy"):
+                with store.lock(wait_seconds=10):
+                    self.fail("must not enter an unowned critical section")
+            call.assert_not_called()
+            sleep.assert_not_called()
 
 
 class PlanTests(unittest.TestCase):

@@ -193,28 +193,40 @@ def prepare(config, store):
     state = state or {"environments": {}}
     values = requests(config, event, os.environ["GITHUB_EVENT_NAME"], state)
     prepared = {"build": False, "targets": [], "sha": "", "source_repo": ""}
-    for request in values:
+    if values:
+        # Accepting intent and executing cloud effects use the same lock. A stop
+        # cannot be acknowledged while an older apply can still start a VM.
+        # Refresh source/state after waiting; an earlier read may now be stale.
+        with store.lock(wait_seconds=450):
+            state, _ = store.read("lifecycle/state.json")
+            values = requests(
+                config,
+                event,
+                os.environ["GITHUB_EVENT_NAME"],
+                state or {"environments": {}},
+            )
+            for request in values:
 
-        def accept(current, request=request):
-            updated, changed = transition(
-                current, request, secrets.token_hex(6), time.time()
-            )
-            return updated, (
-                changed,
-                updated["environments"].get(request["environment"]),
-            )
+                def accept(current, request=request):
+                    updated, changed = transition(
+                        current, request, secrets.token_hex(6), time.time()
+                    )
+                    return updated, (
+                        changed,
+                        updated["environments"].get(request["environment"]),
+                    )
 
-        changed, entry = store.mutate(accept)
-        if changed and build_needed(entry):
-            prepared.update(
-                build=True, sha=entry["sha"], source_repo=entry["source_repo"]
-            )
-            prepared["targets"].append(
-                {
-                    "environment": request["environment"],
-                    "generation": entry["generation"],
-                }
-            )
+                changed, entry = store.mutate(accept)
+                if changed and build_needed(entry):
+                    prepared.update(
+                        build=True, sha=entry["sha"], source_repo=entry["source_repo"]
+                    )
+                    prepared["targets"].append(
+                        {
+                            "environment": request["environment"],
+                            "generation": entry["generation"],
+                        }
+                    )
     destination = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "aidash-request.json"
     private_json(destination, prepared)
     if os.environ.get("GITHUB_OUTPUT"):
