@@ -1,5 +1,9 @@
 # HTTP protection and observability
 
+The [v0.1.0 nonfunctional release requirements](nonfunctional-release.md) list
+the availability, latency and alert decisions and evidence needed for release.
+The settings and metrics below are mechanisms; their defaults are not SLOs.
+
 The server applies process-local protection to the public router, including
 static-file responses, API errors, authentication routes and federation routes.
 No cluster-wide quota or automatic request retry is introduced.
