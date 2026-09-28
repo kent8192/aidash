@@ -79,6 +79,11 @@ def main():
             subprocess.run(["helm", "upgrade", "--install", f"ops-{node}", str(ROOT / "deploy/helm/aidash"), "--namespace", namespace, "--set", f"node.id=aidash://ops-{node}", "--set", f"existingSecret=aidash-{node}", "--set", f"image.repository={repo}", "--set", f"image.tag={tag}", "--set", f"frontend.image.repository={frontend_repo}", "--set", f"frontend.image.tag={frontend_tag}", "--wait", "--timeout", "5m"], check=True, env=env, stdout=subprocess.DEVNULL)
         for service_name in ["nats", "qdrant"]:
             kube("rollout", "status", f"statefulset/{service_name}", "--timeout=180s")
+        # The fixture operator provisions once; runtime bootstrapping stays off.
+        activation_scopes = {}
+        for node in ["a", "b"]:
+            activation_scopes[node] = json.loads(kube("exec", f"deployment/ops-{node}-aidash-server", "--", "aidash", "activation-provision"))
+            wait_for(lambda node=node: "activation transport ready" in kube("logs", f"deployment/ops-{node}-aidash-worker"), timeout=30, label="activation consumer ready")
         rollout("fixture")
         fixture_url = forward("fixture", 8000)
         bases = [forward(f"ops-{node}-aidash", 8080) for node in ["a", "b"]]
@@ -142,7 +147,18 @@ def main():
         kube("scale", "deployment/ops-b-aidash-worker", "--replicas=1")
         rollout("ops-b-aidash-worker")
         assert len(api_request(fixture_url, "/status")["effects"]) == 3
+        for node in ["a", "b"]:
+            observed_scope = json.loads(kube("exec", f"deployment/ops-{node}-aidash-server", "--", "aidash", "activation-provision"))
+            assert observed_scope == activation_scopes[node], "Pod replacement must retain the same durable consumer"
+            worker_log = kube("logs", f"deployment/ops-{node}-aidash-worker", "--all-pods=true")
+            server_log = kube("logs", f"deployment/ops-{node}-aidash-server", "--all-pods=true")
+            assert "activation lease committed" not in server_log, "server role consumed activation"
+        image_ids = sorted({c["imageID"] for pod in json.loads(kube("get", "pods", "-o", "json"))["items"] for c in pod.get("status", {}).get("containerStatuses", [])})
         report = {"distribution": args.distribution, "kubernetes": json.loads(kube("version", "-o", "json"))["serverVersion"]["gitVersion"], "namespace": namespace, "image": args.image, "frontend_image": args.frontend_image, "workspace": workspace, "recovered_run": recovered["id"], "tasks": 4, "artifacts": 4, "external_effects": 3, "worker_sigkill": "passed", "worker_scale_up_down": "passed", "server_scale_up": "passed", "rolling_updates": "passed", "stable_identity": "passed", "deployment_observation": observation, "base_a": bases[0], "base_b": bases[1]}
+        report.update({"activation_scopes": activation_scopes, "activation_consumer_survived_replacement": True, "server_did_not_claim": True, "git_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(), "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)), "image_ids": image_ids})
+        source_manifest = os.environ.get("AIDASH_CLUSTER_SOURCE_MANIFEST")
+        if source_manifest:
+            report["build_source"] = json.loads(pathlib.Path(source_manifest).read_text())
         (report_dir / "report.json").write_text(json.dumps(report, indent=2))
         print(f"Cluster acceptance passed: {report_dir / 'report.json'}", flush=True)
         if args.keep:

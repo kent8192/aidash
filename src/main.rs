@@ -29,12 +29,30 @@ async fn main() -> Result<()> {
 		);
 		return Ok(());
 	}
-	if !matches!(mode.as_str(), "serve" | "server" | "worker" | "migrate") {
+	if !matches!(
+		mode.as_str(),
+		"serve" | "server" | "worker" | "migrate" | "activation-provision"
+	) {
 		return Err(aidash::Error::Invalid(
-			"usage: aidash [serve|server|worker|migrate|openapi]".into(),
+			"usage: aidash [serve|server|worker|migrate|activation-provision|openapi]".into(),
 		));
 	}
 	let config = Config::from_env()?;
+	let activation_settings = aidash::activation::Settings::from_env()?;
+	if mode == "activation-provision" {
+		let broker = aidash::activation::Broker::provision(
+			&std::env::var("AIDASH_ACTIVATION_NATS_URL")
+				.unwrap_or_else(|_| config.nats_url.clone()),
+			&config.node_id,
+			&activation_settings,
+		)
+		.await?;
+		println!(
+			"{}",
+			serde_json::json!({"stream":broker.stream_name,"subject":broker.subject,"consumer":"workers-v1","consumer_created":broker.consumer.as_ref().map(|c| c.cached_info().created.to_string())})
+		);
+		return Ok(());
+	}
 	let http_settings = aidash::http::Settings::from_env()?;
 	let metrics = metrics_exporter_prometheus::PrometheusBuilder::new()
 		.install_recorder()
@@ -163,15 +181,35 @@ async fn main() -> Result<()> {
 			}
 		});
 	}
+	let mut activation_federation = federation.for_runtime_workers().await?;
+	if let Ok(url) = std::env::var("AIDASH_ACTIVATION_NATS_URL") {
+		activation_federation.config.nats_url = url;
+	}
+	let activation = aidash::activation::Runtime::new(
+		activation_federation,
+		activation_settings.clone(),
+		mode != "server",
+	);
+	background.spawn(activation.clone().run(stopping.clone()));
 	if mode != "server" {
+		// Terminal remote inputs keep their independent durable delivery path.
+		let delivery = Harness {
+			federation: federation.for_runtime_workers().await?,
+		};
+		let delivery_stopping = stopping.clone();
+		background.spawn(async move {
+			delivery
+				.deliver_terminal_messages_until(delivery_stopping)
+				.await
+		});
 		let worker_federation = federation.for_runtime_workers().await?;
 		// Independent workers allow one agent to wait while another makes progress.
-		for _ in 0..4 {
+		for _ in 0..activation_settings.slots {
 			let h = Harness {
 				federation: worker_federation.clone(),
 			};
 			let stopping = stopping.clone();
-			workers.spawn(async move { h.run_worker_until(stopping).await });
+			workers.spawn(activation.clone().worker(h, stopping));
 		}
 	}
 	let mut http = tokio::task::JoinSet::new();

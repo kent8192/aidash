@@ -60,6 +60,15 @@ PY
   k3d kubeconfig get "$cluster" > "$KUBECONFIG"
 fi
 helm lint deploy/helm/aidash --set node.id=aidash://acceptance --set existingSecret=acceptance
+export AIDASH_CLUSTER_SOURCE_MANIFEST="$PWD/.ignore/platform/$cluster-source.json"
+python3 - <<'SOURCE_MANIFEST'
+import hashlib,json,os,pathlib,subprocess,datetime
+files=subprocess.check_output(['git','ls-files','--cached','--others','--exclude-standard','-z']).decode().split('\0')
+files={p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in sorted(set(files)) if p and pathlib.Path(p).is_file()}
+manifest={'git_sha':subprocess.check_output(['git','rev-parse','HEAD']).decode().strip(),'dirty':bool(subprocess.check_output(['git','status','--porcelain'])),'utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'file_hashes':files}
+manifest['source_digest']=hashlib.sha256(json.dumps(files,sort_keys=True).encode()).hexdigest()
+pathlib.Path(os.environ['AIDASH_CLUSTER_SOURCE_MANIFEST']).write_text(json.dumps(manifest,indent=2)+'\n')
+SOURCE_MANIFEST
 docker build --build-arg CARGO_PROFILE=dev -t aidash:cluster-acceptance .
 docker build --build-arg CARGO_PROFILE=dev --target frontend -t aidash-frontend:cluster-acceptance .
 postgres_image=aidash-postgres:17-pg-jsonschema-0.3.4

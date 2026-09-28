@@ -1579,6 +1579,23 @@ async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait(
 		)
 		.await
 		.unwrap();
+	let release_obligations: i64 = sqlx::query_scalar(
+		&sea_orm::sea_query::Query::select()
+			.expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
+			.from(sea_orm::sea_query::Alias::new("run_activations"))
+			.and_where(sea_orm::sea_query::Expr::cust(
+				"run_id = $1 AND reason = 'dependency_release'",
+			))
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.fetch_one(&store.pool)
+	.await
+	.unwrap();
+	assert_eq!(
+		release_obligations, 1,
+		"dependency completion must durably reactivate the waiting Run"
+	);
 	let owner = qualified_agent(&store.node_id, &other.id, &other.version);
 	assert!(matches!(
 		store.claim(task.id, task.revision, &owner, &other).await,

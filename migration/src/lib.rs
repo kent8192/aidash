@@ -43,6 +43,8 @@ mod m20260925_140000_core_working_files;
 mod m20260926_010000_scoped_remote_execution;
 mod m20260927_000000_core_operation_queue;
 
+mod m20260928_000000_worker_activation;
+
 pub struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
@@ -90,6 +92,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260925_140000_core_working_files::Migration),
 			Box::new(m20260926_010000_scoped_remote_execution::Migration),
 			Box::new(m20260927_000000_core_operation_queue::Migration),
+			Box::new(m20260928_000000_worker_activation::Migration),
 		]
 	}
 }

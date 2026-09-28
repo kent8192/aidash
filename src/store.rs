@@ -3405,6 +3405,18 @@ impl Store {
 		.await?)
 	}
 	pub async fn lease_run(&self, worker: Uuid, seconds: i32) -> Result<Option<Run>> {
+		let mut tx = self.pool.begin().await?;
+		let run = Self::lease_run_in(&mut tx, worker, seconds, None).await?;
+		tx.commit().await?;
+		Ok(run)
+	}
+	/// Shared eligibility/fencing path for targeted notification claims and recovery.
+	pub(crate) async fn lease_run_in(
+		tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+		worker: Uuid,
+		seconds: i32,
+		run_id: Option<Uuid>,
+	) -> Result<Option<Run>> {
 		use sea_orm::sea_query::{
 			Alias, Condition, Expr, JoinType, LockBehavior, LockType, Order, PostgresQueryBuilder,
 			Query,
@@ -3466,7 +3478,7 @@ impl Store {
 			.and_where(Expr::col((Alias::new("q"), Alias::new("initialized"))).eq(false))
 			.and_where(Expr::col((Alias::new("a"), Alias::new("state"))).ne("active"))
 			.to_owned();
-		let ready = Query::select().column(Alias::new("id")).from(Alias::new("runs"))
+		let mut ready = Query::select().column(Alias::new("id")).from(Alias::new("runs"))
             .and_where(Expr::col(Alias::new("phase")).is_not_in(["COMPLETED","FAILED","CANCELLED"]))
             .and_where(Expr::col(Alias::new("control")).ne("PAUSED"))
             .and_where(Expr::col(Alias::new("revision")).lt(i64::MAX-2))
@@ -3475,6 +3487,9 @@ impl Store {
             .and_where(Expr::cust("phase <> 'WAITING' OR control = 'CANCELLED' OR CAST((pending ->> 'wake_at') AS TIMESTAMPTZ) < CURRENT_TIMESTAMP OR EXISTS(SELECT 1 FROM human_requests AS h WHERE CAST(h.id AS TEXT) = runs.pending ->> 'human_request_id' AND h.response IS NOT NULL) OR EXISTS(SELECT 1 FROM core_records AS c WHERE CAST(c.id AS TEXT) = runs.pending ->> 'core_approval_id' AND (c.state <> 'pending' OR c.expires_at < CURRENT_TIMESTAMP))"))
             .cond_where(Condition::any().add(Expr::col(Alias::new("control")).eq("CANCELLED")).add(Condition::all().add(Expr::exists(earlier).not()).add(Expr::exists(unready).not())))
             .order_by(Alias::new("updated_at"),Order::Asc).limit(1).lock_with_behavior(LockType::Update,LockBehavior::SkipLocked).to_owned();
+		if let Some(id) = run_id {
+			ready.and_where(Expr::col(Alias::new("id")).eq(id));
+		}
 		// Session admission precedes Run leasing. Waiting retains its position; controls bypass it.
 		Ok(sqlx::query_as(&Query::update().table(Alias::new("runs"))
             .value(Alias::new("pending"),Expr::cust("CASE WHEN lease_owner IS NOT NULL THEN pending || CAST('{\"lease_recovered\":true}' AS JSONB) ELSE pending END"))
@@ -3485,7 +3500,7 @@ impl Store {
             .and_where(Expr::col(Alias::new("id")).in_subquery(ready))
             .and_where(Expr::cust("set_config('aidash.input_ledger_worker', 'true', true) = 'true'"))
             .returning_all().to_string(PostgresQueryBuilder))
-            .bind(worker).bind(seconds as f64).fetch_optional(&self.pool).await?)
+            .bind(worker).bind(seconds as f64).fetch_optional(&mut **tx).await?)
 	}
 	pub async fn renew_lease(&self, id: Uuid, worker: Uuid, seconds: i32) -> Result<bool> {
 		Ok(sqlx::query(

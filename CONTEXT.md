@@ -1,6 +1,6 @@
 # Aidash
 
-Aidash coordinates Agents and their durable work. This glossary records the shared language relevant to the Web-search design; it is not an implementation specification.
+Aidash coordinates Agents and their durable work. This glossary records the shared language for execution and Agent capabilities.
 
 ## Language
 
@@ -11,6 +11,22 @@ _Avoid_: Model, Agent
 **Run**:
 A durable execution of a task by an exact Agent version. A Run is distinct from a single model request or capability invocation.
 _Avoid_: Model request, tool call
+
+**Harness worker**:
+A runtime executor that advances Runs on behalf of logical Agents. It is distinct from the Agent whose identity and definition a Run uses.
+_Avoid_: Agent, Agent subscription
+
+**Runnable Run**:
+A nonterminal Run eligible to advance under its current execution constraints. Readiness to advance does not establish permission for every subsequent action.
+_Avoid_: Received event, authorized effect
+
+**Run activation**:
+A request for Harness workers to consider advancing a Run whose durable state may permit progress. It does not confer execution ownership or create another Run.
+_Avoid_: Agent selection, Run creation, process startup
+
+**Activation generation**:
+The ordered version of a Run's need to be reconsidered for progress. Handling an activation generation does not by itself establish that every accepted input has been processed.
+_Avoid_: Run revision, observed input position
 
 **Core capability**:
 A facility provided and governed by the Harness independently of Registry integrations. Availability and permission to use a capability are distinct.

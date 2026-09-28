@@ -1,3 +1,4 @@
+pub mod activation;
 pub mod api;
 pub mod authorization;
 pub mod bus;
