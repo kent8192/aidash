@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Controller lifecycle regressions independent of cluster availability."""
 import importlib.util
+import base64
 import contextlib
+import hashlib
 import io
 import sys
 import json
@@ -86,6 +88,54 @@ class ControllerLifecycle(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "freeze rejected"):
             self.start_controller("freeze")
         self.assertEqual(self.events, ["policy", "isolation", "freeze"])
+
+    def shell_recovery_runner(self):
+        runner = self.start_controller()
+        runner.update(self.operation, status="running", executed=True,
+                      termination_confirmed=False, request={"files": []})
+        return runner
+
+    def test_shell_recovery_waits_for_physical_stop_after_collector_loss(self):
+        runner = self.shell_recovery_runner()
+        for first_status in ({"termination_confirmed": False}, RuntimeError("runtime state unavailable")):
+            with self.subTest(first_status=first_status):
+                runner.update(self.operation, status="running", termination_confirmed=False)
+                content = b"saved before memory limit"
+                file = dict(path="saved.txt", object_id="saved", size=len(content),
+                            digest=hashlib.sha256(content).hexdigest())
+                with patch.object(runner, "pod", side_effect=RuntimeError("WaitPID failed: EOF")), \
+                     patch.object(runner, "guard", side_effect=[first_status,
+                         {"termination_confirmed": True}, {"files": [file]},
+                         {"stdout": ""}, {"data": base64.b64encode(content).decode()}]) as guard, \
+                     patch.object(runner, "kube") as kube, \
+                     patch.object(controller.time, "sleep"), \
+                     patch.object(controller.time, "monotonic", side_effect=[0, 1]):
+                    runner.reconcile(self.operation)
+                result = runner.get(self.operation)
+                self.assertEqual(result["status"], "failed")
+                self.assertTrue(result["termination_confirmed"])
+                self.assertEqual(result["error"]["code"], "SANDBOX_LOST")
+                self.assertEqual((runner.root / (self.operation + ".files") / "saved").read_bytes(), content)
+                self.assertEqual([call.args[1] for call in guard.call_args_list],
+                                 ["status", "status", "export", "logs", "read"])
+                self.assertEqual(kube.call_count, 1)
+                self.assertEqual(kube.call_args.args[0][:2], ["delete", "pod"])
+
+    def test_shell_recovery_without_stop_proof_remains_uncertain(self):
+        runner = self.shell_recovery_runner()
+        for status in ({"termination_confirmed": False}, RuntimeError("runtime state unavailable")):
+            with self.subTest(status=status), \
+                 patch.object(runner, "pod", side_effect=RuntimeError("WaitPID failed: EOF")), \
+                 patch.object(runner, "guard", side_effect=[status]) as guard, \
+                 patch.object(runner, "kube") as kube, \
+                 patch.object(controller.time, "sleep"), \
+                 patch.object(controller.time, "monotonic", side_effect=[0, 11]):
+                runner.reconcile(self.operation)
+                result = runner.get(self.operation)
+                self.assertEqual(result["status"], "uncertain")
+                self.assertFalse(result["termination_confirmed"])
+                self.assertEqual([call.args[1] for call in guard.call_args_list], ["status"])
+                kube.assert_not_called()
 
     def test_acknowledgement_releases_all_copied_payloads_and_is_idempotent(self):
         runner = self.start_controller()
