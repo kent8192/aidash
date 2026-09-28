@@ -23,7 +23,10 @@ pub struct Runtime {
 	progress: AtomicBool,
 }
 impl Runtime {
-	pub fn new(f: Federation, settings: Settings, worker: bool) -> Arc<Self> {
+	pub fn new(mut f: Federation, settings: Settings, worker: bool) -> Arc<Self> {
+		if let Ok(url) = std::env::var("AIDASH_ACTIVATION_NATS_URL") {
+			f.config.nats_url = url;
+		}
 		let (broker, _) = watch::channel(None);
 		Arc::new(Self {
 			f,
@@ -41,9 +44,14 @@ impl Runtime {
 		self.mode(state);
 		while !*stopping.borrow() {
 			let setup = async {
-				let _visibility = ReadLease::begin(&self.f.store).await?;
-				durable::reconcile(&self.f.store).await?;
-				drop(_visibility);
+				loop {
+					let visibility = ReadLease::begin(&self.f.store).await?;
+					let reconciled = durable::reconcile(&self.f.store).await?;
+					drop(visibility);
+					if reconciled < durable::RECONCILE_BATCH_SIZE {
+						break;
+					}
+				}
 				Broker::connect(
 					&self.f.config.nats_url,
 					&self.f.config.node_id,
@@ -58,6 +66,7 @@ impl Runtime {
 			};
 			match result {
 				Ok(broker) => {
+					backoff = Duration::from_millis(500);
 					self.failed.store(false, Ordering::Release);
 					self.progress.store(false, Ordering::Release);
 					let broker = Arc::new(broker);
@@ -99,7 +108,6 @@ impl Runtime {
 								{
 									state = "event_driven";
 									self.mode(state);
-									backoff = Duration::from_millis(500);
 								}
 							}
 							Err(crate::Error::TransactionPending) => {}

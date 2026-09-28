@@ -150,7 +150,6 @@ def main():
         for node in ["a", "b"]:
             observed_scope = json.loads(kube("exec", f"deployment/ops-{node}-aidash-server", "--", "aidash", "activation-provision"))
             assert observed_scope == activation_scopes[node], "Pod replacement must retain the same durable consumer"
-            worker_log = kube("logs", f"deployment/ops-{node}-aidash-worker", "--all-pods=true")
             server_log = kube("logs", f"deployment/ops-{node}-aidash-server", "--all-pods=true")
             assert "activation lease committed" not in server_log, "server role consumed activation"
         image_ids = sorted({c["imageID"] for pod in json.loads(kube("get", "pods", "-o", "json"))["items"] for c in pod.get("status", {}).get("containerStatuses", [])})

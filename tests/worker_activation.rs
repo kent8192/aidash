@@ -1155,3 +1155,192 @@ authorization {{ users: [
 	assert_eq!(consumer.info().await.unwrap().num_ack_pending, 0);
 	std::fs::write(directory.join("result.json"),serde_json::to_vec_pretty(&json!({"result":"passed","stream":stream,"server_publish":true,"server_pull_denied":true,"worker_pull_ack":true,"other_node_denied":true,"mismatch_did_not_reset_consumer":true,"consumer_created":created.to_string()})).unwrap()).unwrap();
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn startup_reconciliation_drains_all_batches(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&environment).await;
+	let mut insert = Query::insert();
+	insert.into_table(a("runs")).columns([
+		a("id"),
+		a("task_id"),
+		a("workspace_id"),
+		a("home_node"),
+		a("agent_id"),
+		a("agent_version"),
+		a("control"),
+	]);
+	for _ in 0..257 {
+		insert.values_panic([
+			Uuid::new_v4().into(),
+			Uuid::new_v4().into(),
+			Uuid::new_v4().into(),
+			f.config.node_id.clone().into(),
+			"fixture".into(),
+			"1.0.0".into(),
+			"PAUSED".into(),
+		]);
+	}
+	sqlx::query(&insert.to_string(PostgresQueryBuilder))
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	// Model an upgrade from writers predating the activation table/triggers.
+	sqlx::query(
+		&Query::delete()
+			.from_table(a("run_activations"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let settings = Settings {
+		namespace: schema.clone(),
+		..Default::default()
+	};
+	let broker = Broker::provision(&f.config.nats_url, &f.config.node_id, &settings)
+		.await
+		.unwrap();
+	let runtime = aidash::activation::Runtime::new(f.clone(), settings, false);
+	let (stop, stopping) = tokio::sync::watch::channel(false);
+	let task = tokio::spawn(runtime.run(stopping));
+	let outcome = tokio::time::timeout(Duration::from_secs(5), async {
+		while count(&f, "reason = 'reconcile'").await < 257 {
+			tokio::time::sleep(Duration::from_millis(20)).await;
+		}
+	})
+	.await;
+	stop.send_replace(true);
+	task.await.unwrap().unwrap();
+	assert!(
+		outcome.is_ok(),
+		"startup backfill stopped before the final batch"
+	);
+	assert_eq!(count(&f, "reason = 'reconcile'").await, 257);
+	broker
+		.context
+		.delete_stream(&broker.stream_name)
+		.await
+		.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn embedded_worker_uses_dedicated_activation_broker(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&environment).await;
+	let settings = Settings {
+		namespace: schema.clone(),
+		..Default::default()
+	};
+	let broker = Broker::provision(&f.config.nats_url, &f.config.node_id, &settings)
+		.await
+		.unwrap();
+	broker
+		.context
+		.publish(broker.subject.clone(), "invalid activation".into())
+		.await
+		.unwrap()
+		.await
+		.unwrap();
+	let mut database = reqwest::Url::parse(&url).unwrap();
+	database
+		.query_pairs_mut()
+		.append_pair("options", &format!("-c search_path={schema}"));
+	let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+		.args([
+			"--exact",
+			"embedded_worker_child",
+			"--ignored",
+			"--nocapture",
+		])
+		.env("AIDASH_ACTIVATION_CHILD_DATABASE", database.as_str())
+		.env("AIDASH_ACTIVATION_NATS_URL", &f.config.nats_url)
+		.env("AIDASH_ACTIVATION_NAMESPACE", &schema)
+		.env("AIDASH_ACTIVATION_BOOTSTRAP", "false")
+		.env_remove("AIDASH_ACTIVATION_TEST_RECOVERY_MS")
+		.env_remove("AIDASH_ACTIVATION_TEST_PAUSE_FILE")
+		.env_remove("AIDASH_ACTIVATION_TEST_AFTER_ACK_PAUSE_FILE")
+		.kill_on_drop(true)
+		.output()
+		.await
+		.unwrap();
+	assert!(
+		output.status.success(),
+		"{}\n{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	broker
+		.context
+		.delete_stream(&broker.stream_name)
+		.await
+		.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[ignore = "subprocess helper: dedicated broker environment must be isolated"]
+async fn embedded_worker_child() {
+	let database = std::env::var("AIDASH_ACTIVATION_CHILD_DATABASE").unwrap();
+	let node = "aidash://execution-test";
+	let store = aidash::store::Store::connect(&database, node.into())
+		.await
+		.unwrap();
+	let f = Federation {
+		registry: aidash::registry::Registry::new(store.pool.clone(), node),
+		store,
+		config: aidash::config::Config {
+			node_id: node.into(),
+			endpoint: "http://127.0.0.1:8080".into(),
+			listen: "127.0.0.1:0".parse().unwrap(),
+			database_url: database,
+			nats_url: "nats://127.0.0.1:1".into(),
+			api_token: "fixture".into(),
+			web_dir: "web/dist".into(),
+			lease_seconds: 30,
+			oidc: None,
+		},
+		client: reqwest::Client::new(),
+		notify: Arc::new(tokio::sync::Notify::new()),
+	};
+	let harness = aidash::harness::Harness {
+		federation: f.clone(),
+	};
+	let (stop, stopping) = tokio::sync::watch::channel(false);
+	let worker = tokio::spawn(async move { harness.run_worker_until(stopping).await });
+	let outcome = tokio::time::timeout(Duration::from_secs(15), async {
+		loop {
+			let quarantined: i64 = sqlx::query_scalar(
+				&Query::select()
+					.expr(Expr::cust("COUNT(*)"))
+					.from(a("activation_quarantine"))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_one(&f.store.pool)
+			.await
+			.unwrap();
+			if quarantined == 1 {
+				break;
+			}
+			tokio::time::sleep(Duration::from_millis(20)).await;
+		}
+	})
+	.await;
+	stop.send_replace(true);
+	worker.await.unwrap().unwrap();
+	assert!(
+		outcome.is_ok(),
+		"embedded worker never consumed the dedicated broker notification"
+	);
+	assert_eq!(f.config.nats_url, "nats://127.0.0.1:1");
+}

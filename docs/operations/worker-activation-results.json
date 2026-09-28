@@ -86,16 +86,7 @@
     "server_pid": 90872,
     "slots_per_worker": 2,
     "worker_pids": [
-      91071,
-      91072,
-      93311,
-      93312,
-      94071,
-      94072,
-      94686,
-      94687,
-      95264,
-      95265
+      91071, 91072, 93311, 93312, 94071, 94072, 94686, 94687, 95264, 95265
     ]
   },
   "raw_notification_samples": "target/activation-remaining/notification-results.json",

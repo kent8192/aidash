@@ -181,10 +181,7 @@ async fn main() -> Result<()> {
 			}
 		});
 	}
-	let mut activation_federation = federation.for_runtime_workers().await?;
-	if let Ok(url) = std::env::var("AIDASH_ACTIVATION_NATS_URL") {
-		activation_federation.config.nats_url = url;
-	}
+	let activation_federation = federation.for_runtime_workers().await?;
 	let activation = aidash::activation::Runtime::new(
 		activation_federation,
 		activation_settings.clone(),

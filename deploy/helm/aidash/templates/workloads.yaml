@@ -3,7 +3,6 @@
 {{- $frontend := printf "%s-frontend" .Release.Name -}}
 {{- $nginxConfig := $.Files.Get "files/default.conf" | replace "http://aidash-backend:8080" (printf "http://%s:8080" $backend) -}}
 {{- $id := required "node.id must be a stable aidash:// identity" .Values.node.id -}}
-{{- $secret := required "existingSecret is required" .Values.existingSecret -}}
 {{- if gt (len .Release.Name) 49 -}}
 {{- fail "release name must be at most 49 characters" -}}
 {{- end -}}
@@ -15,6 +14,7 @@
 {{- end -}}
 {{- range $role := list "server" "worker" }}
 {{- $settings := index $.Values $role }}
+{{- $secret := required (printf "%s.existingSecret or existingSecret is required" $role) ($settings.existingSecret | default $.Values.existingSecret) }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -73,7 +73,7 @@ spec:
             readOnlyRootFilesystem: true
             capabilities: { drop: [ALL] }
           envFrom:
-            - secretRef: { name: {{ $settings.existingSecret | default $secret }} }
+            - secretRef: { name: {{ $secret | quote }} }
           env:
             - { name: AIDASH_NODE_ID, value: {{ $id | quote }} }
             - { name: AIDASH_ACTIVATION_BOOTSTRAP, value: "false" }

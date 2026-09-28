@@ -37,15 +37,17 @@ conservative admission-to-lease upper bound. No provider time is subtracted.
 [Machine-readable results](worker-activation-results.json) identify commands,
 source manifests, raw logs, PIDs, image IDs and remaining validation. All 255
 runtime, configuration and test inputs checked against the final test manifest
-were unchanged; subsequent edits only document the results.
+were unchanged when implementation commit `17bad16` was published. Later review
+repairs change runtime, chart and test inputs; the historical cluster images and
+latency measurements below do not validate those repairs.
 
-| Validation | Observed result |
-| --- | --- |
-| Rust unit/integration targets | **512 cases passed**, across the full-suite attempt, targeted fixture retry and remaining targets. |
-| Final activation fixture | 5 tests passed; 100 timing samples; **p95 174.6 ms**, **maximum 746.1 ms**; zero measured recovery claims; 107 expected provider completions including control/batch cases. |
-| Formatting and lint | `cargo fmt --check`, Clippy with `-D warnings`, shell syntax and Python compilation passed. |
-| Kubernetes | v1.34.0; Pod kill/recovery, scale zero/up, rolling restart, durable identity and dashboard checks passed. |
-| k3s | v1.34.11+k3s1; the same acceptance checks passed. |
+| Validation                    | Observed result                                                                                                                                                             |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Rust unit/integration targets | **512 cases passed**, across the full-suite attempt, targeted fixture retry and remaining targets.                                                                          |
+| Final activation fixture      | 5 tests passed; 100 timing samples; **p95 174.6 ms**, **maximum 746.1 ms**; zero measured recovery claims; 107 expected provider completions including control/batch cases. |
+| Formatting and lint           | `cargo fmt --check`, Clippy with `-D warnings`, shell syntax and Python compilation passed.                                                                                 |
+| Kubernetes                    | v1.34.0; Pod kill/recovery, scale zero/up, rolling restart, durable identity and dashboard checks passed.                                                                   |
+| k3s                           | v1.34.11+k3s1; the same acceptance checks passed.                                                                                                                           |
 
 Both cluster runs used backend image ID
 `sha256:40ac5a5179076c063406cbbc1e37c1c38b979850a3a36eaf21b185e06fa1d79c`
@@ -66,6 +68,23 @@ Those failed logs are preserved; these results do not claim that high-concurrenc
 fixture reliability is fixed. Earlier k3s setup attempts also encountered a killed
 validation tool and a host-port collision; completed cluster runs were separate,
 successful executions. Disposable clusters and the failed Qdrant container were removed.
+
+## Review repair verification — 2026-09-29
+
+The review repairs centralize the dedicated broker override, drain startup
+reconciliation in bounded batches, reset reconnect delay on successful setup,
+and validate the effective Secret for each Helm role. Trunk formatting and an
+unused Python assignment were also corrected.
+
+- The activation target passed **7 tests**, including 257-Run startup backfill
+  and an isolated subprocess exercising `Harness::run_worker_until` with a
+  dedicated broker. Its ignored helper is executed by that subprocess test.
+- Clippy with warnings denied, Rust formatting and full-tree Trunk checks passed.
+- Helm rendering passed for role-only, shared and mixed Secret settings; missing
+  required role Secrets were rejected in three negative configurations.
+
+These focused checks cover the review repair. The historical cluster images and
+latency results remain the earlier snapshot, not measurements of this revision.
 
 ## Exercised behavior
 
@@ -98,20 +117,20 @@ successful executions. Disposable clusters and the failed Qdrant container were 
 
 ## Acceptance coverage and remaining gaps
 
-| IDs | Evidence and limits |
-| --- | --- |
-| AT01–AT03 | Process notification, negative control, combined/split topology and PID evidence. |
-| AT04 | Blocked replica and batch exceeding the available two slots. Exhaustive per-slot occupancy instrumentation is not included. |
-| AT05–AT06 | Duplicate references, stale inference and concurrent input. No literal 120-second duplicate-window aging or complete out-of-order permutation matrix. |
+| IDs       | Evidence and limits                                                                                                                                                                           |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AT01–AT03 | Process notification, negative control, combined/split topology and PID evidence.                                                                                                             |
+| AT04      | Blocked replica and batch exceeding the available two slots. Exhaustive per-slot occupancy instrumentation is not included.                                                                   |
+| AT05–AT06 | Duplicate references, stale inference and concurrent input. No literal 120-second duplicate-window aging or complete out-of-order permutation matrix.                                         |
 | AT07–AT09 | Atomic rollback, wake deadline and dependency release; existing control, approval, authority and visibility regressions. Not every trigger/gate timing is injected across separate processes. |
-| AT10 | After-ACK/before-execution SIGKILL and cluster after-effect recovery. Not every publication/commit/ACK ambiguity checkpoint has a deterministic fault fixture. |
-| AT11–AT12 | Startup outage, reconnect, capacity refusal, expiry and empty stream reconstruction. Deleting/recreating the stream is not a whole NATS server disk-loss restart. |
-| AT13 | Malformed, wrong-Node, unsupported-version and mismatched-reference quarantine. Quarantine-write database failure remains untested. |
-| AT14 | Active-owner deferral, input preservation, release and real lease-expiry recovery. |
-| AT15 | SIGTERM, SIGKILL, rolling restart and scale zero/up. Different-version coexistence and binary rollback are not exercised. |
-| AT16 | Mode logs, configuration validation and exact-scope credential tests. No production credential issuance or complete metrics scrape assertion. |
-| AT17 | Atomic `activation::request_in` helper and compatibility triggers; existing #38 coverage. Real #70 recipient routing is pending its implementation/integration. |
-| AT18 | Disposable Kubernetes/k3s configuration and image evidence. Cluster fixtures use operator NATS credentials; scoped ACL checks are separate component tests. |
+| AT10      | After-ACK/before-execution SIGKILL and cluster after-effect recovery. Not every publication/commit/ACK ambiguity checkpoint has a deterministic fault fixture.                                |
+| AT11–AT12 | Startup outage, reconnect, capacity refusal, expiry and empty stream reconstruction. Deleting/recreating the stream is not a whole NATS server disk-loss restart.                             |
+| AT13      | Malformed, wrong-Node, unsupported-version and mismatched-reference quarantine. Quarantine-write database failure remains untested.                                                           |
+| AT14      | Active-owner deferral, input preservation, release and real lease-expiry recovery.                                                                                                            |
+| AT15      | SIGTERM, SIGKILL, rolling restart and scale zero/up. Different-version coexistence and binary rollback are not exercised.                                                                     |
+| AT16      | Mode logs, configuration validation and exact-scope credential tests. No production credential issuance or complete metrics scrape assertion.                                                 |
+| AT17      | Atomic `activation::request_in` helper and compatibility triggers; existing #38 coverage. Real #70 recipient routing is pending its implementation/integration.                               |
+| AT18      | Disposable Kubernetes/k3s configuration and image evidence. Cluster fixtures use operator NATS credentials; scoped ACL checks are separate component tests.                                   |
 
 Do not close the broader matrix or claim #70 end-to-end routing based only on
 these component results. General activation-journal retention remains with #73.

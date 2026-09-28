@@ -243,6 +243,8 @@ pub(super) async fn quarantine(
 	Ok(())
 }
 
+pub(super) const RECONCILE_BATCH_SIZE: u64 = 128;
+
 pub(super) async fn reconcile(store: &Store) -> Result<u64> {
 	// Bounded, oldest-first backfill; existing records (including settled ones)
 	// avoid repeatedly rediscovering a permanently blocked Run.
@@ -256,7 +258,7 @@ pub(super) async fn reconcile(store: &Store) -> Result<u64> {
 			"NOT EXISTS (SELECT 1 FROM run_activations a WHERE a.run_id = runs.id)",
 		))
 		.order_by(a("updated_at"), Order::Asc)
-		.limit(128)
+		.limit(RECONCILE_BATCH_SIZE)
 		.to_owned();
 	let query = Query::insert()
 		.into_table(a("run_activations"))
