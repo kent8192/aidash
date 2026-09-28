@@ -1,5 +1,6 @@
 use super::{
 	Broker, Settings,
+	broker::Publication,
 	durable::{self, Envelope, Handoff},
 };
 use crate::{Result, federation::Federation, harness::Harness, transactions::gate::ReadLease};
@@ -79,6 +80,8 @@ impl Runtime {
 						"activation transport ready"
 					);
 					let mut observation = Instant::now();
+					let mut publish_after = Instant::now();
+					let mut publish_backoff = Duration::from_millis(500);
 					let mut ticks = tokio::time::interval(Duration::from_millis(250));
 					ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 					loop {
@@ -94,8 +97,19 @@ impl Runtime {
 						{
 							break;
 						}
+						if Instant::now() < publish_after {
+							continue;
+						}
 						match broker.publish(&self.f.store).await {
-							Ok(published) => {
+							Ok(Publication::Backpressured) => {
+								// Consumers must keep draining retained messages to free capacity.
+								metrics::counter!("aidash_activation_publish_errors_total")
+									.increment(1);
+								publish_after = Instant::now() + publish_backoff;
+								publish_backoff = (publish_backoff * 2).min(Duration::from_secs(5));
+							}
+							Ok(Publication::Published(published)) => {
+								publish_backoff = Duration::from_millis(500);
 								if !self.worker && published > 0 {
 									self.progress.store(true, Ordering::Release);
 								}

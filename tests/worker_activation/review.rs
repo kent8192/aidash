@@ -227,3 +227,137 @@ async fn slow_publication_ack_does_not_hold_the_visibility_gate(
 		"publication retained the visibility lock: {lock:?}"
 	);
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn header_only_consumer_requires_operator_repair(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let node = format!("aidash://headers-{}", Uuid::new_v4());
+	let settings = Settings::default();
+	let broker = Broker::provision(&environment.nats_url, &node, &settings)
+		.await
+		.unwrap();
+	let stream = broker
+		.context
+		.get_stream(&broker.stream_name)
+		.await
+		.unwrap();
+	let mut config = broker
+		.consumer
+		.as_ref()
+		.unwrap()
+		.cached_info()
+		.config
+		.clone();
+	stream.delete_consumer("workers-v1").await.unwrap();
+	config.headers_only = true;
+	stream.create_consumer(config).await.unwrap();
+	let result = Broker::connect(&environment.nats_url, &node, &settings, true).await;
+	broker
+		.context
+		.delete_stream(&broker.stream_name)
+		.await
+		.unwrap();
+	assert!(
+		matches!(result, Err(aidash::Error::Invalid(_))),
+		"header-only deliveries lose activation envelopes"
+	);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn completed_dependencies_release_wait_without_expiring_timer(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&environment).await;
+	let app = axum_test::TestServer::new(api::router(f.clone())).unwrap();
+	let (_, token, dependency) = bootstrap_with_server(&f, &app, "http://localhost:1").await;
+	let parent = f.store.task(dependency).await.unwrap();
+	let (status, task) = request_json(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{}/tasks", parent.workspace_id),
+		json!({"title":"Dependent","description":"Wait"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{task}");
+	let task: aidash::domain::Task = serde_json::from_value(task).unwrap();
+	let (status, body) = request_json(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{}/claim", task.id),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	sqlx::query(
+		&Query::update()
+			.table(a("tasks"))
+			.value(a("dependencies"), Expr::cust("$1"))
+			.and_where(Expr::col(a("id")).eq(task.id))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(vec![dependency])
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let harness = aidash::harness::Harness {
+		federation: f.clone(),
+	};
+	assert!(harness.worker_once().await.unwrap());
+	let waiting = f.store.run(run.id).await.unwrap();
+	assert_eq!(waiting.phase, "WAITING");
+	// Widen the ordinary two-second timer so elapsed test time cannot mask the bug.
+	sqlx::query(
+		&Query::update()
+			.table(a("runs"))
+			.value(
+				a("pending"),
+				json!({"resume_phase":"READY","wake_at":chrono::Utc::now()+chrono::Duration::hours(1)}),
+			)
+			.and_where(Expr::col(a("id")).eq(run.id))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	assert!(
+		f.store
+			.lease_run(Uuid::new_v4(), 30)
+			.await
+			.unwrap()
+			.is_none()
+	);
+	sqlx::query(
+		&Query::update()
+			.table(a("tasks"))
+			.value(a("status"), "COMPLETED")
+			.and_where(Expr::col(a("id")).eq(dependency))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	assert!(
+		count(
+			&f,
+			&format!("run_id = '{}' AND reason = 'dependency_release'", run.id)
+		)
+		.await > 0
+	);
+	let leased = f.store.lease_run(Uuid::new_v4(), 30).await.unwrap();
+	cleanup(f, &url, &schema).await;
+	assert_eq!(
+		leased.map(|r| r.id),
+		Some(run.id),
+		"dependency completion must bypass its fallback timer"
+	);
+}

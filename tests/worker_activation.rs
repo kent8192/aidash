@@ -808,8 +808,17 @@ async fn broker_absence_reconnect_and_empty_storage_preserve_accepted_work(
 		.await
 		.unwrap();
 	let baseline = stream.info().await.unwrap().config.clone();
+	// Retain one real activation, then reject further publication while workers
+	// are paused. Draining must recover without operator capacity repair.
+	let queued = admit(&f, &token, fresh_task(&f, &token).await).await;
+	wait_count(
+		&f,
+		&format!("run_id = '{queued}' AND published_at IS NOT NULL"),
+		1,
+	)
+	.await;
 	let mut full = baseline.clone();
-	full.max_bytes = 1;
+	full.max_bytes = stream.info().await.unwrap().state.bytes as i64;
 	restored.context.update_stream(full).await.unwrap();
 	let rejected = restored
 		.context
@@ -829,12 +838,21 @@ async fn broker_absence_reconnect_and_empty_storage_preserve_accepted_work(
 	)
 	.await;
 	assert!(f.store.run(fourth).await.unwrap().lease_owner.is_none());
+	// Let the failed publisher finish before opening the consumer slots.
+	tokio::time::sleep(Duration::from_secs(1)).await;
+	std::fs::remove_file(&pause).unwrap();
+	wait_count(
+		&f,
+		&format!("run_id = '{queued}' AND claim_source = 'notification'"),
+		1,
+	)
+	.await;
 	restored
 		.context
 		.update_stream(baseline.clone())
 		.await
 		.unwrap();
-	std::fs::remove_file(&pause).unwrap();
+	complete(&f, queued).await;
 	complete(&f, fourth).await;
 	assert_eq!(
 		count(
@@ -880,8 +898,8 @@ async fn broker_absence_reconnect_and_empty_storage_preserve_accepted_work(
 		0
 	);
 	assert!(count(&f, &format!("run_id = '{fifth}' AND publication_epoch > 0")).await > 0);
-	assert_eq!(calls.load(Ordering::SeqCst), 5);
-	std::fs::write(directory.join("result.json"),serde_json::to_vec_pretty(&json!({"result":"passed","combined_pid":process.child.id(),"broker_absent_at_startup":true,"reconnected":true,"stream_deleted_and_recreated":true,"capacity_refusal_repaired_without_recovery":true,"expired_notification_republished_without_recovery":true,"provider_calls":calls.load(Ordering::SeqCst)})).unwrap()).unwrap();
+	assert_eq!(calls.load(Ordering::SeqCst), 6);
+	std::fs::write(directory.join("result.json"),serde_json::to_vec_pretty(&json!({"result":"passed","combined_pid":process.child.id(),"broker_absent_at_startup":true,"reconnected":true,"stream_deleted_and_recreated":true,"capacity_refusal_kept_consumer_draining":true,"expired_notification_republished_without_recovery":true,"provider_calls":calls.load(Ordering::SeqCst)})).unwrap()).unwrap();
 	process.stop();
 	drop(process);
 	proxy.abort();

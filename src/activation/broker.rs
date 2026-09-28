@@ -16,6 +16,11 @@ use std::{
 };
 use uuid::Uuid;
 
+pub(super) enum Publication {
+	Published(usize),
+	Backpressured,
+}
+
 #[derive(Clone)]
 pub struct Broker {
 	pub context: jetstream::Context,
@@ -180,6 +185,7 @@ impl Broker {
 				|| !actual.backoff.is_empty()
 				|| actual.inactive_threshold != Duration::ZERO
 				|| actual.memory_storage
+				|| actual.headers_only
 			{
 				return Err(Error::Invalid(
 					"activation consumer configuration mismatch; operator repair required".into(),
@@ -202,7 +208,7 @@ impl Broker {
 		settings.bootstrap = true;
 		Self::connect(url, node, &settings, true).await
 	}
-	pub(super) async fn publish(&self, store: &Store) -> Result<usize> {
+	pub(super) async fn publish(&self, store: &Store) -> Result<Publication> {
 		if self.disconnected.load(Ordering::Acquire) {
 			return Err(unavailable());
 		}
@@ -219,26 +225,53 @@ impl Broker {
 				format!("{}:{}", row.id, row.publication_epoch),
 			);
 			let bytes = serde_json::to_vec(&row.envelope(&store.node_id))?;
-			tokio::time::timeout(Duration::from_secs(2), async {
-				self.context
+			let accepted = tokio::time::timeout(Duration::from_secs(2), async {
+				let ack = self
+					.context
 					.publish_with_headers(self.subject.clone(), headers, bytes.into())
 					.await
 					.map_err(|_| unavailable())?
-					.await
-					.map_err(|_| unavailable())?;
-				Result::Ok(())
+					.await;
+				match ack {
+					Ok(_) => Ok(true),
+					Err(error)
+						if std::error::Error::source(&error)
+							.and_then(|source| source.downcast_ref::<jetstream::Error>())
+							.is_some_and(|source| {
+								matches!(
+									source.error_code(),
+									jetstream::ErrorCode::STREAM_STORE_FAILED
+										| jetstream::ErrorCode::STORAGE_RESOURCES_EXCEEDED
+										| jetstream::ErrorCode::MEMORY_RESOURCES_EXCEEDED
+										| jetstream::ErrorCode::ACCOUNT_RESOURCES_EXCEEDED
+										| jetstream::ErrorCode::INSUFFICIENT_RESOURCES
+								)
+							}) =>
+					{
+						Ok(false)
+					}
+					Err(_) => Err(unavailable()),
+				}
 			})
 			.await
 			.map_err(|_| unavailable())??;
+			if !accepted {
+				return Ok(false);
+			}
 			durable::published(store, &row, token).await?;
 			metrics::counter!("aidash_activation_published_total").increment(1);
-			Result::Ok(())
+			Result::Ok(true)
 		}))
 		.buffer_unordered(8);
+		let mut backpressured = false;
 		while let Some(result) = sends.next().await {
-			result?;
+			backpressured |= !result?;
 		}
-		Ok(count)
+		Ok(if backpressured {
+			Publication::Backpressured
+		} else {
+			Publication::Published(count)
+		})
 	}
 }
 pub(super) fn unavailable() -> Error {
