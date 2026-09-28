@@ -1,0 +1,1257 @@
+{
+  "release_acceptance": "incomplete; see ../../transaction-acceptance.md",
+  "implementation_commit": "d4cf0cf1ed316b7ce58260cc71d0a1456715fe3e",
+  "runs": [
+    {
+      "environment": {
+        "source_revision": "20d1fb46f13cf042af6afce7763140c132428b78",
+        "dirty": true,
+        "source_inputs_sha256": "361e4ea5d73fa7bc6e62d9df9a14877e024a31fd361da78f41934974c1498f9d",
+        "distribution": "kubernetes",
+        "server_version": "v1.35.6+orb1",
+        "image": "aidash:issue-40-final",
+        "namespace": "aidash-tx-dbd3e9dda3",
+        "started_at": "2026-09-28T14:21:25.575869+00:00",
+        "nodes": 16,
+        "repetitions": 3,
+        "scope": "transaction process and lifecycle cases",
+        "mixed_version": "not tested; requires a distinct compatible runtime pair"
+      },
+      "archive": "aidash-tx-dbd3e9dda3.jsonl.gz",
+      "uncompressed_sha256": "b9181b04345e5c2f4b603a83280ba173b6fee54f9eba81aa67ef815f09e5b8a6",
+      "image_ids": [
+        [
+          "tx-0-server-6f9cfb8567-gsj85",
+          [
+            "docker-pullable://aidash@sha256:48b658c59cd30f74f5c93dde0296bc25fd003e43bc7050a6d17d84e53194560e"
+          ]
+        ],
+        [
+          "tx-1-server-7ffb9b9d4c-m98mf",
+          [
+            "docker-pullable://aidash@sha256:48b658c59cd30f74f5c93dde0296bc25fd003e43bc7050a6d17d84e53194560e"
+          ]
+        ],
+        [
+          "tx-10-server-5657bf8499-29vbh",
+          [
+            "docker-pullable://aidash@sha256:48b658c59cd30f74f5c93dde0296bc25fd003e43bc7050a6d17d84e53194560e"
+          ]
+        ],
+        [
+          "tx-11-server-7bf7f96595-s9q5h",
+          [
+            "docker-pullable://aidash@sha256:48b658c59cd30f74f5c93dde0296bc25fd003e43bc7050a6d17d84e53194560e"
+          ]
+        ],
+        [
+          "tx-12-server-9765fd547-28kzc",
+          [
+            "docker-pullable://aidash@sha256:48b658c59cd30f74f5c93dde0296bc25fd003e43bc7050a6d17d84e53194560e"
+          ]
+        ],
+        [
+          "tx-13-server-6fbbf66b4c-xjvzc",
+          [
+            "docker-pullable://aidash@sha256:48b658c59cd30f74f5c93dde0296bc25fd003e43bc7050a6d17d84e53194560e"
+          ]
+        ],
+        [
+          "tx-14-server-5dbb896d4c-mnblm",
+          [
+            "docker-pullable://aidash@sha256:48b658c59cd30f74f5c93dde0296bc25fd003e43bc7050a6d17d84e53194560e"
+          ]
+        ],
+        [
+          "tx-15-server-576d65c96c-nfpgc",
+          [
+            "docker-pullable://aidash@sha256:48b658c59cd30f74f5c93dde0296bc25fd003e43bc7050a6d17d84e53194560e"
+          ]
+        ],
+        [
+          "tx-2-server-55b6c7b987-sgxn4",
+          [
+            "docker-pullable://aidash@sha256:48b658c59cd30f74f5c93dde0296bc25fd003e43bc7050a6d17d84e53194560e"
+          ]
+        ],
+        [
+          "tx-3-server-7db5b749f9-lrcjl",
+          [
+            "docker-pullable://aidash@sha256:48b658c59cd30f74f5c93dde0296bc25fd003e43bc7050a6d17d84e53194560e"
+          ]
+        ],
+        [
+          "tx-4-server-76d5f8ff-svn5c",
+          [
+            "docker-pullable://aidash@sha256:48b658c59cd30f74f5c93dde0296bc25fd003e43bc7050a6d17d84e53194560e"
+          ]
+        ],
+        [
+          "tx-5-server-64ffb87bb7-f6brk",
+          [
+            "docker-pullable://aidash@sha256:48b658c59cd30f74f5c93dde0296bc25fd003e43bc7050a6d17d84e53194560e"
+          ]
+        ],
+        [
+          "tx-6-server-679497cff5-kbx66",
+          [
+            "docker-pullable://aidash@sha256:48b658c59cd30f74f5c93dde0296bc25fd003e43bc7050a6d17d84e53194560e"
+          ]
+        ],
+        [
+          "tx-7-server-7d5d56fb87-bk5bq",
+          [
+            "docker-pullable://aidash@sha256:48b658c59cd30f74f5c93dde0296bc25fd003e43bc7050a6d17d84e53194560e"
+          ]
+        ],
+        [
+          "tx-8-server-647977c559-d8v7v",
+          [
+            "docker-pullable://aidash@sha256:48b658c59cd30f74f5c93dde0296bc25fd003e43bc7050a6d17d84e53194560e"
+          ]
+        ],
+        [
+          "tx-9-server-6d897f867-kv9cx",
+          [
+            "docker-pullable://aidash@sha256:48b658c59cd30f74f5c93dde0296bc25fd003e43bc7050a6d17d84e53194560e"
+          ]
+        ]
+      ],
+      "passed": 86,
+      "failed": 1,
+      "max_converged_seconds": 13.207,
+      "inventory": [
+        {
+          "nodes": 2,
+          "phase": "coordinator.submit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 12.39
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.submit",
+          "edge": "after",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 13.207
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.vote",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 5.924
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.vote",
+          "edge": "after",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 5.878
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 3.316
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.commit",
+          "edge": "after",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 4.734
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.abort",
+          "edge": "before",
+          "abort": true,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 5.062
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.abort",
+          "edge": "after",
+          "abort": true,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 4.586
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.visible",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 3.58
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.visible",
+          "edge": "after",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 8.818
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.complete",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 1.64
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.complete",
+          "edge": "after",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 0.77
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.complete",
+          "edge": "before",
+          "abort": true,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 2.025
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.complete",
+          "edge": "after",
+          "abort": true,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 0.182
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.reserve",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 12.567
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.reserve",
+          "edge": "after",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 9.047
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.prepare",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 10.261
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.prepare",
+          "edge": "after",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 10.684
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.apply",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 10.277
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.apply",
+          "edge": "after",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 9.115
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.release",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 9.991
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.release",
+          "edge": "after",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 8.566
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.abort",
+          "edge": "before",
+          "abort": true,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 12.672
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.abort",
+          "edge": "after",
+          "abort": true,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 11.02
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "scale",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 4.691
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "rolling",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 10.81
+        },
+        {
+          "nodes": 3,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "partition",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 8.823
+        },
+        {
+          "nodes": 3,
+          "phase": "coordinator.abort",
+          "edge": "before",
+          "abort": true,
+          "lifecycle": "partition",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 6.486
+        },
+        {
+          "nodes": 3,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "scale",
+          "passed": 2,
+          "failed": 1,
+          "max_converged_seconds": 10.529
+        }
+      ]
+    },
+    {
+      "environment": {
+        "source_revision": "20d1fb46f13cf042af6afce7763140c132428b78",
+        "dirty": true,
+        "source_inputs_sha256": "361e4ea5d73fa7bc6e62d9df9a14877e024a31fd361da78f41934974c1498f9d",
+        "distribution": "k3s",
+        "server_version": "v1.35.5+k3s1",
+        "image": "aidash:issue-40-final",
+        "namespace": "aidash-tx-1f7379854a",
+        "started_at": "2026-09-28T14:23:05.369176+00:00",
+        "nodes": 16,
+        "repetitions": 3,
+        "scope": "transaction process and lifecycle cases",
+        "mixed_version": "not tested; requires a distinct compatible runtime pair"
+      },
+      "archive": "aidash-tx-1f7379854a.jsonl.gz",
+      "uncompressed_sha256": "4270ccde6a2e3c5ee7683707c3f16bab49407f4388eda4b3dbe771231fd24e52",
+      "image_ids": [
+        [
+          "tx-0-server-6f9cfb8567-ngkch",
+          [
+            "sha256:35d4f60b801cbcab9b553bb1b9e0a06cd5438767d64a00eceb976bc088194c17"
+          ]
+        ],
+        [
+          "tx-1-server-7ffb9b9d4c-klcv2",
+          [
+            "sha256:35d4f60b801cbcab9b553bb1b9e0a06cd5438767d64a00eceb976bc088194c17"
+          ]
+        ],
+        [
+          "tx-10-server-5657bf8499-j2gtn",
+          [
+            "sha256:35d4f60b801cbcab9b553bb1b9e0a06cd5438767d64a00eceb976bc088194c17"
+          ]
+        ],
+        [
+          "tx-11-server-7bf7f96595-vtl6g",
+          [
+            "sha256:35d4f60b801cbcab9b553bb1b9e0a06cd5438767d64a00eceb976bc088194c17"
+          ]
+        ],
+        [
+          "tx-12-server-9765fd547-lxvl8",
+          [
+            "sha256:35d4f60b801cbcab9b553bb1b9e0a06cd5438767d64a00eceb976bc088194c17"
+          ]
+        ],
+        [
+          "tx-13-server-6fbbf66b4c-w2zhx",
+          [
+            "sha256:35d4f60b801cbcab9b553bb1b9e0a06cd5438767d64a00eceb976bc088194c17"
+          ]
+        ],
+        [
+          "tx-14-server-5dbb896d4c-wzszw",
+          [
+            "sha256:35d4f60b801cbcab9b553bb1b9e0a06cd5438767d64a00eceb976bc088194c17"
+          ]
+        ],
+        [
+          "tx-15-server-576d65c96c-xxkqh",
+          [
+            "sha256:35d4f60b801cbcab9b553bb1b9e0a06cd5438767d64a00eceb976bc088194c17"
+          ]
+        ],
+        [
+          "tx-2-server-55b6c7b987-hcljj",
+          [
+            "sha256:35d4f60b801cbcab9b553bb1b9e0a06cd5438767d64a00eceb976bc088194c17"
+          ]
+        ],
+        [
+          "tx-3-server-7db5b749f9-jcjth",
+          [
+            "sha256:35d4f60b801cbcab9b553bb1b9e0a06cd5438767d64a00eceb976bc088194c17"
+          ]
+        ],
+        [
+          "tx-4-server-76d5f8ff-pplsb",
+          [
+            "sha256:35d4f60b801cbcab9b553bb1b9e0a06cd5438767d64a00eceb976bc088194c17"
+          ]
+        ],
+        [
+          "tx-5-server-64ffb87bb7-bw4x7",
+          [
+            "sha256:35d4f60b801cbcab9b553bb1b9e0a06cd5438767d64a00eceb976bc088194c17"
+          ]
+        ],
+        [
+          "tx-6-server-679497cff5-wbntd",
+          [
+            "sha256:35d4f60b801cbcab9b553bb1b9e0a06cd5438767d64a00eceb976bc088194c17"
+          ]
+        ],
+        [
+          "tx-7-server-7d5d56fb87-26hhb",
+          [
+            "sha256:35d4f60b801cbcab9b553bb1b9e0a06cd5438767d64a00eceb976bc088194c17"
+          ]
+        ],
+        [
+          "tx-8-server-647977c559-zb9r8",
+          [
+            "sha256:35d4f60b801cbcab9b553bb1b9e0a06cd5438767d64a00eceb976bc088194c17"
+          ]
+        ],
+        [
+          "tx-9-server-6d897f867-6q9rm",
+          [
+            "sha256:35d4f60b801cbcab9b553bb1b9e0a06cd5438767d64a00eceb976bc088194c17"
+          ]
+        ]
+      ],
+      "passed": 102,
+      "failed": 0,
+      "max_converged_seconds": 31.44,
+      "inventory": [
+        {
+          "nodes": 2,
+          "phase": "coordinator.submit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 9.728
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.submit",
+          "edge": "after",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 1.159
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.vote",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 5.346
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.vote",
+          "edge": "after",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 3.827
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 2.802
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.commit",
+          "edge": "after",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 2.798
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.abort",
+          "edge": "before",
+          "abort": true,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 5.234
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.abort",
+          "edge": "after",
+          "abort": true,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 2.233
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.visible",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 2.945
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.visible",
+          "edge": "after",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 1.832
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.complete",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 0.859
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.complete",
+          "edge": "after",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 2.504
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.complete",
+          "edge": "before",
+          "abort": true,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 0.159
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.complete",
+          "edge": "after",
+          "abort": true,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 0.145
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.reserve",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 1.842
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.reserve",
+          "edge": "after",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 3.037
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.prepare",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 4.326
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.prepare",
+          "edge": "after",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 4.871
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.apply",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 9.441
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.apply",
+          "edge": "after",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 2.632
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.release",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 1.638
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.release",
+          "edge": "after",
+          "abort": false,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 2.085
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.abort",
+          "edge": "before",
+          "abort": true,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 11.169
+        },
+        {
+          "nodes": 2,
+          "phase": "participant.abort",
+          "edge": "after",
+          "abort": true,
+          "lifecycle": null,
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 11.249
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "scale",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 11.991
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "rolling",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 2.601
+        },
+        {
+          "nodes": 3,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "partition",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 2.318
+        },
+        {
+          "nodes": 3,
+          "phase": "coordinator.abort",
+          "edge": "before",
+          "abort": true,
+          "lifecycle": "partition",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 3.242
+        },
+        {
+          "nodes": 3,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "scale",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 1.693
+        },
+        {
+          "nodes": 3,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "rolling",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 2.043
+        },
+        {
+          "nodes": 16,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "partition",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 27.228
+        },
+        {
+          "nodes": 16,
+          "phase": "coordinator.abort",
+          "edge": "before",
+          "abort": true,
+          "lifecycle": "partition",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 19.145
+        },
+        {
+          "nodes": 16,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "scale",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 26.51
+        },
+        {
+          "nodes": 16,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "rolling",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 31.44
+        }
+      ]
+    },
+    {
+      "environment": {
+        "source_revision": "6b90aca95d4b1500f8608fe72d34467e9263d1ea",
+        "dirty": true,
+        "source_inputs_sha256": "5616b4d98bfa412e82762b99818b74d5a1fa0357742d7957bd0ac320a04bbe23",
+        "distribution": "k3s",
+        "server_version": "v1.35.5+k3s1",
+        "image": "aidash:issue-40-recovery-verified",
+        "namespace": "aidash-tx-ff24b4e22e",
+        "started_at": "2026-09-28T14:49:49.682668+00:00",
+        "nodes": 2,
+        "repetitions": 3,
+        "scope": "transaction process and lifecycle cases",
+        "mixed_version": "not tested; requires a distinct compatible runtime pair"
+      },
+      "archive": "aidash-tx-ff24b4e22e.jsonl.gz",
+      "uncompressed_sha256": "e184c5335e28d3252f20234ac7220ded823feefad0ececc5cf529948b2584607",
+      "image_ids": [
+        [
+          "tx-0-server-ffb7b4545-ltdt7",
+          [
+            "sha256:2a63b5af4ca63ac8a941b0b92504e1198dec1a39363220946b67f3a3702adc04"
+          ]
+        ],
+        [
+          "tx-1-server-58fcc7c85-mcdgw",
+          [
+            "sha256:2a63b5af4ca63ac8a941b0b92504e1198dec1a39363220946b67f3a3702adc04"
+          ]
+        ]
+      ],
+      "passed": 6,
+      "failed": 0,
+      "max_converged_seconds": 10.121,
+      "inventory": [
+        {
+          "nodes": 2,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "scale",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 10.121
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "peer-recovery",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 3.219
+        }
+      ]
+    },
+    {
+      "environment": {
+        "source_revision": "6b90aca95d4b1500f8608fe72d34467e9263d1ea",
+        "dirty": true,
+        "source_inputs_sha256": "5616b4d98bfa412e82762b99818b74d5a1fa0357742d7957bd0ac320a04bbe23",
+        "distribution": "kubernetes",
+        "server_version": "v1.35.6+orb1",
+        "image": "aidash:issue-40-recovery-verified",
+        "namespace": "aidash-tx-5b825a8c34",
+        "started_at": "2026-09-28T14:50:41.633077+00:00",
+        "nodes": 2,
+        "repetitions": 3,
+        "scope": "transaction process and lifecycle cases",
+        "mixed_version": "not tested; requires a distinct compatible runtime pair"
+      },
+      "archive": "aidash-tx-5b825a8c34.jsonl.gz",
+      "uncompressed_sha256": "b18cc90a65ad7598cd3de70634e8d326dcda02551417914a22f31683a2d7302b",
+      "image_ids": [
+        [
+          "tx-0-server-ffb7b4545-sft8k",
+          [
+            "docker-pullable://aidash@sha256:8a794fec19e8a4f77896022c335bf7898dfa2a6e0d58e60a60db8b5f6a75998b"
+          ]
+        ],
+        [
+          "tx-1-server-58fcc7c85-cpxdn",
+          [
+            "docker-pullable://aidash@sha256:8a794fec19e8a4f77896022c335bf7898dfa2a6e0d58e60a60db8b5f6a75998b"
+          ]
+        ]
+      ],
+      "passed": 6,
+      "failed": 0,
+      "max_converged_seconds": 10.827,
+      "inventory": [
+        {
+          "nodes": 2,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "scale",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 3.981
+        },
+        {
+          "nodes": 2,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "peer-recovery",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 10.827
+        }
+      ]
+    },
+    {
+      "environment": {
+        "source_revision": "6b90aca95d4b1500f8608fe72d34467e9263d1ea",
+        "dirty": true,
+        "source_inputs_sha256": "5616b4d98bfa412e82762b99818b74d5a1fa0357742d7957bd0ac320a04bbe23",
+        "distribution": "kubernetes",
+        "server_version": "v1.35.6+orb1",
+        "image": "aidash:issue-40-recovery-verified",
+        "namespace": "aidash-tx-3187e44fa1",
+        "started_at": "2026-09-28T14:55:40.896412+00:00",
+        "nodes": 16,
+        "repetitions": 3,
+        "scope": "transaction process and lifecycle cases",
+        "mixed_version": "not tested; requires a distinct compatible runtime pair"
+      },
+      "archive": "aidash-tx-3187e44fa1.jsonl.gz",
+      "uncompressed_sha256": "410bd35758b64a4d39d7bf8370faa383d530f7a7f0b2cfb60f303ad3aab647ec",
+      "image_ids": [
+        [
+          "tx-0-server-ffb7b4545-tkrfs",
+          [
+            "docker-pullable://aidash@sha256:8a794fec19e8a4f77896022c335bf7898dfa2a6e0d58e60a60db8b5f6a75998b"
+          ]
+        ],
+        [
+          "tx-1-server-58fcc7c85-lg7qq",
+          [
+            "docker-pullable://aidash@sha256:8a794fec19e8a4f77896022c335bf7898dfa2a6e0d58e60a60db8b5f6a75998b"
+          ]
+        ],
+        [
+          "tx-10-server-55cdc6579c-cl665",
+          [
+            "docker-pullable://aidash@sha256:8a794fec19e8a4f77896022c335bf7898dfa2a6e0d58e60a60db8b5f6a75998b"
+          ]
+        ],
+        [
+          "tx-11-server-889c8cd5c-2ltlc",
+          [
+            "docker-pullable://aidash@sha256:8a794fec19e8a4f77896022c335bf7898dfa2a6e0d58e60a60db8b5f6a75998b"
+          ]
+        ],
+        [
+          "tx-12-server-64f49f9757-d7mbl",
+          [
+            "docker-pullable://aidash@sha256:8a794fec19e8a4f77896022c335bf7898dfa2a6e0d58e60a60db8b5f6a75998b"
+          ]
+        ],
+        [
+          "tx-13-server-7bb7dc5dbf-vppjt",
+          [
+            "docker-pullable://aidash@sha256:8a794fec19e8a4f77896022c335bf7898dfa2a6e0d58e60a60db8b5f6a75998b"
+          ]
+        ],
+        [
+          "tx-14-server-75584866b5-mt7nn",
+          [
+            "docker-pullable://aidash@sha256:8a794fec19e8a4f77896022c335bf7898dfa2a6e0d58e60a60db8b5f6a75998b"
+          ]
+        ],
+        [
+          "tx-15-server-96b878b77-hnpsg",
+          [
+            "docker-pullable://aidash@sha256:8a794fec19e8a4f77896022c335bf7898dfa2a6e0d58e60a60db8b5f6a75998b"
+          ]
+        ],
+        [
+          "tx-2-server-666dc98d6f-nhx48",
+          [
+            "docker-pullable://aidash@sha256:8a794fec19e8a4f77896022c335bf7898dfa2a6e0d58e60a60db8b5f6a75998b"
+          ]
+        ],
+        [
+          "tx-3-server-b87f9d8f7-zzf92",
+          [
+            "docker-pullable://aidash@sha256:8a794fec19e8a4f77896022c335bf7898dfa2a6e0d58e60a60db8b5f6a75998b"
+          ]
+        ],
+        [
+          "tx-4-server-745ff87b89-smkcr",
+          [
+            "docker-pullable://aidash@sha256:8a794fec19e8a4f77896022c335bf7898dfa2a6e0d58e60a60db8b5f6a75998b"
+          ]
+        ],
+        [
+          "tx-5-server-5fc674574f-54sqp",
+          [
+            "docker-pullable://aidash@sha256:8a794fec19e8a4f77896022c335bf7898dfa2a6e0d58e60a60db8b5f6a75998b"
+          ]
+        ],
+        [
+          "tx-6-server-76d9dc77d5-v6ltp",
+          [
+            "docker-pullable://aidash@sha256:8a794fec19e8a4f77896022c335bf7898dfa2a6e0d58e60a60db8b5f6a75998b"
+          ]
+        ],
+        [
+          "tx-7-server-6c8cd54b49-bwfcd",
+          [
+            "docker-pullable://aidash@sha256:8a794fec19e8a4f77896022c335bf7898dfa2a6e0d58e60a60db8b5f6a75998b"
+          ]
+        ],
+        [
+          "tx-8-server-d5467f6d9-f8lnk",
+          [
+            "docker-pullable://aidash@sha256:8a794fec19e8a4f77896022c335bf7898dfa2a6e0d58e60a60db8b5f6a75998b"
+          ]
+        ],
+        [
+          "tx-9-server-7b4fbccdd9-fkh4k",
+          [
+            "docker-pullable://aidash@sha256:8a794fec19e8a4f77896022c335bf7898dfa2a6e0d58e60a60db8b5f6a75998b"
+          ]
+        ]
+      ],
+      "passed": 24,
+      "failed": 0,
+      "max_converged_seconds": 23.517,
+      "inventory": [
+        {
+          "nodes": 3,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "partition",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 9.748
+        },
+        {
+          "nodes": 3,
+          "phase": "coordinator.abort",
+          "edge": "before",
+          "abort": true,
+          "lifecycle": "partition",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 6.483
+        },
+        {
+          "nodes": 3,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "scale",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 9.953
+        },
+        {
+          "nodes": 3,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "rolling",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 9.64
+        },
+        {
+          "nodes": 16,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "partition",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 12.974
+        },
+        {
+          "nodes": 16,
+          "phase": "coordinator.abort",
+          "edge": "before",
+          "abort": true,
+          "lifecycle": "partition",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 23.517
+        },
+        {
+          "nodes": 16,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "scale",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 14.571
+        },
+        {
+          "nodes": 16,
+          "phase": "coordinator.commit",
+          "edge": "before",
+          "abort": false,
+          "lifecycle": "rolling",
+          "passed": 3,
+          "failed": 0,
+          "max_converged_seconds": 15.436
+        }
+      ]
+    }
+  ],
+  "earlier_runs": [
+    {
+      "run": "aidash-tx-24f7534215",
+      "distribution": "k3s",
+      "image": "aidash:issue-40-acceptance",
+      "status": "incomplete",
+      "archive": "aidash-tx-24f7534215.jsonl.gz",
+      "uncompressed_sha256": "e34bde25f42843661f07f5f8846c99f09dbffb60ee040672a4e6e844e7b85703",
+      "passed": 6,
+      "failed": 0
+    },
+    {
+      "run": "aidash-tx-605610ef98",
+      "distribution": "k3s",
+      "image": "aidash:issue-40-final",
+      "status": "incomplete",
+      "failure": "PostgreSQL fixture readiness; no transaction case executed."
+    },
+    {
+      "run": "aidash-tx-eef7b506b0",
+      "distribution": "kubernetes",
+      "image": "aidash:issue-40-verified",
+      "status": "incomplete",
+      "archive": "aidash-tx-eef7b506b0.jsonl.gz",
+      "uncompressed_sha256": "5a0e7be556b66847a29fd20dfbcfc35afba7890e607c32379c8d116b44416d4e",
+      "passed": 1,
+      "failed": 1
+    },
+    {
+      "run": "aidash-tx-0b5e7266a4",
+      "distribution": "k3s",
+      "image": "aidash:issue-40-verified",
+      "status": "incomplete",
+      "archive": "aidash-tx-0b5e7266a4.jsonl.gz",
+      "uncompressed_sha256": "2abdc85878b809e0c9e8aee7823c8755df7c304025a809ba694ed2597821d230",
+      "passed": 33,
+      "failed": 1
+    },
+    {
+      "run": "aidash-tx-ce67e1413e",
+      "distribution": "kubernetes",
+      "image": "aidash:issue-40-recovery-verified",
+      "status": "incomplete",
+      "failure": "Peer registration during fixture setup; no transaction case executed."
+    },
+    {
+      "run": "aidash-tx-993df21b08",
+      "distribution": "k3s",
+      "image": "aidash:issue-40-recovery-verified",
+      "status": "incomplete",
+      "failure": "Peer registration during fixture setup; no transaction case executed."
+    },
+    {
+      "run": "aidash-tx-0ce38a9a17",
+      "distribution": "k3s",
+      "image": "aidash:issue-40-recovery-verified",
+      "status": "incomplete",
+      "failure": "Peer registration during fixture setup; no transaction case executed."
+    }
+  ],
+  "distinct_passed_repetitions_per_distribution": {
+    "kubernetes": 105,
+    "k3s": 105
+  }
+}

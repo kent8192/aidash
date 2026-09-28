@@ -35,6 +35,20 @@ Each case records UUID, Node count, phase/edge, outcome branch, repetition, held
 
 The complete driver inventory is 105 repetitions per distribution: 72 two-Node durable-cut repetitions, nine two-Node lifecycle repetitions (including same-peer authentication restoration), and twelve each at three/sixteen Nodes for COMMIT/ABORT unavailability, scaling and rolling replacement. The original main inventory contains 102 repetitions; a supplemental final-image run repeats the two-Node scaling cases and adds the three peer-restoration cases with explicit zero-worker assertions. Retained run records identify actual passes and failures; a planned row alone is never a passed gate.
 
+## Recorded cluster outcomes
+
+The [evidence bundle](evidence/2026-09-28-transactions/README.md) includes compressed original traces, their uncompressed SHA-256 values, source-input manifests and a machine-readable summary. Runtime inputs in implementation commit `d4cf0cf1ed316b7ce58260cc71d0a1456715fe3e` match the final-image fingerprint above.
+
+| Distribution / run                                | Image                        | Actual outcome                              | Maximum observed convergence       |
+| ------------------------------------------------- | ---------------------------- | ------------------------------------------- | ---------------------------------- |
+| Kubernetes main, `dbd3e9dda3`                     | `issue-40-final`             | 86 passed, one failed, remaining 15 not run | 13.207 s among passing repetitions |
+| Kubernetes two-Node supplement, `5b825a8c34`      | `issue-40-recovery-verified` | Six passed                                  | 10.827 s                           |
+| Kubernetes three/sixteen-Node rerun, `3187e44fa1` | `issue-40-recovery-verified` | 24 passed                                   | 23.517 s                           |
+| k3s main, `1f7379854a`                            | `issue-40-final`             | 102 passed                                  | 31.440 s                           |
+| k3s two-Node supplement, `ff24b4e22e`             | `issue-40-recovery-verified` | Six passed                                  | 10.121 s                           |
+
+Each distribution has passing evidence for all 105 distinct repetitions of the implemented inventory across these identified runs. Repeated cases retain separate records; the Kubernetes main-run failure remains failed. These results cover the executable subset above, not all accepted release gates or a single final-image acceptance run. Task-owned namespaces, port forwards and the temporary k3s cluster were removed after verification.
+
 ## Failure and rerun ledger
 
 Earlier failed executions are retained separately from successful reruns:
@@ -43,7 +57,7 @@ Earlier failed executions are retained separately from successful reruns:
 - Early process probes exceeded the fixture's HTTP rate limit. Only test-server burst limits were raised; production limits were unchanged. A later 500 ms observation timeout under concurrent builds was replaced with a five-second test request bound, since the design does not impose a 500 ms latency target.
 - Early tier fixtures used invalid database-name hyphens, reused peer credentials, or used credentials shorter than the existing minimum. The fixtures now use valid database names and distinct sufficiently long test credentials.
 - Two simultaneous sixteen-Node tests exhausted PostgreSQL's default 100 connections. The disposable Compose test database now permits 600 connections.
-- A later Kubernetes main run passed 86 repetitions, then missed `coordinator.commit.before` on the third three-Node scale repetition. The observed transaction committed, so the intended crash was not exercised and that repetition is failed. The old driver did not wait for all terminating Workers to disappear before the next case. The updated driver verifies zero Worker Pods; the three/sixteen-Node tiers are rerun separately on the final image.
+- A later Kubernetes main run passed 86 repetitions, then missed `coordinator.commit.before` on the third three-Node scale repetition. The observed transaction committed, so the intended crash was not exercised and that repetition is failed. The old driver did not wait for all terminating Workers to disappear before the next case. The updated driver verifies zero Worker Pods; the three/sixteen-Node tiers passed all 24 repetitions when rerun separately on the final image.
 - A Kubernetes run missed a fault cut because `kubectl port-forward` remained attached to a terminating Pod with old fault settings. The driver now reconnects after every server rollout. The failed run remains failed.
 - A k3s provisioning attempt failed to connect during PostgreSQL's temporary initialization server. Readiness now probes TCP, which becomes available only for the final server. One earlier k3s run was interrupted while replacing the driver/image and is incomplete.
 - Two supplemental fixtures and a diagnostic retry failed at Peer registration with HTTP 500 before any transaction case ran. Retained reruns passed; the driver now waits for the peer identity endpoint from the originating Pod before registration, covering Service/DNS propagation separately from Pod health. These setup failures are not successful transaction cases.
