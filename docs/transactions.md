@@ -1,6 +1,6 @@
 # Distributed transaction contract
 
-The implementation follows FR-TX-001. Its release gate remains open until the complete process-failure matrix, subject authorization integration and expanded cluster acceptance are verified.
+This document describes the implemented cross-node transaction protocol for supported manifest mutations. Implementation and focused regression coverage do not establish complete FR-TX-001 release acceptance: the full process-failure matrix, subject authorization integration and Kubernetes/k3s acceptance remain open in #40.
 
 ## Protocol and isolation
 
@@ -24,7 +24,7 @@ Administrative database access is outside the application protocol. Operators mu
 
 Transaction administration is initially operator-only. A configured federation peer needs a separate explicit transaction trust grant before reserving a node. Existing authenticated participants can finish their admitted transaction after that grant is disabled; disabling the grant prevents new reservations. Subject-scoped transaction admission remains part of the authorization integration gate.
 
-Required evidence includes two independent databases; commit and abort; conflicting manifests; stale revisions; immutable decisions; each durable phase interrupted and restarted; partitions and duplicate/delayed messages; every ordinary read/write/worker/stream boundary; and no visible partial state or duplicate effects. Outstanding release acceptance is tracked in [the authoritative requirements in Notion](https://app.notion.com/p/3e172fa877aa8096bca5c8d8c2c73b24).
+Required evidence includes two independent databases; commit and abort; conflicting manifests; stale revisions; immutable decisions; each durable phase interrupted and restarted; partitions and duplicate/delayed messages; every ordinary read/write/worker/stream boundary; and no visible partial state or duplicate effects. The requirement is in [Notion](https://app.notion.com/p/3e172fa877aa8096bca5c8d8c2c73b24); #40 tracks the outstanding release evidence. The tests below cover a subset of this matrix.
 
 ## Management workflow
 
