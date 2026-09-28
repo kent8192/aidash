@@ -10,6 +10,7 @@ use axum::{
 	response::{IntoResponse, Response},
 };
 use std::{
+	net::IpAddr,
 	sync::{
 		Arc,
 		atomic::{AtomicUsize, Ordering},
@@ -45,6 +46,8 @@ pub struct Settings {
 	pub sse_connections: usize,
 	pub auth_burst: u32,
 	pub auth_period: Duration,
+	/// Exact socket peers allowed to supply a sanitized, single X-Real-IP.
+	pub auth_trusted_proxy_ips: Vec<IpAddr>,
 	pub actor_burst: u32,
 	pub actor_period: Duration,
 	pub peer_burst: u32,
@@ -58,6 +61,7 @@ impl Default for Settings {
 			sse_connections: 128,
 			auth_burst: 30,
 			auth_period: Duration::from_secs(2),
+			auth_trusted_proxy_ips: Vec::new(),
 			actor_burst: 120,
 			actor_period: Duration::from_millis(100),
 			peer_burst: 240,
@@ -84,6 +88,23 @@ impl Settings {
 		}
 		let defaults = Self::default();
 		Ok(Self {
+			auth_trusted_proxy_ips: match std::env::var("AIDASH_AUTH_TRUSTED_PROXY_IPS") {
+				Ok(raw) if raw.trim().is_empty() => Vec::new(),
+				Ok(raw) => raw
+					.split(',')
+					.map(|ip| {
+						ip.trim().parse().map_err(|_| {
+							crate::Error::Invalid("invalid AIDASH_AUTH_TRUSTED_PROXY_IPS".into())
+						})
+					})
+					.collect::<crate::Result<Vec<_>>>()?,
+				Err(std::env::VarError::NotPresent) => Vec::new(),
+				Err(_) => {
+					return Err(crate::Error::Invalid(
+						"invalid AIDASH_AUTH_TRUSTED_PROXY_IPS".into(),
+					));
+				}
+			},
 			auth_period: Duration::from_millis(value(
 				"AIDASH_AUTH_RATE_PERIOD_MS",
 				defaults.auth_period.as_millis() as u64,
@@ -125,6 +146,27 @@ impl Settings {
 /// Only constructed after federation authentication succeeds.
 #[derive(Clone, Debug)]
 pub(crate) struct AuthenticatedPeer(pub String);
+#[derive(Clone)]
+pub(crate) struct AuthKey(pub Vec<IpAddr>);
+impl KeyExtractor for AuthKey {
+	type Key = IpAddr;
+	fn extract<T>(&self, request: &axum::http::Request<T>) -> Result<IpAddr, GovernorError> {
+		let peer = tower_governor::key_extractor::PeerIpKeyExtractor.extract(request)?;
+		if self.0.contains(&peer) {
+			let mut values = request.headers().get_all("x-real-ip").iter();
+			let client = values
+				.next()
+				.and_then(|value| value.to_str().ok())
+				.and_then(|value| value.parse::<IpAddr>().ok());
+			if values.next().is_none()
+				&& let Some(client) = client
+			{
+				return Ok(client);
+			}
+		}
+		Ok(peer)
+	}
+}
 #[derive(Clone)]
 pub(crate) struct ActorKey;
 impl KeyExtractor for ActorKey {
