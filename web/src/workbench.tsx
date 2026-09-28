@@ -2,6 +2,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker } from "@tanstack/react-router";
 import {
   Bot,
+  Boxes,
+  Database,
+  FlaskConical,
+  History,
+  Link2,
+  Settings2,
+  Wrench,
+  Zap,
+  Award,
+  Users,
   CheckCircle2,
   CircleAlert,
   FileText,
@@ -505,6 +515,7 @@ export function Workbench({
   const [transferOwner, setTransferOwner] = useState("");
   const [adoptRef, setAdoptRef] = useState("");
   const [inspection, setInspection] = useState<Inspection | null>(null);
+  const [incidentsLoaded, setIncidentsLoaded] = useState(false);
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [incidentOwner, setIncidentOwner] = useState("");
   const [incidentNotes, setIncidentNotes] = useState("");
@@ -776,7 +787,10 @@ export function Workbench({
       `${inspectedId}@${inspectedVersion}` !== focus
     ) {
       queueMicrotask(() => {
-        if (active) setIncidents([]);
+        if (active) {
+          setIncidents([]);
+          setIncidentsLoaded(false);
+        }
       });
       return;
     }
@@ -785,11 +799,15 @@ export function Workbench({
         `/api/workbench/versions/${encodeURIComponent(inspectedId)}/${encodeURIComponent(inspectedVersion)}/incidents`,
       )
         .then((value) => {
-          if (active) setIncidents(value);
+          if (active) {
+            setIncidents(value);
+            setIncidentsLoaded(true);
+          }
         })
         .catch((cause) => {
           if (active) {
             setIncidents([]);
+            setIncidentsLoaded(false);
             setError(String(cause));
           }
         });
@@ -1186,7 +1204,7 @@ export function Workbench({
       );
       setPendingTestId(session.status === "running" ? session.id : null);
       setTestInput((pending) => (pending === submittedMessage ? "" : pending));
-      setCreatorTab("test");
+      if (creatorTab !== "overview") setCreatorTab("test");
     } catch (cause) {
       setError(
         cause instanceof ApiError && cause.status === 409
@@ -1371,7 +1389,9 @@ export function Workbench({
   ]);
   const testPanel = (
     <section className="wb-card wb-test">
-      <h2>{t.test}</h2>
+      <h2>
+        <FlaskConical size={18} /> {t.test}
+      </h2>
       <p>
         {testMode === "real"
           ? locale === "ja-JP"
@@ -1587,8 +1607,8 @@ export function Workbench({
 
   const renderEditor = () =>
     !editing ? null : (
-      <div className="wb-stack">
-        <section className="wb-card">
+      <div className="wb-editor">
+        <section className="wb-card wb-span wb-profile">
           <h2>
             <Bot size={18} /> {t.profile}
           </h2>
@@ -1618,7 +1638,7 @@ export function Workbench({
                   })
                 }
               />
-              <small>{t.categoryHint}</small>
+              <small className="wb-profile-hint">{t.categoryHint}</small>
             </label>
             <label className="wb-span">
               {t.description}
@@ -1660,25 +1680,16 @@ export function Workbench({
                 }
               />
             </label>
-            <label className="wb-span">
-              {t.capabilities}
-              <input
-                value={editing.capabilities.join(", ")}
-                onChange={(event) =>
-                  change((value) => {
-                    value.capabilities = split(event.target.value);
-                  })
-                }
-              />
-            </label>
           </div>
         </section>
-        <section className="wb-card">
-          <h2>{t.build}</h2>
+        <section className="wb-card wb-span">
+          <h2>
+            <FileText size={18} /> {t.instructions}
+          </h2>
           <label>
             {t.instructions}
             <textarea
-              rows={7}
+              rows={4}
               value={editing.config.instructions}
               onChange={(event) =>
                 change((value) => {
@@ -1687,6 +1698,28 @@ export function Workbench({
               }
             />
           </label>
+        </section>
+        <section className="wb-card">
+          <h2>
+            <Zap size={18} /> {locale === "ja-JP" ? "能力" : "Capabilities"}
+          </h2>
+          <label>
+            {t.capabilities}
+            <input
+              value={editing.capabilities.join(", ")}
+              onChange={(event) =>
+                change((value) => {
+                  value.capabilities = split(event.target.value);
+                })
+              }
+            />
+          </label>
+          <p className="wb-hint">{t.permission}</p>
+        </section>
+        <section className="wb-card">
+          <h2>
+            <Boxes size={18} /> {t.model}
+          </h2>
           <div className="wb-fields">
             <label>
               {t.model}
@@ -1731,6 +1764,11 @@ export function Workbench({
               />
             </label>
           </div>
+        </section>
+        <section className="wb-card">
+          <h2>
+            <Wrench size={18} /> {t.tools} &amp; {t.skills}
+          </h2>
           <div className="wb-checklist">
             <fieldset>
               <legend>{t.skills}</legend>
@@ -1788,22 +1826,11 @@ export function Workbench({
         </section>
         <section className="wb-card wb-behavior">
           <h2>
-            {locale === "ja-JP"
-              ? "ワークスペースでの動作"
-              : "Workspace behavior"}
+            <Database size={18} />{" "}
+            {locale === "ja-JP" ? "メモリとコンテキスト" : "Memory & context"}
           </h2>
           {(
             [
-              [
-                "allow_task_creation",
-                locale === "ja-JP"
-                  ? "タスクの自動作成"
-                  : "Automatic task creation",
-              ],
-              [
-                "allow_task_delegation",
-                locale === "ja-JP" ? "自動委任" : "Automatic delegation",
-              ],
               [
                 "allow_memory_write",
                 locale === "ja-JP"
@@ -1837,13 +1864,48 @@ export function Workbench({
               {title}
             </label>
           ))}
+        </section>
+        <section className="wb-card wb-behavior wb-span">
+          <h2>
+            <Settings2 size={18} />
+            {locale === "ja-JP"
+              ? "ワークスペースでの動作"
+              : "Workspace behavior"}
+          </h2>
+          {(
+            [
+              [
+                "allow_task_creation",
+                locale === "ja-JP"
+                  ? "タスクの自動作成"
+                  : "Automatic task creation",
+              ],
+              [
+                "allow_task_delegation",
+                locale === "ja-JP" ? "自動委任" : "Automatic delegation",
+              ],
+            ] as const
+          ).map(([key, title]) => (
+            <label key={key}>
+              <input
+                type="checkbox"
+                checked={editing.config[key] === true}
+                onChange={(event) =>
+                  change((value) => {
+                    value.config[key] = event.target.checked;
+                  })
+                }
+              />
+              {title}
+            </label>
+          ))}
           <p>
             {locale === "ja-JP"
               ? "ここで許可しても、既存の権限ポリシーは広がりません。"
               : "These settings never expand existing permissions."}
           </p>
         </section>
-        <section className="wb-card">
+        <section className="wb-card wb-span">
           <h2>
             <FileText size={18} /> {t.docs}
           </h2>
@@ -2201,6 +2263,9 @@ export function Workbench({
     </section>
   );
 
+  const selectedModel = editing
+    ? models.find((model) => refKey(model) === refKey(editing.config.model))
+    : undefined;
   const heroEntry = mode === "creator" ? editing : selectedAgent;
   const heroIcon = heroEntry ? profile(heroEntry).icon : undefined;
   return (
@@ -2234,6 +2299,12 @@ export function Workbench({
                   ? `${selectedAgent.id} · ${selectedAgent.version} · ${t.source}: ${data.node.id}`
                   : t.safe}
             </p>
+            {heroEntry && (
+              <p className="wb-description">
+                {heroEntry.description[locale.slice(0, 2)] ||
+                  heroEntry.description.en}
+              </p>
+            )}
           </div>
         </div>
         <div className="wb-actions">
@@ -2387,31 +2458,31 @@ export function Workbench({
                   className={creatorTab === "overview" ? "active" : ""}
                   onClick={() => setCreatorTab("overview")}
                 >
-                  {t.overview}
+                  <FileText size={15} /> {t.overview}
                 </button>
                 <button
                   className={creatorTab === "build" ? "active" : ""}
                   onClick={() => setCreatorTab("build")}
                 >
-                  {t.build}
+                  <Settings2 size={15} /> {t.build}
                 </button>
                 <button
                   className={creatorTab === "test" ? "active" : ""}
                   onClick={() => setCreatorTab("test")}
                 >
-                  {t.test}
+                  <FlaskConical size={15} /> {t.test}
                 </button>
                 <button
                   className={creatorTab === "versions" ? "active" : ""}
                   onClick={() => setCreatorTab("versions")}
                 >
-                  {t.versions}
+                  <History size={15} /> {t.versions}
                 </button>
                 <button
                   className={creatorTab === "register" ? "active" : ""}
                   onClick={() => setCreatorTab("register")}
                 >
-                  {t.register}
+                  <Boxes size={15} /> {t.register}
                 </button>
               </nav>
               <div
@@ -2712,15 +2783,49 @@ export function Workbench({
                         <h2>
                           <CheckCircle2 size={18} /> {t.validate}
                         </h2>
-                        <p>
+                        <p
+                          className={`wb-validation ${validation?.revision === current.revision && validation.valid ? "valid" : ""}`}
+                        >
                           {validation?.revision === current.revision
                             ? validation.message
-                            : t.noTests}
+                            : locale === "ja-JP"
+                              ? "この版の技術検証は未実施です。"
+                              : "This revision has not been validated."}
                         </p>
+                        <dl className="wb-facts">
+                          <div>
+                            <dt>{t.model}</dt>
+                            <dd>
+                              {editing?.config.model.id
+                                ? locale === "ja-JP"
+                                  ? "選択済み"
+                                  : "Selected"
+                                : t.noModel}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>{t.test}</dt>
+                            <dd>
+                              {
+                                testSessions.filter(
+                                  (session) =>
+                                    session.revision === current.revision,
+                                ).length
+                              }{" "}
+                              {locale === "ja-JP" ? "件の記録" : "records"}
+                            </dd>
+                          </div>
+                        </dl>
                       </section>
                       <section className="wb-card">
-                        <h2>{t.dependencies}</h2>
-                        <p>{editing?.config.model.id || t.noModel}</p>
+                        <h2>
+                          <Boxes size={18} /> {t.dependencies}
+                        </h2>
+                        <p>
+                          {selectedModel
+                            ? label(selectedModel, locale)
+                            : editing?.config.model.id || t.noModel}
+                        </p>
                         <p>
                           {editing?.config.skills.length ?? 0} Skills ·{" "}
                           {editing?.config.tools.length ?? 0} {t.tools}
@@ -2733,11 +2838,46 @@ export function Workbench({
                         <p>{t.permission}</p>
                       </section>
                       <section className="wb-card">
-                        <h2>{t.version}</h2>
-                        <p>
-                          {editing?.version} · r{baseRevision}
-                        </p>
-                        <p>{releaseNotes || "—"}</p>
+                        <h2>
+                          <History size={18} /> {t.version}
+                        </h2>
+                        <dl className="wb-facts">
+                          <div>
+                            <dt>{t.version}</dt>
+                            <dd>
+                              {editing?.version} · r{baseRevision}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>{t.operatorOwner}</dt>
+                            <dd>{current.owner}</dd>
+                          </div>
+                          <div>
+                            <dt>
+                              {locale === "ja-JP" ? "更新日時" : "Updated"}
+                            </dt>
+                            <dd>
+                              {new Date(current.updated_at).toLocaleString(
+                                locale,
+                              )}
+                            </dd>
+                          </div>
+                        </dl>
+                        {creatorTab === "register" ? (
+                          <p>{releaseNotes || "—"}</p>
+                        ) : (
+                          <label>
+                            {t.release}
+                            <textarea
+                              rows={3}
+                              value={releaseNotes}
+                              onChange={(event) => {
+                                setReleaseNotes(event.target.value);
+                                setDirty(true);
+                              }}
+                            />
+                          </label>
+                        )}
                       </section>
                     </div>
                   </aside>
@@ -2786,193 +2926,492 @@ export function Workbench({
                   className={trustTab === "overview" ? "active" : ""}
                   onClick={() => setTrustTab("overview")}
                 >
-                  {t.overview}
+                  <FileText size={15} /> {t.overview}
                 </button>
                 <button
                   className={trustTab === "policies" ? "active" : ""}
                   onClick={() => setTrustTab("policies")}
                 >
-                  {t.policies}
+                  <ShieldCheck size={15} /> {t.policies}
                 </button>
                 <button
                   className={trustTab === "audit" ? "active" : ""}
                   onClick={() => setTrustTab("audit")}
                 >
-                  {t.audit}
+                  <History size={15} /> {t.audit}
                 </button>
                 <button
                   className={trustTab === "certifications" ? "active" : ""}
                   onClick={() => setTrustTab("certifications")}
                 >
-                  {t.certifications}
+                  <Award size={15} /> {t.certifications}
                 </button>
                 <button
                   className={trustTab === "incidents" ? "active" : ""}
                   onClick={() => setTrustTab("incidents")}
                 >
-                  {t.incidents}
+                  <CircleAlert size={15} /> {t.incidents}
                 </button>
               </nav>
               <div className="wb-trust-layout">
-                <div className="wb-trust-grid">
+                <div className="wb-trust-main">
                   {trustTab === "overview" && (
-                    <>
-                      <section className="wb-card">
-                        <h2>{t.profile}</h2>
-                        <p>{label(selectedAgent, locale)}</p>
-                        <p>
-                          {selectedAgent.id}@{selectedAgent.version}
-                        </p>
-                        <p>
-                          {selectedAgent.description[locale.slice(0, 2)] ||
-                            selectedAgent.description.en ||
-                            "—"}
-                        </p>
-                      </section>
-                      <section className="wb-card">
-                        <h2>{t.dependencies}</h2>
-                        <p>
-                          {t.model}: {selectedAgent.config.model.id}@
-                          {selectedAgent.config.model.version}
-                        </p>
-                        <p>
-                          {t.skills}:{" "}
-                          {selectedAgent.config.skills.length
-                            ? selectedAgent.config.skills.map(refKey).join(", ")
-                            : "—"}
-                        </p>
-                        <p>
-                          {t.tools}:{" "}
-                          {selectedAgent.config.tools.length
-                            ? selectedAgent.config.tools.map(refKey).join(", ")
-                            : "—"}
-                        </p>
-                      </section>
-                      <section className="wb-card">
-                        <h2>
+                    <div
+                      className="wb-metrics"
+                      aria-label={
+                        locale === "ja-JP" ? "信頼性の概要" : "Trust overview"
+                      }
+                    >
+                      <section className="wb-card wb-metric">
+                        <ShieldCheck size={19} />
+                        <span>Trust</span>
+                        <strong>
+                          {locale === "ja-JP" ? "未評価" : "Not assessed"}
+                        </strong>
+                        <small>
                           {locale === "ja-JP"
-                            ? "閲覧可能なテスト記録"
-                            : "Visible test evidence"}
-                        </h2>
-                        {inspection?.test_evidence?.length ? (
-                          <ul>
-                            {inspection.test_evidence
-                              .slice(0, 5)
-                              .map((test) => (
-                                <li key={test.session_id}>
-                                  r{test.draft_revision} · {test.mode}
-                                  {test.profile_id
-                                    ? ` / ${test.profile_id} r${test.profile_revision}`
-                                    : ""}{" "}
-                                  · {test.status} ·{" "}
-                                  {new Date(test.created_at).toLocaleString(
-                                    locale,
-                                  )}
-                                  {test.expired_at
-                                    ? locale === "ja-JP"
-                                      ? " · 本文は期限切れ"
-                                      : " · payload expired"
-                                    : ""}
+                            ? "外部評価待ち"
+                            : "External review pending"}
+                        </small>
+                      </section>
+                      <section className="wb-card wb-metric">
+                        <ShieldCheck size={19} />
+                        <span>{t.policies}</span>
+                        <strong>
+                          {permissionContext
+                            ? `${permissionContext.rows.filter((row) => row.effective_for_component).length} / ${permissionContext.rows.length}`
+                            : "—"}
+                        </strong>
+                        <small>
+                          {locale === "ja-JP"
+                            ? "指定条件で有効な部品"
+                            : "Effective in checked context"}
+                        </small>
+                      </section>
+                      <section className="wb-card wb-metric">
+                        <Award size={19} />
+                        <span>{t.certifications}</span>
+                        <strong>—</strong>
+                        <small>
+                          {locale === "ja-JP"
+                            ? "認証情報は未提供"
+                            : "Not provided"}
+                        </small>
+                      </section>
+                      <section className="wb-card wb-metric">
+                        <CircleAlert size={19} />
+                        <span>{t.incidents}</span>
+                        <strong>
+                          {incidentsLoaded
+                            ? incidents.filter(
+                                (incident) =>
+                                  !incident.archived &&
+                                  incident.status !== "resolved" &&
+                                  incident.status !== "closed",
+                              ).length
+                            : "—"}
+                        </strong>
+                        <small>
+                          {locale === "ja-JP"
+                            ? "閲覧可能な未解決記録"
+                            : "Visible open reports"}
+                        </small>
+                      </section>
+                      <section className="wb-card wb-metric">
+                        <History size={19} />
+                        <span>
+                          {locale === "ja-JP" ? "最終確認" : "Last observed"}
+                        </span>
+                        <strong>
+                          {inspection
+                            ? new Date(
+                                inspection.observed_at,
+                              ).toLocaleDateString(locale)
+                            : "—"}
+                        </strong>
+                        <small>
+                          {locale === "ja-JP"
+                            ? "Registryの観測日時"
+                            : "Registry observation"}
+                        </small>
+                      </section>
+                    </div>
+                  )}
+                  <div
+                    className={`wb-trust-grid ${trustTab !== "overview" ? "wb-trust-detail" : ""}`}
+                  >
+                    {trustTab === "overview" && (
+                      <>
+                        <section className="wb-card">
+                          <h2>
+                            <ShieldCheck size={18} /> {t.policies}
+                          </h2>
+                          <p>
+                            {permissionContext
+                              ? `${permissionContext.rows.filter((row) => row.effective_for_component).length} / ${permissionContext.rows.length}`
+                              : locale === "ja-JP"
+                                ? "権限コンテキスト未確認"
+                                : "Context not checked"}
+                          </p>
+                          <p>{t.permission}</p>
+                          <button
+                            className="wb-card-link"
+                            onClick={() => setTrustTab("policies")}
+                          >
+                            {locale === "ja-JP"
+                              ? "権限を確認"
+                              : "Review permissions"}
+                          </button>
+                        </section>
+                        <section className="wb-card">
+                          <h2>
+                            <Award size={18} /> {t.certifications}
+                          </h2>
+                          <p>{t.noAssessment}</p>
+                          <button
+                            className="wb-card-link"
+                            onClick={() => setTrustTab("certifications")}
+                          >
+                            {locale === "ja-JP"
+                              ? "認証情報を表示"
+                              : "View certifications"}
+                          </button>
+                        </section>
+                        <section className="wb-card">
+                          <h2>
+                            <Link2 size={18} />{" "}
+                            {locale === "ja-JP"
+                              ? "出自・来歴"
+                              : "Lineage / provenance"}
+                          </h2>
+                          <dl className="wb-facts">
+                            <div>
+                              <dt>{t.model}</dt>
+                              <dd>
+                                {selectedAgent.config.model.id} ·{" "}
+                                {selectedAgent.config.model.version}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt>{t.source}</dt>
+                              <dd>{inspection?.source_node ?? data.node.id}</dd>
+                            </div>
+                            <div>
+                              <dt>{t.version}</dt>
+                              <dd>{selectedAgent.version}</dd>
+                            </div>
+                          </dl>
+                          <button
+                            className="wb-card-link"
+                            onClick={() => setTrustTab("audit")}
+                          >
+                            {locale === "ja-JP"
+                              ? "監査履歴を表示"
+                              : "View audit trail"}
+                          </button>
+                        </section>
+                        <section className="wb-card">
+                          <h2>
+                            <Database size={18} />{" "}
+                            {locale === "ja-JP"
+                              ? "データアクセス範囲"
+                              : "Data access scope"}
+                          </h2>
+                          <dl className="wb-facts">
+                            {(
+                              [
+                                [
+                                  "allow_memory_write",
+                                  locale === "ja-JP"
+                                    ? "永続メモリへの書き込み"
+                                    : "Persistent memory writes",
+                                ],
+                                [
+                                  "allow_cross_conversation_memory",
+                                  locale === "ja-JP"
+                                    ? "会話をまたぐメモリ"
+                                    : "Cross-conversation memory",
+                                ],
+                                [
+                                  "allow_workspace_retrieval",
+                                  locale === "ja-JP"
+                                    ? "ワークスペースの追加取得"
+                                    : "Workspace retrieval",
+                                ],
+                              ] as const
+                            ).map(([key, title]) => (
+                              <div key={key}>
+                                <dt>{title}</dt>
+                                <dd>
+                                  <span className="wb-badge">
+                                    {selectedAgent.config[key]
+                                      ? locale === "ja-JP"
+                                        ? "要求あり"
+                                        : "Requested"
+                                      : locale === "ja-JP"
+                                        ? "要求なし"
+                                        : "Not requested"}
+                                  </span>
+                                </dd>
+                              </div>
+                            ))}
+                          </dl>
+                          <p className="wb-hint">{t.permission}</p>
+                        </section>
+                        <section className="wb-card">
+                          <h2>
+                            <Wrench size={18} /> {t.tools} &amp; {t.skills}
+                          </h2>
+                          <ul className="wb-resource-list">
+                            {[
+                              ...selectedAgent.config.tools,
+                              ...selectedAgent.config.skills,
+                            ].map((ref, index) => (
+                              <li key={`${index}:${refKey(ref)}`}>
+                                <Wrench size={15} />
+                                <span>
+                                  {ref.id}
+                                  <small>{ref.version}</small>
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                          {!selectedAgent.config.tools.length &&
+                            !selectedAgent.config.skills.length && (
+                              <p>
+                                {locale === "ja-JP"
+                                  ? "ツール・Skillsの依存関係はありません。"
+                                  : "No tool or skill dependencies."}
+                              </p>
+                            )}
+                          <button
+                            className="wb-card-link"
+                            onClick={() => setTrustTab("policies")}
+                          >
+                            {locale === "ja-JP"
+                              ? "有効な権限を確認"
+                              : "Check effective permissions"}
+                          </button>
+                        </section>
+                        <section className="wb-card">
+                          <h2>
+                            <Users size={18} />{" "}
+                            {locale === "ja-JP"
+                              ? "自律動作の設定"
+                              : "Autonomy settings"}
+                          </h2>
+                          <dl className="wb-facts">
+                            {(
+                              [
+                                [
+                                  "allow_task_creation",
+                                  locale === "ja-JP"
+                                    ? "タスクの自動作成"
+                                    : "Automatic task creation",
+                                ],
+                                [
+                                  "allow_task_delegation",
+                                  locale === "ja-JP"
+                                    ? "自動委任"
+                                    : "Automatic delegation",
+                                ],
+                              ] as const
+                            ).map(([key, title]) => (
+                              <div key={key}>
+                                <dt>{title}</dt>
+                                <dd>
+                                  <span className="wb-badge">
+                                    {selectedAgent.config[key]
+                                      ? locale === "ja-JP"
+                                        ? "有効"
+                                        : "Enabled"
+                                      : locale === "ja-JP"
+                                        ? "無効"
+                                        : "Disabled"}
+                                  </span>
+                                </dd>
+                              </div>
+                            ))}
+                          </dl>
+                          <p>
+                            <strong>
+                              {locale === "ja-JP"
+                                ? "要求された能力"
+                                : "Requested capabilities"}
+                            </strong>
+                            <br />
+                            {selectedAgent.capabilities.join(", ") || "—"}
+                          </p>
+                          <p className="wb-hint">{t.permission}</p>
+                        </section>
+                        <section className="wb-card wb-compliance">
+                          <h2>
+                            <ShieldCheck size={18} />{" "}
+                            {locale === "ja-JP"
+                              ? "権限マトリクス"
+                              : "Permission matrix"}
+                          </h2>
+                          {permissionContext ? (
+                            <div className="wb-policy-table">
+                              <table>
+                                <thead>
+                                  <tr>
+                                    <th>{t.dependencies}</th>
+                                    <th>
+                                      {locale === "ja-JP" ? "操作" : "Action"}
+                                    </th>
+                                    <th>{t.status}</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {permissionContext.rows.map((row) => (
+                                    <tr
+                                      key={`${row.kind}:${refKey(row.reference)}`}
+                                    >
+                                      <td>{row.reference.id}</td>
+                                      <td>{row.action}</td>
+                                      <td>
+                                        {row.effective_for_component
+                                          ? locale === "ja-JP"
+                                            ? "有効"
+                                            : "Effective"
+                                          : locale === "ja-JP"
+                                            ? "制限あり"
+                                            : "Restricted"}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : (
+                            <p>{t.policyContext}</p>
+                          )}
+                          <button
+                            className="wb-card-link"
+                            onClick={() => setTrustTab("policies")}
+                          >
+                            {locale === "ja-JP"
+                              ? "条件を指定して確認"
+                              : "Review a permission context"}
+                          </button>
+                        </section>
+                        <section className="wb-card">
+                          <h2>
+                            <CircleAlert size={18} /> {t.incidents}
+                          </h2>
+                          {incidents.length ? (
+                            <ul>
+                              {incidents.slice(0, 3).map((incident) => (
+                                <li key={incident.id}>
+                                  {incident.severity} · {incident.status} ·{" "}
+                                  {incident.notes}
                                 </li>
                               ))}
-                          </ul>
-                        ) : (
-                          <p>
-                            {locale === "ja-JP"
-                              ? "この権限で閲覧できるテスト記録はありません。未実施や合格を意味しません。"
-                              : "No test record is visible with this access. This does not imply none ran or that it passed."}
-                          </p>
-                        )}
-                        {inspection?.test_evidence_truncated && (
-                          <p>
-                            {locale === "ja-JP"
-                              ? "最新100件まで表示します。"
-                              : "Showing the latest 100 records."}
-                          </p>
-                        )}
-                      </section>
+                            </ul>
+                          ) : (
+                            <p>
+                              {locale === "ja-JP"
+                                ? "この権限で閲覧できる報告記録はありません。"
+                                : "No report is visible with this access."}
+                            </p>
+                          )}
+                        </section>
+                      </>
+                    )}
+                    {trustTab === "policies" && policyPanel}
+                    {trustTab === "audit" && auditPanel}
+                    {trustTab === "certifications" && (
                       <section className="wb-card">
-                        <h2>
-                          {locale === "ja-JP"
-                            ? "要求された能力"
-                            : "Requested capabilities"}
-                        </h2>
-                        <ul>
-                          {selectedAgent.capabilities.map((capability) => (
-                            <li key={capability}>{capability}</li>
-                          ))}
-                        </ul>
-                        <p>{t.permission}</p>
+                        <h2>{t.certifications}</h2>
+                        <p>{t.noAssessment}</p>
                       </section>
-                      <section className="wb-card">
-                        <h2>{t.workspaces}</h2>
-                        {inspection?.workspaces.length ? (
-                          <ul>
-                            {inspection.workspaces.map((workspace) => (
-                              <li key={workspace.workspace_id}>
-                                {workspace.title} ·{" "}
-                                {workspace.current
-                                  ? locale === "ja-JP"
-                                    ? "現在"
-                                    : "Current"
-                                  : locale === "ja-JP"
-                                    ? "過去"
-                                    : "Past"}
-                              </li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <p>{t.noUse}</p>
-                        )}
-                        {inspection?.usage_truncated && (
-                          <p>
-                            {locale === "ja-JP"
-                              ? "表示は最新500実行の範囲です。"
-                              : "Based on the latest 500 runs."}
-                          </p>
-                        )}
-                      </section>
-                      <section className="wb-card">
-                        <h2>{t.incidents}</h2>
-                        {incidents.length ? (
-                          <ul>
-                            {incidents.slice(0, 3).map((incident) => (
-                              <li key={incident.id}>
-                                {incident.severity} · {incident.status} ·{" "}
-                                {incident.notes}
-                              </li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <p>
-                            {locale === "ja-JP"
-                              ? "この権限で閲覧できる報告記録はありません。"
-                              : "No report is visible with this access."}
-                          </p>
-                        )}
-                      </section>
-                    </>
-                  )}
-                  {trustTab === "policies" && policyPanel}
-                  {trustTab === "audit" && auditPanel}
-                  {trustTab === "certifications" && (
-                    <section className="wb-card">
-                      <h2>{t.certifications}</h2>
-                      <p>{t.noAssessment}</p>
-                    </section>
-                  )}
-                  {trustTab === "incidents" && incidentPanel}
+                    )}
+                    {trustTab === "incidents" && incidentPanel}
+                  </div>
                 </div>
                 <aside className="wb-sidebar open">
                   <div className="wb-side-content">
                     <section className="wb-card">
                       <h2>
-                        <ShieldCheck size={18} /> Trust
+                        <ShieldCheck size={18} /> Trust Summary
                       </h2>
                       <p>{t.noAssessment}</p>
                     </section>
                     <section className="wb-card">
-                      <h2>{t.status}</h2>
+                      <h2>
+                        <FlaskConical size={18} />
+                        {locale === "ja-JP"
+                          ? "閲覧可能なテスト記録"
+                          : "Visible test evidence"}
+                      </h2>
+                      {inspection?.test_evidence?.length ? (
+                        <ul>
+                          {inspection.test_evidence.slice(0, 5).map((test) => (
+                            <li key={test.session_id}>
+                              r{test.draft_revision} · {test.mode}
+                              {test.profile_id
+                                ? ` / ${test.profile_id} r${test.profile_revision}`
+                                : ""}{" "}
+                              · {test.status} ·{" "}
+                              {new Date(test.created_at).toLocaleString(locale)}
+                              {test.expired_at
+                                ? locale === "ja-JP"
+                                  ? " · 本文は期限切れ"
+                                  : " · payload expired"
+                                : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p>
+                          {locale === "ja-JP"
+                            ? "この権限で閲覧できるテスト記録はありません。未実施や合格を意味しません。"
+                            : "No test record is visible with this access. This does not imply none ran or that it passed."}
+                        </p>
+                      )}
+                      {inspection?.test_evidence_truncated && (
+                        <p>
+                          {locale === "ja-JP"
+                            ? "最新100件まで表示します。"
+                            : "Showing the latest 100 records."}
+                        </p>
+                      )}
+                    </section>
+                    <section className="wb-card">
+                      <h2>
+                        <Users size={18} /> {t.workspaces}
+                      </h2>
+                      {inspection?.workspaces.length ? (
+                        <ul>
+                          {inspection.workspaces.map((workspace) => (
+                            <li key={workspace.workspace_id}>
+                              {workspace.title} ·{" "}
+                              {workspace.current
+                                ? locale === "ja-JP"
+                                  ? "現在"
+                                  : "Current"
+                                : locale === "ja-JP"
+                                  ? "過去"
+                                  : "Past"}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p>{t.noUse}</p>
+                      )}
+                      {inspection?.usage_truncated && (
+                        <p>
+                          {locale === "ja-JP"
+                            ? "表示は最新500実行の範囲です。"
+                            : "Based on the latest 500 runs."}
+                        </p>
+                      )}
+                    </section>
+                    <section className="wb-card">
+                      <h2>
+                        <History size={18} /> {t.status}
+                      </h2>
                       <p>
                         {t.source}: {inspection?.source_node ?? data.node.id}
                       </p>
