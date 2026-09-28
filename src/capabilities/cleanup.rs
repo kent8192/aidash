@@ -743,17 +743,8 @@ pub(crate) async fn run(
 			let area = job.area_id;
 			if let Err(error) = Box::pin(erase_job(&store, job)).await {
 				let mut tx = store.pool.begin().await?;
-				sqlx::query(
-					&Query::update()
-						.table(Alias::new("core_records"))
-						.value(Alias::new("state"), "cleanup_failed")
-						.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
-						.and_where(Expr::col(Alias::new("state")).eq("deleting"))
-						.to_string(PostgresQueryBuilder),
-				)
-				.bind(id)
-				.execute(&mut *tx)
-				.await?;
+				// Failure reporting follows the same area-before-record order as
+				// deletion, restore and status reads.
 				sqlx::query(
 					&Query::update()
 						.table(Alias::new("core_areas"))
@@ -763,6 +754,17 @@ pub(crate) async fn run(
 						.to_string(PostgresQueryBuilder),
 				)
 				.bind(area)
+				.execute(&mut *tx)
+				.await?;
+				sqlx::query(
+					&Query::update()
+						.table(Alias::new("core_records"))
+						.value(Alias::new("state"), "cleanup_failed")
+						.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+						.and_where(Expr::col(Alias::new("state")).eq("deleting"))
+						.to_string(PostgresQueryBuilder),
+				)
+				.bind(id)
 				.execute(&mut *tx)
 				.await?;
 				tx.commit().await?;

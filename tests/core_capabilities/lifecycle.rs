@@ -22,6 +22,33 @@ pub(super) async fn wait_for_channel_thread_lock_waiters(pool: &sqlx::PgPool, mi
 	}
 }
 
+async fn wait_for_blocked_connection(pool: &sqlx::PgPool, blocker: i32) -> i32 {
+	use sea_orm::sea_query::{Alias, Expr, Func, PostgresQueryBuilder, Query};
+	let query = Query::select()
+		.column(Alias::new("pid"))
+		.from(Alias::new("pg_stat_activity"))
+		.and_where(
+			Expr::val(blocker).eq(Func::cust(Alias::new("ANY"))
+				.arg(Func::cust(Alias::new("pg_blocking_pids")).arg(Expr::col(Alias::new("pid"))))),
+		)
+		.limit(1)
+		.to_string(PostgresQueryBuilder);
+	tokio::time::timeout(std::time::Duration::from_secs(10), async {
+		loop {
+			if let Some(pid) = sqlx::query_scalar(&query)
+				.fetch_optional(pool)
+				.await
+				.unwrap()
+			{
+				return pid;
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+		}
+	})
+	.await
+	.expect("expected a connection waiting for the controlled transaction")
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_objects(
@@ -694,6 +721,7 @@ async fn cleanup_fault_fixture(#[future] capability_fixture: CoreFixture) -> (Co
 async fn failed_snapshot_preserves_active_files_and_interrupted_delete_is_reconcilable(
 	#[future] cleanup_fault_fixture: (CoreFixture, Value),
 ) {
+	use sea_orm::sea_query::{Alias, Func, PostgresQueryBuilder, Query};
 	let (c, area) = Box::pin(cleanup_fault_fixture).await;
 	let id = area["id"].as_str().unwrap();
 	let file: Uuid = serde_json::from_value(area["manifest"][1]["file_id"].clone()).unwrap();
@@ -728,22 +756,54 @@ async fn failed_snapshot_preserves_active_files_and_interrupted_delete_is_reconc
 	// durable intent fenced every writer. No unrelated path is modified.
 	tokio::fs::rename(&owned, &backup).await.unwrap();
 	tokio::fs::create_dir(&owned).await.unwrap();
+	// SeaQuery cannot express PostgreSQL trigger/function DDL. This fixture-only
+	// barrier pauses the real worker while reporting its storage failure, so
+	// status polling deterministically overlaps the failure transaction.
+	let barrier_key = Uuid::new_v4().as_u128() as i64;
+	sqlx::query(&format!("CREATE FUNCTION pause_cleanup_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock({barrier_key}); RETURN NEW; END; $$"))
+		.execute(&c.f.store.pool).await.unwrap();
+	sqlx::query("CREATE TRIGGER pause_cleanup_failure BEFORE UPDATE OF state ON core_records FOR EACH ROW WHEN (NEW.state = 'cleanup_failed') EXECUTE FUNCTION pause_cleanup_failure()")
+		.execute(&c.f.store.pool).await.unwrap();
+	let mut barrier = c.f.store.pool.begin().await.unwrap();
+	sqlx::query(
+		&Query::select()
+			.expr(Func::cust(Alias::new("pg_advisory_xact_lock")).arg(barrier_key))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *barrier)
+	.await
+	.unwrap();
+	let barrier_pid: i32 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Func::cust(Alias::new("pg_backend_pid")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *barrier)
+	.await
+	.unwrap();
 	let (stop, rx) = tokio::sync::watch::channel(false);
 	let worker = tokio::spawn(aidash::capabilities::operations::run(c.f.store.clone(), rx));
 	let status_path = format!(
 		"/api/file-cleanups/{}",
 		deletion["operation_id"].as_str().unwrap()
 	);
-	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
-	loop {
-		let (status, state) = request(&c.app, &c.token, "GET", &status_path, Value::Null).await;
-		assert_eq!(status, 200, "{state}");
-		if state["state"] == "cleanup_failed" {
-			break;
-		}
-		assert!(tokio::time::Instant::now() < deadline, "{state}");
-		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-	}
+	let failure_pid = wait_for_blocked_connection(&c.f.store.pool, barrier_pid).await;
+	let app = c.app.clone();
+	let token = c.token.clone();
+	let polling_path = status_path.clone();
+	let polling =
+		tokio::spawn(async move { request(&app, &token, "GET", &polling_path, Value::Null).await });
+	wait_for_blocked_connection(&c.f.store.pool, failure_pid).await;
+	barrier.rollback().await.unwrap();
+	let (status, state) = polling.await.unwrap();
+	assert_eq!(
+		status, 200,
+		"status polling must not deadlock failure reporting: {state}"
+	);
+	assert_eq!(
+		state["state"], "cleanup_failed",
+		"failure reporting must commit before the waiting status read"
+	);
 	stop.send(true).unwrap();
 	worker.await.unwrap().unwrap();
 	let (status, inventory) =
@@ -835,28 +895,7 @@ async fn cleanup_status_does_not_block_the_worker_while_waiting_for_its_area(
 		)
 		.await
 	});
-	let waiters = Query::select()
-		.expr(Func::count(Expr::col(Alias::new("pid"))))
-		.from(Alias::new("pg_stat_activity"))
-		.and_where(
-			Expr::val(pid).eq(Func::cust(Alias::new("ANY"))
-				.arg(Func::cust(Alias::new("pg_blocking_pids")).arg(Expr::col(Alias::new("pid"))))),
-		)
-		.to_string(PostgresQueryBuilder);
-	tokio::time::timeout(std::time::Duration::from_secs(10), async {
-		loop {
-			let waiting: i64 = sqlx::query_scalar(&waiters)
-				.fetch_one(&c.f.store.pool)
-				.await
-				.unwrap();
-			if waiting > 0 {
-				break;
-			}
-			tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-		}
-	})
-	.await
-	.expect("status request must be waiting for the worker's area lock");
+	wait_for_blocked_connection(&c.f.store.pool, pid).await;
 	let lock = Query::select()
 		.column(Alias::new("id"))
 		.from(Alias::new("core_records"))
