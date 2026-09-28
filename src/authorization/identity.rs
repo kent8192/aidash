@@ -160,7 +160,9 @@ impl Authorization {
 	}
 
 	pub async fn revoke_credential(&self, tenant: &str, id: Uuid) -> Result<Credential> {
-		sqlx::query_as(
+		let mut tx = self.pool.begin().await?;
+		crate::transactions::authority::control(&mut tx).await?;
+		let credential = sqlx::query_as(
 			&Query::update()
 				.table(Alias::new("authorization_credentials"))
 				.value(
@@ -186,9 +188,11 @@ impl Authorization {
 		)
 		.bind(tenant)
 		.bind(id)
-		.fetch_optional(&self.pool)
+		.fetch_optional(&mut *tx)
 		.await?
-		.ok_or_else(|| Error::NotFound("credential".into()))
+		.ok_or_else(|| Error::NotFound("credential".into()))?;
+		tx.commit().await?;
+		Ok(credential)
 	}
 
 	pub async fn authenticate(&self, token: &str) -> Result<Actor> {

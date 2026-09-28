@@ -94,6 +94,7 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
 			"/api",
 			ordinary_routes()
 				.merge(crate::transactions::api::routes())
+				.merge(crate::authorization::api::control_routes())
 				.merge(crate::orchestration::routes())
 				.routes(routes!(session)),
 		)
@@ -120,6 +121,7 @@ pub fn router_with_settings(f: Federation, settings: crate::http::Settings) -> R
 	let body_limit = crate::http::body_limit(crate::http::BODY_LIMIT);
 	let (api, _) = ordinary_routes().split_for_parts();
 	let (transactions, _) = crate::transactions::api::routes()
+		.merge(crate::authorization::api::control_routes())
 		.merge(crate::orchestration::routes())
 		.routes(routes!(session))
 		.split_for_parts();

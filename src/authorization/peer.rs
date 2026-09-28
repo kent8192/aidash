@@ -183,7 +183,21 @@ pub async fn write(f: &Federation, tenant: &str, input: PeerMappingInput) -> Res
 	if input.enabled {
 		f.peer(&input.source_node).await?;
 	}
-	let mut tx = f.store.pool.begin().await?;
+	// Only disabling an existing mapping bypasses a transaction barrier.
+	let _visibility = if input.enabled {
+		Some(crate::transactions::gate::ReadLease::begin(&f.store).await?)
+	} else {
+		None
+	};
+	if !input.enabled && input.expected_revision == 0 {
+		return Err(Error::Invalid(
+			"revocation requires an existing mapping".into(),
+		));
+	}
+	let mut tx = f.store.control_pool.begin().await?;
+	if !input.enabled {
+		crate::transactions::authority::control(&mut tx).await?;
+	}
 	Authorization::load(&mut tx, tenant).await?;
 	let subject: Option<String> = sqlx::query_scalar(
 		&sea_orm::sea_query::Query::select()

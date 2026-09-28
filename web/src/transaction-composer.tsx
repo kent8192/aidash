@@ -24,7 +24,9 @@ function clearResource(mutation: TransactionMutation): TransactionMutation {
 export function TransactionComposer({
   value,
   change,
+  operator = true,
 }: {
+  operator?: boolean;
   value: TransactionManifest;
   change: (value: TransactionManifest) => void;
 }) {
@@ -182,11 +184,15 @@ export function TransactionComposer({
                       "complete_task",
                       "finish_run",
                       "registry_register",
-                    ].map((kind) => (
-                      <option key={kind} value={kind}>
-                        {t(`transactionOperation_${kind}`)}
-                      </option>
-                    ))}
+                    ]
+                      .filter(
+                        (kind) => operator || kind !== "registry_register",
+                      )
+                      .map((kind) => (
+                        <option key={kind} value={kind}>
+                          {t(`transactionOperation_${kind}`)}
+                        </option>
+                      ))}
                   </select>
                 </Field>
                 {mutation.kind === "workspace_state" && (

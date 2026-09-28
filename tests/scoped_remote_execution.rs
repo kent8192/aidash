@@ -347,6 +347,101 @@ async fn scoped_remote_worker_finishes_at_home_and_retries_keep_one_execution(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn transaction_finalization_uses_the_actual_home_and_executor_admission(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	use aidash::transactions::{Manifest, coordinator, participant};
+	let p = scoped_pair;
+	for (local, app, remote) in [(&p.a, &p.aa, &p.b), (&p.b, &p.ba, &p.a)] {
+		assert_eq!(
+			request(
+				app,
+				&local.config.api_token,
+				"POST",
+				"/api/transactions/trust",
+				json!({"node_id":remote.config.node_id,"enabled":true})
+			)
+			.await
+			.0,
+			200
+		);
+	}
+	for _ in 0..4 {
+		if p.a.store.task(p.task).await.unwrap().status == "RUNNING" {
+			break;
+		}
+		p.step().await;
+	}
+	let task = p.a.store.task(p.task).await.unwrap();
+	assert_eq!(task.status, "RUNNING");
+	let run = p.run().await;
+	sqlx::query(&Query::update().table(Alias::new("runs"))
+		.value(Alias::new("phase"),"TOOL_CALL").value(Alias::new("pending"),Expr::cust("$2"))
+		.and_where(Expr::cust("id=$1")).to_string(PostgresQueryBuilder))
+		.bind(run.id).bind(json!({"response":{"text":"Atomic remote answer","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0}))
+		.execute(&p.b.store.pool).await.unwrap();
+	let mut manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":p.a.config.node_id,"isolation":"serializable","deadline":chrono::Utc::now()+chrono::Duration::minutes(5),
+		"participants":[{"node_id":p.a.config.node_id,"mutations":[{"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,"artifact":{"kind":"text","name":"Answer","content":"Atomic remote answer"}}]},
+		{"node_id":p.b.config.node_id,"mutations":[{"kind":"finish_run","run_id":run.id,"task_id":task.id,"expected_revision":run.revision}]}]})).unwrap();
+	manifest
+		.participants
+		.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		"/api/transactions",
+		json!(manifest),
+	)
+	.await;
+	assert_eq!(status, 202, "{body}");
+	for _ in 0..2 {
+		coordinator::advance(&p.a, manifest.id).await.unwrap();
+	}
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/transactions/{}", manifest.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		status, 200,
+		"current authorized controls remain available during reservation: {body}"
+	);
+	for _ in 0..20 {
+		if coordinator::advance(&p.a, manifest.id)
+			.await
+			.unwrap()
+			.complete
+		{
+			break;
+		}
+	}
+	let result = coordinator::status(&p.a, manifest.id).await.unwrap();
+	assert!(result.complete, "{result:?}");
+	assert_eq!(result.decision.as_deref(), Some("COMMIT"), "{result:?}");
+	for local in [&p.a, &p.b] {
+		participant::finish(local, &p.a.config.node_id, &manifest)
+			.await
+			.unwrap();
+	}
+	assert_eq!(p.a.store.task(task.id).await.unwrap().status, "COMPLETED");
+	assert_eq!(p.run().await.phase, "COMPLETED");
+	let artifacts =
+		p.a.store
+			.snapshot(task.workspace_id)
+			.await
+			.unwrap()
+			.artifacts;
+	assert_eq!(artifacts.len(), 1);
+	assert_eq!(artifacts[0].created_by, task.owner.unwrap());
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn scoped_remote_agent_can_delegate_its_created_child_to_the_home_node(
 	#[future(awt)] scoped_pair: Pair,
 ) {

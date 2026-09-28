@@ -24,7 +24,11 @@ struct Node {
 impl Node {
 	async fn new(environment: &TestEnvironment, suffix: &str) -> Self {
 		let admin = environment.database_url.clone();
-		let database = format!("atomic_{}_{}", suffix, Uuid::new_v4().simple());
+		let database = format!(
+			"atomic_{}_{}",
+			suffix.replace('-', "_"),
+			Uuid::new_v4().simple()
+		);
 		PgConnection::connect(&admin)
 			.await
 			.unwrap()
@@ -908,15 +912,18 @@ struct WorkerProcess(std::process::Child);
 impl WorkerProcess {
 	fn start(node: &Node) -> Self {
 		Self(
-			std::process::Command::new(env!("CARGO_BIN_EXE_aidash"))
-				.arg("worker")
-				.env("DATABASE_URL", &node.f.config.database_url)
-				.env("AIDASH_NODE_ID", &node.f.config.node_id)
-				.env("AIDASH_ENDPOINT", &node.f.config.endpoint)
-				.env("AIDASH_API_TOKEN", &node.f.config.api_token)
-				.env("RUST_LOG", "aidash=error")
-				.spawn()
-				.unwrap(),
+			std::process::Command::new(
+				std::env::var_os("AIDASH_TEST_BINARY")
+					.unwrap_or_else(|| env!("CARGO_BIN_EXE_aidash").into()),
+			)
+			.arg("worker")
+			.env("DATABASE_URL", &node.f.config.database_url)
+			.env("AIDASH_NODE_ID", &node.f.config.node_id)
+			.env("AIDASH_ENDPOINT", &node.f.config.endpoint)
+			.env("AIDASH_API_TOKEN", &node.f.config.api_token)
+			.env("RUST_LOG", "aidash=error")
+			.spawn()
+			.unwrap(),
 		)
 	}
 }
@@ -1040,6 +1047,461 @@ async fn unreachable_aborted_transactions_cannot_starve_later_local_work(
 	}
 	assert!(coordinator::status(&a.f, local.id).await.unwrap().complete);
 	assert_eq!(a.f.store.workspace(wa).await.unwrap().revision, 1);
+	a.cleanup().await;
+	b.cleanup().await;
+}
+
+#[rstest::rstest]
+#[case::source_before_any(0, "source", "ABORT")]
+#[case::uncertain_source_admission(1, "lost_reply", "ABORT")]
+#[case::source_after_one(1, "source", "ABORT")]
+#[case::source_after_all(usize::MAX, "source", "COMMIT")]
+#[case::receiver_before_admission(1, "receiver", "ABORT")]
+#[case::receiver_after_admission(2, "receiver", "COMMIT")]
+#[case::trust_before_admission(1, "trust", "ABORT")]
+#[case::trust_after_admission(2, "trust", "COMMIT")]
+#[case::mapping_before_admission(1, "mapping", "ABORT")]
+#[case::mapping_after_admission(2, "mapping", "COMMIT")]
+#[case::recipient_disclosure_denied(0, "disclosure", "REJECTED")]
+#[tokio::test]
+async fn mapped_transaction_admission_and_revocation(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+	#[case] transitions: usize,
+	#[case] revocation: &str,
+	#[case] expected: &str,
+	#[values(2, 3)] count: usize,
+) {
+	use aidash::authorization::{
+		Authorization,
+		peer::{PeerMappingInput, write},
+	};
+	let (mut a, mut b, mut manifest, _, _) = pair(&environment).await;
+	let app_a = api::router(a.f.clone());
+	let app_b = api::router(b.f.clone());
+	let (_, token_a, task_a) = common::bootstrap(&a.f, &app_a, "http://127.0.0.1:9").await;
+	let (_, _, task_b) = common::bootstrap(&b.f, &app_b, "http://127.0.0.1:9").await;
+	let wa = a.f.store.task(task_a).await.unwrap().workspace_id;
+	let wb = b.f.store.task(task_b).await.unwrap().workspace_id;
+	let auth_a = Authorization {
+		pool: a.f.store.control_pool.clone(),
+	};
+	let auth_b = Authorization {
+		pool: b.f.store.control_pool.clone(),
+	};
+	let credential_a = auth_a
+		.credentials("acme")
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|c| c.subject == "alice")
+		.unwrap();
+	let credential_b = auth_b
+		.credentials("acme")
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|c| c.subject == "alice")
+		.unwrap();
+	write(
+		&b.f,
+		"acme",
+		PeerMappingInput {
+			source_node: a.f.config.node_id.clone(),
+			source_tenant: "acme".into(),
+			source_subject: "alice".into(),
+			credential_id: credential_b.id,
+			enabled: true,
+			expected_revision: 0,
+		},
+	)
+	.await
+	.unwrap();
+	for (index, workspace) in [wa, wb].into_iter().enumerate() {
+		manifest.participants[index].mutations =
+			vec![aidash::transactions::Mutation::WorkspaceState {
+				workspace_id: workspace,
+				expected_revision: 0,
+				state: json!({"accepted":true}),
+			}];
+	}
+	let mut third = None;
+	if count == 3 {
+		let c = Node::new(&environment, "c").await;
+		for (local, remote) in [(&a, &c), (&c, &a)] {
+			local
+				.f
+				.register_peer(Peer {
+					node_id: remote.f.config.node_id.clone(),
+					endpoint: remote.f.config.endpoint.clone(),
+					credential_env: "AIDASH_SECRET_TRANSACTION_02".into(),
+					protocol_version: "0.1".into(),
+					enabled: true,
+				})
+				.await
+				.unwrap();
+			assert_eq!(
+				local
+					.request(
+						reqwest::Method::POST,
+						"/api/transactions/trust",
+						Some(json!({"node_id":remote.f.config.node_id,"enabled":true}))
+					)
+					.await
+					.0,
+				200
+			);
+		}
+		let app_c = api::router(c.f.clone());
+		let (_, _, task) = common::bootstrap(&c.f, &app_c, "http://127.0.0.1:9").await;
+		let workspace = c.f.store.task(task).await.unwrap().workspace_id;
+		let auth = Authorization {
+			pool: c.f.store.control_pool.clone(),
+		};
+		let credential = auth
+			.credentials("acme")
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|r| r.subject == "alice")
+			.unwrap();
+		write(
+			&c.f,
+			"acme",
+			PeerMappingInput {
+				source_node: a.f.config.node_id.clone(),
+				source_tenant: "acme".into(),
+				source_subject: "alice".into(),
+				credential_id: credential.id,
+				enabled: true,
+				expected_revision: 0,
+			},
+		)
+		.await
+		.unwrap();
+		manifest
+			.participants
+			.push(aidash::transactions::Participant {
+				node_id: c.f.config.node_id.clone(),
+				mutations: vec![aidash::transactions::Mutation::WorkspaceState {
+					workspace_id: workspace,
+					expected_revision: 0,
+					state: json!({"accepted":true}),
+				}],
+			});
+		third = Some((c, workspace));
+	}
+	if revocation == "disclosure" {
+		let snapshot = auth_b.snapshot("acme").await.unwrap();
+		let mut policy = json!(snapshot.bundle);
+		policy["policies"].as_array_mut().unwrap().push(json!({"id":"no-disclosure","effect":"deny","subjects":{"any":true},"actions":["transaction.disclose"],"resources":{"kinds":["*"]}}));
+		auth_b
+			.replace(
+				"acme",
+				snapshot.revision,
+				serde_json::from_value(policy).unwrap(),
+				"operator",
+			)
+			.await
+			.unwrap();
+	}
+	let (status, body) = common::request(
+		&app_a,
+		&token_a,
+		"POST",
+		"/api/transactions",
+		json!(manifest),
+	)
+	.await;
+	if revocation == "disclosure" {
+		assert_eq!(status, 403, "{body}");
+		assert!(matches!(
+			coordinator::status(&a.f, manifest.id).await,
+			Err(Error::NotFound(_))
+		));
+		for node in [&a, &b] {
+			use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+			let count: i64 = sqlx::query_scalar(
+				&Query::select()
+					.expr(Expr::col(sea_orm::sea_query::Asterisk).count())
+					.from(Alias::new("atomic_participants"))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_one(&node.f.store.control_pool)
+			.await
+			.unwrap();
+			assert_eq!(
+				count, 0,
+				"no full manifest is admitted before all disclosure preflights pass"
+			);
+		}
+		if let Some((c, _)) = third {
+			c.cleanup().await;
+		}
+		a.cleanup().await;
+		b.cleanup().await;
+		return;
+	}
+	assert_eq!(status, 202, "{body}");
+	steps(
+		&a,
+		manifest.id,
+		if transitions == usize::MAX {
+			count
+		} else {
+			transitions
+		},
+	)
+	.await;
+	let mut reconciliation_check = None;
+	match revocation {
+		"lost_reply" => {
+			use axum::{middleware, response::IntoResponse};
+			b.stop().await;
+			let admitted = Arc::new(tokio::sync::Notify::new());
+			let release = Arc::new(tokio::sync::Notify::new());
+			let reached = admitted.clone();
+			let unblock = release.clone();
+			let app = api::router(b.f.clone()).layer(middleware::from_fn(
+				move |request: axum::extract::Request, next: middleware::Next| {
+					let reached = reached.clone();
+					let unblock = unblock.clone();
+					async move {
+						let reservation =
+							request.uri().path() == "/federation/v0.1/transactions/reserve";
+						let response = next.run(request).await;
+						if reservation && response.status().is_success() {
+							reached.notify_one();
+							unblock.notified().await;
+							return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+						}
+						response
+					}
+				},
+			));
+			let listener = tokio::net::TcpListener::bind(b.f.config.listen)
+				.await
+				.unwrap();
+			b.server = Some(tokio::spawn(async move {
+				axum::serve(listener, app).await.unwrap()
+			}));
+			a.f.client = reqwest::Client::new();
+			let f = a.f.clone();
+			let id = manifest.id;
+			let pending = tokio::spawn(async move { coordinator::advance(&f, id).await.unwrap() });
+			tokio::time::timeout(std::time::Duration::from_secs(10), admitted.notified())
+				.await
+				.unwrap();
+			let path = format!(
+				"/api/authorization/acme/credentials/{}/revoke",
+				credential_a.id
+			);
+			let (status, body) =
+				common::request(&app_a, &a.f.config.api_token, "POST", &path, Value::Null).await;
+			assert_eq!(
+				status, 202,
+				"an unknown durable admission cannot acknowledge complete revocation: {body}"
+			);
+			assert_eq!(body["pending_transactions"], json!([manifest.id]));
+			assert_eq!(
+				common::request(&app_a, &token_a, "GET", "/api/transactions", Value::Null)
+					.await
+					.0,
+				401
+			);
+			release.notify_one();
+			let unknown = pending.await.unwrap();
+			assert!(
+				unknown.decision.is_none(),
+				"an unmarked 503 is not proof of a rejected admission"
+			);
+			reconciliation_check = Some(path);
+		}
+		"source" => {
+			auth_a
+				.revoke_credential("acme", credential_a.id)
+				.await
+				.unwrap();
+		}
+		"receiver" => {
+			auth_b
+				.revoke_credential("acme", credential_b.id)
+				.await
+				.unwrap();
+		}
+		"mapping" => {
+			write(
+				&b.f,
+				"acme",
+				PeerMappingInput {
+					source_node: a.f.config.node_id.clone(),
+					source_tenant: "acme".into(),
+					source_subject: "alice".into(),
+					credential_id: credential_b.id,
+					enabled: false,
+					expected_revision: 1,
+				},
+			)
+			.await
+			.unwrap();
+		}
+		"trust" => {
+			let (status, body) = b
+				.request(
+					reqwest::Method::POST,
+					"/api/transactions/trust",
+					Some(json!({"node_id":a.f.config.node_id,"enabled":false})),
+				)
+				.await;
+			assert_eq!(status, 200, "{body}");
+		}
+		_ => unreachable!(),
+	}
+	let result = complete(&a, manifest.id).await;
+	assert_eq!(result.decision.as_deref(), Some(expected), "{result:?}");
+	if let Some(path) = reconciliation_check {
+		let (status, body) =
+			common::request(&app_a, &a.f.config.api_token, "POST", &path, Value::Null).await;
+		assert_eq!(status, 200, "{body}");
+		assert_eq!(body["pending_transactions"], json!([]));
+	}
+	for (node, workspace) in [(&a, wa), (&b, wb)] {
+		assert_eq!(
+			node.f.store.workspace(workspace).await.unwrap().revision,
+			i64::from(expected == "COMMIT")
+		);
+		assert_eq!(
+			node.get(&format!("/api/workspaces/{workspace}")).await.0,
+			200
+		);
+	}
+	if let Some((c, workspace)) = third {
+		assert_eq!(
+			c.f.store.workspace(workspace).await.unwrap().revision,
+			i64::from(expected == "COMMIT")
+		);
+		assert_eq!(c.get(&format!("/api/workspaces/{workspace}")).await.0, 200);
+		c.cleanup().await;
+	}
+	a.cleanup().await;
+	b.cleanup().await;
+}
+
+#[path = "transaction_protocol/process.rs"]
+mod process;
+
+#[path = "transaction_protocol/tiers.rs"]
+mod tiers;
+
+#[rstest::rstest]
+#[tokio::test]
+async fn restoring_the_same_peer_during_a_barrier_does_not_restore_transaction_trust(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+	let (a, b, manifest, wa, wb) = pair(&environment).await;
+	coordinator::submit(&a.f, &manifest).await.unwrap();
+	steps(&a, manifest.id, 5).await;
+	assert_eq!(
+		coordinator::status(&a.f, manifest.id)
+			.await
+			.unwrap()
+			.decision
+			.as_deref(),
+		Some("COMMIT")
+	);
+	// Simulate loss of the existing communication credential after admission.
+	// The operator recovery route must restore that exact Node, not grant trust.
+	let mut tx = a.f.store.control_pool.begin().await.unwrap();
+	sqlx::query(
+		&Query::select()
+			.expr(Expr::cust(
+				"set_config('aidash.transaction_control','authority',true)",
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("peers"))
+			.value(Alias::new("enabled"), false)
+			.and_where(Expr::cust("node_id=$1"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(&b.f.config.node_id)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	assert_eq!(
+		a.request(
+			reqwest::Method::POST,
+			"/api/transactions/trust",
+			Some(json!({"node_id":b.f.config.node_id,"enabled":false}))
+		)
+		.await
+		.0,
+		200
+	);
+	assert_eq!(
+		b.request(
+			reqwest::Method::POST,
+			"/api/transactions/trust",
+			Some(json!({"node_id":a.f.config.node_id,"enabled":false}))
+		)
+		.await
+		.0,
+		200
+	);
+	steps(&a, manifest.id, 2).await;
+	assert!(
+		!coordinator::status(&a.f, manifest.id)
+			.await
+			.unwrap()
+			.complete
+	);
+	assert_eq!(a.get(&format!("/api/workspaces/{wa}")).await.0, 503);
+	let (status, peer) = a
+		.request(
+			reqwest::Method::POST,
+			"/api/transactions/peer-recovery",
+			Some(json!({"node_id":b.f.config.node_id,"credential_env":"AIDASH_SECRET_TEST_PEER"})),
+		)
+		.await;
+	assert_eq!(status, 200, "{peer}");
+	assert_eq!(peer["endpoint"], b.f.config.endpoint);
+	assert_eq!(
+		a.get("/api/transactions/trust").await.1[0]["enabled"],
+		false
+	);
+	assert_eq!(
+		complete(&a, manifest.id).await.decision.as_deref(),
+		Some("COMMIT")
+	);
+	for (node, workspace) in [(&a, wa), (&b, wb)] {
+		assert_eq!(node.f.store.workspace(workspace).await.unwrap().revision, 1);
+	}
+	let mut next = manifest.clone();
+	next.id = Uuid::new_v4();
+	for p in &mut next.participants {
+		for mutation in &mut p.mutations {
+			if let aidash::transactions::Mutation::WorkspaceState {
+				expected_revision, ..
+			} = mutation
+			{
+				*expected_revision = 1;
+			}
+		}
+	}
+	assert!(matches!(
+		coordinator::submit(&a.f, &next).await,
+		Err(Error::Forbidden)
+	));
 	a.cleanup().await;
 	b.cleanup().await;
 }

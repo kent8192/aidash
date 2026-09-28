@@ -9,7 +9,7 @@ use axum::{
 	Json,
 	extract::{Path, Query, State},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
@@ -18,18 +18,25 @@ use uuid::Uuid;
 /// Evaluation bodies are simulations of authority, never execution credentials.
 pub fn routes() -> OpenApiRouter<Federation> {
 	OpenApiRouter::new()
-		.merge(super::peer::routes())
-		.routes(routes!(snapshot))
-		.routes(routes!(replace))
-		.routes(routes!(evaluate))
-		.routes(routes!(simulate))
 		.routes(routes!(revisions))
 		.routes(routes!(decisions))
-		.routes(routes!(credentials))
 		.routes(routes!(issue_credential))
-		.routes(routes!(revoke_credential))
 		.routes(routes!(catalog))
 		.routes(routes!(set_catalog))
+}
+
+/// Authority metadata remains available during transaction recovery.
+pub fn control_routes() -> OpenApiRouter<Federation> {
+	OpenApiRouter::new()
+		.merge(super::peer::routes())
+		.routes(routes!(evaluate))
+		.routes(routes!(simulate))
+		.routes(routes!(snapshot))
+		.routes(routes!(transaction_revocations))
+		.routes(routes!(replace))
+		.routes(routes!(credentials))
+		.routes(routes!(revoke_credential))
+		.route_layer(axum::middleware::from_fn(crate::api::operator_only))
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -104,12 +111,33 @@ async fn credentials(
 		service(f).credentials_page(&tenant, page.offset).await?,
 	))
 }
-#[utoipa::path(post, path = "/authorization/{tenant}/credentials/{id}/revoke", operation_id = "authorization_revoke_credential", params(("tenant" = String, Path), ("id" = Uuid, Path)), responses((status = 200, body = Credential)), security(("bearer_auth" = [])))]
+#[derive(Serialize, utoipa::ToSchema)]
+struct CredentialRevocation {
+	#[serde(flatten)]
+	credential: Credential,
+	/// Admissions racing this revocation whose durable result is still unknown.
+	pending_transactions: Vec<Uuid>,
+}
+#[utoipa::path(post, path = "/authorization/{tenant}/credentials/{id}/revoke", operation_id = "authorization_revoke_credential", params(("tenant" = String, Path), ("id" = Uuid, Path)), responses((status = 200, body = CredentialRevocation),(status=202,body=CredentialRevocation)), security(("bearer_auth" = [])))]
 async fn revoke_credential(
 	State(f): State<Federation>,
 	Path((tenant, id)): Path<(String, Uuid)>,
-) -> Result<Json<Credential>> {
-	Ok(Json(service(f).revoke_credential(&tenant, id).await?))
+) -> Result<(axum::http::StatusCode, Json<CredentialRevocation>)> {
+	let credential = service(f.clone()).revoke_credential(&tenant, id).await?;
+	let pending_transactions =
+		crate::transactions::authority::pending(&f, &tenant, Some(id)).await?;
+	let status = if pending_transactions.is_empty() {
+		axum::http::StatusCode::OK
+	} else {
+		axum::http::StatusCode::ACCEPTED
+	};
+	Ok((
+		status,
+		Json(CredentialRevocation {
+			credential,
+			pending_transactions,
+		}),
+	))
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -132,7 +160,9 @@ fn page_size() -> i64 {
 	100
 }
 fn service(f: Federation) -> Authorization {
-	Authorization { pool: f.store.pool }
+	Authorization {
+		pool: f.store.control_pool,
+	}
 }
 
 #[utoipa::path(get, path = "/authorization/{tenant}", operation_id = "authorization_snapshot", params(("tenant" = String, Path)), responses((status = 200, body = Snapshot)), security(("bearer_auth" = [])))]
@@ -142,16 +172,42 @@ async fn snapshot(
 ) -> Result<Json<Snapshot>> {
 	Ok(Json(service(f).snapshot(&tenant).await?))
 }
-#[utoipa::path(post, path = "/authorization/{tenant}", operation_id = "authorization_replace", params(("tenant" = String, Path)), request_body = AuthorizationUpdate, responses((status = 200, body = Snapshot)), security(("bearer_auth" = [])))]
+#[derive(Serialize, utoipa::ToSchema)]
+struct PolicyReplacement {
+	#[serde(flatten)]
+	snapshot: Snapshot,
+	pending_transactions: Vec<Uuid>,
+}
+#[utoipa::path(post, path = "/authorization/{tenant}", operation_id = "authorization_replace", params(("tenant" = String, Path)), request_body = AuthorizationUpdate, responses((status = 200, body = PolicyReplacement),(status=202,body=PolicyReplacement)), security(("bearer_auth" = [])))]
 async fn replace(
 	State(f): State<Federation>,
 	Path(tenant): Path<String>,
 	Json(input): Json<AuthorizationUpdate>,
-) -> Result<Json<Snapshot>> {
+) -> Result<(axum::http::StatusCode, Json<PolicyReplacement>)> {
+	let snapshot = service(f.clone())
+		.replace(&tenant, input.expected_revision, input.bundle, "operator")
+		.await?;
+	let pending_transactions = crate::transactions::authority::pending(&f, &tenant, None).await?;
+	let status = if pending_transactions.is_empty() {
+		axum::http::StatusCode::OK
+	} else {
+		axum::http::StatusCode::ACCEPTED
+	};
+	Ok((
+		status,
+		Json(PolicyReplacement {
+			snapshot,
+			pending_transactions,
+		}),
+	))
+}
+#[utoipa::path(get,path="/authorization/{tenant}/transaction-revocations",operation_id="transaction_revocations",params(("tenant"=String,Path)),responses((status=200,body=[Uuid])),security(("bearer_auth"=[])))]
+async fn transaction_revocations(
+	State(f): State<Federation>,
+	Path(tenant): Path<String>,
+) -> Result<Json<Vec<Uuid>>> {
 	Ok(Json(
-		service(f)
-			.replace(&tenant, input.expected_revision, input.bundle, "operator")
-			.await?,
+		crate::transactions::authority::pending(&f, &tenant, None).await?,
 	))
 }
 #[utoipa::path(post, path = "/authorization/{tenant}/evaluate", operation_id = "authorization_evaluate", params(("tenant" = String, Path)), request_body = Evaluation, responses((status = 200, body = Decision)), security(("bearer_auth" = [])))]

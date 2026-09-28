@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-distribution="${1:?Usage: scripts/test-cluster.sh kubernetes|k3s}"
+distribution="${1:?Usage: scripts/test-cluster.sh kubernetes|k3s [platform|transactions]}"
 case "$distribution" in kubernetes|k3s) ;; *) exit 2 ;; esac
+profile="${2:-platform}"
+case "$profile" in platform|transactions) ;; *) exit 2 ;; esac
 tools_dir="$PWD/.ignore/platform/cluster-tools"
 mkdir -p "$tools_dir"
 export PATH="$tools_dir:$PATH"
@@ -60,15 +62,26 @@ PY
   k3d kubeconfig get "$cluster" > "$KUBECONFIG"
 fi
 helm lint deploy/helm/aidash --set node.id=aidash://acceptance --set existingSecret=acceptance
-docker build --build-arg CARGO_PROFILE=dev -t aidash:cluster-acceptance .
-docker build --build-arg CARGO_PROFILE=dev --target frontend -t aidash-frontend:cluster-acceptance .
+images=(aidash:cluster-acceptance)
+if [[ "$profile" == transactions ]]; then
+  docker build --build-arg CARGO_PROFILE=dev --target dev-backend -t aidash:cluster-acceptance .
+else
+  docker build --build-arg CARGO_PROFILE=dev -t aidash:cluster-acceptance .
+  docker build --build-arg CARGO_PROFILE=dev --target frontend -t aidash-frontend:cluster-acceptance .
+  images+=(aidash-frontend:cluster-acceptance)
+fi
 postgres_image=aidash-postgres:17-pg-jsonschema-0.3.4
 docker build -f deploy/postgres/Dockerfile -t "$postgres_image" .
 if [[ "$distribution" == kubernetes ]]; then
-  kind load docker-image aidash:cluster-acceptance aidash-frontend:cluster-acceptance --name "$cluster"
+  kind load docker-image "${images[@]}" --name "$cluster"
   kind load docker-image "$postgres_image" --name "$cluster"
 else
-  k3d image import aidash:cluster-acceptance aidash-frontend:cluster-acceptance --cluster "$cluster"
+  k3d image import "${images[@]}" --cluster "$cluster"
   k3d image import "$postgres_image" --cluster "$cluster"
 fi
-python3 scripts/cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --frontend-image aidash-frontend:cluster-acceptance --postgres-image "$postgres_image" --dashboard
+if [[ "$profile" == transactions ]]; then
+  RUSTC_WRAPPER= cargo run --locked --quiet --example acceptance_queries > "$tools_dir/transaction-queries.json"
+  python3 scripts/transaction_cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --postgres-image "$postgres_image" --queries "$tools_dir/transaction-queries.json"
+else
+  python3 scripts/cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --frontend-image aidash-frontend:cluster-acceptance --postgres-image "$postgres_image" --dashboard
+fi
