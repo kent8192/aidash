@@ -188,6 +188,10 @@ Trunk owns formatting and linting: rustfmt, Clippy, Prettier, ESLint, Ruff and T
 
 `check.sh` runs Rust unit and PostgreSQL integration tests, builds the dashboard, and executes the two-node acceptance scenario starting from a real Chromium dashboard. It also verifies remote human controls, all four tool transports, and the browser scenarios. The scenario starts real Aidash processes, PostgreSQL and NATS with a deterministic OpenRouter-compatible protocol fixture. The same checks and Trunk lint run in GitHub Actions. Both nodes and workers start with NATS unavailable; the scenario verifies queued events drain after the broker connection is restored. It kills Node B's worker after an external effect but before its result is persisted, restarts the worker, and checks the same run completes with no duplicate effect. Reports are written to `.ignore/acceptance/report.json`.
 
+Golden Path also requires subject-scoped remote execution on these real Node processes. Separate source and receiver tenants, credentials, catalog approvals and peer mappings authorize the work. It kills the receiver Worker after a Home message or task completion commits but before its response is delivered, checks recovery of the same admission and Run without duplicate effects, and repeats recovery with a peer outage and with a grant revoked while the Worker is stopped. Cross-tenant/workspace access, disabled Agents, unauthorized dependencies and legacy admission are rejected. The `scoped_remote_execution` report records each scenario, the Worker process IDs and persistent execution IDs without credentials. A successful legacy scenario alone cannot pass this gate.
+
+Use `scripts/test-acceptance.sh` to build the current checkout's binary and frontend before running the full gate. The report includes the Git revision, dirty status, source fingerprint and binary digest; changing the source or binary while the gate runs fails verification. The browser authentication fixture exercises real Bearer-authenticated APIs; it does not establish an OIDC provider login flow.
+
 For browser tests, keep that completed fixture environment running in one terminal:
 
 ```sh
