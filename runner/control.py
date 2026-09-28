@@ -592,8 +592,19 @@ class Runner:
                 self.active.discard(operation)
 
     def recover_stopped_shell(self, record):
-        if self.guard(record, 'status').get('termination_confirmed') is not True:
-            raise RuntimeError('physical termination proof unavailable')
+        # Collector RPCs can fail before the Sentry's death becomes observable.
+        # Wait for exact-bound physical stop evidence; never replay the command
+        # or export files while a writer may still be alive.
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                if self.guard(record, 'status').get('termination_confirmed') is not True:
+                    raise RuntimeError('physical termination proof unavailable')
+                break
+            except Exception:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(.25)
         exported = self.guard(record, 'export', working_bytes=self.writable_bytes(record))
         captured = self.guard(record, 'logs')
         operation = record['operation_id']
@@ -731,7 +742,8 @@ class Runner:
                 if not record.get('executed'):
                     raise RuntimeError('not dispatched')
                 self.recover_stopped_shell(record)
-            except Exception:
+            except Exception as recovery_error:
+                print(f"Shell recovery {operation}: {recovery_error}", file=sys.stderr, flush=True)
                 self.update(operation, status="uncertain", error=str(error)[-2000:])
         finally:
             with self.lock:

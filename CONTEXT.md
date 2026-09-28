@@ -1,6 +1,6 @@
 # Aidash
 
-Aidash coordinates Agents and their durable work. This glossary records the shared language for execution, capabilities, transactions, Agent collaboration, event subscriptions and Web research; it is not an implementation specification.
+Aidash coordinates Agents and their durable work. This glossary records the shared language for execution, capabilities, transactions, Agent collaboration, event subscriptions, federation, evidence gathering and Web research; it is not an implementation specification.
 
 ## Language
 
@@ -153,3 +153,41 @@ _Avoid_: Transaction abort, completed revocation while admission is uncertain
 **Manifest disclosure authority**:
 Explicit permission to disclose a transaction manifest's contents to its named recipient Nodes. It is distinct from permission to mutate a resource or trust a peer to participate.
 _Avoid_: Transaction trust, blanket peer access
+
+### Federation
+
+**Node**:
+An independently operated Aidash participant with its own identity, resources and authority.
+_Avoid_: Worker, Agent
+
+**Home node**:
+The Node that owns a Workspace and its Tasks and published Artifacts, including when another Node performs the work.
+_Avoid_: Execution node, central server
+
+**Execution node**:
+The Node responsible for carrying out a Run. In remote execution it is the receiving Node, distinct from the Home node.
+_Avoid_: Home node, Workspace owner
+
+**Subject chain**:
+The originating subject and the Agents on whose behalf work is delegated. Delegation is constrained by every member's authority.
+_Avoid_: Peer identity, Agent version
+
+**Remote grant**:
+The Home node's recorded, time-bounded authorization for a specified remote Task, subject chain and executor. It is distinct from the receiving Node's consent to perform the work.
+_Avoid_: Bearer token, Receiver admission
+
+**Receiver admission**:
+The Execution node's recorded acceptance of a Remote grant for a particular local identity and exact Agent version. Acceptance is distinct from starting the Run.
+_Avoid_: Remote grant, Activation
+
+**Activation**:
+The transition from an accepted remote assignment to a runnable execution.
+_Avoid_: Receiver admission, Task completion
+
+**Home command**:
+A remote Run's request to read or change Home-node resources within its authorized scope.
+_Avoid_: Unrestricted Workspace access, local working-area operation
+
+**Pinned definition**:
+The exact version and contents of an Agent or execution dependency to which an authorization applies.
+_Avoid_: Latest version, compatible replacement

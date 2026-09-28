@@ -24,6 +24,12 @@ fn main() {
 		.expr(Expr::col(Asterisk).count())
 		.from(Alias::new("inbox"))
 		.to_string(PostgresQueryBuilder);
+	let count = |table: &str| {
+		Query::select()
+			.expr(Expr::col(Asterisk).count())
+			.from(Alias::new(table))
+			.to_string(PostgresQueryBuilder)
+	};
 	println!(
 		"{}",
 		serde_json::json!({"pending_events":pending,"inbox":inbox,
@@ -35,6 +41,7 @@ fn main() {
 			"tx_barrier":evidence("atomic_gate",&["transaction_id","commit_epoch"],"singleton"),
 			"tx_workspace":evidence("workspaces",&["id","revision"],"id=:'workspace'::uuid"),
 			"tx_events":evidence("events",&["id","kind"],"workspace_id=:'workspace'::uuid AND kind='workspace.updated'"),
-		})
+			"remote_admissions":count("authorization_remote_admissions"),
+			"remote_bindings":count("authorization_remote_execution")})
 	);
 }
