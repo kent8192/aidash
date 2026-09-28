@@ -91,6 +91,7 @@ import "./collaboration/style.css";
 import "./collaboration/workspace.css";
 import "./collaboration/mesh.css";
 import "./workbench.css";
+import "./trust-overview.css";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 1000 } },
