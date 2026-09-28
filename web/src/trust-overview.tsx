@@ -9,6 +9,7 @@ import {
   History,
   Layers,
   Link2,
+  Settings2,
   ShieldCheck,
   Users,
   Wrench,
@@ -55,6 +56,10 @@ export function TrustOverview({
   const tests = inspection?.test_evidence ?? [];
   const title = (ref: { id: string; version: string }) =>
     `${ref.id} @ ${ref.version}`;
+  const dependencies = [
+    ...agent.config.tools.map((reference) => ({ kind: "tool", reference })),
+    ...agent.config.skills.map((reference) => ({ kind: "skill", reference })),
+  ];
   const badge = (value: ReactNode, tone = "neutral") => (
     <span className={`trust-badge ${tone}`}>{value}</span>
   );
@@ -316,21 +321,71 @@ export function TrustOverview({
             link("policies"),
           )}
           {card(
-            text("Configured tools", "設定済みツール"),
+            text("Autonomy settings", "自律動作の設定"),
+            <Settings2 size={21} />,
+            <>
+              <dl className="trust-facts">
+                {(
+                  [
+                    [
+                      text("Automatic task creation", "タスクの自動作成"),
+                      agent.config.allow_task_creation,
+                    ],
+                    [
+                      text("Automatic delegation", "自動委任"),
+                      agent.config.allow_task_delegation,
+                    ],
+                  ] as const
+                ).map(([name, enabled]) => (
+                  <div key={name}>
+                    <dt>{name}</dt>
+                    <dd>
+                      {badge(
+                        enabled === undefined
+                          ? text("Default", "既定")
+                          : enabled
+                            ? text("Enabled", "有効")
+                            : text("Disabled", "無効"),
+                      )}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+              <p className="trust-caption">
+                {text(
+                  "Registered configuration; execution remains subject to policy.",
+                  "登録済みの設定です。実行にはポリシーによる許可が必要です。",
+                )}
+              </p>
+            </>,
+          )}
+          {card(
+            text("Configured tools and skills", "設定済みツール・スキル"),
             <Wrench size={21} />,
             <>
-              {agent.config.tools.length ? (
+              {dependencies.length ? (
                 <ul className="trust-list">
-                  {agent.config.tools.map((tool) => {
+                  {dependencies.map(({ kind, reference }) => {
                     const decision = rows.find(
                       (row) =>
-                        row.kind === "tool" &&
-                        row.reference.id === tool.id &&
-                        row.reference.version === tool.version,
+                        row.kind === kind &&
+                        row.reference.id === reference.id &&
+                        row.reference.version === reference.version,
                     );
                     return (
-                      <li className="trust-row" key={title(tool)}>
-                        <span>{title(tool)}</span>
+                      <li
+                        className="trust-row"
+                        key={`${kind}:${title(reference)}`}
+                      >
+                        <span>
+                          <small>
+                            {kind === "tool"
+                              ? text("Tool", "ツール")
+                              : text("Skill", "スキル")}
+                          </small>
+                          <br />
+                          {title(reference)}
+                        </span>
                         {badge(
                           decision
                             ? decision.effective_for_component
@@ -350,8 +405,8 @@ export function TrustOverview({
               ) : (
                 <p>
                   {text(
-                    "No tools configured for this version.",
-                    "このバージョンにツールは設定されていません。",
+                    "No tools or skills configured for this version.",
+                    "このバージョンにツール・スキルは設定されていません。",
                   )}
                 </p>
               )}

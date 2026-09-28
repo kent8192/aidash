@@ -1,5 +1,10 @@
 # Kubernetes and k3s
 
+The [v0.1.0 nonfunctional release requirements](operations/nonfunctional-release.md)
+define the proposed deployment, performance, recovery and alert acceptance
+boundaries. This orchestration scenario verifies a functional fixture; its
+replica defaults and four-task run are not approved scale or availability targets.
+
 The Helm chart deploys one stable Aidash node as separate server and worker
 Deployments. Install the same chart twice for two independent nodes. Each node
 needs its own PostgreSQL database and node ID; every replica of that node uses
@@ -157,7 +162,7 @@ python3 scripts/cluster_acceptance.py --kubeconfig /path/to/k3s.kubeconfig \
 ```
 
 The runner requires an explicit kubeconfig and creates a unique namespace. It
-executes the two-node research golden path using local OpenAI/Anthropic protocol
+executes the two-node research golden path using local OpenRouter-compatible protocol
 fixtures, kills a worker after an effect, scales server/worker replicas, rolls
 every Deployment, stops and resumes workers, and checks stable identities,
 original task/run/artifact IDs and three unique external effects. It checks the

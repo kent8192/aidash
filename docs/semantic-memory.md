@@ -1,5 +1,9 @@
 # Semantic memory
 
+The [nonfunctional release requirements](operations/nonfunctional-release.md)
+cover PostgreSQL/Qdrant backup consistency, restore drills, retention and alerts.
+The recovery behavior below is not a tested RPO or RTO.
+
 Aidash keeps authoritative sources, revisions, scope, indexing jobs, read dependencies,
 and cleanup records in PostgreSQL. Qdrant stores vectors and identifiers. Retrieved text
 always comes from the current authorized source, never from a vector payload.

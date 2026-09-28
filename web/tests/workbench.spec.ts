@@ -32,8 +32,9 @@ async function editableDrafts(
   page: Page,
   secondRevision = 7,
   paginated = false,
+  subject = false,
 ) {
-  await setup(page, { locale: "en-US" });
+  await setup(page, { locale: "en-US", subject });
   const state = { failRefresh: false };
   const saves: Record<string, unknown>[] = [];
   const cursors: (string | null)[] = [];
@@ -110,6 +111,7 @@ async function editableDrafts(
   await expect(page.getByLabel("Additional instructions")).toHaveValue(
     "First draft",
   );
+  await page.getByText("Select & manage drafts", { exact: true }).click();
   return { state, saves, cursors, drafts };
 }
 
@@ -567,6 +569,7 @@ for (const status of [
       .locator(".wb-tabs")
       .getByRole("button", { name: "Test", exact: true })
       .click();
+    await page.getByLabel("Tool mode").selectOption("simulated");
     const input = page.getByPlaceholder("Test message…");
     const send = page
       .locator(".wb-test-compose")
@@ -912,4 +915,419 @@ for (const width of [1280, 390]) {
     expect(dimensions.content).toBeLessThanOrEqual(dimensions.viewport);
     expect(errors).toEqual([]);
   });
+}
+
+test("Creator preserves unsaved edits across all five tabs and invalidates validation", async ({
+  page,
+}) => {
+  const { drafts, saves } = await editableDrafts(page);
+  const registered: Record<string, unknown>[] = [];
+  await page.route(
+    `**/api/workbench/drafts/${drafts[0].id}/validate`,
+    async (route) => {
+      const { expected_revision } = route.request().postDataJSON();
+      await route.fulfill({
+        json: {
+          draft_id: drafts[0].id,
+          revision: expected_revision,
+          valid: true,
+          message: "Draft structure validated",
+        },
+      });
+    },
+  );
+  await page.route(
+    `**/api/workbench/drafts/${drafts[0].id}/register`,
+    async (route) => {
+      registered.push(route.request().postDataJSON());
+      await route.fulfill({
+        json: {
+          draft_id: drafts[0].id,
+          revision: drafts[0].revision,
+          entry: drafts[0].entry,
+          behavioral_tested: false,
+        },
+      });
+    },
+  );
+  const tabs = page.locator(".wb-tabs");
+  await page
+    .getByLabel("Additional instructions")
+    .fill("Keep these instructions while reviewing the draft");
+  await page
+    .locator(".wb-actions")
+    .getByRole("button", { name: "Review registration", exact: true })
+    .click();
+  await expect(page.locator(".wb-register-layout")).toBeVisible();
+  expect(saves).toEqual([]);
+  expect(registered).toEqual([]);
+  for (const name of [
+    "Build",
+    "Test",
+    "Versions",
+    "Register in Registry",
+    "Overview",
+  ]) {
+    await tabs.getByRole("button", { name, exact: true }).click();
+    await expect(
+      tabs.getByRole("button", { name, exact: true }),
+    ).toHaveAttribute("aria-current", "page");
+    if (name === "Test") {
+      await expect(page.getByLabel("Tool mode")).toHaveValue("real");
+      await expect(page.locator(".wb-test-compose button")).toBeDisabled();
+    }
+    if (name === "Versions")
+      await expect(
+        page.getByText("Register your first version to view history"),
+      ).toBeVisible();
+    if (name === "Register in Registry")
+      await expect(
+        page.locator(".wb-register-layout .wb-primary"),
+      ).toBeEnabled();
+  }
+  await expect(page.getByLabel("Additional instructions")).toHaveValue(
+    "Keep these instructions while reviewing the draft",
+  );
+  await page
+    .locator(".wb-actions")
+    .getByRole("button", {
+      name: "Save draft + Technical validation",
+      exact: true,
+    })
+    .click();
+  await tabs
+    .getByRole("button", { name: "Register in Registry", exact: true })
+    .click();
+  await expect(page.locator(".wb-register-layout .wb-primary")).toBeEnabled();
+  await page
+    .getByLabel("Release notes", { exact: true })
+    .fill("Changed after validation");
+  await expect(page.locator(".wb-register-layout .wb-primary")).toBeEnabled();
+  await expect(page.locator(".wb-validation-status")).toContainText(
+    "This draft has not been validated.",
+  );
+  expect(registered).toEqual([]);
+  await page
+    .locator(".wb-actions")
+    .getByRole("button", {
+      name: "Save draft + Technical validation",
+      exact: true,
+    })
+    .click();
+  await page.locator(".wb-register-layout .wb-primary").click();
+  await expect.poll(() => registered.length).toBe(1);
+  expect(registered[0]).toEqual({ expected_revision: drafts[0].revision });
+});
+
+for (const width of [1280, 900, 640, 600, 541, 390]) {
+  test(`Creator tab layouts stay within the viewport at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 960 });
+    await editableDrafts(page);
+    await page.getByText("Select & manage drafts", { exact: true }).click();
+    for (const name of [
+      "Build",
+      "Test",
+      "Versions",
+      "Register in Registry",
+      "Overview",
+    ]) {
+      await page
+        .locator(".wb-tabs")
+        .getByRole("button", { name, exact: true })
+        .click();
+      const dimensions = await page.evaluate(() => ({
+        width: document.documentElement.scrollWidth,
+        viewport: window.innerWidth,
+      }));
+      expect(dimensions.width, name).toBeLessThanOrEqual(dimensions.viewport);
+      await expect(page.locator(".wb-layout")).toBeVisible();
+      if (width <= 640 && (name === "Overview" || name === "Build")) {
+        const sizes = await page
+          .locator(".wb-editor-grid")
+          .evaluate((element) => ({
+            width: element.getBoundingClientRect().width,
+            cards: [...element.querySelectorAll(":scope > .wb-span")].map(
+              (card) => card.getBoundingClientRect().width,
+            ),
+          }));
+        for (const card of sizes.cards)
+          expect(Math.abs(card - sizes.width)).toBeLessThan(2);
+      }
+      const colors = await page.locator(".wb-creator").evaluate((element) => ({
+        surface: getComputedStyle(element).backgroundColor,
+        card: getComputedStyle(element.querySelector(".wb-card")!)
+          .backgroundColor,
+        primary: getComputedStyle(element.querySelector(".wb-primary")!)
+          .backgroundColor,
+      }));
+      expect(colors.surface).toBe("rgb(245, 247, 243)");
+      expect(colors.card).toBe("rgb(255, 255, 255)");
+      expect(colors.primary).toBe("rgb(69, 107, 75)");
+    }
+  });
+}
+
+for (const attemptValidation of [false, true]) {
+  test(`Creator registers a read/register-only draft after advisory validation attempted=${attemptValidation}`, async ({
+    page,
+  }) => {
+    const { drafts } = await editableDrafts(page, 7, false, true);
+    const registrations: Record<string, unknown>[] = [];
+    let writes = 0;
+    let validations = 0;
+    await page.route(
+      `**/api/workbench/drafts/${drafts[0].id}`,
+      async (route) => {
+        if (route.request().method() === "PUT") writes++;
+        await route.fulfill({
+          status: 403,
+          json: { error: "agent_draft.write denied" },
+        });
+      },
+    );
+    await page.route(
+      `**/api/workbench/drafts/${drafts[0].id}/validate`,
+      async (route) => {
+        validations++;
+        await route.fulfill({
+          status: 403,
+          json: { error: "agent_draft.write denied" },
+        });
+      },
+    );
+    await page.route(
+      `**/api/workbench/drafts/${drafts[0].id}/register`,
+      async (route) => {
+        registrations.push(route.request().postDataJSON());
+        await route.fulfill({
+          json: {
+            draft_id: drafts[0].id,
+            revision: drafts[0].revision,
+            entry: drafts[0].entry,
+            behavioral_tested: false,
+          },
+        });
+      },
+    );
+    if (attemptValidation) {
+      await page
+        .locator(".wb-actions")
+        .getByRole("button", { name: "Technical validation", exact: true })
+        .click();
+      await expect(page.getByRole("alert")).toContainText(
+        "Your current permissions do not allow this operation.",
+      );
+    }
+    await page
+      .locator(".wb-actions")
+      .getByRole("button", { name: "Review registration", exact: true })
+      .click();
+    const register = page.locator(".wb-register-layout .wb-primary");
+    await expect(register).toBeEnabled();
+    await register.click();
+    await expect.poll(() => registrations.length).toBe(1);
+    expect(registrations[0]).toEqual({ expected_revision: drafts[0].revision });
+    expect(writes).toBe(0);
+    expect(validations).toBe(attemptValidation ? 1 : 0);
+  });
+}
+
+for (const [width, locale] of [
+  [1280, "en-US"],
+  [390, "ja-JP"],
+] as const) {
+  for (const configuration of ["mixed", "skills-only", "defaults"] as const) {
+    test(`Trust exposes registered dependencies and autonomy for ${configuration} at ${width} ${locale}`, async ({
+      page,
+    }, testInfo) => {
+      const ja = locale === "ja-JP";
+      const text = (en: string, jp: string) => (ja ? jp : en);
+      const configuredEntry = {
+        ...entry,
+        config: {
+          ...entry.config,
+          tools:
+            configuration === "mixed"
+              ? [{ id: "source-reader", version: "2.0.0" }]
+              : [],
+          skills:
+            configuration === "defaults"
+              ? []
+              : [
+                  { id: "registered-research-skill", version: "1.0.0" },
+                  { id: "registered-research-skill", version: "2.0.0" },
+                ],
+          allow_task_creation:
+            configuration === "defaults"
+              ? undefined
+              : configuration === "mixed",
+          allow_task_delegation:
+            configuration === "defaults"
+              ? undefined
+              : configuration === "skills-only",
+        },
+      };
+      const dependencies = [
+        ...configuredEntry.config.tools.map((reference) => ({
+          reference,
+          kind: "tool",
+          action: "tool.call",
+          effective_for_component: true,
+        })),
+        ...configuredEntry.config.skills.map((reference) => ({
+          reference,
+          kind: "skill",
+          action: "skill.use",
+          effective_for_component: reference.version === "2.0.0",
+        })),
+      ];
+      await page.setViewportSize({ width, height: 960 });
+      const { errors } = await setup(page, { locale });
+      let permissionRequests = 0;
+      await page.route("**/api/workbench/**", async (route) => {
+        const path = new URL(route.request().url()).pathname;
+        if (path === "/api/workbench/versions/managed-agent/1.0.0")
+          return route.fulfill({
+            json: {
+              entry: configuredEntry,
+              source_node: "aidash://home",
+              observed_at: "2026-09-25T00:00:00Z",
+              workspaces: [],
+              test_evidence: [],
+              usage_truncated: false,
+              external_assessment_available: false,
+            },
+          });
+        if (path.endsWith("/permissions")) {
+          permissionRequests++;
+          return route.fulfill({
+            json: {
+              tenant: "acme",
+              subject: "alice",
+              workspace_id: null,
+              policy_revision: 1,
+              observed_at: "2026-09-25T00:00:00Z",
+              requested_capabilities: configuredEntry.capabilities,
+              rows: dependencies.map((dependency) => ({
+                ...dependency,
+                catalog_enabled: true,
+                policy_allowed: dependency.effective_for_component,
+                registry_read_allowed: true,
+              })),
+              workspace_read: null,
+              note: "Execution permission context",
+            },
+          });
+        }
+        if (path === "/api/workbench/drafts" || path.endsWith("/incidents"))
+          return route.fulfill({ json: [] });
+        return route.fulfill({
+          status: 404,
+          json: { error: "fixture route unavailable" },
+        });
+      });
+      await page.goto("/trust?focus=managed-agent%401.0.0");
+      const overview = page.locator(".trust-overview");
+      const dependencyCard = overview.locator("section").filter({
+        has: page.getByRole("heading", {
+          name: text("Configured tools and skills", "設定済みツール・スキル"),
+          exact: true,
+        }),
+      });
+      const autonomyCard = overview.locator("section").filter({
+        has: page.getByRole("heading", {
+          name: text("Autonomy settings", "自律動作の設定"),
+          exact: true,
+        }),
+      });
+      await expect(dependencyCard).toBeVisible();
+      await expect(autonomyCard).toBeVisible();
+      const expectedAutonomy = [
+        configuredEntry.config.allow_task_creation,
+        configuredEntry.config.allow_task_delegation,
+      ].map((enabled) =>
+        enabled === undefined
+          ? text("Default", "既定")
+          : enabled
+            ? text("Enabled", "有効")
+            : text("Disabled", "無効"),
+      );
+      await expect(autonomyCard.locator("dt")).toHaveText([
+        text("Automatic task creation", "タスクの自動作成"),
+        text("Automatic delegation", "自動委任"),
+      ]);
+      await expect(autonomyCard.locator("dd")).toHaveText(expectedAutonomy);
+      await expect(autonomyCard).toContainText(
+        text(
+          "Registered configuration; execution remains subject to policy.",
+          "登録済みの設定です。実行にはポリシーによる許可が必要です。",
+        ),
+      );
+      await expect(dependencyCard.locator("li")).toHaveCount(
+        dependencies.length,
+      );
+      for (const [index, dependency] of dependencies.entries()) {
+        const row = dependencyCard.locator("li").nth(index);
+        await expect(row).toContainText(
+          `${dependency.reference.id} @ ${dependency.reference.version}`,
+        );
+        await expect(row.locator("small")).toHaveText(
+          dependency.kind === "tool"
+            ? text("Tool", "ツール")
+            : text("Skill", "スキル"),
+        );
+        await expect(row.locator(".trust-badge")).toHaveText(
+          text("Not checked", "未確認"),
+        );
+      }
+      if (!dependencies.length)
+        await expect(dependencyCard).toContainText(
+          text(
+            "No tools or skills configured for this version.",
+            "このバージョンにツール・スキルは設定されていません。",
+          ),
+        );
+      expect(permissionRequests).toBe(0);
+      if (dependencies.length) {
+        await dependencyCard.getByRole("button").click();
+        await page.locator(".wb-policy input").nth(0).fill("acme");
+        await page.locator(".wb-policy input").nth(1).fill("alice");
+        await page
+          .getByRole("button", {
+            name: text("Check this context", "この条件で権限を確認"),
+          })
+          .click();
+        await expect(page.locator(".wb-policy tbody tr")).toHaveCount(
+          dependencies.length,
+        );
+        await page
+          .locator(".wb-tabs")
+          .getByRole("button", { name: text("Overview", "概要"), exact: true })
+          .click();
+        for (const [index, dependency] of dependencies.entries())
+          await expect(
+            dependencyCard.locator("li").nth(index).locator(".trust-badge"),
+          ).toHaveText(
+            dependency.effective_for_component
+              ? text("Allowed", "許可")
+              : text("Restricted", "制限"),
+          );
+        await expect(autonomyCard.locator("dd")).toHaveText(expectedAutonomy);
+        expect(permissionRequests).toBe(1);
+      }
+      await dependencyCard.scrollIntoViewIfNeeded();
+      await page.screenshot({
+        path: testInfo.outputPath("registered-configuration.png"),
+        fullPage: true,
+      });
+      const dimensions = await page.evaluate(() => ({
+        content: document.documentElement.scrollWidth,
+        viewport: innerWidth,
+      }));
+      expect(dimensions.content).toBeLessThanOrEqual(dimensions.viewport);
+      expect(errors).toEqual([]);
+    });
+  }
 }

@@ -37,8 +37,10 @@ Focused visual checks covered observation fields, policy input alignment/table c
 
 - Server-owned OpenAPI generation and production frontend build completed successfully.
 - TypeScript project check, ESLint on changed TypeScript files and Prettier checks passed.
-- Workbench regression suite: 24 tests passed, including Creator compatibility and Trust desktop/mobile behavior.
+- Workbench regression suite: 39 tests passed, including the merged Creator tab regressions and Trust desktop/mobile behavior.
 - After integrating #69, the suite also checks that registered capabilities remain visible before permission evaluation at both viewport widths.
+- PR #81 review fixes restore configured skill IDs/versions alongside tools and the registered task-creation/delegation settings. Six additional English desktop/Japanese mobile cases cover mixed dependencies, skills without tools, empty configuration, enabled/disabled/default autonomy settings, and permission decisions matched to the configured version. Configuration remains visible before any permission request.
+- Integrated `develop/0.1.0` at `6b90aca` while retaining both Creator and Trust styles and browser suites. Desktop and mobile fixture captures of the restored configuration cards were visually checked for legibility and layout; these remain automated fixture evidence, not live-data verification.
 - Tested navigation from evidence links, contextual permission result labels, audit event selection, pagination/reset, incident status/search filters, required notes, paired optional evidence validation, horizontal overflow and JavaScript errors.
 - No captured JavaScript errors in the test cases. Existing Vite large-chunk warning remains.
 - Live authenticated API rendering, report downloads and actual incident writes were not performed. No incident was created on the user's node for a visual test.
