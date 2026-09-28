@@ -1328,6 +1328,56 @@ async fn mapped_transaction_admission_and_revocation(
 			tokio::time::timeout(std::time::Duration::from_secs(10), admitted.notified())
 				.await
 				.unwrap();
+			// Retry the actually issued ticket with only one available control slot.
+			// The source must read status through the retained authority transaction,
+			// even while the original reservation reply is still unknown.
+			let mut limited = a.f.clone();
+			limited.store.control_pool =
+				a.f.store
+					.control_pool
+					.options()
+					.clone()
+					.max_connections(1)
+					.acquire_timeout(std::time::Duration::from_secs(2))
+					.connect_with(a.f.store.control_pool.connect_options().as_ref().clone())
+					.await
+					.unwrap();
+			let ticket_app = api::router(limited.clone());
+			let peer_token = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
+			for _ in 0..2 {
+				use tower::ServiceExt;
+				let response = ticket_app
+					.clone()
+					.oneshot(
+						axum::http::Request::builder()
+							.uri(format!(
+								"/federation/v0.1/transactions/{}/authority",
+								manifest.id
+							))
+							.header("authorization", format!("Bearer {peer_token}"))
+							.header("x-aidash-node", &b.f.config.node_id)
+							.header("x-aidash-protocol", "0.1")
+							.body(axum::body::Body::empty())
+							.unwrap(),
+					)
+					.await
+					.unwrap();
+				let status = response.status();
+				let bytes = axum::body::to_bytes(response.into_body(), 1_048_576)
+					.await
+					.unwrap();
+				assert_eq!(
+					status,
+					200,
+					"ticket retry required another control slot: {}",
+					String::from_utf8_lossy(&bytes)
+				);
+				let ticket: Value = serde_json::from_slice(&bytes).unwrap();
+				assert_eq!(ticket["id"], json!(manifest.id));
+				assert_eq!(ticket["digest"], manifest.digest().unwrap());
+			}
+			drop(ticket_app);
+			limited.store.control_pool.close().await;
 			let path = format!(
 				"/api/authorization/acme/credentials/{}/revoke",
 				credential_a.id

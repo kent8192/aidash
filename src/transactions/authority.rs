@@ -528,7 +528,7 @@ pub(super) async fn ticket(f: &Federation, id: Uuid, node: &str) -> Result<Prefl
 	let mut access = access(f, &origin).await?;
 	let result = async {
 		trusted(&mut access, node).await?;
-		let state = coordinator::status(f, id).await?;
+		let state = coordinator::status_with(&mut **access.tx, id).await?;
 		if state.decision.is_some() {
 			return Err(Error::Forbidden);
 		}
