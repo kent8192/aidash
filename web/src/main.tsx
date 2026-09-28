@@ -104,7 +104,7 @@ type BrowserSession = {
 type Registration = { status: string; expires_at: string } | null;
 const authCopy = {
   "ja-JP": {
-    signIn: "Keycloak でサインイン",
+    signIn: "Google でサインイン",
     setup:
       "管理者が Aidash の OIDC 接続を設定してください。API の Bearer 認証は引き続き利用できます。",
     choose: "このタブで使う権限を選択してください",
@@ -117,7 +117,7 @@ const authCopy = {
     currentDevice: "このブラウザからログアウト",
   },
   "en-US": {
-    signIn: "Sign in with Keycloak",
+    signIn: "Sign in with Google",
     setup:
       "Ask an administrator to configure OIDC for Aidash. Bearer API access remains available.",
     choose: "Choose the authority for this tab",
@@ -161,6 +161,7 @@ function Dashboard({
   const client = useQueryClient();
   const [authLoading, setAuthLoading] = useState(true);
   const [oidcEnabled, setOidcEnabled] = useState(false);
+  const [oidcProvider, setOidcProvider] = useState("google");
   const [browserSession, setBrowserSession] = useState<BrowserSession | null>(
     null,
   );
@@ -271,9 +272,13 @@ function Dashboard({
         });
         if (!configResponse.ok)
           throw new Error("Aidash authentication is unavailable");
-        const config = (await configResponse.json()) as { enabled: boolean };
+        const config = (await configResponse.json()) as {
+          enabled: boolean;
+          provider?: string;
+        };
         if (cancelled) return;
         setOidcEnabled(config.enabled);
+        setOidcProvider(config.provider ?? "google");
         if (!config.enabled) return;
         const response = await fetch("/auth/session", { cache: "no-store" });
         if (response.status === 401) return;
@@ -549,7 +554,9 @@ function Dashboard({
                 );
               }}
             >
-              {auth.signIn}
+              {oidcProvider === "keycloak"
+                ? auth.signIn.replace("Google", "Keycloak")
+                : auth.signIn}
             </button>
           ) : (
             <>

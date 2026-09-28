@@ -68,7 +68,7 @@ pub fn routes() -> OpenApiRouter<Federation> {
 		.routes(routes!(deletion_confirmation))
 		.routes(routes!(restore))
 		.routes(routes!(restore_new_thread))
-		.layer(axum::extract::DefaultBodyLimit::max(6 * 1024 * 1024))
+		.layer(crate::http::body_limit(6 * 1024 * 1024))
 		.layer(axum::middleware::from_fn(super::errors::http))
 }
 pub(crate) async fn access(f: &Federation, actor: Actor) -> Result<Access> {

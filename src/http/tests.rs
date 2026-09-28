@@ -59,10 +59,12 @@ async fn request_ids_and_sensitive_headers_cover_success_and_errors() {
 #[tokio::test]
 async fn body_limit_applies_to_declared_and_streamed_bodies() {
 	let app = protect(
-		Router::new().route(
-			"/body",
-			post(|body: axum::body::Bytes| async move { body.len().to_string() }),
-		),
+		Router::new()
+			.route(
+				"/body",
+				post(|body: axum::body::Bytes| async move { body.len().to_string() }),
+			)
+			.layer(body_limit(BODY_LIMIT)),
 		&Settings::default(),
 	);
 	let server = TestServer::new(app.clone()).unwrap();

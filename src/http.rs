@@ -4,7 +4,7 @@ use axum::{
 	Router,
 	body::Body,
 	error_handling::HandleErrorLayer,
-	extract::{MatchedPath, Request},
+	extract::{DefaultBodyLimit, MatchedPath, Request},
 	http::{HeaderName, HeaderValue, StatusCode, header},
 	middleware::{self, Next},
 	response::{IntoResponse, Response},
@@ -29,6 +29,14 @@ use tower_http::{
 };
 
 pub const BODY_LIMIT: usize = 1024 * 1024;
+
+/// Apply before merging route groups with different payload limits.
+pub(crate) fn body_limit(limit: usize) -> (DefaultBodyLimit, RequestBodyLimitLayer) {
+	(
+		DefaultBodyLimit::max(limit),
+		RequestBodyLimitLayer::new(limit),
+	)
+}
 
 #[derive(Clone, Debug)]
 pub struct Settings {
@@ -200,7 +208,6 @@ where
 		))
 		.build();
 	router
-		.layer(RequestBodyLimitLayer::new(BODY_LIMIT))
 		.layer(
 			ServiceBuilder::new()
 				.layer(SetRequestIdLayer::new(request_id.clone(), MakeRequestUuid))
