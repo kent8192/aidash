@@ -194,7 +194,11 @@ pub async fn write(f: &Federation, tenant: &str, input: PeerMappingInput) -> Res
 			"revocation requires an existing mapping".into(),
 		));
 	}
-	let mut tx = f.store.control_pool.begin().await?;
+	let mut tx = if input.enabled {
+		f.store.pool.begin().await?
+	} else {
+		f.store.control_pool.begin().await?
+	};
 	if !input.enabled {
 		crate::transactions::authority::control(&mut tx).await?;
 	}

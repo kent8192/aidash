@@ -218,3 +218,43 @@ test("peer trust retains pending revocations across refresh and supports checkin
   ).toHaveCount(0);
   expect(changes).toEqual([false, false]);
 });
+
+test("subjects submit explicit remote participant IDs without peer inventory", async ({
+  page,
+}) => {
+  await setup(page, { subject: true });
+  let submitted: { participants: { node_id: string }[] } | undefined;
+  await page.route("**/api/transactions**", (route) => {
+    if (route.request().method() === "POST") {
+      submitted = route.request().postDataJSON();
+      return route.fulfill({ status: 403, json: { error: "forbidden" } });
+    }
+    return route.fulfill({ json: [] });
+  });
+  await page.goto("/transactions");
+  await page
+    .getByRole("button", { name: "Create transaction", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await dialog
+    .getByLabel("Workspace", { exact: true })
+    .selectOption("workspace-one");
+  await dialog
+    .getByRole("button", { name: "Add participant", exact: true })
+    .click();
+  await dialog
+    .getByLabel("Node", { exact: true })
+    .nth(1)
+    .fill("aidash://remote");
+  await dialog
+    .getByRole("button", { name: "Review changes", exact: true })
+    .click();
+  await expect(dialog).toContainText("aidash://remote");
+  await dialog
+    .getByRole("button", { name: "Submit transaction", exact: true })
+    .click();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  expect(
+    submitted?.participants.map((participant) => participant.node_id),
+  ).toEqual(["aidash://home", "aidash://remote"]);
+});

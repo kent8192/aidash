@@ -73,7 +73,7 @@ async fn abort_honors_manifest_attribute_denies(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn authorization_and_submission_work_with_one_control_connection(
+async fn authorization_submission_and_abort_work_with_one_control_connection(
 	#[future(awt)]
 	#[from(test_environment)]
 	environment: std::sync::Arc<TestEnvironment>,
@@ -127,6 +127,22 @@ async fn authorization_and_submission_work_with_one_control_connection(
 			"new and retried submission must not require another control slot: {body}"
 		);
 	}
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!(
+			"/api/transactions/{}/abort",
+			manifest["id"].as_str().unwrap()
+		),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		status, 200,
+		"subject abort must reuse its authority connection: {body}"
+	);
+	assert_eq!(body["decision"], "ABORT");
 	cleanup(f, &url, &schema).await;
 }
 
@@ -199,5 +215,164 @@ async fn transaction_visibility_scans_past_hidden_rows_without_poll_audits(
 		before,
 		"unchanged list polls must not persist per-row decisions"
 	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn peer_mapping_writes_work_with_one_control_connection(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (mut f, url, schema) = setup(&environment).await;
+	let app = api::router(f.clone());
+	bootstrap(&f, &app, "http://localhost:1").await;
+	let (status, credential) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme/credentials",
+		json!({"subject":"alice"}),
+	)
+	.await;
+	assert_eq!(status, 200);
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("peers"))
+			.columns(
+				[
+					"node_id",
+					"endpoint",
+					"credential_env",
+					"protocol_version",
+					"enabled",
+				]
+				.map(Alias::new),
+			)
+			.values_panic([
+				"aidash://source".into(),
+				"http://localhost:1".into(),
+				"AIDASH_SECRET_TEST_PEER".into(),
+				"0.1".into(),
+				true.into(),
+			])
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let old_pool = f.store.control_pool.clone();
+	f.store.control_pool = old_pool
+		.options()
+		.clone()
+		.max_connections(1)
+		.acquire_timeout(std::time::Duration::from_secs(2))
+		.connect_with(old_pool.connect_options().as_ref().clone())
+		.await
+		.unwrap();
+	drop(app);
+	old_pool.close().await;
+	let app = api::router(f.clone());
+	for (revision, enabled) in [(0, true), (1, true), (2, false)] {
+		let (status, body) = request(&app, &f.config.api_token, "POST", "/api/authorization/acme/peer-mappings",
+            json!({"source_node":"aidash://source","source_tenant":"remote","source_subject":"bob","credential_id":credential["credential"]["id"],"enabled":enabled,"expected_revision":revision})).await;
+		assert_eq!(
+			status, 200,
+			"mapping change must not acquire a second control slot: {body}"
+		);
+		assert_eq!(body["revision"], revision + 1);
+	}
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn subject_transaction_errors_do_not_reveal_other_owners(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&environment).await;
+	let app = api::router(f.clone());
+	let (_, token, task) = bootstrap(&f, &app, "http://localhost:1").await;
+	let workspace = f.store.task(task).await.unwrap().workspace_id;
+	let own = manifest(&f.config.node_id, workspace);
+	assert_eq!(
+		request(&app, &token, "POST", "/api/transactions", own.clone())
+			.await
+			.0,
+		202
+	);
+	let operator = manifest(&f.config.node_id, workspace);
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/transactions",
+			operator.clone()
+		)
+		.await
+		.0,
+		202
+	);
+	// The foreign subject's binding is immutable fixture state. Its transaction
+	// exists and is visible to the operator, but must look absent to Alice.
+	let foreign = manifest(&f.config.node_id, workspace);
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/transactions",
+			foreign.clone()
+		)
+		.await
+		.0,
+		202
+	);
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("atomic_subjects"))
+			.columns([Alias::new("id"), Alias::new("binding")])
+			.values_panic([Expr::cust("$1"), Expr::cust("$2")])
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(Uuid::parse_str(foreign["id"].as_str().unwrap()).unwrap())
+	.bind(json!({"tenant":"acme","subject":"bob","credential_id":Uuid::new_v4()}))
+	.execute(&f.store.control_pool)
+	.await
+	.unwrap();
+	for (method, suffix) in [("GET", ""), ("POST", "/abort")] {
+		let missing = request(
+			&app,
+			&token,
+			method,
+			&format!("/api/transactions/{}{suffix}", Uuid::new_v4()),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(missing.0, 404);
+		for id in [&operator["id"], &foreign["id"]] {
+			let path = format!("/api/transactions/{}{suffix}", id.as_str().unwrap());
+			assert_eq!(
+				request(&app, &token, method, &path, Value::Null).await,
+				missing
+			);
+		}
+		assert_eq!(
+			request(
+				&app,
+				&token,
+				method,
+				&format!("/api/transactions/{}{suffix}", own["id"].as_str().unwrap()),
+				Value::Null
+			)
+			.await
+			.0,
+			200
+		);
+	}
 	cleanup(f, &url, &schema).await;
 }

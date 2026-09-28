@@ -399,6 +399,13 @@ export function TransactionsPage({
             {review ? (
               <>
                 <p className="notice">{t("transactionReviewHelp")}</p>
+                {!operator && (
+                  <ul aria-label={t("transactionParticipant")}>
+                    {review.participants.map((participant) => (
+                      <li key={participant.node_id}>{participant.node_id}</li>
+                    ))}
+                  </ul>
+                )}
                 <RecordView value={review} />
                 <button type="button" onClick={() => setReview(null)}>
                   {t("edit")}

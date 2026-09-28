@@ -620,18 +620,24 @@ pub(super) async fn settle(f: &Federation, id: Uuid, node: &str, outcome: &str) 
 	.await?;
 	Ok(())
 }
+// Immutable owner bindings hide both operator and other-subject transactions.
+pub(super) async fn require_owner(
+	f: &Federation,
+	identity: &SubjectIdentity,
+	id: Uuid,
+) -> Result<Origin> {
+	binding::<Origin>(f, "atomic_subjects", id)
+		.await?
+		.filter(|origin| origin.tenant == identity.tenant && origin.subject == identity.subject)
+		.ok_or_else(|| Error::NotFound("transaction".into()))
+}
 pub(super) async fn manage(
 	f: &Federation,
 	identity: &SubjectIdentity,
 	state: &Status,
 	action: &str,
 ) -> Result<()> {
-	let origin = binding::<Origin>(f, "atomic_subjects", state.id)
-		.await?
-		.ok_or(Error::Forbidden)?;
-	if origin.tenant != identity.tenant || origin.subject != identity.subject {
-		return Err(Error::Forbidden);
-	}
+	let origin = require_owner(f, identity, state.id).await?;
 	let manifest: Manifest = serde_json::from_value(state.manifest.clone())?;
 	let mut access = access(f, &Origin::from(identity)).await?;
 	// Live read checks are repeated by dashboard polling; mutation decisions stay audited.
@@ -663,12 +669,16 @@ pub(super) async fn manage(
 			}
 		}
 		if action == "transaction.abort" {
-			coordinator::abort(f, state.id).await?;
+			coordinator::abort_in(&mut access.tx, state.id).await?;
 		}
 		Ok(())
 	}
 	.await;
-	access.finish(result).await
+	access.finish(result).await?;
+	if action == "transaction.abort" {
+		super::fault::cut(state.id, "coordinator.abort.after").await?;
+	}
+	Ok(())
 }
 pub(super) async fn read_access(f: &Federation, caller: &str, input: &Preflight) -> Result<()> {
 	if caller != input.coordinator {

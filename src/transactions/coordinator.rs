@@ -289,8 +289,12 @@ async fn send(f: &Federation, manifest: &Manifest, node: &str, phase: &str) -> R
 		.await
 	}
 }
-async fn record_decision(f: &Federation, id: Uuid, decision: &str, reason: &str) -> Result<()> {
-	let mut tx = f.store.control_pool.begin().await?;
+async fn record_decision_in(
+	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	id: Uuid,
+	decision: &str,
+	reason: &str,
+) -> Result<()> {
 	let changed = sqlx::query(
 		&sea_orm::sea_query::Query::update()
 			.table(sea_orm::sea_query::Alias::new("atomic_coordinators"))
@@ -310,12 +314,17 @@ async fn record_decision(f: &Federation, id: Uuid, decision: &str, reason: &str)
 	.bind(id)
 	.bind(decision)
 	.bind((!reason.is_empty()).then_some(reason))
-	.execute(&mut *tx)
+	.execute(&mut **tx)
 	.await?
 	.rows_affected();
 	if changed == 1 {
-		history(&mut tx, id, "coordinator", decision, reason).await?;
+		history(tx, id, "coordinator", decision, reason).await?;
 	}
+	Ok(())
+}
+async fn record_decision(f: &Federation, id: Uuid, decision: &str, reason: &str) -> Result<()> {
+	let mut tx = f.store.control_pool.begin().await?;
+	record_decision_in(&mut tx, id, decision, reason).await?;
 	super::fault::cut(
 		id,
 		&format!("coordinator.{}.before", decision.to_lowercase()),
@@ -346,6 +355,32 @@ async fn lease(f: &Federation, id: Uuid) -> Result<sqlx::Transaction<'static, sq
 	}
 	Ok(tx)
 }
+/// Retain the subject authority locks through the durable abort decision.
+pub(super) async fn abort_in(
+	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	id: Uuid,
+) -> Result<()> {
+	record_decision_in(tx, id, "ABORT", "subject requested abort").await?;
+	let decision: Option<String> = sqlx::query_scalar(
+		&sea_orm::sea_query::Query::select()
+			.column(sea_orm::sea_query::Alias::new("decision"))
+			.from(sea_orm::sea_query::Alias::new("atomic_coordinators"))
+			.and_where(
+				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id"))
+					.eq(sea_orm::sea_query::Expr::cust("$1")),
+			)
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(id)
+	.fetch_optional(&mut **tx)
+	.await?
+	.ok_or_else(|| Error::NotFound("transaction".into()))?;
+	if decision.as_deref() == Some("COMMIT") {
+		return Err(Error::Conflict("commit is irrevocable".into()));
+	}
+	super::fault::cut(id, "coordinator.abort.before").await
+}
+
 pub async fn abort(f: &Federation, id: Uuid) -> Result<Status> {
 	// The conditional decision update arbitrates commit versus abort in SQL.
 	// Do not require the recovery lease: it spans peer I/O, and contention must

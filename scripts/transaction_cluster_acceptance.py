@@ -221,7 +221,7 @@ class Cluster:
         return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
 
     def observe(self, count, transaction, workspaces, observations):
-        verified_new_state = False
+        verified_new_state = any(entry.get("revision") == 1 for entry in observations)
         for node in range(count):
             try:
                 status, body = self.api(node, f"/api/workspaces/{workspaces[node]}")
@@ -234,6 +234,8 @@ class Cluster:
                 revision = body["workspace"]["revision"]
                 assert revision in (0, 1)
                 entry["revision"] = revision
+                observations.append(entry)
+                assert not (verified_new_state and revision == 0), "old state after publication"
                 if revision == 1 and not verified_new_state:
                     for other in range(count):
                         assert self.inspect(other, transaction, workspaces[other], "tx_workspace")[0]["revision"] == 1, "partial visibility"
@@ -241,7 +243,8 @@ class Cluster:
                     # manifest, they cannot go back. Avoid quadratic diagnostic
                     # traffic while still checking every ordinary response.
                     verified_new_state = True
-            observations.append(entry)
+            else:
+                observations.append(entry)
 
     def case(self, count, phase, edge, abort, repetition, lifecycle=None):
         transaction = str(uuid.uuid4())
@@ -294,12 +297,13 @@ class Cluster:
             elif lifecycle == "peer-recovery":
                 for local, remote in [(0, 1), (1, 0)]:
                     assert self.api(local, "/api/transactions/trust", {"node_id": f"aidash://tx-{remote:02}", "enabled": False})[0] == 200
-                status, peer = self.api(0, "/api/transactions/peer-recovery", {"node_id": "aidash://tx-01", "credential_env": "AIDASH_SECRET_TRANSACTION_01"})
-                assert status == 200, (status, peer)
-                assert peer["endpoint"] == "http://tx-1:8080"
-                _, grants = self.api(0, "/api/transactions/trust")
-                assert not next(grant for grant in grants if grant["node_id"] == "aidash://tx-01")["enabled"]
-                record["peer_restored_without_admission_trust"] = True
+                # Fault injection uses generated SeaQuery DML and the same narrow
+                # authority control used by the operator recovery route.
+                self.kube("exec", "-i", "postgres-0", "--", "psql", "-U", "aidash", "-d", "tx_0",
+                    "-qAt", "-v", "ON_ERROR_STOP=1", "-f", "-", value="BEGIN;\n" +
+                    self.queries["tx_authority_control"] + ";\n" + self.queries["tx_disable_peer"] + ";\nCOMMIT;\n")
+                assert not self.inspect(0, transaction, workspaces[0], "tx_peer")[0]["enabled"]
+                record["peer_transport_disabled_at"] = now()
             elif lifecycle == "rolling":
                 for node in range(1, count):
                     self.kube("rollout", "restart", f"deployment/tx-{node}-server")
@@ -318,6 +322,29 @@ class Cluster:
                 self.kube("scale", "deployment/tx-1-server", "--replicas=1")
                 self.rollout("tx-1-server")
                 self.ready(1)
+            if lifecycle == "peer-recovery":
+                def blocked_by_peer():
+                    self.observe(count, transaction, workspaces, trace)
+                    status, detail = self.api(0, f"/api/transactions/{transaction}")
+                    assert status == 200, (status, detail)
+                    state = detail["transaction"]
+                    assert not state["complete"], "disabled peer must prevent convergence"
+                    return state["decision"] == "COMMIT" and state["last_error"] is not None
+
+                # The process fault is gone. Require an actual failed recovery
+                # attempt before restoring transport; a held fault is not proof.
+                self.until(blocked_by_peer, "recovery blocked by disabled peer", timeout=30)
+                for node in range(count):
+                    assert self.api(node, f"/api/workspaces/{workspaces[node]}")[0] == 503
+                record["peer_recovery_blocked_at"] = now()
+                status, peer = self.api(0, "/api/transactions/peer-recovery", {"node_id": "aidash://tx-01", "credential_env": "AIDASH_SECRET_TRANSACTION_01"})
+                assert status == 200, (status, peer)
+                assert peer["node_id"] == "aidash://tx-01" and peer["enabled"]
+                assert peer["endpoint"] == "http://tx-1:8080"
+                assert self.inspect(0, transaction, workspaces[0], "tx_peer")[0]["enabled"]
+                _, grants = self.api(0, "/api/transactions/trust")
+                assert not next(grant for grant in grants if grant["node_id"] == "aidash://tx-01")["enabled"]
+                record["peer_restored_without_admission_trust"] = True
             record["services_restored_at"] = now()
             restored = time.monotonic()
             if not self.inspect(0, transaction, workspaces[0], "tx_coordinator"):

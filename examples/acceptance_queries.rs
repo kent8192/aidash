@@ -27,6 +27,9 @@ fn main() {
 	println!(
 		"{}",
 		serde_json::json!({"pending_events":pending,"inbox":inbox,
+			"tx_authority_control":Query::select().expr(Expr::cust("set_config('aidash.transaction_control','authority',true)")).to_string(PostgresQueryBuilder),
+			"tx_disable_peer":Query::update().table(Alias::new("peers")).value(Alias::new("enabled"),false).and_where(Expr::col(Alias::new("node_id")).eq("aidash://tx-01")).to_string(PostgresQueryBuilder),
+			"tx_peer":evidence("peers", &["node_id","enabled"], "node_id='aidash://tx-01'"),
 			"tx_coordinator":evidence("atomic_coordinators",&["id","digest","decision","visible","complete"],"id=:'transaction'::uuid"),
 			"tx_participant":evidence("atomic_participants",&["id","digest","phase"],"id=:'transaction'::uuid"),
 			"tx_barrier":evidence("atomic_gate",&["transaction_id","commit_epoch"],"singleton"),

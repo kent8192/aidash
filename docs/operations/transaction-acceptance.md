@@ -49,6 +49,14 @@ The [evidence bundle](evidence/2026-09-28-transactions/README.md) includes compr
 
 Each distribution has passing evidence for all 105 distinct repetitions of the implemented inventory across these identified runs. Repeated cases retain separate records; the Kubernetes main-run failure remains failed. These results cover the executable subset above, not all accepted release gates or a single final-image acceptance run. Task-owned namespaces, port forwards and the temporary k3s cluster were removed after verification.
 
+## Review findings affecting historical evidence
+
+The September 28 cluster records predate two corrections to the acceptance driver. Their peer-recovery lifecycle revoked admission trust without disabling peer communication, so those historical repetitions do **not** prove authentication restoration. Their visibility oracle checked every database when it observed revision 1, but accepted a later revision-0 API response. They therefore do **not** establish monotonic ordinary API visibility after publication. The retained raw outcomes above remain historical records, with these limitations; they are not upgraded by changing the driver.
+
+The corrected driver remembers publication across the entire case trace and rejects every later successful old-state response, including responses from another Node. Its peer-recovery lifecycle disables the existing peer, removes the process fault, observes a failed recovery attempt and visibility barriers, and only then restores that same peer through the operator endpoint while admission trust remains disabled.
+
+The [September 29 review-repair bundle](evidence/2026-09-29-transaction-review/README.md) records three passing two-Node Kubernetes `v1.34.0` repetitions of the corrected peer-recovery lifecycle. The image is `aidash:pr87-review-20260929`, with runtime fingerprint `c25de28fa9b2b8e95c79ec3fb3e115f69c42db733bdaf4dec3e34e8f3163cee0`; image identities, exact input hashes, driver hash and original traces are retained in the bundle. Maximum observed convergence was 1.039 seconds after required service restoration. Local review verification also passed 20 Rust cases, five UI cases, four visibility-oracle regressions, the production web build, Clippy with warnings denied and Trunk. No full acceptance-matrix rerun or new k3s run is claimed for this repair.
+
 ## Failure and rerun ledger
 
 Earlier failed executions are retained separately from successful reruns:

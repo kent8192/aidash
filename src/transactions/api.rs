@@ -135,6 +135,9 @@ async fn details(
 	Extension(actor): Extension<Actor>,
 	Path(id): Path<Uuid>,
 ) -> Result<Json<TransactionDetails>> {
+	if let Actor::Subject(identity) = &actor {
+		authority::require_owner(&f, identity, id).await?;
+	}
 	let transaction = coordinator::status(&f, id).await?;
 	if let Actor::Subject(identity) = actor {
 		authority::manage(&f, &identity, &transaction, "transaction.read").await?;
@@ -169,6 +172,7 @@ async fn abort(
 	Path(id): Path<Uuid>,
 ) -> Result<Json<Status>> {
 	if let Actor::Subject(identity) = actor {
+		authority::require_owner(&f, &identity, id).await?;
 		let state = coordinator::status(&f, id).await?;
 		authority::manage(&f, &identity, &state, "transaction.abort").await?;
 		return Ok(Json(coordinator::status(&f, id).await?));
