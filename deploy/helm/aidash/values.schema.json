@@ -8,7 +8,8 @@
     "server",
     "worker",
     "frontend",
-    "terminationGracePeriodSeconds"
+    "terminationGracePeriodSeconds",
+    "activation"
   ],
   "properties": {
     "node": {
@@ -30,7 +31,18 @@
       }
     },
     "server": { "$ref": "#/definitions/role" },
-    "worker": { "$ref": "#/definitions/role" },
+    "worker": {
+      "allOf": [
+        { "$ref": "#/definitions/role" },
+        {
+          "type": "object",
+          "required": ["slots"],
+          "properties": {
+            "slots": { "type": "integer", "minimum": 1, "maximum": 4 }
+          }
+        }
+      ]
+    },
     "frontend": {
       "type": "object",
       "required": ["replicas", "image", "resources"],
@@ -58,6 +70,24 @@
           "minimum": 30000,
           "maximum": 32767
         }
+      }
+    },
+    "activation": {
+      "type": "object",
+      "required": ["namespace", "maxAgeSeconds", "maxBytes", "replicas"],
+      "properties": {
+        "namespace": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "maxAgeSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 31536000
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "replicas": { "type": "integer", "minimum": 1, "maximum": 5 }
       }
     }
   },

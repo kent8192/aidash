@@ -37,13 +37,16 @@ async fn main() -> Result<()> {
 			"usage: aidash [serve|server|worker|migrate|activation-provision|openapi]".into(),
 		));
 	}
-	let config = Config::from_env()?;
-	let activation_settings = aidash::activation::Settings::from_env()?;
 	if mode == "activation-provision" {
+		let node = std::env::var("AIDASH_NODE_ID")
+			.map_err(|_| aidash::Error::Invalid("AIDASH_NODE_ID is required".into()))?;
+		aidash::config::validate_node_id(&node)?;
+		let activation_settings = aidash::activation::Settings::from_env()?;
 		let broker = aidash::activation::Broker::provision(
 			&std::env::var("AIDASH_ACTIVATION_NATS_URL")
-				.unwrap_or_else(|_| config.nats_url.clone()),
-			&config.node_id,
+				.or_else(|_| std::env::var("NATS_URL"))
+				.unwrap_or_else(|_| "nats://127.0.0.1:4222".into()),
+			&node,
 			&activation_settings,
 		)
 		.await?;
@@ -53,6 +56,8 @@ async fn main() -> Result<()> {
 		);
 		return Ok(());
 	}
+	let config = Config::from_env()?;
+	let activation_settings = aidash::activation::Settings::from_env()?;
 	let http_settings = aidash::http::Settings::from_env()?;
 	let metrics = metrics_exporter_prometheus::PrometheusBuilder::new()
 		.install_recorder()

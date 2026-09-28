@@ -12,6 +12,9 @@
 {{- if lt (int .Values.terminationGracePeriodSeconds) 25 -}}
 {{- fail "terminationGracePeriodSeconds must allow the 20-second application drain" -}}
 {{- end -}}
+{{- if gt (len .Values.activation.namespace) 128 -}}
+{{- fail "activation.namespace must be at most 128 UTF-8 bytes" -}}
+{{- end -}}
 {{- range $role := list "server" "worker" }}
 {{- $settings := index $.Values $role }}
 {{- $secret := required (printf "%s.existingSecret or existingSecret is required" $role) ($settings.existingSecret | default $.Values.existingSecret) }}

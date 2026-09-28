@@ -123,6 +123,7 @@ impl Broker {
 				.map_err(|_| unavailable())?
 		};
 		let actual = &stream.cached_info().config;
+		let maximum_message_size = maximum_message_size(node)?;
 		if actual.subjects != wanted.subjects
 			|| actual.retention != wanted.retention
 			|| actual.storage != wanted.storage
@@ -131,6 +132,8 @@ impl Broker {
 			|| actual.max_bytes != wanted.max_bytes
 			|| actual.duplicate_window != wanted.duplicate_window
 			|| actual.num_replicas != wanted.num_replicas
+			|| (actual.max_message_size > 0
+				&& (actual.max_message_size as usize) < maximum_message_size)
 			|| actual.max_messages > 0
 			|| actual.max_messages_per_subject > 0
 			|| actual.sealed
@@ -203,9 +206,11 @@ impl Broker {
 		if self.disconnected.load(Ordering::Acquire) {
 			return Err(unavailable());
 		}
-		let _visibility = crate::transactions::gate::ReadLease::begin(store).await?;
+		let mut visibility = crate::transactions::gate::ReadLease::begin(store).await?;
 		let token = Uuid::new_v4();
 		let rows = durable::publish_batch(store, token).await?;
+		// Broker acknowledgements cannot retain the ordinary-state visibility lock.
+		visibility.suspend().await?;
 		let count = rows.len();
 		let mut sends = futures_util::stream::iter(rows.into_iter().map(|row| async move {
 			let mut headers = async_nats::HeaderMap::new();
@@ -238,4 +243,21 @@ impl Broker {
 }
 pub(super) fn unavailable() -> Error {
 	Error::External("activation broker unavailable".into())
+}
+
+/// JetStream's message limit includes the payload and serialized NATS headers.
+fn maximum_message_size(node: &str) -> Result<usize> {
+	let envelope = durable::Envelope {
+		version: 1,
+		node_id: node.into(),
+		run_id: Uuid::nil(),
+		activation_id: Uuid::nil(),
+		generation: i64::MAX,
+	};
+	let header = format!(
+		"NATS/1.0\r\nNats-Msg-Id: {}:{}\r\n\r\n",
+		Uuid::nil(),
+		i64::MAX
+	);
+	Ok(serde_json::to_vec(&envelope)?.len() + header.len())
 }

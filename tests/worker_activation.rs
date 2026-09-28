@@ -1,4 +1,6 @@
 mod common;
+#[path = "worker_activation/review.rs"]
+mod review;
 use aidash::{
 	activation::{Broker, Settings},
 	api,
