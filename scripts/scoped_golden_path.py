@@ -294,6 +294,10 @@ def verify(base_a, base_b, node_a, node_b, worker, launch_worker, counts):
                 wait_for(lambda: run()["phase"] == "COMPLETED", timeout=150, label=scenario)
                 if scenario == "home-completion-recovery":
                     assert fixture.model_calls[scenario] == before_calls, "Recovery repeated committed inference"
+                else:
+                    # A committed message leaves only the tool request and final
+                    # response, including when recovery first meets a peer outage.
+                    assert fixture.model_calls[scenario] == before_calls + 2, "Message recovery must perform exactly two remaining inferences"
                 snapshot = api_request(base_a, f"/api/workspaces/{workspace['id']}", token=token)
                 assert snapshot["tasks"][0]["status"] == "COMPLETED"
                 assert len(snapshot["artifacts"]) == 1 and snapshot["artifacts"][0]["content"] == "Scoped result: " + scenario
