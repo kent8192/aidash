@@ -130,7 +130,10 @@ class Providers:
             def do_POST(self):
                 try:
                     raw = self.rfile.read(int(self.headers["Content-Length"]))
-                    assert not any(token in raw.decode() for token in forbidden_tokens), "Credential disclosed to provider"
+                    assert not any(
+                        token in raw.decode() or token in str(self.headers)
+                        for token in forbidden_tokens
+                    ), "Credential disclosed to provider"
                     body = json.loads(raw)
                     if self.path == "/effect":
                         key = self.headers.get("Idempotency-Key")
@@ -228,7 +231,7 @@ def verify(base_a, base_b, node_a, node_b, worker, launch_worker, counts):
 
         # An allowed source cannot override the receiver's exact catalog approval.
         _, rejected_task = create_task("receiver-denies-dependency")
-        for reference in ({"id": "scoped-effect", "version": "1.0.0"}, agent):
+        for reference in ({"id": "scoped-model", "version": "1.0.0"}, {"id": "scoped-effect", "version": "1.0.0"}, agent):
             catalog(reference, False, 1)
             denied(base_a, f"/api/tasks/{rejected_task['id']}/delegate", {"node_id": node_b, "agent": agent}, token=token)
             catalog(reference, True, 2)
@@ -289,6 +292,8 @@ def verify(base_a, base_b, node_a, node_b, worker, launch_worker, counts):
                 assert api_request(base_a, f"/api/workspaces/{workspace['id']}")["tasks"][0]["status"] == "CANCELLED"
             else:
                 wait_for(lambda: run()["phase"] == "COMPLETED", timeout=150, label=scenario)
+                if scenario == "home-completion-recovery":
+                    assert fixture.model_calls[scenario] == before_calls, "Recovery repeated committed inference"
                 snapshot = api_request(base_a, f"/api/workspaces/{workspace['id']}", token=token)
                 assert snapshot["tasks"][0]["status"] == "COMPLETED"
                 assert len(snapshot["artifacts"]) == 1 and snapshot["artifacts"][0]["content"] == "Scoped result: " + scenario
