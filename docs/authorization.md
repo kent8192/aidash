@@ -135,7 +135,7 @@ Each worker boundary reloads and locks the current policy, credential, grant, wo
 
 The `serve` process reserves a separate database pool for workers so API requests waiting to revoke authority cannot exhaust the connections needed to finish an effect. Embedded runners should construct their worker Federation with `Federation::for_workers()` before starting workers. Pool settings and connection initialization hooks are preserved. Deploy this version to all workers before admitting scoped runs; older workers do not enforce execution grants.
 
-Scoped remote delegation and execution admission remain closed pending durable cross-node execution grants and worker-boundary validation. Legacy admission also rejects scoped workspaces, including operator requests through that path; use subject credentials for scoped local admission. Tasks created in legacy operator workspaces retain their existing behavior.
+Scoped remote delegation uses durable source grants, receiver admissions and scoped Worker/Home boundaries, described below. Legacy admission rejects scoped workspaces, including operator requests through that path; use subject credentials for scoped admission. Tasks created in legacy operator workspaces retain their existing behavior.
 
 ## Scoped conversations and human interaction
 
