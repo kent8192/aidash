@@ -7,10 +7,12 @@ Only task-created databases and child processes are removed by this script.
 
 import argparse
 import collections
+import hashlib
 import http.server
 import json
 import os
 import pathlib
+import runpy
 import signal
 import select
 import socket
@@ -272,6 +274,9 @@ def main():
     parser.add_argument("--keep", action="store_true", help="Keep the completed local demo running until interrupted")
     parser.add_argument("--dashboard", action="store_true", help="Submit the golden path goal through Chromium instead of the API")
     args = parser.parse_args()
+    revision = runpy.run_path(str(ROOT / "scripts/core-capability-evidence.py"))["revision"]
+    source = revision()
+    binary_sha256 = hashlib.sha256(pathlib.Path(args.binary).read_bytes()).hexdigest()
     query_helper = pathlib.Path(args.binary).resolve().parent / "examples" / "acceptance_queries"
     queries = json.loads(subprocess.check_output([str(query_helper)], text=True))
     run_id = uuid.uuid4().hex[:12]
@@ -283,6 +288,7 @@ def main():
     logs = ROOT / ".ignore" / "acceptance"
     logs.mkdir(parents=True, exist_ok=True)
     (logs / "report.json").unlink(missing_ok=True)
+    (logs / "source.json").write_text(json.dumps({"source": source, "binary_sha256": binary_sha256}, indent=2) + "\n")
     children = []
     files = []
     fixture = Fixture(node_a, node_b)
@@ -350,7 +356,7 @@ def main():
         remote_worker.kill()
         remote_worker.wait(timeout=10)
         print("Killed Node B worker after the remote tool effect, before result persistence", flush=True)
-        launch(node_b, db_b, port_b, "worker")
+        remote_worker = launch(node_b, db_b, port_b, "worker")
 
         def complete():
             snapshot = api_request(base_a, f"/api/workspaces/{workspace}")
@@ -412,11 +418,21 @@ def main():
             result = wait_for(lambda base=base, plugin_workspace=plugin_workspace, task_id=plugin_conversation["task"]["id"]: next((t for t in api_request(base, f"/api/workspaces/{plugin_workspace}")["tasks"] if t["id"] == task_id and t["status"] == "COMPLETED"), None), label=agent_id)
             assert result["status"] == "COMPLETED"
             plugin_runs.append(agent_id)
+        # This branch is mandatory: legacy recovery alone cannot establish
+        # subject-scoped authority or the remote grant/admission contract.
+        from scoped_golden_path import verify
+        scoped = verify(base_a, base_b, node_a, node_b, remote_worker,
+                        lambda: launch(node_b, db_b, port_b, "worker"),
+                        lambda: {"admissions": int(psql(db_b, queries["remote_admissions"])),
+                                 "bindings": int(psql(db_a, queries["remote_bindings"]))})
         report = {"node_a": base_a, "node_b": base_b, "node_ids": [node_a, node_b], "workspace_id": workspace, "tasks": len(snapshot["tasks"]), "artifacts": len(snapshot["artifacts"]), "external_effects": len(fixture.effects), "tool_requests": dict(fixture.requests), "provider_calls": dict(fixture.provider_calls), "recovered_run_id": recovered["id"], "sse_events": len(stream_events), "database_a": db_a, "database_b": db_b, "goal_entry": "dashboard" if args.dashboard else "api", "remote_human_controls": "passed", "nats_outage_startup_and_recovery": "passed", "events_queued_during_outage": pending_events, "additional_plugins": plugin_runs}
+        report.update(source=source, binary_sha256=binary_sha256, scoped_remote_execution=scoped)
         if args.dashboard:
             browser_report = logs / "browser-report.json"
             subprocess.run(["npm", "test", "--prefix", "web", "--", "--reporter=list,json"], cwd=ROOT, check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b})
             report["browser_scenarios"] = json.loads(browser_report.read_text())["stats"]["expected"]
+        assert source == revision(), "Source changed while Golden Path was running"
+        assert binary_sha256 == hashlib.sha256(pathlib.Path(args.binary).read_bytes()).hexdigest(), "Binary changed while Golden Path was running"
         (logs / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
         print("Golden path passed:", json.dumps(report, ensure_ascii=False), flush=True)
         if args.keep:
