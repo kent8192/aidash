@@ -130,6 +130,7 @@ impl Broker {
 		let actual = &stream.cached_info().config;
 		let maximum_message_size = maximum_message_size(node)?;
 		if actual.subjects != wanted.subjects
+			|| actual.subject_transform.is_some()
 			|| actual.retention != wanted.retention
 			|| actual.storage != wanted.storage
 			|| actual.discard != wanted.discard

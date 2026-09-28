@@ -2,6 +2,40 @@ use super::*;
 
 #[rstest::rstest]
 #[tokio::test]
+async fn transformed_subject_requires_operator_repair(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let node = format!("aidash://transform-{}", Uuid::new_v4());
+	let settings = Settings::default();
+	let broker = Broker::provision(&environment.nats_url, &node, &settings)
+		.await
+		.unwrap();
+	let stream = broker
+		.context
+		.get_stream(&broker.stream_name)
+		.await
+		.unwrap();
+	let mut config = stream.cached_info().config.clone();
+	config.subject_transform = Some(async_nats::jetstream::stream::SubjectTransform {
+		source: broker.subject.clone(),
+		destination: "unconsumed.activation".into(),
+	});
+	broker.context.update_stream(config).await.unwrap();
+	let provision = Broker::provision(&environment.nats_url, &node, &settings).await;
+	let connect = Broker::connect(&environment.nats_url, &node, &settings, true).await;
+	broker
+		.context
+		.delete_stream(&broker.stream_name)
+		.await
+		.unwrap();
+	assert!(matches!(provision, Err(aidash::Error::Invalid(_))));
+	assert!(matches!(connect, Err(aidash::Error::Invalid(_))));
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn provisioning_needs_only_node_and_broker_inputs(
 	#[future(awt)]
 	#[from(test_environment)]

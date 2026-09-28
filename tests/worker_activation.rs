@@ -1,6 +1,8 @@
 mod common;
 #[path = "worker_activation/review.rs"]
 mod review;
+#[path = "worker_activation/unblock.rs"]
+mod unblock;
 use aidash::{
 	activation::{Broker, Settings},
 	api,

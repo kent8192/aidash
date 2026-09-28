@@ -20,13 +20,21 @@ BEGIN
         END IF;
         PERFORM aidash_request_activation(NEW.id, 'run_transition');
         IF NEW.phase IN ('COMPLETED', 'FAILED', 'CANCELLED') THEN
-            -- Completion releases the durable per-area admission ordering gate.
+            -- Only the head's completion releases admission. Notify one successor,
+            -- skipping terminal gaps while preserving paused predecessors.
             INSERT INTO run_activations (run_id, run_revision, reason)
             SELECT r.id, r.revision, 'ordering_release' FROM core_runs mine
               JOIN core_runs next ON next.area_id = mine.area_id AND next.generation = mine.generation
               JOIN runs r ON r.id = next.run_id
              WHERE mine.run_id = NEW.id AND next.sequence > mine.sequence
-               AND r.phase NOT IN ('COMPLETED', 'FAILED', 'CANCELLED');
+               AND r.phase NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
+               AND NOT EXISTS (
+                   SELECT 1 FROM core_runs earlier JOIN runs pending ON pending.id = earlier.run_id
+                    WHERE earlier.area_id = mine.area_id AND earlier.generation = mine.generation
+                      AND earlier.sequence < mine.sequence
+                      AND pending.phase NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
+               )
+             ORDER BY next.sequence LIMIT 1;
         END IF;
     ELSIF TG_TABLE_NAME = 'tasks' THEN
         IF NEW.status IS DISTINCT FROM OLD.status THEN
@@ -54,12 +62,6 @@ BEGIN
             SELECT r.id, r.revision, 'area_release' FROM runs r JOIN core_runs c ON c.run_id = r.id
              WHERE c.area_id = NEW.id AND r.phase NOT IN ('COMPLETED', 'FAILED', 'CANCELLED');
         END IF;
-    ELSIF TG_TABLE_NAME = 'atomic_gate' THEN
-        IF OLD.transaction_id IS NOT NULL AND NEW.transaction_id IS NULL THEN
-            INSERT INTO run_activations (run_id, run_revision, reason)
-            SELECT id, revision, 'visibility_release' FROM runs
-             WHERE phase NOT IN ('COMPLETED', 'FAILED', 'CANCELLED');
-        END IF;
     END IF;
     RETURN NEW;
 END;
@@ -70,5 +72,6 @@ CREATE TRIGGER aidash_activation AFTER UPDATE OF response ON human_requests FOR 
 CREATE TRIGGER aidash_activation AFTER INSERT OR UPDATE OF state, expires_at ON core_records FOR EACH ROW EXECUTE FUNCTION aidash_activation_trigger();
 CREATE TRIGGER aidash_activation AFTER INSERT OR UPDATE OF initialized ON core_runs FOR EACH ROW EXECUTE FUNCTION aidash_activation_trigger();
 CREATE TRIGGER aidash_activation AFTER UPDATE OF state ON core_areas FOR EACH ROW EXECUTE FUNCTION aidash_activation_trigger();
-CREATE TRIGGER aidash_activation AFTER UPDATE OF transaction_id ON atomic_gate FOR EACH ROW EXECUTE FUNCTION aidash_activation_trigger();
+-- Gate closure preserves existing obligations: publication retries and consumer
+-- redelivery resume after release. Do not scan/activate unrelated Runs here.
 CREATE TRIGGER aidash_activation AFTER UPDATE OF status ON tasks FOR EACH ROW EXECUTE FUNCTION aidash_activation_trigger();

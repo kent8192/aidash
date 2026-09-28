@@ -51,9 +51,13 @@ credential issuance are deployment responsibilities.
 
 `run_activations` is an append-only obligation/disposition journal with independent
 requested generations. Generations are allocated by a database sequence; gaps do
-not imply settlement. Run/input, Task dependency completion, human response, approval, core admission/ordering,
-and visibility-release triggers append in the writer's transaction, including
-compatible old writers. `activation::request_in` is also available for #70's
+not imply settlement. Run/input, Task dependency completion, human response, approval,
+and core admission/ordering triggers append in the writer's transaction, including
+compatible old writers. Ordering release notifies only the next nonterminal Run
+after the head completes, preserving paused predecessors. Transaction visibility
+gates retain existing obligations; publication retries and consumer redelivery resume
+after release without appending notifications for unrelated Runs.
+`activation::request_in` is also available for #70's
 transactional recipient handoff. Trigger/function DDL is the documented SeaQuery
 exception; runtime queries use SeaQuery. No recipient selection is performed here.
 

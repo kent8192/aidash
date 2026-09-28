@@ -119,7 +119,6 @@ impl MigrationTrait for Migration {
 			"core_records",
 			"core_runs",
 			"core_areas",
-			"atomic_gate",
 		] {
 			m.get_connection()
 				.execute_unprepared(&format!("DROP TRIGGER aidash_activation ON {table}"))
