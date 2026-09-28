@@ -424,13 +424,29 @@ pub(crate) async fn persist(access: &mut Access, area: &Area) -> Result<()> {
 }
 
 pub(crate) async fn status(access: &mut Access, id: Uuid) -> Result<CleanupResult> {
-	let record = records::get(access, id, "cleanup").await?;
-	load(
-		access,
-		record.area_id.ok_or(Error::Forbidden)?,
-		"file.manage",
+	// The cleanup worker and restore path lock the area before its record.
+	// Discover the immutable association without locking, then use that order
+	// here too so status polling cannot deadlock the worker completing cleanup.
+	let area_id: Option<Uuid> = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("area_id"))
+			.from(Alias::new("core_records"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::cust("$2")))
+			.and_where(Expr::col(Alias::new("kind")).eq("cleanup"))
+			.to_string(PostgresQueryBuilder),
 	)
-	.await?;
+	.bind(id)
+	.bind(&access.identity.tenant)
+	.fetch_optional(&mut **access.tx)
+	.await?
+	.ok_or_else(|| Error::NotFound("resource unavailable".into()))?;
+	let area_id = area_id.ok_or(Error::Forbidden)?;
+	load(access, area_id, "file.manage").await?;
+	let record = records::get(access, id, "cleanup").await?;
+	if record.area_id != Some(area_id) {
+		return Err(Error::Forbidden);
+	}
 	result(&record)
 }
 pub(crate) async fn restore(

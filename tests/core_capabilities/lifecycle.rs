@@ -778,3 +778,102 @@ async fn failed_snapshot_preserves_active_files_and_interrupted_delete_is_reconc
 	assert_eq!(retry, result);
 	c.close().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn cleanup_status_does_not_block_the_worker_while_waiting_for_its_area(
+	#[future] capability_fixture: CoreFixture,
+) {
+	use sea_orm::sea_query::{
+		Alias, Expr, Func, LockBehavior, LockType, PostgresQueryBuilder, Query,
+	};
+	let c = Box::pin(capability_fixture).await;
+	let run = admit(&c).await;
+	let (status, area) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!("/api/runs/{}/working-area", run.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{area}");
+	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
+	let (status, cleanup) = request(&c.app, &c.token, "POST", &format!("/api/working-areas/{area_id}/cleanup"), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"choice":"recoverable"})).await;
+	assert_eq!(status, 200, "{cleanup}");
+	let operation_id: Uuid = serde_json::from_value(cleanup["operation_id"].clone()).unwrap();
+	// Pause a worker transaction after it has locked the area, before its record.
+	let mut worker = c.f.store.pool.begin().await.unwrap();
+	let lock = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("core_areas"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+		.lock(LockType::Update)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&lock)
+		.bind(area_id)
+		.fetch_one(&mut *worker)
+		.await
+		.unwrap();
+	let pid: i32 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Func::cust(Alias::new("pg_backend_pid")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *worker)
+	.await
+	.unwrap();
+	let app = c.app.clone();
+	let token = c.token.clone();
+	let polling = tokio::spawn(async move {
+		request(
+			&app,
+			&token,
+			"GET",
+			&format!("/api/file-cleanups/{operation_id}"),
+			Value::Null,
+		)
+		.await
+	});
+	let waiters = Query::select()
+		.expr(Func::count(Expr::col(Alias::new("pid"))))
+		.from(Alias::new("pg_stat_activity"))
+		.and_where(
+			Expr::val(pid).eq(Func::cust(Alias::new("ANY"))
+				.arg(Func::cust(Alias::new("pg_blocking_pids")).arg(Expr::col(Alias::new("pid"))))),
+		)
+		.to_string(PostgresQueryBuilder);
+	tokio::time::timeout(std::time::Duration::from_secs(10), async {
+		loop {
+			let waiting: i64 = sqlx::query_scalar(&waiters)
+				.fetch_one(&c.f.store.pool)
+				.await
+				.unwrap();
+			if waiting > 0 {
+				break;
+			}
+			tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+		}
+	})
+	.await
+	.expect("status request must be waiting for the worker's area lock");
+	let lock = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("core_records"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+		.lock_with_behavior(LockType::Update, LockBehavior::Nowait)
+		.to_string(PostgresQueryBuilder);
+	let acquired = sqlx::query(&lock)
+		.bind(operation_id)
+		.fetch_one(&mut *worker)
+		.await;
+	worker.rollback().await.unwrap();
+	let (status, value) = polling.await.unwrap();
+	assert!(
+		acquired.is_ok(),
+		"status must not hold the cleanup record while waiting for the worker: {acquired:?}"
+	);
+	assert_eq!(status, 200, "{value}");
+	assert_eq!(value["operation_id"], cleanup["operation_id"]);
+	c.close().await;
+}
