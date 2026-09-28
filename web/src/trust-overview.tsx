@@ -291,6 +291,21 @@ export function TrustOverview({
                   </li>
                 ))}
               </ul>
+              <h3>{text("Declared capabilities", "宣言済みcapability")}</h3>
+              {agent.capabilities.length ? (
+                <ul className="trust-list">
+                  {agent.capabilities.map((capability) => (
+                    <li key={capability}>{capability}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p>
+                  {text(
+                    "No capabilities declared.",
+                    "宣言済みcapabilityはありません。",
+                  )}
+                </p>
+              )}
               <p className="trust-caption">
                 {text(
                   "Agent configuration; effective access depends on policy.",

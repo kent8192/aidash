@@ -5,6 +5,12 @@ import {
   Download,
   History,
   Bot,
+  Boxes,
+  Database,
+  FlaskConical,
+  Settings2,
+  Wrench,
+  Zap,
   CheckCircle2,
   CircleAlert,
   FileText,
@@ -515,8 +521,8 @@ export function Workbench({
   const [transferOwner, setTransferOwner] = useState("");
   const [adoptRef, setAdoptRef] = useState("");
   const [inspection, setInspection] = useState<Inspection | null>(null);
-  const [incidents, setIncidents] = useState<Incident[]>([]);
   const [incidentsLoaded, setIncidentsLoaded] = useState(false);
+  const [incidents, setIncidents] = useState<Incident[]>([]);
   const [incidentFilter, setIncidentFilter] = useState("all");
   const [incidentSearch, setIncidentSearch] = useState("");
   const [incidentOwner, setIncidentOwner] = useState("");
@@ -1211,7 +1217,7 @@ export function Workbench({
       );
       setPendingTestId(session.status === "running" ? session.id : null);
       setTestInput((pending) => (pending === submittedMessage ? "" : pending));
-      setCreatorTab("test");
+      if (creatorTab !== "overview") setCreatorTab("test");
     } catch (cause) {
       setError(
         cause instanceof ApiError && cause.status === 409
@@ -1408,7 +1414,9 @@ export function Workbench({
   ]);
   const testPanel = (
     <section className="wb-card wb-test">
-      <h2>{t.test}</h2>
+      <h2>
+        <FlaskConical size={18} /> {t.test}
+      </h2>
       <p>
         {testMode === "real"
           ? locale === "ja-JP"
@@ -1624,8 +1632,8 @@ export function Workbench({
 
   const renderEditor = () =>
     !editing ? null : (
-      <div className="wb-stack">
-        <section className="wb-card">
+      <div className="wb-editor">
+        <section className="wb-card wb-span wb-profile">
           <h2>
             <Bot size={18} /> {t.profile}
           </h2>
@@ -1655,7 +1663,7 @@ export function Workbench({
                   })
                 }
               />
-              <small>{t.categoryHint}</small>
+              <small className="wb-profile-hint">{t.categoryHint}</small>
             </label>
             <label className="wb-span">
               {t.description}
@@ -1697,25 +1705,16 @@ export function Workbench({
                 }
               />
             </label>
-            <label className="wb-span">
-              {t.capabilities}
-              <input
-                value={editing.capabilities.join(", ")}
-                onChange={(event) =>
-                  change((value) => {
-                    value.capabilities = split(event.target.value);
-                  })
-                }
-              />
-            </label>
           </div>
         </section>
-        <section className="wb-card">
-          <h2>{t.build}</h2>
+        <section className="wb-card wb-span">
+          <h2>
+            <FileText size={18} /> {t.instructions}
+          </h2>
           <label>
             {t.instructions}
             <textarea
-              rows={7}
+              rows={4}
               value={editing.config.instructions}
               onChange={(event) =>
                 change((value) => {
@@ -1724,6 +1723,28 @@ export function Workbench({
               }
             />
           </label>
+        </section>
+        <section className="wb-card">
+          <h2>
+            <Zap size={18} /> {locale === "ja-JP" ? "能力" : "Capabilities"}
+          </h2>
+          <label>
+            {t.capabilities}
+            <input
+              value={editing.capabilities.join(", ")}
+              onChange={(event) =>
+                change((value) => {
+                  value.capabilities = split(event.target.value);
+                })
+              }
+            />
+          </label>
+          <p className="wb-hint">{t.permission}</p>
+        </section>
+        <section className="wb-card">
+          <h2>
+            <Boxes size={18} /> {t.model}
+          </h2>
           <div className="wb-fields">
             <label>
               {t.model}
@@ -1768,6 +1789,11 @@ export function Workbench({
               />
             </label>
           </div>
+        </section>
+        <section className="wb-card">
+          <h2>
+            <Wrench size={18} /> {t.tools} &amp; {t.skills}
+          </h2>
           <div className="wb-checklist">
             <fieldset>
               <legend>{t.skills}</legend>
@@ -1825,22 +1851,11 @@ export function Workbench({
         </section>
         <section className="wb-card wb-behavior">
           <h2>
-            {locale === "ja-JP"
-              ? "ワークスペースでの動作"
-              : "Workspace behavior"}
+            <Database size={18} />{" "}
+            {locale === "ja-JP" ? "メモリとコンテキスト" : "Memory & context"}
           </h2>
           {(
             [
-              [
-                "allow_task_creation",
-                locale === "ja-JP"
-                  ? "タスクの自動作成"
-                  : "Automatic task creation",
-              ],
-              [
-                "allow_task_delegation",
-                locale === "ja-JP" ? "自動委任" : "Automatic delegation",
-              ],
               [
                 "allow_memory_write",
                 locale === "ja-JP"
@@ -1874,13 +1889,48 @@ export function Workbench({
               {title}
             </label>
           ))}
+        </section>
+        <section className="wb-card wb-behavior wb-span">
+          <h2>
+            <Settings2 size={18} />
+            {locale === "ja-JP"
+              ? "ワークスペースでの動作"
+              : "Workspace behavior"}
+          </h2>
+          {(
+            [
+              [
+                "allow_task_creation",
+                locale === "ja-JP"
+                  ? "タスクの自動作成"
+                  : "Automatic task creation",
+              ],
+              [
+                "allow_task_delegation",
+                locale === "ja-JP" ? "自動委任" : "Automatic delegation",
+              ],
+            ] as const
+          ).map(([key, title]) => (
+            <label key={key}>
+              <input
+                type="checkbox"
+                checked={editing.config[key] === true}
+                onChange={(event) =>
+                  change((value) => {
+                    value.config[key] = event.target.checked;
+                  })
+                }
+              />
+              {title}
+            </label>
+          ))}
           <p>
             {locale === "ja-JP"
               ? "ここで許可しても、既存の権限ポリシーは広がりません。"
               : "These settings never expand existing permissions."}
           </p>
         </section>
-        <section className="wb-card">
+        <section className="wb-card wb-span">
           <h2>
             <FileText size={18} /> {t.docs}
           </h2>
@@ -2401,6 +2451,9 @@ export function Workbench({
     />
   );
 
+  const selectedModel = editing
+    ? models.find((model) => refKey(model) === refKey(editing.config.model))
+    : undefined;
   const heroEntry = mode === "creator" ? editing : selectedAgent;
   const heroIcon = heroEntry ? profile(heroEntry).icon : undefined;
   return (
@@ -2434,10 +2487,10 @@ export function Workbench({
                   ? `${selectedAgent.id} · ${selectedAgent.version} · ${t.source}: ${data.node.id}`
                   : t.safe}
             </p>
-            {mode === "trust" && selectedAgent && (
+            {heroEntry && (
               <p className="wb-description">
-                {selectedAgent.description[locale.slice(0, 2)] ||
-                  selectedAgent.description.en}
+                {heroEntry.description[locale.slice(0, 2)] ||
+                  heroEntry.description.en}
               </p>
             )}
           </div>
@@ -2594,31 +2647,31 @@ export function Workbench({
                   className={creatorTab === "overview" ? "active" : ""}
                   onClick={() => setCreatorTab("overview")}
                 >
-                  {t.overview}
+                  <FileText size={15} /> {t.overview}
                 </button>
                 <button
                   className={creatorTab === "build" ? "active" : ""}
                   onClick={() => setCreatorTab("build")}
                 >
-                  {t.build}
+                  <Settings2 size={15} /> {t.build}
                 </button>
                 <button
                   className={creatorTab === "test" ? "active" : ""}
                   onClick={() => setCreatorTab("test")}
                 >
-                  {t.test}
+                  <FlaskConical size={15} /> {t.test}
                 </button>
                 <button
                   className={creatorTab === "versions" ? "active" : ""}
                   onClick={() => setCreatorTab("versions")}
                 >
-                  {t.versions}
+                  <History size={15} /> {t.versions}
                 </button>
                 <button
                   className={creatorTab === "register" ? "active" : ""}
                   onClick={() => setCreatorTab("register")}
                 >
-                  {t.register}
+                  <Boxes size={15} /> {t.register}
                 </button>
               </nav>
               <div
@@ -2919,15 +2972,49 @@ export function Workbench({
                         <h2>
                           <CheckCircle2 size={18} /> {t.validate}
                         </h2>
-                        <p>
+                        <p
+                          className={`wb-validation ${validation?.revision === current.revision && validation.valid ? "valid" : ""}`}
+                        >
                           {validation?.revision === current.revision
                             ? validation.message
-                            : t.noTests}
+                            : locale === "ja-JP"
+                              ? "この版の技術検証は未実施です。"
+                              : "This revision has not been validated."}
                         </p>
+                        <dl className="wb-facts">
+                          <div>
+                            <dt>{t.model}</dt>
+                            <dd>
+                              {editing?.config.model.id
+                                ? locale === "ja-JP"
+                                  ? "選択済み"
+                                  : "Selected"
+                                : t.noModel}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>{t.test}</dt>
+                            <dd>
+                              {
+                                testSessions.filter(
+                                  (session) =>
+                                    session.revision === current.revision,
+                                ).length
+                              }{" "}
+                              {locale === "ja-JP" ? "件の記録" : "records"}
+                            </dd>
+                          </div>
+                        </dl>
                       </section>
                       <section className="wb-card">
-                        <h2>{t.dependencies}</h2>
-                        <p>{editing?.config.model.id || t.noModel}</p>
+                        <h2>
+                          <Boxes size={18} /> {t.dependencies}
+                        </h2>
+                        <p>
+                          {selectedModel
+                            ? label(selectedModel, locale)
+                            : editing?.config.model.id || t.noModel}
+                        </p>
                         <p>
                           {editing?.config.skills.length ?? 0} Skills ·{" "}
                           {editing?.config.tools.length ?? 0} {t.tools}
@@ -2940,11 +3027,46 @@ export function Workbench({
                         <p>{t.permission}</p>
                       </section>
                       <section className="wb-card">
-                        <h2>{t.version}</h2>
-                        <p>
-                          {editing?.version} · r{baseRevision}
-                        </p>
-                        <p>{releaseNotes || "—"}</p>
+                        <h2>
+                          <History size={18} /> {t.version}
+                        </h2>
+                        <dl className="wb-facts">
+                          <div>
+                            <dt>{t.version}</dt>
+                            <dd>
+                              {editing?.version} · r{baseRevision}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>{t.operatorOwner}</dt>
+                            <dd>{current.owner}</dd>
+                          </div>
+                          <div>
+                            <dt>
+                              {locale === "ja-JP" ? "更新日時" : "Updated"}
+                            </dt>
+                            <dd>
+                              {new Date(current.updated_at).toLocaleString(
+                                locale,
+                              )}
+                            </dd>
+                          </div>
+                        </dl>
+                        {creatorTab === "register" ? (
+                          <p>{releaseNotes || "—"}</p>
+                        ) : (
+                          <label>
+                            {t.release}
+                            <textarea
+                              rows={3}
+                              value={releaseNotes}
+                              onChange={(event) => {
+                                setReleaseNotes(event.target.value);
+                                setDirty(true);
+                              }}
+                            />
+                          </label>
+                        )}
                       </section>
                     </div>
                   </aside>

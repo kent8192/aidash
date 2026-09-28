@@ -133,6 +133,21 @@ test("Creator opens and edits a focused draft beyond the first page", async ({
   expect(saves[0].id).toBe("00000000-0000-7000-8000-000000000001");
 });
 
+test("Register has one release-notes editor", async ({ page }) => {
+  await editableDrafts(page);
+  await page
+    .getByRole("navigation", { name: "Creator" })
+    .getByRole("button", { name: "Register in Registry" })
+    .click();
+  const notes = page.getByRole("textbox", {
+    name: "Release notes",
+    exact: true,
+  });
+  await expect(notes).toHaveCount(1);
+  await notes.fill("Ready for registration");
+  await expect(notes).toHaveValue("Ready for registration");
+});
+
 test("Creator retains dirty edits after a background refresh error", async ({
   page,
 }) => {
@@ -778,6 +793,17 @@ for (const width of [1280, 390]) {
       });
     });
     await page.goto("/trust?focus=managed-agent%401.0.0");
+    await expect(
+      page.getByRole("heading", { name: "Declared capabilities", exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText("summarize", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText(
+        "Agent configuration; effective access depends on policy.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+
     await expect(page.locator(".trust-overview")).toBeVisible();
     await page.screenshot({
       path: testInfo.outputPath("overview.png"),

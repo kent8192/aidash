@@ -1,9 +1,4 @@
 .wb-page.wb-trust-page {
-  --wb-bg: #090f1b;
-  --wb-card: #101b29;
-  --wb-line: #223047;
-  --wb-muted: #a3b1ca;
-  --wb-violet: #6653ed;
   padding: 20px 20px 36px;
 }
 .wb-trust-page .wb-header h1 {
@@ -17,8 +12,8 @@
   margin-top: 5px;
 }
 .wb-trust-page .wb-hero-icon {
-  background: #173f38;
-  border-color: #23534a;
+  background: #e7eee4;
+  border-color: #d5e3d7;
 }
 .wb-trust-page .wb-picker {
   margin: 8px 0 14px;
@@ -69,7 +64,7 @@
   gap: 9px;
 }
 .trust-overview h2 svg {
-  color: #8582ff;
+  color: var(--wb-accent);
   flex-shrink: 0;
 }
 .trust-overview p {
@@ -90,7 +85,7 @@
 }
 .trust-metric h2 {
   margin: 0;
-  color: #afbdd8;
+  color: var(--wb-muted);
   font-size: 11px;
 }
 .trust-metric strong {
@@ -110,7 +105,7 @@
   min-width: 0;
 }
 .trust-overview .trust-large {
-  color: #d8d8fc;
+  color: var(--wb-text);
   font-size: 23px;
   font-weight: 600;
   margin: 6px 0;
@@ -134,7 +129,7 @@
   justify-content: space-between;
   gap: 12px;
   padding: 9px 0;
-  border-bottom: 1px solid #233047;
+  border-bottom: 1px solid var(--wb-line);
 }
 .trust-facts dt {
   color: var(--wb-muted);
@@ -151,7 +146,7 @@
   margin: 0;
 }
 .trust-list > li {
-  border-bottom: 1px solid #233047;
+  border-bottom: 1px solid var(--wb-line);
   padding: 9px 0;
   min-width: 0;
   font-size: 11px;
@@ -178,20 +173,20 @@
   padding: 3px 8px;
   font-size: 10px;
   white-space: nowrap;
-  color: #b6c2da;
-  background: #202e45;
+  color: #43594b;
+  background: #e7eee4;
 }
 .trust-badge.success {
-  color: #66dfb0;
-  background: #103b32;
+  color: #24613b;
+  background: #e4f3e7;
 }
 .trust-badge.danger {
-  color: #ff7895;
-  background: #3e1c30;
+  color: #a33149;
+  background: #fbe9ed;
 }
 .trust-badge.warning {
-  color: #eed176;
-  background: #3e351c;
+  color: #806017;
+  background: #fff4d6;
 }
 .trust-overview .trust-link {
   display: inline-flex;
@@ -199,7 +194,7 @@
   gap: 7px;
   background: transparent;
   border: 0;
-  color: #aaa1ff;
+  color: var(--wb-accent);
   padding: 0;
   margin-top: 15px;
   align-self: flex-start;
@@ -207,7 +202,7 @@
   text-align: left;
 }
 .trust-overview .trust-link:hover {
-  color: #dad5ff;
+  color: #204e32;
   text-decoration: underline;
 }
 .trust-unassessed {
@@ -215,7 +210,7 @@
   gap: 16px;
   align-items: center;
   padding: 12px 0;
-  color: #8582ff;
+  color: var(--wb-accent);
 }
 .trust-matrix {
   grid-column: span 2;
@@ -248,7 +243,7 @@
 .trust-overview meter {
   width: 100%;
   height: 12px;
-  accent-color: #62dba4;
+  accent-color: var(--wb-accent);
 }
 .trust-rail .trust-card h2 {
   font-size: 14px;
@@ -314,7 +309,7 @@
   font-size: 15px;
 }
 .trust-detail-main h2 svg {
-  color: #8582ff;
+  color: var(--wb-accent);
 }
 .trust-detail-main p {
   font-size: 12px;
@@ -330,12 +325,12 @@
   overflow-wrap: anywhere;
 }
 .trust-detail-main .wb-policy th {
-  background: #152134;
+  background: #edf3e9;
   padding: 12px 8px;
 }
 .trust-detail-main .wb-policy > button {
   justify-self: start;
-  background: #5141cc;
+  background: var(--wb-accent);
 }
 .trust-incident-layout {
   display: grid;
@@ -352,7 +347,7 @@
   border: 1px solid var(--wb-line);
   border-radius: 8px;
   padding: 14px;
-  background: #0d1623;
+  background: #fbfcf9;
 }
 .trust-detail-main .wb-incidents article button {
   margin: 12px 6px 0 0;
@@ -372,7 +367,7 @@
 .trust-detail-main .wb-audit ol {
   list-style: none;
   padding: 0 0 0 18px;
-  border-left: 2px solid #5141cc;
+  border-left: 2px solid var(--wb-accent);
 }
 .trust-detail-main .wb-audit li {
   padding: 16px 0;
@@ -387,13 +382,13 @@
   font-size: 13px;
 }
 .trust-detail-main .wb-audit details {
-  background: #0c1420;
+  background: #fbfcf9;
   padding: 10px;
   border: 1px solid var(--wb-line);
   border-radius: 7px;
 }
 .trust-detail-main summary {
-  color: #b6adff;
+  color: var(--wb-accent);
   cursor: pointer;
   font-size: 12px;
 }
@@ -439,7 +434,7 @@
   gap: 16px;
 }
 .trust-policy-metrics svg {
-  color: #8880ff;
+  color: var(--wb-accent);
   flex-shrink: 0;
 }
 .trust-policy-metrics span {
@@ -466,7 +461,7 @@
   min-height: 230px;
   padding: 32px 20px;
   gap: 12px;
-  color: #a7a0fa;
+  color: var(--wb-muted);
 }
 .trust-empty-state h3 {
   color: var(--wb-text);
@@ -484,7 +479,7 @@
   padding: 16px;
   border: 1px solid var(--wb-line);
   border-radius: 50%;
-  background: #162035;
+  background: #e7eee4;
 }
 .trust-panel-heading {
   display: flex;
@@ -513,8 +508,8 @@
   text-align: left;
 }
 .trust-timeline button[aria-pressed="true"] {
-  border-color: #8678f5;
-  background: #222941;
+  border-color: #99c8a2;
+  background: #e7eee4;
 }
 .trust-event-title {
   display: flex;
@@ -522,10 +517,10 @@
   gap: 10px;
 }
 .trust-event-title svg {
-  color: #9d93ff;
+  color: var(--wb-accent);
 }
 .trust-event-details pre {
-  background: #0b1320;
+  background: #fbfcf9;
   border: 1px solid var(--wb-line);
   border-radius: 8px;
   padding: 16px;
@@ -557,7 +552,7 @@
   flex-direction: column;
 }
 .trust-evidence-links > .wb-card > svg {
-  color: #9d93ff;
+  color: var(--wb-accent);
 }
 .trust-evidence-links h3 {
   font-size: 14px;
@@ -571,7 +566,7 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  color: #aaa1ff;
+  color: var(--wb-accent);
   background: transparent;
   border: 0;
   padding: 0;
@@ -579,7 +574,7 @@
   font-size: 12px;
 }
 .wb-trust-page .trust-link:hover {
-  color: #dad5ff;
+  color: #204e32;
   text-decoration: underline;
 }
 .trust-evidence-inputs {
@@ -607,7 +602,7 @@
   margin: 20px 0 8px;
 }
 .trust-detail-layout .trust-rail svg {
-  color: #a69ffd;
+  color: var(--wb-accent);
   flex-shrink: 0;
 }
 .trust-detail-layout .trust-rail p {
@@ -615,7 +610,7 @@
   line-height: 1.65;
 }
 .trust-detail-layout .trust-rail .trust-large {
-  color: #c1baf9;
+  color: var(--wb-text);
   font-size: 24px;
   margin: 8px 0 16px;
 }
@@ -644,7 +639,7 @@
 
 .collab-workspace.wide .collab-main:has(.wb-trust-page) {
   padding: 0;
-  background: #090f1b;
+  background: #f5f7f3;
 }
 
 .wb-trust-page .wb-picker label {
@@ -677,7 +672,7 @@
   color: var(--wb-text);
 }
 .wb-trust-page .wb-policy tbody tr:hover td {
-  background: #152134;
+  background: #edf3e9;
 }
 .wb-trust-page .wb-policy th,
 .wb-trust-page .wb-policy td {

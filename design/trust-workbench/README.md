@@ -1,6 +1,6 @@
 # Trust Workbench detail tab proposals
 
-Status: all four designs approved by the user. Generated with imagegen from the supplied Overview reference.
+Status: all four layouts approved by the user. Generated with imagegen from the supplied Overview reference. The subsequent request to incorporate #69 adopts its shared white/sage/forest-green palette while retaining these detail layouts.
 
 - [Policies](policies.png): contextual permission inputs, decision summary, permission matrix.
 - [Audit](audit.png): timeline, event details and pagination, evidence scope.
