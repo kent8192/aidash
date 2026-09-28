@@ -1,5 +1,10 @@
 # Kubernetes and k3s
 
+The [v0.1.0 nonfunctional release requirements](operations/nonfunctional-release.md)
+define the proposed deployment, performance, recovery and alert acceptance
+boundaries. This orchestration scenario verifies a functional fixture; its
+replica defaults and four-task run are not approved scale or availability targets.
+
 The Helm chart deploys one stable Aidash node as separate server and worker
 Deployments. Install the same chart twice for two independent nodes. Each node
 needs its own PostgreSQL database and node ID; every replica of that node uses
