@@ -79,8 +79,7 @@ def checked_download(url, checksum):
     return data
 
 
-def mount_data():
-    device = "/dev/disk/by-id/google-aidash-data"
+def mount_disk(device, destination):
     for _ in range(60):
         if Path(device).exists():
             break
@@ -100,14 +99,18 @@ def mount_data():
         command("mkfs.ext4", "-F", device)
     elif filesystem != "ext4":
         raise RuntimeError("unexpected retained data filesystem")
-    ROOT.mkdir(parents=True, exist_ok=True)
-    if not os.path.ismount(ROOT):
-        command("mount", device, ROOT)
-    line = f"{device} {ROOT} ext4 defaults 0 2\n"
+    destination.mkdir(parents=True, exist_ok=True)
+    if not os.path.ismount(destination):
+        command("mount", device, destination)
+    line = f"{device} {destination} ext4 defaults 0 2\n"
     fstab = Path("/etc/fstab")
     if line not in fstab.read_text():
         with fstab.open("a") as file:
             file.write(line)
+
+
+def mount_data():
+    mount_disk("/dev/disk/by-id/google-aidash-data", ROOT)
     for name in (
         "objects",
         "journal",
@@ -378,6 +381,11 @@ def install():
     private(RUN / "draining", "bootstrap\n", 0o644)
     (RUN / "serving").unlink(missing_ok=True)
     mount_data()
+    host = json.loads((BUNDLE / "host.json").read_text())
+    # Stop Caddy before changing its store, including on a resumed retained VM.
+    command("systemctl", "stop", "caddy", check=False)
+    if host.get("preview"):
+        mount_disk("/dev/disk/by-id/google-aidash-preview-tls", ROOT / "tls")
     command("apt-get", "update", "-qq", timeout=240)
     command(
         "apt-get",
@@ -408,7 +416,6 @@ def install():
     command("systemctl", "kill", "--signal=SIGCONT", "aidash-runner", check=False)
     command("systemctl", "stop", "aidash-runner", check=False)
     command("systemctl", "restart", "docker")
-    host = json.loads((BUNDLE / "host.json").read_text())
     release = json.loads((BUNDLE / "release.json").read_text())
     configuration(host)
     configure_runtime()
@@ -571,15 +578,12 @@ WantedBy=multi-user.target
         f"{host['hostname']} {{\n  reverse_proxy 127.0.0.1:8088\n}}\n",
         0o644,
     )
-    # Caddy's cert/account storage survives VM replacement on the retained data disk.
-    os.chown(
-        ROOT / "tls",
-        int(command("id", "-u", "caddy")),
-        int(command("id", "-g", "caddy")),
-    )
+    # Previews share this store across PRs; other hosts retain it with their data.
+    # The Caddy uid can differ between images used by successive previews.
+    command("chown", "-R", "caddy:caddy", ROOT / "tls")
     private(
         "/etc/systemd/system/caddy.service.d/aidash.conf",
-        "[Service]\nEnvironment=XDG_DATA_HOME=/var/lib/aidash/tls\nReadWritePaths=/var/lib/aidash/tls\n",
+        "[Unit]\nRequiresMountsFor=/var/lib/aidash/tls\n[Service]\nEnvironment=XDG_DATA_HOME=/var/lib/aidash/tls\nReadWritePaths=/var/lib/aidash/tls\n",
         0o644,
     )
     private(

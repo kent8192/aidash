@@ -1,3 +1,14 @@
+// The hostname belongs to the preview slot, not to an individual PR. Keep its
+// certificate/account store even when the last PR environment is destroyed.
+resource "google_compute_disk" "preview_tls" {
+  name   = "aidash-preview-tls"
+  zone   = "us-central1-a"
+  type   = "pd-balanced"
+  size   = 10
+  labels = { application = "aidash", lifecycle = "nonproduction", purpose = "preview-tls" }
+  lifecycle { prevent_destroy = true }
+}
+
 module "environment" {
   source   = "../modules/environment"
   for_each = var.environments
@@ -8,6 +19,7 @@ module "environment" {
   hostname               = "${each.value.kind == "pr" ? "preview" : each.value.kind}.${var.domain}"
   release_bucket         = var.release_bucket
   deploy_service_account = var.deploy_service_account
+  preview_tls_disk       = each.value.kind == "pr" ? google_compute_disk.preview_tls.id : null
 }
 
 resource "cloudflare_dns_record" "environment" {

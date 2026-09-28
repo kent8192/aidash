@@ -117,6 +117,13 @@ resource "google_compute_instance" "host" {
     source      = google_compute_disk.data.id
     device_name = "aidash-data"
   }
+  dynamic "attached_disk" {
+    for_each = var.environment.kind == "pr" && var.environment.running ? [var.preview_tls_disk] : []
+    content {
+      source      = attached_disk.value
+      device_name = "aidash-preview-tls"
+    }
+  }
   network_interface {
     subnetwork = google_compute_subnetwork.environment.id
     access_config {}
@@ -147,6 +154,7 @@ resource "google_compute_instance" "host" {
       sha256   = var.environment.bundle_sha256
       hostname = var.hostname
       secret   = google_secret_manager_secret.runtime.secret_id
+      preview  = var.environment.kind == "pr"
     })
   }
   depends_on = [
@@ -155,7 +163,13 @@ resource "google_compute_instance" "host" {
   ]
   # Refreshing another environment must never undo Spot preemption or an OS
   # shutdown. The trusted controller performs explicit power operations.
-  lifecycle { ignore_changes = [desired_status] }
+  lifecycle {
+    ignore_changes = [desired_status]
+    precondition {
+      condition     = var.environment.kind != "pr" || var.preview_tls_disk != null
+      error_message = "PR environments must use the shared preview TLS disk."
+    }
+  }
 }
 
 output "instance" { value = local.name }

@@ -95,7 +95,7 @@ class ReconcileTests(unittest.TestCase):
             "ci_success": lambda *args: None,
             "provision_secret": lambda *args: None,
             "restart_bootstrap": lambda *args: self.calls.append(
-                ("bootstrap", args[1]["instance"])
+                ("bootstrap", args[1]["instance"], args[2])
             ),
             "public_health": lambda *args: None,
             "github": self.github,
@@ -165,6 +165,18 @@ class ReconcileTests(unittest.TestCase):
         self.assertNotIn(("start", "test"), self.calls)
         self.assertFalse(self.cloud.managed["test"]["published"])
 
+    def test_resumed_and_replaced_hosts_wait_for_their_boot_script(self):
+        self.request()
+        self.reconcile()
+        self.request(action="stop")
+        self.reconcile()
+        self.request(action="resume")
+        self.reconcile()
+        self.assertEqual(self.calls.count(("bootstrap", "test", True)), 2)
+        self.request(action="resume", mode="normal")
+        self.reconcile()
+        self.assertEqual(self.calls.count(("bootstrap", "test", True)), 3)
+
     def test_missing_vm_is_removed_from_intent_before_any_other_apply(self):
         self.request()
         self.reconcile()
@@ -194,6 +206,8 @@ class ReconcileTests(unittest.TestCase):
         self.busy = False
         self.reconcile()
         self.assertEqual(self.cloud.managed["pr-1"]["release_sha"], "c" * 40)
+        self.assertIn(("bootstrap", "pr-1", True), self.calls)
+        self.assertEqual(self.calls.count(("bootstrap", "pr-1", False)), 1)
 
     def test_failed_bootstrap_waits_for_explicit_retry_and_keeps_data(self):
         self.request()
@@ -207,11 +221,11 @@ class ReconcileTests(unittest.TestCase):
         self.assertFalse(self.cloud.managed["test"]["published"])
         self.calls.clear()
         self.reconcile()
-        self.assertNotIn(("bootstrap", "test"), self.calls)
+        self.assertFalse(any(call[0] == "bootstrap" for call in self.calls))
         self.request(action="resume", force=True)
         self.reconcile()
         self.assertEqual(self.store.state["environments"]["test"]["status"], "ready")
-        self.assertIn(("bootstrap", "test"), self.calls)
+        self.assertIn(("bootstrap", "test", False), self.calls)
         self.assertFalse(any(retiring for _, retiring in self.cloud.plans))
 
     def test_stop_waits_for_work_and_destroy_only_retires_its_owned_environment(self):
@@ -307,7 +321,7 @@ class ReconcileTests(unittest.TestCase):
                 self.reconcile()
                 self.assertEqual(self.cloud.status["test"], "TERMINATED")
                 self.assertNotIn(("start", "test"), self.calls)
-                self.assertNotIn(("bootstrap", "test"), self.calls)
+                self.assertFalse(any(call[0] == "bootstrap" for call in self.calls))
 
     def test_accepted_stop_fences_an_older_create_before_any_apply(self):
         self.request()
@@ -315,6 +329,78 @@ class ReconcileTests(unittest.TestCase):
         self.reconcile()
         self.assertFalse(self.cloud.plans)
         self.assertFalse(self.calls)
+
+
+class BootstrapTests(unittest.TestCase):
+    def test_initial_boot_is_waited_out_and_only_failure_or_update_restarts(self):
+        for fresh_boot, failed, expected_restarts in (
+            (True, False, 0),
+            (True, True, 1),
+            (False, False, 1),
+        ):
+            with self.subTest(fresh_boot=fresh_boot, failed=failed):
+                observations = iter(
+                    [
+                        b"ActiveState=inactive\nResult=success\nExecMainStatus=0\nExecMainStartTimestampMonotonic=0\nExecMainExitTimestampMonotonic=0\n",
+                        b"ActiveState=activating\nResult=success\nExecMainStatus=0\nExecMainStartTimestampMonotonic=1\nExecMainExitTimestampMonotonic=0\n",
+                        (
+                            b"ActiveState=failed\nResult=exit-code\nExecMainStatus=1\n"
+                            if failed
+                            else b"ActiveState=inactive\nResult=success\nExecMainStatus=0\n"
+                        )
+                        + b"ExecMainStartTimestampMonotonic=1\nExecMainExitTimestampMonotonic=2\n",
+                    ]
+                )
+                finished = False
+                restarts = []
+
+                def run(*args, observations=observations, restarts=restarts, **kwargs):
+                    nonlocal finished
+                    remote = args[args.index("--command") + 1]
+                    if remote == "true":
+                        return b""
+                    if "show" in remote:
+                        state = next(observations)
+                        finished = b"ExecMainExitTimestampMonotonic=2" in state
+                        return state
+                    if "restart" in remote:
+                        self.assertTrue(
+                            finished,
+                            "must not interrupt an active or pending bootstrap",
+                        )
+                        restarts.append(remote)
+                        return b""
+                    self.fail(f"unexpected remote operation: {remote}")
+
+                with (
+                    patch.object(controller, "run", run),
+                    patch.object(controller.time, "sleep"),
+                ):
+                    controller.restart_bootstrap(
+                        {"project_id": "fixture"},
+                        {"instance": "fixture", "zone": "us-central1-a"},
+                        fresh_boot,
+                    )
+                self.assertEqual(len(restarts), expected_restarts)
+
+    def test_unfinished_bootstrap_times_out_without_replaying(self):
+        active = b"ActiveState=activating\nResult=success\nExecMainStatus=0\nExecMainStartTimestampMonotonic=1\nExecMainExitTimestampMonotonic=0\n"
+
+        def run(*args, **kwargs):
+            remote = args[args.index("--command") + 1]
+            self.assertNotIn("restart", remote)
+            return active
+
+        with (
+            patch.object(controller, "run", run),
+            patch.object(controller.time, "sleep"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "startup script did not finish"):
+                controller.restart_bootstrap(
+                    {"project_id": "fixture"},
+                    {"instance": "fixture", "zone": "us-central1-a"},
+                    True,
+                )
 
 
 if __name__ == "__main__":

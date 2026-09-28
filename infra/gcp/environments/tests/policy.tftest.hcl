@@ -14,6 +14,10 @@ run "empty_has_no_hosts_or_dns" {
     condition     = length(module.environment) == 0 && length(cloudflare_dns_record.environment) == 0
     error_message = "An unrequested environment must not be provisioned."
   }
+  assert {
+    condition     = google_compute_disk.preview_tls.name == "aidash-preview-tls" && google_compute_disk.preview_tls.size == 10
+    error_message = "The preview TLS store must survive even when every PR is retired."
+  }
 }
 
 run "stopped_retains_host_and_disks_without_dns" {

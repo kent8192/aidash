@@ -26,6 +26,14 @@ disks and identity; `destroy` deletes that environment's disks and secret. A
 closed/merged PR is destroyed by reconciliation, regardless of its build result.
 Reopening it requires a fresh explicit request.
 
+The preview hostname has a separate 10 GiB `aidash-preview-tls` disk managed by
+`environments/`, with Terraform destruction protection. Only the running preview
+attaches it; stop detaches it before another PR can use the slot. Caddy mounts it
+at `/var/lib/aidash/tls`, preserving certificates and ACME accounts across PR
+replacement and retirement. It contains no application data and remains allocated
+after the last PR is destroyed. Develop/test keep TLS state on their own data disks.
+Do not delete the shared store during routine PR cleanup.
+
 Push/CI completion never creates a missing environment or wakes a stopped host.
 An active shared develop or opted-in same-repository PR follows its current,
 CI-successful SHA. Test environments remain pinned. Updates wait for active
@@ -188,6 +196,13 @@ immediate apply job finds the lock busy. Inspect Actions
 logs and `lifecycle/state.json` in the private state bucket for ready/pending/
 interrupted/failed state, source and digests. A build artifact alone is not proof
 of a successful deployment.
+
+A newly created, resumed or replaced VM runs the Compute Engine startup script
+once at boot. The controller waits for that service to finish; only a failed
+initial run gets one explicit retry after credentials are provisioned. An update
+to a running VM waits for any existing bootstrap before explicitly restarting it.
+A timeout leaves the generation failed for operator inspection, without replaying
+an install whose outcome is unknown.
 
 ## Idle stop, updates and failure recovery
 

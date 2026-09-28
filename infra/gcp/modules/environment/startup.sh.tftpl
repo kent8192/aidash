@@ -21,6 +21,7 @@ with tarfile.open(archive) as tar:
             raise SystemExit('invalid bootstrap archive member')
     tar.extractall(root, filter='data')
 configuration = {'project': '${project}', 'hostname': '${hostname}', 'secret': '${secret}'}
+configuration['preview'] = '${preview}' == 'true'
 (root / 'host.json').write_text(json.dumps(configuration))
 PY
 exec /usr/bin/python3 /opt/aidash/bootstrap/host.py install

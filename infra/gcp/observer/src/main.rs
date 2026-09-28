@@ -214,7 +214,14 @@ async fn observe(database_url: &str) -> Result<Value, Error> {
 		(
 			"agent_test_sessions",
 			"status",
-			vec!["completed", "failed", "cancelled"],
+			vec![
+				"completed",
+				"failed",
+				"blocked",
+				"timed_out",
+				"outcome_unknown",
+				"stopped",
+			],
 		),
 	] {
 		let query = Query::select()
@@ -376,6 +383,60 @@ mod tests {
 				.as_f64()
 				.unwrap() > 1_000_000_000.0
 		);
+		let previous = observe(&url).await?["last_work_completed"]
+			.as_f64()
+			.unwrap();
+		// Each terminal outcome can begin and finish between observation samples.
+		for (index, status) in [
+			"completed",
+			"failed",
+			"blocked",
+			"timed_out",
+			"outcome_unknown",
+			"stopped",
+		]
+		.into_iter()
+		.enumerate()
+		{
+			let completed = previous + 10.0 + index as f64;
+			let insert = Query::insert()
+				.into_table(Alias::new("agent_test_sessions"))
+				.columns(["status", "updated_at"].map(Alias::new))
+				.values([
+					Expr::val(status).into(),
+					Func::cust(Alias::new("to_timestamp")).arg(completed).into(),
+				])?
+				.to_owned();
+			database.execute(DbBackend::Postgres.build(&insert)).await?;
+			let snapshot = observe(&url).await?;
+			assert_eq!(snapshot["busy"], false, "terminal test status {status}");
+			assert_eq!(
+				snapshot["last_work_completed"].as_f64().unwrap(),
+				completed,
+				"terminal test status {status}"
+			);
+		}
+		let insert = Query::insert()
+			.into_table(Alias::new("agent_test_sessions"))
+			.columns(["status", "updated_at"].map(Alias::new))
+			.values([
+				Expr::val("running").into(),
+				Func::cust(Alias::new("to_timestamp"))
+					.arg(previous + 100.0)
+					.into(),
+			])?
+			.to_owned();
+		database.execute(DbBackend::Postgres.build(&insert)).await?;
+		let snapshot = observe(&url).await?;
+		assert_eq!(snapshot["counts"]["verification"], 1);
+		assert_eq!(
+			snapshot["last_work_completed"].as_f64().unwrap(),
+			previous + 15.0
+		);
+		let delete = Query::delete()
+			.from_table(Alias::new("agent_test_sessions"))
+			.to_owned();
+		database.execute(DbBackend::Postgres.build(&delete)).await?;
 		for (id, kind, state) in [
 			(
 				"00000000-0000-0000-0000-000000000001",

@@ -381,32 +381,8 @@ def provision_secret(config, output, kind):
         )
 
 
-def restart_bootstrap(config, output):
-    # The first SSH connection may race OS Login/sshd initialization. Retry only
-    # a harmless readiness command; never blindly replay a timed-out install.
-    for attempt in range(12):
-        try:
-            run(
-                "gcloud",
-                "compute",
-                "ssh",
-                output["instance"],
-                "--project",
-                config["project_id"],
-                "--zone",
-                output["zone"],
-                "--tunnel-through-iap",
-                "--quiet",
-                "--command",
-                "true",
-                timeout=30,
-            )
-            break
-        except (RuntimeError, TimeoutError, subprocess.TimeoutExpired):
-            if attempt == 11:
-                raise
-            time.sleep(5)
-    run(
+def restart_bootstrap(config, output, fresh_boot=False):
+    ssh = (
         "gcloud",
         "compute",
         "ssh",
@@ -418,8 +394,52 @@ def restart_bootstrap(config, output):
         "--tunnel-through-iap",
         "--quiet",
         "--command",
-        "sudo systemctl restart google-startup-scripts.service",
-        timeout=1500,
+    )
+    # OS Login readiness says nothing about the boot-time oneshot service.
+    for attempt in range(12):
+        try:
+            run(*ssh, "true", timeout=30)
+            break
+        except (RuntimeError, TimeoutError, subprocess.TimeoutExpired):
+            if attempt == 11:
+                raise
+            time.sleep(5)
+    for _ in range(300):
+        value = run(
+            *ssh,
+            "sudo systemctl show google-startup-scripts.service "
+            "--property=ActiveState,Result,ExecMainStatus,"
+            "ExecMainStartTimestampMonotonic,ExecMainExitTimestampMonotonic",
+            timeout=30,
+        )
+        state = dict(
+            line.split("=", 1) for line in value.decode().splitlines() if "=" in line
+        )
+        started = int(state["ExecMainStartTimestampMonotonic"])
+        finished = int(state["ExecMainExitTimestampMonotonic"])
+        if (
+            state["ActiveState"] not in {"activating", "deactivating", "reloading"}
+            and started > 0
+            and finished >= started
+        ):
+            if (
+                fresh_boot
+                and state["Result"] == "success"
+                and state["ExecMainStatus"] == "0"
+            ):
+                return
+            # An in-place release update needs an explicit run. A fresh boot
+            # retries once only after the original script has actually failed.
+            # Never retry an SSH timeout around this effect.
+            run(
+                *ssh,
+                "sudo systemctl restart google-startup-scripts.service",
+                timeout=1500,
+            )
+            return
+        time.sleep(5)
+    raise RuntimeError(
+        "startup script did not finish; inspect the host before retrying"
     )
 
 
@@ -713,6 +733,12 @@ def reconcile(config, store):
                     bundle_sha256=digest,
                     release_sha=entry["sha"],
                 )
+                fresh_boot = (
+                    not previous
+                    or not previous["running"]
+                    or previous["spot"] != entry["spot"]
+                    or not previous.get("vm_present", True)
+                )
                 terraform.apply(
                     managed,
                     starting={identity} if entry.get("start_pending") else set(),
@@ -725,9 +751,10 @@ def reconcile(config, store):
                         )
                     current_entry(store, identity, generation)
                     power(config, output, "start")
+                    fresh_boot = True
                 provision_secret(config, output, entry["kind"])
                 current_entry(store, identity, generation)
-                restart_bootstrap(config, output)
+                restart_bootstrap(config, output, fresh_boot)
                 for attempt in range(24):
                     try:
                         health = host(config, output, "health")
