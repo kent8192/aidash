@@ -1,21 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker } from "@tanstack/react-router";
 import {
+  Award,
+  Download,
+  History,
   Bot,
   Blocks,
   Boxes,
   Database,
-  FlaskConical,
-  History,
   Link2,
+  FlaskConical,
   Settings2,
   Send,
   Wrench,
   Zap,
   BookOpen,
   Clock3,
-  Award,
-  Users,
   CheckCircle2,
   CircleAlert,
   FileText,
@@ -24,9 +24,16 @@ import {
 import { ApiError, apiFetch, authenticatedFetch } from "./transport";
 import { useI18n } from "./ui";
 import type { State } from "./types";
+import { TrustOverview } from "./trust-overview";
+import {
+  TrustAudit,
+  TrustCertifications,
+  TrustEmpty,
+  TrustSummary,
+} from "./trust-details";
 
 type Ref = { id: string; version: string };
-type AgentEntry = {
+export type AgentEntry = {
   id: string;
   version: string;
   kind: string;
@@ -108,7 +115,7 @@ type RegisteredVersion = {
   source_version: string | null;
   behavioral_tested: boolean | null;
 };
-type Inspection = {
+export type Inspection = {
   entry: AgentEntry;
   source_node: string;
   observed_at: string;
@@ -157,7 +164,7 @@ type TestLimits = {
   max_concurrent: number;
   payload_days: number;
 };
-type Incident = {
+export type Incident = {
   id: string;
   revision: number;
   severity: string;
@@ -169,7 +176,7 @@ type Incident = {
   created_at: string;
   evidence_expired_at: string | null;
 };
-type PermissionContext = {
+export type PermissionContext = {
   tenant: string;
   subject: string;
   workspace_id: string | null;
@@ -188,7 +195,7 @@ type PermissionContext = {
   workspace_read: boolean | null;
   note: string;
 };
-type AuditPage = {
+export type AuditPage = {
   observed_at: string;
   items: {
     source: string;
@@ -527,6 +534,8 @@ export function Workbench({
   const [inspection, setInspection] = useState<Inspection | null>(null);
   const [incidentsLoaded, setIncidentsLoaded] = useState(false);
   const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [incidentFilter, setIncidentFilter] = useState("all");
+  const [incidentSearch, setIncidentSearch] = useState("");
   const [incidentOwner, setIncidentOwner] = useState("");
   const [incidentNotes, setIncidentNotes] = useState("");
   const [incidentSeverity, setIncidentSeverity] = useState("medium");
@@ -539,10 +548,15 @@ export function Workbench({
     data.access.kind === "subject" ? data.access.subject : "",
   );
   const [policyWorkspace, setPolicyWorkspace] = useState("");
-  const [permissionContext, setPermissionContext] =
-    useState<PermissionContext | null>(null);
+  const [permissionResult, setPermissionContext] = useState<
+    (PermissionContext & { agent_ref: string }) | null
+  >(null);
+  const permissionContext =
+    permissionResult?.agent_ref === focus ? permissionResult : null;
   const [auditPage, setAuditPage] = useState<AuditPage | null>(null);
   const [auditOffset, setAuditOffset] = useState(0);
+  const [auditError, setAuditError] = useState("");
+  const [auditContextKey, setAuditContextKey] = useState("");
   const [testSessions, setTestSessions] = useState<TestSession[]>([]);
   const [registeredVersions, setRegisteredVersions] = useState<
     RegisteredVersion[]
@@ -1352,7 +1366,7 @@ export function Workbench({
           }),
         },
       );
-      setPermissionContext(result);
+      setPermissionContext({ ...result, agent_ref: refKey(selectedAgent) });
     } catch (cause) {
       setPermissionContext(null);
       setError(String(cause));
@@ -1362,6 +1376,12 @@ export function Workbench({
   };
   const selectedAgentId = selectedAgent?.id;
   const selectedAgentVersion = selectedAgent?.version;
+  const currentAuditKey = JSON.stringify([
+    selectedAgentId,
+    selectedAgentVersion,
+    auditOffset,
+    isOperator ? policyTenant : null,
+  ]);
   useEffect(() => {
     if (
       mode !== "trust" ||
@@ -1375,12 +1395,17 @@ export function Workbench({
     const read = () => {
       void apiFetch<AuditPage>(path)
         .then((value) => {
-          if (active) setAuditPage(value);
+          if (active) {
+            setAuditPage(value);
+            setAuditContextKey(currentAuditKey);
+            setAuditError("");
+          }
         })
         .catch((cause) => {
           if (active) {
             setAuditPage(null);
-            setError(String(cause));
+            setAuditContextKey(currentAuditKey);
+            setAuditError(String(cause));
           }
         });
     };
@@ -1398,6 +1423,7 @@ export function Workbench({
     isOperator,
     selectedAgentId,
     selectedAgentVersion,
+    currentAuditKey,
   ]);
   const testConfiguration = (
     <div className="wb-test-configuration">
@@ -2057,294 +2083,457 @@ export function Workbench({
       </div>
     );
 
+  const filteredIncidents = incidents.filter(
+    (incident) =>
+      (incidentFilter === "all" ||
+        (incidentFilter === "archived"
+          ? incident.archived
+          : !incident.archived && incident.status === incidentFilter)) &&
+      `${incident.notes} ${incident.owner} ${incident.id}`
+        .toLocaleLowerCase()
+        .includes(incidentSearch.toLocaleLowerCase()),
+  );
+  const decisionBadge = (value: boolean | null) => (
+    <span
+      className={`trust-badge ${value === null ? "neutral" : value ? "success" : "danger"}`}
+    >
+      {value === null
+        ? locale === "ja-JP"
+          ? "対象外"
+          : "N/A"
+        : value
+          ? locale === "ja-JP"
+            ? "許可"
+            : "Allowed"
+          : locale === "ja-JP"
+            ? "制限"
+            : "Restricted"}
+    </span>
+  );
   const incidentPanel = (
-    <section className="wb-card wb-incidents">
-      <h2>{t.incidents}</h2>
-      {incidents.length ? (
-        incidents.map((incident) => (
-          <article key={incident.id}>
-            <header>
-              <strong>
-                {incident.severity} · {incident.status}
-                {incident.archived
-                  ? ` · ${locale === "ja-JP" ? "アーカイブ済み" : "Archived"}`
-                  : ""}
-              </strong>
-              <time>
-                {new Date(incident.created_at).toLocaleString(locale)}
-              </time>
-            </header>
-            <p>{incident.notes}</p>
-            <small>
-              {t.owner}: {incident.owner} · r{incident.revision}
-            </small>
-            <ul>
-              {incident.evidence.map((evidence, index) => (
-                <li key={index}>
-                  {evidence.title} · SHA-256 {evidence.sha256.slice(0, 12)}
-                  {incident.evidence_expired_at
-                    ? ` · ${locale === "ja-JP" ? "期限切れ" : "expired"}`
-                    : ""}
-                </li>
-              ))}
-            </ul>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() =>
-                void changeIncident(
-                  incident,
-                  incident.status === "resolved" ? "open" : "resolved",
-                  incident.archived,
-                )
-              }
+    <div className="trust-incident-layout">
+      <section className="wb-card wb-incidents">
+        <h2>
+          <CircleAlert size={18} />
+          {t.incidents}
+        </h2>
+        <div className="trust-filter-bar">
+          <label>
+            {locale === "ja-JP" ? "状態" : "Status"}
+            <select
+              value={incidentFilter}
+              onChange={(event) => setIncidentFilter(event.target.value)}
             >
-              {incident.status === "resolved"
-                ? locale === "ja-JP"
-                  ? "再オープン"
-                  : "Reopen"
-                : locale === "ja-JP"
-                  ? "解決済みにする"
-                  : "Resolve"}
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() =>
-                void changeIncident(
-                  incident,
-                  incident.status,
-                  !incident.archived,
-                )
-              }
-            >
-              {incident.archived
-                ? locale === "ja-JP"
-                  ? "アーカイブ解除"
-                  : "Unarchive"
-                : locale === "ja-JP"
-                  ? "アーカイブ"
-                  : "Archive"}
-            </button>
-          </article>
-        ))
-      ) : (
-        <p>
-          {locale === "ja-JP"
-            ? "この権限で閲覧できる報告記録はありません。安全性の評価を意味しません。"
-            : "No report is visible with this access. This is not a safety assessment."}
+              <option value="all">
+                {locale === "ja-JP" ? "すべて" : "All"}
+              </option>
+              <option value="open">
+                {locale === "ja-JP" ? "未解決" : "Open"}
+              </option>
+              <option value="resolved">
+                {locale === "ja-JP" ? "解決済み" : "Resolved"}
+              </option>
+              <option value="archived">
+                {locale === "ja-JP" ? "アーカイブ" : "Archived"}
+              </option>
+            </select>
+          </label>
+          <label>
+            {locale === "ja-JP" ? "記録を検索" : "Search reports"}
+            <input
+              type="search"
+              value={incidentSearch}
+              onChange={(event) => setIncidentSearch(event.target.value)}
+            />
+          </label>
+        </div>
+        <p className="trust-caption">
+          {incidentsLoaded
+            ? `${filteredIncidents.length} / ${incidents.length}`
+            : locale === "ja-JP"
+              ? "記録を取得中"
+              : "Loading reports"}
         </p>
-      )}
-      <h3>{locale === "ja-JP" ? "報告を追加" : "Add a report"}</h3>
-      {isOperator && (
+        {filteredIncidents.length ? (
+          filteredIncidents.map((incident) => (
+            <article key={incident.id}>
+              <header>
+                <strong
+                  className={`trust-badge ${incident.status === "resolved" ? "success" : incident.severity === "high" || incident.severity === "critical" ? "danger" : "warning"}`}
+                >
+                  {incident.severity} · {incident.status}
+                  {incident.archived
+                    ? ` · ${locale === "ja-JP" ? "アーカイブ済み" : "Archived"}`
+                    : ""}
+                </strong>
+                <time>
+                  {new Date(incident.created_at).toLocaleString(locale)}
+                </time>
+              </header>
+              <p>{incident.notes}</p>
+              <small>
+                {t.owner}: {incident.owner} · r{incident.revision}
+              </small>
+              <ul>
+                {incident.evidence.map((evidence, index) => (
+                  <li key={index}>
+                    {evidence.title} · SHA-256 {evidence.sha256.slice(0, 12)}
+                    {incident.evidence_expired_at
+                      ? ` · ${locale === "ja-JP" ? "期限切れ" : "expired"}`
+                      : ""}
+                  </li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() =>
+                  void changeIncident(
+                    incident,
+                    incident.status === "resolved" ? "open" : "resolved",
+                    incident.archived,
+                  )
+                }
+              >
+                {incident.status === "resolved"
+                  ? locale === "ja-JP"
+                    ? "再オープン"
+                    : "Reopen"
+                  : locale === "ja-JP"
+                    ? "解決済みにする"
+                    : "Resolve"}
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() =>
+                  void changeIncident(
+                    incident,
+                    incident.status,
+                    !incident.archived,
+                  )
+                }
+              >
+                {incident.archived
+                  ? locale === "ja-JP"
+                    ? "アーカイブ解除"
+                    : "Unarchive"
+                  : locale === "ja-JP"
+                    ? "アーカイブ"
+                    : "Archive"}
+              </button>
+            </article>
+          ))
+        ) : (
+          <div className="trust-empty-state">
+            <FileText size={36} />
+            <p>
+              {!incidentsLoaded
+                ? locale === "ja-JP"
+                  ? "記録はまだ取得できていません。"
+                  : "Reports are not available yet."
+                : incidents.length
+                  ? locale === "ja-JP"
+                    ? "検索条件に一致する記録はありません。"
+                    : "No reports match these filters."
+                  : locale === "ja-JP"
+                    ? "この権限で閲覧できる報告記録はありません。安全性の評価を意味しません。"
+                    : "No report is visible with this access. This is not a safety assessment."}
+            </p>
+          </div>
+        )}
+      </section>
+      <section className="wb-card wb-incidents trust-report-form">
+        <h2>
+          <FileText size={18} />
+          {locale === "ja-JP" ? "報告を追加" : "Add a report"}
+        </h2>
+        {isOperator && (
+          <label>
+            {t.operatorTenant}
+            <input
+              value={tenant}
+              onChange={(event) => setTenant(event.target.value)}
+            />
+          </label>
+        )}
         <label>
-          {t.operatorTenant}
+          {t.owner}
           <input
-            value={tenant}
-            onChange={(event) => setTenant(event.target.value)}
+            value={incidentOwner}
+            onChange={(event) => setIncidentOwner(event.target.value)}
+            placeholder={
+              !isOperator && data.access.kind === "subject"
+                ? data.access.subject
+                : ""
+            }
           />
         </label>
-      )}
-      <label>
-        {t.owner}
-        <input
-          value={incidentOwner}
-          onChange={(event) => setIncidentOwner(event.target.value)}
-          placeholder={
-            !isOperator && data.access.kind === "subject"
-              ? data.access.subject
-              : ""
+        <label>
+          {locale === "ja-JP" ? "報告した重大度" : "Reported severity"}
+          <select
+            value={incidentSeverity}
+            onChange={(event) => setIncidentSeverity(event.target.value)}
+          >
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+            <option value="critical">Critical</option>
+          </select>
+        </label>
+        <label>
+          {locale === "ja-JP" ? "内容" : "Notes"}
+          <textarea
+            rows={4}
+            value={incidentNotes}
+            onChange={(event) => setIncidentNotes(event.target.value)}
+          />
+        </label>
+        <details className="trust-evidence-inputs">
+          <summary>
+            {locale === "ja-JP" ? "証拠（任意）" : "Evidence (optional)"}
+          </summary>
+          <label>
+            {locale === "ja-JP"
+              ? "証拠の名前（任意）"
+              : "Evidence title (optional)"}
+            <input
+              value={evidenceTitle}
+              onChange={(event) => setEvidenceTitle(event.target.value)}
+            />
+          </label>
+          <label>
+            {locale === "ja-JP"
+              ? "証拠の固定コピー（任意）"
+              : "Fixed evidence copy (optional)"}
+            <textarea
+              rows={3}
+              value={evidenceContent}
+              onChange={(event) => setEvidenceContent(event.target.value)}
+            />
+          </label>
+          {Boolean(evidenceTitle.trim()) !==
+            Boolean(evidenceContent.trim()) && (
+            <p role="status">
+              {locale === "ja-JP"
+                ? "証拠を添付する場合は、名前と本文の両方を入力してください。"
+                : "Enter both an evidence title and content to attach evidence."}
+            </p>
+          )}
+        </details>
+        <button
+          type="button"
+          className="wb-primary"
+          disabled={
+            busy ||
+            !incidentNotes.trim() ||
+            Boolean(evidenceTitle.trim()) !== Boolean(evidenceContent.trim())
           }
-        />
-      </label>
-      <label>
-        {locale === "ja-JP" ? "報告した重大度" : "Reported severity"}
-        <select
-          value={incidentSeverity}
-          onChange={(event) => setIncidentSeverity(event.target.value)}
+          onClick={() => void createIncident()}
         >
-          <option value="low">Low</option>
-          <option value="medium">Medium</option>
-          <option value="high">High</option>
-          <option value="critical">Critical</option>
-        </select>
-      </label>
-      <label>
-        {locale === "ja-JP" ? "内容" : "Notes"}
-        <textarea
-          rows={4}
-          value={incidentNotes}
-          onChange={(event) => setIncidentNotes(event.target.value)}
-        />
-      </label>
-      <label>
-        {locale === "ja-JP"
-          ? "証拠の名前（任意）"
-          : "Evidence title (optional)"}
-        <input
-          value={evidenceTitle}
-          onChange={(event) => setEvidenceTitle(event.target.value)}
-        />
-      </label>
-      <label>
-        {locale === "ja-JP"
-          ? "証拠の固定コピー（任意）"
-          : "Fixed evidence copy (optional)"}
-        <textarea
-          rows={3}
-          value={evidenceContent}
-          onChange={(event) => setEvidenceContent(event.target.value)}
-        />
-      </label>
-      <button
-        type="button"
-        disabled={busy || !incidentNotes.trim()}
-        onClick={() => void createIncident()}
-      >
-        {locale === "ja-JP" ? "報告を記録" : "Record incident"}
-      </button>
-    </section>
+          {locale === "ja-JP" ? "報告を記録" : "Record incident"}
+        </button>
+      </section>
+    </div>
   );
   const policyPanel = (
-    <section className="wb-card wb-policy">
-      <h2>{t.policies}</h2>
-      <p>{t.policyContext}</p>
-      <div className="wb-fields">
-        <label>
-          {t.operatorTenant}
-          <input
-            value={policyTenant}
-            disabled={!isOperator}
-            onChange={(event) => setPolicyTenant(event.target.value)}
-          />
-        </label>
-        <label>
-          {locale === "ja-JP" ? "主体" : "Subject"}
-          <input
-            value={policySubject}
-            disabled={!isOperator}
-            onChange={(event) => setPolicySubject(event.target.value)}
-          />
-        </label>
-        <label className="wb-span">
-          {locale === "ja-JP"
-            ? "ワークスペースID（任意）"
-            : "Workspace ID (optional)"}
-          <input
-            value={policyWorkspace}
-            onChange={(event) => setPolicyWorkspace(event.target.value)}
-          />
-        </label>
+    <div className="trust-policy-stack">
+      <div className="trust-policy-metrics">
+        {[
+          [
+            locale === "ja-JP" ? "許可" : "Allowed",
+            permissionContext
+              ? permissionContext.rows.filter(
+                  (row) => row.effective_for_component,
+                ).length
+              : "—",
+          ],
+          [
+            locale === "ja-JP" ? "制限" : "Restricted",
+            permissionContext
+              ? permissionContext.rows.filter(
+                  (row) => !row.effective_for_component,
+                ).length
+              : "—",
+          ],
+          [
+            locale === "ja-JP" ? "ポリシー改訂" : "Policy revision",
+            permissionContext?.policy_revision ?? "—",
+          ],
+        ].map(([title, value]) => (
+          <section className="wb-card" key={title}>
+            <ShieldCheck size={22} />
+            <div>
+              <span>{title}</span>
+              <strong>{value}</strong>
+            </div>
+          </section>
+        ))}
       </div>
-      <button
-        type="button"
-        disabled={busy || !policyTenant || !policySubject}
-        onClick={() => void evaluatePermissions()}
-      >
-        {locale === "ja-JP" ? "この条件で権限を確認" : "Check this context"}
-      </button>
-      {permissionContext && (
-        <>
-          <p>
-            {locale === "ja-JP" ? "ポリシー改訂" : "Policy revision"}{" "}
-            {permissionContext.policy_revision} ·{" "}
-            {new Date(permissionContext.observed_at).toLocaleString(locale)}
-          </p>
-          <p>
-            {locale === "ja-JP" ? "宣言した能力" : "Declared capabilities"}:{" "}
-            {permissionContext.requested_capabilities.join(", ") || "—"}
-          </p>
-          <div className="wb-policy-table">
-            <table>
-              <thead>
-                <tr>
-                  <th>{t.dependencies}</th>
-                  <th>{locale === "ja-JP" ? "操作" : "Action"}</th>
-                  <th>Catalog</th>
-                  <th>Policy</th>
-                  <th>
-                    {locale === "ja-JP" ? "Registry参照" : "Registry read"}
-                  </th>
-                  <th>
-                    {locale === "ja-JP"
-                      ? "この部品で有効"
-                      : "Effective component"}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {permissionContext.rows.map((row) => (
+      <section className="wb-card wb-policy trust-context-form">
+        <h2>
+          <ShieldCheck size={18} />
+          {locale === "ja-JP" ? "権限の確認条件" : "Permission context"}
+        </h2>
+        <p>{t.policyContext}</p>
+        <div className="wb-fields trust-context-fields">
+          <label>
+            {t.operatorTenant}
+            <input
+              value={policyTenant}
+              disabled={!isOperator}
+              onChange={(event) => setPolicyTenant(event.target.value)}
+            />
+          </label>
+          <label>
+            {locale === "ja-JP" ? "主体" : "Subject"}
+            <input
+              value={policySubject}
+              disabled={!isOperator}
+              onChange={(event) => setPolicySubject(event.target.value)}
+            />
+          </label>
+          <label>
+            {locale === "ja-JP"
+              ? "ワークスペースID（任意）"
+              : "Workspace ID (optional)"}
+            <input
+              value={policyWorkspace}
+              onChange={(event) => setPolicyWorkspace(event.target.value)}
+            />
+          </label>
+        </div>
+        <button
+          type="button"
+          disabled={busy || !policyTenant || !policySubject}
+          onClick={() => void evaluatePermissions()}
+        >
+          {locale === "ja-JP" ? "この条件で権限を確認" : "Check this context"}
+        </button>
+      </section>
+      <section className="wb-card wb-policy">
+        <h2>
+          <FileText size={20} />
+          {locale === "ja-JP" ? "権限マトリクス" : "Permission matrix"}
+        </h2>
+        <p>
+          {locale === "ja-JP"
+            ? "表示される権限は、確認した条件にのみ適用されます。"
+            : "Permissions apply only to the checked context."}
+        </p>
+        {permissionContext && (
+          <>
+            <p>
+              {permissionContext.tenant} / {permissionContext.subject} /{" "}
+              {permissionContext.workspace_id ||
+                (locale === "ja-JP"
+                  ? "ワークスペース未指定"
+                  : "No workspace selected")}
+            </p>
+            <p>
+              {locale === "ja-JP" ? "ポリシー改訂" : "Policy revision"}{" "}
+              {permissionContext.policy_revision} ·{" "}
+              {new Date(permissionContext.observed_at).toLocaleString(locale)}
+            </p>
+            <p>
+              {locale === "ja-JP" ? "宣言した能力" : "Declared capabilities"}:{" "}
+              {permissionContext.requested_capabilities.join(", ") || "—"}
+            </p>
+          </>
+        )}
+        <div className="wb-policy-table">
+          <table>
+            <thead>
+              <tr>
+                <th>{t.dependencies}</th>
+                <th>{locale === "ja-JP" ? "操作" : "Action"}</th>
+                <th>Catalog</th>
+                <th>Policy</th>
+                <th>{locale === "ja-JP" ? "Registry参照" : "Registry read"}</th>
+                <th>
+                  {locale === "ja-JP"
+                    ? "この部品で有効"
+                    : "Effective component"}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {permissionContext ? (
+                permissionContext.rows.map((row) => (
                   <tr key={`${row.kind}:${refKey(row.reference)}`}>
                     <td>
                       {row.kind} · {refKey(row.reference)}
                     </td>
                     <td>{row.action}</td>
-                    <td>{row.catalog_enabled ? "✓" : "—"}</td>
-                    <td>{row.policy_allowed ? "✓" : "—"}</td>
-                    <td>{row.registry_read_allowed ? "✓" : "—"}</td>
-                    <td>{row.effective_for_component ? "✓" : "—"}</td>
+                    <td>{decisionBadge(row.catalog_enabled)}</td>
+                    <td>{decisionBadge(row.policy_allowed)}</td>
+                    <td>{decisionBadge(row.registry_read_allowed)}</td>
+                    <td>{decisionBadge(row.effective_for_component)}</td>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p>
-            {permissionContext.workspace_id
-              ? `${t.workspaces}: ${permissionContext.workspace_read ? "✓" : "—"}`
-              : locale === "ja-JP"
-                ? "ワークスペース未指定"
-                : "No workspace selected"}
-          </p>
-          <p>{permissionContext.note}</p>
-        </>
-      )}
-    </section>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={6}>
+                    {" "}
+                    <TrustEmpty
+                      icon={<ShieldCheck size={36} />}
+                      title={
+                        locale === "ja-JP"
+                          ? "条件を指定して権限を確認"
+                          : "Choose a context to inspect permissions"
+                      }
+                    >
+                      {locale === "ja-JP"
+                        ? "テナントと主体を指定して、権限の確認を実行してください。"
+                        : "Select a tenant and subject above to view permission details."}
+                    </TrustEmpty>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        {permissionContext && (
+          <>
+            <p>
+              {permissionContext.workspace_id
+                ? `${t.workspaces}: ${permissionContext.workspace_read ? "✓" : "—"}`
+                : locale === "ja-JP"
+                  ? "ワークスペース未指定"
+                  : "No workspace selected"}
+            </p>
+            <p>{permissionContext.note}</p>
+          </>
+        )}
+      </section>
+    </div>
   );
   const auditPanel = (
-    <section className="wb-card wb-audit">
-      <h2>{t.audit}</h2>
-      {isOperator && (
-        <label>
-          {t.operatorTenant}
-          <input
-            value={policyTenant}
-            onChange={(event) => setPolicyTenant(event.target.value)}
-          />
-        </label>
-      )}
-      {auditPage ? (
-        <>
-          <p>{auditPage.source_boundary}</p>
-          <p>{new Date(auditPage.observed_at).toLocaleString(locale)}</p>
-          {auditPage.items.length ? (
-            <ol>
-              {auditPage.items.map((item, index) => (
-                <li key={`${item.source}:${item.at}:${index}`}>
-                  <strong>
-                    {item.source} · {item.kind}
-                  </strong>
-                  <time>{new Date(item.at).toLocaleString(locale)}</time>
-                  <small>{item.actor ?? "—"}</small>
-                  <pre>{JSON.stringify(item.details, null, 2)}</pre>
-                </li>
-              ))}
-            </ol>
-          ) : (
-            <p>{t.noAudit}</p>
-          )}
-          {auditPage.next_offset !== null && (
-            <button
-              type="button"
-              onClick={() => setAuditOffset(auditPage.next_offset!)}
-            >
-              {locale === "ja-JP" ? "次の50件" : "Next 50"}
-            </button>
-          )}
-        </>
-      ) : (
-        <p>{t.loading}</p>
-      )}
-    </section>
+    <TrustAudit
+      page={auditContextKey === currentAuditKey ? auditPage : null}
+      error={auditContextKey === currentAuditKey ? auditError : ""}
+      locale={locale}
+      offset={auditOffset}
+      onOffset={(offset) => {
+        setAuditPage(null);
+        setAuditOffset(offset);
+      }}
+      tenantControl={
+        isOperator ? (
+          <label>
+            {t.operatorTenant}
+            <input
+              value={policyTenant}
+              onChange={(event) => {
+                setAuditPage(null);
+                setAuditOffset(0);
+                setPolicyTenant(event.target.value);
+              }}
+            />
+          </label>
+        ) : null
+      }
+    />
   );
 
   const validationCurrent =
@@ -2367,7 +2556,9 @@ export function Workbench({
   const heroEntry = mode === "creator" ? editing : selectedAgent;
   const heroIcon = heroEntry ? profile(heroEntry).icon : undefined;
   return (
-    <main className={`wb-page ${mode === "creator" ? "wb-creator" : ""}`}>
+    <main
+      className={`wb-page ${mode === "creator" ? "wb-creator" : "wb-trust-page"}`}
+    >
       <div className="wb-header">
         <div className="wb-identity">
           <span className="wb-hero-icon" aria-hidden="true">
@@ -2434,10 +2625,11 @@ export function Workbench({
           {mode === "trust" && selectedAgent && (
             <>
               <button type="button" onClick={() => void exportReport("json")}>
-                JSON
+                <Download size={15} />{" "}
+                {locale === "ja-JP" ? "レポート JSON" : "Export JSON"}
               </button>
               <button type="button" onClick={() => void exportReport("html")}>
-                HTML / PDF
+                <Download size={15} /> HTML / PDF
               </button>
               <button
                 type="button"
@@ -3329,6 +3521,7 @@ export function Workbench({
               {t.registeredVersion}
               <select
                 value={selectedAgent ? focus : ""}
+                disabled={busy}
                 onChange={(event) => select(event.target.value)}
               >
                 <option value="">{t.select}</option>
@@ -3359,506 +3552,74 @@ export function Workbench({
             <>
               <nav className="wb-tabs" aria-label="Trust">
                 <button
+                  aria-current={trustTab === "overview" ? "page" : undefined}
                   className={trustTab === "overview" ? "active" : ""}
                   onClick={() => setTrustTab("overview")}
                 >
                   <FileText size={15} /> {t.overview}
                 </button>
                 <button
+                  aria-current={trustTab === "policies" ? "page" : undefined}
                   className={trustTab === "policies" ? "active" : ""}
                   onClick={() => setTrustTab("policies")}
                 >
                   <ShieldCheck size={15} /> {t.policies}
                 </button>
                 <button
+                  aria-current={trustTab === "audit" ? "page" : undefined}
                   className={trustTab === "audit" ? "active" : ""}
                   onClick={() => setTrustTab("audit")}
                 >
                   <History size={15} /> {t.audit}
                 </button>
                 <button
+                  aria-current={
+                    trustTab === "certifications" ? "page" : undefined
+                  }
                   className={trustTab === "certifications" ? "active" : ""}
                   onClick={() => setTrustTab("certifications")}
                 >
                   <Award size={15} /> {t.certifications}
                 </button>
                 <button
+                  aria-current={trustTab === "incidents" ? "page" : undefined}
                   className={trustTab === "incidents" ? "active" : ""}
                   onClick={() => setTrustTab("incidents")}
                 >
                   <CircleAlert size={15} /> {t.incidents}
                 </button>
               </nav>
-              <div className="wb-trust-layout">
-                <div className="wb-trust-main">
-                  {trustTab === "overview" && (
-                    <div
-                      className="wb-metrics"
-                      aria-label={
-                        locale === "ja-JP" ? "信頼性の概要" : "Trust overview"
-                      }
-                    >
-                      <section className="wb-card wb-metric">
-                        <ShieldCheck size={19} />
-                        <span>Trust</span>
-                        <strong>
-                          {locale === "ja-JP" ? "未評価" : "Not assessed"}
-                        </strong>
-                        <small>
-                          {locale === "ja-JP"
-                            ? "外部評価待ち"
-                            : "External review pending"}
-                        </small>
-                      </section>
-                      <section className="wb-card wb-metric">
-                        <ShieldCheck size={19} />
-                        <span>{t.policies}</span>
-                        <strong>
-                          {permissionContext
-                            ? `${permissionContext.rows.filter((row) => row.effective_for_component).length} / ${permissionContext.rows.length}`
-                            : "—"}
-                        </strong>
-                        <small>
-                          {locale === "ja-JP"
-                            ? "指定条件で有効な部品"
-                            : "Effective in checked context"}
-                        </small>
-                      </section>
-                      <section className="wb-card wb-metric">
-                        <Award size={19} />
-                        <span>{t.certifications}</span>
-                        <strong>—</strong>
-                        <small>
-                          {locale === "ja-JP"
-                            ? "認証情報は未提供"
-                            : "Not provided"}
-                        </small>
-                      </section>
-                      <section className="wb-card wb-metric">
-                        <CircleAlert size={19} />
-                        <span>{t.incidents}</span>
-                        <strong>
-                          {incidentsLoaded
-                            ? incidents.filter(
-                                (incident) =>
-                                  !incident.archived &&
-                                  incident.status !== "resolved" &&
-                                  incident.status !== "closed",
-                              ).length
-                            : "—"}
-                        </strong>
-                        <small>
-                          {locale === "ja-JP"
-                            ? "閲覧可能な未解決記録"
-                            : "Visible open reports"}
-                        </small>
-                      </section>
-                      <section className="wb-card wb-metric">
-                        <History size={19} />
-                        <span>
-                          {locale === "ja-JP" ? "最終確認" : "Last observed"}
-                        </span>
-                        <strong>
-                          {inspection
-                            ? new Date(
-                                inspection.observed_at,
-                              ).toLocaleDateString(locale)
-                            : "—"}
-                        </strong>
-                        <small>
-                          {locale === "ja-JP"
-                            ? "Registryの観測日時"
-                            : "Registry observation"}
-                        </small>
-                      </section>
-                    </div>
-                  )}
-                  <div
-                    className={`wb-trust-grid ${trustTab !== "overview" ? "wb-trust-detail" : ""}`}
-                  >
-                    {trustTab === "overview" && (
-                      <>
-                        <section className="wb-card">
-                          <h2>
-                            <ShieldCheck size={18} /> {t.policies}
-                          </h2>
-                          <p>
-                            {permissionContext
-                              ? `${permissionContext.rows.filter((row) => row.effective_for_component).length} / ${permissionContext.rows.length}`
-                              : locale === "ja-JP"
-                                ? "権限コンテキスト未確認"
-                                : "Context not checked"}
-                          </p>
-                          <p>{t.permission}</p>
-                          <button
-                            className="wb-card-link"
-                            onClick={() => setTrustTab("policies")}
-                          >
-                            {locale === "ja-JP"
-                              ? "権限を確認"
-                              : "Review permissions"}
-                          </button>
-                        </section>
-                        <section className="wb-card">
-                          <h2>
-                            <Award size={18} /> {t.certifications}
-                          </h2>
-                          <p>{t.noAssessment}</p>
-                          <button
-                            className="wb-card-link"
-                            onClick={() => setTrustTab("certifications")}
-                          >
-                            {locale === "ja-JP"
-                              ? "認証情報を表示"
-                              : "View certifications"}
-                          </button>
-                        </section>
-                        <section className="wb-card">
-                          <h2>
-                            <Link2 size={18} />{" "}
-                            {locale === "ja-JP"
-                              ? "出自・来歴"
-                              : "Lineage / provenance"}
-                          </h2>
-                          <dl className="wb-facts">
-                            <div>
-                              <dt>{t.model}</dt>
-                              <dd>
-                                {selectedAgent.config.model.id} ·{" "}
-                                {selectedAgent.config.model.version}
-                              </dd>
-                            </div>
-                            <div>
-                              <dt>{t.source}</dt>
-                              <dd>{inspection?.source_node ?? data.node.id}</dd>
-                            </div>
-                            <div>
-                              <dt>{t.version}</dt>
-                              <dd>{selectedAgent.version}</dd>
-                            </div>
-                          </dl>
-                          <button
-                            className="wb-card-link"
-                            onClick={() => setTrustTab("audit")}
-                          >
-                            {locale === "ja-JP"
-                              ? "監査履歴を表示"
-                              : "View audit trail"}
-                          </button>
-                        </section>
-                        <section className="wb-card">
-                          <h2>
-                            <Database size={18} />{" "}
-                            {locale === "ja-JP"
-                              ? "データアクセス範囲"
-                              : "Data access scope"}
-                          </h2>
-                          <dl className="wb-facts">
-                            {(
-                              [
-                                [
-                                  "allow_memory_write",
-                                  locale === "ja-JP"
-                                    ? "永続メモリへの書き込み"
-                                    : "Persistent memory writes",
-                                ],
-                                [
-                                  "allow_cross_conversation_memory",
-                                  locale === "ja-JP"
-                                    ? "会話をまたぐメモリ"
-                                    : "Cross-conversation memory",
-                                ],
-                                [
-                                  "allow_workspace_retrieval",
-                                  locale === "ja-JP"
-                                    ? "ワークスペースの追加取得"
-                                    : "Workspace retrieval",
-                                ],
-                              ] as const
-                            ).map(([key, title]) => (
-                              <div key={key}>
-                                <dt>{title}</dt>
-                                <dd>
-                                  <span className="wb-badge">
-                                    {selectedAgent.config[key]
-                                      ? locale === "ja-JP"
-                                        ? "要求あり"
-                                        : "Requested"
-                                      : locale === "ja-JP"
-                                        ? "要求なし"
-                                        : "Not requested"}
-                                  </span>
-                                </dd>
-                              </div>
-                            ))}
-                          </dl>
-                          <p className="wb-hint">{t.permission}</p>
-                        </section>
-                        <section className="wb-card">
-                          <h2>
-                            <Wrench size={18} /> {t.tools} &amp; {t.skills}
-                          </h2>
-                          <ul className="wb-resource-list">
-                            {[
-                              ...selectedAgent.config.tools,
-                              ...selectedAgent.config.skills,
-                            ].map((ref, index) => (
-                              <li key={`${index}:${refKey(ref)}`}>
-                                <Wrench size={15} />
-                                <span>
-                                  {ref.id}
-                                  <small>{ref.version}</small>
-                                </span>
-                              </li>
-                            ))}
-                          </ul>
-                          {!selectedAgent.config.tools.length &&
-                            !selectedAgent.config.skills.length && (
-                              <p>
-                                {locale === "ja-JP"
-                                  ? "ツール・Skillsの依存関係はありません。"
-                                  : "No tool or skill dependencies."}
-                              </p>
-                            )}
-                          <button
-                            className="wb-card-link"
-                            onClick={() => setTrustTab("policies")}
-                          >
-                            {locale === "ja-JP"
-                              ? "有効な権限を確認"
-                              : "Check effective permissions"}
-                          </button>
-                        </section>
-                        <section className="wb-card">
-                          <h2>
-                            <Users size={18} />{" "}
-                            {locale === "ja-JP"
-                              ? "自律動作の設定"
-                              : "Autonomy settings"}
-                          </h2>
-                          <dl className="wb-facts">
-                            {(
-                              [
-                                [
-                                  "allow_task_creation",
-                                  locale === "ja-JP"
-                                    ? "タスクの自動作成"
-                                    : "Automatic task creation",
-                                ],
-                                [
-                                  "allow_task_delegation",
-                                  locale === "ja-JP"
-                                    ? "自動委任"
-                                    : "Automatic delegation",
-                                ],
-                              ] as const
-                            ).map(([key, title]) => (
-                              <div key={key}>
-                                <dt>{title}</dt>
-                                <dd>
-                                  <span className="wb-badge">
-                                    {selectedAgent.config[key]
-                                      ? locale === "ja-JP"
-                                        ? "有効"
-                                        : "Enabled"
-                                      : locale === "ja-JP"
-                                        ? "無効"
-                                        : "Disabled"}
-                                  </span>
-                                </dd>
-                              </div>
-                            ))}
-                          </dl>
-                          <p>
-                            <strong>
-                              {locale === "ja-JP"
-                                ? "要求された能力"
-                                : "Requested capabilities"}
-                            </strong>
-                            <br />
-                            {selectedAgent.capabilities.join(", ") || "—"}
-                          </p>
-                          <p className="wb-hint">{t.permission}</p>
-                        </section>
-                        <section className="wb-card wb-compliance">
-                          <h2>
-                            <ShieldCheck size={18} />{" "}
-                            {locale === "ja-JP"
-                              ? "権限マトリクス"
-                              : "Permission matrix"}
-                          </h2>
-                          {permissionContext ? (
-                            <div className="wb-policy-table">
-                              <table>
-                                <thead>
-                                  <tr>
-                                    <th>{t.dependencies}</th>
-                                    <th>
-                                      {locale === "ja-JP" ? "操作" : "Action"}
-                                    </th>
-                                    <th>{t.status}</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {permissionContext.rows.map((row) => (
-                                    <tr
-                                      key={`${row.kind}:${refKey(row.reference)}`}
-                                    >
-                                      <td>{row.reference.id}</td>
-                                      <td>{row.action}</td>
-                                      <td>
-                                        {row.effective_for_component
-                                          ? locale === "ja-JP"
-                                            ? "有効"
-                                            : "Effective"
-                                          : locale === "ja-JP"
-                                            ? "制限あり"
-                                            : "Restricted"}
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          ) : (
-                            <p>{t.policyContext}</p>
-                          )}
-                          <button
-                            className="wb-card-link"
-                            onClick={() => setTrustTab("policies")}
-                          >
-                            {locale === "ja-JP"
-                              ? "条件を指定して確認"
-                              : "Review a permission context"}
-                          </button>
-                        </section>
-                        <section className="wb-card">
-                          <h2>
-                            <CircleAlert size={18} /> {t.incidents}
-                          </h2>
-                          {incidents.length ? (
-                            <ul>
-                              {incidents.slice(0, 3).map((incident) => (
-                                <li key={incident.id}>
-                                  {incident.severity} · {incident.status} ·{" "}
-                                  {incident.notes}
-                                </li>
-                              ))}
-                            </ul>
-                          ) : (
-                            <p>
-                              {locale === "ja-JP"
-                                ? "この権限で閲覧できる報告記録はありません。"
-                                : "No report is visible with this access."}
-                            </p>
-                          )}
-                        </section>
-                      </>
-                    )}
+              {trustTab === "overview" ? (
+                <TrustOverview
+                  agent={selectedAgent}
+                  inspection={inspection}
+                  incidents={incidents}
+                  incidentsLoaded={incidentsLoaded}
+                  permissions={permissionContext}
+                  locale={locale}
+                  navigate={setTrustTab}
+                />
+              ) : (
+                <div className="wb-trust-layout trust-detail-layout">
+                  <div className="trust-detail-main">
                     {trustTab === "policies" && policyPanel}
                     {trustTab === "audit" && auditPanel}
                     {trustTab === "certifications" && (
-                      <section className="wb-card">
-                        <h2>{t.certifications}</h2>
-                        <p>{t.noAssessment}</p>
-                      </section>
+                      <TrustCertifications
+                        locale={locale}
+                        navigate={setTrustTab}
+                      />
                     )}
                     {trustTab === "incidents" && incidentPanel}
                   </div>
+                  <TrustSummary
+                    inspection={inspection}
+                    version={selectedAgent.version}
+                    locale={locale}
+                    audit={trustTab === "audit"}
+                  />
                 </div>
-                <aside className="wb-sidebar open">
-                  <div className="wb-side-content">
-                    <section className="wb-card">
-                      <h2>
-                        <ShieldCheck size={18} /> Trust Summary
-                      </h2>
-                      <p>{t.noAssessment}</p>
-                    </section>
-                    <section className="wb-card">
-                      <h2>
-                        <FlaskConical size={18} />
-                        {locale === "ja-JP"
-                          ? "閲覧可能なテスト記録"
-                          : "Visible test evidence"}
-                      </h2>
-                      {inspection?.test_evidence?.length ? (
-                        <ul>
-                          {inspection.test_evidence.slice(0, 5).map((test) => (
-                            <li key={test.session_id}>
-                              r{test.draft_revision} · {test.mode}
-                              {test.profile_id
-                                ? ` / ${test.profile_id} r${test.profile_revision}`
-                                : ""}{" "}
-                              · {test.status} ·{" "}
-                              {new Date(test.created_at).toLocaleString(locale)}
-                              {test.expired_at
-                                ? locale === "ja-JP"
-                                  ? " · 本文は期限切れ"
-                                  : " · payload expired"
-                                : ""}
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p>
-                          {locale === "ja-JP"
-                            ? "この権限で閲覧できるテスト記録はありません。未実施や合格を意味しません。"
-                            : "No test record is visible with this access. This does not imply none ran or that it passed."}
-                        </p>
-                      )}
-                      {inspection?.test_evidence_truncated && (
-                        <p>
-                          {locale === "ja-JP"
-                            ? "最新100件まで表示します。"
-                            : "Showing the latest 100 records."}
-                        </p>
-                      )}
-                    </section>
-                    <section className="wb-card">
-                      <h2>
-                        <Users size={18} /> {t.workspaces}
-                      </h2>
-                      {inspection?.workspaces.length ? (
-                        <ul>
-                          {inspection.workspaces.map((workspace) => (
-                            <li key={workspace.workspace_id}>
-                              {workspace.title} ·{" "}
-                              {workspace.current
-                                ? locale === "ja-JP"
-                                  ? "現在"
-                                  : "Current"
-                                : locale === "ja-JP"
-                                  ? "過去"
-                                  : "Past"}
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p>{t.noUse}</p>
-                      )}
-                      {inspection?.usage_truncated && (
-                        <p>
-                          {locale === "ja-JP"
-                            ? "表示は最新500実行の範囲です。"
-                            : "Based on the latest 500 runs."}
-                        </p>
-                      )}
-                    </section>
-                    <section className="wb-card">
-                      <h2>
-                        <History size={18} /> {t.status}
-                      </h2>
-                      <p>
-                        {t.source}: {inspection?.source_node ?? data.node.id}
-                      </p>
-                      <p>
-                        {t.version}: {selectedAgent.version}
-                      </p>
-                      <p>{inspection?.observed_at}</p>
-                    </section>
-                  </div>
-                </aside>
-              </div>
+              )}
             </>
           )}
         </>
