@@ -209,6 +209,30 @@ class ReconcileTests(unittest.TestCase):
         self.assertIn(("bootstrap", "pr-1", True), self.calls)
         self.assertEqual(self.calls.count(("bootstrap", "pr-1", False)), 1)
 
+    def test_pending_build_keeps_observing_old_release_and_stops_when_idle(self):
+        self.request("pr-1")
+        self.reconcile()
+        entry = self.request("pr-1", "update", sha="b" * 40)
+        entry["release"] = None
+        self.calls.clear()
+        self.busy = True
+        self.idle = True
+        self.reconcile()
+        self.assertEqual(self.cloud.status["pr-1"], "RUNNING")
+        self.assertEqual(
+            self.store.state["environments"]["pr-1"]["status"], "awaiting_build"
+        )
+        self.assertIn(("observe", "pr-1"), self.calls)
+        self.busy = False
+        self.reconcile()
+        self.assertEqual(self.cloud.status["pr-1"], "TERMINATED")
+        self.assertEqual(self.cloud.managed["pr-1"]["release_sha"], SHA)
+        self.assertFalse(self.cloud.managed["pr-1"]["published"])
+        self.assertEqual(self.store.state["environments"]["pr-1"]["desired"], "stopped")
+        self.assertFalse(any(call[0] == "bootstrap" for call in self.calls))
+        self.reconcile()
+        self.assertEqual(self.cloud.status["pr-1"], "TERMINATED")
+
     def test_failed_bootstrap_waits_for_explicit_retry_and_keeps_data(self):
         self.request()
         with patch.object(
@@ -244,6 +268,23 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(
             [retiring for _, retiring in self.cloud.plans if retiring], [{"test"}]
         )
+
+    def test_deadline_fences_an_incomplete_bootstrap_and_releases_the_lock(self):
+        self.request()
+        with patch.object(
+            controller,
+            "restart_bootstrap",
+            side_effect=controller.OperationDeadline("fixture deadline"),
+        ):
+            with self.assertRaises(controller.OperationDeadline):
+                self.reconcile()
+        self.assertFalse(self.store.locked)
+        entry = self.store.state["environments"]["test"]
+        self.assertEqual(entry["failed_deployment_generation"], entry["generation"])
+        self.assertFalse(self.cloud.managed["test"]["published"])
+        self.calls.clear()
+        self.reconcile()
+        self.assertFalse(any(call[0] == "bootstrap" for call in self.calls))
 
     def test_closed_pr_cleans_up_even_when_another_host_is_unhealthy(self):
         self.request()
@@ -388,6 +429,100 @@ class ReconcileTests(unittest.TestCase):
         self.reconcile()
         self.assertFalse(self.cloud.plans)
         self.assertFalse(self.calls)
+
+
+class IntakeTests(unittest.TestCase):
+    def test_comment_preflight_rejects_noise_and_unauthorized_commands_without_cloud_access(
+        self,
+    ):
+        with TemporaryDirectory() as directory:
+            event = Path(directory) / "event.json"
+            output = Path(directory) / "output"
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "GITHUB_EVENT_PATH": str(event),
+                        "GITHUB_EVENT_NAME": "issue_comment",
+                        "GITHUB_REPOSITORY": CONFIG["repository"],
+                        "GITHUB_OUTPUT": str(output),
+                    },
+                ),
+                patch.object(sys, "argv", ["controller.py", "preflight"]),
+                patch.object(
+                    controller,
+                    "load_config",
+                    side_effect=AssertionError(
+                        "preflight must not load cloud configuration"
+                    ),
+                ),
+                patch.object(
+                    controller,
+                    "Store",
+                    side_effect=AssertionError("preflight must not access cloud state"),
+                ),
+                patch.object(
+                    controller, "github", return_value={"permission": "read"}
+                ) as github,
+            ):
+                for body, pr, permission, allowed in (
+                    ("Thanks!", True, "write", False),
+                    ("/preview up\necho bad", True, "write", False),
+                    ("/preview stop spot", True, "write", False),
+                    ("/preview up", False, "write", False),
+                    ("/preview up", True, "read", False),
+                    ("/preview up normal", True, "write", True),
+                    ("/preview stop", True, "maintain", True),
+                ):
+                    with self.subTest(body=body, pr=pr, permission=permission):
+                        event.write_text(
+                            json.dumps(
+                                {
+                                    "action": "created",
+                                    "issue": {"pull_request": {}} if pr else {},
+                                    "comment": {
+                                        "body": body,
+                                        "user": {"login": "fixture"},
+                                    },
+                                }
+                            )
+                        )
+                        output.write_text("")
+                        github.return_value = {"permission": permission}
+                        controller.main()
+                        self.assertEqual(
+                            output.read_text(), f"proceed={str(allowed).lower()}\n"
+                        )
+
+    def test_job_setup_time_reduces_the_operation_budget(self):
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "GITHUB_ACTIONS": "true",
+                    "GITHUB_REPOSITORY": CONFIG["repository"],
+                    "GITHUB_RUN_ID": "1",
+                    "GITHUB_RUN_ATTEMPT": "1",
+                    "GITHUB_JOB": "apply",
+                },
+            ),
+            patch.object(
+                controller,
+                "github",
+                return_value={
+                    "jobs": [{"name": "apply", "started_at": "2026-09-28T00:00:00Z"}]
+                },
+            ),
+            patch.object(controller.time, "time", return_value=1790553600 + 45 * 60),
+        ):
+            self.assertEqual(controller.controller_budget("reconcile"), 3 * 60)
+            with patch.object(
+                controller.time, "time", return_value=1790553600 + 50 * 60
+            ):
+                with self.assertRaisesRegex(
+                    controller.Refused, "Insufficient job time"
+                ):
+                    controller.controller_budget("reconcile")
 
 
 class BootstrapTests(unittest.TestCase):

@@ -42,8 +42,31 @@ permissions:
 # groups. Intent acceptance and applies share a durable GCS lock, with state
 # updated using compare-and-swap. Builds cannot overwrite a newer generation.
 jobs:
+  intake:
+    if: >-
+      vars.GCP_ENVIRONMENTS_ENABLED == 'true' &&
+      (github.event_name != 'issue_comment' ||
+       (github.event.issue.pull_request && startsWith(github.event.comment.body, '/preview ') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    outputs:
+      proceed: ${{ steps.filter.outputs.proceed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 infra/gcp/control/controller.py preflight
+
   prepare:
-    if: vars.GCP_ENVIRONMENTS_ENABLED == 'true'
+    needs: intake
+    if: needs.intake.outputs.proceed == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

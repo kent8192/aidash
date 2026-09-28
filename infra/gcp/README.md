@@ -201,10 +201,26 @@ On the PR, an authorized collaborator can write exactly one of:
 For Actions use `environment=pr`, `pr_number=N`, and `approved_sha` for a new fork
 head. The illustrative fork SHA above must be replaced with the actual hash.
 No environment is created by opening a PR alone. Command acceptance and cloud
+authentication require a complete preview command beginning with `/preview `
+and current repository write/maintain/admin permission. A separate intake job
+has no cloud or OIDC permissions; ordinary issue/PR comments and unrelated
+authors are excluded before it starts, and malformed/unauthorized commands
+cannot start the prepare/apply jobs.
+
+Command acceptance and cloud
 reconciliation share a durable lock, so an older apply cannot create/start a VM
-after a newer stop/destroy request has been accepted. Intake waits up to 450
+after a newer stop/destroy request has been accepted. Preparation waits up to 450
 seconds for the lock; if that expires, the command has not been accepted and the
 Actions run fails. Retry after the lock owner finishes. Locks are never stolen.
+Preparation has at most eight minutes of controller work, and reconciliation has at
+most forty minutes across all environments. These budgets shrink by the setup
+time already spent in the current Actions job, preserving time before its
+10/55-minute hard timeout. Expiration exits retry loops, interrupts and reaps CLI
+process groups, bounds failure cleanup to three minutes, and reserves a separate
+90 seconds for deleting only the owned lock generation. A started deployment
+that runs out of time stays failed/gated until an explicit retry; untouched
+environments can be reconciled by a later scheduled run. Forced runner loss or
+unavailable cloud credentials still require the lock recovery procedure below.
 Builds run outside the lock and attach only to their accepted generation. A later
 scheduled reconciliation can process accepted intent or a completed build if its
 immediate apply job finds the lock busy. Inspect Actions
@@ -233,6 +249,9 @@ have no completion timestamp: a newly observed inbound/outbound completion start
 a full idle hour at observation time, and subsequent samples of that receipt do
 not extend it. Pure human-input/approval waits may idle; approval
 expiration remains wall-clock based.
+An update waiting for a failed, cancelled or unfinished build still observes its
+previously applied VM and can stop it when idle. The pending source remains
+recorded, but a late build cannot attach to or wake the stopped environment.
 
 Before stop/update, the controller closes proxy admission, freezes application
 and Runner controllers and checks work again, including outstanding HTTP and

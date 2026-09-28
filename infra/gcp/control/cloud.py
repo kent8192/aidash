@@ -1,29 +1,76 @@
 """Small trusted CLI/API boundary used by the lifecycle controller."""
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
+DEADLINE = ContextVar("controller_deadline", default=None)
+
+
+class OperationDeadline(BaseException):
+    """Stop retry loops and release the lock before the runner's hard timeout."""
+
+
+@contextmanager
+def operation_budget(seconds):
+    token = DEADLINE.set(time.monotonic() + seconds)
+    try:
+        yield
+    finally:
+        DEADLINE.reset(token)
+
+
+def bounded_timeout(seconds):
+    deadline = DEADLINE.get()
+    if deadline is None:
+        return seconds
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise OperationDeadline("controller operation deadline reached")
+    return min(seconds, remaining)
+
 
 def run(*args, data=None, timeout=900):
-    result = subprocess.run(
+    timeout = bounded_timeout(timeout)
+    with subprocess.Popen(
         [str(arg) for arg in args],
-        input=data,
-        capture_output=True,
-        timeout=timeout,
-        check=False,
-    )
-    if result.returncode:
+        stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    ) as process:
+        try:
+            output, _ = process.communicate(data, timeout=timeout)
+        except BaseException:
+            # Terraform needs an opportunity to persist state/unlock. Stop the
+            # whole CLI process group before releasing the lifecycle lock.
+            try:
+                os.killpg(process.pid, signal.SIGINT)
+            except ProcessLookupError:
+                pass
+            try:
+                process.communicate(timeout=15)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate(timeout=5)
+            bounded_timeout(1)
+            raise
+    if process.returncode:
         raise RuntimeError(
-            f"{args[0]} failed (exit {result.returncode}); no private command output was logged"
+            f"{args[0]} failed (exit {process.returncode}); no private command output was logged"
         )
-    return result.stdout
+    return output
 
 
 def github(path):
@@ -45,7 +92,7 @@ class Store:
                 "Content-Type": "application/json",
             },
         )
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with urllib.request.urlopen(request, timeout=bounded_timeout(60)) as response:
             return response.read()
 
     def read(self, key):
@@ -111,10 +158,13 @@ class Store:
             yield
         finally:
             encoded = urllib.parse.quote(key, safe="")
-            self.call(
-                "DELETE",
-                f"storage/v1/b/{self.bucket}/o/{encoded}?ifGenerationMatch={generation}",
-            )
+            # Reserve a fresh bounded budget for authenticated release, even
+            # after the operation exhausted its own wall-clock allowance.
+            with operation_budget(90):
+                self.call(
+                    "DELETE",
+                    f"storage/v1/b/{self.bucket}/o/{encoded}?ifGenerationMatch={generation}",
+                )
 
 
 def private_json(path, value):

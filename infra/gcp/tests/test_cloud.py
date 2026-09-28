@@ -9,10 +9,37 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "control"))
-from cloud import Store, Terraform
+from cloud import (
+    Store,
+    Terraform,
+    OperationDeadline,
+    operation_budget,
+    run,
+    bounded_timeout,
+)
 
 
 class LockTests(unittest.TestCase):
+    def test_operation_budget_stops_work_and_leaves_time_to_release_its_lock(self):
+        store = Store("fixture")
+        released = []
+
+        def release(method, path):
+            self.assertEqual(method, "DELETE")
+            self.assertIn("ifGenerationMatch=owned-generation", path)
+            self.assertGreater(bounded_timeout(60), 1)
+            released.append(path)
+
+        with (
+            patch.object(store, "write", return_value="owned-generation"),
+            patch.object(store, "call", side_effect=release),
+        ):
+            with self.assertRaises(OperationDeadline):
+                with operation_budget(0.1), store.lock():
+                    run(sys.executable, "-c", "import time; time.sleep(0.3)", timeout=5)
+                    self.fail("the operation exceeded its controller budget")
+        self.assertEqual(len(released), 1)
+
     def test_busy_lock_waits_without_stealing_then_releases_only_its_generation(self):
         store = Store("fixture")
         with (

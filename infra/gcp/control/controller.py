@@ -2,6 +2,7 @@
 """GitHub-authorized nonproduction lifecycle control. Infrastructure only."""
 
 import argparse
+from datetime import datetime
 import hashlib
 import io
 import json
@@ -14,7 +15,16 @@ import time
 import urllib.parse
 import urllib.request
 
-from cloud import Store, Terraform, github, private_json, run
+from cloud import (
+    Store,
+    Terraform,
+    github,
+    private_json,
+    run,
+    OperationDeadline,
+    operation_budget,
+    bounded_timeout,
+)
 from policy import (
     Refused,
     attach_release,
@@ -493,7 +503,7 @@ def public_health(output):
     for attempt in range(24):
         try:
             with urllib.request.urlopen(
-                f"https://{output['hostname']}/health", timeout=10
+                f"https://{output['hostname']}/health", timeout=bounded_timeout(10)
             ) as response:
                 value = json.load(response)
                 if (
@@ -634,15 +644,12 @@ def reconcile(config, store):
                         store, identity, generation, status="waiting_for_pr_slot"
                     )
                     continue
-                if not entry.get("release"):
-                    update_entry(store, identity, generation, status="awaiting_build")
-                    continue
                 if entry.get(
                     "failed_deployment_generation"
                 ) == generation and not entry.get("start_pending"):
                     continue
                 previous = managed.get(identity)
-                needs_deploy = (
+                needs_deploy = bool(entry.get("release")) and (
                     not previous
                     or not previous["running"]
                     or previous.get("release_sha") != entry["sha"]
@@ -708,6 +715,11 @@ def reconcile(config, store):
                                     status="stopped",
                                 )
                             continue
+                        if not entry.get("release"):
+                            update_entry(
+                                store, identity, generation, status="awaiting_build"
+                            )
+                            continue
                         if entry.get("status") != "ready":
                             current_entry(store, identity, generation)
                             host(config, output, "unseal")
@@ -720,6 +732,9 @@ def reconcile(config, store):
                             start_pending=False,
                         )
                         continue
+                if not entry.get("release"):
+                    update_entry(store, identity, generation, status="awaiting_build")
+                    continue
                 # Revalidate source identity at the effect boundary, not just at intake.
                 current_entry(store, identity, generation)
                 verify_source(config, identity, entry)
@@ -814,41 +829,47 @@ def reconcile(config, store):
                 print(
                     f"Ready: {identity} https://{output['hostname']} source={entry['sha']}"
                 )
-            except Exception as error:
-                if deployment_started:
-                    # Keep failed releases gated and data intact. A subsequent
-                    # explicit resume/new source can retry, but cron cannot loop
-                    # migrations or resurrect an interrupted first boot.
+            except (Exception, OperationDeadline) as error:
+                with operation_budget(180):
+                    if deployment_started:
+                        # Keep failed releases gated and data intact. A subsequent
+                        # explicit resume/new source can retry, but cron cannot loop
+                        # migrations or resurrect an interrupted first boot.
+                        update_entry(
+                            store,
+                            identity,
+                            snapshot["generation"],
+                            failed_deployment_generation=snapshot["generation"],
+                        )
+                        if identity in managed:
+                            managed[identity]["published"] = False
+                            try:
+                                host(config, terraform.outputs()[identity], "gate")
+                            except Exception:
+                                pass
+                            try:
+                                terraform.apply(managed)
+                            except Exception:
+                                pass
+                    elif sealed:
+                        try:
+                            host(config, output, "unseal")
+                        except Exception:
+                            pass
                     update_entry(
                         store,
                         identity,
                         snapshot["generation"],
-                        failed_deployment_generation=snapshot["generation"],
+                        status="failed",
+                        diagnostic=type(error).__name__,
                     )
-                    if identity in managed:
-                        managed[identity]["published"] = False
-                        try:
-                            host(config, terraform.outputs()[identity], "gate")
-                        except Exception:
-                            pass
-                        try:
-                            terraform.apply(managed)
-                        except Exception:
-                            pass
-                elif sealed:
-                    try:
-                        host(config, output, "unseal")
-                    except Exception:
-                        pass
-                update_entry(
-                    store,
-                    identity,
-                    snapshot["generation"],
-                    status="failed",
-                    diagnostic=type(error).__name__,
-                )
-                print(f"Deferred/failed: {identity}: {type(error).__name__}")
-                failures.append(identity)
+                    print(f"Deferred/failed: {identity}: {type(error).__name__}")
+                    failures.append(identity)
+                if isinstance(error, OperationDeadline):
+                    raise
+                # A normal failure's cleanup may have consumed the remaining
+                # operation budget. Do not start another environment/cleanup.
+                bounded_timeout(1)
         if failures:
             raise RuntimeError("Reconciliation incomplete: " + ", ".join(failures))
 
@@ -867,20 +888,73 @@ def finish(config, store, prepared_path, release_path):
     reconcile(config, store)
 
 
+def preflight(event, name, repository):
+    if name == "issue_comment":
+        if event.get("action") != "created" or "pull_request" not in event.get(
+            "issue", {}
+        ):
+            return False
+        try:
+            if preview_command(event["comment"]["body"]) is None:
+                return False
+            permission({"repository": repository}, event["comment"]["user"]["login"])
+        except Refused:
+            return False
+    return True
+
+
+def controller_budget(phase):
+    seconds = 8 * 60 if phase == "prepare" else 40 * 60
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        # Include runner setup/download time in the allowance. These hard
+        # limits match gcp-environments.yml; reserve cleanup + lock release.
+        hard_limit, reserve = (
+            (10 * 60, 2 * 60) if phase == "prepare" else (55 * 60, 7 * 60)
+        )
+        with operation_budget(60):
+            jobs = github(
+                f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}/attempts/{os.environ['GITHUB_RUN_ATTEMPT']}/jobs?per_page=100"
+            )
+        job = next(
+            (job for job in jobs["jobs"] if job["name"] == os.environ["GITHUB_JOB"]),
+            None,
+        )
+        if not job or not job.get("started_at"):
+            raise Refused("Cannot determine this job's remaining lifecycle time")
+        started = datetime.fromisoformat(
+            job["started_at"].replace("Z", "+00:00")
+        ).timestamp()
+        seconds = min(seconds, hard_limit - (time.time() - started) - reserve)
+    if seconds < 60:
+        raise Refused("Insufficient job time to acquire the lifecycle lock safely")
+    return seconds
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("phase", choices=["prepare", "finish", "reconcile"])
+    parser.add_argument(
+        "phase", choices=["preflight", "prepare", "finish", "reconcile"]
+    )
     parser.add_argument("--request")
     parser.add_argument("--release")
     args = parser.parse_args()
-    config = load_config()
-    store = Store(config["state_bucket"])
-    if args.phase == "prepare":
-        prepare(config, store)
-    elif args.phase == "finish":
-        finish(config, store, args.request, args.release)
-    else:
-        reconcile(config, store)
+    if args.phase == "preflight":
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+        proceed = preflight(
+            event, os.environ["GITHUB_EVENT_NAME"], os.environ["GITHUB_REPOSITORY"]
+        )
+        with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+            output.write(f"proceed={str(proceed).lower()}\n")
+        return
+    with operation_budget(controller_budget(args.phase)):
+        config = load_config()
+        store = Store(config["state_bucket"])
+        if args.phase == "prepare":
+            prepare(config, store)
+        elif args.phase == "finish":
+            finish(config, store, args.request, args.release)
+        else:
+            reconcile(config, store)
 
 
 if __name__ == "__main__":
