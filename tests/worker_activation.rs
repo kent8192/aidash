@@ -1252,8 +1252,11 @@ async fn startup_reconciliation_drains_all_batches(
 }
 
 #[rstest::rstest]
+#[case::explicit_shutdown(true)]
+#[case::continuous_worker(false)]
 #[tokio::test]
 async fn embedded_worker_uses_dedicated_activation_broker(
+	#[case] explicit_shutdown: bool,
 	#[future(awt)]
 	#[from(test_environment)]
 	environment: Arc<TestEnvironment>,
@@ -1285,6 +1288,10 @@ async fn embedded_worker_uses_dedicated_activation_broker(
 			"--nocapture",
 		])
 		.env("AIDASH_ACTIVATION_CHILD_DATABASE", database.as_str())
+		.env(
+			"AIDASH_ACTIVATION_CHILD_UNTIL",
+			explicit_shutdown.to_string(),
+		)
 		.env("AIDASH_ACTIVATION_NATS_URL", &f.config.nats_url)
 		.env("AIDASH_ACTIVATION_NAMESPACE", &schema)
 		.env("AIDASH_ACTIVATION_BOOTSTRAP", "false")
@@ -1339,7 +1346,14 @@ async fn embedded_worker_child() {
 		federation: f.clone(),
 	};
 	let (stop, stopping) = tokio::sync::watch::channel(false);
-	let worker = tokio::spawn(async move { harness.run_worker_until(stopping).await });
+	let explicit_shutdown = std::env::var("AIDASH_ACTIVATION_CHILD_UNTIL").unwrap() == "true";
+	let mut worker = tokio::spawn(async move {
+		if explicit_shutdown {
+			harness.run_worker_until(stopping).await
+		} else {
+			harness.run_worker().await
+		}
+	});
 	let outcome = tokio::time::timeout(Duration::from_secs(15), async {
 		loop {
 			let quarantined: i64 = sqlx::query_scalar(
@@ -1358,8 +1372,17 @@ async fn embedded_worker_child() {
 		}
 	})
 	.await;
-	stop.send_replace(true);
-	worker.await.unwrap().unwrap();
+	assert!(
+		!worker.is_finished(),
+		"worker exited without a shutdown request"
+	);
+	if explicit_shutdown {
+		stop.send_replace(true);
+		(&mut worker).await.unwrap().unwrap();
+	} else {
+		worker.abort();
+		assert!(worker.await.unwrap_err().is_cancelled());
+	}
 	assert!(
 		outcome.is_ok(),
 		"embedded worker never consumed the dedicated broker notification"

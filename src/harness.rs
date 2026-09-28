@@ -347,21 +347,24 @@ impl Harness {
 		&self,
 		mut stopping: tokio::sync::watch::Receiver<bool>,
 	) -> Result<()> {
-		while !*stopping.borrow() {
+		while !*stopping.borrow() && stopping.has_changed().is_ok() {
 			let delivery = async {
-				if let Some(run) = self.federation.store.pending_terminal_run_message().await?
-					&& self.federation.deliver_run_messages(&run).await.is_err()
-				{
+				if let Some(run) = self.federation.store.pending_terminal_run_message().await? {
+					if self.federation.deliver_run_messages(&run).await.is_ok() {
+						return Ok(true);
+					}
 					self.federation
 						.store
 						.defer_run_message_delivery(run.id)
 						.await?;
 				}
-				Ok::<(), Error>(())
+				Ok::<bool, Error>(false)
 			}
 			.await;
-			if let Err(error) = delivery {
-				tracing::warn!(%error, "terminal remote input delivery deferred");
+			match delivery {
+				Ok(true) => continue,
+				Ok(false) => {}
+				Err(error) => tracing::warn!(%error, "terminal remote input delivery deferred"),
 			}
 			tokio::select! {
 				_ = tokio::time::sleep(Duration::from_millis(250)) => {},

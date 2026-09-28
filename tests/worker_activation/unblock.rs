@@ -1,6 +1,6 @@
 use super::*;
 
-async fn insert_run(f: &Federation, control: &str) -> Uuid {
+pub(super) async fn insert_run(f: &Federation, control: &str) -> Uuid {
 	let id = Uuid::new_v4();
 	sqlx::query(
 		&Query::insert()
@@ -201,4 +201,75 @@ async fn visibility_release_retries_existing_work_without_fanout(
 		after_release, obligations,
 		"gate release activated unrelated paused Runs"
 	);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn approval_notifications_target_only_the_bound_run(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&environment).await;
+	let target = insert_run(&f, "ACTIVE").await;
+	let unrelated = insert_run(&f, "ACTIVE").await;
+	let approval = Uuid::new_v4();
+	// A stale/mismatched pointer on another Run must not receive this approval.
+	for run in [target, unrelated] {
+		sqlx::query(
+			&Query::update()
+				.table(a("runs"))
+				.value(a("pending"), json!({"core_approval_id":approval}))
+				.and_where(Expr::col(a("id")).eq(run))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	}
+	for (id, kind, data) in [
+		(Uuid::new_v4(), "file", json!({"run_id":"not-a-run"})),
+		(Uuid::new_v4(), "grant", json!({"run_id":target})),
+		(approval, "approval", json!({"run_id":target})),
+	] {
+		sqlx::query(
+			&Query::insert()
+				.into_table(a("core_records"))
+				.columns(["id", "tenant", "owner", "kind", "state", "data"].map(a))
+				.values_panic([
+					id.into(),
+					"default".into(),
+					"fixture".into(),
+					kind.into(),
+					"pending".into(),
+					data.into(),
+				])
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	}
+	sqlx::query(
+		&Query::update()
+			.table(a("core_records"))
+			.value(a("state"), "allowed")
+			.and_where(Expr::col(a("id")).eq(approval))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let actual: Vec<Uuid> = sqlx::query_scalar(
+		&Query::select()
+			.column(a("run_id"))
+			.from(a("run_activations"))
+			.and_where(Expr::col(a("reason")).eq("approval"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(&f.store.pool)
+	.await
+	.unwrap();
+	cleanup(f, &url, &schema).await;
+	assert_eq!(actual, vec![target, target]);
 }

@@ -395,3 +395,125 @@ async fn completed_dependencies_release_wait_without_expiring_timer(
 		"dependency completion must bypass its fallback timer"
 	);
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn terminal_delivery_drains_a_burst_without_per_run_sleep(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&environment).await;
+	let workspace = Uuid::new_v4();
+	let node = f.config.node_id.clone();
+	let app = Router::new().route("/federation/v0.1/workspace", post(move |Json(input): Json<Value>| {
+        let node = node.clone();
+        async move {
+            match input["operation"].as_str().unwrap() {
+                "run_message_commit" => Json(json!({"committed":true})),
+                "run_message_delivery" => Json(json!({"id":Uuid::new_v4(),"workspace_id":workspace,
+                    "sender":"human","content":input["data"]["content"],
+                    "idempotency_key":format!("{}:{}:{}",node,input["task_id"].as_str().unwrap(),input["data"]["key"].as_str().unwrap()),
+                    "created_at":chrono::Utc::now()})),
+                other => panic!("unexpected operation {other}"),
+            }
+        }
+    }));
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+	sqlx::query(
+		&Query::insert()
+			.into_table(a("peers"))
+			.columns(
+				[
+					"node_id",
+					"endpoint",
+					"credential_env",
+					"protocol_version",
+					"enabled",
+				]
+				.map(a),
+			)
+			.values_panic([
+				"aidash://delivery-home".into(),
+				endpoint.into(),
+				"AIDASH_SECRET_TEST_PEER".into(),
+				"0.1".into(),
+				true.into(),
+			])
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let mut runs = Vec::new();
+	for _ in 0..24 {
+		let id = super::unblock::insert_run(&f, "ACTIVE").await;
+		sqlx::query(
+			&Query::update()
+				.table(a("runs"))
+				.value(a("home_node"), "aidash://delivery-home")
+				.value(a("workspace_id"), workspace)
+				.value(a("phase"), "COMPLETED")
+				.and_where(Expr::col(a("id")).eq(id))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+		sqlx::query(
+			&Query::insert()
+				.into_table(a("run_inputs"))
+				.columns(["run_id", "sender", "content", "idempotency_key"].map(a))
+				.values_panic([
+					id.into(),
+					"human".into(),
+					"terminal correction".into(),
+					id.to_string().into(),
+				])
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+		runs.push(id);
+	}
+	let harness = aidash::harness::Harness {
+		federation: f.clone(),
+	};
+	let (stop, stopping) = tokio::sync::watch::channel(false);
+	let delivery =
+		tokio::spawn(async move { harness.deliver_terminal_messages_until(stopping).await });
+	let drained = tokio::time::timeout(Duration::from_secs(3), async {
+		loop {
+			if f.store
+				.pending_terminal_run_message()
+				.await
+				.unwrap()
+				.is_none()
+			{
+				break;
+			}
+			tokio::time::sleep(Duration::from_millis(10)).await;
+		}
+	})
+	.await;
+	stop.send_replace(true);
+	delivery.await.unwrap().unwrap();
+	let mut delivered = 0;
+	for id in runs {
+		delivered += usize::from(
+			f.store.run_inputs(id).await.unwrap()[0]
+				.message_id
+				.is_some(),
+		);
+	}
+	server.abort();
+	cleanup(f, &url, &schema).await;
+	assert!(
+		drained.is_ok(),
+		"healthy delivery still sleeps between Runs: {delivered}/24"
+	);
+	assert_eq!(delivered, 24);
+}
