@@ -20,6 +20,7 @@ import {
   type GraphPage,
   type RemoteExpansion,
 } from "./federated-graph";
+import { mergeGraphTimeline } from "./graph-timeline";
 import { meshCopy } from "./mesh-copy";
 import { meshColors, MeshIcon } from "./mesh-icons";
 import {
@@ -515,13 +516,36 @@ export function Graph({
         )
       : modeKinds[graphMode];
   const relationTypes = [...new Set(full.edges.map((e) => e.relation))];
-  const events = data.events
+  const localEvents = data.events
     .filter(
       (e) =>
         (!graphWorkspace || e.workspace_id === graphWorkspace) &&
         inWindow(e.created_at, hours, now),
     )
-    .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+    .map((event) => {
+      const references = eventReferences(event);
+      const target = full.nodes.find(
+        (node) =>
+          node.nodeId === data.node.id &&
+          ((node.kind === "task" &&
+            node.resourceId === references.task_id) ||
+            (node.kind === "artifact" &&
+              node.resourceId === references.artifact_id)),
+      );
+      return {
+        id: event.id,
+        kind: event.kind,
+        created_at: event.created_at,
+        reference: target?.id ?? null,
+      };
+    });
+  const events = mergeGraphTimeline(
+    localEvents,
+    pages,
+    full.nodes,
+    hours,
+    Date.now(),
+  );
   const tasks = data.tasks.filter(
     (task) => !graphWorkspace || task.workspace_id === graphWorkspace,
   );
@@ -959,12 +983,8 @@ export function Graph({
                 {events.length ? (
                   <div className="mesh-timeline-track">
                     {timeline.map((event, index) => {
-                      const d = eventReferences(event);
                       const target = full.nodes.find(
-                        (v) =>
-                          (v.kind === "task" && v.resourceId === d.task_id) ||
-                          (v.kind === "artifact" &&
-                            v.resourceId === d.artifact_id),
+                        (node) => node.id === event.reference,
                       );
                       const progress =
                         timelineEnd === timelineStart

@@ -1,5 +1,6 @@
 //! Scoped graph projection. A peer connection authenticates the source Node;
 //! a mapped Subject or a typed operator grant supplies the receiving authority.
+mod catalog;
 mod scoped;
 
 use super::super::{Authorization, access::Access, identity::Actor, policy::identifier};
@@ -676,47 +677,10 @@ async fn candidates(
 	{
 		return scoped::candidates(authority, workspace, source_node, offset).await;
 	}
-	let conn = authority.connection();
 	if kind == 5 {
-		let documents: Vec<serde_json::Value> = sqlx::query_scalar(
-			&Query::select()
-				.column((Alias::new("r"), Alias::new("metadata")))
-				.from_as(Alias::new("authorization_catalog"), Alias::new("c"))
-				.join_as(
-					JoinType::InnerJoin,
-					Alias::new("registry"),
-					Alias::new("r"),
-					Condition::all()
-						.add(
-							Expr::col((Alias::new("r"), Alias::new("id")))
-								.eq(Expr::col((Alias::new("c"), Alias::new("entry_id")))),
-						)
-						.add(
-							Expr::col((Alias::new("r"), Alias::new("version")))
-								.eq(Expr::col((Alias::new("c"), Alias::new("entry_version")))),
-						),
-				)
-				.and_where(Expr::col((Alias::new("c"), Alias::new("tenant"))).eq(Expr::cust("$1")))
-				.and_where(Expr::col((Alias::new("c"), Alias::new("enabled"))).eq(true))
-				.order_by((Alias::new("c"), Alias::new("entry_id")), Order::Asc)
-				.order_by((Alias::new("c"), Alias::new("entry_version")), Order::Asc)
-				.limit(CANDIDATE_BATCH)
-				.offset(offset)
-				.lock_with_tables(LockType::Share, [Alias::new("c")])
-				.to_string(PostgresQueryBuilder),
-		)
-		.bind(&tenant)
-		.fetch_all(conn)
-		.await?;
-		return documents
-			.into_iter()
-			.map(|value| {
-				serde_json::from_value(value)
-					.map(Candidate::Registry)
-					.map_err(Error::from)
-			})
-			.collect();
+		return catalog::candidates(authority, options, offset).await;
 	}
+	let conn = authority.connection();
 	let table = match kind {
 		0 => "workspaces",
 		1 => "tasks",
