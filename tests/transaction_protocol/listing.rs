@@ -120,3 +120,6 @@ async fn listing_checks_peers_concurrently_and_preserves_order_and_denials(
 		"peer checks must be bounded and concurrent, observed {concurrency}"
 	);
 }
+
+#[path = "admission.rs"]
+mod admission;

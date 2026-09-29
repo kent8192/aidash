@@ -87,16 +87,47 @@ class Cluster:
         previous = self.forwards.get(node)
         if previous and previous[0].poll() is None:
             return previous[1]
+        if previous:
+            self.forwards.pop(node)
+            previous[0].wait(timeout=10)
+            previous[2].close()
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             port = listener.getsockname()[1]
         log = (self.directory / f"forward-{node}.log").open("a")
-        process = subprocess.Popen(["kubectl", "-n", self.namespace, "port-forward",
-                                    f"service/tx-{node}", f"{port}:8080"],
-                                   env=self.env, stdout=log, stderr=log)
+        try:
+            process = subprocess.Popen(["kubectl", "-n", self.namespace, "port-forward",
+                                        f"service/tx-{node}", f"{port}:8080"],
+                                       env=self.env, stdout=log, stderr=log)
+        except OSError:
+            log.close()
+            raise
         self.forwards[node] = (process, f"http://127.0.0.1:{port}", log)
-        time.sleep(0.3)
-        return self.forwards[node][1]
+        # kubectl startup can exceed a fixed sleep under the 16-Node matrix.
+        # Wait before sending any HTTP request; never retry an ambiguous POST.
+        deadline = time.monotonic() + 10
+        try:
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise ConnectionError(f"port-forward for Node {node} exited before listening")
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                        return self.forwards[node][1]
+                except OSError:
+                    time.sleep(0.05)
+            raise TimeoutError(f"port-forward for Node {node} did not listen within 10 seconds")
+        except BaseException:
+            self.forwards.pop(node, None)
+            try:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=10)
+            finally:
+                log.close()
+            raise
 
     def api(self, node, path, body=None):
         request = urllib.request.Request(self.forward(node) + path,

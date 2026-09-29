@@ -38,7 +38,12 @@ pub struct TransactionTrust {
 
 pub fn routes() -> OpenApiRouter<Federation> {
 	OpenApiRouter::new()
-		.routes(routes!(submit, list))
+		.routes(routes!(submit))
+		// Acquire before the handler can retain a control connection. All router
+		// clones share eight slots, leaving capacity in the sixteen-connection
+		// control pool for inbound preflights. Peer routes do not use this gate.
+		.route_layer(tower::limit::concurrency::GlobalConcurrencyLimitLayer::new(8))
+		.routes(routes!(list))
 		.routes(routes!(details))
 		.routes(routes!(abort))
 		.merge(
@@ -129,6 +134,15 @@ async fn list(
 			match result {
 				Ok(()) => {}
 				Err(Error::Forbidden | Error::Unauthorized | Error::NotFound(_)) => continue,
+				Err(
+					error @ (Error::External(_)
+					| Error::TransactionPending
+					| Error::IdentityStatusUnavailable),
+				) => {
+					// An unavailable live proof hides this row, not unrelated local rows.
+					tracing::debug!(transaction_id = %row.id, %error, "transaction list authority unavailable");
+					continue;
+				}
 				Err(error) => return Err(error),
 			}
 			visible.push(row);

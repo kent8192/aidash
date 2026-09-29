@@ -104,8 +104,14 @@ async fn invalid_deadline_does_not_bind_remote_preflight(
 		..
 	} = scoped_pair(&environment).await;
 	manifest.deadline = Utc::now() + Duration::seconds(seconds);
-	let (status, body) =
-		common::request(&app_a, &token_a, "POST", "/api/transactions", json!(manifest)).await;
+	let (status, body) = common::request(
+		&app_a,
+		&token_a,
+		"POST",
+		"/api/transactions",
+		json!(manifest),
+	)
+	.await;
 	assert_eq!(status, 400, "{body}");
 	let bound: i64 = sqlx::query_scalar(
 		&Query::select()
@@ -119,12 +125,24 @@ async fn invalid_deadline_does_not_bind_remote_preflight(
 	.await
 	.unwrap();
 	manifest.deadline = Utc::now() + Duration::minutes(5);
-	let (retry, body) =
-		common::request(&app_a, &token_a, "POST", "/api/transactions", json!(manifest)).await;
+	let (retry, body) = common::request(
+		&app_a,
+		&token_a,
+		"POST",
+		"/api/transactions",
+		json!(manifest),
+	)
+	.await;
 	a.cleanup().await;
 	b.cleanup().await;
-	assert_eq!(bound, 0, "invalid admission must not strand a remote binding");
-	assert_eq!(retry, 202, "the same ID with a corrected deadline must work: {body}");
+	assert_eq!(
+		bound, 0,
+		"invalid admission must not strand a remote binding"
+	);
+	assert_eq!(
+		retry, 202,
+		"the same ID with a corrected deadline must work: {body}"
+	);
 }
 
 #[rstest::rstest]
@@ -154,17 +172,35 @@ async fn deadline_expiring_during_preflight_has_a_recoverable_coordinator(
 		},
 	));
 	serve(&mut b, app).await;
-	let (status, body) =
-		common::request(&app_a, &token_a, "POST", "/api/transactions", json!(manifest)).await;
-	assert_eq!(status, 202, "expiry during preflight must remain recoverable: {body}");
+	let (status, body) = common::request(
+		&app_a,
+		&token_a,
+		"POST",
+		"/api/transactions",
+		json!(manifest),
+	)
+	.await;
+	assert_eq!(
+		status, 202,
+		"expiry during preflight must remain recoverable: {body}"
+	);
 	assert!(Utc::now() > manifest.deadline);
 	let state = complete(&a, manifest.id).await;
 	assert_eq!(state.decision.as_deref(), Some("ABORT"));
-	let (retry, body) =
-		common::request(&app_a, &token_a, "POST", "/api/transactions", json!(manifest)).await;
+	let (retry, body) = common::request(
+		&app_a,
+		&token_a,
+		"POST",
+		"/api/transactions",
+		json!(manifest),
+	)
+	.await;
 	a.cleanup().await;
 	b.cleanup().await;
-	assert_eq!(retry, 202, "expired idempotent retries must still work: {body}");
+	assert_eq!(
+		retry, 202,
+		"expired idempotent retries must still work: {body}"
+	);
 }
 
 #[rstest::rstest]
@@ -182,14 +218,28 @@ async fn unavailable_peer_hides_only_its_rows(
 		mut manifest,
 		..
 	} = scoped_pair(&environment).await;
-	let (status, body) =
-		common::request(&app_a, &token_a, "POST", "/api/transactions", json!(manifest)).await;
+	let (status, body) = common::request(
+		&app_a,
+		&token_a,
+		"POST",
+		"/api/transactions",
+		json!(manifest),
+	)
+	.await;
 	assert_eq!(status, 202, "{body}");
 	let remote_id = manifest.id;
 	manifest.id = Uuid::new_v4();
-	manifest.participants.retain(|node| node.node_id == a.f.config.node_id);
-	let (status, body) =
-		common::request(&app_a, &token_a, "POST", "/api/transactions", json!(manifest)).await;
+	manifest
+		.participants
+		.retain(|node| node.node_id == a.f.config.node_id);
+	let (status, body) = common::request(
+		&app_a,
+		&token_a,
+		"POST",
+		"/api/transactions",
+		json!(manifest),
+	)
+	.await;
 	assert_eq!(status, 202, "{body}");
 	b.stop().await;
 	let (status, rows) =
@@ -203,7 +253,12 @@ async fn unavailable_peer_hides_only_its_rows(
 	a.cleanup().await;
 	b.cleanup().await;
 	assert_eq!(status, 200, "{rows}");
-	let ids: Vec<_> = rows.as_array().unwrap().iter().map(|row| row["id"].clone()).collect();
+	let ids: Vec<_> = rows
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|row| row["id"].clone())
+		.collect();
 	assert_eq!(ids, vec![json!(manifest.id), json!(remote_id)]);
 }
 
@@ -279,7 +334,10 @@ async fn bidirectional_submissions_reserve_inbound_control_capacity(
 	.expect("bidirectional admissions must finish without pool starvation");
 	a.cleanup().await;
 	b.cleanup().await;
-	assert!(spare_a && spare_b, "outbound admissions exhausted an inbound control pool");
+	assert!(
+		spare_a && spare_b,
+		"outbound admissions exhausted an inbound control pool"
+	);
 	for result in results {
 		let (status, body) = result.unwrap();
 		assert_eq!(status, 202, "{body}");
@@ -303,17 +361,31 @@ async fn independent_preflights_run_concurrently(
 	} = scoped_pair(&environment).await;
 	let mut c = Node::new(&environment, "preflight-c").await;
 	for (local, remote) in [(&a, &c), (&c, &a)] {
-		local.f.register_peer(Peer {
-			node_id: remote.f.config.node_id.clone(),
-			endpoint: remote.f.config.endpoint.clone(),
-			credential_env: "AIDASH_SECRET_TRANSACTION_02".into(),
-			protocol_version: "0.1".into(),
-			enabled: true,
-		}).await.unwrap();
-		assert_eq!(local.request(reqwest::Method::POST, "/api/transactions/trust",
-			Some(json!({"node_id":remote.f.config.node_id,"enabled":true}))).await.0, 200);
+		local
+			.f
+			.register_peer(Peer {
+				node_id: remote.f.config.node_id.clone(),
+				endpoint: remote.f.config.endpoint.clone(),
+				credential_env: "AIDASH_SECRET_TRANSACTION_02".into(),
+				protocol_version: "0.1".into(),
+				enabled: true,
+			})
+			.await
+			.unwrap();
+		assert_eq!(
+			local
+				.request(
+					reqwest::Method::POST,
+					"/api/transactions/trust",
+					Some(json!({"node_id":remote.f.config.node_id,"enabled":true}))
+				)
+				.await
+				.0,
+			200
+		);
 	}
-	let (_, _, task) = common::bootstrap(&c.f, &api::router(c.f.clone()), "http://localhost:1").await;
+	let (_, _, task) =
+		common::bootstrap(&c.f, &api::router(c.f.clone()), "http://localhost:1").await;
 	map_subject(&a, &c).await;
 	let workspace = c.f.store.task(task).await.unwrap().workspace_id;
 	let mut third = manifest.participants[0].clone();
@@ -340,8 +412,17 @@ async fn independent_preflights_run_concurrently(
 		));
 		serve(node, app).await;
 	}
-	let response = tokio::time::timeout(StdDuration::from_secs(5),
-		common::request(&app_a, &token_a, "POST", "/api/transactions", json!(manifest))).await;
+	let response = tokio::time::timeout(
+		StdDuration::from_secs(5),
+		common::request(
+			&app_a,
+			&token_a,
+			"POST",
+			"/api/transactions",
+			json!(manifest),
+		),
+	)
+	.await;
 	a.cleanup().await;
 	b.cleanup().await;
 	c.cleanup().await;

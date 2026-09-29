@@ -44,7 +44,8 @@ mod m20260926_010000_scoped_remote_execution;
 mod m20260927_000000_core_operation_queue;
 
 mod m20260928_000000_transaction_authority;
-
+mod m20260928_000000_worker_activation;
+mod m20260929_010000_activation_trigger_lookups;
 mod m20260929_020000_pending_authority_indexes;
 
 pub struct Migrator;
@@ -95,6 +96,8 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260926_010000_scoped_remote_execution::Migration),
 			Box::new(m20260927_000000_core_operation_queue::Migration),
 			Box::new(m20260928_000000_transaction_authority::Migration),
+			Box::new(m20260928_000000_worker_activation::Migration),
+			Box::new(m20260929_010000_activation_trigger_lookups::Migration),
 			Box::new(m20260929_020000_pending_authority_indexes::Migration),
 		]
 	}

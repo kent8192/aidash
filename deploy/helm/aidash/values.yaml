@@ -11,11 +11,15 @@ node:
 # pair-specific AIDASH_SECRET_* variables. No secret values belong in Helm values.
 existingSecret: ""
 server:
+  # Optional role-scoped override of existingSecret.
+  existingSecret: ""
   replicas: 1
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { cpu: "2", memory: 1Gi }
 worker:
+  existingSecret: ""
+  slots: 4
   replicas: 1
   resources:
     requests: { cpu: 100m, memory: 128Mi }
@@ -40,3 +44,11 @@ terminationGracePeriodSeconds: 30
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# Stable across Pod replacements. Provision once with `aidash activation-provision`
+# using operator credentials and these same values; runtime does not create objects.
+activation:
+  namespace: default
+  maxAgeSeconds: 86400
+  maxBytes: 1073741824
+  replicas: 1

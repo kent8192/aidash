@@ -6,6 +6,7 @@ use crate::{
 	authorization::{access::Access, identity::SubjectIdentity},
 	federation::Federation,
 };
+use futures_util::{TryStreamExt, stream};
 use sea_orm::sea_query::{Alias, Asterisk, Expr, OnConflict, PostgresQueryBuilder, Query};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -450,22 +451,35 @@ pub(super) async fn submit(
 	}
 	let result = async {
 		gate::read_in(&mut access.tx).await?;
-		for node in &manifest.participants {
-			let input = request(manifest, &origin, &node.node_id)?;
-			if node.node_id == f.config.node_id {
-				let binding = Binding {
-					request: input,
-					local: origin.clone(),
-					subjects: access.subjects.clone(),
-				};
-				bind(
-					&mut access.tx,
-					"atomic_preflights",
-					manifest.id,
-					&json!(binding),
-				)
-				.await?;
-			} else {
+		// Validate fresh admission before remote side effects. Keep the coordinator
+		// uncommitted in this same authority transaction until every preflight
+		// succeeds. Expiry during those RPCs then has a durable abort/recovery path.
+		let stored = coordinator::submit_in(f, manifest, Some(&origin), &mut access.tx).await?;
+		let binding = Binding {
+			request: request(manifest, &origin, &f.config.node_id)?,
+			local: origin.clone(),
+			subjects: access.subjects.clone(),
+		};
+		bind(
+			&mut access.tx,
+			"atomic_preflights",
+			manifest.id,
+			&json!(binding),
+		)
+		.await?;
+		// Participants make independent live policy decisions. Bound fan-out so
+		// sixteen Nodes do not turn per-peer latency into a serial API timeout.
+		stream::iter(
+			manifest
+				.participants
+				.iter()
+				.filter(|node| node.node_id != f.config.node_id)
+				.map(Ok::<_, Error>),
+		)
+		.try_for_each_concurrent(8, |node| {
+			let origin = &origin;
+			async move {
+				let input = request(manifest, origin, &node.node_id)?;
 				let _: Value = coordinator::remote(
 					f,
 					&node.node_id,
@@ -474,11 +488,10 @@ pub(super) async fn submit(
 					Some(&input),
 				)
 				.await?;
+				Ok(())
 			}
-		}
-		// Commit preflights and the coordinator together under the same visibility
-		// and authority locks, without a second control-pool checkout.
-		let stored = coordinator::submit_in(f, manifest, Some(&origin), &mut access.tx).await?;
+		})
+		.await?;
 		super::fault::cut(manifest.id, "coordinator.submit.before").await?;
 		Ok(stored)
 	}
