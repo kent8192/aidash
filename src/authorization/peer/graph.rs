@@ -848,20 +848,36 @@ async fn aggregate_revision(
 	conn: &mut PgConnection,
 	table: &str,
 	column: &str,
+	join_column: &str,
+	tenant: &str,
 ) -> Result<(Option<i64>, i64)> {
 	Ok(sqlx::query_as(
-		&Query::select()
+		&tenant_resources(table, join_column)
 			.expr(
-				Expr::col(Alias::new(column))
+				Expr::col((Alias::new("r"), Alias::new(column)))
 					.sum()
 					.cast_as(Alias::new("bigint")),
 			)
-			.expr(Expr::col(Alias::new(column)).count())
-			.from(Alias::new(table))
+			.expr(Expr::col((Alias::new("r"), Alias::new(column))).count())
 			.to_string(PostgresQueryBuilder),
 	)
+	.bind(tenant)
 	.fetch_one(conn)
 	.await?)
+}
+
+fn tenant_resources(table: &str, join_column: &str) -> sea_orm::sea_query::SelectStatement {
+	Query::select()
+		.from_as(Alias::new(table), Alias::new("r"))
+		.join_as(
+			JoinType::InnerJoin,
+			Alias::new("authorization_workspaces"),
+			Alias::new("a"),
+			Expr::col((Alias::new("r"), Alias::new(join_column)))
+				.eq(Expr::col((Alias::new("a"), Alias::new("workspace_id")))),
+		)
+		.and_where(Expr::col((Alias::new("a"), Alias::new("tenant"))).eq(Expr::cust("$1")))
+		.to_owned()
 }
 
 async fn graph_generation(
@@ -885,33 +901,35 @@ async fn graph_generation(
 	.bind(&tenant)
 	.fetch_one(&mut *conn)
 	.await?;
-	let workspaces = aggregate_revision(&mut *conn, "workspaces", "revision").await?;
-	let tasks = aggregate_revision(&mut *conn, "tasks", "revision").await?;
-	let runs = aggregate_revision(&mut *conn, "runs", "revision").await?;
+	let workspaces =
+		aggregate_revision(&mut *conn, "workspaces", "revision", "id", &tenant).await?;
+	let tasks =
+		aggregate_revision(&mut *conn, "tasks", "revision", "workspace_id", &tenant).await?;
+	let runs = aggregate_revision(&mut *conn, "runs", "revision", "workspace_id", &tenant).await?;
 	let artifacts: (Option<DateTime<Utc>>, i64) = sqlx::query_as(
-		&Query::select()
-			.expr(Expr::col(Alias::new("created_at")).max())
-			.expr(Expr::col(Alias::new("id")).count())
-			.from(Alias::new("artifacts"))
+		&tenant_resources("artifacts", "workspace_id")
+			.expr(Expr::col((Alias::new("r"), Alias::new("created_at"))).max())
+			.expr(Expr::col((Alias::new("r"), Alias::new("id"))).count())
 			.to_string(PostgresQueryBuilder),
 	)
+	.bind(&tenant)
 	.fetch_one(&mut *conn)
 	.await?;
 	let conversations: (Option<DateTime<Utc>>, i64) = sqlx::query_as(
-		&Query::select()
-			.expr(Expr::col(Alias::new("created_at")).max())
-			.expr(Expr::col(Alias::new("id")).count())
-			.from(Alias::new("conversations"))
+		&tenant_resources("conversations", "workspace_id")
+			.expr(Expr::col((Alias::new("r"), Alias::new("created_at"))).max())
+			.expr(Expr::col((Alias::new("r"), Alias::new("id"))).count())
 			.to_string(PostgresQueryBuilder),
 	)
+	.bind(&tenant)
 	.fetch_one(&mut *conn)
 	.await?;
 	let events: Option<i64> = sqlx::query_scalar(
-		&Query::select()
-			.expr(Expr::col(Alias::new("sequence")).max())
-			.from(Alias::new("events"))
+		&tenant_resources("events", "workspace_id")
+			.expr(Expr::col((Alias::new("r"), Alias::new("sequence"))).max())
 			.to_string(PostgresQueryBuilder),
 	)
+	.bind(&tenant)
 	.fetch_one(&mut *conn)
 	.await?;
 	Ok(crate::registry::digest(&json!({
@@ -1115,6 +1133,15 @@ async fn project_activity(
 		return Ok(vec![]);
 	}
 	let visible: BTreeSet<&str> = nodes.iter().map(|node| node.id.as_str()).collect();
+	let workspaces: Vec<Uuid> = nodes
+		.iter()
+		.filter_map(|node| node.workspace_id)
+		.collect::<BTreeSet<_>>()
+		.into_iter()
+		.collect();
+	if workspaces.is_empty() {
+		return Ok(vec![]);
+	}
 	let tenant = authority.tenant().to_owned();
 	let mut query = Query::select();
 	query
@@ -1130,39 +1157,57 @@ async fn project_activity(
 		.and_where(Expr::col((Alias::new("a"), Alias::new("tenant"))).eq(Expr::cust("$1")))
 		.and_where(Expr::col((Alias::new("e"), Alias::new("node_id"))).eq(Expr::cust("$2")))
 		.and_where(Expr::col((Alias::new("e"), Alias::new("created_at"))).lte(Expr::cust("$3")))
+		.and_where(Expr::cust("e.workspace_id = ANY($4)"))
+		.and_where(Expr::cust("($5::bigint IS NULL OR e.sequence < $5)"))
 		.order_by((Alias::new("e"), Alias::new("sequence")), Order::Desc)
 		.limit(512);
 	if options.hours > 0 {
 		query.and_where(
-			Expr::col((Alias::new("e"), Alias::new("created_at"))).gte(Expr::cust("$4")),
+			Expr::col((Alias::new("e"), Alias::new("created_at"))).gte(Expr::cust("$6")),
 		);
 	}
 	let sql = query.to_string(PostgresQueryBuilder);
-	let mut query = sqlx::query_as::<_, Event>(&sql)
-		.bind(&tenant)
-		.bind(&f.config.node_id)
-		.bind(DateTime::<Utc>::from_timestamp(window_end, 0).ok_or(Error::Forbidden)?);
-	if options.hours > 0 {
-		query = query.bind(
+	let end = DateTime::<Utc>::from_timestamp(window_end, 0).ok_or(Error::Forbidden)?;
+	let start = if options.hours > 0 {
+		Some(
 			DateTime::<Utc>::from_timestamp(window_end - i64::from(options.hours) * 3600, 0)
 				.ok_or(Error::Forbidden)?,
-		);
-	}
-	let events = query.fetch_all(authority.connection()).await?;
+		)
+	} else {
+		None
+	};
 	let mut markers = Vec::new();
-	for event in events {
-		let Some(reference) = event_reference(&event, &f.config.node_id) else {
-			continue;
-		};
-		if !visible.contains(reference.as_str()) || !authority.event_visible(&event).await? {
-			continue;
+	let mut before = None;
+	loop {
+		let mut query = sqlx::query_as::<_, Event>(&sql)
+			.bind(&tenant)
+			.bind(&f.config.node_id)
+			.bind(end)
+			.bind(&workspaces)
+			.bind(before);
+		if let Some(start) = start {
+			query = query.bind(start);
 		}
-		markers.push(GraphActivity {
-			kind: event.kind,
-			at: event.created_at,
-			reference,
-		});
-		if markers.len() == 80 {
+		let events = query.fetch_all(authority.connection()).await?;
+		let exhausted = events.len() < 512;
+		before = events.last().map(|event| event.sequence);
+		for event in events {
+			let Some(reference) = event_reference(&event, &f.config.node_id) else {
+				continue;
+			};
+			if !visible.contains(reference.as_str()) || !authority.event_visible(&event).await? {
+				continue;
+			}
+			markers.push(GraphActivity {
+				kind: event.kind,
+				at: event.created_at,
+				reference,
+			});
+			if markers.len() == 80 {
+				break;
+			}
+		}
+		if markers.len() == 80 || exhausted {
 			break;
 		}
 	}
@@ -1201,7 +1246,8 @@ async fn project_in(
 	let mut next_cursor = None;
 	while cursor.kind < CANDIDATE_KINDS {
 		if scanned >= 4096 {
-			return Err(Error::External("graph projection scan limit".into()));
+			next_cursor = Some(encode_cursor(f, &cursor)?);
+			break;
 		}
 		let batch = candidates(authority, cursor.kind, cursor.offset, options, source_node).await?;
 		if batch.is_empty() {
@@ -1211,10 +1257,16 @@ async fn project_in(
 		}
 		let exhausted = batch.len() < CANDIDATE_BATCH as usize;
 		for candidate in batch {
+			if scanned >= 4096 {
+				next_cursor = Some(encode_cursor(f, &cursor)?);
+				break;
+			}
 			let before = cursor.offset;
 			cursor.offset += 1;
 			scanned += 1;
-			if !kind_allowed(candidate.kind(), options) || !authority.visible(&candidate).await? {
+			let allowed_kind = kind_allowed(candidate.kind(), options)
+				|| matches!(&candidate, Candidate::Workspace(_)) && kind_allowed("goal", options);
+			if !allowed_kind || !authority.visible(&candidate).await? {
 				continue;
 			}
 			if let Candidate::Run(run) = &candidate
@@ -1384,8 +1436,19 @@ async fn set_grant(
 	}
 	if input.enabled {
 		f.peer(&input.source_node).await?;
+	} else if input.expected_revision == 0 {
+		return Err(Error::Invalid(
+			"revocation requires an existing grant".into(),
+		));
 	}
-	let mut tx = f.store.pool.begin().await?;
+	let mut tx = if input.enabled {
+		f.store.pool.begin().await?
+	} else {
+		f.store.control_pool.begin().await?
+	};
+	if !input.enabled {
+		crate::transactions::authority::control(&mut tx).await?;
+	}
 	Authorization::load(&mut tx, &tenant).await?;
 	let row: Option<GraphOperatorGrant> = if input.expected_revision == 0 {
 		sqlx::query_as(

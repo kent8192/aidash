@@ -105,12 +105,16 @@ export function Graph({
     {},
   );
   const [targetTenant, setTargetTenant] = useState("");
+  const [graphWorkspace, setGraphWorkspace] = useState(channel);
   const [refreshTick, setRefreshTick] = useState(0);
   const requests = useRef(new Map<string, number>());
   const expansionsRef = useRef(expansions);
   useEffect(() => {
     expansionsRef.current = expansions;
   }, [expansions]);
+  useEffect(() => {
+    setGraphWorkspace(channel);
+  }, [channel]);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
@@ -129,7 +133,7 @@ export function Graph({
     [relations],
   );
   const scope = JSON.stringify([
-    channel,
+    graphWorkspace,
     graphMode,
     [...projectedKinds].sort(),
     [...projectedRelations].sort(),
@@ -228,7 +232,7 @@ export function Graph({
         let windowCursor = cursor;
         const options = {
           node_id: peer,
-          scope_workspace: channel || null,
+          scope_workspace: graphWorkspace || null,
           depth: 1 as const,
           mode: graphMode,
           kinds: projectedKinds,
@@ -282,7 +286,7 @@ export function Graph({
       }
     },
     [
-      channel,
+      graphWorkspace,
       graphMode,
       projectedKinds,
       projectedRelations,
@@ -351,7 +355,7 @@ export function Graph({
     () =>
       mergeGraphPages(
         buildMeshGraph(data, {
-          channel,
+          channel: graphWorkspace,
           runs,
           authorizedPeers: peerIds,
           hours,
@@ -361,7 +365,7 @@ export function Graph({
         pages,
         runs,
       ),
-    [data, channel, runs, peerIds, pages, hours, now],
+    [data, graphWorkspace, runs, peerIds, pages, hours, now],
   );
   useEffect(() => {
     if (selectedId && !full.nodes.some((node) => node.id === selectedId))
@@ -509,12 +513,12 @@ export function Graph({
   const events = data.events
     .filter(
       (e) =>
-        (!channel || e.workspace_id === channel) &&
+        (!graphWorkspace || e.workspace_id === graphWorkspace) &&
         inWindow(e.created_at, hours, now),
     )
     .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
   const tasks = data.tasks.filter(
-    (task) => !channel || task.workspace_id === channel,
+    (task) => !graphWorkspace || task.workspace_id === graphWorkspace,
   );
   const timeline = events.slice(-80);
   const timelineStart = Date.parse(timeline[0]?.created_at ?? "");
@@ -564,6 +568,27 @@ export function Graph({
             <p>{copy.subtitle}</p>
           </div>
           <div className="mesh-toolbar">
+            {mode !== "neighborhood" && (
+              <label className="mesh-select">
+                <span className="sr-only">{copy.workspaceScope}</span>
+                <select
+                  aria-label={copy.workspaceScope}
+                  value={graphWorkspace}
+                  onChange={(event) => {
+                    setGraphWorkspace(event.target.value);
+                    setSelectedId("");
+                    setFocused("");
+                  }}
+                >
+                  <option value="">{copy.allWorkspaces}</option>
+                  {data.workspaces.map((workspace) => (
+                    <option key={workspace.id} value={workspace.id}>
+                      {workspace.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label className="mesh-select">
               <Network size={14} />
               <span className="sr-only">{copy.mode}</span>
@@ -705,7 +730,9 @@ export function Graph({
                     state === "loading"
                       ? copy.peerLoading
                       : state === "empty"
-                        ? copy.peerEmpty
+                        ? expansion?.page?.next_cursor
+                          ? copy.peerEmptyPage
+                          : copy.peerEmpty
                         : state === "denied"
                           ? copy.peerDenied
                           : state === "unsupported"

@@ -3,6 +3,7 @@ mod common;
 use aidash::api;
 use axum::{Router, body::Body, http::Request};
 use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
+use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -16,19 +17,36 @@ async fn graph(
 	cursor: Option<&str>,
 	limit: u16,
 ) -> (u16, Value) {
-	let response = app.clone().oneshot(
-		Request::builder().method("POST").uri("/federation/v0.1/scoped/graph")
-			.header("authorization",format!("Bearer {token}"))
-			.header("x-aidash-node",SOURCE)
-			.header("x-aidash-protocol","0.1")
-			.header("content-type","application/json")
-			.body(Body::from(json!({
-				"viewer":viewer,"scope_workspace":null,"mode":"mesh",
-				"kinds":["workspace","goal","task","agent","tool","model"],
-				"relations":["goal","contains","tool","model"],
-				"hours":0,"limit":limit,"cursor":cursor,"target_tenant":if viewer["kind"] == "operator" { Some("acme") } else { None },
-			}).to_string())).unwrap()
-	).await.unwrap();
+	graph_custom(app, token, viewer, json!({"cursor":cursor,"limit":limit})).await
+}
+
+async fn graph_custom(app: &Router, token: &str, viewer: Value, overrides: Value) -> (u16, Value) {
+	let mut payload = json!({
+		"viewer":viewer,"scope_workspace":null,"mode":"mesh",
+		"kinds":["workspace","goal","task","agent","tool","model"],
+		"relations":["goal","contains","tool","model"],
+		"hours":0,"limit":80,"cursor":null,
+		"target_tenant":if viewer["kind"] == "operator" { Some("acme") } else { None },
+	});
+	payload
+		.as_object_mut()
+		.unwrap()
+		.extend(overrides.as_object().unwrap().clone());
+	let response = app
+		.clone()
+		.oneshot(
+			Request::builder()
+				.method("POST")
+				.uri("/federation/v0.1/scoped/graph")
+				.header("authorization", format!("Bearer {token}"))
+				.header("x-aidash-node", SOURCE)
+				.header("x-aidash-protocol", "0.1")
+				.header("content-type", "application/json")
+				.body(Body::from(payload.to_string()))
+				.unwrap(),
+		)
+		.await
+		.unwrap();
 	let status = response.status().as_u16();
 	let bytes = axum::body::to_bytes(response.into_body(), 4_194_304)
 		.await
@@ -171,6 +189,28 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	assert!(!page.to_string().contains("credential_env"));
 	assert!(!page.to_string().contains("aidash://third"));
 	assert!(page["activity"].as_array().is_some());
+	let (status, goals) = graph_custom(
+		&app,
+		&peer_token,
+		viewer.clone(),
+		json!({"kinds":["goal"],"relations":["goal"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{goals}");
+	assert!(
+		goals["nodes"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|node| node["kind"] == "goal")
+	);
+	assert!(
+		goals["nodes"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|node| node["goal_body"] == long_goal)
+	);
 	let (status, first) = graph(&app, &peer_token, viewer.clone(), None, 2).await;
 	assert_eq!(status, 200, "{first}");
 	let cursor = first["next_cursor"]
@@ -189,6 +229,83 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			.await
 			.0,
 		403
+	);
+	let mut other_policy = common::policy(&f.config.node_id);
+	other_policy["tenant"] = json!("other");
+	let (status, written) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/other",
+		json!({"expected_revision":0,"bundle":other_policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{written}");
+	let other_workspace = Uuid::new_v4();
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("workspaces"))
+			.columns([Alias::new("id"), Alias::new("title"), Alias::new("goal")])
+			.values_panic([
+				Expr::cust("$1"),
+				Expr::cust("'Other tenant'"),
+				Expr::cust("'Unrelated'"),
+			])
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(other_workspace)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("authorization_workspaces"))
+			.columns([
+				Alias::new("workspace_id"),
+				Alias::new("tenant"),
+				Alias::new("owner_subject"),
+			])
+			.values_panic([
+				Expr::cust("$1"),
+				Expr::cust("'other'"),
+				Expr::cust("'alice'"),
+			])
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(other_workspace)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("events"))
+			.columns([
+				Alias::new("id"),
+				Alias::new("node_id"),
+				Alias::new("workspace_id"),
+				Alias::new("kind"),
+				Alias::new("data"),
+			])
+			.values_panic([
+				Expr::val(Uuid::new_v4()).into(),
+				Expr::val(&f.config.node_id).into(),
+				Expr::val(other_workspace).into(),
+				Expr::val("workspace.updated").into(),
+				Expr::val(json!({})).into(),
+			])
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let (status, after_other_tenant) = graph(&app, &peer_token, viewer.clone(), None, 80).await;
+	assert_eq!(status, 200, "{after_other_tenant}");
+	assert_eq!(after_other_tenant["generation"], page["generation"]);
+	assert_eq!(
+		graph(&app, &peer_token, viewer.clone(), Some(cursor), 2)
+			.await
+			.0,
+		200
 	);
 	let (status, mapping) = request(
 		&app,
@@ -406,6 +523,33 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		graph(&app, &peer_token, viewer.clone(), None, 80).await.0,
 		403
 	);
+	let gate = Uuid::new_v4();
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("atomic_participants"))
+			.columns(["id", "coordinator", "digest", "manifest", "phase"].map(Alias::new))
+			.values_panic([
+				Expr::val(gate).into(),
+				Expr::val(&f.config.node_id).into(),
+				Expr::val("fixture").into(),
+				Expr::val(json!({})).into(),
+				Expr::val("PREPARED").into(),
+			])
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&f.store.control_pool)
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("atomic_gate"))
+			.value(Alias::new("transaction_id"), Expr::cust("$1"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(gate)
+	.execute(&f.store.control_pool)
+	.await
+	.unwrap();
 	let (status, _) = request(
 		&app,
 		&f.config.api_token,
@@ -416,6 +560,16 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		}),
 	)
 	.await;
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("atomic_gate"))
+			.value(Alias::new("transaction_id"), Expr::cust("$1"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(Option::<Uuid>::None)
+	.execute(&f.store.control_pool)
+	.await
+	.unwrap();
 	assert_eq!(status, 200);
 	assert_eq!(
 		graph(
@@ -430,5 +584,193 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		403
 	);
 	let _ = subject_token;
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&environment).await;
+	let app = api::router(f.clone());
+	bootstrap(&f, &app, "http://localhost:1").await;
+	add_peer(&f, SOURCE).await;
+	let peer_token = std::env::var("AIDASH_SECRET_TEST_PEER").unwrap();
+	let final_id = Uuid::from_u128(u128::MAX);
+	let policy = json!({
+		"tenant":"sparse","subjects":{"alice":{"kind":"user"}},
+		"policies":[
+			{"id":"graph-read","effect":"allow","subjects":{"any":true},
+			 "actions":["federation.graph.read"],"resources":{"kinds":["node"]}},
+			{"id":"final-workspace","effect":"allow","subjects":{"any":true},
+			 "actions":["workspace.read","workspace.events"],
+			 "resources":{"kinds":["workspace"],"ids":[final_id.to_string()]}}
+		]
+	});
+	let (status, written) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/sparse",
+		json!({"expected_revision":0,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{written}");
+	let (status, issued) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/sparse/credentials",
+		json!({"subject":"alice"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{issued}");
+	let (status, mapping) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/sparse/peer-mappings",
+		json!({"source_node":SOURCE,"source_tenant":"source-tenant","source_subject":"sparse-subject",
+			"credential_id":issued["credential"]["id"],"enabled":true,"expected_revision":0}),
+	)
+	.await;
+	assert_eq!(status, 200, "{mapping}");
+	let ids: Vec<Uuid> = (1..=4096).map(Uuid::from_u128).collect();
+	for chunk in ids.chunks(256) {
+		let mut workspaces = Query::insert();
+		workspaces.into_table(Alias::new("workspaces")).columns([
+			Alias::new("id"),
+			Alias::new("title"),
+			Alias::new("goal"),
+		]);
+		let mut authorities = Query::insert();
+		authorities
+			.into_table(Alias::new("authorization_workspaces"))
+			.columns([
+				Alias::new("workspace_id"),
+				Alias::new("tenant"),
+				Alias::new("owner_subject"),
+			]);
+		for id in chunk {
+			workspaces.values_panic([
+				Expr::val(*id).into(),
+				Expr::val("Hidden").into(),
+				Expr::val("Hidden goal").into(),
+			]);
+			authorities.values_panic([
+				Expr::val(*id).into(),
+				Expr::val("sparse").into(),
+				Expr::val("alice").into(),
+			]);
+		}
+		sqlx::query(&workspaces.to_string(PostgresQueryBuilder))
+			.execute(&f.store.pool)
+			.await
+			.unwrap();
+		sqlx::query(&authorities.to_string(PostgresQueryBuilder))
+			.execute(&f.store.pool)
+			.await
+			.unwrap();
+	}
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("workspaces"))
+			.columns([Alias::new("id"), Alias::new("title"), Alias::new("goal")])
+			.values_panic([
+				Expr::cust("$1"),
+				Expr::cust("'Last'"),
+				Expr::cust("'Reachable goal'"),
+			])
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(final_id)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("authorization_workspaces"))
+			.columns([
+				Alias::new("workspace_id"),
+				Alias::new("tenant"),
+				Alias::new("owner_subject"),
+			])
+			.values_panic([
+				Expr::cust("$1"),
+				Expr::cust("'sparse'"),
+				Expr::cust("'alice'"),
+			])
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(final_id)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let occurred = chrono::Utc::now() - chrono::Duration::seconds(30);
+	let mut events = Query::insert();
+	events.into_table(Alias::new("events")).columns([
+		Alias::new("id"),
+		Alias::new("node_id"),
+		Alias::new("workspace_id"),
+		Alias::new("kind"),
+		Alias::new("data"),
+		Alias::new("created_at"),
+	]);
+	let samples = std::iter::once((final_id, "workspace.updated"))
+		.chain(std::iter::repeat_n((ids[0], "workspace.updated"), 600))
+		.chain(std::iter::repeat_n((final_id, "unrelated.event"), 600));
+	for (id, kind) in samples {
+		events.values_panic([
+			Expr::val(Uuid::new_v4()).into(),
+			Expr::val(&f.config.node_id).into(),
+			Expr::val(id).into(),
+			Expr::val(kind).into(),
+			Expr::val(json!({})).into(),
+			Expr::val(occurred).into(),
+		]);
+	}
+	sqlx::query(&events.to_string(PostgresQueryBuilder))
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	let viewer = json!({"kind":"subject","tenant":"source-tenant","subject":"sparse-subject"});
+	let options = json!({"kinds":["goal"],"relations":[]});
+	let (status, first) = graph_custom(&app, &peer_token, viewer.clone(), options.clone()).await;
+	assert_eq!(status, 200, "{first}");
+	assert!(first["nodes"].as_array().unwrap().is_empty());
+	let cursor = first["next_cursor"].as_str().expect("scan continuation");
+	let mut next_options = options;
+	next_options["cursor"] = json!(cursor);
+	let (status, second) = graph_custom(&app, &peer_token, viewer.clone(), next_options).await;
+	assert_eq!(status, 200, "{second}");
+	assert!(
+		second["nodes"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|node| node["goal_body"] == "Reachable goal")
+	);
+	let options = json!({"kinds":["workspace","goal"],"relations":[],"limit":2});
+	let (status, first) = graph_custom(&app, &peer_token, viewer.clone(), options.clone()).await;
+	assert_eq!(status, 200, "{first}");
+	assert!(first["nodes"].as_array().unwrap().is_empty());
+	let mut options = options;
+	options["cursor"] = first["next_cursor"].clone();
+	let (status, activity) = graph_custom(&app, &peer_token, viewer, options).await;
+	assert_eq!(status, 200, "{activity}");
+	let reference = json!([
+		"resource",
+		f.config.node_id,
+		"workspace",
+		final_id.to_string()
+	])
+	.to_string();
+	assert!(activity["activity"].as_array().unwrap().iter().any(|item| {
+		item["kind"] == "workspace.updated"
+			&& item["reference"].as_str() == Some(reference.as_str())
+	}));
 	cleanup(f, &url, &schema).await;
 }

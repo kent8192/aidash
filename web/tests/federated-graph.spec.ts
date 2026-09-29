@@ -161,6 +161,24 @@ test("subject expands only direct authorized peers and clears remote details on 
   await expect(
     page.locator(".mesh-node-label").filter({ hasText: "B Agent" }),
   ).toBeVisible();
+  await expect
+    .poll(() =>
+      requests.some(
+        (body) =>
+          (body as { scope_workspace: string | null }).scope_workspace ===
+          "product-lab",
+      ),
+    )
+    .toBe(true);
+  await page.getByLabel("Graph workspace").selectOption("");
+  await expect
+    .poll(() =>
+      requests.some(
+        (body) =>
+          (body as { scope_workspace: string | null }).scope_workspace === null,
+      ),
+    )
+    .toBe(true);
   for (const perspective of [
     "collaboration",
     "knowledge",
@@ -225,8 +243,13 @@ test("compact Japanese view replaces page windows and clears outages and forged 
   await page.addInitScript(() =>
     localStorage.setItem("aidash-locale", "ja-JP"),
   );
-  let response: "normal" | "outage" | "unsupported" | "oversized" | "forged" =
-    "normal";
+  let response:
+    | "normal"
+    | "outage"
+    | "unsupported"
+    | "oversized"
+    | "forged"
+    | "empty" = "normal";
   const agent = (name: string, node = firstPeer) => ({
     id: entity(node, "agent", name, "1.0.0"),
     node_id: node,
@@ -257,11 +280,14 @@ test("compact Japanese view replaces page windows and clears outages and forged 
           node_id: firstPeer,
           generation: `sha256:${"b".repeat(64)}`,
           checked_at: timestamp,
-          nodes: [
-            response === "forged"
-              ? agent("C非公開", secondPeer)
-              : agent(next ? "B次ページ" : "B最初のページ"),
-          ],
+          nodes:
+            response === "empty" && !next
+              ? []
+              : [
+                  response === "forged"
+                    ? agent("C非公開", secondPeer)
+                    : agent(next ? "B次ページ" : "B最初のページ"),
+                ],
           edges: [],
           activity: [],
           next_cursor: next ? null : "next",
@@ -313,5 +339,16 @@ test("compact Japanese view replaces page windows and clears outages and forged 
   await page.getByRole("button", { name: "ノードを展開" }).click();
   await expect(
     page.locator(".mesh-node-label").filter({ hasText: "B最初のページ" }),
+  ).toBeVisible();
+  response = "empty";
+  await page.getByRole("button", { name: "ノードを更新" }).click();
+  await expect(
+    page.getByText(
+      "このページにリソースはありません。次のページを表示できます。",
+    ),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "認可済みの次ページを表示" }).click();
+  await expect(
+    page.locator(".mesh-node-label").filter({ hasText: "B次ページ" }),
   ).toBeVisible();
 });
