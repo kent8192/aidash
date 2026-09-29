@@ -2547,6 +2547,7 @@ impl Store {
 			},
 		)
 		.await
+		.map(|_| ())
 	}
 
 	pub(crate) async fn accept_run_media_message_in(
@@ -2557,7 +2558,7 @@ impl Store {
 		content: &str,
 		key: &str,
 		max_input_tokens: usize,
-	) -> Result<()> {
+	) -> Result<bool> {
 		self.accept_run_message_inner(
 			tx,
 			RunMessageAcceptance {
@@ -2576,7 +2577,7 @@ impl Store {
 		&self,
 		tx: &mut Transaction<'_, Postgres>,
 		request: RunMessageAcceptance<'_>,
-	) -> Result<()> {
+	) -> Result<bool> {
 		let RunMessageAcceptance {
 			run_id,
 			sender,
@@ -2633,7 +2634,7 @@ impl Store {
 				false
 			};
 			return if old_content == content && has_media == allow_empty {
-				Ok(())
+				Ok(true)
 			} else {
 				Err(Error::Conflict("run message idempotency key reused".into()))
 			};
@@ -2721,7 +2722,7 @@ impl Store {
 			self.bind_run_input_message_in(tx, run_id, key, message.id)
 				.await?;
 		}
-		Ok(())
+		Ok(false)
 	}
 	async fn run_inputs_in(
 		&self,

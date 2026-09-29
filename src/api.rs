@@ -1072,7 +1072,8 @@ async fn run_message(
 			}
 			let sender = lease.sender();
 			let limit = f.run_message_limit(&run).await?;
-			f.store
+			let existing = f
+				.store
 				.accept_run_media_message_in(lease.tx(), id, &sender, &input.content, &key, limit)
 				.await?;
 			let message_id: Uuid = sqlx::query_scalar(
@@ -1095,6 +1096,26 @@ async fn run_message(
 				&input.attachment_ids,
 			)
 			.await?;
+			let saved = crate::collaboration::attachments::for_messages(
+				&mut lease,
+				run.workspace_id,
+				&[message_id],
+			)
+			.await?;
+			let saved = saved.get(&message_id).ok_or(Error::Forbidden)?;
+			if saved
+				.iter()
+				.map(|attachment| attachment.id)
+				.collect::<Vec<_>>()
+				!= input.attachment_ids
+			{
+				return Err(Error::Conflict(
+					"run message attachment order changed".into(),
+				));
+			}
+			if existing {
+				return Ok(());
+			}
 			let media: Vec<(String, Vec<u8>)> = sqlx::query_as(
 				&sea_orm::sea_query::Query::select()
 					.columns([
@@ -1143,23 +1164,6 @@ async fn run_message(
 			};
 			request.validate()?;
 			crate::generation::budget::Reservation::check_request(headroom, &request)?;
-			let saved = crate::collaboration::attachments::for_messages(
-				&mut lease,
-				run.workspace_id,
-				&[message_id],
-			)
-			.await?;
-			let saved = saved.get(&message_id).ok_or(Error::Forbidden)?;
-			if saved
-				.iter()
-				.map(|attachment| attachment.id)
-				.collect::<Vec<_>>()
-				!= input.attachment_ids
-			{
-				return Err(Error::Conflict(
-					"run message attachment order changed".into(),
-				));
-			}
 			Ok(())
 		}
 		.await;

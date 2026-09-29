@@ -58,6 +58,7 @@ async fn verify_audio_batches(
 	received: &mut mpsc::UnboundedReceiver<Value>,
 	operator: &str,
 	first_audio: &[u8],
+	message_text: &str,
 ) {
 	let (status, audio_created) = request(
 		app,
@@ -103,7 +104,7 @@ async fn verify_audio_batches(
 			operator,
 			"POST",
 			&format!("/api/runs/{}/message", audio_run.id),
-			json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}),
+			json!({"content":message_text, "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}),
 		)
 		.await;
 		assert_eq!(status, 200, "{sent}");
@@ -137,6 +138,74 @@ async fn verify_audio_batches(
 	);
 	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(f.store.run(audio_run.id).await.unwrap().phase, "COMPLETED");
+}
+
+async fn verify_expired_route_retry(app: &Router, f: &Federation, operator: &str) {
+	let mut model = f.registry.get("model", "1.0.1").await.unwrap();
+	model.version = "1.0.2".into();
+	model.config["media_routes"][0]["expires_at"] =
+		json!(chrono::Utc::now() + chrono::Duration::seconds(3));
+	let (status, body) = request(app, operator, "POST", "/api/registry", json!(model)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		app,
+		operator,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"entry":{"id":"model","version":"1.0.2"},"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let mut agent = f.registry.get("research", "1.0.1").await.unwrap();
+	agent.version = "1.0.2".into();
+	agent.config["model"]["version"] = json!("1.0.2");
+	let (status, body) = request(app, operator, "POST", "/api/registry", json!(agent)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		app,
+		operator,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"entry":{"id":"research","version":"1.0.2"},"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, created) = request(
+		app,
+		operator,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Retry after route expiry", "goal":"Inspect media", "target":{"id":"research","version":"1.0.2"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let workspace = created["workspace"]["id"].as_str().unwrap();
+	let run = f
+		.store
+		.runs()
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.workspace_id.to_string() == workspace)
+		.unwrap();
+	let image = upload(
+		app,
+		operator,
+		workspace,
+		"retry.png",
+		"image/png",
+		b"\x89PNG\r\n\x1a\nretry",
+	)
+	.await;
+	let key = Uuid::new_v4();
+	let input = json!({"content":"retry", "idempotency_key":key, "attachment_ids":[image["id"]]});
+	let path = format!("/api/runs/{}/message", run.id);
+	let (status, body) = request(app, operator, "POST", &path, input.clone()).await;
+	assert_eq!(status, 200, "{body}");
+	tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+	let (status, body) = request(app, operator, "POST", &path, input).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(f.store.run_inputs(run.id).await.unwrap().len(), 1);
 }
 
 #[rstest::rstest]
@@ -518,8 +587,21 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&mut received,
 		&operator,
 		&large_audio,
+		"",
 	))
 	.await;
+	let text = "a".repeat(5_500);
+	Box::pin(verify_audio_batches(
+		&app,
+		&f,
+		&worker,
+		&mut received,
+		&operator,
+		&large_audio[..380 * 1024],
+		&text,
+	))
+	.await;
+	Box::pin(verify_expired_route_retry(&app, &f, &operator)).await;
 	server.abort();
 	cleanup(f, &url, &schema).await;
 }

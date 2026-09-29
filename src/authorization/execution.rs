@@ -786,14 +786,13 @@ impl WorkerAuthority {
 pub(crate) async fn operator_human_message_media(
 	store: &Store,
 	run: &Run,
-	messages: &[(i64, Uuid)],
-	headroom: usize,
+	messages: &[(i64, Uuid, usize)],
 ) -> Result<HumanMediaBatch> {
 	if run.home_node != store.node_id {
 		return Err(Error::Forbidden);
 	}
 	let mut tx = store.pool.begin().await?;
-	let parts = load_human_message_media(&mut tx, run.workspace_id, messages, headroom).await?;
+	let parts = load_human_message_media(&mut tx, run.workspace_id, messages).await?;
 	tx.commit().await?;
 	Ok(parts)
 }
@@ -807,8 +806,7 @@ pub(crate) struct HumanMediaBatch {
 async fn load_human_message_media(
 	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 	workspace: Uuid,
-	messages: &[(i64, Uuid)],
-	headroom: usize,
+	messages: &[(i64, Uuid, usize)],
 ) -> Result<HumanMediaBatch> {
 	#[derive(sqlx::FromRow)]
 	struct Attachment {
@@ -830,7 +828,7 @@ async fn load_human_message_media(
 		max_output_tokens: 0,
 		content_parts: Vec::new(),
 	};
-	for (seq, id) in messages {
+	for (seq, id, headroom) in messages {
 		let query = Query::select()
 			.columns(["filename", "media_type", "sha256", "size_bytes", "content"].map(Alias::new))
 			.from(Alias::new("channel_attachments"))
@@ -875,7 +873,7 @@ async fn load_human_message_media(
 			)?);
 		}
 		if let Err(error) = crate::generation::budget::Reservation::check_request_with_parts(
-			headroom, &request, &parts,
+			*headroom, &request, &parts,
 		) {
 			parts.truncate(previous_len);
 			if previous_len == 0 {
@@ -1258,16 +1256,15 @@ impl Guard {
 
 	pub async fn human_message_media(
 		&self,
-		messages: &[(i64, Uuid)],
-		headroom: usize,
+		messages: &[(i64, Uuid, usize)],
 	) -> Result<HumanMediaBatch> {
 		let mut access = self.access.lock().await;
-		for (_, id) in messages {
+		for (_, id, _) in messages {
 			access
 				.workspace_record(self.run.workspace_id, "message", *id)
 				.await?;
 		}
-		load_human_message_media(&mut access.tx, self.run.workspace_id, messages, headroom).await
+		load_human_message_media(&mut access.tx, self.run.workspace_id, messages).await
 	}
 
 	async fn authorize_inference_with(&self, access: &mut Access) -> Result<()> {

@@ -713,7 +713,7 @@ impl Harness {
 				} else {
 					initial_page
 				};
-				let batch_end_seq = page
+				let mut batch_end_seq = page
 					.entries
 					.last()
 					.map_or(summary_seq, |(index, _)| inputs[*index].seq);
@@ -787,16 +787,20 @@ impl Harness {
 							.cloned()
 							.unwrap_or_else(|| json!([])),
 					)?;
-				let new_messages: Vec<(i64, Uuid)> = page
-					.entries
-					.iter()
-					.filter_map(|(index, _)| {
-						let input = &inputs[*index];
-						(input.seq > context.media_inferred_seq)
-							.then_some((input.seq, input.message_id?))
-					})
-					.collect();
 				let media_headroom = self.federation.run_request_headroom(run).await?;
+				let mut new_messages = Vec::new();
+				for (position, (index, _)) in page.entries.iter().enumerate() {
+					let input = &inputs[*index];
+					if input.seq > context.media_inferred_seq {
+						let id = input.message_id.ok_or_else(|| {
+							Error::External("run message home delivery is pending".into())
+						})?;
+						let headroom = media_headroom.saturating_sub(
+							encoded_run_message_reservation(&run_messages[..=position]),
+						);
+						new_messages.push((input.seq, id, headroom));
+					}
+				}
 				let media = Box::pin(resolve_model_input_media(
 					store,
 					run,
@@ -807,8 +811,26 @@ impl Harness {
 				))
 				.await?;
 				if media.defer_human {
+					let through = media.through_seq.ok_or_else(|| {
+						Error::Invalid("run media batch cannot fit the model window".into())
+					})?;
+					run_messages.retain(|message| {
+						message["seq"].as_i64().is_some_and(|seq| seq <= through)
+					});
+					required_run_message_reads = page
+						.entries
+						.iter()
+						.filter(|(index, reference_only)| {
+							*reference_only && inputs[*index].seq <= through
+						})
+						.filter_map(|(index, _)| inputs[*index].message_id)
+						.collect();
+					has_run_message_references = !required_run_message_reads.is_empty();
+					batch_end_seq = batch_end_seq.min(through);
+				}
+				if media.defer_human || media.defer_selected {
 					specifications.clear();
-					instructions.push_str("\nMedia intake is continuing. Briefly describe the media in this request as plain text. Do not call tools or complete the task; more accepted media follows.");
+					instructions.push_str("\nMedia intake is continuing. Briefly describe the media in this request as plain text. Do not call tools or complete the task; deferred media will be provided in the next request.");
 				}
 				let context_window = window.saturating_sub(
 					crate::provider::ModelRequest::content_parts_reservation(&media.parts),
@@ -987,7 +1009,7 @@ impl Harness {
 					"observed_input_seq_before_response":observed_input_seq_before_response,
 					"inferred_selected_media":if media.defer_selected { json!([]) } else { json!(selected_media) },
 					"deferred_selected_media":if media.defer_selected { json!(selected_media) } else { json!([]) },
-					"deferred_human_media":media.defer_human,
+					"deferred_human_media":media.defer_human || media.defer_selected,
 					"media_inferred_through_seq":media.through_seq,
 					"required_run_message_reads":required_run_message_reads,
 					"references_read_at_inference":references_read_at_inference,
@@ -1298,6 +1320,19 @@ impl Harness {
 				let mut context: Context = serde_json::from_value(run.context.clone())?;
 				capture_message_read_coverage(&mut context);
 				let mut call = result.tool_calls[cursor].clone();
+				if !pending_selected_media(&run.pending).is_empty()
+					&& !read_only_after_model_media_selection(&call.name)
+				{
+					return self
+						.tool_error(
+							run,
+							token,
+							&call,
+							cursor,
+							"selected model media must be inferred before this tool call; retry it after the next model response".into(),
+						)
+						.await;
+				}
 				let mut prepared_result = None;
 				if call.name == "workspace_read" {
 					let (read_range, saved_read) =
@@ -2230,7 +2265,7 @@ async fn resolve_model_input_media(
 	run: &Run,
 	guard: Option<&Guard>,
 	selections: &[crate::capabilities::sharing::Selection],
-	messages: &[(i64, Uuid)],
+	messages: &[(i64, Uuid, usize)],
 	headroom: usize,
 ) -> Result<ResolvedMedia> {
 	let selected_parts = if selections.is_empty() {
@@ -2242,23 +2277,30 @@ async fn resolve_model_input_media(
 			.await?
 	};
 	let has_human_media = store
-		.run_message_has_media(&messages.iter().map(|(_, id)| *id).collect::<Vec<_>>())
+		.run_message_has_media(&messages.iter().map(|(_, id, _)| *id).collect::<Vec<_>>())
 		.await?;
 	let human = if !has_human_media {
 		crate::authorization::execution::HumanMediaBatch {
 			parts: Vec::new(),
-			through_seq: messages.last().map(|(seq, _)| *seq),
+			through_seq: messages.last().map(|(seq, _, _)| *seq),
 			has_more: false,
 		}
 	} else if let Some(guard) = guard {
-		guard.human_message_media(messages, headroom).await?
+		guard.human_message_media(messages).await?
 	} else {
-		crate::authorization::execution::operator_human_message_media(
-			store, run, messages, headroom,
-		)
-		.await?
+		crate::authorization::execution::operator_human_message_media(store, run, messages).await?
 	};
-	let (parts, defer_selected) = choose_inference_media(selected_parts, human.parts, headroom);
+	let batch_headroom = human
+		.through_seq
+		.and_then(|through| {
+			messages
+				.iter()
+				.find(|(seq, _, _)| *seq == through)
+				.map(|(_, _, available)| *available)
+		})
+		.unwrap_or(headroom);
+	let (parts, defer_selected) =
+		choose_inference_media(selected_parts, human.parts, batch_headroom);
 	Ok(ResolvedMedia {
 		parts,
 		through_seq: human.through_seq,
@@ -2296,6 +2338,41 @@ fn media_request_headroom(headroom: usize, parts: &[crate::provider::ContentPart
 		content_parts: Vec::new(),
 	};
 	crate::generation::budget::Reservation::check_request_with_parts(headroom, &request, parts)
+}
+
+fn encoded_run_message_reservation(messages: &[Value]) -> usize {
+	if messages.is_empty() {
+		return 0;
+	}
+	let estimate = |current: Value| {
+		crate::provider::ModelRequest {
+			instructions: String::new(),
+			context: json!({
+				"current":current,
+				"summary":"",
+				"run_message_summary":"",
+				"history":[]
+			}),
+			tools: Vec::new(),
+			max_output_tokens: 0,
+			content_parts: Vec::new(),
+		}
+		.estimated_total_tokens()
+	};
+	estimate(json!({"run_messages":messages})).saturating_sub(estimate(json!({})))
+}
+
+fn read_only_after_model_media_selection(name: &str) -> bool {
+	matches!(
+		name,
+		"file_read"
+			| "file_search"
+			| "workspace_read"
+			| "workspace_observe"
+			| "skill_list"
+			| "skill_load"
+			| "skill_read"
+	)
 }
 
 fn pending_selected_media(pending: &Value) -> Vec<Value> {
@@ -2437,6 +2514,32 @@ mod review_tests {
 			super::choose_inference_media(vec![audio()], vec![audio()], 128_000);
 		assert!(deferred);
 		assert_eq!(parts.len(), 1);
+	}
+
+	#[rstest::rstest]
+	fn encoded_message_text_consumes_media_headroom() {
+		let text = "quoted \"text\" and newline\n".repeat(100);
+		let reservation = super::encoded_run_message_reservation(&[json!({
+			"seq":1,"sender":"human","content":text
+		})]);
+		assert!(reservation > text.len());
+		let image = crate::provider::ContentPart::Image {
+			media_type: "image/png".into(),
+			bytes: vec![1],
+		};
+		let headroom = 4_096 + reservation / 2;
+		assert!(super::media_request_headroom(headroom, std::slice::from_ref(&image)).is_ok());
+		assert!(super::media_request_headroom(headroom - reservation, &[image]).is_err());
+	}
+
+	#[rstest::rstest]
+	fn selected_media_defers_workspace_mutations_until_the_next_inference() {
+		for name in ["file_read", "file_search", "workspace_read", "skill_read"] {
+			assert!(super::read_only_after_model_media_selection(name));
+		}
+		for name in ["apply_patch", "shell", "code_interpreter", "plugin_0"] {
+			assert!(!super::read_only_after_model_media_selection(name));
+		}
 	}
 
 	#[rstest::rstest]
