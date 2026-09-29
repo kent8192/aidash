@@ -902,12 +902,14 @@ async fn catchup_summary_retries_and_completes_without_spending_the_last_step(
 	let max_steps = serde_json::from_value::<aidash::registry::AgentConfig>(agent.config)
 		.unwrap()
 		.max_steps;
+	let selected = json!({"file_id":Uuid::new_v4(),"expected_digest":"digest"});
 	leased.step = max_steps - 1;
 	leased.phase = "TOOL_CALL".into();
 	leased.pending = json!({
 		"included_input_seq":0,
 		"response":{"text":"summary that is too long","tool_calls":[],"input_tokens":1,"output_tokens":1,"usage_complete":true},
 		"cursor":0,
+		"deferred_selected_media":[selected],
 		"required_run_message_reads":[],
 		"references_read_at_inference":true,
 		"run_message_catchup":true,
@@ -931,6 +933,7 @@ async fn catchup_summary_retries_and_completes_without_spending_the_last_step(
 	assert_eq!(current.step, leased.step);
 	assert_eq!(current.context["run_message_summary_seq"], 0);
 	assert_eq!(current.context["run_message_summary"], "");
+	assert_eq!(current.pending["selected_media"], json!([selected]));
 	assert!(
 		current.context["history"]
 			.as_array()
@@ -945,6 +948,7 @@ async fn catchup_summary_retries_and_completes_without_spending_the_last_step(
 		"included_input_seq":0,
 		"response":{"text":"done","tool_calls":[],"input_tokens":1,"output_tokens":1,"usage_complete":true},
 		"cursor":0,
+		"deferred_selected_media":[selected],
 		"required_run_message_reads":[],
 		"references_read_at_inference":true,
 		"run_message_catchup":true,
@@ -968,6 +972,7 @@ async fn catchup_summary_retries_and_completes_without_spending_the_last_step(
 	assert_eq!(current.step, max_steps - 1);
 	assert_eq!(current.context["run_message_summary_seq"], 7);
 	assert_eq!(current.context["run_message_summary"], "done");
+	assert_eq!(current.pending["selected_media"], json!([selected]));
 	cleanup(f, &url, &schema).await;
 }
 

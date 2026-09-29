@@ -811,7 +811,11 @@ impl Harness {
 					store,
 					run,
 					guard,
-					&selected_media,
+					if run_message_catchup {
+						&[]
+					} else {
+						&selected_media
+					},
 					&new_messages,
 					media_headroom,
 				))
@@ -1027,8 +1031,8 @@ impl Harness {
 					"request_tokens":request_tokens,
 					"media_inferred_seq_before_response":media_inferred_seq_before_response,
 					"observed_input_seq_before_response":observed_input_seq_before_response,
-					"inferred_selected_media":if media.defer_selected { json!([]) } else { json!(selected_media) },
-					"deferred_selected_media":if media.defer_selected { json!(selected_media) } else { json!([]) },
+					"inferred_selected_media":if run_message_catchup || media.defer_selected { json!([]) } else { json!(selected_media) },
+					"deferred_selected_media":if run_message_catchup || media.defer_selected { json!(selected_media) } else { json!([]) },
 					"deferred_human_media":media.defer_human || media.defer_selected,
 					"media_inferred_through_seq":media.through_seq,
 					"media_intake_through_seq":intake_seq,
@@ -1195,7 +1199,8 @@ impl Harness {
 						}));
 						run.context = json!(context);
 						run.phase = "THINKING".into();
-						run.pending = json!({});
+						run.pending =
+							json!({"selected_media":pending_selected_media(&run.pending)});
 						store
 							.save_run(run, token, "run.message_summary_required")
 							.await?;
@@ -1213,7 +1218,8 @@ impl Harness {
 						}));
 						run.context = json!(context);
 						run.phase = "THINKING".into();
-						run.pending = json!({});
+						run.pending =
+							json!({"selected_media":pending_selected_media(&run.pending)});
 						store
 							.save_run(run, token, "run.message_summary_required")
 							.await?;
@@ -1242,7 +1248,7 @@ impl Harness {
 					}
 					run.context = json!(context);
 					run.phase = "THINKING".into();
-					run.pending = json!({});
+					run.pending = json!({"selected_media":pending_selected_media(&run.pending)});
 					store.save_run(run, token, "run.message_summarized").await?;
 					return Ok(());
 				}
@@ -2334,8 +2340,12 @@ async fn resolve_model_input_media(
 				.map(|(_, _, available)| *available)
 		})
 		.unwrap_or(headroom);
-	let (parts, defer_selected) =
-		choose_inference_media(selected_parts, human.parts, batch_headroom);
+	let (parts, defer_selected) = choose_inference_media(
+		selected_parts,
+		human.parts,
+		batch_headroom,
+		human.through_seq.is_some(),
+	);
 	Ok(ResolvedMedia {
 		parts,
 		through_seq: human.through_seq,
@@ -2348,10 +2358,11 @@ fn choose_inference_media(
 	selected_parts: Vec<crate::provider::ContentPart>,
 	human_parts: Vec<crate::provider::ContentPart>,
 	headroom: usize,
+	human_batch_present: bool,
 ) -> (Vec<crate::provider::ContentPart>, bool) {
 	let mut combined = selected_parts;
 	combined.extend(human_parts.iter().cloned());
-	let defer_selected = !human_parts.is_empty()
+	let defer_selected = human_batch_present
 		&& (!crate::provider::ModelRequest::media_within_limits(&combined)
 			|| media_request_headroom(headroom, &combined).is_err());
 	(
@@ -2546,6 +2557,7 @@ mod review_tests {
 			(0..8).map(|_| image()).collect(),
 			vec![image()],
 			128_000,
+			true,
 		);
 		assert!(deferred);
 		assert_eq!(parts.len(), 1);
@@ -2558,9 +2570,21 @@ mod review_tests {
 			bytes: vec![0; 1024 * 1024],
 		};
 		let (parts, deferred) =
-			super::choose_inference_media(vec![audio()], vec![audio()], 128_000);
+			super::choose_inference_media(vec![audio()], vec![audio()], 128_000, true);
 		assert!(deferred);
 		assert_eq!(parts.len(), 1);
+	}
+
+	#[rstest::rstest]
+	fn text_only_batch_defers_selected_media_when_its_headroom_is_used() {
+		let selected = crate::provider::ContentPart::Audio {
+			format: "wav".into(),
+			bytes: vec![0; 64 * 1024],
+		};
+		let (parts, deferred) =
+			super::choose_inference_media(vec![selected], Vec::new(), 2_048, true);
+		assert!(deferred);
+		assert!(parts.is_empty());
 	}
 
 	#[rstest::rstest]
