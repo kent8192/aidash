@@ -2,7 +2,7 @@ use crate::{
 	Error, Result,
 	config::{Config, PROTOCOL_VERSION, peer_secret, validate_endpoint, validate_node_id},
 	domain::*,
-	registry::{AgentConfig, EntityRef, Entry, Registry, Search},
+	registry::{AgentConfig, EntityRef, Entry, ModelConfig, Registry, Search},
 	store::{RunResponseMessage, Store},
 };
 use futures_util::{StreamExt, stream};
@@ -196,6 +196,20 @@ impl Federation {
 		// Keep most of the registered model's remaining window for the task,
 		// workspace observation and tool history.
 		Ok((available / 4).min(16_384))
+	}
+
+	pub(crate) async fn run_media_input_routes(&self, run: &Run) -> Result<Vec<Vec<String>>> {
+		if run.home_node != self.config.node_id {
+			return Ok(Vec::new());
+		}
+		let agent = self.registry.get(&run.agent_id, &run.agent_version).await?;
+		let agent: AgentConfig = serde_json::from_value(agent.config)?;
+		let model = self
+			.registry
+			.get(&agent.model.id, &agent.model.version)
+			.await?;
+		let model: ModelConfig = serde_json::from_value(model.config)?;
+		Ok(model.current_media_input_routes())
 	}
 
 	pub(crate) async fn run_request_headroom(&self, run: &Run) -> Result<usize> {

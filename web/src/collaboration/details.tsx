@@ -43,8 +43,9 @@ import { ArtifactList } from "./channel";
 import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
 import {
-  RUN_MEDIA_ACCEPT,
+  runMediaAccept,
   validRunMediaAttachments,
+  validRunMediaRoute,
 } from "./conversation-model";
 
 export type Selection = {
@@ -450,7 +451,9 @@ function RunPanel({
         {local && query.isPending ? copy.processing : copy.unavailable}
       </p>
     );
-  const canAttach = local && run.home_node === data.node.id;
+  const mediaInputRoutes = query.data?.pages[0].media_input_routes ?? [];
+  const mediaAccept = runMediaAccept(mediaInputRoutes);
+  const canAttach = local && run.home_node === data.node.id && !!mediaAccept;
   const terminal = ["COMPLETED", "FAILED", "CANCELLED"].includes(run.phase);
   const control = (action: string) => {
     if (action === "cancel" && !window.confirm(t("confirmCancel"))) return;
@@ -501,18 +504,37 @@ function RunPanel({
             onSubmit={(event) => {
               event.preventDefault();
               const content = draft.trim();
+              if ((!content && files.length === 0) || sending.current) return;
               if (
-                (!content && (!canAttach || files.length === 0)) ||
-                sending.current
-              )
+                files.length > 0 &&
+                (!canAttach ||
+                  !validRunMediaRoute(
+                    files.map((entry) => entry.file),
+                    mediaInputRoutes,
+                  ))
+              ) {
+                setFileError(fileCopy.invalidAttachment);
                 return;
+              }
               sending.current = true;
               setSendingMessage(true);
               setFileError("");
               void (async () => {
                 try {
                   const attachments: string[] = [];
-                  for (const entry of canAttach ? files : []) {
+                  if (files.length > 0) {
+                    const current = await runGet(id, { offset: 0 });
+                    if (
+                      !validRunMediaRoute(
+                        files.map((entry) => entry.file),
+                        current.media_input_routes,
+                      )
+                    ) {
+                      setFileError(fileCopy.invalidAttachment);
+                      return;
+                    }
+                  }
+                  for (const entry of files) {
                     let uploaded = entry.uploaded;
                     if (!uploaded) {
                       setUploading(true);
@@ -597,7 +619,7 @@ function RunPanel({
               <>
                 <input
                   type="file"
-                  accept={RUN_MEDIA_ACCEPT}
+                  accept={mediaAccept}
                   multiple
                   aria-label={fileCopy.attach}
                   disabled={sendingMessage}
@@ -613,6 +635,10 @@ function RunPanel({
                     if (
                       validRunMediaAttachments(
                         selected.map((item) => item.file),
+                      ) &&
+                      validRunMediaRoute(
+                        selected.map((item) => item.file),
+                        mediaInputRoutes,
                       )
                     ) {
                       setFiles(selected);
@@ -622,31 +648,31 @@ function RunPanel({
                     event.target.value = "";
                   }}
                 />
-                {files.length > 0 && (
-                  <ul className="workspace-draft-files">
-                    {files.map((entry) => (
-                      <li key={entry.key}>
-                        {entry.file.name}
-                        <button
-                          type="button"
-                          aria-label={`${fileCopy.removeAttachment}: ${entry.file.name}`}
-                          disabled={sendingMessage}
-                          onClick={() => {
-                            if (sending.current) return;
-                            setFiles((current) =>
-                              current.filter((file) => file.key !== entry.key),
-                            );
-                            request.current = null;
-                          }}
-                        >
-                          ×
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
                 <p>{fileCopy.attachmentLimit}</p>
               </>
+            )}
+            {files.length > 0 && (
+              <ul className="workspace-draft-files">
+                {files.map((entry) => (
+                  <li key={entry.key}>
+                    {entry.file.name}
+                    <button
+                      type="button"
+                      aria-label={`${fileCopy.removeAttachment}: ${entry.file.name}`}
+                      disabled={sendingMessage}
+                      onClick={() => {
+                        if (sending.current) return;
+                        setFiles((current) =>
+                          current.filter((file) => file.key !== entry.key),
+                        );
+                        request.current = null;
+                      }}
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
             )}
             {fileError && (
               <p role="alert" className="error">

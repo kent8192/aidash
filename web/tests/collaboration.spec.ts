@@ -486,6 +486,45 @@ test("run message attachments stay fixed while an upload is pending", async ({
   expect(errors).toEqual([]);
 });
 
+test("run media picker follows the effective model route before uploads", async ({
+  page,
+}) => {
+  const { submissions, errors, setRunMediaRoutes } = await setup(page, {
+    runMediaRoutes: [],
+  });
+  await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Execution history", exact: true })
+    .click();
+  await page.locator(".collab-channel .collab-task").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.locator('input[type="file"]')).toHaveCount(0);
+  await expect(
+    dialog.getByRole("textbox", { name: "Message", exact: true }),
+  ).toBeVisible();
+  expect(
+    submissions.filter((item) => item.path.endsWith("/attachments")),
+  ).toHaveLength(0);
+  setRunMediaRoutes([["image/png"]]);
+  await expect(dialog.locator('input[type="file"]')).toBeVisible();
+  const picker = dialog.locator('input[type="file"]');
+  await picker.setInputFiles({
+    name: "sample.png",
+    mimeType: "image/png",
+    buffer: Buffer.from("\x89PNG\r\n\x1a\nfixture"),
+  });
+  await expect(
+    dialog.getByRole("button", { name: "Remove attachment: sample.png" }),
+  ).toBeVisible();
+  setRunMediaRoutes([]);
+  await dialog.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  expect(
+    submissions.filter((item) => item.path.endsWith("/attachments")),
+  ).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
 test("the mobile channel toggle is absent outside Collaboration", async ({
   page,
 }) => {

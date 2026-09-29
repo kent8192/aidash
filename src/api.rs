@@ -999,6 +999,7 @@ async fn run_get(
 	.await?;
 	Ok(Json(RunDetails {
 		memory: f.store.memory(&run).await?,
+		media_input_routes: f.run_media_input_routes(&run).await?,
 		run,
 		invocations,
 	}))

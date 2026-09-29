@@ -291,14 +291,59 @@ impl ModelConfig {
 		if formats.is_empty() {
 			return true;
 		}
-		let now = chrono::Utc::now();
-		self.media_routes.iter().any(|route| {
-			route.verified_at <= now
-				&& route.expires_at > now
-				&& formats
-					.iter()
-					.all(|format| route.formats.iter().any(|supported| supported == format))
+		self.current_media_routes().any(|route| {
+			formats
+				.iter()
+				.all(|format| route.formats.iter().any(|supported| supported == format))
 		})
+	}
+
+	fn current_media_routes(&self) -> impl Iterator<Item = &MediaRouteEvidence> {
+		let now = chrono::Utc::now();
+		self.media_routes
+			.iter()
+			.filter(move |route| route.verified_at <= now && route.expires_at > now)
+	}
+
+	/// Current routes expressed as MIME types the run-message upload accepts.
+	pub(crate) fn current_media_input_routes(&self) -> Vec<Vec<String>> {
+		const MEDIA_TYPES: [&str; 14] = [
+			"image/png",
+			"image/jpeg",
+			"image/gif",
+			"image/webp",
+			"audio/wav",
+			"audio/x-wav",
+			"audio/mpeg",
+			"audio/mp4",
+			"audio/x-m4a",
+			"audio/aac",
+			"audio/ogg",
+			"audio/webm",
+			"audio/flac",
+			"audio/x-flac",
+		];
+		self.current_media_routes()
+			.map(|route| {
+				MEDIA_TYPES
+					.into_iter()
+					.filter(|media_type| {
+						let modality =
+							crate::provider::ContentPart::modality_for_media_type(media_type)
+								.expect("supported media type");
+						let format =
+							crate::provider::ContentPart::format_for_media_type(media_type)
+								.expect("supported media type");
+						self.modalities
+							.iter()
+							.any(|available| available == modality)
+							&& route.formats.iter().any(|supported| supported == format)
+					})
+					.map(str::to_owned)
+					.collect::<Vec<_>>()
+			})
+			.filter(|route| !route.is_empty())
+			.collect()
 	}
 	/// Resolve the provider's inference deadline without inheriting the shared
 	/// HTTP client's shorter default. Validate at registration and before use.
@@ -1356,6 +1401,26 @@ fn overlay_config(target: &mut Value, overrides: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn run_media_routes_follow_current_evidence_and_model_modalities() {
+		let now = chrono::Utc::now();
+		let mut model: ModelConfig = serde_json::from_value(json!({
+			"provider":"openrouter", "model_id":"fixture", "endpoint":"https://example.test",
+			"credential_env":null, "context_window":8192, "modalities":["text","image","audio"],
+			"cost":{}, "media_routes":[
+				{"tag":"image", "formats":["image/png"], "source":"test", "verified_at":now - chrono::Duration::hours(1), "expires_at":now + chrono::Duration::hours(1)},
+				{"tag":"audio", "formats":["wav"], "source":"test", "verified_at":now - chrono::Duration::hours(1), "expires_at":now + chrono::Duration::hours(1)},
+				{"tag":"expired", "formats":["image/jpeg"], "source":"test", "verified_at":now - chrono::Duration::hours(2), "expires_at":now - chrono::Duration::hours(1)}
+			]
+		})).unwrap();
+		assert_eq!(
+			model.current_media_input_routes(),
+			vec![vec!["image/png"], vec!["audio/wav", "audio/x-wav"],]
+		);
+		model.modalities = vec!["text".into()];
+		assert!(model.current_media_input_routes().is_empty());
+	}
+
 	fn entry() -> Entry {
 		serde_json::from_value(json!({"id":"research","version":"1.0.0","kind":"skill","name":{"en":"Research","ja":"調査"},"description":{"en":"Research"},"capabilities":["web.search"],"languages":["ja","en"],"config":{"instructions":"Research carefully"}})).unwrap()
 	}

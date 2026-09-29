@@ -1610,6 +1610,7 @@ pub async fn details_page(
 		.fetch_optional(&mut **access.tx)
 		.await?;
 		Ok(RunDetails {
+			media_input_routes: f.run_media_input_routes(&run).await?,
 			run,
 			invocations,
 			memory: memory.unwrap_or_else(|| json!({})),

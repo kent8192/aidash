@@ -552,6 +552,27 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs().await.unwrap().remove(0);
 	let workspace = run.workspace_id.to_string();
+	let (status, details) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/runs/{}", run.id),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{details}");
+	assert!(
+		details["media_input_routes"][0]
+			.as_array()
+			.unwrap()
+			.contains(&json!("image/png"))
+	);
+	assert!(
+		details["media_input_routes"][0]
+			.as_array()
+			.unwrap()
+			.contains(&json!("audio/wav"))
+	);
 	let bad = upload(
 		&app,
 		&token,

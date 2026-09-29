@@ -221,9 +221,11 @@ export async function setup(
     failFirstUpload?: boolean;
     coreCapabilities?: boolean;
     coreVersion?: boolean;
+    runMediaRoutes?: string[][];
   } = {},
 ) {
   let data = fixture(options.referenceLayout);
+  let runMediaRoutes = options.runMediaRoutes ?? [["image/png", "audio/wav"]];
   if (options.coreCapabilities) {
     data.registry[0].config = {
       ...data.registry[0].config,
@@ -581,6 +583,7 @@ export async function setup(
         json: {
           run,
           invocations: [],
+          media_input_routes: runMediaRoutes,
           memory: options.runMemory
             ? { evidence: "Retained execution memory." }
             : {},
@@ -607,6 +610,9 @@ export async function setup(
     },
     revokeAgents: () => {
       data = { ...data, registry: [] };
+    },
+    setRunMediaRoutes: (routes: string[][]) => {
+      runMediaRoutes = routes;
     },
   };
 }

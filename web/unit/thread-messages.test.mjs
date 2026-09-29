@@ -5,6 +5,8 @@ import {
   submissionFor,
   validAttachments,
   validRunMediaAttachments,
+  runMediaAccept,
+  validRunMediaRoute,
 } from "../src/collaboration/conversation-model.ts";
 
 const message = (id, content = id) => ({
@@ -109,6 +111,19 @@ test("run media selection accepts only supported image and audio MIME types", ()
   for (const type of ["", "application/pdf", "text/plain", "image/svg+xml"]) {
     assert.equal(validRunMediaAttachments([{ ...file, type }]), false);
   }
+});
+
+test("run media routes require one current route for every selected format", () => {
+  const routes = [["image/png"], ["audio/wav", "audio/x-wav"]];
+  assert.equal(runMediaAccept(routes), "image/png,audio/wav,audio/x-wav");
+  assert.equal(validRunMediaRoute([{ type: "image/png" }], routes), true);
+  assert.equal(validRunMediaRoute([{ type: "audio/x-wav" }], routes), true);
+  assert.equal(
+    validRunMediaRoute([{ type: "image/png" }, { type: "audio/wav" }], routes),
+    false,
+  );
+  assert.equal(validRunMediaRoute([{ type: "image/png" }], []), false);
+  assert.equal(runMediaAccept([["application/pdf"]]), "");
 });
 
 test("participants keep node and version identity and prefer a still-active run", async () => {
