@@ -78,6 +78,8 @@ jobs:
         run: cargo install cargo-llvm-cov --version 0.8.7 --locked
       - name: Test with disposable Testcontainers services and collect LCOV
         run: scripts/test-rust.sh --coverage
+      - name: Verify cluster visibility oracle
+        run: python3 -m unittest discover -s scripts -p test_transaction_cluster_acceptance.py
       - name: Upload Rust coverage to Codecov
         uses: codecov/codecov-action@04b047e8bb82a0c002c8312c1c880fbc6a999d45 # v5
         with:
@@ -121,13 +123,14 @@ jobs:
         if: always()
         run: docker compose down
   orchestration:
-    name: Cluster recovery (${{ matrix.distribution }})
+    name: Cluster recovery (${{ matrix.distribution }}, ${{ matrix.profile }})
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         distribution: [kubernetes, k3s]
+        profile: [platform, transactions]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -140,14 +143,15 @@ jobs:
       - run: npm ci --ignore-scripts --prefix web
       - run: npm exec --prefix web -- playwright install --with-deps chromium
       - name: Test Pod recovery, scaling, rolling updates and dashboard
-        run: bash scripts/test-cluster.sh '${{ matrix.distribution }}'
+        run: bash scripts/test-cluster.sh '${{ matrix.distribution }}' '${{ matrix.profile }}'
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: cluster-evidence-${{ matrix.distribution }}
+          name: cluster-evidence-${{ matrix.distribution }}-${{ matrix.profile }}
           include-hidden-files: true
           path: |
             .ignore/platform/aidash-ops-*/
+            .ignore/transaction-acceptance/*/
             .ignore/dashboard-deployment-cluster-*.png
   core-runtime:
     name: Core capability isolation and recovery

@@ -10,28 +10,7 @@ pub struct ReadLease {
 impl ReadLease {
 	pub async fn begin(store: &Store) -> Result<Self> {
 		let mut tx = store.control_pool.begin().await?;
-		let (pending, commit_epoch): (Option<Uuid>, i64) = sqlx::query_as(
-			&sea_orm::sea_query::Query::select()
-				.columns([
-					sea_orm::sea_query::Alias::new("transaction_id"),
-					sea_orm::sea_query::Alias::new("commit_epoch"),
-				])
-				.from(sea_orm::sea_query::Alias::new("atomic_gate"))
-				.and_where(sea_orm::sea_query::SimpleExpr::from(
-					sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("singleton")),
-				))
-				.lock_with_behavior(
-					sea_orm::sea_query::LockType::Share,
-					sea_orm::sea_query::LockBehavior::Nowait,
-				)
-				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
-		)
-		.fetch_one(&mut *tx)
-		.await
-		.map_err(lock_error)?;
-		if pending.is_some() {
-			return Err(Error::TransactionPending);
-		}
+		let commit_epoch = read_in(&mut tx).await?;
 		Ok(Self {
 			transaction: Some(tx),
 			commit_epoch,
@@ -101,4 +80,31 @@ pub(crate) async fn exclusive(tx: &mut Transaction<'_, Postgres>) -> Result<Opti
 	.fetch_one(&mut **tx)
 	.await
 	.map_err(lock_error)
+}
+
+/// Retain the visibility lock in an existing authority transaction.
+pub(super) async fn read_in(tx: &mut Transaction<'_, Postgres>) -> Result<i64> {
+	let (pending, commit_epoch): (Option<Uuid>, i64) = sqlx::query_as(
+		&sea_orm::sea_query::Query::select()
+			.columns([
+				sea_orm::sea_query::Alias::new("transaction_id"),
+				sea_orm::sea_query::Alias::new("commit_epoch"),
+			])
+			.from(sea_orm::sea_query::Alias::new("atomic_gate"))
+			.and_where(sea_orm::sea_query::SimpleExpr::from(
+				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("singleton")),
+			))
+			.lock_with_behavior(
+				sea_orm::sea_query::LockType::Share,
+				sea_orm::sea_query::LockBehavior::Nowait,
+			)
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.fetch_one(&mut **tx)
+	.await
+	.map_err(lock_error)?;
+	if pending.is_some() {
+		return Err(Error::TransactionPending);
+	}
+	Ok(commit_epoch)
 }

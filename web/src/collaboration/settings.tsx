@@ -16,7 +16,6 @@ import type { Selection } from "./details";
 
 const operatorSections = new Set<SettingsSection>([
   "authorization",
-  "transactions",
   "deployment",
   "marketplace",
 ]);
@@ -62,14 +61,31 @@ function SettingsFrame({
 
 export function TransactionSettings({
   nodeId,
+  operator,
   select,
 }: {
   nodeId: string;
+  operator: boolean;
   select: (section: SettingsSection) => void;
 }) {
   return (
-    <SettingsFrame section="transactions" select={select} operator>
-      <TransactionsPage nodeId={nodeId} />
+    <SettingsFrame section="transactions" select={select} operator={operator}>
+      <TransactionsPage nodeId={nodeId} operator={operator} />
+    </SettingsFrame>
+  );
+}
+
+export function AuthoritySettings({
+  select,
+  entries,
+}: {
+  select: (section: SettingsSection) => void;
+  entries: State["registry"];
+}) {
+  return (
+    <SettingsFrame section="authorization" select={select} operator>
+      <DashboardIdentityAdministration />
+      <AuthorizationPage entries={entries} />
     </SettingsFrame>
   );
 }

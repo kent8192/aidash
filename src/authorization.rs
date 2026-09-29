@@ -46,6 +46,7 @@ impl Authorization {
 			));
 		}
 		let mut tx = self.pool.begin().await?;
+		crate::transactions::authority::control(&mut tx).await?;
 		let document = serde_json::to_value(&bundle)?;
 		let revision: Option<i64> = if expected_revision == 0 {
 			sqlx::query_scalar(
@@ -186,6 +187,8 @@ impl Authorization {
 		input: &Evaluation,
 		decision: &Decision,
 	) -> Result<()> {
+		// Audit records are authority metadata; ordinary resource writes remain guarded.
+		crate::transactions::authority::control(tx).await?;
 		// Hold allocation order through commit, matching the decision cursor.
 		sqlx::query(
 			&Query::select()

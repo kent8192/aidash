@@ -94,28 +94,57 @@ async fn phase(tx: &mut Transaction<'_, Postgres>, id: Uuid, next: &str) -> Resu
 }
 pub async fn reserve(f: &Federation, caller: &str, manifest: &Manifest) -> Result<LocalStatus> {
 	sender(f, caller, manifest)?;
+	// Durable admission is checked before live authority: recovery cannot be
+	// cancelled by revoking a grant which already created an obligation.
 	let mut tx = begin(f).await?;
 	if let Some(existing) = load(&mut tx, manifest.id).await? {
 		check(&existing, manifest)?;
 		tx.commit().await?;
 		return Ok(existing);
 	}
+	tx.rollback().await?;
+	if let Some(mut access) = super::authority::admission(f, caller, manifest).await? {
+		let result = reserve_in(f, caller, manifest, &mut access.tx).await;
+		super::fault::cut(manifest.id, "participant.reserve.before").await?;
+		let row = access.finish(result).await?;
+		super::fault::cut(manifest.id, "participant.reserve.after").await?;
+		Ok(row)
+	} else {
+		let mut tx = begin(f).await?;
+		let result = reserve_in(f, caller, manifest, &mut tx).await?;
+		super::fault::cut(manifest.id, "participant.reserve.before").await?;
+		tx.commit().await?;
+		super::fault::cut(manifest.id, "participant.reserve.after").await?;
+		Ok(result)
+	}
+}
+async fn reserve_in(
+	f: &Federation,
+	caller: &str,
+	manifest: &Manifest,
+	tx: &mut Transaction<'_, Postgres>,
+) -> Result<LocalStatus> {
+	if let Some(existing) = load(tx, manifest.id).await? {
+		check(&existing, manifest)?;
+		return Ok(existing);
+	}
 	if caller != f.config.node_id {
-		let allowed: bool = sqlx::query_scalar(
+		let allowed: Option<bool> = sqlx::query_scalar(
 			&sea_orm::sea_query::Query::select()
-				.expr(sea_orm::sea_query::Expr::cust(
-					"EXISTS(SELECT 1 FROM atomic_peer_trust WHERE node_id = $1 AND enabled)",
-				))
+				.expr(sea_orm::sea_query::Expr::cust("enabled"))
+				.from(sea_orm::sea_query::Alias::new("atomic_peer_trust"))
+				.and_where(sea_orm::sea_query::Expr::cust("node_id = $1"))
+				.lock(sea_orm::sea_query::LockType::Share)
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 		)
 		.bind(caller)
-		.fetch_one(&mut *tx)
+		.fetch_optional(&mut **tx)
 		.await?;
-		if !allowed {
+		if allowed != Some(true) {
 			return Err(Error::Forbidden);
 		}
 	}
-	if gate::exclusive(&mut tx).await?.is_some() {
+	if gate::exclusive(tx).await?.is_some() {
 		return Err(Error::TransactionPending);
 	}
 	let row = sqlx::query_as(
@@ -142,7 +171,7 @@ pub async fn reserve(f: &Federation, caller: &str, manifest: &Manifest) -> Resul
 	.bind(&manifest.coordinator)
 	.bind(manifest.digest()?)
 	.bind(json!(manifest))
-	.fetch_one(&mut *tx)
+	.fetch_one(&mut **tx)
 	.await?;
 	sqlx::query(
 		&sea_orm::sea_query::Query::update()
@@ -157,17 +186,16 @@ pub async fn reserve(f: &Federation, caller: &str, manifest: &Manifest) -> Resul
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(manifest.id)
-	.execute(&mut *tx)
+	.execute(&mut **tx)
 	.await?;
 	history(
-		&mut tx,
+		tx,
 		manifest.id,
 		"participant",
 		"RESERVED",
 		"node visibility barrier persisted",
 	)
 	.await?;
-	tx.commit().await?;
 	Ok(row)
 }
 pub async fn prepare(f: &Federation, caller: &str, manifest: &Manifest) -> Result<LocalStatus> {
@@ -200,7 +228,9 @@ pub async fn prepare(f: &Federation, caller: &str, manifest: &Manifest) -> Resul
 	mutation::apply(&f.store, &mut validation, manifest).await?;
 	validation.rollback().await?;
 	let row = phase(&mut tx, manifest.id, "PREPARED").await?;
+	super::fault::cut(manifest.id, "participant.prepare.before").await?;
 	tx.commit().await?;
+	super::fault::cut(manifest.id, "participant.prepare.after").await?;
 	Ok(row)
 }
 pub async fn finish(f: &Federation, caller: &str, manifest: &Manifest) -> Result<LocalStatus> {
@@ -272,7 +302,9 @@ pub async fn finish(f: &Federation, caller: &str, manifest: &Manifest) -> Result
 			.await?;
 		}
 		let row = phase(&mut tx, manifest.id, "ABORTED").await?;
+		super::fault::cut(manifest.id, "participant.abort.before").await?;
 		tx.commit().await?;
+		super::fault::cut(manifest.id, "participant.abort.after").await?;
 		return Ok(row);
 	}
 	let existing =
@@ -328,7 +360,14 @@ pub async fn finish(f: &Federation, caller: &str, manifest: &Manifest) -> Result
 	} else {
 		load(&mut tx, manifest.id).await?.unwrap()
 	};
+	let point = if proof.visible {
+		"participant.release"
+	} else {
+		"participant.apply"
+	};
+	super::fault::cut(manifest.id, &format!("{point}.before")).await?;
 	tx.commit().await?;
+	super::fault::cut(manifest.id, &format!("{point}.after")).await?;
 	f.notify.notify_waiters();
 	Ok(row)
 }

@@ -6,6 +6,11 @@ export RUST_MIN_STACK="${RUST_MIN_STACK:-8388608}"
 # These immutable, local-only credentials are inherited when Cargo starts each
 # test binary; dynamically mapped service endpoints come from TestEnvironment.
 export AIDASH_SECRET_TEST_PEER=local-peer-regression-test-token-0123456789
+# Distinct per-peer identities for the three- and sixteen-Node fixtures.
+for transaction_peer in $(seq 1 15); do
+  transaction_key=$(printf 'AIDASH_SECRET_TRANSACTION_%02d' "$transaction_peer")
+  export "$transaction_key=transaction-acceptance-test-peer-$transaction_peer-only"
+done
 export AIDASH_SECRET_TEST_QDRANT=local-semantic-vector-fixture-key-0123456789
 case "${1:-}" in
   '') cargo test --locked --workspace --all-targets ;;
