@@ -1,6 +1,6 @@
 mod common;
 
-use aidash::{api, harness::Harness};
+use aidash::{api, federation::Federation, harness::Harness};
 use axum::{
 	Json, Router,
 	body::Body,
@@ -51,6 +51,94 @@ async fn upload(
 	body
 }
 
+async fn verify_audio_batches(
+	app: &Router,
+	f: &Federation,
+	worker: &Harness,
+	received: &mut mpsc::UnboundedReceiver<Value>,
+	operator: &str,
+	first_audio: &[u8],
+) {
+	let (status, audio_created) = request(
+		app,
+		operator,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Audio batching", "goal":"Inspect both clips", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{audio_created}");
+	let audio_workspace = audio_created["workspace"]["id"].as_str().unwrap();
+	let audio_run = f
+		.store
+		.runs()
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.workspace_id.to_string() == audio_workspace)
+		.unwrap();
+	let mut second_audio = first_audio.to_vec();
+	*second_audio.last_mut().unwrap() = 1;
+	let first = upload(
+		app,
+		operator,
+		audio_workspace,
+		"first.wav",
+		"audio/wav",
+		first_audio,
+	)
+	.await;
+	let second = upload(
+		app,
+		operator,
+		audio_workspace,
+		"second.wav",
+		"audio/wav",
+		&second_audio,
+	)
+	.await;
+	for attachment in [first, second] {
+		let (status, sent) = request(
+			app,
+			operator,
+			"POST",
+			&format!("/api/runs/{}/message", audio_run.id),
+			json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}),
+		)
+		.await;
+		assert_eq!(status, 200, "{sent}");
+	}
+	let mut audio_batches = Vec::new();
+	for _ in 0..8 {
+		assert!(worker.worker_once().await.unwrap());
+		while let Ok(body) = received.try_recv() {
+			let Some(parts) = body["messages"][1]["content"].as_array() else {
+				continue;
+			};
+			let audio: Vec<String> = parts
+				.iter()
+				.filter_map(|part| part["input_audio"]["data"].as_str().map(str::to_owned))
+				.collect();
+			if !audio.is_empty() {
+				assert_eq!(audio.len(), 1, "audio messages must fit individually");
+				audio_batches.push(audio[0].clone());
+			}
+		}
+		if audio_batches.len() == 2 {
+			break;
+		}
+	}
+	assert_eq!(
+		audio_batches,
+		vec![
+			base64::engine::general_purpose::STANDARD.encode(first_audio),
+			base64::engine::general_purpose::STANDARD.encode(&second_audio),
+		]
+	);
+	assert!(worker.worker_once().await.unwrap());
+	assert_eq!(f.store.run(audio_run.id).await.unwrap().phase, "COMPLETED");
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
@@ -99,6 +187,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	assert_eq!(status, 200, "{body}");
 	let mut model = f.registry.get("model", "1.0.0").await.unwrap();
 	model.version = "1.0.1".into();
+	model.config["context_window"] = json!(64_000);
 	model.config["modalities"] = json!(["text", "image", "audio"]);
 	model.config["media_routes"] = json!([{
 		"tag":"fixture/verified", "formats":["image/png", "wav"],
@@ -168,7 +257,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	.await;
 	assert_eq!(status, 400, "{rejected}");
 	assert!(f.store.run_inputs(run.id).await.unwrap().is_empty());
-	let mut large_audio = vec![0_u8; 1024 * 1024];
+	let mut large_audio = vec![0_u8; 512 * 1024];
 	large_audio[..12].copy_from_slice(b"RIFF\0\0\0\0WAVE");
 	let first_large = upload(
 		&app,
@@ -422,6 +511,15 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		f.store.run(operator_run.id).await.unwrap().phase,
 		"COMPLETED"
 	);
+	Box::pin(verify_audio_batches(
+		&app,
+		&f,
+		&worker,
+		&mut received,
+		&operator,
+		&large_audio,
+	))
+	.await;
 	server.abort();
 	cleanup(f, &url, &schema).await;
 }

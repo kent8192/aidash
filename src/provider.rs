@@ -216,14 +216,18 @@ impl ModelRequest {
 	/// Conservative UTF-8 byte estimate, not a provider tokenizer. Reserve
 	/// completion tokens and framing separately, in the same unit at every gate.
 	pub(crate) fn estimated_total_tokens(&self) -> usize {
+		self.estimated_total_tokens_with_parts(&self.content_parts)
+	}
+
+	pub(crate) fn estimated_total_tokens_with_parts(&self, parts: &[ContentPart]) -> usize {
 		// Base64 is a transport encoding, not text for the model tokenizer.
 		// Keep the ordinary text estimate and reserve a bounded media estimate.
-		let content = if self.content_parts.is_empty() {
+		let content = if parts.is_empty() {
 			Value::String(self.context.to_string())
 		} else {
 			Value::Array(
 				std::iter::once(json!({"type":"text","text":self.context.to_string()}))
-					.chain(self.content_parts.iter().filter_map(|part| match part {
+					.chain(parts.iter().filter_map(|part| match part {
 						ContentPart::Text(_) => Some(part.openrouter()),
 						_ => None,
 					}))
@@ -238,7 +242,7 @@ impl ModelRequest {
 		}
 		body.to_string()
 			.len()
-			.saturating_add(Self::media_tokens(&self.content_parts))
+			.saturating_add(Self::media_tokens(parts))
 			.saturating_add(self.max_output_tokens as usize)
 			.saturating_add(1024)
 	}

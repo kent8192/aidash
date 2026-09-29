@@ -262,8 +262,7 @@ impl Harness {
 		let store = &self.federation.store;
 		let _active = crate::http::ActiveExecution::begin();
 		let result = {
-			let work = self.advance(&mut run, token, &mut visibility);
-			tokio::pin!(work);
+			let mut work = Box::pin(self.advance(&mut run, token, &mut visibility));
 			let mut heartbeat = tokio::time::interval(Duration::from_secs(
 				(self.federation.config.lease_seconds / 3).max(1) as u64,
 			));
@@ -427,6 +426,24 @@ impl Harness {
 			.save_run(run, token, "run.tool_recorded")
 			.await?;
 		Ok(())
+	}
+
+	async fn tool_invocation_error(
+		&self,
+		run: &mut Run,
+		token: Uuid,
+		call: &crate::provider::ToolCall,
+		cursor: usize,
+		unfinished_key: Option<&str>,
+		message: String,
+	) -> Result<()> {
+		if let Some(key) = unfinished_key {
+			self.federation
+				.store
+				.invocation_finish(run, token, key, &json!({"error":message}))
+				.await?;
+		}
+		self.tool_error(run, token, call, cursor, message).await
 	}
 
 	async fn tools(&self, config: &AgentConfig) -> Result<BTreeMap<String, Arc<dyn Tool>>> {
@@ -779,12 +796,14 @@ impl Harness {
 							.then_some((input.seq, input.message_id?))
 					})
 					.collect();
+				let media_headroom = self.federation.run_request_headroom(run).await?;
 				let media = Box::pin(resolve_model_input_media(
 					store,
 					run,
 					guard,
 					&selected_media,
 					&new_messages,
+					media_headroom,
 				))
 				.await?;
 				if media.defer_human {
@@ -1588,6 +1607,7 @@ impl Harness {
 					store.save_run(run, token, "run.waiting").await?;
 					return Ok(());
 				}
+				let unfinished_key = (invocation.status != "COMPLETED").then_some(key.as_str());
 				let output = if invocation.status == "COMPLETED" {
 					invocation.result.ok_or_else(|| {
 						Error::Conflict("completed invocation has no result".into())
@@ -1621,11 +1641,12 @@ impl Harness {
 						.map_or(0, Vec::len);
 					if selected.len() + deferred_count >= 8 {
 						return self
-							.tool_error(
+							.tool_invocation_error(
 								run,
 								token,
 								call,
 								cursor,
+								unfinished_key,
 								"model media input exceeds count limit".into(),
 							)
 							.await;
@@ -1640,11 +1661,12 @@ impl Harness {
 						serde_json::from_value(Value::Array(combined))?;
 					let Some(guard) = guard else {
 						return self
-							.tool_error(
+							.tool_invocation_error(
 								run,
 								token,
 								call,
 								cursor,
+								unfinished_key,
 								"model media input requires scoped file access".into(),
 							)
 							.await;
@@ -1656,14 +1678,30 @@ impl Harness {
 								Ok(()) => {}
 								Err(Error::Invalid(message)) => {
 									return self
-										.tool_error(run, token, call, cursor, message)
+										.tool_invocation_error(
+											run,
+											token,
+											call,
+											cursor,
+											unfinished_key,
+											message,
+										)
 										.await;
 								}
 								Err(error) => return Err(error),
 							}
 						}
 						Err(Error::Invalid(message)) => {
-							return self.tool_error(run, token, call, cursor, message).await;
+							return self
+								.tool_invocation_error(
+									run,
+									token,
+									call,
+									cursor,
+									unfinished_key,
+									message,
+								)
+								.await;
 						}
 						Err(error) => return Err(error),
 					}
@@ -2193,6 +2231,7 @@ async fn resolve_model_input_media(
 	guard: Option<&Guard>,
 	selections: &[crate::capabilities::sharing::Selection],
 	messages: &[(i64, Uuid)],
+	headroom: usize,
 ) -> Result<ResolvedMedia> {
 	let selected_parts = if selections.is_empty() {
 		Vec::new()
@@ -2212,11 +2251,14 @@ async fn resolve_model_input_media(
 			has_more: false,
 		}
 	} else if let Some(guard) = guard {
-		guard.human_message_media(messages).await?
+		guard.human_message_media(messages, headroom).await?
 	} else {
-		crate::authorization::execution::operator_human_message_media(store, run, messages).await?
+		crate::authorization::execution::operator_human_message_media(
+			store, run, messages, headroom,
+		)
+		.await?
 	};
-	let (parts, defer_selected) = choose_inference_media(selected_parts, human.parts);
+	let (parts, defer_selected) = choose_inference_media(selected_parts, human.parts, headroom);
 	Ok(ResolvedMedia {
 		parts,
 		through_seq: human.through_seq,
@@ -2228,11 +2270,13 @@ async fn resolve_model_input_media(
 fn choose_inference_media(
 	selected_parts: Vec<crate::provider::ContentPart>,
 	human_parts: Vec<crate::provider::ContentPart>,
+	headroom: usize,
 ) -> (Vec<crate::provider::ContentPart>, bool) {
 	let mut combined = selected_parts;
 	combined.extend(human_parts.iter().cloned());
-	let defer_selected =
-		!human_parts.is_empty() && !crate::provider::ModelRequest::media_within_limits(&combined);
+	let defer_selected = !human_parts.is_empty()
+		&& (!crate::provider::ModelRequest::media_within_limits(&combined)
+			|| media_request_headroom(headroom, &combined).is_err());
 	(
 		if defer_selected {
 			human_parts
@@ -2241,6 +2285,17 @@ fn choose_inference_media(
 		},
 		defer_selected,
 	)
+}
+
+fn media_request_headroom(headroom: usize, parts: &[crate::provider::ContentPart]) -> Result<()> {
+	let request = crate::provider::ModelRequest {
+		instructions: String::new(),
+		context: json!({}),
+		tools: Vec::new(),
+		max_output_tokens: 0,
+		content_parts: Vec::new(),
+	};
+	crate::generation::budget::Reservation::check_request_with_parts(headroom, &request, parts)
 }
 
 fn pending_selected_media(pending: &Value) -> Vec<Value> {
@@ -2363,8 +2418,23 @@ mod review_tests {
 			media_type: "image/png".into(),
 			bytes: vec![1],
 		};
+		let (parts, deferred) = super::choose_inference_media(
+			(0..8).map(|_| image()).collect(),
+			vec![image()],
+			128_000,
+		);
+		assert!(deferred);
+		assert_eq!(parts.len(), 1);
+	}
+
+	#[rstest::rstest]
+	fn human_media_takes_the_first_inference_when_selected_audio_exceeds_headroom() {
+		let audio = || crate::provider::ContentPart::Audio {
+			format: "wav".into(),
+			bytes: vec![0; 1024 * 1024],
+		};
 		let (parts, deferred) =
-			super::choose_inference_media((0..8).map(|_| image()).collect(), vec![image()]);
+			super::choose_inference_media(vec![audio()], vec![audio()], 128_000);
 		assert!(deferred);
 		assert_eq!(parts.len(), 1);
 	}

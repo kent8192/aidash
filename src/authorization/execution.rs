@@ -787,12 +787,13 @@ pub(crate) async fn operator_human_message_media(
 	store: &Store,
 	run: &Run,
 	messages: &[(i64, Uuid)],
+	headroom: usize,
 ) -> Result<HumanMediaBatch> {
 	if run.home_node != store.node_id {
 		return Err(Error::Forbidden);
 	}
 	let mut tx = store.pool.begin().await?;
-	let parts = load_human_message_media(&mut tx, run.workspace_id, messages).await?;
+	let parts = load_human_message_media(&mut tx, run.workspace_id, messages, headroom).await?;
 	tx.commit().await?;
 	Ok(parts)
 }
@@ -807,6 +808,7 @@ async fn load_human_message_media(
 	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 	workspace: Uuid,
 	messages: &[(i64, Uuid)],
+	headroom: usize,
 ) -> Result<HumanMediaBatch> {
 	#[derive(sqlx::FromRow)]
 	struct Attachment {
@@ -821,6 +823,13 @@ async fn load_human_message_media(
 	let mut total = 0_usize;
 	let mut through_seq = None;
 	let mut has_more = false;
+	let request = crate::provider::ModelRequest {
+		instructions: String::new(),
+		context: json!({}),
+		tools: Vec::new(),
+		max_output_tokens: 0,
+		content_parts: Vec::new(),
+	};
 	for (seq, id) in messages {
 		let query = Query::select()
 			.columns(["filename", "media_type", "sha256", "size_bytes", "content"].map(Alias::new))
@@ -847,9 +856,9 @@ async fn load_human_message_media(
 			has_more = true;
 			break;
 		}
+		let previous_len = parts.len();
+		let attachment_count = attachments.len();
 		for attachment in attachments {
-			count += 1;
-			total = total.saturating_add(attachment.content.len());
 			if attachment.size_bytes != attachment.content.len() as i64 {
 				return Err(Error::Invalid("run media input size changed".into()));
 			}
@@ -865,6 +874,18 @@ async fn load_human_message_media(
 				attachment.content,
 			)?);
 		}
+		if let Err(error) = crate::generation::budget::Reservation::check_request_with_parts(
+			headroom, &request, &parts,
+		) {
+			parts.truncate(previous_len);
+			if previous_len == 0 {
+				return Err(error);
+			}
+			has_more = true;
+			break;
+		}
+		count += attachment_count;
+		total = total.saturating_add(message_bytes);
 		through_seq = Some(*seq);
 	}
 	Ok(HumanMediaBatch {
@@ -1235,14 +1256,18 @@ impl Guard {
 		Ok(parts)
 	}
 
-	pub async fn human_message_media(&self, messages: &[(i64, Uuid)]) -> Result<HumanMediaBatch> {
+	pub async fn human_message_media(
+		&self,
+		messages: &[(i64, Uuid)],
+		headroom: usize,
+	) -> Result<HumanMediaBatch> {
 		let mut access = self.access.lock().await;
 		for (_, id) in messages {
 			access
 				.workspace_record(self.run.workspace_id, "message", *id)
 				.await?;
 		}
-		load_human_message_media(&mut access.tx, self.run.workspace_id, messages).await
+		load_human_message_media(&mut access.tx, self.run.workspace_id, messages, headroom).await
 	}
 
 	async fn authorize_inference_with(&self, access: &mut Access) -> Result<()> {
