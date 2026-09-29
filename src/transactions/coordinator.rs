@@ -8,6 +8,12 @@ use std::time::Duration;
 use uuid::Uuid;
 
 pub async fn status(f: &Federation, id: Uuid) -> Result<Status> {
+	status_with(&f.store.control_pool, id).await
+}
+pub(super) async fn status_with<'e>(
+	executor: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+	id: Uuid,
+) -> Result<Status> {
 	sqlx::query_as(
 		&sea_orm::sea_query::Query::select()
 			.expr(sea_orm::sea_query::SimpleExpr::from(
@@ -18,7 +24,7 @@ pub async fn status(f: &Federation, id: Uuid) -> Result<Status> {
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(id)
-	.fetch_optional(&f.store.control_pool)
+	.fetch_optional(executor)
 	.await?
 	.ok_or_else(|| Error::NotFound("transaction".into()))
 }
@@ -46,12 +52,35 @@ pub async fn votes(f: &Federation, id: Uuid) -> Result<Vec<Vote>> {
 	.await?)
 }
 pub async fn submit(f: &Federation, manifest: &Manifest) -> Result<Status> {
+	submit_bound(f, manifest, None).await
+}
+pub(super) async fn submit_bound(
+	f: &Federation,
+	manifest: &Manifest,
+	origin: Option<&super::authority::Origin>,
+) -> Result<Status> {
+	let mut tx = f.store.control_pool.begin().await?;
+	let stored = submit_in(f, manifest, origin, &mut tx).await?;
+	super::fault::cut(manifest.id, "coordinator.submit.before").await?;
+	tx.commit().await?;
+	super::fault::cut(manifest.id, "coordinator.submit.after").await?;
+	f.notify.notify_waiters();
+	Ok(stored)
+}
+
+pub(super) async fn submit_in(
+	f: &Federation,
+	manifest: &Manifest,
+	origin: Option<&super::authority::Origin>,
+	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<Status> {
 	manifest.validate()?;
 	if manifest.coordinator != f.config.node_id {
 		return Err(Error::Invalid("submit to the named coordinator".into()));
 	}
-	match status(f, manifest.id).await {
+	match status_with(&mut **tx, manifest.id).await {
 		Ok(existing) => {
+			super::authority::match_origin_with(&mut **tx, manifest.id, origin).await?;
 			if existing.digest != manifest.digest()? || existing.manifest != json!(manifest) {
 				return Err(Error::Conflict(
 					"transaction ID already has another immutable manifest".into(),
@@ -82,14 +111,13 @@ pub async fn submit(f: &Federation, manifest: &Manifest) -> Result<Status> {
 					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 			)
 			.bind(&node.node_id)
-			.fetch_one(&f.store.control_pool)
+			.fetch_one(&mut **tx)
 			.await?;
 			if !allowed {
 				return Err(Error::Forbidden);
 			}
 		}
 	}
-	let mut tx = f.store.control_pool.begin().await?;
 	let inserted = sqlx::query(
 		&sea_orm::sea_query::Query::insert()
 			.into_table(sea_orm::sea_query::Alias::new("atomic_coordinators"))
@@ -113,7 +141,7 @@ pub async fn submit(f: &Federation, manifest: &Manifest) -> Result<Status> {
 	.bind(manifest.id)
 	.bind(manifest.digest()?)
 	.bind(json!(manifest))
-	.execute(&mut *tx)
+	.execute(&mut **tx)
 	.await?
 	.rows_affected();
 	let stored: Status = sqlx::query_as(
@@ -126,7 +154,7 @@ pub async fn submit(f: &Federation, manifest: &Manifest) -> Result<Status> {
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(manifest.id)
-	.fetch_one(&mut *tx)
+	.fetch_one(&mut **tx)
 	.await?;
 	if stored.digest != manifest.digest()? || stored.manifest != json!(manifest) {
 		return Err(Error::Conflict(
@@ -134,6 +162,9 @@ pub async fn submit(f: &Federation, manifest: &Manifest) -> Result<Status> {
 		));
 	}
 	if inserted == 1 {
+		if let Some(origin) = origin {
+			super::authority::bind(tx, "atomic_subjects", manifest.id, &json!(origin)).await?;
+		}
 		for node in &manifest.participants {
 			sqlx::query(
 				&sea_orm::sea_query::Query::insert()
@@ -150,11 +181,11 @@ pub async fn submit(f: &Federation, manifest: &Manifest) -> Result<Status> {
 			)
 			.bind(manifest.id)
 			.bind(&node.node_id)
-			.execute(&mut *tx)
+			.execute(&mut **tx)
 			.await?;
 		}
 		history(
-			&mut tx,
+			tx,
 			manifest.id,
 			"coordinator",
 			"PENDING",
@@ -162,8 +193,7 @@ pub async fn submit(f: &Federation, manifest: &Manifest) -> Result<Status> {
 		)
 		.await?;
 	}
-	tx.commit().await?;
-	f.notify.notify_waiters();
+	super::authority::match_origin_with(&mut **tx, manifest.id, origin).await?;
 	Ok(stored)
 }
 pub(crate) async fn remote<T: DeserializeOwned>(
@@ -190,7 +220,14 @@ pub(crate) async fn remote<T: DeserializeOwned>(
 				reqwest::StatusCode::CONFLICT => Error::Conflict(
 					"transaction participant rejected its state precondition".into(),
 				),
-				reqwest::StatusCode::SERVICE_UNAVAILABLE => Error::TransactionPending,
+				reqwest::StatusCode::SERVICE_UNAVAILABLE
+					if response
+						.headers()
+						.get("x-aidash-transaction-pending")
+						.is_some_and(|v| v == "1") =>
+				{
+					Error::TransactionPending
+				}
 				_ => Error::External(format!("transaction participant returned {status}")),
 			});
 		}
@@ -232,6 +269,9 @@ pub(crate) async fn decision(f: &Federation, manifest: &Manifest) -> Result<Stat
 	Ok(proof)
 }
 async fn send(f: &Federation, manifest: &Manifest, node: &str, phase: &str) -> Result<LocalStatus> {
+	if phase == "reserve" {
+		super::authority::issue(f, manifest, node).await?;
+	}
 	if node == f.config.node_id {
 		match phase {
 			"reserve" => participant::reserve(f, &manifest.coordinator, manifest).await,
@@ -249,8 +289,12 @@ async fn send(f: &Federation, manifest: &Manifest, node: &str, phase: &str) -> R
 		.await
 	}
 }
-async fn record_decision(f: &Federation, id: Uuid, decision: &str, reason: &str) -> Result<()> {
-	let mut tx = f.store.control_pool.begin().await?;
+async fn record_decision_in(
+	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	id: Uuid,
+	decision: &str,
+	reason: &str,
+) -> Result<()> {
 	let changed = sqlx::query(
 		&sea_orm::sea_query::Query::update()
 			.table(sea_orm::sea_query::Alias::new("atomic_coordinators"))
@@ -270,13 +314,28 @@ async fn record_decision(f: &Federation, id: Uuid, decision: &str, reason: &str)
 	.bind(id)
 	.bind(decision)
 	.bind((!reason.is_empty()).then_some(reason))
-	.execute(&mut *tx)
+	.execute(&mut **tx)
 	.await?
 	.rows_affected();
 	if changed == 1 {
-		history(&mut tx, id, "coordinator", decision, reason).await?;
+		history(tx, id, "coordinator", decision, reason).await?;
 	}
+	Ok(())
+}
+async fn record_decision(f: &Federation, id: Uuid, decision: &str, reason: &str) -> Result<()> {
+	let mut tx = f.store.control_pool.begin().await?;
+	record_decision_in(&mut tx, id, decision, reason).await?;
+	super::fault::cut(
+		id,
+		&format!("coordinator.{}.before", decision.to_lowercase()),
+	)
+	.await?;
 	tx.commit().await?;
+	super::fault::cut(
+		id,
+		&format!("coordinator.{}.after", decision.to_lowercase()),
+	)
+	.await?;
 	Ok(())
 }
 async fn lease(f: &Federation, id: Uuid) -> Result<sqlx::Transaction<'static, sqlx::Postgres>> {
@@ -296,6 +355,32 @@ async fn lease(f: &Federation, id: Uuid) -> Result<sqlx::Transaction<'static, sq
 	}
 	Ok(tx)
 }
+/// Retain the subject authority locks through the durable abort decision.
+pub(super) async fn abort_in(
+	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	id: Uuid,
+) -> Result<()> {
+	record_decision_in(tx, id, "ABORT", "subject requested abort").await?;
+	let decision: Option<String> = sqlx::query_scalar(
+		&sea_orm::sea_query::Query::select()
+			.column(sea_orm::sea_query::Alias::new("decision"))
+			.from(sea_orm::sea_query::Alias::new("atomic_coordinators"))
+			.and_where(
+				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id"))
+					.eq(sea_orm::sea_query::Expr::cust("$1")),
+			)
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(id)
+	.fetch_optional(&mut **tx)
+	.await?
+	.ok_or_else(|| Error::NotFound("transaction".into()))?;
+	if decision.as_deref() == Some("COMMIT") {
+		return Err(Error::Conflict("commit is irrevocable".into()));
+	}
+	super::fault::cut(id, "coordinator.abort.before").await
+}
+
 pub async fn abort(f: &Federation, id: Uuid) -> Result<Status> {
 	// The conditional decision update arbitrates commit versus abort in SQL.
 	// Do not require the recovery lease: it spans peer I/O, and contention must
@@ -394,6 +479,8 @@ async fn advance_locked(f: &Federation, id: Uuid) -> Result<Status> {
 						"participant returned an unexpected phase".into(),
 					));
 				}
+				super::fault::cut(id, "coordinator.vote.before").await?;
+				super::authority::settle(f, id, &vote.node_id, &result.phase).await?;
 				sqlx::query(
 					&sea_orm::sea_query::Query::update()
 						.table(sea_orm::sea_query::Alias::new("atomic_votes"))
@@ -411,6 +498,7 @@ async fn advance_locked(f: &Federation, id: Uuid) -> Result<Status> {
 				.bind(&result.phase)
 				.execute(&f.store.control_pool)
 				.await?;
+				super::fault::cut(id, "coordinator.vote.after").await?;
 				sqlx::query(
 					&sea_orm::sea_query::Query::update()
 						.table(sea_orm::sea_query::Alias::new("atomic_coordinators"))
@@ -427,12 +515,14 @@ async fn advance_locked(f: &Federation, id: Uuid) -> Result<Status> {
 			}
 			Err(error) => {
 				if state.decision.is_none()
-					&& matches!(
+					&& (matches!(
 						error,
 						Error::Conflict(_)
 							| Error::Invalid(_) | Error::NotFound(_)
 							| Error::Forbidden | Error::Unauthorized
-					) {
+					) || (matches!(error, Error::TransactionPending)
+						&& super::authority::scoped(f, id).await?))
+				{
 					record_decision(f, id, "ABORT", &error.to_string()).await?;
 				} else {
 					sqlx::query(
@@ -514,18 +604,31 @@ async fn advance_locked(f: &Federation, id: Uuid) -> Result<Status> {
 			)
 			.await?;
 		}
+		let point = if state.decision.as_deref() == Some("COMMIT") && !state.visible {
+			"coordinator.visible"
+		} else {
+			"coordinator.complete"
+		};
+		super::fault::cut(id, &format!("{point}.before")).await?;
 		tx.commit().await?;
+		super::fault::cut(id, &format!("{point}.after")).await?;
 	}
 	status(f, id).await
 }
 pub async fn recover_once(f: &Federation) -> Result<()> {
+	recover_kind(f, false).await?;
+	recover_kind(f, true).await
+}
+async fn recover_kind(f: &Federation, aborted: bool) -> Result<()> {
 	let ids: Vec<Uuid> = sqlx::query_scalar(
 		&sea_orm::sea_query::Query::select()
 			.expr(sea_orm::sea_query::SimpleExpr::from(
 				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id")),
 			))
 			.from(sea_orm::sea_query::Alias::new("atomic_coordinators"))
-			.and_where(sea_orm::sea_query::Expr::cust("NOT complete"))
+			.and_where(sea_orm::sea_query::Expr::cust(
+				"NOT complete AND ((decision = 'ABORT') IS TRUE) = $1",
+			))
 			.order_by_expr(
 				sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
 					sea_orm::sea_query::Alias::new("updated_at"),
@@ -541,6 +644,7 @@ pub async fn recover_once(f: &Federation) -> Result<()> {
 			.limit(32)
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
+	.bind(aborted)
 	.fetch_all(&f.store.control_pool)
 	.await?;
 	for id in ids {
@@ -551,10 +655,17 @@ pub async fn recover_once(f: &Federation) -> Result<()> {
 	Ok(())
 }
 pub async fn run(f: Federation) -> Result<()> {
-	loop {
-		if let Err(error) = recover_once(&f).await {
-			tracing::warn!(%error,"coordinator recovery failed; decisions retained");
+	// Aborted history may have unreachable peers indefinitely. Its network
+	// waits must not occupy the loop or connection capacity for active work.
+	let aborted = f.for_recovery().await?;
+	async fn recover(f: Federation, aborted: bool) -> Result<()> {
+		loop {
+			if let Err(error) = recover_kind(&f, aborted).await {
+				tracing::warn!(%error,aborted,"coordinator recovery failed; decisions retained");
+			}
+			tokio::time::sleep(Duration::from_millis(if aborted { 1000 } else { 100 })).await;
 		}
-		tokio::time::sleep(Duration::from_millis(100)).await;
 	}
+	tokio::try_join!(recover(f, false), recover(aborted, true))?;
+	Ok(())
 }

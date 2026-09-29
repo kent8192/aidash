@@ -24,7 +24,9 @@ function clearResource(mutation: TransactionMutation): TransactionMutation {
 export function TransactionComposer({
   value,
   change,
+  operator = true,
 }: {
+  operator?: boolean;
   value: TransactionManifest;
   change: (value: TransactionManifest) => void;
 }) {
@@ -90,31 +92,48 @@ export function TransactionComposer({
             {t("transactionParticipant")} {index + 1}
           </legend>
           <Field label={t("node")}>
-            <select
-              required
-              disabled={participant.node_id === value.coordinator}
-              value={participant.node_id}
-              onChange={(event) =>
-                update(index, {
-                  ...participant,
-                  node_id: event.target.value,
-                  mutations: participant.mutations.map(clearResource),
-                })
-              }
-            >
-              <option value="">{t("choose")}</option>
-              {nodes
-                .filter(
-                  (node) =>
-                    node === participant.node_id ||
-                    !value.participants.some((other) => other.node_id === node),
-                )
-                .map((node) => (
-                  <option key={node} value={node}>
-                    <ReferenceName id={node} />
-                  </option>
-                ))}
-            </select>
+            {!operator && index > 0 ? (
+              <input
+                required
+                placeholder="aidash://remote-node"
+                value={participant.node_id}
+                onChange={(event) =>
+                  update(index, {
+                    ...participant,
+                    node_id: event.target.value,
+                    mutations: participant.mutations.map(clearResource),
+                  })
+                }
+              />
+            ) : (
+              <select
+                required
+                disabled={participant.node_id === value.coordinator}
+                value={participant.node_id}
+                onChange={(event) =>
+                  update(index, {
+                    ...participant,
+                    node_id: event.target.value,
+                    mutations: participant.mutations.map(clearResource),
+                  })
+                }
+              >
+                <option value="">{t("choose")}</option>
+                {nodes
+                  .filter(
+                    (node) =>
+                      node === participant.node_id ||
+                      !value.participants.some(
+                        (other) => other.node_id === node,
+                      ),
+                  )
+                  .map((node) => (
+                    <option key={node} value={node}>
+                      <ReferenceName id={node} />
+                    </option>
+                  ))}
+              </select>
+            )}
           </Field>
           {participant.node_id !== data?.node.id && (
             <p className="muted">{t("transactionRemoteReferenceHelp")}</p>
@@ -182,11 +201,15 @@ export function TransactionComposer({
                       "complete_task",
                       "finish_run",
                       "registry_register",
-                    ].map((kind) => (
-                      <option key={kind} value={kind}>
-                        {t(`transactionOperation_${kind}`)}
-                      </option>
-                    ))}
+                    ]
+                      .filter(
+                        (kind) => operator || kind !== "registry_register",
+                      )
+                      .map((kind) => (
+                        <option key={kind} value={kind}>
+                          {t(`transactionOperation_${kind}`)}
+                        </option>
+                      ))}
                   </select>
                 </Field>
                 {mutation.kind === "workspace_state" && (
@@ -483,7 +506,10 @@ export function TransactionComposer({
       ))}
       <button
         type="button"
-        disabled={value.participants.length >= Math.min(nodes.length, 16)}
+        disabled={
+          value.participants.length >=
+          (operator ? Math.min(nodes.length, 16) : 16)
+        }
         onClick={() =>
           change({
             ...value,

@@ -12,6 +12,7 @@ import {
   authorizationCredentials,
   authorizationIssueCredential,
   authorizationRevokeCredential,
+  transactionRevocations,
   authorizationCatalog,
   authorizationSetCatalog,
 } from "./generated/aidash";
@@ -103,6 +104,11 @@ function TenantAuthorization({
   const missing =
     snapshot.error instanceof ApiError && snapshot.error.status === 404;
   const current = !snapshot.isError ? snapshot.data : undefined;
+  const admissions = useQuery({
+    queryKey: ["authorization", tenant, "transaction-revocations"],
+    queryFn: () => transactionRevocations(path),
+    refetchInterval: 1000,
+  });
   const credentials = useQuery({
     queryKey: ["authorization", tenant, "credentials"],
     queryFn: async () => {
@@ -160,6 +166,11 @@ function TenantAuthorization({
       <p className="muted">
         {t("tenant")}: <strong>{tenant}</strong>
       </p>
+      {!admissions.isError && (admissions.data?.length ?? 0) > 0 && (
+        <p className="notice" role="status">
+          {t("transactionRevocationPending")}
+        </p>
+      )}
       {error && !modal && (
         <p role="alert" className="error">
           {error}

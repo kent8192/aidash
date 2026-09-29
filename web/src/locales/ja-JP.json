@@ -576,5 +576,7 @@
   "semanticOlderMessages": "古いメッセージを読み込む",
   "toolManualRemoteAgent": "リモートAgentの参照値を入力",
   "toolChooseRemoteAgent": "検出されたAgentから選択",
-  "toolRemoteAgentReference": "リモートAgentの参照値"
+  "toolRemoteAgentReference": "リモートAgentの参照値",
+  "transactionCheckRevocation": "失効状況を確認",
+  "transactionRevocationPending": "失効後の新しい予約は拒否されます。失効前に送信した予約の結果を確認中です。確認が完了するまで失効処理中として扱います。"
 }

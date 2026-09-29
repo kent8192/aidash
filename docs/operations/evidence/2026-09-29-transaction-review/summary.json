@@ -1,0 +1,48 @@
+{
+  "scope": "Two-node Kubernetes peer transport recovery after process-fault removal; no full release acceptance or new k3s run",
+  "environment": {
+    "source_revision": "e5bfb1e2013cc340fc1369f9270b94aeeb2bce79",
+    "dirty": true,
+    "source_inputs_sha256": "c25de28fa9b2b8e95c79ec3fb3e115f69c42db733bdaf4dec3e34e8f3163cee0",
+    "distribution": "kubernetes",
+    "server_version": "v1.34.0",
+    "image": "aidash:pr87-review-20260929",
+    "namespace": "aidash-tx-d637a0aa1d",
+    "started_at": "2026-09-28T22:52:52.379347+00:00",
+    "nodes": 2,
+    "repetitions": 3,
+    "scope": "selected cases",
+    "selected_phase": null,
+    "selected_lifecycles": ["peer-recovery"],
+    "selected_node_counts": [2],
+    "mixed_version": "not tested; requires a distinct compatible runtime pair"
+  },
+  "images": [
+    [
+      "tx-0-server-f94b8cb96-ng7h9",
+      [
+        "sha256:23501657ed8ad0f2e3e7384d9839ba97c9ed6973869a185646e91f32a1b77173"
+      ]
+    ],
+    [
+      "tx-1-server-7b97b78bd4-7d746",
+      [
+        "sha256:23501657ed8ad0f2e3e7384d9839ba97c9ed6973869a185646e91f32a1b77173"
+      ]
+    ]
+  ],
+  "image_id": "sha256:4cdfa080e47dfb8782099ce44b3c1ff1b2c52574f0a8067c32a2ca43cc29f9c8",
+  "driver_sha256": "481ad2285e6aa0437def599f87cb688a72d60d06bd5ce04abe127f73fc82c292",
+  "query_generator_sha256": "2de0cb85c104fc7534e4aa68ba040c1315e569b74112a827606a0bba5ae84f34",
+  "cases": 3,
+  "passed": 3,
+  "uncompressed_sha256": "1be3d9317a50cd258305f54f523fdf7e393b1711f3b76e7c181a4bce9762225c",
+  "maximum_converged_seconds": 1.0381752089597285,
+  "local_checks": {
+    "rust": 20,
+    "browser": 5,
+    "visibility_oracle": 4,
+    "clippy": "passed with warnings denied",
+    "trunk": "passed"
+  }
+}

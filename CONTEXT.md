@@ -128,6 +128,48 @@ _Avoid_: Live page, search snippet
 An identified passage from a document snapshot made available to the Agent and eligible to support a source citation.
 _Avoid_: Unread passage, generated summary
 
+## Distributed transactions
+
+**Transaction manifest**:
+The fixed definition of an Aidash atomic operation, identifying its coordinator, participating Nodes and intended resource changes.
+_Avoid_: Mutable work request, execution plan
+
+**Coordinator submission**:
+The coordinator's durable acceptance of a transaction request for coordination. It is distinct from each participating Node's acceptance of its obligations.
+_Avoid_: Participant admission, completed transaction
+
+**Participant admission**:
+A participating Node's durable acceptance of the exact obligations defined for it by a transaction manifest, under the authority checked at acceptance.
+_Avoid_: Coordinator submission, temporary permission check
+
+**Transaction trust**:
+A Node operator's explicit permission for a peer to request participation in new Aidash transactions. It is distinct from peer authentication and subject permission to change a resource.
+_Avoid_: Peer credential, subject authorization
+
+**Transaction visibility barrier**:
+The boundary that withholds ordinary access to a participating Node while a transaction's outcome is not yet safe to expose.
+_Avoid_: Completed commit, resource permission
+
+**Transaction completion**:
+The state in which all participants have finalized the coordinator's durable decision and released their transaction visibility barriers.
+_Avoid_: Request accepted, commit decision recorded
+
+**Admitted transaction obligation**:
+A Participant's responsibility for its fixed resource changes under an accepted manifest, which remains valid for recovery after the admitting subject or transaction trust is revoked.
+_Avoid_: Current read permission, reusable execution grant
+
+**Transaction decision**:
+The coordinator's durable choice of commit or abort for one immutable transaction manifest. A commit decision is distinct from completed application and safe visibility at every participant.
+_Avoid_: Transaction completion, delivery acknowledgment
+
+**Transaction authority revocation**:
+Withdrawal of authority to admit new transaction obligations, distinct from cancellation of obligations already admitted. A pending revocation has denied new work but has not yet resolved every admission that raced with it.
+_Avoid_: Transaction abort, completed revocation while admission is uncertain
+
+**Manifest disclosure authority**:
+Explicit permission to disclose a transaction manifest's contents to its named recipient Nodes. It is distinct from permission to mutate a resource or trust a peer to participate.
+_Avoid_: Transaction trust, blanket peer access
+
 ### Federation
 
 **Node**:

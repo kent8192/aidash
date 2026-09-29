@@ -136,6 +136,8 @@ Japanese; native Kubernetes diagnostic messages retain their original text.
 An observation failure hides old successful observations and shows an error.
 The page remains available while an atomic transaction blocks ordinary reads.
 
+Atomic-manifest recovery has a separate acceptance profile: `scripts/test-cluster.sh kubernetes transactions` and `scripts/test-cluster.sh k3s transactions`. It uses independent Node databases, real Pod replacement at durable cuts, worker scaling and same-version rolling replacement, retaining case traces and durable diagnostics in `.ignore/transaction-acceptance/`. The CI matrix runs both the platform and transaction profiles. See the [transaction evidence register](operations/transaction-acceptance.md); these functional fixtures do not establish mixed-version compatibility, availability or restore targets.
+
 The observer has namespaced `list` access only to Deployments, Pods and Events,
 and returns resources for its configured Helm release. Only Aidash operators can
 read `/api/deployment`. It cannot read Secrets or mutate workloads. Do not share

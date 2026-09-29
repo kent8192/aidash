@@ -1,5 +1,7 @@
 pub mod api;
+pub(crate) mod authority;
 pub mod coordinator;
+mod fault;
 pub mod gate;
 mod mutation;
 pub mod participant;

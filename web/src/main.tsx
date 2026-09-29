@@ -66,6 +66,11 @@ const Configuration = lazy(() =>
     default: module.Configuration,
   })),
 );
+const AuthoritySettings = lazy(() =>
+  import("./collaboration/settings").then((module) => ({
+    default: module.AuthoritySettings,
+  })),
+);
 const TransactionSettings = lazy(() =>
   import("./collaboration/settings").then((module) => ({
     default: module.TransactionSettings,
@@ -1262,7 +1267,8 @@ function Dashboard({
                     />
                   )}
                   {route.section === "settings" &&
-                    (route.settings !== "transactions" || !operator) && (
+                    route.settings !== "transactions" &&
+                    (route.settings !== "authorization" || !operator) && (
                       <Suspense
                         fallback={<p role="status">{copy.processing}</p>}
                       >
@@ -1294,9 +1300,20 @@ function Dashboard({
               {operator &&
                 session.data &&
                 route.section === "settings" &&
+                route.settings === "authorization" && (
+                  <Suspense fallback={<p role="status">{copy.processing}</p>}>
+                    <AuthoritySettings
+                      entries={data?.registry ?? []}
+                      select={(settings) => go("settings", { settings })}
+                    />
+                  </Suspense>
+                )}
+              {session.data &&
+                route.section === "settings" &&
                 route.settings === "transactions" && (
                   <Suspense fallback={<p role="status">{copy.processing}</p>}>
                     <TransactionSettings
+                      operator={operator}
                       nodeId={session.data.node_id}
                       select={(settings) => go("settings", { settings })}
                     />

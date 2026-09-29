@@ -32,7 +32,13 @@ const phase = (transaction: AtomicTransaction) => {
   return "PREPARING";
 };
 
-export function TransactionsPage({ nodeId }: { nodeId: string }) {
+export function TransactionsPage({
+  nodeId,
+  operator = true,
+}: {
+  nodeId: string;
+  operator?: boolean;
+}) {
   const { t } = useI18n();
   const nodeLabel = useNodeLabel();
   const displayData = useContext(DisplayState);
@@ -58,11 +64,13 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
   const participants = useQuery({
     queryKey: ["transactions", "local"],
     queryFn: () => transactionParticipants(),
+    enabled: operator,
     refetchInterval: 1000,
   });
   const trust = useQuery({
     queryKey: ["transactions", "trust"],
     queryFn: () => transactionTrustList(),
+    enabled: operator,
     refetchInterval: 5000,
   });
   const details = useQuery({
@@ -158,76 +166,115 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
             </div>
           ))}
       </Panel>
-      <Panel title={t("transactionLocalParticipants")}>
-        {!participants.isError && participants.data?.length === 0 && <Empty />}
-        {!participants.isError &&
-          participants.data?.map((participant) => (
-            <div className="generation-request" key={participant.id}>
-              <div>
-                <strong className="transaction-id">
-                  {transactionLabels.get(participant.id) ??
-                    transactionLabel(participant.manifest)}
-                </strong>
-                <small>
-                  {t("transactionCoordinator")}:{" "}
-                  <ReferenceName id={participant.coordinator} />
-                </small>
-              </div>
-              <Badge value={participant.phase} />
-            </div>
-          ))}
-      </Panel>
-      <Panel title={t("transactionTrust")}>
-        <div className="generation-padding">
-          <p>{t("transactionTrustHelp")}</p>
-          <form
-            className="transaction-trust-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void mutate(() =>
-                transactionTrust({ node_id: peer.trim(), enabled: true }),
-              );
-            }}
-          >
-            <Field label={t("transactionPeer")}>
-              <select
-                required
-                value={peer}
-                onChange={(event) => setPeer(event.target.value)}
-              >
-                <option value="">{t("choose")}</option>
-                {displayData?.peers.map((peer) => (
-                  <option key={peer.node_id} value={peer.node_id}>
-                    <ReferenceName id={peer.node_id} />
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <button disabled={busy}>{t("transactionGrant")}</button>
-          </form>
-        </div>
-        {!trust.isError &&
-          trust.data?.map((grant) => (
-            <div className="generation-request" key={grant.node_id}>
-              <div>
-                <strong>
-                  <ReferenceName id={grant.node_id} />
-                </strong>
-                <Badge value={grant.enabled ? "ENABLED" : "DISABLED"} />
-              </div>
-              <button
-                disabled={busy}
-                onClick={() =>
+      {operator && (
+        <>
+          <Panel title={t("transactionLocalParticipants")}>
+            {!participants.isError && participants.data?.length === 0 && (
+              <Empty />
+            )}
+            {!participants.isError &&
+              participants.data?.map((participant) => (
+                <div className="generation-request" key={participant.id}>
+                  <div>
+                    <strong className="transaction-id">
+                      {transactionLabels.get(participant.id) ??
+                        transactionLabel(participant.manifest)}
+                    </strong>
+                    <small>
+                      {t("transactionCoordinator")}:{" "}
+                      <ReferenceName id={participant.coordinator} />
+                    </small>
+                  </div>
+                  <Badge value={participant.phase} />
+                </div>
+              ))}
+          </Panel>
+          <Panel title={t("transactionTrust")}>
+            <div className="generation-padding">
+              <p>{t("transactionTrustHelp")}</p>
+              <form
+                className="transaction-trust-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
                   void mutate(() =>
-                    transactionTrust({ ...grant, enabled: !grant.enabled }),
-                  )
-                }
+                    transactionTrust({ node_id: peer.trim(), enabled: true }),
+                  );
+                }}
               >
-                {t(grant.enabled ? "transactionRevoke" : "transactionGrant")}
-              </button>
+                <Field label={t("transactionPeer")}>
+                  <select
+                    required
+                    value={peer}
+                    onChange={(event) => setPeer(event.target.value)}
+                  >
+                    <option value="">{t("choose")}</option>
+                    {displayData?.peers.map((peer) => (
+                      <option key={peer.node_id} value={peer.node_id}>
+                        <ReferenceName id={peer.node_id} />
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <button
+                  disabled={
+                    busy ||
+                    !!trust.data?.find((grant) => grant.node_id === peer.trim())
+                      ?.pending_transactions?.length
+                  }
+                >
+                  {t("transactionGrant")}
+                </button>
+              </form>
             </div>
-          ))}
-      </Panel>
+            {!trust.isError &&
+              trust.data?.map((grant) => (
+                <div className="generation-request" key={grant.node_id}>
+                  <div>
+                    <strong>
+                      <ReferenceName id={grant.node_id} />
+                    </strong>
+                    <Badge
+                      value={
+                        grant.pending_transactions?.length
+                          ? "PENDING"
+                          : grant.enabled
+                            ? "ENABLED"
+                            : "DISABLED"
+                      }
+                    />
+                    {!!grant.pending_transactions?.length && (
+                      <p className="notice" role="status">
+                        {t("transactionRevocationPending")}{" "}
+                        {grant.pending_transactions.join(", ")}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    disabled={busy}
+                    onClick={() =>
+                      void mutate(() =>
+                        transactionTrust({
+                          node_id: grant.node_id,
+                          enabled:
+                            !grant.enabled &&
+                            !grant.pending_transactions?.length,
+                        }),
+                      )
+                    }
+                  >
+                    {t(
+                      grant.pending_transactions?.length
+                        ? "transactionCheckRevocation"
+                        : grant.enabled
+                          ? "transactionRevoke"
+                          : "transactionGrant",
+                    )}
+                  </button>
+                </div>
+              ))}
+          </Panel>
+        </>
+      )}
       {selected && (
         <Modal title={t("transactionDetails")} close={() => setSelected(null)}>
           {error && (
@@ -352,13 +399,24 @@ export function TransactionsPage({ nodeId }: { nodeId: string }) {
             {review ? (
               <>
                 <p className="notice">{t("transactionReviewHelp")}</p>
+                {!operator && (
+                  <ul aria-label={t("transactionParticipant")}>
+                    {review.participants.map((participant) => (
+                      <li key={participant.node_id}>{participant.node_id}</li>
+                    ))}
+                  </ul>
+                )}
                 <RecordView value={review} />
                 <button type="button" onClick={() => setReview(null)}>
                   {t("edit")}
                 </button>
               </>
             ) : (
-              <TransactionComposer value={draft} change={setDraft} />
+              <TransactionComposer
+                value={draft}
+                change={setDraft}
+                operator={operator}
+              />
             )}
             <button className="primary" disabled={busy}>
               {t(review ? "transactionSubmit" : "transactionReview")}
