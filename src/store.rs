@@ -2599,9 +2599,12 @@ impl Store {
 		.bind(run_id)
 		.fetch_one(&mut **tx)
 		.await?;
-		let previous: Option<String> = sqlx::query_scalar(
+		let previous: Option<(String, Option<Uuid>)> = sqlx::query_as(
 			&sea_orm::sea_query::Query::select()
-				.column(sea_orm::sea_query::Alias::new("content"))
+				.columns([
+					sea_orm::sea_query::Alias::new("content"),
+					sea_orm::sea_query::Alias::new("message_id"),
+				])
 				.from(sea_orm::sea_query::Alias::new("run_inputs"))
 				.and_where(sea_orm::sea_query::Expr::cust(
 					"run_id = $1 AND idempotency_key = $2",
@@ -2612,8 +2615,24 @@ impl Store {
 		.bind(key)
 		.fetch_optional(&mut **tx)
 		.await?;
-		if let Some(old_content) = previous {
-			return if old_content == content {
+		if let Some((old_content, message_id)) = previous {
+			let has_media = if let Some(message_id) = message_id {
+				let attached: Option<Uuid> = sqlx::query_scalar(
+					&sea_orm::sea_query::Query::select()
+						.column(sea_orm::sea_query::Alias::new("id"))
+						.from(sea_orm::sea_query::Alias::new("channel_attachments"))
+						.and_where(sea_orm::sea_query::Expr::cust("message_id = $1"))
+						.limit(1)
+						.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+				)
+				.bind(message_id)
+				.fetch_optional(&mut **tx)
+				.await?;
+				attached.is_some()
+			} else {
+				false
+			};
+			return if old_content == content && has_media == allow_empty {
 				Ok(())
 			} else {
 				Err(Error::Conflict("run message idempotency key reused".into()))

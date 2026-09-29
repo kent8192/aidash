@@ -72,6 +72,16 @@ impl Federation {
 			if input.content != content {
 				return Err(Error::Conflict("run message idempotency key reused".into()));
 			}
+			if input.message_id.is_some()
+				&& self
+					.store
+					.run_message_has_media(&[input.message_id.expect("checked")])
+					.await?
+			{
+				return Err(Error::Conflict(
+					"run message idempotency key reused with media".into(),
+				));
+			}
 			if !home.local() && !home.recover_run_message(key, content).await? {
 				return Err(Error::Conflict(
 					"remote home cannot persist run message admission".into(),
@@ -182,6 +192,13 @@ impl Federation {
 		}
 	}
 	pub async fn run_message_limit(&self, run: &Run) -> Result<usize> {
+		let available = self.run_request_headroom(run).await?;
+		// Keep most of the registered model's remaining window for the task,
+		// workspace observation and tool history.
+		Ok((available / 4).min(16_384))
+	}
+
+	pub(crate) async fn run_request_headroom(&self, run: &Run) -> Result<usize> {
 		let agent_entry = self.registry.get(&run.agent_id, &run.agent_version).await?;
 		let agent: AgentConfig = serde_json::from_value(agent_entry.config.clone())?;
 		let mut references = Vec::with_capacity(1 + agent.skills.len() + agent.tools.len());
@@ -198,11 +215,7 @@ impl Federation {
 		} else {
 			Value::Null
 		};
-		let available =
-			crate::registry::agent_prompt_headroom(&agent, &references, &private_context)?;
-		// Keep most of the registered model's remaining window for the task,
-		// workspace observation and tool history.
-		Ok((available / 4).min(16_384))
+		crate::registry::agent_prompt_headroom(&agent, &references, &private_context)
 	}
 
 	pub async fn deliver_run_messages(&self, run: &Run) -> Result<()> {

@@ -1035,7 +1035,20 @@ async fn run_message(
 	Json(input): Json<MessageInput>,
 ) -> Result<Json<SentResponse>> {
 	if !input.attachment_ids.is_empty() {
-		let run = f.store.run(id).await?;
+		let run = match &actor {
+			Actor::Subject(identity) => {
+				let mut access =
+					crate::authorization::access::Access::begin(&f.store, identity).await?;
+				let result = access.run_for_interaction(id).await;
+				access.finish(result).await?
+			}
+			Actor::Operator => f.store.run(id).await?,
+		};
+		let external_key = input.idempotency_key.unwrap_or_else(Uuid::new_v4);
+		let key = match &actor {
+			Actor::Subject(identity) => interaction::run_message_key(identity, id, external_key),
+			Actor::Operator => format!("human:{id}:{external_key}"),
+		};
 		let mut lease = crate::collaboration::access::Lease::begin_message_create(
 			&f.store,
 			actor,
@@ -1057,11 +1070,6 @@ async fn run_message(
 					"media run messages require a local run".into(),
 				));
 			}
-			let key = format!(
-				"media-human:{id}:{}:{}",
-				lease.principal(),
-				input.idempotency_key.unwrap_or_else(Uuid::new_v4)
-			);
 			let sender = lease.sender();
 			let limit = f.run_message_limit(&run).await?;
 			f.store
@@ -1106,8 +1114,12 @@ async fn run_message(
 			if media.len() != attachments.len() {
 				return Err(Error::Conflict("run message attachment set changed".into()));
 			}
+			let mut parts = Vec::with_capacity(media.len() * 2);
 			for (media_type, content) in media {
-				crate::provider::ContentPart::from_media(&media_type, content)?;
+				parts.push(crate::provider::ContentPart::from_media(
+					&media_type,
+					content,
+				)?);
 			}
 			let agent = f.registry.get(&run.agent_id, &run.agent_version).await?;
 			let agent: crate::registry::AgentConfig = serde_json::from_value(agent.config)?;
@@ -1120,6 +1132,17 @@ async fn run_message(
 				attachments
 					.iter()
 					.map(|attachment| attachment.media_type.as_str()),
+			)?;
+			let headroom = f.run_request_headroom(&run).await?;
+			crate::generation::budget::Reservation::check_request(
+				headroom,
+				&crate::provider::ModelRequest {
+					instructions: String::new(),
+					context: json!({"run_message": input.content}),
+					tools: Vec::new(),
+					max_output_tokens: 0,
+					content_parts: parts,
+				},
 			)?;
 			let saved = crate::collaboration::attachments::for_messages(
 				&mut lease,

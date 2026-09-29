@@ -42,7 +42,10 @@ import { EntityDetails } from "../entity-details";
 import { ArtifactList } from "./channel";
 import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
-import { validAttachments } from "./conversation-model";
+import {
+  RUN_MEDIA_ACCEPT,
+  validRunMediaAttachments,
+} from "./conversation-model";
 
 export type Selection = {
   kind: string;
@@ -582,6 +585,7 @@ function RunPanel({
               <>
                 <input
                   type="file"
+                  accept={RUN_MEDIA_ACCEPT}
                   multiple
                   aria-label={fileCopy.attach}
                   onChange={(event) => {
@@ -592,7 +596,7 @@ function RunPanel({
                         file,
                       })),
                     ];
-                    if (validAttachments(selected.map((item) => item.file))) {
+                    if (validRunMediaAttachments(selected.map((item) => item.file))) {
                       setFiles(selected);
                       request.current = null;
                       setFileError("");

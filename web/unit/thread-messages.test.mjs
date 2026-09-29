@@ -4,6 +4,7 @@ import {
   mergeMessagePages,
   submissionFor,
   validAttachments,
+  validRunMediaAttachments,
 } from "../src/collaboration/conversation-model.ts";
 
 const message = (id, content = id) => ({
@@ -94,6 +95,18 @@ test("attachment validation rejects empty, oversized, unsafe and over-count sele
     assert.equal(validAttachments([bad]), false);
   }
   assert.equal(validAttachments(Array(9).fill(file)), false);
+});
+
+test("run media selection accepts only supported image and audio MIME types", () => {
+  const file = { name: "evidence.png", size: 1024, type: "image/png" };
+  assert.equal(validRunMediaAttachments([file]), true);
+  assert.equal(
+    validRunMediaAttachments([{ ...file, name: "sound.wav", type: "audio/wav" }]),
+    true,
+  );
+  for (const type of ["", "application/pdf", "text/plain", "image/svg+xml"]) {
+    assert.equal(validRunMediaAttachments([{ ...file, type }]), false);
+  }
 });
 
 test("participants keep node and version identity and prefer a still-active run", async () => {

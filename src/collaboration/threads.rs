@@ -181,7 +181,16 @@ pub(crate) async fn post(
 			"message idempotency key reused for a different thread".into(),
 		));
 	}
-	if context.attachment_digest != attachment_digest {
+	if context.attachment_digest != attachment_digest
+		&& !attachments::legacy_digest_matches(
+			lease,
+			workspace,
+			message.id,
+			&input.attachment_ids,
+			&context.attachment_digest,
+		)
+		.await?
+	{
 		return Err(Error::Conflict(
 			"message idempotency key reused for different attachments".into(),
 		));

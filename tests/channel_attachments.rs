@@ -3,7 +3,9 @@ mod common;
 use aidash::api;
 use axum::{Router, body::Body, http::Request};
 use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
+use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -297,10 +299,12 @@ async fn media_only_channel_message_preserves_attachment_order_and_retry_identit
 	let workspace = workspace["id"].as_str().unwrap();
 	let (_, first) = upload(&app, &token, workspace, Uuid::new_v4(), b"first").await;
 	let (_, second) = upload(&app, &token, workspace, Uuid::new_v4(), b"second").await;
-	let ids = [
+	let mut ids = [
 		second["id"].as_str().unwrap(),
 		first["id"].as_str().unwrap(),
 	];
+	ids.sort_unstable();
+	ids.reverse();
 	let path = format!("/api/workspaces/{workspace}/thread-messages");
 	let key = Uuid::new_v4();
 	let body = json!({"content":"","idempotency_key":key,"attachment_ids":ids});
@@ -337,5 +341,44 @@ async fn media_only_channel_message_preserves_attachment_order_and_retry_identit
 		.unwrap();
 	assert_eq!(saved["attachments"][0]["id"], ids[0]);
 	assert_eq!(saved["attachments"][1]["id"], ids[1]);
+	// A pre-upgrade message has a sorted digest and all migrated positions at
+	// zero. Its original unsorted submission must remain replayable.
+	let message_id: Uuid = posted["message"]["id"].as_str().unwrap().parse().unwrap();
+	let mut canonical = ids;
+	canonical.sort_unstable();
+	let legacy_digest = format!("{:x}", Sha256::digest(canonical.join("\n").as_bytes()));
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("channel_message_context"))
+			.value(Alias::new("attachment_digest"), Expr::cust("$2"))
+			.and_where(Expr::col(Alias::new("message_id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(message_id)
+	.bind(legacy_digest)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("channel_attachments"))
+			.value(Alias::new("position"), Expr::value(0))
+			.and_where(Expr::col(Alias::new("message_id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(message_id)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let (status, replay) = request(
+		&app,
+		&token,
+		"POST",
+		&path,
+		json!({"content":"","idempotency_key":key,"attachment_ids":ids}),
+	)
+	.await;
+	assert_eq!(status, 200, "{replay}");
+	assert_eq!(replay["message"]["id"], posted["message"]["id"]);
 	cleanup(f, &url, &schema).await;
 }

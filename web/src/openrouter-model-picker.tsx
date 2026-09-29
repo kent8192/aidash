@@ -189,6 +189,7 @@ export function OpenRouterModelPicker({
               : "To use image or audio input, register the formats, evidence, and expiry for each provider route. Unverified or expired routes cannot receive media."}
           </p>
           <textarea
+            key={selectedId}
             name="media_routes"
             aria-label={
               locale === "ja-JP"

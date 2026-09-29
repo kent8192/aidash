@@ -45,6 +45,14 @@ export function submissionFor(
 
 export const MAX_ATTACHMENT_BYTES = 1024 * 1024;
 export const MAX_ATTACHMENTS = 8;
+export const RUN_MEDIA_ACCEPT =
+  "image/png,image/jpeg,image/gif,image/webp,audio/wav,audio/x-wav,audio/mpeg,audio/mp4,audio/x-m4a,audio/aac,audio/ogg,audio/webm,audio/flac,audio/x-flac";
+const runMediaTypes = new Set(RUN_MEDIA_ACCEPT.split(","));
+export function validRunMediaAttachments(
+  files: readonly { name: string; size: number; type: string }[],
+): boolean {
+  return validAttachments(files) && files.every((file) => runMediaTypes.has(file.type));
+}
 export function validAttachments(
   files: readonly { name: string; size: number }[],
 ): boolean {

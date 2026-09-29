@@ -187,6 +187,38 @@ pub(crate) fn digest_ids(ids: &[Uuid]) -> Result<String> {
 	))
 }
 
+pub(crate) async fn legacy_digest_matches(
+	lease: &mut Lease,
+	workspace: Uuid,
+	message: Uuid,
+	ids: &[Uuid],
+	digest: &str,
+) -> Result<bool> {
+	if ids.len() < 2 {
+		return Ok(false);
+	}
+	let rows: Vec<(Uuid, i32)> = sqlx::query_as(
+		&Query::select()
+			.columns([Alias::new("id"), Alias::new("position")])
+			.from(Alias::new("channel_attachments"))
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("message_id")).eq(Expr::cust("$2")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(workspace)
+	.bind(message)
+	.fetch_all(&mut **lease.tx())
+	.await?;
+	if rows.len() != ids.len() || rows.iter().any(|(_, position)| *position != 0) {
+		return Ok(false);
+	}
+	let mut prior: Vec<Uuid> = rows.iter().map(|(id, _)| *id).collect();
+	let mut retried = ids.to_vec();
+	prior.sort_unstable();
+	retried.sort_unstable();
+	Ok(prior == retried && digest_ids(&retried)? == digest)
+}
+
 pub(crate) async fn attach(
 	lease: &mut Lease,
 	workspace: Uuid,

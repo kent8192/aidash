@@ -407,3 +407,41 @@ async fn upstream_media_rejection_keeps_its_status_and_safe_reason() {
 	);
 	server.abort();
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn upstream_errors_cannot_echo_unrecognized_media_or_secret_data() {
+	use aidash::Error;
+	use axum::http::StatusCode;
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let app = Router::new().route(
+		"/chat/completions",
+		post(|| async {
+			(
+				StatusCode::SERVICE_UNAVAILABLE,
+				Json(
+					json!({"error":{"message":"input_audio.data=U2Vuc2l0aXZlQnl0ZXM=; token=private"}}),
+				),
+			)
+		}),
+	);
+	let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+	let model = provider(reqwest::Client::new(), config("openrouter", endpoint)).unwrap();
+	let error = model
+		.infer(ModelRequest {
+			instructions: "test".into(),
+			context: json!({}),
+			tools: vec![],
+			max_output_tokens: 512,
+			content_parts: vec![],
+		})
+		.await
+		.unwrap_err();
+	assert!(matches!(
+		error,
+		Error::ProviderRejected { status: 503, reason }
+			if reason == "upstream rejected the request"
+	));
+	server.abort();
+}

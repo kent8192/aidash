@@ -140,6 +140,20 @@ impl ContentPart {
 }
 
 impl ModelRequest {
+	pub(crate) fn media_within_limits(parts: &[ContentPart]) -> bool {
+		let mut count = 0_usize;
+		let mut bytes = 0_usize;
+		for part in parts {
+			if let ContentPart::Image { bytes: content, .. }
+			| ContentPart::Audio { bytes: content, .. } = part
+			{
+				count += 1;
+				bytes = bytes.saturating_add(content.len());
+			}
+		}
+		count <= 8 && bytes <= 8 * 1024 * 1024
+	}
+
 	/// Model-visible payload, shared by transport and context accounting. The
 	/// context is encoded as message text, including its JSON escaping.
 	pub(crate) fn input_body(&self) -> Value {
@@ -164,24 +178,49 @@ impl ModelRequest {
 	/// Conservative UTF-8 byte estimate, not a provider tokenizer. Reserve
 	/// completion tokens and framing separately, in the same unit at every gate.
 	pub(crate) fn estimated_total_tokens(&self) -> usize {
-		self.input_body()
-			.to_string()
+		// Base64 is a transport encoding, not text for the model tokenizer.
+		// Keep the ordinary text estimate and reserve a bounded media estimate.
+		let content = if self.content_parts.is_empty() {
+			Value::String(self.context.to_string())
+		} else {
+			Value::Array(
+				std::iter::once(json!({"type":"text","text":self.context.to_string()}))
+					.chain(self.content_parts.iter().filter_map(|part| match part {
+						ContentPart::Text(_) => Some(part.openrouter()),
+						_ => None,
+					}))
+					.collect(),
+			)
+		};
+		let mut body = json!({"messages":[
+			{"role":"system","content":self.instructions},
+			{"role":"user","content":content}]});
+		if !self.tools.is_empty() {
+			body["tools"] = Value::Array(self.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
+		}
+		let media_tokens = self.content_parts.iter().fold(0_usize, |total, part| {
+			total.saturating_add(match part {
+				ContentPart::Text(_) => 0,
+				ContentPart::Image { bytes, .. } => {
+					4096_usize.saturating_add(bytes.len().div_ceil(256))
+				}
+				ContentPart::Audio { bytes, .. } => {
+					1024_usize.saturating_add(bytes.len().div_ceil(16))
+				}
+			})
+		});
+		body.to_string()
 			.len()
+			.saturating_add(media_tokens)
 			.saturating_add(self.max_output_tokens as usize)
 			.saturating_add(1024)
 	}
 
 	fn validate(&self) -> Result<()> {
-		let mut media_count = 0;
-		let mut media_bytes = 0_usize;
 		for part in &self.content_parts {
 			part.validate()?;
-			if let ContentPart::Image { bytes, .. } | ContentPart::Audio { bytes, .. } = part {
-				media_count += 1;
-				media_bytes = media_bytes.saturating_add(bytes.len());
-			}
 		}
-		if media_count > 8 || media_bytes > 8 * 1024 * 1024 {
+		if !Self::media_within_limits(&self.content_parts) {
 			return Err(Error::Invalid(
 				"model media input exceeds count or byte limit".into(),
 			));
@@ -423,11 +462,15 @@ impl ModelProvider for OpenRouterProvider {
 }
 
 fn safe_upstream_reason(detail: &str) -> String {
-	let detail = detail.split_whitespace().collect::<Vec<_>>().join(" ");
-	if detail.contains("base64,") || detail.contains("Bearer ") || detail.contains("sk-") {
-		return "upstream rejected the media input".into();
+	let normalized = detail.to_ascii_lowercase();
+	if normalized.contains("audio")
+		&& (normalized.contains("exceed")
+			|| normalized.contains("too long")
+			|| normalized.contains("duration limit"))
+	{
+		return "Audio exceeds the provider limit".into();
 	}
-	detail.chars().take(512).collect()
+	"upstream rejected the request".into()
 }
 
 pub fn parse_openai(value: Value) -> Result<ModelResponse> {

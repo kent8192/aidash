@@ -783,6 +783,77 @@ impl WorkerAuthority {
 	}
 }
 
+pub(crate) async fn operator_human_message_media(
+	store: &Store,
+	run: &Run,
+	messages: &[(i64, Uuid)],
+) -> Result<Vec<crate::provider::ContentPart>> {
+	if run.home_node != store.node_id {
+		return Err(Error::Forbidden);
+	}
+	let mut tx = store.pool.begin().await?;
+	let parts = load_human_message_media(&mut tx, run.workspace_id, messages).await?;
+	tx.commit().await?;
+	Ok(parts)
+}
+
+async fn load_human_message_media(
+	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	workspace: Uuid,
+	messages: &[(i64, Uuid)],
+) -> Result<Vec<crate::provider::ContentPart>> {
+	#[derive(sqlx::FromRow)]
+	struct Attachment {
+		filename: String,
+		media_type: String,
+		sha256: String,
+		size_bytes: i64,
+		content: Vec<u8>,
+	}
+	let mut parts = Vec::new();
+	let mut count = 0_usize;
+	let mut total = 0_usize;
+	for (seq, id) in messages {
+		let query = Query::select()
+			.columns(["filename", "media_type", "sha256", "size_bytes", "content"].map(Alias::new))
+			.from(Alias::new("channel_attachments"))
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("message_id")).eq(Expr::cust("$2")))
+			.order_by(Alias::new("position"), Order::Asc)
+			.order_by(Alias::new("id"), Order::Asc)
+			.to_string(PostgresQueryBuilder);
+		let attachments: Vec<Attachment> = sqlx::query_as(&query)
+			.bind(workspace)
+			.bind(id)
+			.fetch_all(&mut **tx)
+			.await?;
+		for attachment in attachments {
+			count += 1;
+			total = total.saturating_add(attachment.content.len());
+			if count > 8
+				|| total > 8 * 1024 * 1024
+				|| attachment.size_bytes != attachment.content.len() as i64
+			{
+				return Err(Error::Invalid(
+					"run media input exceeds count or byte limit".into(),
+				));
+			}
+			if crate::capabilities::objects::digest(&attachment.content) != attachment.sha256 {
+				return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
+			}
+			parts.push(crate::provider::ContentPart::Text(format!(
+				"Run message {seq} attachment: {}",
+				attachment.filename
+			)));
+			parts.push(crate::provider::ContentPart::from_media(
+				&attachment.media_type,
+				attachment.content,
+			)?);
+		}
+	}
+	Ok(parts)
+}
+
 pub(crate) struct Guard {
 	remote: Option<Federation>,
 	access: Arc<Mutex<Access>>,
@@ -1148,62 +1219,13 @@ impl Guard {
 		&self,
 		messages: &[(i64, Uuid)],
 	) -> Result<Vec<crate::provider::ContentPart>> {
-		#[derive(sqlx::FromRow)]
-		struct Attachment {
-			filename: String,
-			media_type: String,
-			sha256: String,
-			size_bytes: i64,
-			content: Vec<u8>,
-		}
 		let mut access = self.access.lock().await;
-		let mut parts = Vec::new();
-		let mut count = 0_usize;
-		let mut total = 0_usize;
-		for (seq, id) in messages {
+		for (_, id) in messages {
 			access
 				.workspace_record(self.run.workspace_id, "message", *id)
 				.await?;
-			let query = Query::select()
-				.columns(
-					["filename", "media_type", "sha256", "size_bytes", "content"].map(Alias::new),
-				)
-				.from(Alias::new("channel_attachments"))
-				.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
-				.and_where(Expr::col(Alias::new("message_id")).eq(Expr::cust("$2")))
-				.order_by(Alias::new("position"), Order::Asc)
-				.order_by(Alias::new("id"), Order::Asc)
-				.to_string(PostgresQueryBuilder);
-			let attachments: Vec<Attachment> = sqlx::query_as(&query)
-				.bind(self.run.workspace_id)
-				.bind(id)
-				.fetch_all(&mut **access.tx)
-				.await?;
-			for attachment in attachments {
-				count += 1;
-				total = total.saturating_add(attachment.content.len());
-				if count > 8
-					|| total > 8 * 1024 * 1024
-					|| attachment.size_bytes != attachment.content.len() as i64
-				{
-					return Err(Error::Invalid(
-						"run media input exceeds count or byte limit".into(),
-					));
-				}
-				if crate::capabilities::objects::digest(&attachment.content) != attachment.sha256 {
-					return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
-				}
-				parts.push(crate::provider::ContentPart::Text(format!(
-					"Run message {seq} attachment: {}",
-					attachment.filename
-				)));
-				parts.push(crate::provider::ContentPart::from_media(
-					&attachment.media_type,
-					attachment.content,
-				)?);
-			}
 		}
-		Ok(parts)
+		load_human_message_media(&mut access.tx, self.run.workspace_id, messages).await
 	}
 
 	async fn authorize_inference_with(&self, access: &mut Access) -> Result<()> {
