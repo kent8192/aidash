@@ -280,6 +280,79 @@ async fn openrouter_sends_ordered_native_image_and_audio_parts() {
 }
 
 #[rstest::rstest]
+fn mp3_signature_accepts_crc_and_mpeg_25_layer_three_frames() {
+	for second in [0xfa, 0xfb, 0xf2, 0xf3, 0xe2, 0xe3] {
+		assert!(
+			ContentPart::from_media("audio/mpeg", vec![0xff, second, 0x90, 0x64]).is_ok(),
+			"valid MPEG header second byte {second:#x}"
+		);
+	}
+	assert!(ContentPart::from_media("audio/mpeg", b"ID3fixture".to_vec()).is_ok());
+	for invalid in [
+		vec![0xff, 0xfe, 0x90, 0x64], // Layer I
+		vec![0xff, 0xea, 0x90, 0x64], // reserved MPEG version
+		vec![0xff, 0xfa, 0xf0, 0x64], // reserved bitrate
+		vec![0xff, 0xfa, 0x9c, 0x64], // reserved sample rate
+		vec![0xff, 0xfa, 0x90],
+	] {
+		assert!(ContentPart::from_media("audio/mpeg", invalid).is_err());
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn media_route_lookup_obeys_the_total_inference_deadline() {
+	use aidash::Error;
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}/api/v1", listener.local_addr().unwrap());
+	let app = Router::new()
+		.route(
+			"/api/v1/models/vendor/fixture-model/endpoints",
+			get(|| async {
+				tokio::time::sleep(Duration::from_secs(5)).await;
+				Json(
+					json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":[]}}),
+				)
+			}),
+		)
+		.route(
+			"/api/v1/endpoints/zdr",
+			get(|| async { Json(json!({"data":[]})) }),
+		);
+	let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+	let mut model_config = config("openrouter", endpoint);
+	model_config.request_timeout_secs = Some(1);
+	model_config.modalities.push("image".into());
+	model_config.media_routes.push(MediaRouteEvidence {
+		tag: "fixture/verified".into(),
+		formats: vec!["image/png".into()],
+		source: "fixture verification".into(),
+		verified_at: chrono::Utc::now() - chrono::Duration::hours(1),
+		expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+	});
+	let model = provider(reqwest::Client::new(), model_config).unwrap();
+	let result = tokio::time::timeout(
+		Duration::from_secs(3),
+		model.infer(ModelRequest {
+			instructions: String::new(),
+			context: json!({}),
+			tools: vec![],
+			max_output_tokens: 128,
+			content_parts: vec![ContentPart::Image {
+				media_type: "image/png".into(),
+				bytes: b"\x89PNG\r\n\x1a\nfixture".to_vec(),
+			}],
+		}),
+	)
+	.await
+	.expect("the configured inference deadline was exceeded");
+	assert!(
+		matches!(result, Err(Error::External(message)) if message == "model inference timed out")
+	);
+	server.abort();
+}
+
+#[rstest::rstest]
 fn refunds_require_complete_usage() {
 	let incomplete = json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],"usage":{"completion_tokens":1}});
 	assert!(

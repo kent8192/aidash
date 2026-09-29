@@ -66,7 +66,8 @@ async fn chunked_transfer(#[future] two_nodes: TransferFixture) -> ChunkedTransf
 	tokio::fs::write(c.a.root.join(id.simple().to_string()), &bytes)
 		.await
 		.unwrap();
-	let file = json!({"file_id":id,"path":"large.txt","digest":digest,"size":bytes.len(),"media_type":"text/plain","scope":"working","provenance":{"kind":"explicit-transport-fixture"}});
+	// A text-only recipient must be able to receive media for storage or tools.
+	let file = json!({"file_id":id,"path":"large.svg","digest":digest,"size":bytes.len(),"media_type":"image/svg+xml","scope":"working","provenance":{"kind":"explicit-transport-fixture"}});
 	let mut tx = c.a.f.store.pool.begin().await.unwrap();
 	sqlx::query(
 		&Query::insert()

@@ -117,9 +117,14 @@ impl ContentPart {
 					"wav" => bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE"),
 					"mp3" => {
 						bytes.starts_with(b"ID3")
-							|| bytes.starts_with(b"\xff\xfb")
-							|| bytes.starts_with(b"\xff\xf3")
-							|| bytes.starts_with(b"\xff\xf2")
+							|| bytes.get(..4).is_some_and(|header| {
+								header[0] == 0xff
+							&& header[1] & 0xe0 == 0xe0 // 11-bit sync word
+							&& (header[1] >> 3) & 0x03 != 0x01 // reserved version
+							&& (header[1] >> 1) & 0x03 == 0x01 // Layer III
+							&& header[2] >> 4 != 0x0f // reserved bitrate
+							&& (header[2] >> 2) & 0x03 != 0x03 // reserved sample rate
+							})
 					}
 					"m4a" => bytes.get(4..8) == Some(b"ftyp"),
 					"aac" => bytes.starts_with(b"\xff\xf1") || bytes.starts_with(b"\xff\xf9"),
@@ -385,39 +390,41 @@ pub fn provider(client: reqwest::Client, config: ModelConfig) -> Result<Arc<dyn 
 #[async_trait]
 impl ModelProvider for OpenRouterProvider {
 	async fn infer(&self, request: ModelRequest) -> Result<ModelResponse> {
-		request.validate()?;
-		for modality in request.content_parts.iter().filter_map(|part| match part {
-			ContentPart::Image { .. } => Some("image"),
-			ContentPart::Audio { .. } => Some("audio"),
-			ContentPart::Text(_) => None,
-		}) {
-			if !self
-				.config
-				.modalities
-				.iter()
-				.any(|available| available == modality)
-			{
-				return Err(Error::Invalid(format!(
-					"model {} does not support {modality} input",
-					self.config.model_id
-				)));
+		let deadline = self.config.request_timeout()?;
+		tokio::time::timeout(deadline, async {
+			request.validate()?;
+			for modality in request.content_parts.iter().filter_map(|part| match part {
+				ContentPart::Image { .. } => Some("image"),
+				ContentPart::Audio { .. } => Some("audio"),
+				ContentPart::Text(_) => None,
+			}) {
+				if !self
+					.config
+					.modalities
+					.iter()
+					.any(|available| available == modality)
+				{
+					return Err(Error::Invalid(format!(
+						"model {} does not support {modality} input",
+						self.config.model_id
+					)));
+				}
 			}
-		}
-		let media_routes = self.verified_media_routes(&request).await?;
-		let mut body = request.input_body();
-		body["model"] = json!(self.config.model_id);
-		body["max_tokens"] = json!(request.max_output_tokens);
-		// Enforce ZDR on every call, including existing registered models. Never
-		// retry against non-ZDR endpoints if no eligible provider is available.
-		body["provider"] = if media_routes.is_empty() {
-			json!({"zdr": true, "require_parameters": true})
-		} else {
-			json!({"zdr": true, "require_parameters": true, "only": media_routes, "allow_fallbacks": true})
-		};
-		if let Some(effort) = self.config.reasoning_effort {
-			body["reasoning"] = json!({"effort": effort});
-		}
-		let mut call = self
+			let media_routes = self.verified_media_routes(&request).await?;
+			let mut body = request.input_body();
+			body["model"] = json!(self.config.model_id);
+			body["max_tokens"] = json!(request.max_output_tokens);
+			// Enforce ZDR on every call, including existing registered models. Never
+			// retry against non-ZDR endpoints if no eligible provider is available.
+			body["provider"] = if media_routes.is_empty() {
+				json!({"zdr": true, "require_parameters": true})
+			} else {
+				json!({"zdr": true, "require_parameters": true, "only": media_routes, "allow_fallbacks": true})
+			};
+			if let Some(effort) = self.config.reasoning_effort {
+				body["reasoning"] = json!({"effort": effort});
+			}
+			let mut call = self
 			.client
 			.post(format!(
 				"{}/chat/completions",
@@ -425,39 +432,42 @@ impl ModelProvider for OpenRouterProvider {
 			))
 			// Override only inference, including response-body reads. Other HTTP
 			// traffic retains the shared client's timeout and connection policy.
-			.timeout(self.config.request_timeout()?)
+			.timeout(deadline)
 			.json(&body);
-		if let Some(name) = &self.config.credential_env {
-			call = call.bearer_auth(secret(name)?);
-		}
-		let started = std::time::Instant::now();
-		let response = call.send().await?;
-		metrics::histogram!("aidash_model_response_headers_seconds")
-			.record(started.elapsed().as_secs_f64());
-		if !response.status().is_success() {
-			let status = response.status();
-			let detail = crate::response::json::<Value>(response, 16_384)
-				.await
-				.ok()
-				.and_then(|body| {
-					body.pointer("/error/message")
-						.and_then(Value::as_str)
-						.map(str::to_owned)
-				})
-				.unwrap_or_else(|| {
-					"upstream rejected the request without a readable reason".into()
+			if let Some(name) = &self.config.credential_env {
+				call = call.bearer_auth(secret(name)?);
+			}
+			let started = std::time::Instant::now();
+			let response = call.send().await?;
+			metrics::histogram!("aidash_model_response_headers_seconds")
+				.record(started.elapsed().as_secs_f64());
+			if !response.status().is_success() {
+				let status = response.status();
+				let detail = crate::response::json::<Value>(response, 16_384)
+					.await
+					.ok()
+					.and_then(|body| {
+						body.pointer("/error/message")
+							.and_then(Value::as_str)
+							.map(str::to_owned)
+					})
+					.unwrap_or_else(|| {
+						"upstream rejected the request without a readable reason".into()
+					});
+				return Err(Error::ProviderRejected {
+					status: status.as_u16(),
+					reason: safe_upstream_reason(&detail),
 				});
-			return Err(Error::ProviderRejected {
-				status: status.as_u16(),
-				reason: safe_upstream_reason(&detail),
-			});
-		}
-		let result = parse_openai(crate::response::json(response, 1_048_576).await?)?;
-		metrics::counter!("aidash_model_tokens_total", "direction" => "input")
-			.increment(result.input_tokens);
-		metrics::counter!("aidash_model_tokens_total", "direction" => "output")
-			.increment(result.output_tokens);
-		Ok(result)
+			}
+			let result = parse_openai(crate::response::json(response, 1_048_576).await?)?;
+			metrics::counter!("aidash_model_tokens_total", "direction" => "input")
+				.increment(result.input_tokens);
+			metrics::counter!("aidash_model_tokens_total", "direction" => "output")
+				.increment(result.output_tokens);
+			Ok(result)
+		})
+		.await
+		.map_err(|_| Error::External("model inference timed out".into()))?
 	}
 }
 

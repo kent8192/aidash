@@ -787,7 +787,7 @@ pub(crate) async fn operator_human_message_media(
 	store: &Store,
 	run: &Run,
 	messages: &[(i64, Uuid)],
-) -> Result<Vec<crate::provider::ContentPart>> {
+) -> Result<HumanMediaBatch> {
 	if run.home_node != store.node_id {
 		return Err(Error::Forbidden);
 	}
@@ -797,11 +797,17 @@ pub(crate) async fn operator_human_message_media(
 	Ok(parts)
 }
 
+pub(crate) struct HumanMediaBatch {
+	pub parts: Vec<crate::provider::ContentPart>,
+	pub through_seq: Option<i64>,
+	pub has_more: bool,
+}
+
 async fn load_human_message_media(
 	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 	workspace: Uuid,
 	messages: &[(i64, Uuid)],
-) -> Result<Vec<crate::provider::ContentPart>> {
+) -> Result<HumanMediaBatch> {
 	#[derive(sqlx::FromRow)]
 	struct Attachment {
 		filename: String,
@@ -813,6 +819,8 @@ async fn load_human_message_media(
 	let mut parts = Vec::new();
 	let mut count = 0_usize;
 	let mut total = 0_usize;
+	let mut through_seq = None;
+	let mut has_more = false;
 	for (seq, id) in messages {
 		let query = Query::select()
 			.columns(["filename", "media_type", "sha256", "size_bytes", "content"].map(Alias::new))
@@ -827,16 +835,23 @@ async fn load_human_message_media(
 			.bind(id)
 			.fetch_all(&mut **tx)
 			.await?;
+		let message_bytes = attachments.iter().fold(0_usize, |sum, attachment| {
+			sum.saturating_add(attachment.content.len())
+		});
+		if attachments.len() > 8 || message_bytes > 8 * 1024 * 1024 {
+			return Err(Error::Invalid(
+				"run media input exceeds count or byte limit".into(),
+			));
+		}
+		if count + attachments.len() > 8 || total.saturating_add(message_bytes) > 8 * 1024 * 1024 {
+			has_more = true;
+			break;
+		}
 		for attachment in attachments {
 			count += 1;
 			total = total.saturating_add(attachment.content.len());
-			if count > 8
-				|| total > 8 * 1024 * 1024
-				|| attachment.size_bytes != attachment.content.len() as i64
-			{
-				return Err(Error::Invalid(
-					"run media input exceeds count or byte limit".into(),
-				));
+			if attachment.size_bytes != attachment.content.len() as i64 {
+				return Err(Error::Invalid("run media input size changed".into()));
 			}
 			if crate::capabilities::objects::digest(&attachment.content) != attachment.sha256 {
 				return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
@@ -850,8 +865,13 @@ async fn load_human_message_media(
 				attachment.content,
 			)?);
 		}
+		through_seq = Some(*seq);
 	}
-	Ok(parts)
+	Ok(HumanMediaBatch {
+		parts,
+		through_seq,
+		has_more,
+	})
 }
 
 pub(crate) struct Guard {
@@ -1215,10 +1235,7 @@ impl Guard {
 		Ok(parts)
 	}
 
-	pub async fn human_message_media(
-		&self,
-		messages: &[(i64, Uuid)],
-	) -> Result<Vec<crate::provider::ContentPart>> {
+	pub async fn human_message_media(&self, messages: &[(i64, Uuid)]) -> Result<HumanMediaBatch> {
 		let mut access = self.access.lock().await;
 		for (_, id) in messages {
 			access

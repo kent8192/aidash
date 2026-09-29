@@ -882,11 +882,11 @@ impl Harness {
 					.iter()
 					.filter_map(|(index, _)| {
 						let input = &inputs[*index];
-						(input.seq > run.observed_input_seq.max(context.media_inferred_seq))
+						(input.seq > context.media_inferred_seq)
 							.then_some((input.seq, input.message_id?))
 					})
 					.collect();
-				let (parts, has_human_media, defer_selected) = Box::pin(resolve_model_input_media(
+				let media = Box::pin(resolve_model_input_media(
 					store,
 					run,
 					guard,
@@ -894,7 +894,10 @@ impl Harness {
 					&new_messages,
 				))
 				.await?;
-				request.content_parts = parts;
+				request.content_parts = media.parts;
+				if media.defer_human {
+					request.instructions.push_str("\nMedia intake is continuing. Briefly describe the media in this request as plain text. Do not call tools or complete the task; more accepted media follows.");
+				}
 				crate::generation::budget::Reservation::check_request(window, &request)?;
 				let request_tokens = request.estimated_total_tokens();
 				let media_inferred_seq_before_response = context.media_inferred_seq;
@@ -935,8 +938,8 @@ impl Harness {
 				// Count only tool content that survived compaction and was present
 				// in a successful provider request, not every completed read.
 				capture_message_inference_coverage(&mut context);
-				if has_human_media && let Some((seq, _)) = new_messages.last() {
-					context.media_inferred_seq = context.media_inferred_seq.max(*seq);
+				if let Some(seq) = media.through_seq {
+					context.media_inferred_seq = context.media_inferred_seq.max(seq);
 				}
 				context.usage = json!({"input_tokens":result.input_tokens,"output_tokens":result.output_tokens,"context_window":window,"compactions":context.compactions});
 				run.context = json!(context);
@@ -944,7 +947,11 @@ impl Harness {
 					.iter()
 					.all(|id| referenced_message_inferred(&context, *id));
 				if references_read_at_inference && !run_message_catchup {
-					run.observed_input_seq = input_seq;
+					run.observed_input_seq = if media.defer_human {
+						media.through_seq.unwrap_or(run.observed_input_seq)
+					} else {
+						input_seq
+					};
 				}
 				run.pending = json!({
 					"response":result,
@@ -955,8 +962,10 @@ impl Harness {
 					"request_tokens":request_tokens,
 					"media_inferred_seq_before_response":media_inferred_seq_before_response,
 					"observed_input_seq_before_response":observed_input_seq_before_response,
-					"inferred_selected_media":if defer_selected { json!([]) } else { json!(selected_media) },
-					"deferred_selected_media":if defer_selected { json!(selected_media) } else { json!([]) },
+					"inferred_selected_media":if media.defer_selected { json!([]) } else { json!(selected_media) },
+					"deferred_selected_media":if media.defer_selected { json!(selected_media) } else { json!([]) },
+					"deferred_human_media":media.defer_human,
+					"media_inferred_through_seq":media.through_seq,
 					"required_run_message_reads":required_run_message_reads,
 					"references_read_at_inference":references_read_at_inference,
 					"run_message_catchup":run_message_catchup,
@@ -1012,6 +1021,21 @@ impl Harness {
 				}
 				let mut result: ModelResponse =
 					serde_json::from_value(run.pending["response"].clone())?;
+				if run.pending["deferred_human_media"] == true {
+					let mut context: Context = serde_json::from_value(run.context.clone())?;
+					if !result.text.trim().is_empty() {
+						context.history.push(json!({
+							"kind":"model_media_observation",
+							"through_seq":run.pending["media_inferred_through_seq"],
+							"text":result.text
+						}));
+					}
+					run.context = json!(context);
+					run.phase = "THINKING".into();
+					run.pending = json!({"selected_media":run.pending["deferred_selected_media"]});
+					store.save_run(run, token, "run.media_deferred").await?;
+					return Ok(());
+				}
 				let run_message_catchup = run.pending["run_message_catchup"] == true;
 				if run_message_catchup {
 					// A provider response cannot execute task tools during catch-up,
@@ -2132,13 +2156,20 @@ fn result_artifact_name(title: &str) -> String {
 	format!("{} result", &title[..end])
 }
 
+struct ResolvedMedia {
+	parts: Vec<crate::provider::ContentPart>,
+	through_seq: Option<i64>,
+	defer_selected: bool,
+	defer_human: bool,
+}
+
 async fn resolve_model_input_media(
 	store: &crate::store::Store,
 	run: &Run,
 	guard: Option<&Guard>,
 	selections: &[crate::capabilities::sharing::Selection],
 	messages: &[(i64, Uuid)],
-) -> Result<(Vec<crate::provider::ContentPart>, bool, bool)> {
+) -> Result<ResolvedMedia> {
 	let selected_parts = if selections.is_empty() {
 		Vec::new()
 	} else {
@@ -2150,15 +2181,24 @@ async fn resolve_model_input_media(
 	let has_human_media = store
 		.run_message_has_media(&messages.iter().map(|(_, id)| *id).collect::<Vec<_>>())
 		.await?;
-	let human_parts = if !has_human_media {
-		Vec::new()
+	let human = if !has_human_media {
+		crate::authorization::execution::HumanMediaBatch {
+			parts: Vec::new(),
+			through_seq: messages.last().map(|(seq, _)| *seq),
+			has_more: false,
+		}
 	} else if let Some(guard) = guard {
 		guard.human_message_media(messages).await?
 	} else {
 		crate::authorization::execution::operator_human_message_media(store, run, messages).await?
 	};
-	let (parts, defer_selected) = choose_inference_media(selected_parts, human_parts);
-	Ok((parts, has_human_media, defer_selected))
+	let (parts, defer_selected) = choose_inference_media(selected_parts, human.parts);
+	Ok(ResolvedMedia {
+		parts,
+		through_seq: human.through_seq,
+		defer_selected,
+		defer_human: human.has_more,
+	})
 }
 
 fn choose_inference_media(

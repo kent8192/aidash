@@ -7,6 +7,7 @@ use axum::{
 	http::Request,
 	routing::{get, post},
 };
+use base64::Engine;
 use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -312,50 +313,62 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		.into_iter()
 		.find(|run| run.workspace_id.to_string() == operator_workspace)
 		.unwrap();
-	let operator_image = upload(
-		&app,
-		&operator,
-		operator_workspace,
-		"operator.png",
-		"image/png",
-		b"\x89PNG\r\n\x1a\noperator",
-	)
-	.await;
-	let (status, sent) = request(
-		&app,
-		&operator,
-		"POST",
-		&format!("/api/runs/{}/message", operator_run.id),
-		json!({"content":"","idempotency_key":Uuid::new_v4(),"attachment_ids":[operator_image["id"]]}),
-	)
-	.await;
-	assert_eq!(status, 200, "{sent}");
-	let mut saw_operator_media = false;
-	for _ in 0..6 {
-		let worked = worker.worker_once().await.unwrap();
-		assert!(worked);
+	let mut image_ids = Vec::new();
+	let mut expected_urls = Vec::new();
+	for index in 0..10_u8 {
+		let mut bytes = b"\x89PNG\r\n\x1a\noperator".to_vec();
+		bytes.push(b'0' + index);
+		let uploaded = upload(
+			&app,
+			&operator,
+			operator_workspace,
+			&format!("operator-{index}.png"),
+			"image/png",
+			&bytes,
+		)
+		.await;
+		image_ids.push(uploaded["id"].as_str().unwrap().to_owned());
+		expected_urls.push(format!(
+			"data:image/png;base64,{}",
+			base64::engine::general_purpose::STANDARD.encode(&bytes)
+		));
+	}
+	for ids in image_ids.chunks(5) {
+		let (status, sent) = request(
+			&app,
+			&operator,
+			"POST",
+			&format!("/api/runs/{}/message", operator_run.id),
+			json!({"content":"","idempotency_key":Uuid::new_v4(),"attachment_ids":ids}),
+		)
+		.await;
+		assert_eq!(status, 200, "{sent}");
+	}
+	let mut media_batches = Vec::new();
+	for _ in 0..8 {
+		assert!(worker.worker_once().await.unwrap());
 		while let Ok(body) = received.try_recv() {
 			let Some(parts) = body["messages"][1]["content"].as_array() else {
 				continue;
 			};
-			let types: Vec<_> = parts
+			let urls: Vec<String> = parts
 				.iter()
-				.map(|part| part["type"].as_str().unwrap())
+				.filter_map(|part| part["image_url"]["url"].as_str().map(str::to_owned))
 				.collect();
-			if types == ["text", "text", "image_url"] {
+			if !urls.is_empty() {
+				assert_eq!(urls.len(), 5);
 				assert_eq!(body["provider"]["only"], json!(["fixture/verified"]));
-				saw_operator_media = true;
-				break;
+				media_batches.push(urls);
 			}
 		}
-		if saw_operator_media {
+		if media_batches.len() == 2 {
 			break;
 		}
 	}
 	let final_operator_run = f.store.run(operator_run.id).await.unwrap();
 	assert!(
-		saw_operator_media,
-		"operator run did not infer its accepted media: {} {} {:?} {:?} lease={:?} until={:?} task={:?}",
+		media_batches.len() == 2,
+		"operator run did not infer both accepted media batches: {} {} {:?} {:?} lease={:?} until={:?} task={:?}",
 		final_operator_run.phase,
 		final_operator_run.control,
 		final_operator_run.error,
@@ -367,6 +380,12 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 			.await
 			.unwrap()
 			.status
+	);
+	assert_eq!(media_batches.concat(), expected_urls);
+	assert!(worker.worker_once().await.unwrap());
+	assert_eq!(
+		f.store.run(operator_run.id).await.unwrap().phase,
+		"COMPLETED"
 	);
 	server.abort();
 	cleanup(f, &url, &schema).await;

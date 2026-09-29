@@ -74,14 +74,6 @@ async fn mapped(f: &Federation, source: &str, description: &Description) -> Resu
 		if !config.core_capabilities.sharing {
 			return Err(Error::Forbidden);
 		}
-		let model = catalog::entry(&mut access, &config.model, "registry.read").await?;
-		let model: crate::registry::ModelConfig = serde_json::from_value(model.config)?;
-		model.require_media_types(
-			description
-				.files
-				.iter()
-				.map(|file| file.media_type.as_str()),
-		)?;
 		let admitted: Option<Uuid> = sqlx::query_scalar(
 			&Query::select()
 				.column((Alias::new("r"), Alias::new("id")))

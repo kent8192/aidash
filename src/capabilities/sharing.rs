@@ -170,9 +170,6 @@ pub(crate) async fn share(
 		if !config.core_capabilities.sharing {
 			return Err(Error::Forbidden);
 		}
-		let model = catalog::entry(access, &config.model, "registry.read").await?;
-		let model: crate::registry::ModelConfig = serde_json::from_value(model.config)?;
-		model.require_media_types(chosen.iter().map(|file| file.media_type.as_str()))?;
 		let resource = access.resource(
 			"working_area",
 			recipient.id,

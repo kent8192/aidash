@@ -992,6 +992,7 @@ async fn reusable_grants_require_explicit_scope_and_revocation_withdraws_reuse(
 #[rstest::rstest]
 #[tokio::test]
 async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixture: CoreFixture) {
+	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let c = capability_fixture.await;
 	let sender = admit(&c).await;
 	let mut reader = c.f.registry.get("research", "1.1.0").await.unwrap();
@@ -1055,7 +1056,7 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 	let patch_path = format!("/api/runs/{}/patch", sender.id);
 	let (status,value)=request(&c.app,&c.token,"POST",&patch_path,json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"data.csv":null},"patch":"*** Begin Patch\n*** Add File: data.csv\n+value\n+first\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{value}");
-	let (_, area) = request(
+	let (_, mut area) = request(
 		&c.app,
 		&c.token,
 		"GET",
@@ -1063,6 +1064,21 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 		Value::Null,
 	)
 	.await;
+	// File transfer is byte-opaque: even an image asset can be shared with a
+	// text-only recipient for storage or processing by its tools.
+	area["manifest"][0]["media_type"] = json!("image/svg+xml");
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("core_areas"))
+			.value(Alias::new("manifest"), Expr::cust("$2"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(area["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+	.bind(&area["manifest"])
+	.execute(&c.f.store.pool)
+	.await
+	.unwrap();
 	let source = &area["manifest"][0];
 	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":source["file_id"],"expected_digest":source["digest"]}],"recipient":{"node_id":c.f.config.node_id,"agent_id":"reader","agent_version":"1.1.0","thread_id":task["id"]}});
 	let share_path = format!("/api/runs/{}/files/share", sender.id);
@@ -1076,6 +1092,7 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 	let file = &receipt["receipt"]["files"][0];
 	assert_ne!(file["file_id"], source["file_id"]);
 	assert_eq!(file["digest"], source["digest"]);
+	assert_eq!(file["media_type"], "image/svg+xml");
 	let (status,value)=request(&c.app,&c.token,"POST",&patch_path,json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"preconditions":{"data.csv":source["digest"]},"patch":"*** Begin Patch\n*** Update File: data.csv\n@@\n-first\n+second\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{value}");
 	let read_path = format!("/api/runs/{}/files/read", receiver.id);
