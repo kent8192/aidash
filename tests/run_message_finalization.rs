@@ -984,6 +984,78 @@ async fn catchup_summary_retries_and_completes_without_spending_the_last_step(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn empty_media_observation_consumes_the_last_available_step(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&test_environment).await;
+	let app = api::router(f.clone());
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Media observation retry", "goal":"Inspect", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	assert!(
+		Harness {
+			federation: f.clone()
+		}
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	let worker = Uuid::new_v4();
+	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
+	let agent = f.registry.get("research", "1.0.0").await.unwrap();
+	let max_steps = serde_json::from_value::<aidash::registry::AgentConfig>(agent.config)
+		.unwrap()
+		.max_steps;
+	leased.step = max_steps - 1;
+	leased.phase = "TOOL_CALL".into();
+	leased.pending = json!({
+		"included_input_seq":0,
+		"response":{"text":"", "tool_calls":[], "input_tokens":1, "output_tokens":1, "usage_complete":true},
+		"cursor":0,
+		"deferred_human_media":true,
+		"media_inferred_seq_before_response":0,
+		"observed_input_seq_before_response":0
+	});
+	f.store
+		.save_run(&leased, worker, "model.completed")
+		.await
+		.unwrap();
+	assert!(
+		Harness {
+			federation: f.clone()
+		}
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	let retried = f.store.run(run.id).await.unwrap();
+	assert_eq!(retried.phase, "THINKING");
+	assert_eq!(retried.step, max_steps);
+	assert!(
+		Harness {
+			federation: f.clone()
+		}
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	let bounded = f.store.run(run.id).await.unwrap();
+	assert_eq!(bounded.pending["terminal_transition"], "FAILED");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn reference_only_inputs_suppress_uninformed_tool_calls(
 	#[future(awt)]
 	#[from(test_environment)]

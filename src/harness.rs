@@ -297,7 +297,11 @@ impl Harness {
 					"execution authority denied"
 				};
 				store
-					.pause_for_authorization(&current, token, reason)
+					.pause_for_execution(&current, token, reason, "run.authorization_blocked")
+					.await?;
+			} else if matches!(e, Error::MediaRouteUnavailable(_)) {
+				store
+					.pause_for_execution(&current, token, &e.to_string(), "run.media_route_blocked")
 					.await?;
 			} else if matches!(e, Error::TransactionPending | Error::StaleInference) {
 				current.pending["retry_at"] =
@@ -1102,6 +1106,7 @@ impl Harness {
 						);
 						run.context = json!(context);
 						run.phase = "THINKING".into();
+						run.step += 1;
 						run.pending = next_pending;
 						store
 							.save_run(run, token, "run.media_observation_required")
@@ -2362,6 +2367,9 @@ async fn resolve_model_input_media(
 		human.through_seq.is_some(),
 		model,
 	);
+	if !model.has_current_media_route_for_parts(&parts) {
+		return Err(Error::MediaRouteUnavailable(model.model_id.clone()));
+	}
 	Ok(ResolvedMedia {
 		parts,
 		through_seq: human.through_seq,

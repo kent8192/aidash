@@ -171,7 +171,12 @@ async fn verify_audio_batches(
 	assert_eq!(f.store.run(audio_run.id).await.unwrap().phase, "COMPLETED");
 }
 
-async fn verify_expired_route_retry(app: &Router, f: &Federation, operator: &str) {
+async fn verify_expired_route_retry(
+	app: &Router,
+	f: &Federation,
+	worker: &Harness,
+	operator: &str,
+) {
 	let mut model = f.registry.get("model", "1.0.1").await.unwrap();
 	model.version = "1.0.2".into();
 	model.config["media_routes"][0]["expires_at"] =
@@ -236,6 +241,16 @@ async fn verify_expired_route_retry(app: &Router, f: &Federation, operator: &str
 	tokio::time::sleep(std::time::Duration::from_secs(4)).await;
 	let (status, body) = request(app, operator, "POST", &path, input).await;
 	assert_eq!(status, 200, "{body}");
+	assert_eq!(f.store.run_inputs(run.id).await.unwrap().len(), 1);
+	assert!(worker.worker_once().await.unwrap());
+	assert!(worker.worker_once().await.unwrap());
+	let paused = f.store.run(run.id).await.unwrap();
+	assert_eq!(paused.control, "PAUSED");
+	assert_eq!(paused.phase, "THINKING");
+	assert_eq!(
+		paused.context["media_inferred_seq"].as_i64().unwrap_or(0),
+		0
+	);
 	assert_eq!(f.store.run_inputs(run.id).await.unwrap().len(), 1);
 }
 
@@ -358,6 +373,13 @@ async fn verify_separate_format_routes(
 		}
 	}
 	assert_eq!(seen, vec![0, 1], "both formats must reach their own route");
+	for _ in 0..4 {
+		if f.store.run(run.id).await.unwrap().phase == "COMPLETED" {
+			break;
+		}
+		assert!(worker.worker_once().await.unwrap());
+	}
+	assert_eq!(f.store.run(run.id).await.unwrap().phase, "COMPLETED");
 }
 
 #[rstest::rstest]
@@ -783,7 +805,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&operator,
 	))
 	.await;
-	Box::pin(verify_expired_route_retry(&app, &f, &operator)).await;
+	Box::pin(verify_expired_route_retry(&app, &f, &worker, &operator)).await;
 	server.abort();
 	cleanup(f, &url, &schema).await;
 }

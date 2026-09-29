@@ -3779,11 +3779,12 @@ impl Store {
 		.await?;
 		Ok(())
 	}
-	pub(crate) async fn pause_for_authorization(
+	pub(crate) async fn pause_for_execution(
 		&self,
 		run: &Run,
 		worker: Uuid,
 		reason: &str,
+		event_kind: &str,
 	) -> Result<()> {
 		let mut tx = self.pool.begin().await?;
 		let changed = sqlx::query(
@@ -3832,7 +3833,7 @@ impl Store {
 		self.event(
 			&mut tx,
 			(run.home_node == self.node_id).then_some(run.workspace_id),
-			"run.authorization_blocked",
+			event_kind,
 			json!({"run_id":run.id,"task_id":run.task_id}),
 		)
 		.await?;

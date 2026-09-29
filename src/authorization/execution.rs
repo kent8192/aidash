@@ -887,10 +887,7 @@ async fn load_human_message_media(
 		if !model.has_current_media_route_for_parts(&parts) {
 			parts.truncate(previous_len);
 			if through_seq.is_none() {
-				return Err(Error::Invalid(format!(
-					"recipient model {} has no current media route for this message",
-					model.model_id
-				)));
+				return Err(Error::MediaRouteUnavailable(model.model_id.clone()));
 			}
 			has_more = true;
 			break;

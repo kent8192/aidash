@@ -215,7 +215,14 @@ impl Federation {
 		} else {
 			Value::Null
 		};
-		crate::registry::agent_prompt_headroom(&agent, &references, &private_context)
+		let available =
+			crate::registry::agent_prompt_headroom(&agent, &references, &private_context)?;
+		if !agent.core_capabilities.skills {
+			return Ok(available);
+		}
+		let pinned =
+			crate::capabilities::skills::context_headroom_reserve(&self.store, run).await?;
+		Ok(available.saturating_sub(pinned))
 	}
 
 	pub async fn deliver_run_messages(&self, run: &Run) -> Result<()> {

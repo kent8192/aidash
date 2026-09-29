@@ -8,6 +8,7 @@ use crate::{
 	store::Store,
 };
 use base64::Engine;
+use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -143,6 +144,62 @@ struct Pinned {
 	loaded: bool,
 	metadata: SkillMetadata,
 	files: Vec<FileEntry>,
+	/// Escaped SKILL.md length when embedded in a JSON system message.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	instruction_json_len: Option<usize>,
+}
+
+fn escaped_instruction_len(text: &str) -> Result<usize> {
+	Ok(serde_json::to_string(text)?.len().saturating_sub(2))
+}
+
+fn pinned_context_reserve(pinned: &[Pinned]) -> Result<usize> {
+	let mut reserve =
+		escaped_instruction_len("\nPinned Skills (select by UUID and origin; use skill_load):\n")?;
+	for skill in pinned {
+		reserve = reserve
+			.saturating_add(escaped_instruction_len(&serde_json::to_string(
+				&skill.metadata,
+			)?)?)
+			.saturating_add(escaped_instruction_len("\n")?);
+		if skill.loaded {
+			let file = skill
+				.files
+				.iter()
+				.find(|file| file.path == "SKILL.md")
+				.ok_or(Error::Forbidden)?;
+			// Older pinned records lack the exact length. Six escaped JSON bytes
+			// per source byte safely bounds all valid UTF-8 instruction text.
+			let instruction_len = skill.instruction_json_len.unwrap_or_else(|| {
+				usize::try_from(file.size)
+					.unwrap_or(usize::MAX)
+					.saturating_mul(6)
+			});
+			reserve = reserve
+				.saturating_add(instruction_len)
+				.saturating_add(escaped_instruction_len("\n")?);
+		}
+	}
+	Ok(reserve)
+}
+
+pub(crate) async fn context_headroom_reserve(store: &Store, run: &Run) -> Result<usize> {
+	let data: Option<Value> = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("data"))
+			.from(Alias::new("core_records"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("kind")).eq("skills"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(run.id)
+	.fetch_optional(&store.pool)
+	.await?;
+	let Some(data) = data else {
+		return Ok(0);
+	};
+	let pinned: Vec<Pinned> = serde_json::from_value(data)?;
+	pinned_context_reserve(&pinned)
 }
 pub(crate) async fn pin(
 	store: &Store,
@@ -224,6 +281,7 @@ pub(crate) async fn pin(
 		let mut package_bytes = 0;
 		let metadata = validate(&a)?;
 		let mut files = vec![];
+		let mut instruction_json_len = None;
 		let inputs = std::iter::once(SkillFile {
 			path: "SKILL.md".into(),
 			content: a.instructions,
@@ -239,6 +297,11 @@ pub(crate) async fn pin(
 			} else {
 				file.content.into_bytes()
 			};
+			if file.path == "SKILL.md" {
+				instruction_json_len = Some(escaped_instruction_len(
+					std::str::from_utf8(&bytes).map_err(|_| Error::Forbidden)?,
+				)?);
+			}
 			package_bytes += bytes.len();
 			if package_bytes > store.capabilities.0.limits.skill_bytes {
 				return Err(Error::Invalid("SKILL_PACKAGE_LIMIT".into()));
@@ -261,6 +324,7 @@ pub(crate) async fn pin(
 			metadata,
 			files,
 			loaded: false,
+			instruction_json_len,
 		});
 	}
 	records::insert(
@@ -429,4 +493,49 @@ pub(crate) async fn mounted(access: &mut Access, run: Uuid) -> Result<Vec<FileEn
 			})
 		})
 		.collect())
+}
+
+#[cfg(test)]
+mod review_tests {
+	use super::*;
+
+	#[rstest::rstest]
+	fn loaded_skill_reserve_matches_the_escaped_system_prompt() {
+		let instructions = "---\nname: check\n---\nA quoted \"line\" and a newline\n";
+		let metadata = SkillMetadata {
+			skill_id: Uuid::new_v4(),
+			name: "check".into(),
+			description: "Inspect input".into(),
+			origin: "test".into(),
+			digest: "digest".into(),
+			license: None,
+		};
+		let mut pinned = vec![Pinned {
+			loaded: true,
+			metadata: metadata.clone(),
+			files: vec![FileEntry {
+				file_id: Uuid::new_v4(),
+				path: "SKILL.md".into(),
+				digest: "digest".into(),
+				size: instructions.len() as u64,
+				media_type: "application/octet-stream".into(),
+				scope: FileScope::References,
+				provenance: json!({}),
+			}],
+			instruction_json_len: Some(escaped_instruction_len(instructions).unwrap()),
+		}];
+		let actual = format!(
+			"\nPinned Skills (select by UUID and origin; use skill_load):\n{}\n{}\n",
+			serde_json::to_string(&metadata).unwrap(),
+			instructions
+		);
+		assert_eq!(
+			pinned_context_reserve(&pinned).unwrap(),
+			escaped_instruction_len(&actual).unwrap()
+		);
+		pinned[0].instruction_json_len = None;
+		assert!(
+			pinned_context_reserve(&pinned).unwrap() >= escaped_instruction_len(&actual).unwrap()
+		);
+	}
 }

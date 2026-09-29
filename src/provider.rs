@@ -394,10 +394,7 @@ impl OpenRouterProvider {
 			}
 		}
 		if eligible.is_empty() {
-			return Err(Error::Invalid(format!(
-				"no verified ZDR route supports every media format for model {}",
-				self.config.model_id
-			)));
+			return Err(Error::MediaRouteUnavailable(self.config.model_id.clone()));
 		}
 		Ok(eligible)
 	}

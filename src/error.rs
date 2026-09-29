@@ -23,6 +23,8 @@ pub enum Error {
 	RateLimited,
 	#[error("external identity status is unavailable")]
 	IdentityStatusUnavailable,
+	#[error("verified model media route unavailable for {0}")]
+	MediaRouteUnavailable(String),
 	#[error("atomic transaction visibility pending; retry after recovery")]
 	TransactionPending,
 	#[error("an atomic transaction committed during inference; retrying from fresh state")]
@@ -57,7 +59,9 @@ impl IntoResponse for Error {
 			Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
 			Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden".into()),
 			Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
-			Self::IdentityStatusUnavailable => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
+			Self::IdentityStatusUnavailable | Self::MediaRouteUnavailable(_) => {
+				(StatusCode::SERVICE_UNAVAILABLE, self.to_string())
+			}
 			Self::TransactionPending
 			| Self::SemanticUnavailable
 			| Self::OrchestrationUnavailable => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
