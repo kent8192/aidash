@@ -1,5 +1,7 @@
 //! Scoped graph projection. A peer connection authenticates the source Node;
 //! a mapped Subject or a typed operator grant supplies the receiving authority.
+mod scoped;
+
 use super::super::{Authorization, access::Access, identity::Actor, policy::identifier};
 use crate::{
 	Error, Result,
@@ -479,11 +481,9 @@ impl GraphAuthority<'_> {
 		let Self::Subject(access) = self else {
 			return Ok(true);
 		};
-		let Some(workspace) = event.workspace_id else {
-			return Ok(false);
-		};
-		Ok(access.allowed(workspace, "workspace.events").await?
-			&& access.event_visible(event).await?)
+		// project_activity checks workspace.events once per workspace. Retain
+		// the event-specific resource and provenance checks without repeating it.
+		access.event_visible(event).await
 	}
 }
 
@@ -671,6 +671,11 @@ async fn candidates(
 	if kind == 4 && !kind_allowed("conversation", options) {
 		return Ok(vec![]);
 	}
+	if kind == 3
+		&& let Some(workspace) = options.scope_workspace
+	{
+		return scoped::candidates(authority, workspace, source_node, offset).await;
+	}
 	let conn = authority.connection();
 	if kind == 5 {
 		let documents: Vec<serde_json::Value> = sqlx::query_scalar(
@@ -721,8 +726,7 @@ async fn candidates(
 		_ => unreachable!(),
 	};
 	let join_column = if kind == 0 { "id" } else { "workspace_id" };
-	let mut query = Query::select();
-	query
+	let sql = Query::select()
 		.column((Alias::new("r"), Asterisk))
 		.from_as(Alias::new(table), Alias::new("r"))
 		.join_as(
@@ -735,15 +739,8 @@ async fn candidates(
 		.and_where(Expr::col((Alias::new("a"), Alias::new("tenant"))).eq(Expr::cust("$1")))
 		.order_by((Alias::new("r"), Alias::new("id")), Order::Asc)
 		.limit(CANDIDATE_BATCH)
-		.offset(offset);
-	if kind == 3 && options.scope_workspace.is_some() {
-		query
-			.and_where(
-				Expr::col((Alias::new("r"), Alias::new("workspace_id"))).eq(Expr::cust("$2")),
-			)
-			.and_where(Expr::col((Alias::new("r"), Alias::new("home_node"))).eq(Expr::cust("$3")));
-	}
-	let sql = query.to_string(PostgresQueryBuilder);
+		.offset(offset)
+		.to_string(PostgresQueryBuilder);
 	match kind {
 		0 => Ok(sqlx::query_as::<_, Workspace>(&sql)
 			.bind(&tenant)
@@ -766,18 +763,13 @@ async fn candidates(
 			.into_iter()
 			.map(Candidate::Artifact)
 			.collect()),
-		3 => {
-			let mut query = sqlx::query_as::<_, Run>(&sql).bind(&tenant);
-			if let Some(workspace) = options.scope_workspace {
-				query = query.bind(workspace).bind(source_node);
-			}
-			Ok(query
-				.fetch_all(conn)
-				.await?
-				.into_iter()
-				.map(Candidate::Run)
-				.collect())
-		}
+		3 => Ok(sqlx::query_as::<_, Run>(&sql)
+			.bind(&tenant)
+			.fetch_all(conn)
+			.await?
+			.into_iter()
+			.map(Candidate::Run)
+			.collect()),
 		4 => Ok(sqlx::query_as::<_, Conversation>(&sql)
 			.bind(&tenant)
 			.fetch_all(conn)
@@ -1097,11 +1089,13 @@ fn tenant_resources(table: &str, join_column: &str) -> sea_orm::sea_query::Selec
 }
 
 async fn graph_generation(
+	f: &Federation,
 	authority: &mut GraphAuthority<'_>,
 	authority_revision: &str,
+	options: &GraphOptions,
+	source_node: &str,
 ) -> Result<String> {
 	let tenant = authority.tenant().to_owned();
-	let conn = authority.connection();
 	let catalog: (Option<i64>, i64) = sqlx::query_as(
 		&Query::select()
 			.expr(
@@ -1115,8 +1109,16 @@ async fn graph_generation(
 			.to_string(PostgresQueryBuilder),
 	)
 	.bind(&tenant)
-	.fetch_one(&mut *conn)
+	.fetch_one(authority.connection())
 	.await?;
+	if let Some(workspace) = options.scope_workspace {
+		let scope =
+			scoped::revision(authority, options, workspace, source_node, &f.config.node_id).await?;
+		return Ok(crate::registry::digest(&json!({
+			"authority":authority_revision,"catalog":catalog,"scope":scope,
+		})));
+	}
+	let conn = authority.connection();
 	let workspaces =
 		aggregate_revision(&mut *conn, "workspaces", "revision", "id", &tenant).await?;
 	let tasks =
@@ -1344,9 +1346,14 @@ async fn project_activity(
 	options: &GraphOptions,
 	nodes: &[GraphNode],
 	window_end: i64,
+	source_node: &str,
 ) -> Result<Vec<GraphActivity>> {
 	if nodes.is_empty() {
 		return Ok(vec![]);
+	}
+	if let Some(workspace) = options.scope_workspace {
+		let end = DateTime::<Utc>::from_timestamp(window_end, 0).ok_or(Error::Forbidden)?;
+		return scoped::activity(f, authority, options, nodes, end, source_node, workspace).await;
 	}
 	let visible: BTreeSet<&str> = nodes.iter().map(|node| node.id.as_str()).collect();
 	let workspaces: Vec<Uuid> = nodes
@@ -1449,7 +1456,6 @@ async fn project_activity(
 			break;
 		}
 	}
-	markers.reverse();
 	Ok(markers)
 }
 
@@ -1461,7 +1467,8 @@ async fn project_in(
 	authority: &mut GraphAuthority<'_>,
 	authority_revision: &str,
 ) -> Result<GraphPage> {
-	let generation = graph_generation(authority, authority_revision).await?;
+	let generation =
+		graph_generation(f, authority, authority_revision, options, source_node).await?;
 	let binding = cursor_binding(source_node, viewer, options)?;
 	let mut cursor = match &options.cursor {
 		Some(token) => decode_cursor(f, token, &binding, &generation)?,
@@ -1504,7 +1511,16 @@ async fn project_in(
 			scanned += 1;
 			let allowed_kind = kind_allowed(candidate.kind(), options)
 				|| matches!(&candidate, Candidate::Workspace(_)) && kind_allowed("goal", options);
-			if !allowed_kind || !authority.visible(&candidate).await? {
+			if !allowed_kind {
+				continue;
+			}
+			let visible = match &candidate {
+				Candidate::Run(run) if options.scope_workspace.is_some() => {
+					scoped::visible(f, authority, run).await?
+				}
+				_ => authority.visible(&candidate).await?,
+			};
+			if !visible {
 				continue;
 			}
 			if let Candidate::Run(run) = &candidate
@@ -1567,8 +1583,11 @@ async fn project_in(
 		}
 	}
 	let edges = build_edges(&f.config.node_id, &records, &nodes, options);
-	let activity = project_activity(f, authority, options, &nodes, cursor.window_end).await?;
-	if graph_generation(authority, authority_revision).await? != generation {
+	let activity =
+		project_activity(f, authority, options, &nodes, cursor.window_end, source_node).await?;
+	if graph_generation(f, authority, authority_revision, options, source_node).await?
+		!= generation
+	{
 		return Err(Error::Conflict("graph projection changed".into()));
 	}
 	let page = GraphPage {

@@ -1,5 +1,6 @@
 import { entityKey } from "../agent-graph/model";
 import { ApiError, apiFetch } from "../transport";
+import { retryFreshGraphPage } from "./graph-retry";
 import {
   meshKinds,
   resourceKey,
@@ -90,11 +91,13 @@ export async function graphPeers(): Promise<GraphPeer[]> {
 }
 
 export async function graphPage(request: GraphRequest): Promise<GraphPage> {
-  return apiFetch<GraphPage>("/api/federation/graph", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(request),
-  });
+  return retryFreshGraphPage(request.cursor, () =>
+    apiFetch<GraphPage>("/api/federation/graph", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+    }),
+  );
 }
 
 export function graphError(error: unknown): RemoteExpansion["state"] {
