@@ -1088,7 +1088,7 @@ async fn run_message(
 			.bind(&key)
 			.fetch_one(&mut **lease.tx())
 			.await?;
-			let attachments = crate::collaboration::attachments::attach(
+			let attachments = crate::collaboration::attachments::attach_run_media(
 				&mut lease,
 				run.workspace_id,
 				message_id,
@@ -1134,16 +1134,15 @@ async fn run_message(
 					.map(|attachment| attachment.media_type.as_str()),
 			)?;
 			let headroom = f.run_request_headroom(&run).await?;
-			crate::generation::budget::Reservation::check_request(
-				headroom,
-				&crate::provider::ModelRequest {
-					instructions: String::new(),
-					context: json!({"run_message": input.content}),
-					tools: Vec::new(),
-					max_output_tokens: 0,
-					content_parts: parts,
-				},
-			)?;
+			let request = crate::provider::ModelRequest {
+				instructions: String::new(),
+				context: json!({"run_message": input.content}),
+				tools: Vec::new(),
+				max_output_tokens: 0,
+				content_parts: parts,
+			};
+			request.validate()?;
+			crate::generation::budget::Reservation::check_request(headroom, &request)?;
 			let saved = crate::collaboration::attachments::for_messages(
 				&mut lease,
 				run.workspace_id,

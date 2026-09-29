@@ -757,7 +757,7 @@ impl Harness {
 				{
 					pinned["deferred_workspace_observation"] = deferred_observation.clone();
 				}
-				let specifications = tools
+				let mut specifications = tools
 					.iter()
 					.filter(|(name, _)| !run_message_catchup || name.as_str() == "workspace_read")
 					.map(|(_, tool)| tool)
@@ -788,6 +788,7 @@ impl Harness {
 				))
 				.await?;
 				if media.defer_human {
+					specifications.clear();
 					instructions.push_str("\nMedia intake is continuing. Briefly describe the media in this request as plain text. Do not call tools or complete the task; more accepted media follows.");
 				}
 				let context_window = window.saturating_sub(
@@ -1026,13 +1027,25 @@ impl Harness {
 					serde_json::from_value(run.pending["response"].clone())?;
 				if run.pending["deferred_human_media"] == true {
 					let mut context: Context = serde_json::from_value(run.context.clone())?;
-					if !result.text.trim().is_empty() {
-						context.history.push(json!({
-							"kind":"model_media_observation",
-							"through_seq":run.pending["media_inferred_through_seq"],
-							"text":result.text
-						}));
+					if result.text.trim().is_empty() {
+						let next_pending = stale_media_pending(
+							&mut context,
+							&run.pending,
+							&mut run.observed_input_seq,
+						);
+						run.context = json!(context);
+						run.phase = "THINKING".into();
+						run.pending = next_pending;
+						store
+							.save_run(run, token, "run.media_observation_required")
+							.await?;
+						return Ok(());
 					}
+					context.history.push(json!({
+						"kind":"model_media_observation",
+						"through_seq":run.pending["media_inferred_through_seq"],
+						"text":result.text
+					}));
 					run.context = json!(context);
 					run.phase = "THINKING".into();
 					run.pending = json!({"selected_media":run.pending["deferred_selected_media"]});
@@ -1248,13 +1261,7 @@ impl Harness {
 							.unwrap_or(false);
 						let deferred_read = run.pending.get("deferred_workspace_read").cloned();
 						let deferred_skill_read = run.pending.get("deferred_skill_read").cloned();
-						let mut selected_media = run.pending["deferred_selected_media"]
-							.as_array()
-							.cloned()
-							.unwrap_or_default();
-						if let Some(new) = run.pending["selected_media"].as_array() {
-							selected_media.extend(new.iter().cloned());
-						}
+						let selected_media = pending_selected_media(&run.pending);
 						run.pending = if force_read_compaction {
 							json!({
 									"force_workspace_read_compaction":true,
@@ -1311,7 +1318,8 @@ impl Harness {
 								}
 								run.pending = json!({
 									"force_workspace_read_compaction":true,
-									"deferred_workspace_read":deferred_workspace_read(&call)
+									"deferred_workspace_read":deferred_workspace_read(&call),
+									"selected_media":pending_selected_media(&run.pending)
 								});
 								store.save_run(run, token, "run.read_deferred").await?;
 								return Ok(());
@@ -1388,7 +1396,8 @@ impl Harness {
 							run.step += 1;
 							run.pending = json!({
 								"force_workspace_read_compaction":true,
-								"deferred_skill_read":deferred_skill_read(&call)
+								"deferred_skill_read":deferred_skill_read(&call),
+								"selected_media":pending_selected_media(&run.pending)
 							});
 							store
 								.save_run(run, token, "run.skill_read_deferred")
@@ -1445,7 +1454,8 @@ impl Harness {
 							run.step += 1;
 							run.pending = json!({
 								"force_workspace_read_compaction":true,
-								"deferred_workspace_observation":deferred_workspace_observation(&call)
+								"deferred_workspace_observation":deferred_workspace_observation(&call),
+								"selected_media":pending_selected_media(&run.pending)
 							});
 							store
 								.save_run(run, token, "run.observation_deferred")
@@ -1640,7 +1650,18 @@ impl Harness {
 							.await;
 					};
 					match Box::pin(guard.model_media(store, &selections)).await {
-						Ok(_) => {}
+						Ok(parts) => {
+							let headroom = self.federation.run_request_headroom(run).await?;
+							match check_model_media_headroom(headroom, parts) {
+								Ok(()) => {}
+								Err(Error::Invalid(message)) => {
+									return self
+										.tool_error(run, token, call, cursor, message)
+										.await;
+								}
+								Err(error) => return Err(error),
+							}
+						}
 						Err(Error::Invalid(message)) => {
 							return self.tool_error(run, token, call, cursor, message).await;
 						}
@@ -2222,6 +2243,32 @@ fn choose_inference_media(
 	)
 }
 
+fn pending_selected_media(pending: &Value) -> Vec<Value> {
+	let mut selected = pending["deferred_selected_media"]
+		.as_array()
+		.cloned()
+		.unwrap_or_default();
+	if let Some(current) = pending["selected_media"].as_array() {
+		selected.extend(current.iter().cloned());
+	}
+	selected
+}
+
+fn check_model_media_headroom(
+	headroom: usize,
+	parts: Vec<crate::provider::ContentPart>,
+) -> Result<()> {
+	let request = crate::provider::ModelRequest {
+		instructions: String::new(),
+		context: json!({}),
+		tools: Vec::new(),
+		max_output_tokens: 0,
+		content_parts: parts,
+	};
+	request.validate()?;
+	crate::generation::budget::Reservation::check_request(headroom, &request)
+}
+
 fn stale_media_pending(
 	context: &mut Context,
 	pending: &Value,
@@ -2320,6 +2367,28 @@ mod review_tests {
 			super::choose_inference_media((0..8).map(|_| image()).collect(), vec![image()]);
 		assert!(deferred);
 		assert_eq!(parts.len(), 1);
+	}
+
+	#[rstest::rstest]
+	fn deferred_tool_transitions_keep_selected_media() {
+		let first = json!({"file_id":Uuid::new_v4(),"expected_digest":"first"});
+		let second = json!({"file_id":Uuid::new_v4(),"expected_digest":"second"});
+		let pending = json!({
+			"deferred_selected_media":[first],
+			"selected_media":[second]
+		});
+		assert_eq!(super::pending_selected_media(&pending), vec![first, second]);
+	}
+
+	#[rstest::rstest]
+	fn selected_audio_must_fit_the_model_context_before_tool_completion() {
+		let mut bytes = vec![0_u8; 8 * 1024 * 1024];
+		bytes[..12].copy_from_slice(b"RIFF\0\0\0\0WAVE");
+		let part = crate::provider::ContentPart::from_media("audio/wav", bytes).unwrap();
+		assert!(matches!(
+			super::check_model_media_headroom(128_000, vec![part]),
+			Err(Error::Invalid(message)) if message.contains("context window")
+		));
 	}
 
 	#[rstest::rstest]

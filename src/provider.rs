@@ -243,7 +243,7 @@ impl ModelRequest {
 			.saturating_add(1024)
 	}
 
-	fn validate(&self) -> Result<()> {
+	pub(crate) fn validate(&self) -> Result<()> {
 		for part in &self.content_parts {
 			part.validate()?;
 		}

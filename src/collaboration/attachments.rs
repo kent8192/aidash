@@ -225,8 +225,30 @@ pub(crate) async fn attach(
 	message: Uuid,
 	ids: &[Uuid],
 ) -> Result<Vec<ChannelAttachment>> {
+	attach_with_limits(lease, workspace, message, ids, None).await
+}
+
+pub(crate) async fn attach_run_media(
+	lease: &mut Lease,
+	workspace: Uuid,
+	message: Uuid,
+	ids: &[Uuid],
+) -> Result<Vec<ChannelAttachment>> {
+	attach_with_limits(lease, workspace, message, ids, Some((8, 8 * 1024 * 1024))).await
+}
+
+async fn attach_with_limits(
+	lease: &mut Lease,
+	workspace: Uuid,
+	message: Uuid,
+	ids: &[Uuid],
+	limits: Option<(usize, i64)>,
+) -> Result<Vec<ChannelAttachment>> {
 	if ids.is_empty() {
 		return Ok(Vec::new());
+	}
+	if limits.is_some_and(|(max_count, _)| ids.len() > max_count) {
+		return Err(Error::Invalid("run media input exceeds count limit".into()));
 	}
 	let unique: HashSet<_> = ids.iter().copied().collect();
 	if unique.len() != ids.len() {
@@ -258,6 +280,14 @@ pub(crate) async fn attach(
 		.await?;
 	if records.len() != ids.len() {
 		return Err(Error::NotFound("attachment unavailable".into()));
+	}
+	if limits.is_some_and(|(_, max_bytes)| {
+		records
+			.iter()
+			.fold(0_i64, |sum, record| sum.saturating_add(record.size_bytes))
+			> max_bytes
+	}) {
+		return Err(Error::Invalid("run media input exceeds byte limit".into()));
 	}
 	if records.iter().any(|record| {
 		record

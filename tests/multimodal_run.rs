@@ -10,7 +10,10 @@ use axum::{
 use base64::Engine;
 use common::{TestEnvironment, bootstrap, cleanup, request, setup, test_environment};
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::sync::{
+	Arc,
+	atomic::{AtomicBool, Ordering},
+};
 use tokio::sync::mpsc;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -56,13 +59,24 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	environment: Arc<TestEnvironment>,
 ) {
 	let (sent, mut received) = mpsc::unbounded_channel();
+	let empty_media_observation = Arc::new(AtomicBool::new(true));
 	let provider = Router::new()
 		.route("/v1/models/fixture/endpoints", get(|| async { Json(json!({"data":{"architecture":{"input_modalities":["text","image","audio"]},"endpoints":[{"tag":"fixture/verified","context_length":128000}]}})) }))
 		.route("/v1/endpoints/zdr", get(|| async { Json(json!({"data":[{"model_id":"fixture","tag":"fixture/verified"}]})) }))
 		.route("/v1/chat/completions", post(move |Json(body): Json<Value>| {
 			let sent = sent.clone();
+			let empty_media_observation = empty_media_observation.clone();
 			async move {
+				let image_count = body["messages"][1]["content"]
+					.as_array()
+					.map(|parts| parts.iter().filter(|part| part["type"] == "image_url").count())
+					.unwrap_or(0);
+				let no_tools = body.get("tools").is_none();
 				sent.send(body).unwrap();
+				if image_count == 5 && empty_media_observation.swap(false, Ordering::SeqCst) {
+					assert!(no_tools, "media intake must not advertise task tools");
+					return Json(json!({"choices":[{"finish_reason":"tool_calls","message":{"content":null,"tool_calls":[{"id":"ignored-media-call","function":{"name":"workspace_read","arguments":"{}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":2}}));
+				}
 				Json(json!({"choices":[{"finish_reason":"stop","message":{"content":"Done"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}}))
 			}
 		}));
@@ -333,6 +347,20 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 			base64::engine::general_purpose::STANDARD.encode(&bytes)
 		));
 	}
+	let original_inputs = f.store.run_inputs(operator_run.id).await.unwrap().len();
+	let (status, rejected) = request(
+		&app,
+		&operator,
+		"POST",
+		&format!("/api/runs/{}/message", operator_run.id),
+		json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":&image_ids[..9]}),
+	)
+	.await;
+	assert_eq!(status, 400, "{rejected}");
+	assert_eq!(
+		f.store.run_inputs(operator_run.id).await.unwrap().len(),
+		original_inputs
+	);
 	for ids in image_ids.chunks(5) {
 		let (status, sent) = request(
 			&app,
@@ -345,7 +373,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		assert_eq!(status, 200, "{sent}");
 	}
 	let mut media_batches = Vec::new();
-	for _ in 0..8 {
+	for _ in 0..12 {
 		assert!(worker.worker_once().await.unwrap());
 		while let Ok(body) = received.try_recv() {
 			let Some(parts) = body["messages"][1]["content"].as_array() else {
@@ -358,17 +386,20 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 			if !urls.is_empty() {
 				assert_eq!(urls.len(), 5);
 				assert_eq!(body["provider"]["only"], json!(["fixture/verified"]));
+				if media_batches.len() < 2 {
+					assert!(body.get("tools").is_none());
+				}
 				media_batches.push(urls);
 			}
 		}
-		if media_batches.len() == 2 {
+		if media_batches.len() == 3 {
 			break;
 		}
 	}
 	let final_operator_run = f.store.run(operator_run.id).await.unwrap();
 	assert!(
-		media_batches.len() == 2,
-		"operator run did not infer both accepted media batches: {} {} {:?} {:?} lease={:?} until={:?} task={:?}",
+		media_batches.len() == 3,
+		"operator run did not retry the empty observation and infer both accepted media batches: {} {} {:?} {:?} lease={:?} until={:?} task={:?}",
 		final_operator_run.phase,
 		final_operator_run.control,
 		final_operator_run.error,
@@ -381,7 +412,11 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 			.unwrap()
 			.status
 	);
-	assert_eq!(media_batches.concat(), expected_urls);
+	assert_eq!(media_batches[0], media_batches[1]);
+	assert_eq!(
+		[media_batches[1].clone(), media_batches[2].clone()].concat(),
+		expected_urls
+	);
 	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(
 		f.store.run(operator_run.id).await.unwrap().phase,
