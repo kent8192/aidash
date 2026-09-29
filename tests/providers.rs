@@ -300,6 +300,22 @@ fn mp3_signature_accepts_crc_and_mpeg_25_layer_three_frames() {
 }
 
 #[rstest::rstest]
+fn aac_signature_accepts_crc_protected_adts_headers() {
+	for second in [0xf0, 0xf1, 0xf8, 0xf9] {
+		assert!(
+			ContentPart::from_media("audio/aac", vec![0xff, second, 0x50, 0x80]).is_ok(),
+			"valid ADTS header second byte {second:#x}"
+		);
+	}
+	for second in [0xe0, 0xf2, 0xf4, 0xf6, 0xfa] {
+		assert!(
+			ContentPart::from_media("audio/aac", vec![0xff, second, 0x50, 0x80]).is_err(),
+			"invalid ADTS header second byte {second:#x}"
+		);
+	}
+}
+
+#[rstest::rstest]
 #[tokio::test]
 async fn media_route_lookup_obeys_the_total_inference_deadline() {
 	use aidash::Error;

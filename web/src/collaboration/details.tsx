@@ -436,6 +436,7 @@ function RunPanel({
   >([]);
   const [fileError, setFileError] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [sendingMessage, setSendingMessage] = useState(false);
   const sending = useRef(false);
   const request = useRef<{
     content: string;
@@ -500,6 +501,7 @@ function RunPanel({
               const content = draft.trim();
               if ((!content && files.length === 0) || sending.current) return;
               sending.current = true;
+              setSendingMessage(true);
               setFileError("");
               void (async () => {
                 try {
@@ -569,6 +571,7 @@ function RunPanel({
                 } finally {
                   setUploading(false);
                   sending.current = false;
+                  setSendingMessage(false);
                 }
               })();
             }}
@@ -576,7 +579,10 @@ function RunPanel({
             <Field label={copy.message}>
               <textarea
                 value={draft}
-                onChange={(event) => setDraft(event.target.value)}
+                onChange={(event) => {
+                  if (!sending.current) setDraft(event.target.value);
+                }}
+                disabled={sendingMessage}
                 required={files.length === 0}
                 rows={3}
               />
@@ -588,7 +594,9 @@ function RunPanel({
                   accept={RUN_MEDIA_ACCEPT}
                   multiple
                   aria-label={fileCopy.attach}
+                  disabled={sendingMessage}
                   onChange={(event) => {
+                    if (sending.current) return;
                     const selected = [
                       ...files,
                       ...Array.from(event.target.files ?? []).map((file) => ({
@@ -616,7 +624,9 @@ function RunPanel({
                         <button
                           type="button"
                           aria-label={`${fileCopy.removeAttachment}: ${entry.file.name}`}
+                          disabled={sendingMessage}
                           onClick={() => {
+                            if (sending.current) return;
                             setFiles((current) =>
                               current.filter((file) => file.key !== entry.key),
                             );
@@ -637,7 +647,7 @@ function RunPanel({
                 {fileError}
               </p>
             )}
-            <button className="primary" disabled={uploading}>
+            <button className="primary" disabled={sendingMessage || uploading}>
               {uploading ? fileCopy.uploading : copy.send}
             </button>
           </form>

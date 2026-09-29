@@ -127,7 +127,9 @@ impl ContentPart {
 							})
 					}
 					"m4a" => bytes.get(4..8) == Some(b"ftyp"),
-					"aac" => bytes.starts_with(b"\xff\xf1") || bytes.starts_with(b"\xff\xf9"),
+					"aac" => bytes
+						.get(..2)
+						.is_some_and(|header| header[0] == 0xff && header[1] & 0xf6 == 0xf0),
 					"ogg" => bytes.starts_with(b"OggS"),
 					"webm" => bytes.starts_with(b"\x1a\x45\xdf\xa3"),
 					"flac" => bytes.starts_with(b"fLaC"),
@@ -145,6 +147,37 @@ impl ContentPart {
 }
 
 impl ModelRequest {
+	fn media_tokens(parts: &[ContentPart]) -> usize {
+		parts.iter().fold(0_usize, |total, part| {
+			total.saturating_add(match part {
+				ContentPart::Text(_) => 0,
+				ContentPart::Image { bytes, .. } => {
+					4096_usize.saturating_add(bytes.len().div_ceil(256))
+				}
+				ContentPart::Audio { bytes, .. } => {
+					1024_usize.saturating_add(bytes.len().div_ceil(16))
+				}
+			})
+		})
+	}
+
+	/// Space added to a media-free request by these parts, including text
+	/// labels and the conservative provider-side media token allowance.
+	pub(crate) fn content_parts_reservation(parts: &[ContentPart]) -> usize {
+		if parts.is_empty() {
+			return 0;
+		}
+		let mut reserved = 64_usize.saturating_add(Self::media_tokens(parts));
+		// Array/text framing replaces a plain context string.
+		for part in parts {
+			if let ContentPart::Text(_) = part {
+				reserved =
+					reserved.saturating_add(part.openrouter().to_string().len().saturating_add(1));
+			}
+		}
+		reserved
+	}
+
 	pub(crate) fn media_within_limits(parts: &[ContentPart]) -> bool {
 		let mut count = 0_usize;
 		let mut bytes = 0_usize;
@@ -203,20 +236,9 @@ impl ModelRequest {
 		if !self.tools.is_empty() {
 			body["tools"] = Value::Array(self.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
 		}
-		let media_tokens = self.content_parts.iter().fold(0_usize, |total, part| {
-			total.saturating_add(match part {
-				ContentPart::Text(_) => 0,
-				ContentPart::Image { bytes, .. } => {
-					4096_usize.saturating_add(bytes.len().div_ceil(256))
-				}
-				ContentPart::Audio { bytes, .. } => {
-					1024_usize.saturating_add(bytes.len().div_ceil(16))
-				}
-			})
-		});
 		body.to_string()
 			.len()
-			.saturating_add(media_tokens)
+			.saturating_add(Self::media_tokens(&self.content_parts))
 			.saturating_add(self.max_output_tokens as usize)
 			.saturating_add(1024)
 	}
@@ -573,6 +595,35 @@ fn validate_response(r: &ModelResponse) -> Result<()> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[rstest::rstest]
+	fn media_reservation_covers_complete_request_growth() {
+		let mut request = ModelRequest {
+			instructions: "Inspect the media".into(),
+			context: json!({"history":"quoted \\\"text\\\" and 日本語"}),
+			tools: vec![],
+			max_output_tokens: 512,
+			content_parts: vec![],
+		};
+		let without_media = request.estimated_total_tokens();
+		request.content_parts = vec![
+			ContentPart::Text("attachment: \\\"sample\\\"".into()),
+			ContentPart::Image {
+				media_type: "image/png".into(),
+				bytes: vec![0; 8192],
+			},
+			ContentPart::Audio {
+				format: "wav".into(),
+				bytes: vec![0; 32_768],
+			},
+		];
+		assert!(
+			request.estimated_total_tokens()
+				<= without_media.saturating_add(ModelRequest::content_parts_reservation(
+					&request.content_parts
+				))
+		);
+	}
+
 	#[rstest::rstest]
 	fn parses_openrouter_tool_calls() {
 		let result = parse_openai(json!({"choices":[{"finish_reason":"tool_calls","message":{"tool_calls":[{"id":"one","function":{"name":"search","arguments":"{\"q\":\"Rust\"}"}}]}}]})).unwrap();

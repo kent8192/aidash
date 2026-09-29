@@ -763,6 +763,36 @@ impl Harness {
 					.map(|(_, tool)| tool)
 					.map(|t| t.specification())
 					.collect::<Vec<_>>();
+				let selected_media: Vec<crate::capabilities::sharing::Selection> =
+					serde_json::from_value(
+						run.pending
+							.get("selected_media")
+							.cloned()
+							.unwrap_or_else(|| json!([])),
+					)?;
+				let new_messages: Vec<(i64, Uuid)> = page
+					.entries
+					.iter()
+					.filter_map(|(index, _)| {
+						let input = &inputs[*index];
+						(input.seq > context.media_inferred_seq)
+							.then_some((input.seq, input.message_id?))
+					})
+					.collect();
+				let media = Box::pin(resolve_model_input_media(
+					store,
+					run,
+					guard,
+					&selected_media,
+					&new_messages,
+				))
+				.await?;
+				if media.defer_human {
+					instructions.push_str("\nMedia intake is continuing. Briefly describe the media in this request as plain text. Do not call tools or complete the task; more accepted media follows.");
+				}
+				let context_window = window.saturating_sub(
+					crate::provider::ModelRequest::content_parts_reservation(&media.parts),
+				);
 				let private_context = if agent.knowledge_digest.is_some() {
 					json!({"reference_documents":documents.clone()})
 				} else {
@@ -776,7 +806,7 @@ impl Harness {
 					&private_context,
 				)?;
 				let mut budget = context::RequestBudget {
-					window,
+					window: context_window,
 					instructions: &instructions,
 					tools: &specifications,
 					max_output_tokens: output,
@@ -784,7 +814,7 @@ impl Harness {
 				let minimum_request = budget
 					.request(&Context::default(), &private_context)
 					.estimated_total_tokens();
-				budget.window = request_context_window(window, minimum_request);
+				budget.window = request_context_window(context_window, minimum_request);
 				if force_read_compaction {
 					budget.window =
 						force_workspace_read_compaction_window(budget.window, minimum_request);
@@ -870,34 +900,7 @@ impl Harness {
 					guard.inference().await?;
 				}
 				let mut request = budget.request(&context, &pinned);
-				let selected_media: Vec<crate::capabilities::sharing::Selection> =
-					serde_json::from_value(
-						run.pending
-							.get("selected_media")
-							.cloned()
-							.unwrap_or_else(|| json!([])),
-					)?;
-				let new_messages: Vec<(i64, Uuid)> = page
-					.entries
-					.iter()
-					.filter_map(|(index, _)| {
-						let input = &inputs[*index];
-						(input.seq > context.media_inferred_seq)
-							.then_some((input.seq, input.message_id?))
-					})
-					.collect();
-				let media = Box::pin(resolve_model_input_media(
-					store,
-					run,
-					guard,
-					&selected_media,
-					&new_messages,
-				))
-				.await?;
 				request.content_parts = media.parts;
-				if media.defer_human {
-					request.instructions.push_str("\nMedia intake is continuing. Briefly describe the media in this request as plain text. Do not call tools or complete the task; more accepted media follows.");
-				}
 				crate::generation::budget::Reservation::check_request(window, &request)?;
 				let request_tokens = request.estimated_total_tokens();
 				let media_inferred_seq_before_response = context.media_inferred_seq;

@@ -72,6 +72,35 @@ async fn japanese_history_compacts_before_the_final_request_check() {
 }
 
 #[rstest::rstest]
+#[tokio::test]
+async fn media_space_is_reserved_before_retained_history_is_compacted() {
+	let media = vec![crate::provider::ContentPart::Image {
+		media_type: "image/png".into(),
+		bytes: vec![0; 8192],
+	}];
+	let window = 12_000;
+	let budget = RequestBudget {
+		window: window - crate::provider::ModelRequest::content_parts_reservation(&media),
+		instructions: "Inspect the image",
+		tools: &[],
+		max_output_tokens: 256,
+	};
+	let pinned = json!({"task":"Inspect accepted image"});
+	let mut context = Context {
+		history: history(),
+		..Default::default()
+	};
+	context.history[1] = tool("obsolete", &"old".repeat(6000));
+	super::compact(&mut context, &FakeJev::new(drop_all), &budget, &pinned)
+		.await
+		.unwrap();
+	let mut request = budget.request(&context, &pinned);
+	request.content_parts = media;
+	crate::generation::budget::Reservation::check_request(window, &request).unwrap();
+	assert_eq!(context.compactions, 1);
+}
+
+#[rstest::rstest]
 fn request_check_reserves_completion_tokens() {
 	let request = crate::provider::ModelRequest {
 		instructions: String::new(),

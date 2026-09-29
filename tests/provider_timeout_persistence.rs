@@ -179,6 +179,48 @@ async fn database_validates_registered_and_overridden_timeouts(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn database_validates_media_route_members_for_models_and_installations(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
+	f.registry.register(model("timeout-model")).await.unwrap();
+	let route = json!({
+		"tag":"fixture/verified", "formats":["image/png"],
+		"source":"fixture verification",
+		"verified_at":"2026-09-28T12:00:00Z",
+		"expires_at":"2026-10-28T12:00:00Z"
+	});
+	let mut valid = model("valid-route");
+	valid.config["media_routes"] = json!([route]);
+	insert_model(&f.store.pool, &valid).await.unwrap();
+	install(&f.store.pool, &json!({"media_routes":[route]}))
+		.await
+		.unwrap();
+	for (index, routes) in [
+		json!([1]),
+		json!([{"tag":"fixture/verified"}]),
+		json!([{ "tag":"fixture/verified", "formats":[1], "source":"fixture", "verified_at":"2026-09-28T12:00:00Z", "expires_at":"2026-10-28T12:00:00Z" }]),
+		json!([{ "tag":"fixture/verified", "formats":["image/png"], "source":"fixture", "verified_at":"2026-09-28T12:00:00Z", "expires_at":"2026-10-28T12:00:00Z", "unexpected":true }]),
+		json!([{ "tag":"fixture/verified", "formats":["image/png"], "source":"fixture", "verified_at":"not a timestamp", "expires_at":"2026-10-28T12:00:00Z" }]),
+	]
+	.into_iter()
+	.enumerate()
+	{
+		let mut entry = model(&format!("invalid-route-{index}"));
+		entry.config["media_routes"] = routes.clone();
+		rejected(insert_model(&f.store.pool, &entry).await, "registry_model_config");
+		rejected(
+			install(&f.store.pool, &json!({"media_routes":routes})).await,
+			"installations_config",
+		);
+	}
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn timeout_migration_upgrades_existing_models_and_preserves_rollback_safety(
 	#[future(awt)]
 	#[from(test_environment)]

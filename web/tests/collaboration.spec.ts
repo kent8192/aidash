@@ -436,6 +436,56 @@ test("local run details retain execution memory", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
+test("run message attachments stay fixed while an upload is pending", async ({
+  page,
+}) => {
+  const { submissions, errors } = await setup(page);
+  let uploadStarted!: () => void;
+  let finishUpload!: () => void;
+  const started = new Promise<void>((resolve) => (uploadStarted = resolve));
+  const uploadGate = new Promise<void>((resolve) => (finishUpload = resolve));
+  await page.route(
+    "**/api/workspaces/workspace-one/attachments?*",
+    async (route) => {
+      uploadStarted();
+      await uploadGate;
+      await route.fallback();
+    },
+  );
+  await page.route("**/api/runs/run-0/message", (route) =>
+    route.fulfill({ json: { id: "run-message-one" } }),
+  );
+  await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Execution history", exact: true })
+    .click();
+  await page.locator(".collab-channel .collab-task").click();
+  const dialog = page.getByRole("dialog");
+  const draft = dialog.getByRole("textbox", { name: "Message", exact: true });
+  const picker = dialog.locator('input[type="file"]');
+  await draft.fill("Inspect this image");
+  await picker.setInputFiles({
+    name: "sample.png",
+    mimeType: "image/png",
+    buffer: Buffer.from("\x89PNG\r\n\x1a\nfixture"),
+  });
+  const remove = dialog.getByRole("button", {
+    name: "Remove attachment: sample.png",
+  });
+  await dialog.getByRole("button", { name: "Send", exact: true }).click();
+  await started;
+  await expect(draft).toBeDisabled();
+  await expect(picker).toBeDisabled();
+  await expect(remove).toBeDisabled();
+  await expect(dialog.locator("button.primary")).toBeDisabled();
+  finishUpload();
+  await expect(dialog).toHaveCount(0);
+  expect(
+    submissions.filter((item) => item.path.endsWith("/attachments")),
+  ).toHaveLength(1);
+  expect(errors).toEqual([]);
+});
+
 test("the mobile channel toggle is absent outside Collaboration", async ({
   page,
 }) => {
