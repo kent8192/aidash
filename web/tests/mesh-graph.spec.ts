@@ -313,7 +313,7 @@ test("zoom and node positions survive snapshot refresh and revoked details disap
   await expect(page.locator(".mesh-graph")).not.toContainText("Planner Agent");
   expect(errors).toEqual([]);
 });
-test("subject graph excludes remote discovery and topology", async ({
+test("subject graph offers topology without joining remote discovery", async ({
   page,
 }) => {
   const { errors } = await setup(page, true);
@@ -321,7 +321,7 @@ test("subject graph excludes remote discovery and topology", async ({
     page
       .getByLabel("Graph perspective", { exact: true })
       .locator("option[value='topology']"),
-  ).toHaveCount(0);
+  ).toHaveCount(1);
   await expect(
     page.locator(".mesh-node-label").filter({ hasText: "Data Analyst" }),
   ).toHaveCount(0);

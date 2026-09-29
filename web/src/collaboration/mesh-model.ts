@@ -11,6 +11,7 @@ export const meshKinds = [
   "goal",
   "conversation",
   "task",
+  "run",
   "agent",
   "tool",
   "artifact",
@@ -55,6 +56,9 @@ export type MeshNode = {
   parent?: string;
   status?: string;
   remote?: boolean;
+  projected?: boolean;
+  goalBody?: string;
+  at?: string;
 };
 export type MeshEdge = {
   id: string;
@@ -112,6 +116,7 @@ export function buildMeshGraph(
     channel?: string;
     discovery?: Discovery;
     runs?: readonly { node: string; run: Run }[];
+    authorizedPeers?: readonly string[];
     hours?: number;
     now?: number;
   } = {},
@@ -202,7 +207,29 @@ export function buildMeshGraph(
   }
   // Discovery is metadata, not proof of remote activity or health. Subject views
   // use their local authorized State only, even if a discovery cache is present.
-  if (data.access.kind === "operator") {
+  if (options.authorizedPeers !== undefined) {
+    const local = resource("remote", nodeId, nodeId);
+    nodes.get(local)!.status = "LOCAL";
+    for (const peer of options.authorizedPeers) {
+      const id = add({
+        id: resourceKey(peer, "remote", peer),
+        kind: "remote",
+        name: { en: peer },
+        nodeId: peer,
+        resourceId: peer,
+        available: true,
+        remote: true,
+        status: "CONFIGURED",
+      });
+      edge(local, id, "federation", "federation");
+    }
+    for (const e of registry.filter(
+      (e) =>
+        e.kind === "cluster" ||
+        (e.kind === "agent" && !reference(e.config?.cluster)),
+    ))
+      edge(local, entityKey(nodeId, e.kind, e), "hosts");
+  } else if (data.access.kind === "operator") {
     const local = resource("remote", nodeId, nodeId);
     nodes.get(local)!.status = "LOCAL";
     for (const peer of data.peers.filter((p) => p.enabled)) {
@@ -292,7 +319,9 @@ export function buildMeshGraph(
   )
     .filter(
       ({ node, run }) =>
-        (node === nodeId || data.access.kind === "operator") &&
+        (node === nodeId ||
+          data.access.kind === "operator" ||
+          options.authorizedPeers !== undefined) &&
         (!run.home_node || run.home_node === nodeId) &&
         workspaceIds.has(run.workspace_id) &&
         (activeRun(run) || inWindow(run.updated_at, hours, now)),
@@ -307,9 +336,27 @@ export function buildMeshGraph(
     data.peers.filter((peer) => peer.enabled).map((peer) => peer.node_id),
   );
   for (const { node, run } of activity) {
+    const runNode = resource(
+      "run",
+      run.id,
+      `Run ${run.id.slice(0, 8)}`,
+      run.workspace_id,
+    );
+    nodes.get(runNode)!.status = run.phase;
+    edge(
+      runNode,
+      resourceKey(nodeId, "task", run.task_id),
+      "executes",
+      "activity",
+    );
     const identity = `${node}/agents/${run.agent_id}@${run.agent_version}`;
     let id = qualified.get(identity);
-    if (!id && node !== nodeId && enabledPeers.has(node)) {
+    if (
+      !id &&
+      node !== nodeId &&
+      options.authorizedPeers === undefined &&
+      enabledPeers.has(node)
+    ) {
       id = add({
         id: entityKey(node, "agent", {
           id: run.agent_id,
@@ -326,7 +373,7 @@ export function buildMeshGraph(
       edge(resourceKey(node, "remote", node), id, "hosts", "federation");
     }
     if (!id) continue;
-    edge(id, resourceKey(nodeId, "task", run.task_id), "executes", "activity");
+    edge(id, runNode, "executes", "activity");
     if (!statusSet.has(id)) {
       nodes.get(id)!.status = run.control === "PAUSED" ? "PAUSED" : run.phase;
       statusSet.add(id);
@@ -394,6 +441,7 @@ export const modeKinds: Record<MeshMode, readonly MeshKind[]> = {
     "cluster",
     "task",
     "artifact",
+    "remote",
   ],
   knowledge: [
     "workspace",
@@ -406,8 +454,9 @@ export const modeKinds: Record<MeshMode, readonly MeshKind[]> = {
     "tool",
     "model",
     "skill",
+    "remote",
   ],
-  execution: ["human", "goal", "task", "agent", "artifact"],
+  execution: ["human", "goal", "task", "run", "agent", "artifact", "remote"],
   topology: ["remote", "cluster", "agent", "tool"],
 };
 export function filterMeshGraph(
@@ -427,9 +476,13 @@ export function filterMeshGraph(
     (n) =>
       modeKinds[options.mode].includes(n.kind) &&
       options.kinds.includes(n.kind) &&
+      (n.kind !== "remote" ||
+        ["mesh", "topology"].includes(options.mode) ||
+        n.projected) &&
       (options.mode === "topology" || n.kind !== "remote" || n.remote) &&
       (["mesh", "topology"].includes(options.mode) ||
         !n.remote ||
+        n.projected ||
         graph.edges.some(
           (e) =>
             e.layer === "activity" && (e.source === n.id || e.target === n.id),
@@ -444,6 +497,7 @@ export function filterMeshGraph(
           Object.values(n.name).some((v) =>
             v.toLocaleLowerCase().includes(query),
           ) ||
+          n.goalBody?.toLocaleLowerCase().includes(query) ||
           n.entity?.id.toLocaleLowerCase().includes(query) ||
           n.resourceId?.toLocaleLowerCase().includes(query),
       )
@@ -489,6 +543,7 @@ export function filterMeshGraph(
       "workspace",
       "agent",
       "task",
+      "run",
       "artifact",
       "conversation",
       "goal",
@@ -611,7 +666,11 @@ export function meshPositions(
     );
     const tasks = nodes.filter((n) => n.kind === "task");
     lane(tasks, 200, 325, 4, 270, 140);
-    const agentsY = 325 + Math.max(1, Math.ceil(tasks.length / 4)) * 155;
+    const runsY = 325 + Math.max(1, Math.ceil(tasks.length / 4)) * 155;
+    const runs = nodes.filter((n) => n.kind === "run");
+    lane(runs, 200, runsY, 4, 270, 140);
+    const agentsY =
+      runsY + (runs.length ? Math.ceil(runs.length / 4) * 155 : 0);
     const agents = nodes.filter(
       (n) => n.kind === "agent" && !coordinators.has(n.id),
     );
@@ -744,8 +803,11 @@ export function meshPositions(
       110;
   const tasks = nodes.filter((n) => n.kind === "task");
   lane(tasks, 370, taskTop, 4, 215);
+  const runsTop = taskTop + Math.max(1, Math.ceil(tasks.length / 4)) * 115 + 20;
+  const runs = nodes.filter((n) => n.kind === "run");
+  lane(runs, 370, runsTop, 4, 215);
   const agentTop =
-    taskTop + Math.max(1, Math.ceil(tasks.length / 4)) * 115 + 40;
+    runsTop + (runs.length ? Math.ceil(runs.length / 4) * 115 : 0) + 20;
   const agents = nodes.filter((n) => n.kind === "agent" && !n.remote);
   const parents = [...new Set(agents.map((n) => n.parent ?? ""))];
   let groupY = agentTop;
@@ -842,6 +904,26 @@ export function nodeEvents(
       .filter((n) => n?.kind === "task")
       .map((n) => n!.resourceId),
   );
+  const adjacentRuns = new Set(
+    graph.edges
+      .filter((e) => e.source === node.id || e.target === node.id)
+      .flatMap((e) => [e.source, e.target])
+      .filter((id) =>
+        graph.nodes.some(
+          (candidate) => candidate.id === id && candidate.kind === "run",
+        ),
+      ),
+  );
+  for (const edge of graph.edges) {
+    if (!adjacentRuns.has(edge.source) && !adjacentRuns.has(edge.target))
+      continue;
+    const task = graph.nodes.find(
+      (candidate) =>
+        candidate.kind === "task" &&
+        (candidate.id === edge.source || candidate.id === edge.target),
+    );
+    if (task) tasks.add(task.resourceId);
+  }
   if (node.kind === "task") {
     tasks.clear();
     tasks.add(node.resourceId);

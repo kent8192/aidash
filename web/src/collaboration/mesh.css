@@ -328,6 +328,47 @@
 .mesh-view-controls .mesh-filter-toggle {
   display: none;
 }
+.mesh-peer-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 17px;
+  border-bottom: 1px solid var(--mesh-line);
+  font-size: 11px;
+}
+.mesh-peer-controls label,
+.mesh-peer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mesh-peer-controls input {
+  max-width: 140px;
+  padding: 4px 6px;
+  border: 1px solid var(--mesh-line);
+  border-radius: 4px;
+  background: var(--mesh-panel);
+  color: var(--mesh-text);
+}
+.mesh-peer {
+  padding: 3px 6px;
+  border: 1px solid var(--mesh-line);
+  border-radius: 5px;
+}
+.mesh-peer button {
+  padding: 3px 6px;
+  border: 1px solid var(--mesh-line);
+  border-radius: 4px;
+}
+.mesh-peer small {
+  color: var(--mesh-muted);
+}
+.mesh-goal-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .mesh-stage {
   position: relative;
   min-height: 250px;

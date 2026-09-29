@@ -47,6 +47,7 @@ mod m20260928_000000_transaction_authority;
 mod m20260928_000000_worker_activation;
 mod m20260929_010000_activation_trigger_lookups;
 mod m20260929_020000_pending_authority_indexes;
+mod m20260929_030000_graph_operator_grants;
 
 pub struct Migrator;
 #[async_trait::async_trait]
@@ -99,6 +100,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260928_000000_worker_activation::Migration),
 			Box::new(m20260929_010000_activation_trigger_lookups::Migration),
 			Box::new(m20260929_020000_pending_authority_indexes::Migration),
+			Box::new(m20260929_030000_graph_operator_grants::Migration),
 		]
 	}
 }

@@ -51,7 +51,8 @@ A view displays at most 120 nodes and 360 edges. Configuration relationships are
 prioritized; a spanning tree is retained before additional edges are capped.
 Omission counts are shown rather than implying completeness. These are rendering
 limits, not server pagination: the projection still processes the supplied State.
-A federated fleet-wide graph requires a separate authorized, paginated projection.
+Graph View uses a separate authorized, paginated projection for direct Peers;
+this agent-centered dialog remains local.
 
 Run `npm run test:graph` in `web` with Node 22.16 or newer for dependency-free graph
 tests. `npm test` runs these tests followed by the existing Playwright suite,
@@ -75,7 +76,7 @@ Five perspectives share the same authorized projection:
 | Collaboration   | A workspace at the center of its people, conversations, goals, agents, tasks and artifacts.                                                                        |
 | Knowledge graph | Goals, tasks and artifacts with their explicit producers, tools, models, skills and conversations.                                                                 |
 | Execution flow  | Request authors, delegating agents, task cards, executing agents and produced artifacts. Current task counts and a time-scaled event timeline accompany the graph. |
-| Topology        | Local and configured peer nodes, separate agent clusters and configured tool links. Available to operators.                                                        |
+| Topology        | Local and directly authorized peer nodes, separate agent clusters and configured tool links. Available to authorized Subjects and operators.                       |
 
 **Agent relationships** retains the previous agent-focused exploration and topology
 controls. Agent-focus links open this perspective so exact entity selection stays
@@ -111,12 +112,34 @@ relationships. Goals represent the existing workspace goal; humans are explicit
 non-agent task/artifact/conversation principals. Registry IDs include origin,
 kind and version. Missing exact references stay unavailable.
 
-Configured peers and discovery metadata appear only for operators. **Configured**
-and **Discovered** describe the available evidence; they do not imply online or
-healthy. Remote runs link local tasks only when their task home is this node.
-Discovery-only agents appear in mesh/topology, and in other perspectives only
-when connected to recorded activity. Subject views never join remote discovery
-or remote run caches. Refreshed authorization removes stale nodes and details.
+Graph View asks the local Node for directly authorized Peer boundaries. Subjects
+can use Topology when their local policy grants `federation.graph.read`; named
+operators can select one authorized receiving tenant. Expand a Peer to fetch a
+versioned, bounded projection from that Node. **Configured** describes a Peer
+boundary, not its health. An authorized empty projection, a denial, an
+unavailable Peer and an older Peer without the graph endpoint have distinct
+states. The next page control replaces the current remote window, keeping
+browser memory bounded. Collapse removes that Peer's projected data without
+resetting other expanded Peers. Reload starts with boundaries only.
+
+The receiving Node decides which Registry, Workspace, Goal, Task, Run, Artifact
+and Conversation nodes, exact relationships and activity markers the viewer
+may see. A Goal inspector shows the full current body only after Workspace
+read authorization. Remote Task descriptions, Artifact contents, message bodies,
+human requests and raw configuration are not sent. Remote inspector and search
+use only projected fields, never matching local IDs as a fallback. A local Run
+can connect to a remote Agent only when that Agent is in the current authorized
+projection. A selected local Workspace limits remote operational records to
+explicitly related resources; selecting all Workspaces allows the receiving
+Node's own authorized Workspaces. Peer expansion does not traverse onward to a
+third Node.
+
+Expanded projections refresh within 30 seconds while the view is visible.
+Denial, connection loss, expiry, collapse, context change and reload remove
+remote names, relationships, Goal body, inspector and search data. A continuation
+page rechecks both Nodes' current authority and must match the projection
+generation. See [the authorization guide](authorization.md#federated-graph-view-authority)
+for the grant and endpoint contract.
 
 The renderer receives display metadata, not agent configuration, credentials,
 message bodies or artifact content. Node details use the existing authorized State.

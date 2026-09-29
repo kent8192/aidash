@@ -4,12 +4,22 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { Clock3, Filter, Focus, List, Network, RotateCcw } from "lucide-react";
 import type { Discovery, Run, State } from "../types";
 import { useI18n } from "../ui";
 import { disambiguateLabels } from "../display-labels";
+import {
+  graphError,
+  graphPage,
+  graphPeers,
+  mergeGraphPages,
+  validateGraphPage,
+  type GraphPage,
+  type RemoteExpansion,
+} from "./federated-graph";
 import { meshCopy } from "./mesh-copy";
 import { meshColors, MeshIcon } from "./mesh-icons";
 import {
@@ -34,6 +44,20 @@ const MeshCanvas = lazy(() =>
 const Neighborhood = lazy(() =>
   import("./agent-neighborhood").then((m) => ({ default: m.Graph })),
 );
+const supportedRelations = [
+  "contains",
+  "goal",
+  "depends",
+  "produces",
+  "executes",
+  "tool",
+  "model",
+  "skill",
+  "member",
+  "hosts",
+  "coordinates",
+  "participates",
+] as const;
 
 export function Graph({
   data,
@@ -76,15 +100,275 @@ export function Graph({
   const [list, setList] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [peerIds, setPeerIds] = useState<string[]>([]);
+  const [expansions, setExpansions] = useState<Record<string, RemoteExpansion>>(
+    {},
+  );
+  const [targetTenant, setTargetTenant] = useState("");
+  const [refreshTick, setRefreshTick] = useState(0);
+  const requests = useRef(new Map<string, number>());
+  const expansionsRef = useRef(expansions);
+  useEffect(() => {
+    expansionsRef.current = expansions;
+  }, [expansions]);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
   }, []);
-  const full = useMemo(
-    () => buildMeshGraph(data, { channel, discovery, runs, hours, now }),
-    [data, channel, discovery, runs, hours, now],
-  );
   const graphMode = mode === "neighborhood" ? "mesh" : mode;
+  const expandedKey = Object.keys(expansions).sort().join("\u0000");
+  const projectedKinds = useMemo(
+    () => kinds.filter((kind) => kind !== "human" && kind !== "remote"),
+    [kinds],
+  );
+  const projectedRelations = useMemo(
+    () =>
+      supportedRelations.filter(
+        (relation) => !relations || relations.includes(relation),
+      ),
+    [relations],
+  );
+  const scope = JSON.stringify([
+    channel,
+    graphMode,
+    [...projectedKinds].sort(),
+    [...projectedRelations].sort(),
+    hours,
+    targetTenant,
+  ]);
+  useEffect(() => {
+    setExpansions((previous) => {
+      if (Object.values(previous).every((value) => value.scope === scope))
+        return previous;
+      return Object.fromEntries(
+        Object.entries(previous).map(([peer]) => [
+          peer,
+          { state: "loading", scope },
+        ]),
+      );
+    });
+  }, [scope]);
+  useEffect(() => {
+    const deadlines = Object.values(expansions)
+      .filter((value) => value.page && value.checkedAt)
+      .map((value) => value.checkedAt! + 30_000);
+    if (!deadlines.length) return;
+    const timer = window.setTimeout(
+      () => {
+        const time = Date.now();
+        setExpansions((previous) =>
+          Object.fromEntries(
+            Object.entries(previous).map(([peer, value]) => [
+              peer,
+              value.page && time >= (value.checkedAt ?? 0) + 30_000
+                ? { state: "loading", scope: value.scope }
+                : value,
+            ]),
+          ),
+        );
+      },
+      Math.max(0, Math.min(...deadlines) - Date.now()),
+    );
+    return () => window.clearTimeout(timer);
+  }, [expansions]);
+  useEffect(() => {
+    let live = true;
+    const refresh = async () => {
+      try {
+        const peers = await graphPeers();
+        if (!live) return;
+        const ids = [...new Set(peers.map((peer) => peer.node_id))].sort();
+        setPeerIds((previous) =>
+          previous.length === ids.length &&
+          previous.every((id, index) => id === ids[index])
+            ? previous
+            : ids,
+        );
+        setExpansions((previous) =>
+          Object.fromEntries(
+            Object.entries(previous).filter(([id]) => ids.includes(id)),
+          ),
+        );
+      } catch {
+        if (!live) return;
+        setPeerIds([]);
+        setExpansions({});
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 25_000);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+  const requestPeer = useCallback(
+    async (peer: string, cursor: string | null, requestScope: string) => {
+      if (document.hidden) return;
+      const nonce = (requests.current.get(peer) ?? 0) + 1;
+      requests.current.set(peer, nonce);
+      setExpansions((previous) =>
+        previous[peer]
+          ? {
+              ...previous,
+              [peer]: {
+                ...previous[peer],
+                state: "loading",
+                scope: requestScope,
+                page:
+                  previous[peer].scope === requestScope
+                    ? previous[peer].page
+                    : undefined,
+              },
+            }
+          : previous,
+      );
+      try {
+        let page: GraphPage;
+        let windowCursor = cursor;
+        const options = {
+          node_id: peer,
+          scope_workspace: channel || null,
+          depth: 1 as const,
+          mode: graphMode,
+          kinds: projectedKinds,
+          relations: projectedRelations,
+          hours,
+          limit: 80,
+          target_tenant: data.access.kind === "operator" ? targetTenant : null,
+        };
+        try {
+          page = await graphPage({ ...options, cursor });
+        } catch (error) {
+          if (
+            !(
+              error instanceof Error &&
+              "status" in error &&
+              error.status === 409 &&
+              cursor
+            )
+          )
+            throw error;
+          windowCursor = null;
+          page = await graphPage({ ...options, cursor: null });
+        }
+        if (!validateGraphPage(page, peer))
+          throw new Error("Invalid graph projection");
+        if (requests.current.get(peer) !== nonce) return;
+        setExpansions((previous) =>
+          previous[peer]
+            ? {
+                ...previous,
+                [peer]: {
+                  state: page.nodes.length ? "ready" : "empty",
+                  page,
+                  windowCursor,
+                  checkedAt: Date.now(),
+                  scope: requestScope,
+                },
+              }
+            : previous,
+        );
+      } catch (error) {
+        if (requests.current.get(peer) !== nonce) return;
+        setExpansions((previous) =>
+          previous[peer]
+            ? {
+                ...previous,
+                [peer]: { state: graphError(error), scope: requestScope },
+              }
+            : previous,
+        );
+      }
+    },
+    [
+      channel,
+      graphMode,
+      projectedKinds,
+      projectedRelations,
+      hours,
+      targetTenant,
+      data.access.kind,
+    ],
+  );
+  useEffect(() => {
+    if (mode === "neighborhood" || document.hidden) return;
+    for (const peer of Object.keys(expansionsRef.current)) {
+      if (!peerIds.includes(peer)) continue;
+      const current = expansionsRef.current[peer];
+      void requestPeer(
+        peer,
+        current.scope === scope ? (current.windowCursor ?? null) : null,
+        scope,
+      );
+    }
+    // Only expansion membership, scope and refresh clock start a new request.
+  }, [expandedKey, peerIds, scope, refreshTick, mode, requestPeer]);
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.hidden) {
+        for (const peer of Object.keys(expansionsRef.current))
+          requests.current.set(peer, (requests.current.get(peer) ?? 0) + 1);
+        setExpansions((previous) =>
+          Object.fromEntries(
+            Object.entries(previous).map(([peer, value]) => [
+              peer,
+              { state: "loading", scope: value.scope },
+            ]),
+          ),
+        );
+      } else setRefreshTick((value) => value + 1);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [expandedKey]);
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => setRefreshTick((value) => value + 1),
+      25_000,
+    );
+    return () => window.clearInterval(timer);
+  }, []);
+  useEffect(() => {
+    if (mode === "neighborhood") setExpansions({});
+  }, [mode]);
+  const pages = useMemo(
+    () =>
+      new Map(
+        Object.entries(expansions)
+          .filter(
+            ([peer, value]) =>
+              peerIds.includes(peer) &&
+              value.page &&
+              value.scope === scope &&
+              now - (value.checkedAt ?? 0) < 30_000,
+          )
+          .map(([peer, value]) => [peer, value.page!] as const),
+      ),
+    [expansions, peerIds, scope, now],
+  );
+  const full = useMemo(
+    () =>
+      mergeGraphPages(
+        buildMeshGraph(data, {
+          channel,
+          runs,
+          authorizedPeers: peerIds,
+          hours,
+          now,
+        }),
+        data.node.id,
+        pages,
+        runs,
+      ),
+    [data, channel, runs, peerIds, pages, hours, now],
+  );
+  useEffect(() => {
+    if (selectedId && !full.nodes.some((node) => node.id === selectedId))
+      setSelectedId("");
+    if (focused && !full.nodes.some((node) => node.id === focused))
+      setFocused("");
+  }, [full, selectedId, focused]);
   const graph = useMemo(
     () =>
       filterMeshGraph(full, {
@@ -153,6 +437,25 @@ export function Graph({
   const select = (id: string) => {
     setSelectedId(id);
     setClosed(false);
+  };
+  const togglePeer = (peer: string) => {
+    if (expansions[peer]) {
+      requests.current.set(peer, (requests.current.get(peer) ?? 0) + 1);
+      setExpansions((previous) => {
+        const next = { ...previous };
+        delete next[peer];
+        return next;
+      });
+      if (
+        selectedId &&
+        full.nodes.find((node) => node.id === selectedId)?.nodeId === peer
+      )
+        setSelectedId("");
+    } else
+      setExpansions((previous) => ({
+        ...previous,
+        [peer]: { state: "loading", scope },
+      }));
   };
   const selectConnected = (id: string) => {
     if (!graph.nodes.some((n) => n.id === id)) {
@@ -271,15 +574,11 @@ export function Graph({
                   changeMode(e.target.value as MeshMode | "neighborhood")
                 }
               >
-                {(Object.keys(copy.modes) as MeshMode[])
-                  .filter(
-                    (v) => v !== "topology" || data.access.kind === "operator",
-                  )
-                  .map((v) => (
-                    <option key={v} value={v}>
-                      {copy.modes[v]}
-                    </option>
-                  ))}
+                {(Object.keys(copy.modes) as MeshMode[]).map((v) => (
+                  <option key={v} value={v}>
+                    {copy.modes[v]}
+                  </option>
+                ))}
                 <option value="neighborhood">{copy.fullDetails}</option>
               </select>
             </label>
@@ -380,6 +679,84 @@ export function Graph({
                 </button>
               </div>
             </div>
+            {peerIds.length > 0 && (
+              <div
+                className="mesh-peer-controls"
+                aria-label={copy.kinds.remote}
+              >
+                {data.access.kind === "operator" && (
+                  <label>
+                    {copy.peerScope}
+                    <input
+                      aria-label={copy.peerScope}
+                      value={targetTenant}
+                      onChange={(event) => {
+                        setTargetTenant(event.target.value);
+                        setExpansions({});
+                        setSelectedId("");
+                      }}
+                    />
+                  </label>
+                )}
+                {peerIds.map((peer) => {
+                  const expansion = expansions[peer];
+                  const state = expansion?.state;
+                  const stateLabel =
+                    state === "loading"
+                      ? copy.peerLoading
+                      : state === "empty"
+                        ? copy.peerEmpty
+                        : state === "denied"
+                          ? copy.peerDenied
+                          : state === "unsupported"
+                            ? copy.peerUnsupported
+                            : state === "oversized"
+                              ? copy.peerOversized
+                              : state === "unavailable"
+                                ? copy.peerUnavailable
+                                : "";
+                  return (
+                    <div className="mesh-peer" key={peer}>
+                      <span>{peer}</span>
+                      <button
+                        type="button"
+                        onClick={() => togglePeer(peer)}
+                        disabled={
+                          data.access.kind === "operator" &&
+                          !targetTenant.trim()
+                        }
+                      >
+                        {expansion ? copy.collapsePeer : copy.expandPeer}
+                      </button>
+                      {expansion && (
+                        <button
+                          type="button"
+                          onClick={() => void requestPeer(peer, null, scope)}
+                        >
+                          {copy.refreshPeer}
+                        </button>
+                      )}
+                      {expansion?.page?.next_cursor &&
+                        expansion.scope === scope && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void requestPeer(
+                                peer,
+                                expansion.page!.next_cursor,
+                                scope,
+                              )
+                            }
+                          >
+                            {copy.loadMorePeer}
+                          </button>
+                        )}
+                      {stateLabel && <small role="status">{stateLabel}</small>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
             {mode === "execution" && (
               <div className="mesh-statistics">
                 {(
@@ -626,6 +1003,9 @@ export function Graph({
           close={() => setClosed(true)}
           open={open}
           visitChannel={visitChannel}
+          remoteActivity={pages
+            .get(selected.nodeId)
+            ?.activity.filter((marker) => marker.reference === selected.id)}
         />
       )}
     </section>

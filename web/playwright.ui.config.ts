@@ -11,6 +11,7 @@ export default defineConfig({
     "collaboration.spec.ts",
     "core-capabilities.spec.ts",
     "mesh-graph.spec.ts",
+    "federated-graph.spec.ts",
     "agent-graph.spec.ts",
     "agent-skills.spec.ts",
     "entity-configuration.spec.ts",

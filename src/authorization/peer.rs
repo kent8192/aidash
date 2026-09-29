@@ -3,6 +3,7 @@
 pub(crate) mod admission;
 pub(crate) mod discovery;
 pub(crate) mod execution;
+pub(crate) mod graph;
 pub(crate) mod reads;
 
 use super::{
@@ -51,6 +52,7 @@ pub fn routes() -> OpenApiRouter<Federation> {
 	OpenApiRouter::new()
 		.routes(routes!(list, set))
 		.routes(routes!(history))
+		.merge(graph::control_routes())
 }
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
