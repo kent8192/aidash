@@ -333,7 +333,7 @@ export function EntityForm({
                     context_window: Number(s("context_window")),
                     max_output_tokens: Number(s("max_output_tokens")),
                     modalities: JSON.parse(s("modalities")),
-					media_routes: JSON.parse(s("media_routes") || "[]"),
+                    media_routes: JSON.parse(s("media_routes") || "[]"),
                     cost: JSON.parse(s("cost")),
                   }
                 : kind === "embedding"

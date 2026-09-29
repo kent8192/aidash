@@ -648,7 +648,9 @@ function ConversationFeed({
                 <button
                   className="primary"
                   aria-label={thread ? threads.sendReply : copy.send}
-                disabled={busy || (!draft.text.trim() && draft.files.length === 0)}
+                  disabled={
+                    busy || (!draft.text.trim() && draft.files.length === 0)
+                  }
                 >
                   <Send size={15} />
                   {sending && (

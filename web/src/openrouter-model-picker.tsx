@@ -174,9 +174,15 @@ export function OpenRouterModelPicker({
         name="modalities"
         value={JSON.stringify(selected?.architecture.input_modalities ?? [])}
       />
-      {selected?.architecture.input_modalities.some((modality) => modality === "image" || modality === "audio") && (
+      {selected?.architecture.input_modalities.some(
+        (modality) => modality === "image" || modality === "audio",
+      ) && (
         <details>
-          <summary>{locale === "ja-JP" ? "確認済みメディア経路" : "Verified media routes"}</summary>
+          <summary>
+            {locale === "ja-JP"
+              ? "確認済みメディア経路"
+              : "Verified media routes"}
+          </summary>
           <p className="muted">
             {locale === "ja-JP"
               ? "画像・音声を使うには、経路ごとの対応形式と確認根拠、有効期限を登録してください。期限切れや未確認の経路では送信しません。"
@@ -184,7 +190,11 @@ export function OpenRouterModelPicker({
           </p>
           <textarea
             name="media_routes"
-            aria-label={locale === "ja-JP" ? "メディア経路の確認根拠 JSON" : "Media route evidence JSON"}
+            aria-label={
+              locale === "ja-JP"
+                ? "メディア経路の確認根拠 JSON"
+                : "Media route evidence JSON"
+            }
             rows={5}
             defaultValue="[]"
             spellCheck={false}

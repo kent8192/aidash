@@ -428,11 +428,17 @@ function RunPanel({
       : query.data?.pages[0].run
     : remoteNode?.runs.find((value) => value.id === id);
   const [draft, setDraft] = useState("");
-  const [files, setFiles] = useState<{ key: string; file: File; uploaded?: string }[]>([]);
+  const [files, setFiles] = useState<
+    { key: string; file: File; uploaded?: string }[]
+  >([]);
   const [fileError, setFileError] = useState("");
   const [uploading, setUploading] = useState(false);
   const sending = useRef(false);
-  const request = useRef<{ content: string; attachments: string[]; key: string } | null>(null);
+  const request = useRef<{
+    content: string;
+    attachments: string[];
+    key: string;
+  } | null>(null);
   if (!run)
     return (
       <p role="status">
@@ -499,27 +505,53 @@ function RunPanel({
                     let uploaded = entry.uploaded;
                     if (!uploaded) {
                       setUploading(true);
-                      uploaded = (await channelAttachmentUpload(run.workspace_id, entry.file, {
-                        filename: entry.file.name,
-                        media_type: entry.file.type || "application/octet-stream",
-                        idempotency_key: entry.key,
-                      })).id;
-                      setFiles((current) => current.map((file) =>
-                        file.key === entry.key ? { ...file, uploaded } : file));
+                      uploaded = (
+                        await channelAttachmentUpload(
+                          run.workspace_id,
+                          entry.file,
+                          {
+                            filename: entry.file.name,
+                            media_type:
+                              entry.file.type || "application/octet-stream",
+                            idempotency_key: entry.key,
+                          },
+                        )
+                      ).id;
+                      setFiles((current) =>
+                        current.map((file) =>
+                          file.key === entry.key ? { ...file, uploaded } : file,
+                        ),
+                      );
                     }
                     attachments.push(uploaded);
                   }
-                  if (request.current?.content !== content ||
-                    JSON.stringify(request.current.attachments) !== JSON.stringify(attachments)) {
-                    request.current = { content, attachments, key: crypto.randomUUID() };
+                  if (
+                    request.current?.content !== content ||
+                    JSON.stringify(request.current.attachments) !==
+                      JSON.stringify(attachments)
+                  ) {
+                    request.current = {
+                      content,
+                      attachments,
+                      key: crypto.randomUUID(),
+                    };
                   }
                   const idempotency_key = request.current.key;
                   const ok = await submit(() =>
                     local
-                      ? runMessage(id, { content, idempotency_key, attachment_ids: attachments })
+                      ? runMessage(id, {
+                          content,
+                          idempotency_key,
+                          attachment_ids: attachments,
+                        })
                       : remoteAction({
                           node_id: node,
-                          control: { run_id: id, action: "message", content, idempotency_key },
+                          control: {
+                            run_id: id,
+                            action: "message",
+                            content,
+                            idempotency_key,
+                          },
                         }),
                   );
                   if (ok) {
@@ -528,7 +560,9 @@ function RunPanel({
                     request.current = null;
                   }
                 } catch (reason) {
-                  setFileError(`${fileCopy.attachmentError} ${reason instanceof Error ? reason.message : String(reason)}`);
+                  setFileError(
+                    `${fileCopy.attachmentError} ${reason instanceof Error ? reason.message : String(reason)}`,
+                  );
                 } finally {
                   setUploading(false);
                   sending.current = false;
@@ -544,27 +578,60 @@ function RunPanel({
                 rows={3}
               />
             </Field>
-            {local && <>
-              <input type="file" multiple aria-label={fileCopy.attach}
-                onChange={(event) => {
-                  const selected = [...files, ...Array.from(event.target.files ?? []).map((file) => ({ key: crypto.randomUUID(), file }))];
-                  if (validAttachments(selected.map((item) => item.file))) {
-                    setFiles(selected);
-                    request.current = null;
-                    setFileError("");
-                  } else setFileError(fileCopy.invalidAttachment);
-                  event.target.value = "";
-                }} />
-              {files.length > 0 && <ul className="workspace-draft-files">
-                {files.map((entry) => <li key={entry.key}>{entry.file.name}
-                  <button type="button" aria-label={`${fileCopy.removeAttachment}: ${entry.file.name}`}
-                    onClick={() => { setFiles((current) => current.filter((file) => file.key !== entry.key)); request.current = null; }}>×</button>
-                </li>)}
-              </ul>}
-              <p>{fileCopy.attachmentLimit}</p>
-            </>}
-            {fileError && <p role="alert" className="error">{fileError}</p>}
-            <button className="primary" disabled={uploading}>{uploading ? fileCopy.uploading : copy.send}</button>
+            {local && (
+              <>
+                <input
+                  type="file"
+                  multiple
+                  aria-label={fileCopy.attach}
+                  onChange={(event) => {
+                    const selected = [
+                      ...files,
+                      ...Array.from(event.target.files ?? []).map((file) => ({
+                        key: crypto.randomUUID(),
+                        file,
+                      })),
+                    ];
+                    if (validAttachments(selected.map((item) => item.file))) {
+                      setFiles(selected);
+                      request.current = null;
+                      setFileError("");
+                    } else setFileError(fileCopy.invalidAttachment);
+                    event.target.value = "";
+                  }}
+                />
+                {files.length > 0 && (
+                  <ul className="workspace-draft-files">
+                    {files.map((entry) => (
+                      <li key={entry.key}>
+                        {entry.file.name}
+                        <button
+                          type="button"
+                          aria-label={`${fileCopy.removeAttachment}: ${entry.file.name}`}
+                          onClick={() => {
+                            setFiles((current) =>
+                              current.filter((file) => file.key !== entry.key),
+                            );
+                            request.current = null;
+                          }}
+                        >
+                          ×
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <p>{fileCopy.attachmentLimit}</p>
+              </>
+            )}
+            {fileError && (
+              <p role="alert" className="error">
+                {fileError}
+              </p>
+            )}
+            <button className="primary" disabled={uploading}>
+              {uploading ? fileCopy.uploading : copy.send}
+            </button>
           </form>
         </>
       )}

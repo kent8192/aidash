@@ -57,6 +57,15 @@ pub(crate) struct FencedRunMessageOutput<'a> {
 	pub key: &'a str,
 }
 
+struct RunMessageAcceptance<'a> {
+	run_id: Uuid,
+	sender: &'a str,
+	content: &'a str,
+	key: &'a str,
+	max_input_tokens: usize,
+	allow_empty: bool,
+}
+
 fn run_input_size(sender: &str, content: &str) -> usize {
 	// The provider receives JSON records, so count escaped content as well as
 	// framing. This is the same conservative byte-based estimate as Context.
@@ -2526,8 +2535,18 @@ impl Store {
 		key: &str,
 		max_input_tokens: usize,
 	) -> Result<()> {
-		self.accept_run_message_inner(tx, run_id, sender, content, key, max_input_tokens, false)
-			.await
+		self.accept_run_message_inner(
+			tx,
+			RunMessageAcceptance {
+				run_id,
+				sender,
+				content,
+				key,
+				max_input_tokens,
+				allow_empty: false,
+			},
+		)
+		.await
 	}
 
 	pub(crate) async fn accept_run_media_message_in(
@@ -2539,20 +2558,33 @@ impl Store {
 		key: &str,
 		max_input_tokens: usize,
 	) -> Result<()> {
-		self.accept_run_message_inner(tx, run_id, sender, content, key, max_input_tokens, true)
-			.await
+		self.accept_run_message_inner(
+			tx,
+			RunMessageAcceptance {
+				run_id,
+				sender,
+				content,
+				key,
+				max_input_tokens,
+				allow_empty: true,
+			},
+		)
+		.await
 	}
 
 	async fn accept_run_message_inner(
 		&self,
 		tx: &mut Transaction<'_, Postgres>,
-		run_id: Uuid,
-		sender: &str,
-		content: &str,
-		key: &str,
-		max_input_tokens: usize,
-		allow_empty: bool,
+		request: RunMessageAcceptance<'_>,
 	) -> Result<()> {
+		let RunMessageAcceptance {
+			run_id,
+			sender,
+			content,
+			key,
+			max_input_tokens,
+			allow_empty,
+		} = request;
 		if !allow_empty {
 			nonempty(content, "message")?;
 		}

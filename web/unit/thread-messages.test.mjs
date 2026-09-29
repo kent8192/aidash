@@ -65,10 +65,10 @@ test("message retry identity includes attachment order", () => {
     submissionFor(first, "workspace", null, "source", key, ["a", "b"]).key,
     first.key,
   );
-	assert.equal(
-		submissionFor(first, "workspace", null, "source", key, ["b", "a"]).key,
-		first.key,
-	);
+  assert.equal(
+    submissionFor(first, "workspace", null, "source", key, ["b", "a"]).key,
+    first.key,
+  );
   assert.notEqual(
     submissionFor(first, "workspace", null, "source", key, ["b"]).key,
     first.key,
