@@ -239,6 +239,127 @@ async fn verify_expired_route_retry(app: &Router, f: &Federation, operator: &str
 	assert_eq!(f.store.run_inputs(run.id).await.unwrap().len(), 1);
 }
 
+async fn verify_separate_format_routes(
+	app: &Router,
+	f: &Federation,
+	worker: &Harness,
+	received: &mut mpsc::UnboundedReceiver<Value>,
+	operator: &str,
+) {
+	let mut model = f.registry.get("model", "1.0.1").await.unwrap();
+	model.version = "1.0.3".into();
+	model.config["media_routes"] = json!([
+		{"tag":"fixture/png", "formats":["image/png"], "source":"mock provider contract",
+		 "verified_at":chrono::Utc::now() - chrono::Duration::hours(1),
+		 "expires_at":chrono::Utc::now() + chrono::Duration::hours(1)},
+		{"tag":"fixture/jpeg", "formats":["image/jpeg"], "source":"mock provider contract",
+		 "verified_at":chrono::Utc::now() - chrono::Duration::hours(1),
+		 "expires_at":chrono::Utc::now() + chrono::Duration::hours(1)}
+	]);
+	let (status, body) = request(app, operator, "POST", "/api/registry", json!(model)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		app,
+		operator,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"entry":{"id":"model","version":"1.0.3"},"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let mut agent = f.registry.get("research", "1.0.1").await.unwrap();
+	agent.version = "1.0.3".into();
+	agent.config["model"]["version"] = json!("1.0.3");
+	let (status, body) = request(app, operator, "POST", "/api/registry", json!(agent)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		app,
+		operator,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"entry":{"id":"research","version":"1.0.3"},"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, created) = request(
+		app,
+		operator,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Separate media routes", "goal":"Inspect both images", "target":{"id":"research","version":"1.0.3"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let workspace = created["workspace"]["id"].as_str().unwrap();
+	let run = f
+		.store
+		.runs()
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.workspace_id.to_string() == workspace)
+		.unwrap();
+	let images = [
+		(
+			"first.png",
+			"image/png",
+			b"\x89PNG\r\n\x1a\nfirst".as_slice(),
+			"fixture/png",
+		),
+		(
+			"second.jpg",
+			"image/jpeg",
+			b"\xff\xd8\xffsecond".as_slice(),
+			"fixture/jpeg",
+		),
+	];
+	for (name, mime, bytes, _) in images {
+		let attachment = upload(app, operator, workspace, name, mime, bytes).await;
+		let (status, sent) = request(
+			app,
+			operator,
+			"POST",
+			&format!("/api/runs/{}/message", run.id),
+			json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}),
+		)
+		.await;
+		assert_eq!(status, 200, "{sent}");
+	}
+	let mut seen = Vec::new();
+	for _ in 0..12 {
+		assert!(worker.worker_once().await.unwrap());
+		while let Ok(body) = received.try_recv() {
+			let Some(parts) = body["messages"][1]["content"].as_array() else {
+				continue;
+			};
+			let urls: Vec<_> = parts
+				.iter()
+				.filter_map(|part| part["image_url"]["url"].as_str())
+				.collect();
+			if urls.is_empty() {
+				continue;
+			}
+			assert_eq!(urls.len(), 1, "each request needs one common media route");
+			for (index, (_, mime, bytes, tag)) in images.iter().enumerate() {
+				let expected = format!(
+					"data:{mime};base64,{}",
+					base64::engine::general_purpose::STANDARD.encode(bytes)
+				);
+				if urls[0] == expected {
+					assert_eq!(body["provider"]["only"], json!([tag]));
+					if !seen.contains(&index) {
+						seen.push(index);
+					}
+				}
+			}
+		}
+		if seen.len() == 2 {
+			break;
+		}
+	}
+	assert_eq!(seen, vec![0, 1], "both formats must reach their own route");
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
@@ -249,8 +370,8 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	let (sent, mut received) = mpsc::unbounded_channel();
 	let empty_media_observation = Arc::new(AtomicBool::new(true));
 	let provider = Router::new()
-		.route("/v1/models/fixture/endpoints", get(|| async { Json(json!({"data":{"architecture":{"input_modalities":["text","image","audio"]},"endpoints":[{"tag":"fixture/verified","context_length":128000}]}})) }))
-		.route("/v1/endpoints/zdr", get(|| async { Json(json!({"data":[{"model_id":"fixture","tag":"fixture/verified"}]})) }))
+		.route("/v1/models/fixture/endpoints", get(|| async { Json(json!({"data":{"architecture":{"input_modalities":["text","image","audio"]},"endpoints":[{"tag":"fixture/verified","context_length":128000},{"tag":"fixture/png","context_length":128000},{"tag":"fixture/jpeg","context_length":128000}]}})) }))
+		.route("/v1/endpoints/zdr", get(|| async { Json(json!({"data":[{"model_id":"fixture","tag":"fixture/verified"},{"model_id":"fixture","tag":"fixture/png"},{"model_id":"fixture","tag":"fixture/jpeg"}]})) }))
 		.route("/v1/chat/completions", post(move |Json(body): Json<Value>| {
 			let sent = sent.clone();
 			let empty_media_observation = empty_media_observation.clone();
@@ -652,6 +773,14 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 			message_text: "",
 			leading_text: Some(&leading_text),
 		},
+	))
+	.await;
+	Box::pin(verify_separate_format_routes(
+		&app,
+		&f,
+		&worker,
+		&mut received,
+		&operator,
 	))
 	.await;
 	Box::pin(verify_expired_route_retry(&app, &f, &operator)).await;

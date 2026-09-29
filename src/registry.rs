@@ -266,20 +266,39 @@ impl ModelConfig {
 		if formats.is_empty() {
 			return Ok(());
 		}
-		let now = chrono::Utc::now();
-		if !self.media_routes.iter().any(|route| {
-			route.verified_at <= now
-				&& route.expires_at > now
-				&& formats
-					.iter()
-					.all(|format| route.formats.iter().any(|supported| supported == format))
-		}) {
+		if !self.has_current_media_route(formats) {
 			return Err(Error::Invalid(format!(
 				"recipient model {} has no current media route for every selected format",
 				self.model_id
 			)));
 		}
 		Ok(())
+	}
+
+	pub(crate) fn has_current_media_route_for_parts(
+		&self,
+		parts: &[crate::provider::ContentPart],
+	) -> bool {
+		self.has_current_media_route(parts.iter().filter_map(|part| match part {
+			crate::provider::ContentPart::Image { media_type, .. } => Some(media_type.as_str()),
+			crate::provider::ContentPart::Audio { format, .. } => Some(format.as_str()),
+			crate::provider::ContentPart::Text(_) => None,
+		}))
+	}
+
+	fn has_current_media_route<'a>(&self, formats: impl IntoIterator<Item = &'a str>) -> bool {
+		let formats: Vec<_> = formats.into_iter().collect();
+		if formats.is_empty() {
+			return true;
+		}
+		let now = chrono::Utc::now();
+		self.media_routes.iter().any(|route| {
+			route.verified_at <= now
+				&& route.expires_at > now
+				&& formats
+					.iter()
+					.all(|format| route.formats.iter().any(|supported| supported == format))
+		})
 	}
 	/// Resolve the provider's inference deadline without inheriting the shared
 	/// HTTP client's shorter default. Validate at registration and before use.

@@ -661,7 +661,7 @@ impl Harness {
 				let model_cfg: ModelConfig = serde_json::from_value(model_entry.config)?;
 				let window = model_cfg.context_window;
 				let output_limit = model_cfg.output_token_limit();
-				let model = provider(self.federation.client.clone(), model_cfg)?;
+				let model = provider(self.federation.client.clone(), model_cfg.clone())?;
 				let mut tools = self.tools(&agent).await?;
 				if let Some(guard) = guard {
 					guard.filter_core_tools(&mut tools).await?;
@@ -818,6 +818,7 @@ impl Harness {
 					},
 					&new_messages,
 					media_headroom,
+					&model_cfg,
 				))
 				.await?;
 				if media.defer_human {
@@ -1197,10 +1198,13 @@ impl Harness {
 							"kind":"run_message_summary_required",
 							"through_seq":run.pending["run_message_summary_end_seq"]
 						}));
-						run.context = json!(context);
 						run.phase = "THINKING".into();
-						run.pending =
-							json!({"selected_media":pending_selected_media(&run.pending)});
+						run.pending = stale_media_pending(
+							&mut context,
+							&run.pending,
+							&mut run.observed_input_seq,
+						);
+						run.context = json!(context);
 						store
 							.save_run(run, token, "run.message_summary_required")
 							.await?;
@@ -1216,10 +1220,13 @@ impl Harness {
 							"max_bytes":summary_limit,
 							"reason":"summary exceeded the complete-summary limit"
 						}));
-						run.context = json!(context);
 						run.phase = "THINKING".into();
-						run.pending =
-							json!({"selected_media":pending_selected_media(&run.pending)});
+						run.pending = stale_media_pending(
+							&mut context,
+							&run.pending,
+							&mut run.observed_input_seq,
+						);
+						run.context = json!(context);
 						store
 							.save_run(run, token, "run.message_summary_required")
 							.await?;
@@ -2308,6 +2315,7 @@ async fn resolve_model_input_media(
 	selections: &[crate::capabilities::sharing::Selection],
 	messages: &[(i64, Uuid, usize)],
 	headroom: usize,
+	model: &ModelConfig,
 ) -> Result<ResolvedMedia> {
 	let selected_parts = if selections.is_empty() {
 		Vec::new()
@@ -2327,9 +2335,10 @@ async fn resolve_model_input_media(
 			has_more: false,
 		}
 	} else if let Some(guard) = guard {
-		guard.human_message_media(messages).await?
+		guard.human_message_media(messages, model).await?
 	} else {
-		crate::authorization::execution::operator_human_message_media(store, run, messages).await?
+		crate::authorization::execution::operator_human_message_media(store, run, messages, model)
+			.await?
 	};
 	let batch_headroom = human
 		.through_seq
@@ -2345,6 +2354,7 @@ async fn resolve_model_input_media(
 		human.parts,
 		batch_headroom,
 		human.through_seq.is_some(),
+		model,
 	);
 	Ok(ResolvedMedia {
 		parts,
@@ -2359,12 +2369,14 @@ fn choose_inference_media(
 	human_parts: Vec<crate::provider::ContentPart>,
 	headroom: usize,
 	human_batch_present: bool,
+	model: &ModelConfig,
 ) -> (Vec<crate::provider::ContentPart>, bool) {
 	let mut combined = selected_parts;
 	combined.extend(human_parts.iter().cloned());
 	let defer_selected = human_batch_present
 		&& (!crate::provider::ModelRequest::media_within_limits(&combined)
-			|| media_request_headroom(headroom, &combined).is_err());
+			|| media_request_headroom(headroom, &combined).is_err()
+			|| !model.has_current_media_route_for_parts(&combined));
 	(
 		if defer_selected {
 			human_parts
@@ -2503,6 +2515,23 @@ mod review_tests {
 	use serde_json::json;
 	use uuid::Uuid;
 
+	fn media_model() -> crate::registry::ModelConfig {
+		serde_json::from_value(json!({
+			"provider":"openrouter", "model_id":"fixture", "endpoint":"https://example.com",
+			"credential_env":null, "context_window":128000, "max_output_tokens":4096,
+			"modalities":["text","image","audio"], "cost":{},
+			"media_routes":[
+				{"tag":"fixture/png", "formats":["image/png", "wav"],
+				"source":"test", "verified_at":chrono::Utc::now() - chrono::Duration::hours(1),
+				"expires_at":chrono::Utc::now() + chrono::Duration::hours(1)},
+				{"tag":"fixture/jpeg", "formats":["image/jpeg"],
+				"source":"test", "verified_at":chrono::Utc::now() - chrono::Duration::hours(1),
+				"expires_at":chrono::Utc::now() + chrono::Duration::hours(1)}
+			]
+		}))
+		.unwrap()
+	}
+
 	#[rstest::rstest]
 	fn transient_provider_statuses_keep_the_worker_retry_path() {
 		for status in [408, 429, 500, 503] {
@@ -2558,6 +2587,7 @@ mod review_tests {
 			vec![image()],
 			128_000,
 			true,
+			&media_model(),
 		);
 		assert!(deferred);
 		assert_eq!(parts.len(), 1);
@@ -2569,8 +2599,13 @@ mod review_tests {
 			format: "wav".into(),
 			bytes: vec![0; 1024 * 1024],
 		};
-		let (parts, deferred) =
-			super::choose_inference_media(vec![audio()], vec![audio()], 128_000, true);
+		let (parts, deferred) = super::choose_inference_media(
+			vec![audio()],
+			vec![audio()],
+			128_000,
+			true,
+			&media_model(),
+		);
 		assert!(deferred);
 		assert_eq!(parts.len(), 1);
 	}
@@ -2582,9 +2617,32 @@ mod review_tests {
 			bytes: vec![0; 64 * 1024],
 		};
 		let (parts, deferred) =
-			super::choose_inference_media(vec![selected], Vec::new(), 2_048, true);
+			super::choose_inference_media(vec![selected], Vec::new(), 2_048, true, &media_model());
 		assert!(deferred);
 		assert!(parts.is_empty());
+	}
+
+	#[rstest::rstest]
+	fn selected_media_waits_when_human_media_needs_another_route() {
+		let selected = crate::provider::ContentPart::Image {
+			media_type: "image/jpeg".into(),
+			bytes: vec![1],
+		};
+		let human = crate::provider::ContentPart::Image {
+			media_type: "image/png".into(),
+			bytes: vec![2],
+		};
+		let (parts, deferred) = super::choose_inference_media(
+			vec![selected],
+			vec![human],
+			128_000,
+			true,
+			&media_model(),
+		);
+		assert!(deferred);
+		assert!(
+			matches!(parts.as_slice(), [crate::provider::ContentPart::Image {media_type, ..}] if media_type == "image/png")
+		);
 	}
 
 	#[rstest::rstest]

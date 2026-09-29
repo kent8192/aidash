@@ -787,12 +787,13 @@ pub(crate) async fn operator_human_message_media(
 	store: &Store,
 	run: &Run,
 	messages: &[(i64, Uuid, usize)],
+	model: &crate::registry::ModelConfig,
 ) -> Result<HumanMediaBatch> {
 	if run.home_node != store.node_id {
 		return Err(Error::Forbidden);
 	}
 	let mut tx = store.pool.begin().await?;
-	let parts = load_human_message_media(&mut tx, run.workspace_id, messages).await?;
+	let parts = load_human_message_media(&mut tx, run.workspace_id, messages, model).await?;
 	tx.commit().await?;
 	Ok(parts)
 }
@@ -807,6 +808,7 @@ async fn load_human_message_media(
 	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 	workspace: Uuid,
 	messages: &[(i64, Uuid, usize)],
+	model: &crate::registry::ModelConfig,
 ) -> Result<HumanMediaBatch> {
 	#[derive(sqlx::FromRow)]
 	struct Attachment {
@@ -878,6 +880,17 @@ async fn load_human_message_media(
 			parts.truncate(previous_len);
 			if through_seq.is_none() {
 				return Err(error);
+			}
+			has_more = true;
+			break;
+		}
+		if !model.has_current_media_route_for_parts(&parts) {
+			parts.truncate(previous_len);
+			if through_seq.is_none() {
+				return Err(Error::Invalid(format!(
+					"recipient model {} has no current media route for this message",
+					model.model_id
+				)));
 			}
 			has_more = true;
 			break;
@@ -1257,6 +1270,7 @@ impl Guard {
 	pub async fn human_message_media(
 		&self,
 		messages: &[(i64, Uuid, usize)],
+		model: &crate::registry::ModelConfig,
 	) -> Result<HumanMediaBatch> {
 		let mut access = self.access.lock().await;
 		for (_, id, _) in messages {
@@ -1264,7 +1278,7 @@ impl Guard {
 				.workspace_record(self.run.workspace_id, "message", *id)
 				.await?;
 		}
-		load_human_message_media(&mut access.tx, self.run.workspace_id, messages).await
+		load_human_message_media(&mut access.tx, self.run.workspace_id, messages, model).await
 	}
 
 	async fn authorize_inference_with(&self, access: &mut Access) -> Result<()> {

@@ -905,8 +905,12 @@ async fn catchup_summary_retries_and_completes_without_spending_the_last_step(
 	let selected = json!({"file_id":Uuid::new_v4(),"expected_digest":"digest"});
 	leased.step = max_steps - 1;
 	leased.phase = "TOOL_CALL".into();
+	leased.context["media_inferred_seq"] = json!(7);
+	leased.observed_input_seq = 7;
 	leased.pending = json!({
 		"included_input_seq":0,
+		"media_inferred_seq_before_response":0,
+		"observed_input_seq_before_response":0,
 		"response":{"text":"summary that is too long","tool_calls":[],"input_tokens":1,"output_tokens":1,"usage_complete":true},
 		"cursor":0,
 		"deferred_selected_media":[selected],
@@ -933,6 +937,8 @@ async fn catchup_summary_retries_and_completes_without_spending_the_last_step(
 	assert_eq!(current.step, leased.step);
 	assert_eq!(current.context["run_message_summary_seq"], 0);
 	assert_eq!(current.context["run_message_summary"], "");
+	assert_eq!(current.context["media_inferred_seq"], 0);
+	assert_eq!(current.observed_input_seq, 0);
 	assert_eq!(current.pending["selected_media"], json!([selected]));
 	assert!(
 		current.context["history"]
