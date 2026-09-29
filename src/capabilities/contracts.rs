@@ -33,6 +33,7 @@ pub struct FileSearch {
 pub enum Representation {
 	Text,
 	Metadata,
+	ModelInput,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]

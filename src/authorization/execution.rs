@@ -783,6 +783,126 @@ impl WorkerAuthority {
 	}
 }
 
+pub(crate) async fn operator_human_message_media(
+	store: &Store,
+	run: &Run,
+	messages: &[(i64, Uuid, usize)],
+	model: &crate::registry::ModelConfig,
+) -> Result<HumanMediaBatch> {
+	if run.home_node != store.node_id {
+		return Err(Error::Forbidden);
+	}
+	let mut tx = store.pool.begin().await?;
+	let parts = load_human_message_media(&mut tx, run.workspace_id, messages, model).await?;
+	tx.commit().await?;
+	Ok(parts)
+}
+
+pub(crate) struct HumanMediaBatch {
+	pub parts: Vec<crate::provider::ContentPart>,
+	pub through_seq: Option<i64>,
+	pub has_more: bool,
+}
+
+async fn load_human_message_media(
+	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	workspace: Uuid,
+	messages: &[(i64, Uuid, usize)],
+	model: &crate::registry::ModelConfig,
+) -> Result<HumanMediaBatch> {
+	#[derive(sqlx::FromRow)]
+	struct Attachment {
+		filename: String,
+		media_type: String,
+		sha256: String,
+		size_bytes: i64,
+		content: Vec<u8>,
+	}
+	let mut parts = Vec::new();
+	let mut count = 0_usize;
+	let mut total = 0_usize;
+	let mut through_seq = None;
+	let mut has_more = false;
+	let request = crate::provider::ModelRequest {
+		instructions: String::new(),
+		context: json!({}),
+		tools: Vec::new(),
+		max_output_tokens: 0,
+		content_parts: Vec::new(),
+	};
+	for (seq, id, headroom) in messages {
+		let query = Query::select()
+			.columns(["filename", "media_type", "sha256", "size_bytes", "content"].map(Alias::new))
+			.from(Alias::new("channel_attachments"))
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("message_id")).eq(Expr::cust("$2")))
+			.order_by(Alias::new("position"), Order::Asc)
+			.order_by(Alias::new("id"), Order::Asc)
+			.to_string(PostgresQueryBuilder);
+		let attachments: Vec<Attachment> = sqlx::query_as(&query)
+			.bind(workspace)
+			.bind(id)
+			.fetch_all(&mut **tx)
+			.await?;
+		let message_bytes = attachments.iter().fold(0_usize, |sum, attachment| {
+			sum.saturating_add(attachment.content.len())
+		});
+		if attachments.len() > 8 || message_bytes > 8 * 1024 * 1024 {
+			return Err(Error::Invalid(
+				"run media input exceeds count or byte limit".into(),
+			));
+		}
+		if count + attachments.len() > 8 || total.saturating_add(message_bytes) > 8 * 1024 * 1024 {
+			has_more = true;
+			break;
+		}
+		let previous_len = parts.len();
+		let attachment_count = attachments.len();
+		for attachment in attachments {
+			if attachment.size_bytes != attachment.content.len() as i64 {
+				return Err(Error::Invalid("run media input size changed".into()));
+			}
+			if crate::capabilities::objects::digest(&attachment.content) != attachment.sha256 {
+				return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
+			}
+			parts.push(crate::provider::ContentPart::Text(format!(
+				"Run message {seq} attachment: {}",
+				attachment.filename
+			)));
+			parts.push(crate::provider::ContentPart::from_media(
+				&attachment.media_type,
+				attachment.content,
+			)?);
+		}
+		if let Err(error) = crate::generation::budget::Reservation::check_request_with_parts(
+			*headroom, &request, &parts,
+		) {
+			parts.truncate(previous_len);
+			if through_seq.is_none() {
+				return Err(error);
+			}
+			has_more = true;
+			break;
+		}
+		if !model.has_current_media_route_for_parts(&parts) {
+			parts.truncate(previous_len);
+			if through_seq.is_none() {
+				return Err(Error::MediaRouteUnavailable(model.model_id.clone()));
+			}
+			has_more = true;
+			break;
+		}
+		count += attachment_count;
+		total = total.saturating_add(message_bytes);
+		through_seq = Some(*seq);
+	}
+	Ok(HumanMediaBatch {
+		parts,
+		through_seq,
+		has_more,
+	})
+}
+
 pub(crate) struct Guard {
 	remote: Option<Federation>,
 	access: Arc<Mutex<Access>>,
@@ -1096,6 +1216,66 @@ impl Guard {
 		self.refresh_remote().await?;
 		let mut access = self.access.lock().await;
 		self.authorize_inference_with(&mut access).await
+	}
+
+	/// Resolve an explicit one-inference file selection under the same execution
+	/// authority as the provider request. Only immutable references are durable.
+	pub async fn model_media(
+		&self,
+		store: &Store,
+		selections: &[crate::capabilities::sharing::Selection],
+	) -> Result<Vec<crate::provider::ContentPart>> {
+		if selections.len() > 8 {
+			return Err(Error::Invalid(
+				"model media input exceeds count limit".into(),
+			));
+		}
+		let mut access = self.access.lock().await;
+		let area = crate::capabilities::sessions::for_run(&mut access, &self.run).await?;
+		crate::capabilities::sessions::require_current_run(&mut access, &area, &self.run).await?;
+		crate::capabilities::sessions::authorize(&mut access, &area, "file.read").await?;
+		let files = crate::capabilities::service::files(&area)?;
+		let mut parts = Vec::with_capacity(selections.len() * 2);
+		let mut total = 0_u64;
+		for selection in selections {
+			let file = files
+				.iter()
+				.find(|file| file.file_id == selection.file_id)
+				.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
+			if file.digest != selection.expected_digest {
+				return Err(Error::Conflict("FILE_CHANGED".into()));
+			}
+			total = total.saturating_add(file.size);
+			if total > 8 * 1024 * 1024 {
+				return Err(Error::Invalid(
+					"model media input exceeds byte limit".into(),
+				));
+			}
+			let bytes = store.capabilities.read(&mut access, file).await?;
+			parts.push(crate::provider::ContentPart::Text(format!(
+				"Selected file: {}",
+				file.path
+			)));
+			parts.push(crate::provider::ContentPart::from_media(
+				&file.media_type,
+				bytes,
+			)?);
+		}
+		Ok(parts)
+	}
+
+	pub async fn human_message_media(
+		&self,
+		messages: &[(i64, Uuid, usize)],
+		model: &crate::registry::ModelConfig,
+	) -> Result<HumanMediaBatch> {
+		let mut access = self.access.lock().await;
+		for (_, id, _) in messages {
+			access
+				.workspace_record(self.run.workspace_id, "message", *id)
+				.await?;
+		}
+		load_human_message_media(&mut access.tx, self.run.workspace_id, messages, model).await
 	}
 
 	async fn authorize_inference_with(&self, access: &mut Access) -> Result<()> {
@@ -1430,6 +1610,7 @@ pub async fn details_page(
 		.fetch_optional(&mut **access.tx)
 		.await?;
 		Ok(RunDetails {
+			media_input_routes: f.run_media_input_routes(&run).await?,
 			run,
 			invocations,
 			memory: memory.unwrap_or_else(|| json!({})),

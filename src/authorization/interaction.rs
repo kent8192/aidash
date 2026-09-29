@@ -224,12 +224,7 @@ pub async fn message_keyed(
 	content: &str,
 	key: Option<Uuid>,
 ) -> Result<()> {
-	let key = format!(
-		"subject-human:{}:{}:{id}:{}",
-		identity.tenant,
-		identity.subject,
-		key.unwrap_or_else(Uuid::new_v4)
-	);
+	let key = run_message_key(identity, id, key.unwrap_or_else(Uuid::new_v4));
 	// Authorize and inspect the idempotency key before peer calls or registry
 	// reads. Both operations use the same access transaction and hide foreign IDs.
 	let preflight = {
@@ -265,6 +260,24 @@ pub async fn message_keyed(
 				.is_some_and(|(previous_content, _)| previous_content != content)
 			{
 				return Err(Error::Conflict("run message idempotency key reused".into()));
+			}
+			if let Some(Some(message_id)) = previous.as_ref().map(|(_, id)| id) {
+				let attached: Option<Uuid> = sqlx::query_scalar(
+					&Query::select()
+						.column(Alias::new("id"))
+						.from(Alias::new("channel_attachments"))
+						.and_where(Expr::col(Alias::new("message_id")).eq(Expr::cust("$1")))
+						.limit(1)
+						.to_string(PostgresQueryBuilder),
+				)
+				.bind(message_id)
+				.fetch_optional(&mut **access.tx)
+				.await?;
+				if attached.is_some() {
+					return Err(Error::Conflict(
+						"run message idempotency key reused with media".into(),
+					));
+				}
 			}
 			Ok((run, previous.map(|(_, message_id)| message_id)))
 		}
@@ -359,6 +372,13 @@ pub async fn message_keyed(
 	}
 	f.notify.notify_waiters();
 	Ok(())
+}
+
+pub(crate) fn run_message_key(identity: &SubjectIdentity, id: Uuid, key: Uuid) -> String {
+	format!(
+		"subject-human:{}:{}:{id}:{key}",
+		identity.tenant, identity.subject
+	)
 }
 
 pub async fn answer(

@@ -31,7 +31,7 @@ export function submissionFor(
   attachments: readonly string[] = [],
 ): MessageSubmission {
   const content = draft.trim();
-  const canonical = [...attachments].sort();
+  const canonical = [...attachments];
   if (
     previous?.workspace === workspace &&
     previous.thread === thread &&
@@ -45,6 +45,33 @@ export function submissionFor(
 
 export const MAX_ATTACHMENT_BYTES = 1024 * 1024;
 export const MAX_ATTACHMENTS = 8;
+export const RUN_MEDIA_ACCEPT =
+  "image/png,image/jpeg,image/gif,image/webp,audio/wav,audio/x-wav,audio/mpeg,audio/mp4,audio/x-m4a,audio/aac,audio/ogg,audio/webm,audio/flac,audio/x-flac";
+const runMediaTypes = new Set(RUN_MEDIA_ACCEPT.split(","));
+export function runMediaAccept(routes: readonly (readonly string[])[]): string {
+  return [
+    ...new Set(routes.flat().filter((type) => runMediaTypes.has(type))),
+  ].join(",");
+}
+
+export function validRunMediaRoute(
+  files: readonly { type: string }[],
+  routes: readonly (readonly string[])[],
+): boolean {
+  return (
+    files.length > 0 &&
+    routes.some((route) => files.every((file) => route.includes(file.type)))
+  );
+}
+
+export function validRunMediaAttachments(
+  files: readonly { name: string; size: number; type: string }[],
+): boolean {
+  return (
+    validAttachments(files) &&
+    files.every((file) => runMediaTypes.has(file.type))
+  );
+}
 export function validAttachments(
   files: readonly { name: string; size: number }[],
 ): boolean {

@@ -1,5 +1,6 @@
 use crate::{Error, Result, config::secret, registry::ModelConfig};
 use async_trait::async_trait;
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -22,15 +23,190 @@ pub struct ModelRequest {
 	pub context: Value,
 	pub tools: Vec<ToolSpec>,
 	pub max_output_tokens: u32,
+	/// Resolved, authorized input for this inference only. Never persist bytes
+	/// in the durable context or serialize them with the request metadata.
+	#[serde(skip)]
+	pub content_parts: Vec<ContentPart>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ContentPart {
+	Text(String),
+	Image { media_type: String, bytes: Vec<u8> },
+	Audio { format: String, bytes: Vec<u8> },
+}
+
+impl ContentPart {
+	pub fn format_for_media_type(media_type: &str) -> Result<&'static str> {
+		match media_type {
+			"image/png" => Ok("image/png"),
+			"image/jpeg" => Ok("image/jpeg"),
+			"image/gif" => Ok("image/gif"),
+			"image/webp" => Ok("image/webp"),
+			"audio/wav" | "audio/x-wav" => Ok("wav"),
+			"audio/mpeg" => Ok("mp3"),
+			"audio/mp4" | "audio/x-m4a" => Ok("m4a"),
+			"audio/aac" => Ok("aac"),
+			"audio/ogg" => Ok("ogg"),
+			"audio/webm" => Ok("webm"),
+			"audio/flac" | "audio/x-flac" => Ok("flac"),
+			_ => Err(Error::Invalid(format!(
+				"unsupported model media type: {media_type}"
+			))),
+		}
+	}
+
+	pub fn modality_for_media_type(media_type: &str) -> Result<&'static str> {
+		match media_type {
+			"image/png" | "image/jpeg" | "image/gif" | "image/webp" => Ok("image"),
+			"audio/wav" | "audio/x-wav" | "audio/mpeg" | "audio/mp4" | "audio/x-m4a"
+			| "audio/aac" | "audio/ogg" | "audio/webm" | "audio/flac" | "audio/x-flac" => Ok("audio"),
+			_ => Err(Error::Invalid(format!(
+				"unsupported model media type: {media_type}"
+			))),
+		}
+	}
+
+	pub fn from_media(media_type: &str, bytes: Vec<u8>) -> Result<Self> {
+		let part = match Self::modality_for_media_type(media_type)? {
+			"image" => Self::Image {
+				media_type: media_type.into(),
+				bytes,
+			},
+			_ => Self::Audio {
+				format: Self::format_for_media_type(media_type)?.into(),
+				bytes,
+			},
+		};
+		part.validate()?;
+		Ok(part)
+	}
+
+	fn openrouter(&self) -> Value {
+		match self {
+			Self::Text(text) => json!({"type":"text","text":text}),
+			Self::Image { media_type, bytes } => {
+				json!({"type":"image_url","image_url":{"url":format!("data:{media_type};base64,{}",base64::engine::general_purpose::STANDARD.encode(bytes))}})
+			}
+			Self::Audio { format, bytes } => {
+				json!({"type":"input_audio","input_audio":{"data":base64::engine::general_purpose::STANDARD.encode(bytes),"format":format}})
+			}
+		}
+	}
+
+	fn validate(&self) -> Result<()> {
+		match self {
+			Self::Text(_) => Ok(()),
+			Self::Image { media_type, bytes } => {
+				let valid = match media_type.as_str() {
+					"image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+					"image/jpeg" => bytes.starts_with(b"\xff\xd8\xff"),
+					"image/gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+					"image/webp" => bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"),
+					_ => false,
+				};
+				if !valid {
+					return Err(Error::Invalid(
+						"image MIME does not match a supported file signature".into(),
+					));
+				}
+				Ok(())
+			}
+			Self::Audio { format, bytes } => {
+				let valid = match format.as_str() {
+					"wav" => bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE"),
+					"mp3" => {
+						bytes.starts_with(b"ID3")
+							|| bytes.get(..4).is_some_and(|header| {
+								header[0] == 0xff
+							&& header[1] & 0xe0 == 0xe0 // 11-bit sync word
+							&& (header[1] >> 3) & 0x03 != 0x01 // reserved version
+							&& (header[1] >> 1) & 0x03 == 0x01 // Layer III
+							&& header[2] >> 4 != 0x0f // reserved bitrate
+							&& (header[2] >> 2) & 0x03 != 0x03 // reserved sample rate
+							})
+					}
+					"m4a" => bytes.get(4..8) == Some(b"ftyp"),
+					"aac" => bytes
+						.get(..2)
+						.is_some_and(|header| header[0] == 0xff && header[1] & 0xf6 == 0xf0),
+					"ogg" => bytes.starts_with(b"OggS"),
+					"webm" => bytes.starts_with(b"\x1a\x45\xdf\xa3"),
+					"flac" => bytes.starts_with(b"fLaC"),
+					_ => false,
+				};
+				if !valid {
+					return Err(Error::Invalid(
+						"audio format does not match a supported file signature".into(),
+					));
+				}
+				Ok(())
+			}
+		}
+	}
 }
 
 impl ModelRequest {
+	fn media_tokens(parts: &[ContentPart]) -> usize {
+		parts.iter().fold(0_usize, |total, part| {
+			total.saturating_add(match part {
+				ContentPart::Text(_) => 0,
+				ContentPart::Image { bytes, .. } => {
+					4096_usize.saturating_add(bytes.len().div_ceil(256))
+				}
+				ContentPart::Audio { bytes, .. } => {
+					1024_usize.saturating_add(bytes.len().div_ceil(16))
+				}
+			})
+		})
+	}
+
+	/// Space added to a media-free request by these parts, including text
+	/// labels and the conservative provider-side media token allowance.
+	pub(crate) fn content_parts_reservation(parts: &[ContentPart]) -> usize {
+		if parts.is_empty() {
+			return 0;
+		}
+		let mut reserved = 64_usize.saturating_add(Self::media_tokens(parts));
+		// Array/text framing replaces a plain context string.
+		for part in parts {
+			if let ContentPart::Text(_) = part {
+				reserved =
+					reserved.saturating_add(part.openrouter().to_string().len().saturating_add(1));
+			}
+		}
+		reserved
+	}
+
+	pub(crate) fn media_within_limits(parts: &[ContentPart]) -> bool {
+		let mut count = 0_usize;
+		let mut bytes = 0_usize;
+		for part in parts {
+			if let ContentPart::Image { bytes: content, .. }
+			| ContentPart::Audio { bytes: content, .. } = part
+			{
+				count += 1;
+				bytes = bytes.saturating_add(content.len());
+			}
+		}
+		count <= 8 && bytes <= 8 * 1024 * 1024
+	}
+
 	/// Model-visible payload, shared by transport and context accounting. The
 	/// context is encoded as message text, including its JSON escaping.
 	pub(crate) fn input_body(&self) -> Value {
+		let content = if self.content_parts.is_empty() {
+			Value::String(self.context.to_string())
+		} else {
+			Value::Array(
+				std::iter::once(json!({"type":"text","text":self.context.to_string()}))
+					.chain(self.content_parts.iter().map(ContentPart::openrouter))
+					.collect(),
+			)
+		};
 		let mut body = json!({"messages":[
 			{"role":"system","content":self.instructions},
-			{"role":"user","content":self.context.to_string()}]});
+			{"role":"user","content":content}]});
 		if !self.tools.is_empty() {
 			body["tools"] = Value::Array(self.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
 		}
@@ -40,11 +216,47 @@ impl ModelRequest {
 	/// Conservative UTF-8 byte estimate, not a provider tokenizer. Reserve
 	/// completion tokens and framing separately, in the same unit at every gate.
 	pub(crate) fn estimated_total_tokens(&self) -> usize {
-		self.input_body()
-			.to_string()
+		self.estimated_total_tokens_with_parts(&self.content_parts)
+	}
+
+	pub(crate) fn estimated_total_tokens_with_parts(&self, parts: &[ContentPart]) -> usize {
+		// Base64 is a transport encoding, not text for the model tokenizer.
+		// Keep the ordinary text estimate and reserve a bounded media estimate.
+		let content = if parts.is_empty() {
+			Value::String(self.context.to_string())
+		} else {
+			Value::Array(
+				std::iter::once(json!({"type":"text","text":self.context.to_string()}))
+					.chain(parts.iter().filter_map(|part| match part {
+						ContentPart::Text(_) => Some(part.openrouter()),
+						_ => None,
+					}))
+					.collect(),
+			)
+		};
+		let mut body = json!({"messages":[
+			{"role":"system","content":self.instructions},
+			{"role":"user","content":content}]});
+		if !self.tools.is_empty() {
+			body["tools"] = Value::Array(self.tools.iter().map(|t| json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect());
+		}
+		body.to_string()
 			.len()
+			.saturating_add(Self::media_tokens(parts))
 			.saturating_add(self.max_output_tokens as usize)
 			.saturating_add(1024)
+	}
+
+	pub(crate) fn validate(&self) -> Result<()> {
+		for part in &self.content_parts {
+			part.validate()?;
+		}
+		if !Self::media_within_limits(&self.content_parts) {
+			return Err(Error::Invalid(
+				"model media input exceeds count or byte limit".into(),
+			));
+		}
+		Ok(())
 	}
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -67,6 +279,127 @@ pub struct OpenRouterProvider {
 	pub config: ModelConfig,
 }
 
+impl OpenRouterProvider {
+	async fn verified_media_routes(&self, request: &ModelRequest) -> Result<Vec<String>> {
+		let formats: Vec<&str> = request
+			.content_parts
+			.iter()
+			.filter_map(|part| match part {
+				ContentPart::Image { media_type, .. } => Some(media_type.as_str()),
+				ContentPart::Audio { format, .. } => Some(format.as_str()),
+				ContentPart::Text(_) => None,
+			})
+			.collect();
+		if formats.is_empty() {
+			return Ok(Vec::new());
+		}
+		if self.config.media_routes.is_empty() {
+			return Err(Error::Invalid(format!(
+				"model {} has no verified media route",
+				self.config.model_id
+			)));
+		}
+		let mut url = reqwest::Url::parse(&self.config.endpoint)
+			.map_err(|_| Error::Invalid("invalid OpenRouter endpoint".into()))?;
+		{
+			let mut segments = url
+				.path_segments_mut()
+				.map_err(|_| Error::Invalid("invalid OpenRouter endpoint".into()))?;
+			segments.pop_if_empty().push("models");
+			for segment in self.config.model_id.split('/') {
+				if segment.is_empty() || segment == "." || segment == ".." {
+					return Err(Error::Invalid("invalid OpenRouter model ID".into()));
+				}
+				segments.push(segment);
+			}
+			segments.push("endpoints");
+		}
+		let mut endpoints = self
+			.client
+			.get(url)
+			.timeout(std::time::Duration::from_secs(15));
+		let mut zdr = self
+			.client
+			.get(format!(
+				"{}/endpoints/zdr",
+				self.config.endpoint.trim_end_matches('/')
+			))
+			.timeout(std::time::Duration::from_secs(15));
+		if let Some(name) = &self.config.credential_env {
+			let credential = secret(name)?;
+			endpoints = endpoints.bearer_auth(&credential);
+			zdr = zdr.bearer_auth(&credential);
+		}
+		let (endpoints, zdr) = tokio::try_join!(endpoints.send(), zdr.send())?;
+		let endpoints =
+			crate::response::json::<Value>(endpoints.error_for_status()?, 2 * 1024 * 1024).await?;
+		let zdr = crate::response::json::<Value>(zdr.error_for_status()?, 8 * 1024 * 1024).await?;
+		let modalities = endpoints
+			.pointer("/data/architecture/input_modalities")
+			.and_then(Value::as_array)
+			.ok_or_else(|| Error::External("OpenRouter model modalities unavailable".into()))?;
+		for part in &request.content_parts {
+			let modality = match part {
+				ContentPart::Image { .. } => "image",
+				ContentPart::Audio { .. } => "audio",
+				ContentPart::Text(_) => continue,
+			};
+			if !modalities.iter().any(|value| value == modality) {
+				return Err(Error::Invalid(format!(
+					"OpenRouter model {} no longer supports {modality} input",
+					self.config.model_id
+				)));
+			}
+		}
+		let endpoints = endpoints
+			.pointer("/data/endpoints")
+			.and_then(Value::as_array)
+			.ok_or_else(|| Error::External("OpenRouter endpoint list unavailable".into()))?;
+		let zdr = zdr
+			.get("data")
+			.and_then(Value::as_array)
+			.ok_or_else(|| Error::External("OpenRouter ZDR endpoint list unavailable".into()))?;
+		let now = chrono::Utc::now();
+		let mut eligible = Vec::new();
+		for evidence in &self.config.media_routes {
+			if evidence.verified_at > now
+				|| evidence.expires_at <= now
+				|| !formats
+					.iter()
+					.all(|format| evidence.formats.iter().any(|verified| verified == format))
+			{
+				continue;
+			}
+			// A base slug also matches variants. An exact route can only be
+			// allowlisted when it cannot select an unverified sibling variant.
+			if !evidence.tag.contains('/')
+				&& endpoints.iter().any(|endpoint| {
+					endpoint["tag"]
+						.as_str()
+						.is_some_and(|tag| tag.starts_with(&format!("{}/", evidence.tag)))
+				}) {
+				continue;
+			}
+			let present = endpoints.iter().any(|endpoint| {
+				endpoint["tag"] == evidence.tag
+					&& endpoint["context_length"]
+						.as_u64()
+						.is_none_or(|limit| request.estimated_total_tokens() as u64 <= limit)
+			});
+			let private = zdr.iter().any(|endpoint| {
+				endpoint["model_id"] == self.config.model_id && endpoint["tag"] == evidence.tag
+			});
+			if present && private {
+				eligible.push(evidence.tag.clone());
+			}
+		}
+		if eligible.is_empty() {
+			return Err(Error::MediaRouteUnavailable(self.config.model_id.clone()));
+		}
+		Ok(eligible)
+	}
+}
+
 pub fn provider(client: reqwest::Client, config: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
 	match config.provider.as_str() {
 		"openrouter" => {
@@ -80,16 +413,41 @@ pub fn provider(client: reqwest::Client, config: ModelConfig) -> Result<Arc<dyn 
 #[async_trait]
 impl ModelProvider for OpenRouterProvider {
 	async fn infer(&self, request: ModelRequest) -> Result<ModelResponse> {
-		let mut body = request.input_body();
-		body["model"] = json!(self.config.model_id);
-		body["max_tokens"] = json!(request.max_output_tokens);
-		// Enforce ZDR on every call, including existing registered models. Never
-		// retry against non-ZDR endpoints if no eligible provider is available.
-		body["provider"] = json!({"zdr": true, "require_parameters": true});
-		if let Some(effort) = self.config.reasoning_effort {
-			body["reasoning"] = json!({"effort": effort});
-		}
-		let mut call = self
+		let deadline = self.config.request_timeout()?;
+		tokio::time::timeout(deadline, async {
+			request.validate()?;
+			for modality in request.content_parts.iter().filter_map(|part| match part {
+				ContentPart::Image { .. } => Some("image"),
+				ContentPart::Audio { .. } => Some("audio"),
+				ContentPart::Text(_) => None,
+			}) {
+				if !self
+					.config
+					.modalities
+					.iter()
+					.any(|available| available == modality)
+				{
+					return Err(Error::Invalid(format!(
+						"model {} does not support {modality} input",
+						self.config.model_id
+					)));
+				}
+			}
+			let media_routes = self.verified_media_routes(&request).await?;
+			let mut body = request.input_body();
+			body["model"] = json!(self.config.model_id);
+			body["max_tokens"] = json!(request.max_output_tokens);
+			// Enforce ZDR on every call, including existing registered models. Never
+			// retry against non-ZDR endpoints if no eligible provider is available.
+			body["provider"] = if media_routes.is_empty() {
+				json!({"zdr": true, "require_parameters": true})
+			} else {
+				json!({"zdr": true, "require_parameters": true, "only": media_routes, "allow_fallbacks": true})
+			};
+			if let Some(effort) = self.config.reasoning_effort {
+				body["reasoning"] = json!({"effort": effort});
+			}
+			let mut call = self
 			.client
 			.post(format!(
 				"{}/chat/completions",
@@ -97,28 +455,55 @@ impl ModelProvider for OpenRouterProvider {
 			))
 			// Override only inference, including response-body reads. Other HTTP
 			// traffic retains the shared client's timeout and connection policy.
-			.timeout(self.config.request_timeout()?)
+			.timeout(deadline)
 			.json(&body);
-		if let Some(name) = &self.config.credential_env {
-			call = call.bearer_auth(secret(name)?);
-		}
-		let started = std::time::Instant::now();
-		let response = call.send().await?;
-		metrics::histogram!("aidash_model_response_headers_seconds")
-			.record(started.elapsed().as_secs_f64());
-		if !response.status().is_success() {
-			return Err(Error::External(format!(
-				"OpenRouter provider returned {}",
-				response.status()
-			)));
-		}
-		let result = parse_openai(crate::response::json(response, 1_048_576).await?)?;
-		metrics::counter!("aidash_model_tokens_total", "direction" => "input")
-			.increment(result.input_tokens);
-		metrics::counter!("aidash_model_tokens_total", "direction" => "output")
-			.increment(result.output_tokens);
-		Ok(result)
+			if let Some(name) = &self.config.credential_env {
+				call = call.bearer_auth(secret(name)?);
+			}
+			let started = std::time::Instant::now();
+			let response = call.send().await?;
+			metrics::histogram!("aidash_model_response_headers_seconds")
+				.record(started.elapsed().as_secs_f64());
+			if !response.status().is_success() {
+				let status = response.status();
+				let detail = crate::response::json::<Value>(response, 16_384)
+					.await
+					.ok()
+					.and_then(|body| {
+						body.pointer("/error/message")
+							.and_then(Value::as_str)
+							.map(str::to_owned)
+					})
+					.unwrap_or_else(|| {
+						"upstream rejected the request without a readable reason".into()
+					});
+				return Err(Error::ProviderRejected {
+					status: status.as_u16(),
+					reason: safe_upstream_reason(&detail),
+				});
+			}
+			let result = parse_openai(crate::response::json(response, 1_048_576).await?)?;
+			metrics::counter!("aidash_model_tokens_total", "direction" => "input")
+				.increment(result.input_tokens);
+			metrics::counter!("aidash_model_tokens_total", "direction" => "output")
+				.increment(result.output_tokens);
+			Ok(result)
+		})
+		.await
+		.map_err(|_| Error::External("model inference timed out".into()))?
 	}
+}
+
+fn safe_upstream_reason(detail: &str) -> String {
+	let normalized = detail.to_ascii_lowercase();
+	if normalized.contains("audio")
+		&& (normalized.contains("exceed")
+			|| normalized.contains("too long")
+			|| normalized.contains("duration limit"))
+	{
+		return "Audio exceeds the provider limit".into();
+	}
+	"upstream rejected the request".into()
 }
 
 pub fn parse_openai(value: Value) -> Result<ModelResponse> {
@@ -211,6 +596,35 @@ fn validate_response(r: &ModelResponse) -> Result<()> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[rstest::rstest]
+	fn media_reservation_covers_complete_request_growth() {
+		let mut request = ModelRequest {
+			instructions: "Inspect the media".into(),
+			context: json!({"history":"quoted \\\"text\\\" and 日本語"}),
+			tools: vec![],
+			max_output_tokens: 512,
+			content_parts: vec![],
+		};
+		let without_media = request.estimated_total_tokens();
+		request.content_parts = vec![
+			ContentPart::Text("attachment: \\\"sample\\\"".into()),
+			ContentPart::Image {
+				media_type: "image/png".into(),
+				bytes: vec![0; 8192],
+			},
+			ContentPart::Audio {
+				format: "wav".into(),
+				bytes: vec![0; 32_768],
+			},
+		];
+		assert!(
+			request.estimated_total_tokens()
+				<= without_media.saturating_add(ModelRequest::content_parts_reservation(
+					&request.content_parts
+				))
+		);
+	}
+
 	#[rstest::rstest]
 	fn parses_openrouter_tool_calls() {
 		let result = parse_openai(json!({"choices":[{"finish_reason":"tool_calls","message":{"tool_calls":[{"id":"one","function":{"name":"search","arguments":"{\"q\":\"Rust\"}"}}]}}]})).unwrap();

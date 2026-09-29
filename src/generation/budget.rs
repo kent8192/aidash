@@ -3,7 +3,7 @@
 use crate::{
 	Error, Result,
 	authorization::access::Access,
-	provider::{ModelRequest, ModelResponse},
+	provider::{ContentPart, ModelRequest, ModelResponse},
 	store::Store,
 };
 use sqlx::PgPool;
@@ -17,11 +17,28 @@ pub(crate) struct Reservation {
 }
 impl Reservation {
 	pub fn check_request(window: usize, request: &ModelRequest) -> Result<()> {
-		let estimated = request.estimated_total_tokens();
+		Self::check_estimate(
+			window,
+			request.max_output_tokens,
+			request.estimated_total_tokens(),
+		)
+	}
+	pub(crate) fn check_request_with_parts(
+		window: usize,
+		request: &ModelRequest,
+		parts: &[ContentPart],
+	) -> Result<()> {
+		Self::check_estimate(
+			window,
+			request.max_output_tokens,
+			request.estimated_total_tokens_with_parts(parts),
+		)
+	}
+	fn check_estimate(window: usize, max_output_tokens: u32, estimated: usize) -> Result<()> {
 		if estimated > window {
 			return Err(Error::Invalid(format!(
 				"model request exceeds context window: estimated total {estimated}, window {window}, output reserve {}, framing reserve 1024",
-				request.max_output_tokens
+				max_output_tokens
 			)));
 		}
 		Ok(())

@@ -220,10 +220,131 @@ pub struct ModelConfig {
 	#[schema(required = true)]
 	pub max_output_tokens: Option<u32>,
 	pub modalities: Vec<String>,
+	/// Administrator-approved evidence for exact OpenRouter route tags. The
+	/// catalog and ZDR APIs are checked again before every media inference.
+	#[serde(default)]
+	pub media_routes: Vec<MediaRouteEvidence>,
 	pub cost: Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MediaRouteEvidence {
+	pub tag: String,
+	/// Image MIME types or OpenRouter input_audio format names.
+	pub formats: Vec<String>,
+	pub source: String,
+	pub verified_at: chrono::DateTime<chrono::Utc>,
+	pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
 impl ModelConfig {
+	pub fn require_media_types<'a>(
+		&self,
+		media_types: impl IntoIterator<Item = &'a str>,
+	) -> Result<()> {
+		let mut formats = Vec::new();
+		for media_type in media_types {
+			if !media_type.starts_with("image/") && !media_type.starts_with("audio/") {
+				continue;
+			}
+			let modality = crate::provider::ContentPart::modality_for_media_type(media_type)?;
+			if !self
+				.modalities
+				.iter()
+				.any(|available| available == modality)
+			{
+				return Err(Error::Invalid(format!(
+					"recipient model {} does not support {modality} input",
+					self.model_id
+				)));
+			}
+			formats.push(crate::provider::ContentPart::format_for_media_type(
+				media_type,
+			)?);
+		}
+		if formats.is_empty() {
+			return Ok(());
+		}
+		if !self.has_current_media_route(formats) {
+			return Err(Error::Invalid(format!(
+				"recipient model {} has no current media route for every selected format",
+				self.model_id
+			)));
+		}
+		Ok(())
+	}
+
+	pub(crate) fn has_current_media_route_for_parts(
+		&self,
+		parts: &[crate::provider::ContentPart],
+	) -> bool {
+		self.has_current_media_route(parts.iter().filter_map(|part| match part {
+			crate::provider::ContentPart::Image { media_type, .. } => Some(media_type.as_str()),
+			crate::provider::ContentPart::Audio { format, .. } => Some(format.as_str()),
+			crate::provider::ContentPart::Text(_) => None,
+		}))
+	}
+
+	fn has_current_media_route<'a>(&self, formats: impl IntoIterator<Item = &'a str>) -> bool {
+		let formats: Vec<_> = formats.into_iter().collect();
+		if formats.is_empty() {
+			return true;
+		}
+		self.current_media_routes().any(|route| {
+			formats
+				.iter()
+				.all(|format| route.formats.iter().any(|supported| supported == format))
+		})
+	}
+
+	fn current_media_routes(&self) -> impl Iterator<Item = &MediaRouteEvidence> {
+		let now = chrono::Utc::now();
+		self.media_routes
+			.iter()
+			.filter(move |route| route.verified_at <= now && route.expires_at > now)
+	}
+
+	/// Current routes expressed as MIME types the run-message upload accepts.
+	pub(crate) fn current_media_input_routes(&self) -> Vec<Vec<String>> {
+		const MEDIA_TYPES: [&str; 14] = [
+			"image/png",
+			"image/jpeg",
+			"image/gif",
+			"image/webp",
+			"audio/wav",
+			"audio/x-wav",
+			"audio/mpeg",
+			"audio/mp4",
+			"audio/x-m4a",
+			"audio/aac",
+			"audio/ogg",
+			"audio/webm",
+			"audio/flac",
+			"audio/x-flac",
+		];
+		self.current_media_routes()
+			.map(|route| {
+				MEDIA_TYPES
+					.into_iter()
+					.filter(|media_type| {
+						let modality =
+							crate::provider::ContentPart::modality_for_media_type(media_type)
+								.expect("supported media type");
+						let format =
+							crate::provider::ContentPart::format_for_media_type(media_type)
+								.expect("supported media type");
+						self.modalities
+							.iter()
+							.any(|available| available == modality)
+							&& route.formats.iter().any(|supported| supported == format)
+					})
+					.map(str::to_owned)
+					.collect::<Vec<_>>()
+			})
+			.filter(|route| !route.is_empty())
+			.collect()
+	}
 	/// Resolve the provider's inference deadline without inheriting the shared
 	/// HTTP client's shorter default. Validate at registration and before use.
 	pub fn request_timeout(&self) -> Result<Duration> {
@@ -606,6 +727,28 @@ fn validate_in(e: &Entry, local: bool) -> Result<()> {
 				));
 			}
 			m.request_timeout()?;
+			for route in &m.media_routes {
+				if route.tag.is_empty()
+					|| !route
+						.tag
+						.bytes()
+						.all(|byte| byte.is_ascii_alphanumeric() || b"._-/".contains(&byte))
+					|| route.formats.is_empty()
+					|| route.source.trim().is_empty()
+					|| route.verified_at >= route.expires_at
+					|| route.formats.iter().any(|format| {
+						!matches!(
+							format.as_str(),
+							"image/png"
+								| "image/jpeg" | "image/gif"
+								| "image/webp" | "wav" | "mp3"
+								| "m4a" | "aac" | "ogg" | "webm"
+								| "flac"
+						)
+					}) {
+					return Err(Error::Invalid("invalid media route evidence".into()));
+				}
+			}
 			validate_endpoint(&m.endpoint)?;
 			if let Some(name) = m.credential_env {
 				crate::config::validate_secret_reference(&name)?;
@@ -1258,6 +1401,26 @@ fn overlay_config(target: &mut Value, overrides: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn run_media_routes_follow_current_evidence_and_model_modalities() {
+		let now = chrono::Utc::now();
+		let mut model: ModelConfig = serde_json::from_value(json!({
+			"provider":"openrouter", "model_id":"fixture", "endpoint":"https://example.test",
+			"credential_env":null, "context_window":8192, "modalities":["text","image","audio"],
+			"cost":{}, "media_routes":[
+				{"tag":"image", "formats":["image/png"], "source":"test", "verified_at":now - chrono::Duration::hours(1), "expires_at":now + chrono::Duration::hours(1)},
+				{"tag":"audio", "formats":["wav"], "source":"test", "verified_at":now - chrono::Duration::hours(1), "expires_at":now + chrono::Duration::hours(1)},
+				{"tag":"expired", "formats":["image/jpeg"], "source":"test", "verified_at":now - chrono::Duration::hours(2), "expires_at":now - chrono::Duration::hours(1)}
+			]
+		})).unwrap();
+		assert_eq!(
+			model.current_media_input_routes(),
+			vec![vec!["image/png"], vec!["audio/wav", "audio/x-wav"],]
+		);
+		model.modalities = vec!["text".into()];
+		assert!(model.current_media_input_routes().is_empty());
+	}
+
 	fn entry() -> Entry {
 		serde_json::from_value(json!({"id":"research","version":"1.0.0","kind":"skill","name":{"en":"Research","ja":"調査"},"description":{"en":"Research"},"capabilities":["web.search"],"languages":["ja","en"],"config":{"instructions":"Research carefully"}})).unwrap()
 	}

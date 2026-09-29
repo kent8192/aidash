@@ -8,7 +8,7 @@ export function OpenRouterModelPicker({
 }: {
   onNameChange?: (name: string) => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const listId = useId();
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState("");
@@ -169,6 +169,39 @@ export function OpenRouterModelPicker({
         </select>
       </Field>
       <input type="hidden" name="model_id" value={selected?.id ?? ""} />
+      <input
+        type="hidden"
+        name="modalities"
+        value={JSON.stringify(selected?.architecture.input_modalities ?? [])}
+      />
+      {selected?.architecture.input_modalities.some(
+        (modality) => modality === "image" || modality === "audio",
+      ) && (
+        <details>
+          <summary>
+            {locale === "ja-JP"
+              ? "確認済みメディア経路"
+              : "Verified media routes"}
+          </summary>
+          <p className="muted">
+            {locale === "ja-JP"
+              ? "画像・音声を使うには、経路ごとの対応形式と確認根拠、有効期限を登録してください。期限切れや未確認の経路では送信しません。"
+              : "To use image or audio input, register the formats, evidence, and expiry for each provider route. Unverified or expired routes cannot receive media."}
+          </p>
+          <textarea
+            key={selectedId}
+            name="media_routes"
+            aria-label={
+              locale === "ja-JP"
+                ? "メディア経路の確認根拠 JSON"
+                : "Media route evidence JSON"
+            }
+            rows={5}
+            defaultValue="[]"
+            spellCheck={false}
+          />
+        </details>
+      )}
       <input
         type="hidden"
         name="endpoint"

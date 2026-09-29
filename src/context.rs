@@ -23,6 +23,9 @@ pub struct Context {
 	pub run_message_summary: String,
 	#[serde(default)]
 	pub run_message_summary_seq: i64,
+	/// Highest run input whose attached media reached a successful inference.
+	#[serde(default)]
+	pub media_inferred_seq: i64,
 	#[serde(default)]
 	pub history: Vec<Value>,
 	#[serde(default)]
@@ -61,6 +64,7 @@ pub(crate) fn tool_event_growth(context: &Context, event: &Value) -> usize {
 			}),
 			tools: vec![],
 			max_output_tokens: 0,
+			content_parts: vec![],
 		}
 		.estimated_total_tokens()
 	}
@@ -89,6 +93,7 @@ impl RequestBudget<'_> {
 			}),
 			tools: self.tools.to_vec(),
 			max_output_tokens: self.max_output_tokens,
+			content_parts: vec![],
 		}
 	}
 

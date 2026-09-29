@@ -436,6 +436,96 @@ test("local run details retain execution memory", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
+test("run message attachments stay fixed while an upload is pending", async ({
+  page,
+}) => {
+  const { submissions, errors } = await setup(page);
+  let uploadStarted!: () => void;
+  let finishUpload!: () => void;
+  const started = new Promise<void>((resolve) => (uploadStarted = resolve));
+  const uploadGate = new Promise<void>((resolve) => (finishUpload = resolve));
+  await page.route(
+    "**/api/workspaces/workspace-one/attachments?*",
+    async (route) => {
+      uploadStarted();
+      await uploadGate;
+      await route.fallback();
+    },
+  );
+  await page.route("**/api/runs/run-0/message", (route) =>
+    route.fulfill({ json: { id: "run-message-one" } }),
+  );
+  await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Execution history", exact: true })
+    .click();
+  await page.locator(".collab-channel .collab-task").click();
+  const dialog = page.getByRole("dialog");
+  const draft = dialog.getByRole("textbox", { name: "Message", exact: true });
+  const picker = dialog.locator('input[type="file"]');
+  await draft.fill("Inspect this image");
+  await picker.setInputFiles({
+    name: "sample.png",
+    mimeType: "image/png",
+    buffer: Buffer.from("\x89PNG\r\n\x1a\nfixture"),
+  });
+  const remove = dialog.getByRole("button", {
+    name: "Remove attachment: sample.png",
+  });
+  await dialog.getByRole("button", { name: "Send", exact: true }).click();
+  await started;
+  await expect(draft).toBeDisabled();
+  await expect(picker).toBeDisabled();
+  await expect(remove).toBeDisabled();
+  await expect(dialog.locator("button.primary")).toBeDisabled();
+  finishUpload();
+  await expect(dialog).toHaveCount(0);
+  expect(
+    submissions.filter((item) => item.path.endsWith("/attachments")),
+  ).toHaveLength(1);
+  expect(errors).toEqual([]);
+});
+
+test("run media picker follows the effective model route before uploads", async ({
+  page,
+}) => {
+  const { submissions, errors, setRunMediaRoutes } = await setup(page, {
+    runMediaRoutes: [],
+  });
+  await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Execution history", exact: true })
+    .click();
+  await page.locator(".collab-channel .collab-task").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.locator('input[type="file"]')).toHaveCount(0);
+  await expect(
+    dialog.getByRole("textbox", { name: "Message", exact: true }),
+  ).toBeVisible();
+  expect(
+    submissions.filter((item) => item.path.endsWith("/attachments")),
+  ).toHaveLength(0);
+  setRunMediaRoutes([["image/png"]]);
+  await expect(dialog.locator('input[type="file"]')).toBeVisible();
+  const picker = dialog.locator('input[type="file"]');
+  await picker.setInputFiles({
+    name: "sample.png",
+    mimeType: "image/png",
+    buffer: Buffer.from("\x89PNG\r\n\x1a\nfixture"),
+  });
+  await expect(
+    dialog.getByRole("button", { name: "Remove attachment: sample.png" }),
+  ).toBeVisible();
+  setRunMediaRoutes([]);
+  await expect(picker).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  expect(
+    submissions.filter((item) => item.path.endsWith("/attachments")),
+  ).toHaveLength(0);
+  expect(errors).toEqual([]);
+});
+
 test("the mobile channel toggle is absent outside Collaboration", async ({
   page,
 }) => {

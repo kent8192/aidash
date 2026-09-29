@@ -732,6 +732,8 @@ async fn task_create(
 struct MessageInput {
 	content: String,
 	idempotency_key: Option<Uuid>,
+	#[serde(default)]
+	attachment_ids: Vec<Uuid>,
 }
 #[utoipa::path(post, path = "/workspaces/{id}/messages", operation_id = "message_create", request_body = MessageInput, params(("id" = Uuid, Path)), responses((status = 200, body = SentResponse)), security(("bearer_auth" = [])))]
 async fn message_create(
@@ -740,6 +742,11 @@ async fn message_create(
 	Path(id): Path<Uuid>,
 	Json(input): Json<MessageInput>,
 ) -> Result<Json<SentResponse>> {
+	if !input.attachment_ids.is_empty() {
+		return Err(Error::Invalid(
+			"use a channel or run message for attachments".into(),
+		));
+	}
 	if let Some(scope) = scoped(&f, actor) {
 		scope
 			.message_keyed(id, &input.content, input.idempotency_key)
@@ -997,6 +1004,7 @@ async fn run_get(
 	.await?;
 	Ok(Json(RunDetails {
 		memory: f.store.memory(&run).await?,
+		media_input_routes: f.run_media_input_routes(&run).await?,
 		run,
 		invocations,
 	}))
@@ -1032,6 +1040,164 @@ async fn run_message(
 	Path(id): Path<Uuid>,
 	Json(input): Json<MessageInput>,
 ) -> Result<Json<SentResponse>> {
+	if !input.attachment_ids.is_empty() {
+		let run = match &actor {
+			Actor::Subject(identity) => {
+				let mut access =
+					crate::authorization::access::Access::begin(&f.store, identity).await?;
+				let result = access.run_for_interaction(id).await;
+				access.finish(result).await?
+			}
+			Actor::Operator => f.store.run(id).await?,
+		};
+		let external_key = input.idempotency_key.unwrap_or_else(Uuid::new_v4);
+		let key = match &actor {
+			Actor::Subject(identity) => interaction::run_message_key(identity, id, external_key),
+			Actor::Operator => format!("human:{id}:{external_key}"),
+		};
+		let mut lease = crate::collaboration::access::Lease::begin_message_create(
+			&f.store,
+			actor,
+			run.workspace_id,
+		)
+		.await?;
+		let result = async {
+			if let Some(access) = lease.access_mut() {
+				let visible = access.run_for_interaction(id).await?;
+				if visible.workspace_id != run.workspace_id {
+					return Err(Error::Forbidden);
+				}
+				access
+					.require(&access.resource("run", id, json!({})), "run.message")
+					.await?;
+			}
+			if run.home_node != f.config.node_id {
+				return Err(Error::Invalid(
+					"media run messages require a local run".into(),
+				));
+			}
+			let sender = lease.sender();
+			let limit = f.run_message_limit(&run).await?;
+			let existing = f
+				.store
+				.accept_run_media_message_in(lease.tx(), id, &sender, &input.content, &key, limit)
+				.await?;
+			let (seq, message_id): (i64, Uuid) = sqlx::query_as(
+				&sea_orm::sea_query::Query::select()
+					.columns([
+						sea_orm::sea_query::Alias::new("seq"),
+						sea_orm::sea_query::Alias::new("message_id"),
+					])
+					.from(sea_orm::sea_query::Alias::new("run_inputs"))
+					.and_where(sea_orm::sea_query::Expr::cust(
+						"run_id = $1 AND idempotency_key = $2",
+					))
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(id)
+			.bind(&key)
+			.fetch_one(&mut **lease.tx())
+			.await?;
+			let attachments = crate::collaboration::attachments::attach_run_media(
+				&mut lease,
+				run.workspace_id,
+				message_id,
+				&input.attachment_ids,
+			)
+			.await?;
+			let saved = crate::collaboration::attachments::for_messages(
+				&mut lease,
+				run.workspace_id,
+				&[message_id],
+			)
+			.await?;
+			let saved = saved.get(&message_id).ok_or(Error::Forbidden)?;
+			if saved
+				.iter()
+				.map(|attachment| attachment.id)
+				.collect::<Vec<_>>()
+				!= input.attachment_ids
+			{
+				return Err(Error::Conflict(
+					"run message attachment order changed".into(),
+				));
+			}
+			if existing {
+				return Ok(());
+			}
+			let media: Vec<(Uuid, String, String, Vec<u8>)> = sqlx::query_as(
+				&sea_orm::sea_query::Query::select()
+					.columns([
+						sea_orm::sea_query::Alias::new("id"),
+						sea_orm::sea_query::Alias::new("filename"),
+						sea_orm::sea_query::Alias::new("media_type"),
+						sea_orm::sea_query::Alias::new("content"),
+					])
+					.from(sea_orm::sea_query::Alias::new("channel_attachments"))
+					.and_where(sea_orm::sea_query::Expr::cust(
+						"workspace_id = $1 AND message_id = $2",
+					))
+					.order_by(
+						sea_orm::sea_query::Alias::new("position"),
+						sea_orm::sea_query::Order::Asc,
+					)
+					.order_by(
+						sea_orm::sea_query::Alias::new("id"),
+						sea_orm::sea_query::Order::Asc,
+					)
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(run.workspace_id)
+			.bind(message_id)
+			.fetch_all(&mut **lease.tx())
+			.await?;
+			if media.len() != attachments.len()
+				|| media
+					.iter()
+					.zip(&attachments)
+					.any(|((id, _, _, _), attachment)| *id != attachment.id)
+			{
+				return Err(Error::Conflict("run message attachment set changed".into()));
+			}
+			let mut parts = Vec::with_capacity(media.len() * 2);
+			for (_, filename, media_type, content) in media {
+				parts.push(crate::provider::ContentPart::Text(format!(
+					"Run message {seq} attachment: {filename}"
+				)));
+				parts.push(crate::provider::ContentPart::from_media(
+					&media_type,
+					content,
+				)?);
+			}
+			let agent = f.registry.get(&run.agent_id, &run.agent_version).await?;
+			let agent: crate::registry::AgentConfig = serde_json::from_value(agent.config)?;
+			let model = f
+				.registry
+				.get(&agent.model.id, &agent.model.version)
+				.await?;
+			let model: crate::registry::ModelConfig = serde_json::from_value(model.config)?;
+			model.require_media_types(
+				attachments
+					.iter()
+					.map(|attachment| attachment.media_type.as_str()),
+			)?;
+			let headroom = f.run_request_headroom(&run).await?;
+			let request = crate::provider::ModelRequest {
+				instructions: String::new(),
+				context: json!({"run_message": input.content}),
+				tools: Vec::new(),
+				max_output_tokens: 0,
+				content_parts: parts,
+			};
+			request.validate()?;
+			crate::generation::budget::Reservation::check_request(headroom, &request)?;
+			Ok(())
+		}
+		.await;
+		lease.finish(result).await?;
+		f.notify.notify_waiters();
+		return Ok(Json(SentResponse { sent: true }));
+	}
 	if let Actor::Subject(identity) = actor {
 		interaction::message_keyed(&f, &identity, id, &input.content, input.idempotency_key)
 			.await?;
