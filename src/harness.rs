@@ -242,14 +242,24 @@ impl Harness {
 				}
 			}
 		}
-		let mut visibility = crate::transactions::gate::ReadLease::begin(store).await?;
+		let visibility = crate::transactions::gate::ReadLease::begin(store).await?;
 		let token = Uuid::new_v4();
-		let Some(mut run) = store
+		let Some(run) = store
 			.lease_run(token, self.federation.config.lease_seconds)
 			.await?
 		else {
 			return Ok(false);
 		};
+		self.advance_leased(run, token, visibility).await
+	}
+	/// The caller has committed the lease and, for notifications, its disposition.
+	pub(crate) async fn advance_leased(
+		&self,
+		mut run: Run,
+		token: Uuid,
+		mut visibility: crate::transactions::gate::ReadLease,
+	) -> Result<bool> {
+		let store = &self.federation.store;
 		let _active = crate::http::ActiveExecution::begin();
 		let result = {
 			let work = self.advance(&mut run, token, &mut visibility);
@@ -332,6 +342,37 @@ impl Harness {
 		}
 		Ok(true)
 	}
+	/// Terminal input delivery remains independent of runnable-Run activation.
+	pub async fn deliver_terminal_messages_until(
+		&self,
+		mut stopping: tokio::sync::watch::Receiver<bool>,
+	) -> Result<()> {
+		while !*stopping.borrow() && stopping.has_changed().is_ok() {
+			let delivery = async {
+				if let Some(run) = self.federation.store.pending_terminal_run_message().await? {
+					if self.federation.deliver_run_messages(&run).await.is_ok() {
+						return Ok(true);
+					}
+					self.federation
+						.store
+						.defer_run_message_delivery(run.id)
+						.await?;
+				}
+				Ok::<bool, Error>(false)
+			}
+			.await;
+			match delivery {
+				Ok(true) => continue,
+				Ok(false) => {}
+				Err(error) => tracing::warn!(%error, "terminal remote input delivery deferred"),
+			}
+			tokio::select! {
+				_ = tokio::time::sleep(Duration::from_millis(250)) => {},
+				_ = crate::lifecycle::stopped(&mut stopping) => break,
+			}
+		}
+		Ok(())
+	}
 	pub async fn run_worker(&self) -> Result<()> {
 		let (_sender, receiver) = tokio::sync::watch::channel(false);
 		self.run_worker_until(receiver).await
@@ -341,23 +382,26 @@ impl Harness {
 		&self,
 		stopping: tokio::sync::watch::Receiver<bool>,
 	) -> Result<()> {
-		while !*stopping.borrow() {
-			match self.worker_once().await {
-				Ok(true) => {}
-				Ok(false) => {
-					tokio::select! {_=tokio::time::sleep(Duration::from_millis(500))=>{},_=self.federation.notify.notified()=>{}}
-				}
-				Err(Error::TransactionPending) => {
-					tokio::time::sleep(Duration::from_millis(250)).await;
-				}
-				Err(e) => {
-					tracing::error!(error=%e,"worker step failed");
-					tokio::time::sleep(Duration::from_secs(1)).await;
-				}
-			}
-		}
-		Ok(())
+		let runtime = crate::activation::Runtime::new(
+			self.federation.clone(),
+			crate::activation::Settings::from_env()?,
+			true,
+		);
+		let mut background = tokio::task::JoinSet::new();
+		background.spawn(runtime.clone().run(stopping.clone()));
+		let delivery = self.clone();
+		let delivery_stopping = stopping.clone();
+		background.spawn(async move {
+			delivery
+				.deliver_terminal_messages_until(delivery_stopping)
+				.await
+		});
+		let result = runtime.worker(self.clone(), stopping).await;
+		background.abort_all();
+		while background.join_next().await.is_some() {}
+		result
 	}
+
 	async fn tool_error(
 		&self,
 		run: &mut Run,
