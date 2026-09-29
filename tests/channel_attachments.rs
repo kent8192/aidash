@@ -275,3 +275,67 @@ async fn attachments_cannot_be_rebound_or_linked_from_another_channel(
 	assert_eq!(status, 400);
 	cleanup(f, &url, &schema).await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn media_only_channel_message_preserves_attachment_order_and_retry_identity(
+	#[future(awt)]
+	#[from(test_environment)]
+	_test_environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&_test_environment).await;
+	let token = f.config.api_token.clone();
+	let app = api::router(f.clone());
+	let (_, workspace) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/workspaces",
+		json!({"title":"Media","goal":"Inspect media"}),
+	)
+	.await;
+	let workspace = workspace["id"].as_str().unwrap();
+	let (_, first) = upload(&app, &token, workspace, Uuid::new_v4(), b"first").await;
+	let (_, second) = upload(&app, &token, workspace, Uuid::new_v4(), b"second").await;
+	let ids = [
+		second["id"].as_str().unwrap(),
+		first["id"].as_str().unwrap(),
+	];
+	let path = format!("/api/workspaces/{workspace}/thread-messages");
+	let key = Uuid::new_v4();
+	let body = json!({"content":"","idempotency_key":key,"attachment_ids":ids});
+	let (status, posted) = request(&app, &token, "POST", &path, body.clone()).await;
+	assert_eq!(status, 200, "{posted}");
+	assert_eq!(posted["attachments"][0]["id"], ids[0]);
+	assert_eq!(posted["attachments"][1]["id"], ids[1]);
+	let (status, replay) = request(&app, &token, "POST", &path, body).await;
+	assert_eq!(status, 200, "{replay}");
+	assert_eq!(replay["message"]["id"], posted["message"]["id"]);
+	let (status, _) = request(
+		&app,
+		&token,
+		"POST",
+		&path,
+		json!({"content":"","idempotency_key":key,"attachment_ids":[ids[1],ids[0]]}),
+	)
+	.await;
+	assert_eq!(status, 409);
+	let (status, history) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/workspaces/{workspace}/message-history"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{history}");
+	let saved = history["messages"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["message"]["id"] == posted["message"]["id"])
+		.unwrap();
+	assert_eq!(saved["attachments"][0]["id"], ids[0]);
+	assert_eq!(saved["attachments"][1]["id"], ids[1]);
+	cleanup(f, &url, &schema).await;
+}

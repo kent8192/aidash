@@ -33,6 +33,8 @@ pub enum Error {
 	OrchestrationUnavailable,
 	#[error("{0}")]
 	External(String),
+	#[error("OpenRouter returned {status}: {reason}")]
+	ProviderRejected { status: u16, reason: String },
 	#[error("{0}")]
 	Database(#[from] sqlx::Error),
 	#[error("{0}")]
@@ -60,6 +62,10 @@ impl IntoResponse for Error {
 			| Self::SemanticUnavailable
 			| Self::OrchestrationUnavailable => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
 			Self::StaleInference => (StatusCode::CONFLICT, self.to_string()),
+			Self::ProviderRejected { status, .. } => (
+				StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
+				self.to_string(),
+			),
 			Self::Database(error)
 				if error
 					.as_database_error()

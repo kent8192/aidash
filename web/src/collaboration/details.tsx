@@ -8,6 +8,7 @@ import {
   runGet,
   runControl,
   runMessage,
+  channelAttachmentUpload,
   humanAnswer,
   taskAbandon,
   remoteAction,
@@ -40,6 +41,8 @@ import { GenerationAssignForm } from "../generation";
 import { EntityDetails } from "../entity-details";
 import { ArtifactList } from "./channel";
 import { collaborationCopy } from "./copy";
+import { workspaceCopy } from "./workspace-copy";
+import { validAttachments } from "./conversation-model";
 
 export type Selection = {
   kind: string;
@@ -405,6 +408,7 @@ function RunPanel({
 }) {
   const { t, locale } = useI18n();
   const copy = collaborationCopy[locale];
+  const fileCopy = workspaceCopy[locale];
   const local = node === data.node.id;
   const agentLabel = useAgentLabel(data, discovery);
   const query = useInfiniteQuery({
@@ -424,7 +428,11 @@ function RunPanel({
       : query.data?.pages[0].run
     : remoteNode?.runs.find((value) => value.id === id);
   const [draft, setDraft] = useState("");
-  const request = useRef<{ content: string; key: string } | null>(null);
+  const [files, setFiles] = useState<{ key: string; file: File; uploaded?: string }[]>([]);
+  const [fileError, setFileError] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const sending = useRef(false);
+  const request = useRef<{ content: string; attachments: string[]; key: string } | null>(null);
   if (!run)
     return (
       <p role="status">
@@ -481,39 +489,82 @@ function RunPanel({
             onSubmit={(event) => {
               event.preventDefault();
               const content = draft.trim();
-              if (!content) return;
-              if (request.current?.content !== content)
-                request.current = { content, key: crypto.randomUUID() };
-              const idempotency_key = request.current.key;
-              void submit(() =>
-                local
-                  ? runMessage(id, { content, idempotency_key })
-                  : remoteAction({
-                      node_id: node,
-                      control: {
-                        run_id: id,
-                        action: "message",
-                        content,
-                        idempotency_key,
-                      },
-                    }),
-              ).then((ok) => {
-                if (ok) {
-                  setDraft("");
-                  request.current = null;
+              if ((!content && files.length === 0) || sending.current) return;
+              sending.current = true;
+              setFileError("");
+              void (async () => {
+                try {
+                  const attachments: string[] = [];
+                  for (const entry of files) {
+                    let uploaded = entry.uploaded;
+                    if (!uploaded) {
+                      setUploading(true);
+                      uploaded = (await channelAttachmentUpload(run.workspace_id, entry.file, {
+                        filename: entry.file.name,
+                        media_type: entry.file.type || "application/octet-stream",
+                        idempotency_key: entry.key,
+                      })).id;
+                      setFiles((current) => current.map((file) =>
+                        file.key === entry.key ? { ...file, uploaded } : file));
+                    }
+                    attachments.push(uploaded);
+                  }
+                  if (request.current?.content !== content ||
+                    JSON.stringify(request.current.attachments) !== JSON.stringify(attachments)) {
+                    request.current = { content, attachments, key: crypto.randomUUID() };
+                  }
+                  const idempotency_key = request.current.key;
+                  const ok = await submit(() =>
+                    local
+                      ? runMessage(id, { content, idempotency_key, attachment_ids: attachments })
+                      : remoteAction({
+                          node_id: node,
+                          control: { run_id: id, action: "message", content, idempotency_key },
+                        }),
+                  );
+                  if (ok) {
+                    setDraft("");
+                    setFiles([]);
+                    request.current = null;
+                  }
+                } catch (reason) {
+                  setFileError(`${fileCopy.attachmentError} ${reason instanceof Error ? reason.message : String(reason)}`);
+                } finally {
+                  setUploading(false);
+                  sending.current = false;
                 }
-              });
+              })();
             }}
           >
             <Field label={copy.message}>
               <textarea
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
-                required
+                required={files.length === 0}
                 rows={3}
               />
             </Field>
-            <button className="primary">{copy.send}</button>
+            {local && <>
+              <input type="file" multiple aria-label={fileCopy.attach}
+                onChange={(event) => {
+                  const selected = [...files, ...Array.from(event.target.files ?? []).map((file) => ({ key: crypto.randomUUID(), file }))];
+                  if (validAttachments(selected.map((item) => item.file))) {
+                    setFiles(selected);
+                    request.current = null;
+                    setFileError("");
+                  } else setFileError(fileCopy.invalidAttachment);
+                  event.target.value = "";
+                }} />
+              {files.length > 0 && <ul className="workspace-draft-files">
+                {files.map((entry) => <li key={entry.key}>{entry.file.name}
+                  <button type="button" aria-label={`${fileCopy.removeAttachment}: ${entry.file.name}`}
+                    onClick={() => { setFiles((current) => current.filter((file) => file.key !== entry.key)); request.current = null; }}>×</button>
+                </li>)}
+              </ul>}
+              <p>{fileCopy.attachmentLimit}</p>
+            </>}
+            {fileError && <p role="alert" className="error">{fileError}</p>}
+            <button className="primary" disabled={uploading}>{uploading ? fileCopy.uploading : copy.send}</button>
           </form>
         </>
       )}

@@ -869,7 +869,42 @@ impl Harness {
 				if let Some(guard) = guard {
 					guard.inference().await?;
 				}
-				let request = budget.request(&context, &pinned);
+				let mut request = budget.request(&context, &pinned);
+				let selected_media: Vec<crate::capabilities::sharing::Selection> =
+					serde_json::from_value(
+						run.pending
+							.get("selected_media")
+							.cloned()
+							.unwrap_or_else(|| json!([])),
+					)?;
+				if !selected_media.is_empty() {
+					request.content_parts = guard
+						.ok_or(Error::Forbidden)?
+						.model_media(store, &selected_media)
+						.await?;
+				}
+				let new_messages: Vec<(i64, Uuid)> = page
+					.entries
+					.iter()
+					.filter_map(|(index, _)| {
+						let input = &inputs[*index];
+						(input.seq > run.observed_input_seq.max(context.media_inferred_seq))
+							.then_some((input.seq, input.message_id?))
+					})
+					.collect();
+				if let Some(guard) = guard {
+					request
+						.content_parts
+						.extend(guard.human_message_media(&new_messages).await?);
+				} else if !new_messages.is_empty()
+					&& store
+						.run_message_has_media(
+							&new_messages.iter().map(|(_, id)| *id).collect::<Vec<_>>(),
+						)
+						.await?
+				{
+					return Err(Error::Forbidden);
+				}
 				crate::generation::budget::Reservation::check_request(window, &request)?;
 				let request_tokens = request.estimated_total_tokens();
 				let reservation = if let Some(guard) = guard {
@@ -908,6 +943,9 @@ impl Harness {
 				// Count only tool content that survived compaction and was present
 				// in a successful provider request, not every completed read.
 				capture_message_inference_coverage(&mut context);
+				if let Some((seq, _)) = new_messages.last() {
+					context.media_inferred_seq = context.media_inferred_seq.max(*seq);
+				}
 				context.usage = json!({"input_tokens":result.input_tokens,"output_tokens":result.output_tokens,"context_window":window,"compactions":context.compactions});
 				run.context = json!(context);
 				let references_read_at_inference = required_run_message_reads
@@ -1163,14 +1201,20 @@ impl Harness {
 							.unwrap_or(false);
 						let deferred_read = run.pending.get("deferred_workspace_read").cloned();
 						let deferred_skill_read = run.pending.get("deferred_skill_read").cloned();
+						let selected_media = run
+							.pending
+							.get("selected_media")
+							.cloned()
+							.unwrap_or_else(|| json!([]));
 						run.pending = if force_read_compaction {
 							json!({
 									"force_workspace_read_compaction":true,
 									"deferred_workspace_read":deferred_read,
-									"deferred_skill_read":deferred_skill_read
+									"deferred_skill_read":deferred_skill_read,
+									"selected_media":selected_media
 							})
 						} else {
-							json!({})
+							json!({"selected_media":selected_media})
 						};
 						store.save_run(run, token, "run.thinking").await?;
 					}
@@ -1503,6 +1547,30 @@ impl Harness {
 						Err(e) => return Err(e),
 					}
 				};
+				if call.name == "file_read"
+					&& call.arguments["representation"] == "model_input"
+					&& output["status"] == "completed"
+					&& output["metadata"]["file_id"] == call.arguments["file_id"]
+				{
+					let selection = json!({"file_id":call.arguments["file_id"],"expected_digest":call.arguments["expected_digest"]});
+					let mut selected = run.pending["selected_media"]
+						.as_array()
+						.cloned()
+						.unwrap_or_default();
+					if selected.len() >= 8 {
+						return self
+							.tool_error(
+								run,
+								token,
+								call,
+								cursor,
+								"model media input exceeds count limit".into(),
+							)
+							.await;
+					}
+					selected.push(selection);
+					run.pending["selected_media"] = json!(selected);
+				}
 				if invocation.status != "COMPLETED" {
 					store.invocation_finish(run, token, &key, &output).await?;
 				}

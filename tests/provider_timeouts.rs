@@ -134,6 +134,7 @@ async fn infer_after(
 				context: json!({}),
 				tools: vec![],
 				max_output_tokens: 512,
+				content_parts: vec![],
 			}),
 			delay_secs,
 		)

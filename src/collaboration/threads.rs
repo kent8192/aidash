@@ -112,7 +112,9 @@ pub(crate) async fn post(
 	workspace: Uuid,
 	input: ChannelMessageInput,
 ) -> Result<ChannelMessage> {
-	nonempty(&input.content, "message")?;
+	if input.attachment_ids.is_empty() {
+		nonempty(&input.content, "message")?;
+	}
 	let attachment_digest = attachments::digest_ids(&input.attachment_ids)?;
 	if let Some(thread) = input.thread_id {
 		get(lease, workspace, thread).await?;
@@ -124,7 +126,7 @@ pub(crate) async fn post(
 		input.idempotency_key
 	);
 	let message = store
-		.message_in(lease.tx(), workspace, &sender, &input.content, Some(&key))
+		.message_in_with_attachments(lease.tx(), workspace, &sender, &input.content, Some(&key))
 		.await?;
 	// Root submissions also have a context row, binding their idempotency key
 	// to the absence of a thread rather than allowing a later reply replay.

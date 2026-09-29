@@ -31,7 +31,7 @@ export function submissionFor(
   attachments: readonly string[] = [],
 ): MessageSubmission {
   const content = draft.trim();
-  const canonical = [...attachments].sort();
+  const canonical = [...attachments];
   if (
     previous?.workspace === workspace &&
     previous.thread === thread &&

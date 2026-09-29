@@ -1,7 +1,7 @@
 //! Durable channel conversations; message creation does not authorize execution.
 pub(crate) mod access;
 pub mod api;
-mod attachments;
+pub(crate) mod attachments;
 mod history;
 pub(crate) mod threads;
 

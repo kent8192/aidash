@@ -39,7 +39,7 @@ export const workspaceCopy = {
     scope: "このチャンネルの参加者に共有",
     attach: "ファイルを添付",
     attachmentLimit:
-      "1ファイル 1 MiB 以下・最大8件。メッセージ本文も入力してください。",
+      "1ファイル 1 MiB 以下・最大8件。添付のみでも送信できます。",
     invalidAttachment:
       "添付できるのは空でない1 MiB以下のファイル（最大8件）です。",
     removeAttachment: "添付を削除",
@@ -105,7 +105,7 @@ export const workspaceCopy = {
     scope: "Shared with this channel's participants",
     attach: "Attach files",
     attachmentLimit:
-      "Up to 8 files, 1 MiB each. Include a message with your files.",
+      "Up to 8 files, 1 MiB each. You can send attachments without text.",
     invalidAttachment: "Choose up to 8 non-empty files of 1 MiB or less.",
     removeAttachment: "Remove attachment",
     uploading: "Uploading…",

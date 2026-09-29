@@ -54,17 +54,21 @@ test("empty page list remains empty without inventing conversation data", () => 
   assert.deepEqual(mergeMessagePages([]), []);
 });
 
-test("message retry identity includes attachment membership", () => {
+test("message retry identity includes attachment order", () => {
   let n = 0;
   const key = () => String(++n);
   const first = submissionFor(null, "workspace", null, "source", key, [
     "b",
     "a",
   ]);
-  assert.equal(
+  assert.notEqual(
     submissionFor(first, "workspace", null, "source", key, ["a", "b"]).key,
     first.key,
   );
+	assert.equal(
+		submissionFor(first, "workspace", null, "source", key, ["b", "a"]).key,
+		first.key,
+	);
   assert.notEqual(
     submissionFor(first, "workspace", null, "source", key, ["b"]).key,
     first.key,

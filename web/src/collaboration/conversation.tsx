@@ -211,7 +211,7 @@ function ConversationFeed({
   }
   async function send() {
     if (
-      !draft.text.trim() ||
+      (!draft.text.trim() && draft.files.length === 0) ||
       inFlight.current ||
       query.isError ||
       query.isPending
@@ -648,7 +648,7 @@ function ConversationFeed({
                 <button
                   className="primary"
                   aria-label={thread ? threads.sendReply : copy.send}
-                  disabled={busy || !draft.text.trim()}
+                disabled={busy || (!draft.text.trim() && draft.files.length === 0)}
                 >
                   <Send size={15} />
                   {sending && (

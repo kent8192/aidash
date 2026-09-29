@@ -180,8 +180,7 @@ pub(crate) fn digest_ids(ids: &[Uuid]) -> Result<String> {
 	if unique.len() != ids.len() {
 		return Err(Error::Invalid("attachment ids must be unique".into()));
 	}
-	let mut canonical: Vec<_> = ids.iter().map(Uuid::to_string).collect();
-	canonical.sort_unstable();
+	let canonical: Vec<_> = ids.iter().map(Uuid::to_string).collect();
 	Ok(format!(
 		"{:x}",
 		Sha256::digest(canonical.join("\n").as_bytes())
@@ -210,6 +209,7 @@ pub(crate) async fn attach(
 			Alias::new("media_type"),
 			Alias::new("size_bytes"),
 			Alias::new("message_id"),
+			Alias::new("position"),
 		])
 		.from(Alias::new("channel_attachments"))
 		.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
@@ -236,10 +236,11 @@ pub(crate) async fn attach(
 			"attachment is already linked to another message".into(),
 		));
 	}
-	for id in ids {
+	for (position, id) in ids.iter().enumerate() {
 		let update = Query::update()
 			.table(Alias::new("channel_attachments"))
 			.value(Alias::new("message_id"), Expr::cust("$1"))
+			.value(Alias::new("position"), Expr::cust("$5"))
 			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$2")))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$3")))
 			.and_where(Expr::col(Alias::new("uploaded_by")).eq(Expr::cust("$4")))
@@ -250,6 +251,10 @@ pub(crate) async fn attach(
 			.bind(workspace)
 			.bind(id)
 			.bind(&uploader)
+			.bind(
+				i32::try_from(position)
+					.map_err(|_| Error::Invalid("too many attachments".into()))?,
+			)
 			.execute(&mut **lease.tx())
 			.await?;
 	}
@@ -280,10 +285,12 @@ pub(crate) async fn for_messages(
 			Alias::new("media_type"),
 			Alias::new("size_bytes"),
 			Alias::new("message_id"),
+			Alias::new("position"),
 		])
 		.from(Alias::new("channel_attachments"))
 		.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
 		.and_where(Expr::cust("message_id = ANY($2)"))
+		.order_by(Alias::new("position"), sea_orm::sea_query::Order::Asc)
 		.order_by(Alias::new("id"), sea_orm::sea_query::Order::Asc)
 		.to_string(PostgresQueryBuilder);
 	let records: Vec<AttachmentLink> = sqlx::query_as(&query)

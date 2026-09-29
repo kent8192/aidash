@@ -65,6 +65,7 @@ async fn japanese_history_compacts_before_the_final_request_check() {
 		context: json!({"current":pinned,"summary":context.summary,"history":context.history}),
 		tools: vec![],
 		max_output_tokens: 256,
+		content_parts: vec![],
 	};
 	crate::generation::budget::Reservation::check_request(12000, &request).unwrap();
 	assert_eq!(context.compactions, 1);
@@ -77,6 +78,7 @@ fn request_check_reserves_completion_tokens() {
 		context: json!({}),
 		tools: vec![],
 		max_output_tokens: 4096,
+		content_parts: vec![],
 	};
 	assert!(crate::generation::budget::Reservation::check_request(2000, &request).is_err());
 }

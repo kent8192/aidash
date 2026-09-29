@@ -1098,6 +1098,114 @@ impl Guard {
 		self.authorize_inference_with(&mut access).await
 	}
 
+	/// Resolve an explicit one-inference file selection under the same execution
+	/// authority as the provider request. Only immutable references are durable.
+	pub async fn model_media(
+		&self,
+		store: &Store,
+		selections: &[crate::capabilities::sharing::Selection],
+	) -> Result<Vec<crate::provider::ContentPart>> {
+		if selections.len() > 8 {
+			return Err(Error::Invalid(
+				"model media input exceeds count limit".into(),
+			));
+		}
+		let mut access = self.access.lock().await;
+		let area = crate::capabilities::sessions::for_run(&mut access, &self.run).await?;
+		crate::capabilities::sessions::require_current_run(&mut access, &area, &self.run).await?;
+		crate::capabilities::sessions::authorize(&mut access, &area, "file.read").await?;
+		let files = crate::capabilities::service::files(&area)?;
+		let mut parts = Vec::with_capacity(selections.len() * 2);
+		let mut total = 0_u64;
+		for selection in selections {
+			let file = files
+				.iter()
+				.find(|file| file.file_id == selection.file_id)
+				.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
+			if file.digest != selection.expected_digest {
+				return Err(Error::Conflict("FILE_CHANGED".into()));
+			}
+			total = total.saturating_add(file.size);
+			if total > 8 * 1024 * 1024 {
+				return Err(Error::Invalid(
+					"model media input exceeds byte limit".into(),
+				));
+			}
+			let bytes = store.capabilities.read(&mut access, file).await?;
+			parts.push(crate::provider::ContentPart::Text(format!(
+				"Selected file: {}",
+				file.path
+			)));
+			parts.push(crate::provider::ContentPart::from_media(
+				&file.media_type,
+				bytes,
+			)?);
+		}
+		Ok(parts)
+	}
+
+	pub async fn human_message_media(
+		&self,
+		messages: &[(i64, Uuid)],
+	) -> Result<Vec<crate::provider::ContentPart>> {
+		#[derive(sqlx::FromRow)]
+		struct Attachment {
+			filename: String,
+			media_type: String,
+			sha256: String,
+			size_bytes: i64,
+			content: Vec<u8>,
+		}
+		let mut access = self.access.lock().await;
+		let mut parts = Vec::new();
+		let mut count = 0_usize;
+		let mut total = 0_usize;
+		for (seq, id) in messages {
+			access
+				.workspace_record(self.run.workspace_id, "message", *id)
+				.await?;
+			let query = Query::select()
+				.columns(
+					["filename", "media_type", "sha256", "size_bytes", "content"].map(Alias::new),
+				)
+				.from(Alias::new("channel_attachments"))
+				.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+				.and_where(Expr::col(Alias::new("message_id")).eq(Expr::cust("$2")))
+				.order_by(Alias::new("position"), Order::Asc)
+				.order_by(Alias::new("id"), Order::Asc)
+				.to_string(PostgresQueryBuilder);
+			let attachments: Vec<Attachment> = sqlx::query_as(&query)
+				.bind(self.run.workspace_id)
+				.bind(id)
+				.fetch_all(&mut **access.tx)
+				.await?;
+			for attachment in attachments {
+				count += 1;
+				total = total.saturating_add(attachment.content.len());
+				if count > 8
+					|| total > 8 * 1024 * 1024
+					|| attachment.size_bytes != attachment.content.len() as i64
+				{
+					return Err(Error::Invalid(
+						"run media input exceeds count or byte limit".into(),
+					));
+				}
+				if crate::capabilities::objects::digest(&attachment.content) != attachment.sha256 {
+					return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
+				}
+				parts.push(crate::provider::ContentPart::Text(format!(
+					"Run message {seq} attachment: {}",
+					attachment.filename
+				)));
+				parts.push(crate::provider::ContentPart::from_media(
+					&attachment.media_type,
+					attachment.content,
+				)?);
+			}
+		}
+		Ok(parts)
+	}
+
 	async fn authorize_inference_with(&self, access: &mut Access) -> Result<()> {
 		if self.remote.is_some() {
 			catalog::entry(access, &self.agent.model, "model.infer").await?;

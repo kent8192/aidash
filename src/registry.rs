@@ -220,10 +220,67 @@ pub struct ModelConfig {
 	#[schema(required = true)]
 	pub max_output_tokens: Option<u32>,
 	pub modalities: Vec<String>,
+	/// Administrator-approved evidence for exact OpenRouter route tags. The
+	/// catalog and ZDR APIs are checked again before every media inference.
+	#[serde(default)]
+	pub media_routes: Vec<MediaRouteEvidence>,
 	pub cost: Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MediaRouteEvidence {
+	pub tag: String,
+	/// Image MIME types or OpenRouter input_audio format names.
+	pub formats: Vec<String>,
+	pub source: String,
+	pub verified_at: chrono::DateTime<chrono::Utc>,
+	pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
 impl ModelConfig {
+	pub fn require_media_types<'a>(
+		&self,
+		media_types: impl IntoIterator<Item = &'a str>,
+	) -> Result<()> {
+		let mut formats = Vec::new();
+		for media_type in media_types {
+			if !media_type.starts_with("image/") && !media_type.starts_with("audio/") {
+				continue;
+			}
+			let modality = crate::provider::ContentPart::modality_for_media_type(media_type)?;
+			if !self
+				.modalities
+				.iter()
+				.any(|available| available == modality)
+			{
+				return Err(Error::Invalid(format!(
+					"recipient model {} does not support {modality} input",
+					self.model_id
+				)));
+			}
+			formats.push(crate::provider::ContentPart::format_for_media_type(
+				media_type,
+			)?);
+		}
+		if formats.is_empty() {
+			return Ok(());
+		}
+		let now = chrono::Utc::now();
+		if !self.media_routes.iter().any(|route| {
+			route.verified_at <= now
+				&& route.expires_at > now
+				&& formats
+					.iter()
+					.all(|format| route.formats.iter().any(|supported| supported == format))
+		}) {
+			return Err(Error::Invalid(format!(
+				"recipient model {} has no current media route for every selected format",
+				self.model_id
+			)));
+		}
+		Ok(())
+	}
 	/// Resolve the provider's inference deadline without inheriting the shared
 	/// HTTP client's shorter default. Validate at registration and before use.
 	pub fn request_timeout(&self) -> Result<Duration> {
@@ -606,6 +663,28 @@ fn validate_in(e: &Entry, local: bool) -> Result<()> {
 				));
 			}
 			m.request_timeout()?;
+			for route in &m.media_routes {
+				if route.tag.is_empty()
+					|| !route
+						.tag
+						.bytes()
+						.all(|byte| byte.is_ascii_alphanumeric() || b"._-/".contains(&byte))
+					|| route.formats.is_empty()
+					|| route.source.trim().is_empty()
+					|| route.verified_at >= route.expires_at
+					|| route.formats.iter().any(|format| {
+						!matches!(
+							format.as_str(),
+							"image/png"
+								| "image/jpeg" | "image/gif"
+								| "image/webp" | "wav" | "mp3"
+								| "m4a" | "aac" | "ogg" | "webm"
+								| "flac"
+						)
+					}) {
+					return Err(Error::Invalid("invalid media route evidence".into()));
+				}
+			}
 			validate_endpoint(&m.endpoint)?;
 			if let Some(name) = m.credential_env {
 				crate::config::validate_secret_reference(&name)?;
