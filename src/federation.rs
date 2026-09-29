@@ -216,7 +216,8 @@ impl Federation {
 			Value::Null
 		};
 		let available =
-			crate::registry::agent_prompt_headroom(&agent, &references, &private_context)?;
+			crate::registry::agent_prompt_headroom(&agent, &references, &private_context)?
+				.saturating_sub(crate::context::MIN_CONTEXT_RESERVE);
 		if !agent.core_capabilities.skills {
 			return Ok(available);
 		}

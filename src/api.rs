@@ -1076,9 +1076,12 @@ async fn run_message(
 				.store
 				.accept_run_media_message_in(lease.tx(), id, &sender, &input.content, &key, limit)
 				.await?;
-			let message_id: Uuid = sqlx::query_scalar(
+			let (seq, message_id): (i64, Uuid) = sqlx::query_as(
 				&sea_orm::sea_query::Query::select()
-					.column(sea_orm::sea_query::Alias::new("message_id"))
+					.columns([
+						sea_orm::sea_query::Alias::new("seq"),
+						sea_orm::sea_query::Alias::new("message_id"),
+					])
 					.from(sea_orm::sea_query::Alias::new("run_inputs"))
 					.and_where(sea_orm::sea_query::Expr::cust(
 						"run_id = $1 AND idempotency_key = $2",
@@ -1116,9 +1119,11 @@ async fn run_message(
 			if existing {
 				return Ok(());
 			}
-			let media: Vec<(String, Vec<u8>)> = sqlx::query_as(
+			let media: Vec<(Uuid, String, String, Vec<u8>)> = sqlx::query_as(
 				&sea_orm::sea_query::Query::select()
 					.columns([
+						sea_orm::sea_query::Alias::new("id"),
+						sea_orm::sea_query::Alias::new("filename"),
 						sea_orm::sea_query::Alias::new("media_type"),
 						sea_orm::sea_query::Alias::new("content"),
 					])
@@ -1126,17 +1131,33 @@ async fn run_message(
 					.and_where(sea_orm::sea_query::Expr::cust(
 						"workspace_id = $1 AND message_id = $2",
 					))
+					.order_by(
+						sea_orm::sea_query::Alias::new("position"),
+						sea_orm::sea_query::Order::Asc,
+					)
+					.order_by(
+						sea_orm::sea_query::Alias::new("id"),
+						sea_orm::sea_query::Order::Asc,
+					)
 					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 			)
 			.bind(run.workspace_id)
 			.bind(message_id)
 			.fetch_all(&mut **lease.tx())
 			.await?;
-			if media.len() != attachments.len() {
+			if media.len() != attachments.len()
+				|| media
+					.iter()
+					.zip(&attachments)
+					.any(|((id, _, _, _), attachment)| *id != attachment.id)
+			{
 				return Err(Error::Conflict("run message attachment set changed".into()));
 			}
 			let mut parts = Vec::with_capacity(media.len() * 2);
-			for (media_type, content) in media {
+			for (_, filename, media_type, content) in media {
+				parts.push(crate::provider::ContentPart::Text(format!(
+					"Run message {seq} attachment: {filename}"
+				)));
 				parts.push(crate::provider::ContentPart::from_media(
 					&media_type,
 					content,

@@ -171,6 +171,78 @@ async fn verify_audio_batches(
 	assert_eq!(f.store.run(audio_run.id).await.unwrap().phase, "COMPLETED");
 }
 
+async fn verify_attachment_labels_count_toward_admission(
+	app: &Router,
+	f: &Federation,
+	operator: &str,
+) {
+	let (status, created) = request(
+		app,
+		operator,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Media label budget", "goal":"Inspect audio", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let workspace = created["workspace"]["id"].as_str().unwrap();
+	let run = f
+		.store
+		.runs()
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.workspace_id.to_string() == workspace)
+		.unwrap();
+	let seq = f
+		.store
+		.run_inputs(run.id)
+		.await
+		.unwrap()
+		.last()
+		.map_or(1, |input| input.seq + 1);
+	let short_name = "s.wav";
+	let long_name = format!("{}.wav", "x".repeat(251));
+	let short_label = format!("Run message {seq} attachment: {short_name}");
+	let text_body = json!({"messages":[
+		{"role":"system","content":""},
+		{"role":"user","content":[
+			{"type":"text","text":json!({"run_message":""}).to_string()},
+			{"type":"text","text":short_label}
+		]}
+	]});
+	// Leave a little room for the short label while the 255-byte filename
+	// pushes the otherwise identical audio beyond the admission boundary.
+	let audio_tokens = (f.run_message_limit(&run).await.unwrap() * 4)
+		.checked_sub(text_body.to_string().len() + 2 * 1024 + 160)
+		.unwrap();
+	let mut audio = vec![0_u8; audio_tokens * 16];
+	audio[..12].copy_from_slice(b"RIFF\0\0\0\0WAVE");
+	let long = upload(app, operator, workspace, &long_name, "audio/wav", &audio).await;
+	let short = upload(app, operator, workspace, short_name, "audio/wav", &audio).await;
+	let path = format!("/api/runs/{}/message", run.id);
+	let (status, rejected) = request(
+		app,
+		operator,
+		"POST",
+		&path,
+		json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":[long["id"]]}),
+	)
+	.await;
+	assert_eq!(status, 400, "{rejected}");
+	assert!(f.store.run_inputs(run.id).await.unwrap().is_empty());
+	let (status, sent) = request(
+		app,
+		operator,
+		"POST",
+		&path,
+		json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":[short["id"]]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{sent}");
+	assert_eq!(f.store.run_inputs(run.id).await.unwrap().len(), 1);
+}
+
 async fn verify_expired_route_retry(
 	app: &Router,
 	f: &Federation,
@@ -806,6 +878,10 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	))
 	.await;
 	Box::pin(verify_expired_route_retry(&app, &f, &worker, &operator)).await;
+	Box::pin(verify_attachment_labels_count_toward_admission(
+		&app, &f, &operator,
+	))
+	.await;
 	server.abort();
 	cleanup(f, &url, &schema).await;
 }
