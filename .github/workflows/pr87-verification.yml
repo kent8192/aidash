@@ -6,25 +6,30 @@ on:
 permissions:
   contents: read
 jobs:
-  workspace:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 10
+  regression-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      RUSTC_WRAPPER: ""
+      RUST_MIN_STACK: "8388608"
+      AIDASH_SECRET_TEST_PEER: local-peer-regression-test-token-0123456789
+      AIDASH_SECRET_TEST_QDRANT: local-semantic-vector-fixture-key-0123456789
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          fetch-depth: 0
           persist-credentials: false
-      - name: Package exact source revisions and formatter
+      - run: rustup show active-toolchain
+      - name: Run the new regressions against the unfixed implementation
         run: |
-          mkdir -p /tmp/pr87-workspace/lib /tmp/pr87-workspace/bin
-          git bundle create /tmp/pr87-workspace/aidash.bundle HEAD refs/remotes/origin/develop/0.1.0
-          rustup show active-toolchain
-          cp "$(rustup which rustfmt)" /tmp/pr87-workspace/bin/
-          ldd "$(rustup which rustfmt)"
-          find "$(rustc --print sysroot)/lib" -maxdepth 1 -name '*.so*' -exec cp -L {} /tmp/pr87-workspace/lib/ \;
-          git rev-parse HEAD refs/remotes/origin/develop/0.1.0 > /tmp/pr87-workspace/revisions.txt
+          printf '\n#[path = "admission.rs"]\nmod admission;\n' >> tests/transaction_protocol/listing.rs
+          for peer in $(seq 1 15); do
+            key=$(printf 'AIDASH_SECRET_TRANSACTION_%02d' "$peer")
+            export "$key=transaction-acceptance-test-peer-$peer-only"
+          done
+          cargo test --locked --test transaction_protocol listing::admission -- --test-threads=1 2>&1 | tee /tmp/pr87-baseline.log
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
         with:
-          name: pr87-verification-workspace
-          path: /tmp/pr87-workspace
+          name: pr87-regression-baseline
+          path: /tmp/pr87-baseline.log
           retention-days: 1
