@@ -12,7 +12,7 @@ RUN set -eux; \
     esac; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl; \
-    curl --fail --location --silent --show-error \
+    curl --fail --location --silent --show-error --retry 5 --retry-delay 2 \
       "https://github.com/supabase/pg_jsonschema/releases/download/v${PG_JSONSCHEMA_VERSION}/${asset}" \
       --output /tmp/pg_jsonschema.deb; \
     echo "${checksum}  /tmp/pg_jsonschema.deb" | sha256sum --check --status; \

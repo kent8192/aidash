@@ -342,7 +342,8 @@ export function buildMeshGraph(
       `Run ${run.id.slice(0, 8)}`,
       run.workspace_id,
     );
-    nodes.get(runNode)!.status = run.phase;
+    nodes.get(runNode)!.status =
+      run.control === "PAUSED" ? "PAUSED" : run.phase;
     edge(
       runNode,
       resourceKey(nodeId, "task", run.task_id),
@@ -955,6 +956,7 @@ export function nodeEvents(
         return e.workspace_id === node.workspaceId;
       if (node.kind === "remote") return e.node_id === node.nodeId;
       const payload = eventReferences(e);
+      if (node.kind === "run") return payload.run_id === node.resourceId;
       return (
         (typeof payload.task_id === "string" && tasks.has(payload.task_id)) ||
         (typeof payload.run_id === "string" && runIds.has(payload.run_id)) ||

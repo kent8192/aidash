@@ -91,6 +91,65 @@ const projected = {
   next_cursor: null,
 };
 
+test("operator tenant input distinguishes invalid IDs from oversized resources", async ({
+  page,
+}) => {
+  const scene = meshScene();
+  await installBearerDashboard(page, "synthetic-federated-tenant");
+  await page.addInitScript(() =>
+    localStorage.setItem("aidash-locale", "en-US"),
+  );
+  let requests = 0;
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/events/stream") return route.abort();
+    if (path === "/api/federation/graph/peers")
+      return route.fulfill({ json: [{ node_id: firstPeer }] });
+    if (path === "/api/federation/graph") {
+      requests++;
+      return route.fulfill({
+        status: 400,
+        json: {
+          error:
+            requests === 1
+              ? "identifiers require 1..256 bytes without whitespace or wildcards"
+              : "remote graph resource exceeds page limit",
+        },
+      });
+    }
+    return route.fulfill({
+      json:
+        path === "/api/session"
+          ? { access: scene.data.access, node_id: scene.data.node.id }
+          : path === "/api/state"
+            ? scene.data
+            : path === "/api/discover"
+              ? scene.discovery
+              : path === "/api/mesh"
+                ? { nodes: [], errors: [] }
+                : [],
+    });
+  });
+  await page.goto("/graph");
+  const tenant = page.getByLabel("Peer tenant");
+  await tenant.fill("acme tenant");
+  await expect(tenant).toHaveAttribute("aria-invalid", "true");
+  await expect(page.getByRole("alert")).toContainText("without spaces");
+  await expect(
+    page.getByRole("button", { name: "Expand node" }),
+  ).toBeDisabled();
+  expect(requests).toBe(0);
+  await tenant.fill("acme");
+  await page.getByRole("button", { name: "Expand node" }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "tenant ID" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Refresh node" }).click();
+  await expect(
+    page.getByText("An authorized resource exceeds the graph page limit."),
+  ).toBeVisible();
+});
+
 test("subject expands only direct authorized peers and clears remote details on denial", async ({
   page,
 }) => {

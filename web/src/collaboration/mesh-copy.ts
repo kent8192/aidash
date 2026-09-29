@@ -120,6 +120,7 @@ export const meshCopy = {
       "Filters recorded runs and events. Active runs and current task/configuration state remain visible.",
     noSelection: "Select a node to explore its connections.",
     peerScope: "Peer tenant",
+    peerInvalidTenant: "Enter a tenant ID of 1–256 bytes without spaces or *.",
     workspaceScope: "Graph workspace",
     allWorkspaces: "All workspaces",
     expandPeer: "Expand node",
@@ -255,6 +256,8 @@ export const meshCopy = {
       "実行記録とイベントの期間を絞ります。実行中の処理と現在のタスク・設定は表示を維持します。",
     noSelection: "ノードを選択すると関係を確認できます。",
     peerScope: "接続先テナント",
+    peerInvalidTenant:
+      "テナントIDは1～256バイトで、空白と * を含めずに入力してください。",
     workspaceScope: "グラフのワークスペース",
     allWorkspaces: "すべてのワークスペース",
     expandPeer: "ノードを展開",

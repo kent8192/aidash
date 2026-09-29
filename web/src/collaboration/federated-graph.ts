@@ -60,7 +60,8 @@ export type RemoteExpansion = {
     | "denied"
     | "unavailable"
     | "unsupported"
-    | "oversized";
+    | "oversized"
+    | "invalid";
   page?: GraphPage;
   windowCursor?: string | null;
   checkedAt?: number;
@@ -100,7 +101,12 @@ export function graphError(error: unknown): RemoteExpansion["state"] {
   if (error instanceof ApiError) {
     if (error.status === 401 || error.status === 403) return "denied";
     if (error.status === 404) return "unsupported";
-    if (error.status === 400) return "oversized";
+    if (error.status === 400)
+      return /(?:resource exceeds|response exceeds|size limit)/i.test(
+        error.message,
+      )
+        ? "oversized"
+        : "invalid";
   }
   return "unavailable";
 }

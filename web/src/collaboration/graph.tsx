@@ -59,6 +59,11 @@ const supportedRelations = [
   "participates",
 ] as const;
 
+const validGraphTenant = (value: string) =>
+  value.length > 0 &&
+  new TextEncoder().encode(value).length <= 256 &&
+  !/[\s\p{Cc}*]/u.test(value);
+
 export function Graph({
   data,
   channel,
@@ -714,6 +719,10 @@ export function Graph({
                     {copy.peerScope}
                     <input
                       aria-label={copy.peerScope}
+                      aria-invalid={
+                        targetTenant.length > 0 &&
+                        !validGraphTenant(targetTenant)
+                      }
                       value={targetTenant}
                       onChange={(event) => {
                         setTargetTenant(event.target.value);
@@ -721,6 +730,10 @@ export function Graph({
                         setSelectedId("");
                       }}
                     />
+                    {targetTenant.length > 0 &&
+                      !validGraphTenant(targetTenant) && (
+                        <span role="alert">{copy.peerInvalidTenant}</span>
+                      )}
                   </label>
                 )}
                 {peerIds.map((peer) => {
@@ -739,9 +752,11 @@ export function Graph({
                             ? copy.peerUnsupported
                             : state === "oversized"
                               ? copy.peerOversized
-                              : state === "unavailable"
-                                ? copy.peerUnavailable
-                                : "";
+                              : state === "invalid"
+                                ? copy.peerInvalidTenant
+                                : state === "unavailable"
+                                  ? copy.peerUnavailable
+                                  : "";
                   return (
                     <div className="mesh-peer" key={peer}>
                       <span>{peer}</span>
@@ -750,7 +765,7 @@ export function Graph({
                         onClick={() => togglePeer(peer)}
                         disabled={
                           data.access.kind === "operator" &&
-                          !targetTenant.trim()
+                          !validGraphTenant(targetTenant)
                         }
                       >
                         {expansion ? copy.collapsePeer : copy.expandPeer}
@@ -1022,7 +1037,7 @@ export function Graph({
           data={data}
           hours={hours}
           now={now}
-          channel={channel}
+          channel={graphWorkspace}
           copy={copy}
           label={label}
           status={status}

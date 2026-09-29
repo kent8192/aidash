@@ -580,7 +580,11 @@ impl Candidate {
 				resource_id: Some(run.id.to_string()),
 				version: None,
 				workspace_id: Some(run.workspace_id),
-				status: Some(run.phase.clone()),
+				status: Some(if run.control == "PAUSED" {
+					"PAUSED".into()
+				} else {
+					run.phase.clone()
+				}),
 				goal_body: None,
 				at: Some(run.updated_at),
 			}),
@@ -639,6 +643,7 @@ fn kind_allowed(kind: &str, options: &GraphOptions) -> bool {
 
 const CANDIDATE_BATCH: u64 = 64;
 const CANDIDATE_KINDS: u8 = 6;
+const ACTIVITY_SCAN_LIMIT: usize = 4096;
 
 async fn candidates(
 	authority: &mut GraphAuthority<'_>,
@@ -782,6 +787,217 @@ async fn candidates(
 			.collect()),
 		_ => unreachable!(),
 	}
+}
+
+async fn linked_workspace(
+	authority: &mut GraphAuthority<'_>,
+	id: Uuid,
+) -> Result<Option<Candidate>> {
+	let tenant = authority.tenant().to_owned();
+	let sql = tenant_resources("workspaces", "id")
+		.column((Alias::new("r"), Asterisk))
+		.and_where(Expr::col((Alias::new("r"), Alias::new("id"))).eq(Expr::cust("$2")))
+		.limit(1)
+		.to_string(PostgresQueryBuilder);
+	Ok(sqlx::query_as::<_, Workspace>(&sql)
+		.bind(tenant)
+		.bind(id)
+		.fetch_optional(authority.connection())
+		.await?
+		.map(Candidate::Workspace))
+}
+
+async fn linked_task(authority: &mut GraphAuthority<'_>, id: Uuid) -> Result<Option<Candidate>> {
+	let tenant = authority.tenant().to_owned();
+	let sql = tenant_resources("tasks", "workspace_id")
+		.column((Alias::new("r"), Asterisk))
+		.and_where(Expr::col((Alias::new("r"), Alias::new("id"))).eq(Expr::cust("$2")))
+		.limit(1)
+		.to_string(PostgresQueryBuilder);
+	Ok(sqlx::query_as::<_, Task>(&sql)
+		.bind(tenant)
+		.bind(id)
+		.fetch_optional(authority.connection())
+		.await?
+		.map(Candidate::Task))
+}
+
+async fn linked_registry(
+	authority: &mut GraphAuthority<'_>,
+	kind: &str,
+	id: &str,
+	version: &str,
+) -> Result<Option<Candidate>> {
+	let tenant = authority.tenant().to_owned();
+	let sql = Query::select()
+		.column((Alias::new("r"), Alias::new("metadata")))
+		.from_as(Alias::new("authorization_catalog"), Alias::new("c"))
+		.join_as(
+			JoinType::InnerJoin,
+			Alias::new("registry"),
+			Alias::new("r"),
+			Condition::all()
+				.add(
+					Expr::col((Alias::new("r"), Alias::new("id")))
+						.eq(Expr::col((Alias::new("c"), Alias::new("entry_id")))),
+				)
+				.add(
+					Expr::col((Alias::new("r"), Alias::new("version")))
+						.eq(Expr::col((Alias::new("c"), Alias::new("entry_version")))),
+				),
+		)
+		.and_where(Expr::col((Alias::new("c"), Alias::new("tenant"))).eq(Expr::cust("$1")))
+		.and_where(Expr::col((Alias::new("c"), Alias::new("enabled"))).eq(true))
+		.and_where(Expr::col((Alias::new("c"), Alias::new("entry_id"))).eq(Expr::cust("$2")))
+		.and_where(Expr::col((Alias::new("c"), Alias::new("entry_version"))).eq(Expr::cust("$3")))
+		.limit(1)
+		.to_string(PostgresQueryBuilder);
+	let entry: Option<serde_json::Value> = sqlx::query_scalar(&sql)
+		.bind(tenant)
+		.bind(id)
+		.bind(version)
+		.fetch_optional(authority.connection())
+		.await?;
+	let entry = entry.map(serde_json::from_value::<Entry>).transpose()?;
+	Ok(entry
+		.filter(|entry| entry.kind == kind)
+		.map(Candidate::Registry))
+}
+
+fn relation_allowed(relation: &str, options: &GraphOptions) -> bool {
+	options.relations.iter().any(|allowed| allowed == relation)
+}
+
+async fn linked_candidates(
+	authority: &mut GraphAuthority<'_>,
+	candidate: &Candidate,
+	options: &GraphOptions,
+	node: &str,
+	visible: &[GraphNode],
+) -> Result<Vec<Candidate>> {
+	let mut linked = Vec::new();
+	let mut seen: BTreeSet<String> = visible.iter().map(|item| item.id.clone()).collect();
+	for item in candidate.nodes(node, options) {
+		seen.insert(item.id);
+	}
+	let mut workspace_ids = Vec::new();
+	let mut task_ids = Vec::new();
+	let mut registry = Vec::<(String, String, String)>::new();
+	match candidate {
+		Candidate::Workspace(_) => {}
+		Candidate::Task(task) if options.scope_workspace.is_none() => {
+			if (kind_allowed("workspace", options) || kind_allowed("goal", options))
+				&& relation_allowed("contains", options)
+			{
+				workspace_ids.push(task.workspace_id);
+			}
+			if kind_allowed("task", options) {
+				if relation_allowed("contains", options) {
+					task_ids.extend(task.parent_id);
+				}
+				if relation_allowed("depends", options) {
+					task_ids.extend(task.dependencies.iter().copied());
+				}
+			}
+		}
+		Candidate::Artifact(artifact) if options.scope_workspace.is_none() => {
+			if kind_allowed("task", options) && relation_allowed("produces", options) {
+				task_ids.push(artifact.task_id);
+			}
+		}
+		Candidate::Run(run) if relation_allowed("executes", options) => {
+			if options.scope_workspace.is_none() && kind_allowed("task", options) {
+				task_ids.push(run.task_id);
+			}
+			if kind_allowed("agent", options) {
+				registry.push((
+					"agent".into(),
+					run.agent_id.clone(),
+					run.agent_version.clone(),
+				));
+			}
+		}
+		Candidate::Conversation(conversation) if options.scope_workspace.is_none() => {
+			if kind_allowed("workspace", options) && relation_allowed("contains", options) {
+				workspace_ids.push(conversation.workspace_id);
+			}
+			if relation_allowed("participates", options)
+				&& kind_allowed(&conversation.target_kind, options)
+				&& matches!(conversation.target_kind.as_str(), "agent" | "cluster")
+				&& let Some((id, version)) = conversation.target.rsplit_once('@')
+			{
+				registry.push((conversation.target_kind.clone(), id.into(), version.into()));
+			}
+		}
+		Candidate::Registry(entry) => {
+			if entry.kind == "cluster"
+				&& relation_allowed("coordinates", options)
+				&& kind_allowed("agent", options)
+				&& let Some((id, version)) = registry_ref(&entry.config["coordinator"])
+			{
+				registry.push(("agent".into(), id.into(), version.into()));
+			}
+			if entry.kind == "agent" {
+				for (kind, field, relation) in [
+					("tool", "tools", "tool"),
+					("model", "model", "model"),
+					("skill", "skills", "skill"),
+					("cluster", "cluster", "member"),
+				] {
+					if !kind_allowed(kind, options) || !relation_allowed(relation, options) {
+						continue;
+					}
+					let value = &entry.config[field];
+					let refs = value
+						.as_array()
+						.map(|items| items.iter().collect::<Vec<_>>())
+						.unwrap_or_else(|| vec![value]);
+					for item in refs {
+						if let Some((id, version)) = registry_ref(item) {
+							registry.push((kind.into(), id.into(), version.into()));
+						}
+					}
+				}
+			}
+		}
+		_ => {}
+	}
+	task_ids.truncate(options.limit as usize);
+	registry.truncate(options.limit as usize);
+	for id in workspace_ids {
+		if let Some(item) = linked_workspace(authority, id).await? {
+			let new_nodes = item.nodes(node, options);
+			if new_nodes.iter().any(|node| !seen.contains(&node.id))
+				&& authority.visible(&item).await?
+			{
+				seen.extend(new_nodes.into_iter().map(|node| node.id));
+				linked.push(item);
+			}
+		}
+	}
+	for id in task_ids {
+		if seen.contains(&resource_key(node, "task", id)) {
+			continue;
+		}
+		if let Some(item) = linked_task(authority, id).await?
+			&& authority.visible(&item).await?
+		{
+			seen.extend(item.nodes(node, options).into_iter().map(|node| node.id));
+			linked.push(item);
+		}
+	}
+	for (kind, id, version) in registry {
+		if seen.contains(&entity_key(node, &kind, &id, &version)) {
+			continue;
+		}
+		if let Some(item) = linked_registry(authority, &kind, &id, &version).await?
+			&& authority.visible(&item).await?
+		{
+			seen.extend(item.nodes(node, options).into_iter().map(|node| node.id));
+			linked.push(item);
+		}
+	}
+	Ok(linked)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1139,6 +1355,17 @@ async fn project_activity(
 		.collect::<BTreeSet<_>>()
 		.into_iter()
 		.collect();
+	let workspaces = if let GraphAuthority::Subject(access) = authority {
+		let mut allowed = Vec::new();
+		for workspace in workspaces {
+			if access.allowed(workspace, "workspace.events").await? {
+				allowed.push(workspace);
+			}
+		}
+		allowed
+	} else {
+		workspaces
+	};
 	if workspaces.is_empty() {
 		return Ok(vec![]);
 	}
@@ -1159,6 +1386,15 @@ async fn project_activity(
 		.and_where(Expr::col((Alias::new("e"), Alias::new("created_at"))).lte(Expr::cust("$3")))
 		.and_where(Expr::cust("e.workspace_id = ANY($4)"))
 		.and_where(Expr::cust("($5::bigint IS NULL OR e.sequence < $5)"))
+		.cond_where(
+			Condition::any()
+				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("task.%"))
+				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("artifact.%"))
+				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("run.%"))
+				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("conversation.%"))
+				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("message.%"))
+				.add(Expr::col((Alias::new("e"), Alias::new("kind"))).like("workspace.%")),
+		)
 		.order_by((Alias::new("e"), Alias::new("sequence")), Order::Desc)
 		.limit(512);
 	if options.hours > 0 {
@@ -1178,6 +1414,7 @@ async fn project_activity(
 	};
 	let mut markers = Vec::new();
 	let mut before = None;
+	let mut scanned = 0;
 	loop {
 		let mut query = sqlx::query_as::<_, Event>(&sql)
 			.bind(&tenant)
@@ -1189,6 +1426,7 @@ async fn project_activity(
 			query = query.bind(start);
 		}
 		let events = query.fetch_all(authority.connection()).await?;
+		scanned += events.len();
 		let exhausted = events.len() < 512;
 		before = events.last().map(|event| event.sequence);
 		for event in events {
@@ -1207,7 +1445,7 @@ async fn project_activity(
 				break;
 			}
 		}
-		if markers.len() == 80 || exhausted {
+		if markers.len() == 80 || exhausted || scanned >= ACTIVITY_SCAN_LIMIT {
 			break;
 		}
 	}
@@ -1239,8 +1477,8 @@ async fn project_in(
 			}
 		}
 	};
-	let mut nodes = Vec::new();
-	let mut records = Vec::new();
+	let mut nodes: Vec<GraphNode> = Vec::new();
+	let mut records: Vec<Candidate> = Vec::new();
 	let mut bytes = 0_usize;
 	let mut scanned = 0_u64;
 	let mut next_cursor = None;
@@ -1276,12 +1514,37 @@ async fn project_in(
 			{
 				continue;
 			}
-			let addition = candidate.nodes(&f.config.node_id, options);
+			let addition: Vec<_> = candidate
+				.nodes(&f.config.node_id, options)
+				.into_iter()
+				.filter(|node| !nodes.iter().any(|existing| existing.id == node.id))
+				.collect();
 			if addition.is_empty() {
 				continue;
 			}
-			let size = serde_json::to_vec(&addition)?.len();
-			if nodes.len() + addition.len() > options.limit as usize || bytes + size > 3_000_000 {
+			let mut group = addition;
+			let mut group_records = vec![candidate.clone()];
+			for linked in
+				linked_candidates(authority, &candidate, options, &f.config.node_id, &nodes).await?
+			{
+				let addition: Vec<_> = linked
+					.nodes(&f.config.node_id, options)
+					.into_iter()
+					.filter(|node| {
+						!nodes
+							.iter()
+							.chain(group.iter())
+							.any(|existing| existing.id == node.id)
+					})
+					.collect();
+				if group.len() + addition.len() > options.limit as usize {
+					continue;
+				}
+				group.extend(addition);
+				group_records.push(linked);
+			}
+			let size = serde_json::to_vec(&group)?.len();
+			if nodes.len() + group.len() > options.limit as usize || bytes + size > 3_000_000 {
 				if nodes.is_empty() {
 					return Err(Error::Invalid(
 						"graph resource exceeds response limit".into(),
@@ -1292,8 +1555,8 @@ async fn project_in(
 				break;
 			}
 			bytes += size;
-			nodes.extend(addition);
-			records.push(candidate);
+			nodes.extend(group);
+			records.extend(group_records);
 		}
 		if next_cursor.is_some() {
 			break;

@@ -507,6 +507,48 @@ test("conversation creation events appear only in the matching conversation insp
   );
 });
 
+test("Run inspector excludes sibling executions and task-only events", () => {
+  const s = scene();
+  const selected = s.data.runs[0];
+  selected.control = "PAUSED";
+  const sibling = { ...selected, id: "run-sibling" };
+  s.data.runs.push(sibling);
+  const graph = project(s);
+  assert.equal(node(graph, selected.id).status, "PAUSED");
+  const event = s.data.events[0];
+  s.data.events = [
+    {
+      ...event,
+      id: "selected",
+      kind: "run.started",
+      data: { task_id: selected.task_id, run_id: selected.id },
+    },
+    {
+      ...event,
+      id: "sibling",
+      kind: "run.started",
+      data: { task_id: selected.task_id, run_id: sibling.id },
+    },
+    {
+      ...event,
+      id: "task-only",
+      kind: "task.updated",
+      data: { task_id: selected.task_id },
+    },
+  ];
+  assert.deepEqual(
+    nodeEvents(
+      node(graph, selected.id),
+      graph,
+      s.data,
+      24,
+      now,
+      "product-lab",
+    ).map((e) => e.id),
+    ["selected"],
+  );
+});
+
 test("foreign task homes do not create local activity links, and task IDs can be searched", () => {
   const s = scene();
   s.data.runs = [{ ...s.data.runs[0], home_node: "aidash://another-home" }];

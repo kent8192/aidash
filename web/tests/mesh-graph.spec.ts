@@ -2,8 +2,28 @@ import { expect, test, type Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 import { meshScene } from "./mesh-scene.mjs";
 
-async function setup(page: Page, subject = false) {
+async function setup(page: Page, subject = false, extraWorkspace = false) {
   const scene = meshScene();
+  if (extraWorkspace) {
+    scene.data.workspaces.push({
+      ...scene.data.workspaces[0],
+      id: "other-workspace",
+      title: "Other Workspace",
+    });
+    scene.data.tasks.push({
+      ...scene.data.tasks[0],
+      id: "other-task",
+      workspace_id: "other-workspace",
+      title: "Other Task",
+    });
+    scene.data.events.push({
+      ...scene.data.events[0],
+      id: "other-workspace-event",
+      workspace_id: "other-workspace",
+      kind: "task.created",
+      data: { task_id: "other-task" },
+    });
+  }
   let data = scene.data;
   if (subject)
     data.access = { kind: "subject", tenant: "acme", subject: "ryota" };
@@ -69,6 +89,19 @@ async function setup(page: Page, subject = false) {
     },
   };
 }
+
+test("inspector follows the selected graph workspace", async ({ page }) => {
+  const { errors } = await setup(page, false, true);
+  await page.getByLabel("Graph workspace").selectOption("other-workspace");
+  await page
+    .locator(".mesh-node-label")
+    .filter({ hasText: "Other Task" })
+    .click();
+  const inspector = page.getByRole("complementary", { name: "Node details" });
+  await inspector.getByRole("button", { name: "Events", exact: true }).click();
+  await expect(inspector).toContainText("task.created");
+  expect(errors).toEqual([]);
+});
 
 test("renders mesh groups and navigates node details, tasks and the existing relationship dialog", async ({
   page,

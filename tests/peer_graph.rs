@@ -97,7 +97,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 ) {
 	let (f, url, schema) = setup(&environment).await;
 	let app = api::router(f.clone());
-	let (mut policy, subject_token, _) = bootstrap(&f, &app, "http://localhost:1").await;
+	let (mut policy, subject_token, task_id) = bootstrap(&f, &app, "http://localhost:1").await;
 	let long_goal = format!(
 		"First line.\n{}\nEnd of the current Goal.",
 		"Authorized context. ".repeat(30)
@@ -307,6 +307,139 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 			.0,
 		200
 	);
+	let workspace_id = f
+		.store
+		.tasks(None)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|task| task.id == task_id)
+		.unwrap()
+		.workspace_id;
+	let mut tasks = Query::insert();
+	tasks
+		.into_table(Alias::new("tasks"))
+		.columns(["id", "workspace_id", "title", "description", "created_by"].map(Alias::new));
+	for index in 1..=81_u128 {
+		tasks.values_panic([
+			Expr::val(Uuid::from_u128(index + 1000)).into(),
+			Expr::val(workspace_id).into(),
+			Expr::val(format!("Task {index}")).into(),
+			Expr::val("Fixture").into(),
+			Expr::val("alice").into(),
+		]);
+	}
+	sqlx::query(&tasks.to_string(PostgresQueryBuilder))
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	let mut runs = Query::insert();
+	runs.into_table(Alias::new("runs")).columns(
+		[
+			"id",
+			"task_id",
+			"workspace_id",
+			"home_node",
+			"agent_id",
+			"agent_version",
+			"phase",
+			"control",
+		]
+		.map(Alias::new),
+	);
+	for index in 1..=81_u128 {
+		runs.values_panic([
+			Expr::val(Uuid::from_u128(index)).into(),
+			Expr::val(Uuid::from_u128(index + 1000)).into(),
+			Expr::val(workspace_id).into(),
+			Expr::val(&f.config.node_id).into(),
+			Expr::val("research").into(),
+			Expr::val("1.0.0").into(),
+			Expr::val("THINKING").into(),
+			Expr::val(if index == 1 { "PAUSED" } else { "ACTIVE" }).into(),
+		]);
+	}
+	sqlx::query(&runs.to_string(PostgresQueryBuilder))
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	let mut options = json!({"kinds":["task","run","agent"],"relations":["executes"],"limit":80});
+	let mut run_page = Value::Null;
+	for _ in 0..4 {
+		let (status, page) = graph_custom(&app, &peer_token, viewer.clone(), options.clone()).await;
+		assert_eq!(status, 200, "{page}");
+		if page["nodes"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|node| node["kind"] == "run")
+		{
+			run_page = page;
+			break;
+		}
+		options["cursor"] = page["next_cursor"].clone();
+		assert!(options["cursor"].is_string());
+	}
+	assert!(run_page.is_object(), "Run page was not reached");
+	let nodes = run_page["nodes"].as_array().unwrap();
+	let paused = nodes
+		.iter()
+		.find(|node| node["kind"] == "run" && node["resource_id"] == Uuid::from_u128(1).to_string())
+		.unwrap();
+	assert_eq!(paused["status"], "PAUSED");
+	let agent = nodes.iter().find(|node| node["kind"] == "agent").unwrap();
+	let task = nodes
+		.iter()
+		.find(|node| {
+			node["kind"] == "task" && node["resource_id"] == Uuid::from_u128(1001).to_string()
+		})
+		.unwrap();
+	let edges = run_page["edges"].as_array().unwrap();
+	assert!(
+		edges
+			.iter()
+			.any(|edge| edge["source"] == agent["id"] && edge["target"] == paused["id"])
+	);
+	assert!(
+		edges
+			.iter()
+			.any(|edge| edge["source"] == paused["id"] && edge["target"] == task["id"])
+	);
+	assert!(run_page["next_cursor"].is_string());
+	let (status, _) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"entry":{"id":"research","version":"1.0.0"},"expected_revision":1,"enabled":false}),
+	)
+	.await;
+	assert_eq!(status, 200);
+	let (status, unapproved) = graph_custom(
+		&app,
+		&peer_token,
+		viewer.clone(),
+		json!({"kinds":["run","agent"],"relations":["executes"],"limit":80}),
+	)
+	.await;
+	assert_eq!(status, 200, "{unapproved}");
+	assert!(
+		unapproved["nodes"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|node| node["kind"] != "agent")
+	);
+	assert!(unapproved["edges"].as_array().unwrap().is_empty());
+	let (status, _) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"entry":{"id":"research","version":"1.0.0"},"expected_revision":2,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200);
 	let (status, mapping) = request(
 		&app,
 		&f.config.api_token,
@@ -347,7 +480,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({
-			"entry":{"id":"research","version":"1.0.0"},"expected_revision":1,"enabled":false,
+			"entry":{"id":"research","version":"1.0.0"},"expected_revision":3,"enabled":false,
 		}),
 	)
 	.await;
@@ -367,7 +500,7 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({
-			"entry":{"id":"research","version":"1.0.0"},"expected_revision":2,"enabled":true,
+			"entry":{"id":"research","version":"1.0.0"},"expected_revision":4,"enabled":true,
 		}),
 	)
 	.await;
