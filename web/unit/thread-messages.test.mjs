@@ -101,7 +101,9 @@ test("run media selection accepts only supported image and audio MIME types", ()
   const file = { name: "evidence.png", size: 1024, type: "image/png" };
   assert.equal(validRunMediaAttachments([file]), true);
   assert.equal(
-    validRunMediaAttachments([{ ...file, name: "sound.wav", type: "audio/wav" }]),
+    validRunMediaAttachments([
+      { ...file, name: "sound.wav", type: "audio/wav" },
+    ]),
     true,
   );
   for (const type of ["", "application/pdf", "text/plain", "image/svg+xml"]) {

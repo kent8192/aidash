@@ -51,7 +51,10 @@ const runMediaTypes = new Set(RUN_MEDIA_ACCEPT.split(","));
 export function validRunMediaAttachments(
   files: readonly { name: string; size: number; type: string }[],
 ): boolean {
-  return validAttachments(files) && files.every((file) => runMediaTypes.has(file.type));
+  return (
+    validAttachments(files) &&
+    files.every((file) => runMediaTypes.has(file.type))
+  );
 }
 export function validAttachments(
   files: readonly { name: string; size: number }[],

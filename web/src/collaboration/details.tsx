@@ -596,7 +596,11 @@ function RunPanel({
                         file,
                       })),
                     ];
-                    if (validRunMediaAttachments(selected.map((item) => item.file))) {
+                    if (
+                      validRunMediaAttachments(
+                        selected.map((item) => item.file),
+                      )
+                    ) {
                       setFiles(selected);
                       request.current = null;
                       setFileError("");
