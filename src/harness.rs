@@ -702,24 +702,31 @@ impl Harness {
 					.last()
 					.map_or(run.observed_input_seq, |input| input.seq);
 				let summary_seq = context.run_message_summary_seq;
+				// Previous media-intake turns are retained as durable observations.
+				// Repeating their text here can block a later media-bearing message.
+				let intake_seq = run.pending["media_intake_through_seq"]
+					.as_i64()
+					.unwrap_or(summary_seq)
+					.max(summary_seq);
 				let run_message_limit = self.federation.run_message_limit(run).await?;
-				let initial_page =
-					run_message_page(&inputs, summary_seq, run_message_limit, false)?;
-				let has_unprocessed_inputs = inputs.iter().any(|input| input.seq > summary_seq);
+				let initial_page = run_message_page(&inputs, intake_seq, run_message_limit, false)?;
+				let has_unprocessed_inputs = inputs.iter().any(|input| input.seq > intake_seq);
 				let run_message_catchup =
 					has_unprocessed_inputs && (summary_seq > 0 || initial_page.has_more);
 				let page = if run_message_catchup {
-					run_message_page(&inputs, summary_seq, run_message_limit, true)?
+					run_message_page(&inputs, intake_seq, run_message_limit, true)?
 				} else {
 					initial_page
 				};
 				let mut batch_end_seq = page
 					.entries
 					.last()
-					.map_or(summary_seq, |(index, _)| inputs[*index].seq);
+					.map_or(intake_seq, |(index, _)| inputs[*index].seq);
 				let mut run_messages = Vec::with_capacity(page.entries.len());
-				let mut required_run_message_reads = Vec::new();
-				let mut has_run_message_references = false;
+				let carried_reads: Vec<Uuid> =
+					serde_json::from_value(run.pending["deferred_run_message_reads"].clone())
+						.unwrap_or_default();
+				let mut page_reads = Vec::new();
 				for (index, reference_only) in &page.entries {
 					let input = &inputs[*index];
 					let id = input.message_id.ok_or_else(|| {
@@ -735,8 +742,7 @@ impl Harness {
 						return Err(Error::Conflict("run input message binding changed".into()));
 					}
 					if *reference_only {
-						has_run_message_references = true;
-						required_run_message_reads.push(id);
+						page_reads.push(id);
 						let reference = json!({"seq":input.seq,"sender":input.sender,"record":{"kind":"message","id":id},"requires_workspace_read":true});
 						run_messages.push(reference);
 					} else {
@@ -817,20 +823,25 @@ impl Harness {
 					run_messages.retain(|message| {
 						message["seq"].as_i64().is_some_and(|seq| seq <= through)
 					});
-					required_run_message_reads = page
-						.entries
-						.iter()
-						.filter(|(index, reference_only)| {
-							*reference_only && inputs[*index].seq <= through
+					page_reads.retain(|id| {
+						page.entries.iter().any(|(index, reference_only)| {
+							*reference_only
+								&& inputs[*index].seq <= through
+								&& inputs[*index].message_id == Some(*id)
 						})
-						.filter_map(|(index, _)| inputs[*index].message_id)
-						.collect();
-					has_run_message_references = !required_run_message_reads.is_empty();
+					});
 					batch_end_seq = batch_end_seq.min(through);
 				}
+				let mut required_run_message_reads = carried_reads.clone();
+				for id in page_reads {
+					if !required_run_message_reads.contains(&id) {
+						required_run_message_reads.push(id);
+					}
+				}
+				let has_run_message_references = !required_run_message_reads.is_empty();
 				if media.defer_human || media.defer_selected {
 					specifications.clear();
-					instructions.push_str("\nMedia intake is continuing. Briefly describe the media in this request as plain text. Do not call tools or complete the task; deferred media will be provided in the next request.");
+					instructions.push_str("\nMedia intake is continuing. For this interim turn, postpone required workspace reads and the cumulative run-message summary. Preserve the user goals, constraints, and corrections in these run messages and describe the media in this request as plain text. Do not call tools or complete the task; deferred media will be provided in the next request.");
 				}
 				let context_window = window.saturating_sub(
 					crate::provider::ModelRequest::content_parts_reservation(&media.parts),
@@ -878,17 +889,26 @@ impl Harness {
 				// workspace preview. Admission has already capped its aggregate size.
 				if !run_messages.is_empty() {
 					pinned["run_messages"] = json!(run_messages);
-					if has_run_message_references {
-						pinned["run_message_read_instruction"] = if run_message_catchup {
-							json!(
-								"Read every run_messages entry with requires_workspace_read through workspace_read(kind=message, id=record.id) before returning the updated run_message_summary. Its full content remains in that workspace record."
-							)
-						} else {
-							json!(
-								"Read every run_messages entry with requires_workspace_read through workspace_read(kind=message, id=record.id) before completing the task. Its full content remains in that workspace record."
-							)
-						};
-					}
+				}
+				if !carried_reads.is_empty() {
+					pinned["deferred_run_message_reads"] = json!(carried_reads);
+				}
+				if has_run_message_references {
+					pinned["run_message_read_instruction"] = if media.defer_human
+						|| media.defer_selected
+					{
+						json!(
+							"These run-message records still require workspace_read after media intake completes. Do not call tools in this interim request."
+						)
+					} else if run_message_catchup {
+						json!(
+							"Read every run_messages entry with requires_workspace_read and every deferred_run_message_reads ID through workspace_read(kind=message, id=record.id or the deferred ID) before returning the updated run_message_summary. Full content remains in each workspace record."
+						)
+					} else {
+						json!(
+							"Read every run_messages entry with requires_workspace_read and every deferred_run_message_reads ID through workspace_read(kind=message, id=record.id or the deferred ID) before completing the task. Full content remains in each workspace record."
+						)
+					};
 				}
 				if let Err(error) = snapshot_fit
 					&& budget
@@ -1011,6 +1031,7 @@ impl Harness {
 					"deferred_selected_media":if media.defer_selected { json!(selected_media) } else { json!([]) },
 					"deferred_human_media":media.defer_human || media.defer_selected,
 					"media_inferred_through_seq":media.through_seq,
+					"media_intake_through_seq":intake_seq,
 					"required_run_message_reads":required_run_message_reads,
 					"references_read_at_inference":references_read_at_inference,
 					"run_message_catchup":run_message_catchup,
@@ -1089,7 +1110,13 @@ impl Harness {
 					}));
 					run.context = json!(context);
 					run.phase = "THINKING".into();
-					run.pending = json!({"selected_media":run.pending["deferred_selected_media"]});
+					run.pending = json!({
+						"selected_media":run.pending["deferred_selected_media"],
+						"media_intake_through_seq":run.pending["media_inferred_through_seq"]
+							.as_i64()
+							.unwrap_or(run.pending["media_intake_through_seq"].as_i64().unwrap_or(0)),
+						"deferred_run_message_reads":run.pending["required_run_message_reads"]
+					});
 					store.save_run(run, token, "run.media_deferred").await?;
 					return Ok(());
 				}
@@ -1125,12 +1152,16 @@ impl Harness {
 					context.history.push(
 						json!({"kind":"run_message_read_required","message_ids":required_reads}),
 					);
-					run.context = json!(context);
 					run.phase = "THINKING".into();
 					if !run_message_catchup {
 						run.step += 1;
 					}
-					run.pending = json!({});
+					run.pending = stale_media_pending(
+						&mut context,
+						&run.pending,
+						&mut run.observed_input_seq,
+					);
+					run.context = json!(context);
 					store
 						.save_run(run, token, "run.message_read_required")
 						.await?;
@@ -1140,12 +1171,16 @@ impl Harness {
 					context.history.push(
 						json!({"kind":"run_message_read_required","message_ids":required_reads}),
 					);
-					run.context = json!(context);
 					run.phase = "THINKING".into();
 					if !run_message_catchup {
 						run.step += 1;
 					}
-					run.pending = json!({});
+					run.pending = stale_media_pending(
+						&mut context,
+						&run.pending,
+						&mut run.observed_input_seq,
+					);
+					run.context = json!(context);
 					store
 						.save_run(run, token, "run.message_read_required")
 						.await?;
@@ -2426,7 +2461,14 @@ fn stale_media_pending(
 			}
 		}
 	}
-	json!({"selected_media":selected})
+	let mut next = json!({"selected_media":selected});
+	if let Some(seq) = pending["media_intake_through_seq"].as_i64() {
+		next["media_intake_through_seq"] = json!(seq);
+	}
+	if let Some(ids) = pending["required_run_message_reads"].as_array() {
+		next["deferred_run_message_reads"] = json!(ids);
+	}
+	next
 }
 
 fn response_epoch(revision: i64, step: i32) -> i64 {
@@ -2477,9 +2519,12 @@ mod review_tests {
 			..Default::default()
 		};
 		let mut observed_input_seq = 5;
+		let required = Uuid::new_v4();
 		let pending = json!({
 			"media_inferred_seq_before_response":3,
 			"observed_input_seq_before_response":3,
+			"media_intake_through_seq":2,
+			"required_run_message_reads":[required],
 			"inferred_selected_media":[first],
 			"selected_media":[first,second]
 		});
@@ -2487,6 +2532,8 @@ mod review_tests {
 		assert_eq!(context.media_inferred_seq, 3);
 		assert_eq!(observed_input_seq, 3);
 		assert_eq!(next["selected_media"], json!([first, second]));
+		assert_eq!(next["media_intake_through_seq"], 2);
+		assert_eq!(next["deferred_run_message_reads"], json!([required]));
 	}
 
 	#[rstest::rstest]

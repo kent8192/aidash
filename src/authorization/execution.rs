@@ -876,7 +876,7 @@ async fn load_human_message_media(
 			*headroom, &request, &parts,
 		) {
 			parts.truncate(previous_len);
-			if previous_len == 0 {
+			if through_seq.is_none() {
 				return Err(error);
 			}
 			has_more = true;

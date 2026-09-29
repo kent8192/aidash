@@ -1019,8 +1019,12 @@ async fn reference_only_inputs_suppress_uninformed_tool_calls(
 	let worker = Uuid::new_v4();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
 	leased.phase = "TOOL_CALL".into();
+	leased.context["media_inferred_seq"] = json!(input.seq);
 	leased.pending = json!({
 		"included_input_seq":input.seq,
+		"media_inferred_seq_before_response":0,
+		"observed_input_seq_before_response":0,
+		"media_intake_through_seq":0,
 		"required_run_message_reads":[input.message_id.unwrap()],
 		"references_read_at_inference":false,
 		"response":{"text":"uninformed text","tool_calls":[{"id":"mutating-call","name":"workspace_message","arguments":{"content":"uninformed side effect"}}],"input_tokens":1,"output_tokens":1,"usage_complete":true},
@@ -1042,6 +1046,11 @@ async fn reference_only_inputs_suppress_uninformed_tool_calls(
 	let current = f.store.run(run.id).await.unwrap();
 	assert_eq!(current.phase, "THINKING");
 	assert!(current.pending.get("response").is_none());
+	assert_eq!(current.context["media_inferred_seq"], 0);
+	assert_eq!(
+		current.pending["deferred_run_message_reads"],
+		json!([input.message_id.unwrap()])
+	);
 	assert_eq!(current.step, leased.step + 1);
 	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
 	assert!(

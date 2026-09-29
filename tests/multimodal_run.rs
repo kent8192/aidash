@@ -59,6 +59,7 @@ async fn verify_audio_batches(
 	operator: &str,
 	first_audio: &[u8],
 	message_text: &str,
+	leading_text: Option<&str>,
 ) {
 	let (status, audio_created) = request(
 		app,
@@ -78,6 +79,17 @@ async fn verify_audio_batches(
 		.into_iter()
 		.find(|run| run.workspace_id.to_string() == audio_workspace)
 		.unwrap();
+	if let Some(content) = leading_text {
+		let (status, sent) = request(
+			app,
+			operator,
+			"POST",
+			&format!("/api/runs/{}/message", audio_run.id),
+			json!({"content":content,"idempotency_key":Uuid::new_v4()}),
+		)
+		.await;
+		assert_eq!(status, 200, "{sent}");
+	}
 	let mut second_audio = first_audio.to_vec();
 	*second_audio.last_mut().unwrap() = 1;
 	let first = upload(
@@ -110,10 +122,19 @@ async fn verify_audio_batches(
 		assert_eq!(status, 200, "{sent}");
 	}
 	let mut audio_batches = Vec::new();
-	for _ in 0..8 {
+	let mut saw_prefix_batch = false;
+	for _ in 0..12 {
 		assert!(worker.worker_once().await.unwrap());
 		while let Ok(body) = received.try_recv() {
 			let Some(parts) = body["messages"][1]["content"].as_array() else {
+				if let Some(prefix) = leading_text
+					&& body["messages"][1]["content"]
+						.as_str()
+						.is_some_and(|content| content.contains(prefix))
+				{
+					assert!(body.get("tools").is_none());
+					saw_prefix_batch = true;
+				}
 				continue;
 			};
 			let audio: Vec<String> = parts
@@ -136,6 +157,12 @@ async fn verify_audio_batches(
 			base64::engine::general_purpose::STANDARD.encode(&second_audio),
 		]
 	);
+	if leading_text.is_some() {
+		assert!(
+			saw_prefix_batch,
+			"the leading text must be deferred separately"
+		);
+	}
 	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(f.store.run(audio_run.id).await.unwrap().phase, "COMPLETED");
 }
@@ -588,6 +615,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&operator,
 		&large_audio,
 		"",
+		None,
 	))
 	.await;
 	let text = "a".repeat(5_500);
@@ -599,6 +627,21 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&operator,
 		&large_audio[..380 * 1024],
 		&text,
+		None,
+	))
+	.await;
+	let mut near_window_audio = vec![0_u8; 700 * 1024];
+	near_window_audio[..12].copy_from_slice(b"RIFF\0\0\0\0WAVE");
+	let leading_text = "retain this instruction ".repeat(450);
+	Box::pin(verify_audio_batches(
+		&app,
+		&f,
+		&worker,
+		&mut received,
+		&operator,
+		&near_window_audio,
+		"",
+		Some(&leading_text),
 	))
 	.await;
 	Box::pin(verify_expired_route_retry(&app, &f, &operator)).await;

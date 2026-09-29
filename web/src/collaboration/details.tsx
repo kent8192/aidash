@@ -193,6 +193,7 @@ export function OperationsDialog({
             )}
             {d.kind === "run" && d.run && (
               <RunPanel
+                key={`${d.node ?? data.node.id}:${d.run.id}:${d.run.workspace_id}`}
                 id={d.run.id}
                 node={d.node ?? data.node.id}
                 data={data}
@@ -449,6 +450,7 @@ function RunPanel({
         {local && query.isPending ? copy.processing : copy.unavailable}
       </p>
     );
+  const canAttach = local && run.home_node === data.node.id;
   const terminal = ["COMPLETED", "FAILED", "CANCELLED"].includes(run.phase);
   const control = (action: string) => {
     if (action === "cancel" && !window.confirm(t("confirmCancel"))) return;
@@ -499,14 +501,15 @@ function RunPanel({
             onSubmit={(event) => {
               event.preventDefault();
               const content = draft.trim();
-              if ((!content && files.length === 0) || sending.current) return;
+              if ((!content && (!canAttach || files.length === 0)) || sending.current)
+                return;
               sending.current = true;
               setSendingMessage(true);
               setFileError("");
               void (async () => {
                 try {
                   const attachments: string[] = [];
-                  for (const entry of files) {
+                  for (const entry of canAttach ? files : []) {
                     let uploaded = entry.uploaded;
                     if (!uploaded) {
                       setUploading(true);
@@ -583,11 +586,11 @@ function RunPanel({
                   if (!sending.current) setDraft(event.target.value);
                 }}
                 disabled={sendingMessage}
-                required={files.length === 0}
+                required={!canAttach || files.length === 0}
                 rows={3}
               />
             </Field>
-            {local && (
+            {canAttach && (
               <>
                 <input
                   type="file"
