@@ -517,6 +517,7 @@ test("run media picker follows the effective model route before uploads", async 
     dialog.getByRole("button", { name: "Remove attachment: sample.png" }),
   ).toBeVisible();
   setRunMediaRoutes([]);
+  await expect(picker).toHaveCount(0);
   await dialog.getByRole("button", { name: "Send", exact: true }).click();
   await expect(dialog.getByRole("alert")).toBeVisible();
   expect(

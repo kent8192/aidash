@@ -1113,13 +1113,15 @@ impl Harness {
 							.await?;
 						return Ok(());
 					}
-					context.history.push(json!({
-						"kind":"model_media_observation",
-						"through_seq":run.pending["media_inferred_through_seq"],
-						"text":result.text
-					}));
+					record_media_observation(
+						&mut context,
+						&result.text,
+						run.pending["media_inferred_through_seq"].as_i64(),
+						media_observation_budget(&run.pending),
+					);
 					run.context = json!(context);
 					run.phase = "THINKING".into();
+					run.step += 1;
 					run.pending = json!({
 						"selected_media":run.pending["deferred_selected_media"],
 						"media_intake_through_seq":run.pending["media_inferred_through_seq"]
@@ -1163,9 +1165,7 @@ impl Harness {
 						json!({"kind":"run_message_read_required","message_ids":required_reads}),
 					);
 					run.phase = "THINKING".into();
-					if !run_message_catchup {
-						run.step += 1;
-					}
+					run.step += 1;
 					run.pending = stale_media_pending(
 						&mut context,
 						&run.pending,
@@ -1182,9 +1182,7 @@ impl Harness {
 						json!({"kind":"run_message_read_required","message_ids":required_reads}),
 					);
 					run.phase = "THINKING".into();
-					if !run_message_catchup {
-						run.step += 1;
-					}
+					run.step += 1;
 					run.pending = stale_media_pending(
 						&mut context,
 						&run.pending,
@@ -1204,6 +1202,7 @@ impl Harness {
 							"through_seq":run.pending["run_message_summary_end_seq"]
 						}));
 						run.phase = "THINKING".into();
+						run.step += 1;
 						run.pending = stale_media_pending(
 							&mut context,
 							&run.pending,
@@ -1226,6 +1225,7 @@ impl Harness {
 							"reason":"summary exceeded the complete-summary limit"
 						}));
 						run.phase = "THINKING".into();
+						run.step += 1;
 						run.pending = stale_media_pending(
 							&mut context,
 							&run.pending,
@@ -1276,8 +1276,11 @@ impl Harness {
 							if !result.text.trim().is_empty() {
 								let mut context: Context =
 									serde_json::from_value(run.context.clone())?;
-								context.history.push(
-									json!({"kind":"model_media_observation","text":result.text}),
+								record_media_observation(
+									&mut context,
+									&result.text,
+									None,
+									media_observation_budget(&run.pending),
 								);
 								run.context = json!(context);
 							}
@@ -2479,6 +2482,62 @@ fn check_model_media_headroom(
 	crate::generation::budget::Reservation::check_request(headroom, &request)
 }
 
+fn media_observation_budget(pending: &Value) -> usize {
+	// Keep durable observations small even when each media batch produces a
+	// full-length response; the compactor preserves these non-tool events.
+	let window = pending["request_window"]
+		.as_u64()
+		.and_then(|value| usize::try_from(value).ok())
+		.unwrap_or(65_536);
+	(window / 16).clamp(256, 4096)
+}
+
+fn record_media_observation(
+	context: &mut Context,
+	text: &str,
+	through_seq: Option<i64>,
+	budget: usize,
+) {
+	let source = text.trim();
+	let mut end = source.len().min(1024);
+	while !source.is_char_boundary(end) {
+		end -= 1;
+	}
+	loop {
+		let mut event = json!({"kind":"model_media_observation","text":&source[..end]});
+		if let Some(seq) = through_seq {
+			event["through_seq"] = json!(seq);
+		}
+		if end < source.len() {
+			event["truncated"] = json!(true);
+		}
+		if event.to_string().len() <= budget {
+			context.history.push(event);
+			break;
+		}
+		end -= 1;
+		while !source.is_char_boundary(end) {
+			end -= 1;
+		}
+	}
+	let mut used = 0_usize;
+	let mut remove = Vec::new();
+	for index in (0..context.history.len()).rev() {
+		let event = &context.history[index];
+		if event["kind"] == "model_media_observation" {
+			let bytes = event.to_string().len();
+			if used.saturating_add(bytes) > budget {
+				remove.push(index);
+			} else {
+				used += bytes;
+			}
+		}
+	}
+	for index in remove {
+		context.history.remove(index);
+	}
+}
+
 fn stale_media_pending(
 	context: &mut Context,
 	pending: &Value,
@@ -2594,6 +2653,40 @@ mod review_tests {
 		assert_eq!(next["selected_media"], json!([first, second]));
 		assert_eq!(next["media_intake_through_seq"], 2);
 		assert_eq!(next["deferred_run_message_reads"], json!([required]));
+	}
+
+	#[test]
+	fn durable_media_observations_keep_recent_text_within_the_request_budget() {
+		let mut context = crate::context::Context {
+			history: vec![json!({"kind":"tool","result":"keep"})],
+			..Default::default()
+		};
+		let budget = super::media_observation_budget(&json!({"request_window":8192}));
+		assert_eq!(budget, 512);
+		for seq in 1..=20 {
+			super::record_media_observation(
+				&mut context,
+				&"あ\\\"".repeat(1000),
+				Some(seq),
+				budget,
+			);
+		}
+		let observations: Vec<_> = context
+			.history
+			.iter()
+			.filter(|event| event["kind"] == "model_media_observation")
+			.collect();
+		assert!(observations.len() < 20);
+		assert_eq!(observations.last().unwrap()["through_seq"], 20);
+		assert_eq!(observations.last().unwrap()["truncated"], true);
+		assert!(
+			observations
+				.iter()
+				.map(|event| event.to_string().len())
+				.sum::<usize>()
+				<= budget
+		);
+		assert_eq!(context.history[0]["result"], "keep");
 	}
 
 	#[rstest::rstest]

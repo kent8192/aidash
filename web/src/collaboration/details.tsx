@@ -611,7 +611,7 @@ function RunPanel({
                   if (!sending.current) setDraft(event.target.value);
                 }}
                 disabled={sendingMessage}
-                required={!canAttach || files.length === 0}
+                required={files.length === 0}
                 rows={3}
               />
             </Field>
