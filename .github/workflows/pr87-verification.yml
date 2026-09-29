@@ -1,0 +1,30 @@
+name: PR 87 verification workspace
+on:
+  push:
+    branches: [docs/issue-40-transaction-acceptance-design]
+    paths: [.github/workflows/pr87-verification.yml]
+permissions:
+  contents: read
+jobs:
+  workspace:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Package exact source revisions and formatter
+        run: |
+          mkdir -p /tmp/pr87-workspace/lib /tmp/pr87-workspace/bin
+          git bundle create /tmp/pr87-workspace/aidash.bundle HEAD refs/remotes/origin/develop/0.1.0
+          rustup show active-toolchain
+          cp "$(rustup which rustfmt)" /tmp/pr87-workspace/bin/
+          ldd "$(rustup which rustfmt)"
+          find "$(rustc --print sysroot)/lib" -maxdepth 1 -name '*.so*' -exec cp -L {} /tmp/pr87-workspace/lib/ \;
+          git rev-parse HEAD refs/remotes/origin/develop/0.1.0 > /tmp/pr87-workspace/revisions.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pr87-verification-workspace
+          path: /tmp/pr87-workspace
+          retention-days: 1
