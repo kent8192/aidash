@@ -1757,7 +1757,13 @@ impl Harness {
 					match Box::pin(guard.model_media(store, &selections)).await {
 						Ok(parts) => {
 							let headroom = self.federation.run_request_headroom(run).await?;
-							match check_model_media_headroom(headroom, parts) {
+							let model_entry = self
+								.federation
+								.registry
+								.get(&agent.model.id, &agent.model.version)
+								.await?;
+							let model: ModelConfig = serde_json::from_value(model_entry.config)?;
+							match check_model_media_headroom(headroom, parts, &model) {
 								Ok(()) => {}
 								Err(Error::Invalid(message)) => {
 									return self
@@ -2447,6 +2453,7 @@ fn pending_selected_media(pending: &Value) -> Vec<Value> {
 fn check_model_media_headroom(
 	headroom: usize,
 	parts: Vec<crate::provider::ContentPart>,
+	model: &ModelConfig,
 ) -> Result<()> {
 	let request = crate::provider::ModelRequest {
 		instructions: String::new(),
@@ -2456,6 +2463,12 @@ fn check_model_media_headroom(
 		content_parts: parts,
 	};
 	request.validate()?;
+	if !model.has_current_media_route_for_parts(&request.content_parts) {
+		return Err(Error::Invalid(format!(
+			"recipient model {} has no current media route for every selected format",
+			model.model_id
+		)));
+	}
 	crate::generation::budget::Reservation::check_request(headroom, &request)
 }
 
@@ -2646,6 +2659,25 @@ mod review_tests {
 	}
 
 	#[rstest::rstest]
+	fn selected_files_must_share_one_current_route() {
+		let png = crate::provider::ContentPart::Image {
+			media_type: "image/png".into(),
+			bytes: b"\x89PNG\r\n\x1a\nfirst".to_vec(),
+		};
+		let jpeg = crate::provider::ContentPart::Image {
+			media_type: "image/jpeg".into(),
+			bytes: b"\xff\xd8\xffsecond".to_vec(),
+		};
+		let model = media_model();
+		assert!(super::check_model_media_headroom(128_000, vec![png.clone()], &model).is_ok());
+		assert!(super::check_model_media_headroom(128_000, vec![jpeg.clone()], &model).is_ok());
+		assert!(matches!(
+			super::check_model_media_headroom(128_000, vec![png, jpeg], &model),
+			Err(Error::Invalid(message)) if message.contains("no current media route")
+		));
+	}
+
+	#[rstest::rstest]
 	fn encoded_message_text_consumes_media_headroom() {
 		let text = "quoted \"text\" and newline\n".repeat(100);
 		let reservation = super::encoded_run_message_reservation(&[json!({
@@ -2688,7 +2720,7 @@ mod review_tests {
 		bytes[..12].copy_from_slice(b"RIFF\0\0\0\0WAVE");
 		let part = crate::provider::ContentPart::from_media("audio/wav", bytes).unwrap();
 		assert!(matches!(
-			super::check_model_media_headroom(128_000, vec![part]),
+			super::check_model_media_headroom(128_000, vec![part], &media_model()),
 			Err(Error::Invalid(message)) if message.contains("context window")
 		));
 	}
