@@ -501,7 +501,10 @@ function RunPanel({
             onSubmit={(event) => {
               event.preventDefault();
               const content = draft.trim();
-              if ((!content && (!canAttach || files.length === 0)) || sending.current)
+              if (
+                (!content && (!canAttach || files.length === 0)) ||
+                sending.current
+              )
                 return;
               sending.current = true;
               setSendingMessage(true);

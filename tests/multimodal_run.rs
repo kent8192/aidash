@@ -51,15 +51,19 @@ async fn upload(
 	body
 }
 
+struct AudioBatchCase<'a> {
+	first_audio: &'a [u8],
+	message_text: &'a str,
+	leading_text: Option<&'a str>,
+}
+
 async fn verify_audio_batches(
 	app: &Router,
 	f: &Federation,
 	worker: &Harness,
 	received: &mut mpsc::UnboundedReceiver<Value>,
 	operator: &str,
-	first_audio: &[u8],
-	message_text: &str,
-	leading_text: Option<&str>,
+	case: AudioBatchCase<'_>,
 ) {
 	let (status, audio_created) = request(
 		app,
@@ -79,7 +83,7 @@ async fn verify_audio_batches(
 		.into_iter()
 		.find(|run| run.workspace_id.to_string() == audio_workspace)
 		.unwrap();
-	if let Some(content) = leading_text {
+	if let Some(content) = case.leading_text {
 		let (status, sent) = request(
 			app,
 			operator,
@@ -90,7 +94,7 @@ async fn verify_audio_batches(
 		.await;
 		assert_eq!(status, 200, "{sent}");
 	}
-	let mut second_audio = first_audio.to_vec();
+	let mut second_audio = case.first_audio.to_vec();
 	*second_audio.last_mut().unwrap() = 1;
 	let first = upload(
 		app,
@@ -98,7 +102,7 @@ async fn verify_audio_batches(
 		audio_workspace,
 		"first.wav",
 		"audio/wav",
-		first_audio,
+		case.first_audio,
 	)
 	.await;
 	let second = upload(
@@ -116,7 +120,7 @@ async fn verify_audio_batches(
 			operator,
 			"POST",
 			&format!("/api/runs/{}/message", audio_run.id),
-			json!({"content":message_text, "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}),
+			json!({"content":case.message_text, "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]}),
 		)
 		.await;
 		assert_eq!(status, 200, "{sent}");
@@ -127,7 +131,7 @@ async fn verify_audio_batches(
 		assert!(worker.worker_once().await.unwrap());
 		while let Ok(body) = received.try_recv() {
 			let Some(parts) = body["messages"][1]["content"].as_array() else {
-				if let Some(prefix) = leading_text
+				if let Some(prefix) = case.leading_text
 					&& body["messages"][1]["content"]
 						.as_str()
 						.is_some_and(|content| content.contains(prefix))
@@ -153,11 +157,11 @@ async fn verify_audio_batches(
 	assert_eq!(
 		audio_batches,
 		vec![
-			base64::engine::general_purpose::STANDARD.encode(first_audio),
+			base64::engine::general_purpose::STANDARD.encode(case.first_audio),
 			base64::engine::general_purpose::STANDARD.encode(&second_audio),
 		]
 	);
-	if leading_text.is_some() {
+	if case.leading_text.is_some() {
 		assert!(
 			saw_prefix_batch,
 			"the leading text must be deferred separately"
@@ -613,9 +617,11 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&worker,
 		&mut received,
 		&operator,
-		&large_audio,
-		"",
-		None,
+		AudioBatchCase {
+			first_audio: &large_audio,
+			message_text: "",
+			leading_text: None,
+		},
 	))
 	.await;
 	let text = "a".repeat(5_500);
@@ -625,9 +631,11 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&worker,
 		&mut received,
 		&operator,
-		&large_audio[..380 * 1024],
-		&text,
-		None,
+		AudioBatchCase {
+			first_audio: &large_audio[..380 * 1024],
+			message_text: &text,
+			leading_text: None,
+		},
 	))
 	.await;
 	let mut near_window_audio = vec![0_u8; 700 * 1024];
@@ -639,9 +647,11 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&worker,
 		&mut received,
 		&operator,
-		&near_window_audio,
-		"",
-		Some(&leading_text),
+		AudioBatchCase {
+			first_audio: &near_window_audio,
+			message_text: "",
+			leading_text: Some(&leading_text),
+		},
 	))
 	.await;
 	Box::pin(verify_expired_route_retry(&app, &f, &operator)).await;
