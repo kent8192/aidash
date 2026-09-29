@@ -2,7 +2,7 @@ use crate::{
 	Error, Result,
 	config::{Config, PROTOCOL_VERSION, peer_secret, validate_endpoint, validate_node_id},
 	domain::*,
-	registry::{AgentConfig, EntityRef, Entry, Registry, Search},
+	registry::{AgentConfig, EntityRef, Entry, ModelConfig, Registry, Search},
 	store::{RunResponseMessage, Store},
 };
 use futures_util::{StreamExt, stream};
@@ -71,6 +71,16 @@ impl Federation {
 		if let Some(input) = existing {
 			if input.content != content {
 				return Err(Error::Conflict("run message idempotency key reused".into()));
+			}
+			if input.message_id.is_some()
+				&& self
+					.store
+					.run_message_has_media(&[input.message_id.expect("checked")])
+					.await?
+			{
+				return Err(Error::Conflict(
+					"run message idempotency key reused with media".into(),
+				));
 			}
 			if !home.local() && !home.recover_run_message(key, content).await? {
 				return Err(Error::Conflict(
@@ -182,6 +192,27 @@ impl Federation {
 		}
 	}
 	pub async fn run_message_limit(&self, run: &Run) -> Result<usize> {
+		let available = self.run_request_headroom(run).await?;
+		// Keep most of the registered model's remaining window for the task,
+		// workspace observation and tool history.
+		Ok((available / 4).min(16_384))
+	}
+
+	pub(crate) async fn run_media_input_routes(&self, run: &Run) -> Result<Vec<Vec<String>>> {
+		if run.home_node != self.config.node_id {
+			return Ok(Vec::new());
+		}
+		let agent = self.registry.get(&run.agent_id, &run.agent_version).await?;
+		let agent: AgentConfig = serde_json::from_value(agent.config)?;
+		let model = self
+			.registry
+			.get(&agent.model.id, &agent.model.version)
+			.await?;
+		let model: ModelConfig = serde_json::from_value(model.config)?;
+		Ok(model.current_media_input_routes())
+	}
+
+	pub(crate) async fn run_request_headroom(&self, run: &Run) -> Result<usize> {
 		let agent_entry = self.registry.get(&run.agent_id, &run.agent_version).await?;
 		let agent: AgentConfig = serde_json::from_value(agent_entry.config.clone())?;
 		let mut references = Vec::with_capacity(1 + agent.skills.len() + agent.tools.len());
@@ -199,10 +230,14 @@ impl Federation {
 			Value::Null
 		};
 		let available =
-			crate::registry::agent_prompt_headroom(&agent, &references, &private_context)?;
-		// Keep most of the registered model's remaining window for the task,
-		// workspace observation and tool history.
-		Ok((available / 4).min(16_384))
+			crate::registry::agent_prompt_headroom(&agent, &references, &private_context)?
+				.saturating_sub(crate::context::MIN_CONTEXT_RESERVE);
+		if !agent.core_capabilities.skills {
+			return Ok(available);
+		}
+		let pinned =
+			crate::capabilities::skills::context_headroom_reserve(&self.store, run).await?;
+		Ok(available.saturating_sub(pinned))
 	}
 
 	pub async fn deliver_run_messages(&self, run: &Run) -> Result<()> {

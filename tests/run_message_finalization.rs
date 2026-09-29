@@ -869,8 +869,12 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 }
 
 #[rstest::rstest]
+#[case::empty("", false)]
+#[case::oversized("summary that is too long", true)]
 #[tokio::test]
-async fn catchup_summary_retries_and_completes_without_spending_the_last_step(
+async fn rejected_catchup_summary_consumes_the_last_step(
+	#[case] response_text: &str,
+	#[case] oversized: bool,
 	#[future(awt)]
 	#[from(test_environment)]
 	test_environment: Arc<TestEnvironment>,
@@ -902,12 +906,18 @@ async fn catchup_summary_retries_and_completes_without_spending_the_last_step(
 	let max_steps = serde_json::from_value::<aidash::registry::AgentConfig>(agent.config)
 		.unwrap()
 		.max_steps;
+	let selected = json!({"file_id":Uuid::new_v4(),"expected_digest":"digest"});
 	leased.step = max_steps - 1;
 	leased.phase = "TOOL_CALL".into();
+	leased.context["media_inferred_seq"] = json!(7);
+	leased.observed_input_seq = 7;
 	leased.pending = json!({
 		"included_input_seq":0,
-		"response":{"text":"summary that is too long","tool_calls":[],"input_tokens":1,"output_tokens":1,"usage_complete":true},
+		"media_inferred_seq_before_response":0,
+		"observed_input_seq_before_response":0,
+		"response":{"text":response_text,"tool_calls":[],"input_tokens":1,"output_tokens":1,"usage_complete":true},
 		"cursor":0,
+		"deferred_selected_media":[selected],
 		"required_run_message_reads":[],
 		"references_read_at_inference":true,
 		"run_message_catchup":true,
@@ -928,33 +938,20 @@ async fn catchup_summary_retries_and_completes_without_spending_the_last_step(
 	);
 	let current = f.store.run(run.id).await.unwrap();
 	assert_eq!(current.phase, "THINKING");
-	assert_eq!(current.step, leased.step);
+	assert_eq!(current.step, max_steps);
 	assert_eq!(current.context["run_message_summary_seq"], 0);
 	assert_eq!(current.context["run_message_summary"], "");
+	assert_eq!(current.context["media_inferred_seq"], 0);
+	assert_eq!(current.observed_input_seq, 0);
+	assert_eq!(current.pending["selected_media"], json!([selected]));
 	assert!(
 		current.context["history"]
 			.as_array()
 			.unwrap()
 			.iter()
-			.any(|event| event["kind"] == "run_message_summary_required" && event["max_bytes"] == 8)
+			.any(|event| event["kind"] == "run_message_summary_required"
+				&& (!oversized || event["max_bytes"] == 8))
 	);
-	let worker = Uuid::new_v4();
-	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
-	leased.phase = "TOOL_CALL".into();
-	leased.pending = json!({
-		"included_input_seq":0,
-		"response":{"text":"done","tool_calls":[],"input_tokens":1,"output_tokens":1,"usage_complete":true},
-		"cursor":0,
-		"required_run_message_reads":[],
-		"references_read_at_inference":true,
-		"run_message_catchup":true,
-		"run_message_summary_end_seq":7,
-		"run_message_summary_limit":8
-	});
-	f.store
-		.save_run(&leased, worker, "model.completed")
-		.await
-		.unwrap();
 	assert!(
 		(Harness {
 			federation: f.clone()
@@ -963,11 +960,80 @@ async fn catchup_summary_retries_and_completes_without_spending_the_last_step(
 		.await
 		.unwrap()
 	);
-	let current = f.store.run(run.id).await.unwrap();
-	assert_eq!(current.phase, "THINKING");
-	assert_eq!(current.step, max_steps - 1);
-	assert_eq!(current.context["run_message_summary_seq"], 7);
-	assert_eq!(current.context["run_message_summary"], "done");
+	let bounded = f.store.run(run.id).await.unwrap();
+	assert_eq!(bounded.pending["terminal_transition"], "FAILED");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn empty_media_observation_consumes_the_last_available_step(
+	#[future(awt)]
+	#[from(test_environment)]
+	test_environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&test_environment).await;
+	let app = api::router(f.clone());
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Media observation retry", "goal":"Inspect", "target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs().await.unwrap().remove(0);
+	assert!(
+		Harness {
+			federation: f.clone()
+		}
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	let worker = Uuid::new_v4();
+	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
+	let agent = f.registry.get("research", "1.0.0").await.unwrap();
+	let max_steps = serde_json::from_value::<aidash::registry::AgentConfig>(agent.config)
+		.unwrap()
+		.max_steps;
+	leased.step = max_steps - 1;
+	leased.phase = "TOOL_CALL".into();
+	leased.pending = json!({
+		"included_input_seq":0,
+		"response":{"text":"", "tool_calls":[], "input_tokens":1, "output_tokens":1, "usage_complete":true},
+		"cursor":0,
+		"deferred_human_media":true,
+		"media_inferred_seq_before_response":0,
+		"observed_input_seq_before_response":0
+	});
+	f.store
+		.save_run(&leased, worker, "model.completed")
+		.await
+		.unwrap();
+	assert!(
+		Harness {
+			federation: f.clone()
+		}
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	let retried = f.store.run(run.id).await.unwrap();
+	assert_eq!(retried.phase, "THINKING");
+	assert_eq!(retried.step, max_steps);
+	assert!(
+		Harness {
+			federation: f.clone()
+		}
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	let bounded = f.store.run(run.id).await.unwrap();
+	assert_eq!(bounded.pending["terminal_transition"], "FAILED");
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1019,8 +1085,12 @@ async fn reference_only_inputs_suppress_uninformed_tool_calls(
 	let worker = Uuid::new_v4();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
 	leased.phase = "TOOL_CALL".into();
+	leased.context["media_inferred_seq"] = json!(input.seq);
 	leased.pending = json!({
 		"included_input_seq":input.seq,
+		"media_inferred_seq_before_response":0,
+		"observed_input_seq_before_response":0,
+		"media_intake_through_seq":0,
 		"required_run_message_reads":[input.message_id.unwrap()],
 		"references_read_at_inference":false,
 		"response":{"text":"uninformed text","tool_calls":[{"id":"mutating-call","name":"workspace_message","arguments":{"content":"uninformed side effect"}}],"input_tokens":1,"output_tokens":1,"usage_complete":true},
@@ -1042,6 +1112,11 @@ async fn reference_only_inputs_suppress_uninformed_tool_calls(
 	let current = f.store.run(run.id).await.unwrap();
 	assert_eq!(current.phase, "THINKING");
 	assert!(current.pending.get("response").is_none());
+	assert_eq!(current.context["media_inferred_seq"], 0);
+	assert_eq!(
+		current.pending["deferred_run_message_reads"],
+		json!([input.message_id.unwrap()])
+	);
 	assert_eq!(current.step, leased.step + 1);
 	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
 	assert!(

@@ -26,8 +26,10 @@ pub(crate) async fn handle(
 	Json(input): Json<Input>,
 ) -> Result<Json<Value>> {
 	let node = crate::api::peer_node(&headers)?;
+	let mut revision_race = false;
 	let (mut access, d) =
-		super::super::description_lease_mode(&f, node, input.grant_id, true).await?;
+		super::super::description_lease_mode(&f, node, input.grant_id, true, &mut revision_race)
+			.await?;
 	access.worker();
 	access.read_grant = Some(input.grant_id);
 	let result = async {

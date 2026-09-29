@@ -23,6 +23,8 @@ pub enum Error {
 	RateLimited,
 	#[error("external identity status is unavailable")]
 	IdentityStatusUnavailable,
+	#[error("verified model media route unavailable for {0}")]
+	MediaRouteUnavailable(String),
 	#[error("atomic transaction visibility pending; retry after recovery")]
 	TransactionPending,
 	#[error("an atomic transaction committed during inference; retrying from fresh state")]
@@ -33,6 +35,8 @@ pub enum Error {
 	OrchestrationUnavailable,
 	#[error("{0}")]
 	External(String),
+	#[error("OpenRouter returned {status}: {reason}")]
+	ProviderRejected { status: u16, reason: String },
 	#[error("{0}")]
 	Database(#[from] sqlx::Error),
 	#[error("{0}")]
@@ -55,11 +59,17 @@ impl IntoResponse for Error {
 			Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
 			Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden".into()),
 			Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
-			Self::IdentityStatusUnavailable => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
+			Self::IdentityStatusUnavailable | Self::MediaRouteUnavailable(_) => {
+				(StatusCode::SERVICE_UNAVAILABLE, self.to_string())
+			}
 			Self::TransactionPending
 			| Self::SemanticUnavailable
 			| Self::OrchestrationUnavailable => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
 			Self::StaleInference => (StatusCode::CONFLICT, self.to_string()),
+			Self::ProviderRejected { status, .. } => (
+				StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
+				self.to_string(),
+			),
 			Self::Database(error)
 				if error
 					.as_database_error()

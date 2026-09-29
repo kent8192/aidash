@@ -180,12 +180,43 @@ pub(crate) fn digest_ids(ids: &[Uuid]) -> Result<String> {
 	if unique.len() != ids.len() {
 		return Err(Error::Invalid("attachment ids must be unique".into()));
 	}
-	let mut canonical: Vec<_> = ids.iter().map(Uuid::to_string).collect();
-	canonical.sort_unstable();
+	let canonical: Vec<_> = ids.iter().map(Uuid::to_string).collect();
 	Ok(format!(
 		"{:x}",
 		Sha256::digest(canonical.join("\n").as_bytes())
 	))
+}
+
+pub(crate) async fn legacy_digest_matches(
+	lease: &mut Lease,
+	workspace: Uuid,
+	message: Uuid,
+	ids: &[Uuid],
+	digest: &str,
+) -> Result<bool> {
+	if ids.len() < 2 {
+		return Ok(false);
+	}
+	let rows: Vec<(Uuid, i32)> = sqlx::query_as(
+		&Query::select()
+			.columns([Alias::new("id"), Alias::new("position")])
+			.from(Alias::new("channel_attachments"))
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
+			.and_where(Expr::col(Alias::new("message_id")).eq(Expr::cust("$2")))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(workspace)
+	.bind(message)
+	.fetch_all(&mut **lease.tx())
+	.await?;
+	if rows.len() != ids.len() || rows.iter().any(|(_, position)| *position != 0) {
+		return Ok(false);
+	}
+	let mut prior: Vec<Uuid> = rows.iter().map(|(id, _)| *id).collect();
+	let mut retried = ids.to_vec();
+	prior.sort_unstable();
+	retried.sort_unstable();
+	Ok(prior == retried && digest_ids(&retried)? == digest)
 }
 
 pub(crate) async fn attach(
@@ -194,8 +225,30 @@ pub(crate) async fn attach(
 	message: Uuid,
 	ids: &[Uuid],
 ) -> Result<Vec<ChannelAttachment>> {
+	attach_with_limits(lease, workspace, message, ids, None).await
+}
+
+pub(crate) async fn attach_run_media(
+	lease: &mut Lease,
+	workspace: Uuid,
+	message: Uuid,
+	ids: &[Uuid],
+) -> Result<Vec<ChannelAttachment>> {
+	attach_with_limits(lease, workspace, message, ids, Some((8, 8 * 1024 * 1024))).await
+}
+
+async fn attach_with_limits(
+	lease: &mut Lease,
+	workspace: Uuid,
+	message: Uuid,
+	ids: &[Uuid],
+	limits: Option<(usize, i64)>,
+) -> Result<Vec<ChannelAttachment>> {
 	if ids.is_empty() {
 		return Ok(Vec::new());
+	}
+	if limits.is_some_and(|(max_count, _)| ids.len() > max_count) {
+		return Err(Error::Invalid("run media input exceeds count limit".into()));
 	}
 	let unique: HashSet<_> = ids.iter().copied().collect();
 	if unique.len() != ids.len() {
@@ -210,6 +263,7 @@ pub(crate) async fn attach(
 			Alias::new("media_type"),
 			Alias::new("size_bytes"),
 			Alias::new("message_id"),
+			Alias::new("position"),
 		])
 		.from(Alias::new("channel_attachments"))
 		.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
@@ -227,6 +281,14 @@ pub(crate) async fn attach(
 	if records.len() != ids.len() {
 		return Err(Error::NotFound("attachment unavailable".into()));
 	}
+	if limits.is_some_and(|(_, max_bytes)| {
+		records
+			.iter()
+			.fold(0_i64, |sum, record| sum.saturating_add(record.size_bytes))
+			> max_bytes
+	}) {
+		return Err(Error::Invalid("run media input exceeds byte limit".into()));
+	}
 	if records.iter().any(|record| {
 		record
 			.message_id
@@ -236,10 +298,11 @@ pub(crate) async fn attach(
 			"attachment is already linked to another message".into(),
 		));
 	}
-	for id in ids {
+	for (position, id) in ids.iter().enumerate() {
 		let update = Query::update()
 			.table(Alias::new("channel_attachments"))
 			.value(Alias::new("message_id"), Expr::cust("$1"))
+			.value(Alias::new("position"), Expr::cust("$5"))
 			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$2")))
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$3")))
 			.and_where(Expr::col(Alias::new("uploaded_by")).eq(Expr::cust("$4")))
@@ -250,6 +313,10 @@ pub(crate) async fn attach(
 			.bind(workspace)
 			.bind(id)
 			.bind(&uploader)
+			.bind(
+				i32::try_from(position)
+					.map_err(|_| Error::Invalid("too many attachments".into()))?,
+			)
 			.execute(&mut **lease.tx())
 			.await?;
 	}
@@ -280,10 +347,12 @@ pub(crate) async fn for_messages(
 			Alias::new("media_type"),
 			Alias::new("size_bytes"),
 			Alias::new("message_id"),
+			Alias::new("position"),
 		])
 		.from(Alias::new("channel_attachments"))
 		.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$1")))
 		.and_where(Expr::cust("message_id = ANY($2)"))
+		.order_by(Alias::new("position"), sea_orm::sea_query::Order::Asc)
 		.order_by(Alias::new("id"), sea_orm::sea_query::Order::Asc)
 		.to_string(PostgresQueryBuilder);
 	let records: Vec<AttachmentLink> = sqlx::query_as(&query)

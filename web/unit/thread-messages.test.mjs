@@ -4,6 +4,9 @@ import {
   mergeMessagePages,
   submissionFor,
   validAttachments,
+  validRunMediaAttachments,
+  runMediaAccept,
+  validRunMediaRoute,
 } from "../src/collaboration/conversation-model.ts";
 
 const message = (id, content = id) => ({
@@ -54,15 +57,19 @@ test("empty page list remains empty without inventing conversation data", () => 
   assert.deepEqual(mergeMessagePages([]), []);
 });
 
-test("message retry identity includes attachment membership", () => {
+test("message retry identity includes attachment order", () => {
   let n = 0;
   const key = () => String(++n);
   const first = submissionFor(null, "workspace", null, "source", key, [
     "b",
     "a",
   ]);
-  assert.equal(
+  assert.notEqual(
     submissionFor(first, "workspace", null, "source", key, ["a", "b"]).key,
+    first.key,
+  );
+  assert.equal(
+    submissionFor(first, "workspace", null, "source", key, ["b", "a"]).key,
     first.key,
   );
   assert.notEqual(
@@ -90,6 +97,33 @@ test("attachment validation rejects empty, oversized, unsafe and over-count sele
     assert.equal(validAttachments([bad]), false);
   }
   assert.equal(validAttachments(Array(9).fill(file)), false);
+});
+
+test("run media selection accepts only supported image and audio MIME types", () => {
+  const file = { name: "evidence.png", size: 1024, type: "image/png" };
+  assert.equal(validRunMediaAttachments([file]), true);
+  assert.equal(
+    validRunMediaAttachments([
+      { ...file, name: "sound.wav", type: "audio/wav" },
+    ]),
+    true,
+  );
+  for (const type of ["", "application/pdf", "text/plain", "image/svg+xml"]) {
+    assert.equal(validRunMediaAttachments([{ ...file, type }]), false);
+  }
+});
+
+test("run media routes require one current route for every selected format", () => {
+  const routes = [["image/png"], ["audio/wav", "audio/x-wav"]];
+  assert.equal(runMediaAccept(routes), "image/png,audio/wav,audio/x-wav");
+  assert.equal(validRunMediaRoute([{ type: "image/png" }], routes), true);
+  assert.equal(validRunMediaRoute([{ type: "audio/x-wav" }], routes), true);
+  assert.equal(
+    validRunMediaRoute([{ type: "image/png" }, { type: "audio/wav" }], routes),
+    false,
+  );
+  assert.equal(validRunMediaRoute([{ type: "image/png" }], []), false);
+  assert.equal(runMediaAccept([["application/pdf"]]), "");
 });
 
 test("participants keep node and version identity and prefer a still-active run", async () => {

@@ -102,7 +102,7 @@ pub(crate) fn add(tools: &mut BTreeMap<String, Arc<dyn Tool>>, config: &CoreCapa
 		),
 		(
 			"file_read",
-			"Read an authorized file by ID with UTF-8 byte continuation; binary files support metadata.",
+			"Read authorized text or metadata. Use model_input with an exact digest to include an image or audio file in the next model inference only.",
 			schema::<FileRead>(),
 		),
 		(

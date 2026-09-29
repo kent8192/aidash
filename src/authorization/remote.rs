@@ -451,13 +451,27 @@ pub(crate) async fn snapshot(
 	access.finish(result).await
 }
 async fn description_lease(f: &Federation, node: &str, id: Uuid) -> Result<(Access, Description)> {
-	description_lease_mode(f, node, id, false).await
+	// A scoped worker may commit a task revision between task_read and the
+	// shared row lock in a read-only description. Revalidate from a new
+	// authority snapshot rather than treating that transient race as a denial.
+	// A revoked grant or changed policy fails without a retry.
+	for attempt in 0..3 {
+		let mut revision_race = false;
+		match description_lease_mode(f, node, id, false, &mut revision_race).await {
+			Err(Error::Forbidden) if revision_race && attempt < 2 => {
+				tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+			}
+			result => return result,
+		}
+	}
+	unreachable!("the last verification attempt returns")
 }
 async fn description_lease_mode(
 	f: &Federation,
 	node: &str,
 	id: Uuid,
 	command: bool,
+	revision_race: &mut bool,
 ) -> Result<(Access, Description)> {
 	let grant: Grant = sqlx::query_as(
 		&sea_orm::sea_query::Query::select()
@@ -534,6 +548,7 @@ async fn description_lease_mode(
 		.fetch_one(&mut **access.tx)
 		.await?;
 		if locked.revision != task.revision {
+			*revision_race = true;
 			return Err(Error::Forbidden);
 		}
 		let execution = execution::binding(&mut access, current.id).await?;

@@ -58,6 +58,8 @@ pub struct RunDetails {
 	pub run: Run,
 	pub invocations: Vec<Invocation>,
 	pub memory: Value,
+	/// Each current route lists MIME types accepted together by the run model.
+	pub media_input_routes: Vec<Vec<String>>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PeerError {

@@ -196,13 +196,23 @@ pub(crate) async fn invoke(
 			.await?
 		}
 		"file_read" => {
-			read(
-				store,
-				access,
-				&area,
-				serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?,
-			)
-			.await?
+			let selection: FileRead =
+				serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
+			if matches!(selection.representation, Representation::ModelInput) {
+				let file = files(&area)?
+					.into_iter()
+					.find(|file| file.file_id == selection.file_id)
+					.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
+				crate::provider::ContentPart::modality_for_media_type(&file.media_type)?;
+				let registry = crate::registry::Registry::new(store.pool.clone(), &store.node_id);
+				let agent = registry.get(&run.agent_id, &run.agent_version).await?;
+				let agent: AgentConfig = serde_json::from_value(agent.config)?;
+				let entry = catalog::entry(access, &agent.model, "registry.read").await?;
+				let effective = registry.get(&entry.id, &entry.version).await?;
+				let model: crate::registry::ModelConfig = serde_json::from_value(effective.config)?;
+				model.require_media_types([file.media_type.as_str()])?;
+			}
+			read(store, access, &area, selection).await?
 		}
 		"file_search" => tokio::time::timeout(
 			std::time::Duration::from_secs(store.capabilities.0.limits.search_seconds),
@@ -265,6 +275,23 @@ async fn read(store: &Store, access: &mut Access, area: &Area, input: FileRead) 
 		.is_some_and(|digest| digest != &file.digest)
 	{
 		return Err(Error::Conflict("FILE_CHANGED".into()));
+	}
+	if matches!(input.representation, Representation::ModelInput) {
+		if input.expected_digest.as_deref() != Some(file.digest.as_str())
+			|| input.offset.is_some()
+			|| input.max_bytes.is_some()
+		{
+			return Err(Error::Invalid(
+				"model input requires an exact digest and no read range".into(),
+			));
+		}
+		if file.size > 8 * 1024 * 1024 {
+			return Err(Error::Invalid(
+				"model media input exceeds byte limit".into(),
+			));
+		}
+		crate::provider::ContentPart::modality_for_media_type(&file.media_type)?;
+		return Ok(json!({"metadata":file,"digest":file.digest,"truncated":false}));
 	}
 	if matches!(input.representation, Representation::Metadata) {
 		return Ok(json!({"metadata":file,"digest":file.digest,"truncated":false}));

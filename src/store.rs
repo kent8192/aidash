@@ -57,6 +57,15 @@ pub(crate) struct FencedRunMessageOutput<'a> {
 	pub key: &'a str,
 }
 
+struct RunMessageAcceptance<'a> {
+	run_id: Uuid,
+	sender: &'a str,
+	content: &'a str,
+	key: &'a str,
+	max_input_tokens: usize,
+	allow_empty: bool,
+}
+
 fn run_input_size(sender: &str, content: &str) -> usize {
 	// The provider receives JSON records, so count escaped content as well as
 	// framing. This is the same conservative byte-based estimate as Context.
@@ -2526,7 +2535,60 @@ impl Store {
 		key: &str,
 		max_input_tokens: usize,
 	) -> Result<()> {
-		nonempty(content, "message")?;
+		self.accept_run_message_inner(
+			tx,
+			RunMessageAcceptance {
+				run_id,
+				sender,
+				content,
+				key,
+				max_input_tokens,
+				allow_empty: false,
+			},
+		)
+		.await
+		.map(|_| ())
+	}
+
+	pub(crate) async fn accept_run_media_message_in(
+		&self,
+		tx: &mut Transaction<'_, Postgres>,
+		run_id: Uuid,
+		sender: &str,
+		content: &str,
+		key: &str,
+		max_input_tokens: usize,
+	) -> Result<bool> {
+		self.accept_run_message_inner(
+			tx,
+			RunMessageAcceptance {
+				run_id,
+				sender,
+				content,
+				key,
+				max_input_tokens,
+				allow_empty: true,
+			},
+		)
+		.await
+	}
+
+	async fn accept_run_message_inner(
+		&self,
+		tx: &mut Transaction<'_, Postgres>,
+		request: RunMessageAcceptance<'_>,
+	) -> Result<bool> {
+		let RunMessageAcceptance {
+			run_id,
+			sender,
+			content,
+			key,
+			max_input_tokens,
+			allow_empty,
+		} = request;
+		if !allow_empty {
+			nonempty(content, "message")?;
+		}
 		let run: Run = sqlx::query_as(
 			&sea_orm::sea_query::Query::select()
 				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
@@ -2538,9 +2600,12 @@ impl Store {
 		.bind(run_id)
 		.fetch_one(&mut **tx)
 		.await?;
-		let previous: Option<String> = sqlx::query_scalar(
+		let previous: Option<(String, Option<Uuid>)> = sqlx::query_as(
 			&sea_orm::sea_query::Query::select()
-				.column(sea_orm::sea_query::Alias::new("content"))
+				.columns([
+					sea_orm::sea_query::Alias::new("content"),
+					sea_orm::sea_query::Alias::new("message_id"),
+				])
 				.from(sea_orm::sea_query::Alias::new("run_inputs"))
 				.and_where(sea_orm::sea_query::Expr::cust(
 					"run_id = $1 AND idempotency_key = $2",
@@ -2551,9 +2616,25 @@ impl Store {
 		.bind(key)
 		.fetch_optional(&mut **tx)
 		.await?;
-		if let Some(old_content) = previous {
-			return if old_content == content {
-				Ok(())
+		if let Some((old_content, message_id)) = previous {
+			let has_media = if let Some(message_id) = message_id {
+				let attached: Option<Uuid> = sqlx::query_scalar(
+					&sea_orm::sea_query::Query::select()
+						.column(sea_orm::sea_query::Alias::new("id"))
+						.from(sea_orm::sea_query::Alias::new("channel_attachments"))
+						.and_where(sea_orm::sea_query::Expr::cust("message_id = $1"))
+						.limit(1)
+						.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+				)
+				.bind(message_id)
+				.fetch_optional(&mut **tx)
+				.await?;
+				attached.is_some()
+			} else {
+				false
+			};
+			return if old_content == content && has_media == allow_empty {
+				Ok(true)
 			} else {
 				Err(Error::Conflict("run message idempotency key reused".into()))
 			};
@@ -2631,13 +2712,17 @@ impl Store {
 		.execute(&mut **tx)
 		.await?;
 		if run.home_node == self.node_id {
-			let message = self
-				.message_in(tx, run.workspace_id, sender, content, Some(key))
-				.await?;
+			let message = if allow_empty {
+				self.message_in_with_attachments(tx, run.workspace_id, sender, content, Some(key))
+					.await?
+			} else {
+				self.message_in(tx, run.workspace_id, sender, content, Some(key))
+					.await?
+			};
 			self.bind_run_input_message_in(tx, run_id, key, message.id)
 				.await?;
 		}
-		Ok(())
+		Ok(false)
 	}
 	async fn run_inputs_in(
 		&self,
@@ -2722,6 +2807,24 @@ impl Store {
 		let inputs = self.run_inputs_in(&mut tx, run_id).await?;
 		tx.commit().await?;
 		Ok(inputs)
+	}
+
+	pub(crate) async fn run_message_has_media(&self, message_ids: &[Uuid]) -> Result<bool> {
+		if message_ids.is_empty() {
+			return Ok(false);
+		}
+		let id: Option<Uuid> = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.column(sea_orm::sea_query::Alias::new("id"))
+				.from(sea_orm::sea_query::Alias::new("channel_attachments"))
+				.and_where(sea_orm::sea_query::Expr::cust("message_id = ANY($1)"))
+				.limit(1)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(message_ids)
+		.fetch_optional(&self.pool)
+		.await?;
+		Ok(id.is_some())
 	}
 	pub(crate) async fn run_input_sequence(
 		&self,
@@ -3175,6 +3278,20 @@ impl Store {
 		key: Option<&str>,
 	) -> Result<Message> {
 		nonempty(content, "message")?;
+		self.message_in_with_attachments(tx, workspace, sender, content, key)
+			.await
+	}
+
+	/// The channel may carry a media-only message. The caller must check that
+	/// at least one attachment belongs to this submission before calling it.
+	pub(crate) async fn message_in_with_attachments(
+		&self,
+		tx: &mut Transaction<'_, Postgres>,
+		workspace: Uuid,
+		sender: &str,
+		content: &str,
+		key: Option<&str>,
+	) -> Result<Message> {
 		let inserted: Option<Message> = sqlx::query_as(
 			&sea_orm::sea_query::Query::insert()
 				.into_table(sea_orm::sea_query::Alias::new("messages"))
@@ -3662,11 +3779,12 @@ impl Store {
 		.await?;
 		Ok(())
 	}
-	pub(crate) async fn pause_for_authorization(
+	pub(crate) async fn pause_for_execution(
 		&self,
 		run: &Run,
 		worker: Uuid,
 		reason: &str,
+		event_kind: &str,
 	) -> Result<()> {
 		let mut tx = self.pool.begin().await?;
 		let changed = sqlx::query(
@@ -3715,7 +3833,7 @@ impl Store {
 		self.event(
 			&mut tx,
 			(run.home_node == self.node_id).then_some(run.workspace_id),
-			"run.authorization_blocked",
+			event_kind,
 			json!({"run_id":run.id,"task_id":run.task_id}),
 		)
 		.await?;
