@@ -2442,7 +2442,6 @@ fn read_only_after_model_media_selection(name: &str) -> bool {
 			| "workspace_read"
 			| "workspace_observe"
 			| "skill_list"
-			| "skill_load"
 			| "skill_read"
 	)
 }
@@ -2706,7 +2705,13 @@ mod review_tests {
 		for name in ["file_read", "file_search", "workspace_read", "skill_read"] {
 			assert!(super::read_only_after_model_media_selection(name));
 		}
-		for name in ["apply_patch", "shell", "code_interpreter", "plugin_0"] {
+		for name in [
+			"skill_load",
+			"apply_patch",
+			"shell",
+			"code_interpreter",
+			"plugin_0",
+		] {
 			assert!(!super::read_only_after_model_media_selection(name));
 		}
 	}

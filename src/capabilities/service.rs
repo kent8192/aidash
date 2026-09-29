@@ -204,8 +204,12 @@ pub(crate) async fn invoke(
 					.find(|file| file.file_id == selection.file_id)
 					.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
 				crate::provider::ContentPart::modality_for_media_type(&file.media_type)?;
-				let entry = catalog::entry(access, &config.model, "registry.read").await?;
-				let model: crate::registry::ModelConfig = serde_json::from_value(entry.config)?;
+				let registry = crate::registry::Registry::new(store.pool.clone(), &store.node_id);
+				let agent = registry.get(&run.agent_id, &run.agent_version).await?;
+				let agent: AgentConfig = serde_json::from_value(agent.config)?;
+				let entry = catalog::entry(access, &agent.model, "registry.read").await?;
+				let effective = registry.get(&entry.id, &entry.version).await?;
+				let model: crate::registry::ModelConfig = serde_json::from_value(effective.config)?;
 				model.require_media_types([file.media_type.as_str()])?;
 			}
 			read(store, access, &area, selection).await?
