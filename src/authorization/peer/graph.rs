@@ -1076,8 +1076,14 @@ async fn graph_generation(
 	.fetch_one(authority.connection())
 	.await?;
 	if let Some(workspace) = options.scope_workspace {
-		let scope =
-			scoped::revision(authority, options, workspace, source_node, &f.config.node_id).await?;
+		let scope = scoped::revision(
+			authority,
+			options,
+			workspace,
+			source_node,
+			&f.config.node_id,
+		)
+		.await?;
 		return Ok(crate::registry::digest(&json!({
 			"authority":authority_revision,"catalog":catalog,"scope":scope,
 		})));
@@ -1280,6 +1286,11 @@ fn build_edges(
 fn event_reference(event: &Event, node: &str) -> Option<String> {
 	let id = |value: &serde_json::Value| value.as_str().and_then(|text| text.parse::<Uuid>().ok());
 	let data = &event.data;
+	if event.kind.starts_with("run.") {
+		return id(&data["run_id"])
+			.or_else(|| id(&data["id"]))
+			.map(|id| resource_key(node, "run", id));
+	}
 	let workspace = event.workspace_id?;
 	if event.kind.starts_with("task.") {
 		return id(&data["task"]["id"])
@@ -1289,11 +1300,6 @@ fn event_reference(event: &Event, node: &str) -> Option<String> {
 	}
 	if event.kind.starts_with("artifact.") {
 		return id(&data["id"]).map(|id| resource_key(node, "artifact", id));
-	}
-	if event.kind.starts_with("run.") {
-		return id(&data["run_id"])
-			.or_else(|| id(&data["id"]))
-			.map(|id| resource_key(node, "run", id));
 	}
 	if event.kind.starts_with("conversation.") {
 		return id(&data["id"]).map(|id| resource_key(node, "conversation", id));
@@ -1547,10 +1553,16 @@ async fn project_in(
 		}
 	}
 	let edges = build_edges(&f.config.node_id, &records, &nodes, options);
-	let activity =
-		project_activity(f, authority, options, &nodes, cursor.window_end, source_node).await?;
-	if graph_generation(f, authority, authority_revision, options, source_node).await?
-		!= generation
+	let activity = project_activity(
+		f,
+		authority,
+		options,
+		&nodes,
+		cursor.window_end,
+		source_node,
+	)
+	.await?;
+	if graph_generation(f, authority, authority_revision, options, source_node).await? != generation
 	{
 		return Err(Error::Conflict("graph projection changed".into()));
 	}

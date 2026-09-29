@@ -36,7 +36,10 @@ test("timeline includes current peer activity in chronological order and count",
     now,
   );
   assert.equal(events.length, 2);
-  assert.deepEqual(events.map((event) => event.created_at), [at(2), at(1)]);
+  assert.deepEqual(
+    events.map((event) => event.created_at),
+    [at(2), at(1)],
+  );
   assert.equal(events[1].reference, key(peer));
 });
 
@@ -59,10 +62,14 @@ test("identical remote resource UUIDs select the correct node-qualified endpoint
 test("removing expired, revoked, collapsed or stale-scope pages removes their events", () => {
   const b = "aidash://b";
   assert.equal(
-    mergeGraphTimeline(local, new Map([[b, page(b)]]), [node(b)], 24, now).length,
+    mergeGraphTimeline(local, new Map([[b, page(b)]]), [node(b)], 24, now)
+      .length,
     2,
   );
-  assert.deepEqual(mergeGraphTimeline(local, new Map(), [node(b)], 24, now), local);
+  assert.deepEqual(
+    mergeGraphTimeline(local, new Map(), [node(b)], 24, now),
+    local,
+  );
 });
 
 test("markers must belong to both the page and the current merged graph", () => {

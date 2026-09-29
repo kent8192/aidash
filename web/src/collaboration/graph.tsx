@@ -527,8 +527,7 @@ export function Graph({
       const target = full.nodes.find(
         (node) =>
           node.nodeId === data.node.id &&
-          ((node.kind === "task" &&
-            node.resourceId === references.task_id) ||
+          ((node.kind === "task" && node.resourceId === references.task_id) ||
             (node.kind === "artifact" &&
               node.resourceId === references.artifact_id)),
       );

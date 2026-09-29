@@ -22,7 +22,9 @@ export function mergeGraphTimeline(
     if (page.node_id !== peer) continue;
     const references = new Set(
       page.nodes
-        .filter((node) => node.node_id === peer && visible.get(node.id) === peer)
+        .filter(
+          (node) => node.node_id === peer && visible.get(node.id) === peer,
+        )
         .map((node) => node.id),
     );
     for (const [index, marker] of page.activity.entries()) {

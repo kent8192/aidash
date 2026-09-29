@@ -199,12 +199,20 @@ async fn admitted_run(
 	id
 }
 
-async fn event(f: &Federation, workspace: Uuid, kind: &str, data: Value, age: i64) {
+async fn event(f: &Federation, workspace: Option<Uuid>, kind: &str, data: Value, age: i64) {
 	sqlx::query(
 		&Query::insert()
 			.into_table(Alias::new("events"))
 			.columns(
-				["id", "node_id", "workspace_id", "kind", "data", "created_at"].map(Alias::new),
+				[
+					"id",
+					"node_id",
+					"workspace_id",
+					"kind",
+					"data",
+					"created_at",
+				]
+				.map(Alias::new),
 			)
 			.values_panic((1..=6).map(|index| Expr::cust(format!("${index}"))))
 			.to_string(PostgresQueryBuilder),
@@ -287,9 +295,23 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	let other_credential = self::credential(&f, &app, "other").await;
 	let other_tenant = admitted_run(&f, &task, other_credential, "other", SOURCE, workspace).await;
 	for index in 0..6 {
-		event(&f, workspace, "run.phase", json!({"run_id":expected[0]}), 60 - index).await;
+		event(
+			&f,
+			None,
+			"run.phase",
+			json!({"run_id":expected[0],"workspace_id":workspace}),
+			60 - index,
+		)
+		.await;
 	}
-	event(&f, workspace, "run.phase", json!({"run_id":third}), 1).await;
+	event(
+		&f,
+		None,
+		"run.phase",
+		json!({"run_id":third,"workspace_id":workspace}),
+		1,
+	)
+	.await;
 	let options =
 		json!({"scope_workspace":workspace,"kinds":["run","agent"],"relations":["executes"]});
 	let (status, page) = project(&app, subject.clone(), options.clone()).await;
@@ -303,9 +325,11 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	}
 	let activity = page["activity"].as_array().unwrap();
 	assert_eq!(activity.len(), 6);
-	assert!(activity.windows(2).all(|pair| {
-		pair[0]["at"].as_str().unwrap() >= pair[1]["at"].as_str().unwrap()
-	}));
+	assert!(
+		activity
+			.windows(2)
+			.all(|pair| { pair[0]["at"].as_str().unwrap() >= pair[1]["at"].as_str().unwrap() })
+	);
 	let local_workspace_count: i64 = sqlx::query_scalar(
 		&Query::select()
 			.expr(Expr::cust("COUNT(*)"))
@@ -330,8 +354,12 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	)
 	.await;
 	assert_eq!(status, 200, "{grant}");
-	let (status, operator_page) =
-		project(&app, json!({"kind":"operator","id":operator}), options.clone()).await;
+	let (status, operator_page) = project(
+		&app,
+		json!({"kind":"operator","id":operator}),
+		options.clone(),
+	)
+	.await;
 	assert_eq!(status, 200, "{operator_page}");
 	let mut actual = run_ids(&operator_page);
 	actual.sort();
@@ -354,7 +382,14 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 	bump_run(&f, other_scope).await;
 	bump_run(&f, third).await;
 	bump_run(&f, other_tenant).await;
-	event(&f, workspace, "run.phase", json!({"run_id":third}), 1).await;
+	event(
+		&f,
+		None,
+		"run.phase",
+		json!({"run_id":third,"workspace_id":workspace}),
+		1,
+	)
+	.await;
 	let (status, continued) = project(&app, subject.clone(), paged.clone()).await;
 	assert_eq!(status, 200, "{continued}");
 	bump_run(&f, expected[0]).await;
@@ -415,7 +450,14 @@ async fn graph_activity_is_newest_first_and_checks_workspace_events_once(
 	.await
 	.unwrap();
 	for index in 0..6 {
-		event(&f, workspace, "workspace.updated", json!({}), 60 - index).await;
+		event(
+			&f,
+			Some(workspace),
+			"workspace.updated",
+			json!({}),
+			60 - index,
+		)
+		.await;
 	}
 	let before = event_decisions(&f).await;
 	let (status, page) = project(&app, subject.clone(), json!({})).await;
@@ -428,9 +470,11 @@ async fn graph_activity_is_newest_first_and_checks_workspace_events_once(
 		.iter()
 		.filter(|item| item["kind"] == "workspace.updated")
 		.collect();
-	assert!(updates.windows(2).all(|pair| {
-		pair[0]["at"].as_str().unwrap() >= pair[1]["at"].as_str().unwrap()
-	}));
+	assert!(
+		updates
+			.windows(2)
+			.all(|pair| { pair[0]["at"].as_str().unwrap() >= pair[1]["at"].as_str().unwrap() })
+	);
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"deny-events","effect":"deny","subjects":{"ids":["alice"]},
 		"actions":["workspace.events"],"resources":{"kinds":["workspace"]},

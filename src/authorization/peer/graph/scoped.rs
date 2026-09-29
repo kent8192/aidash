@@ -161,7 +161,9 @@ pub(super) async fn revision(
 				JoinType::InnerJoin,
 				Alias::new("events"),
 				Alias::new("e"),
-				Expr::cust("e.workspace_id = r.workspace_id AND COALESCE(e.data->>'run_id', e.data->>'id') = r.id::text"),
+				Expr::cust(
+					"e.workspace_id IS NULL AND COALESCE(e.data->>'run_id', e.data->>'id') = r.id::text",
+				),
 			)
 			.and_where(Expr::cust("e.node_id = $4 AND e.kind LIKE 'run.%'"))
 			.to_string(PostgresQueryBuilder),
@@ -202,21 +204,20 @@ pub(super) async fn activity(
 	query
 		.expr(Expr::cust("e.*"))
 		.from_as(Alias::new("events"), Alias::new("e"))
-		.and_where(Expr::cust("e.node_id = $1 AND e.workspace_id = $2"))
+		.and_where(Expr::cust("e.node_id = $1 AND e.workspace_id IS NULL"))
 		.and_where(Expr::cust("e.kind LIKE 'run.%'"))
 		.and_where(Expr::cust(
-			"COALESCE(e.data->>'run_id', e.data->>'id') = ANY($3)",
+			"COALESCE(e.data->>'run_id', e.data->>'id') = ANY($2)",
 		))
-		.and_where(Expr::cust("e.created_at <= $4"))
+		.and_where(Expr::cust("e.created_at <= $3"))
 		.order_by((Alias::new("e"), Alias::new("sequence")), Order::Desc)
 		.limit(80);
 	if options.hours > 0 {
-		query.and_where(Expr::cust("e.created_at >= $5"));
+		query.and_where(Expr::cust("e.created_at >= $4"));
 	}
 	let sql = query.to_string(PostgresQueryBuilder);
 	let mut request = sqlx::query_as::<_, Event>(&sql)
 		.bind(&f.config.node_id)
-		.bind(workspace)
 		.bind(ids)
 		.bind(window_end);
 	if options.hours > 0 {

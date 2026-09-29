@@ -100,8 +100,7 @@ mod tests {
 		let (_, kinds) =
 			query(&options("execution", &["agent", "tool", "model", "run"]), 0).unwrap();
 		assert_eq!(kinds, vec!["agent"]);
-		let (_, kinds) =
-			query(&options("topology", &["agent", "tool", "model"]), 0).unwrap();
+		let (_, kinds) = query(&options("topology", &["agent", "tool", "model"]), 0).unwrap();
 		assert_eq!(kinds, vec!["agent", "tool"]);
 	}
 

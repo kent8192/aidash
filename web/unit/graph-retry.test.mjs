@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { retryFreshGraphPage } from "../src/collaboration/graph-retry.ts";
 
-const conflict = () => Object.assign(new Error("Graph changed"), { status: 409 });
+const conflict = () =>
+  Object.assign(new Error("Graph changed"), { status: 409 });
 
 test("a fresh page retries transient generation conflicts", async () => {
   const page = { nodes: [{ id: "current" }] };
