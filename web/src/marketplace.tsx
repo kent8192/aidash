@@ -57,8 +57,11 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
   const [author, setAuthor] = useState("");
   const [audience, setAudience] = useState<string>();
   const [redistributor, setRedistributor] = useState("");
-  const [consentRevision, setConsentRevision] = useState(0);
-  const [consentAudience, setConsentAudience] = useState("");
+  const [consentDraft, setConsentDraft] = useState<{
+    key: string;
+    revision: number;
+    audience: string;
+  }>();
   const packages = useQuery({
     queryKey: [...context, "packages", search],
     queryFn: () => marketplaceBrowse({ q: search, limit: 50 }),
@@ -86,20 +89,24 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
   });
   const consentQuery = useQuery({
     queryKey: [...context, "consent", selected, redistributor],
-    queryFn: () => apiFetch<MarketplaceAudience>(`/api/marketplace/packages/${encodeURIComponent(selected!)}/consents/${encodeURIComponent(redistributor)}`),
+    queryFn: () =>
+      apiFetch<MarketplaceAudience>(
+        `/api/marketplace/packages/${encodeURIComponent(selected!)}/consents/${encodeURIComponent(redistributor)}`,
+      ),
     enabled: !!selected && !!redistributor && !denied,
     retry: false,
     staleTime: 0,
   });
-  useEffect(() => {
-    if (consentQuery.isFetching || consentQuery.isError || !consentQuery.data) {
-      setConsentRevision(0);
-      setConsentAudience("");
-      return;
-    }
-    setConsentRevision(consentQuery.data.revision);
-    setConsentAudience([...consentQuery.data.tenants].join(" "));
-  }, [consentQuery.data, consentQuery.isFetching, consentQuery.isError]);
+  const consent =
+    !consentQuery.isFetching && !consentQuery.isError
+      ? consentQuery.data
+      : undefined;
+  const consentKey = `${selected}:${redistributor}:${consentQuery.dataUpdatedAt}`;
+  const currentDraft =
+    consent && consentDraft?.key === consentKey ? consentDraft : undefined;
+  const consentRevision = currentDraft?.revision ?? consent?.revision ?? 0;
+  const consentAudience =
+    currentDraft?.audience ?? (consent ? [...consent.tenants].join(" ") : "");
   const editingQuery = useQuery({
     queryKey: [
       ...context,
@@ -153,8 +160,7 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
     setSource("");
     setConfig("{}");
     setBindings("[]");
-    setConsentRevision(0);
-    setConsentAudience("");
+    setConsentDraft(undefined);
   }
   async function run(
     action: () => Promise<unknown>,
@@ -174,8 +180,7 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
         setSource("");
         setConfig("{}");
         setBindings("[]");
-        setConsentRevision(0);
-        setConsentAudience("");
+        setConsentDraft(undefined);
         cache.removeQueries({ queryKey: ["marketplace"] });
         setMessage(copy.operationUnavailable);
       } else
@@ -330,28 +335,35 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
                   type="number"
                   min={0}
                   value={consentRevision}
-                  onChange={(e) => setConsentRevision(Number(e.target.value))}
+                  onChange={(e) =>
+                    setConsentDraft({
+                      key: consentKey,
+                      revision: Number(e.target.value),
+                      audience: consentAudience,
+                    })
+                  }
                 />
               </Field>
               <Field label={copy.tenants}>
                 <textarea
                   value={consentAudience}
-                  onChange={(e) => setConsentAudience(e.target.value)}
+                  onChange={(e) =>
+                    setConsentDraft({
+                      key: consentKey,
+                      revision: consentRevision,
+                      audience: e.target.value,
+                    })
+                  }
                 />
               </Field>
               <button
-                disabled={busy || !redistributor || !consentQuery.data || consentQuery.isFetching}
+                disabled={busy || !redistributor || !consent}
                 onClick={() =>
                   void run(async () => {
-                    const next = await marketplaceConsent(
-                      selected,
-                      redistributor,
-                      {
-                        expected_revision: consentRevision,
-                        tenants: tenants(consentAudience),
-                      },
-                    );
-                    setConsentRevision(next.revision);
+                    await marketplaceConsent(selected, redistributor, {
+                      expected_revision: consentRevision,
+                      tenants: tenants(consentAudience),
+                    });
                   })
                 }
               >
