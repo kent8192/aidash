@@ -14,10 +14,9 @@ pub(super) fn recipient_event(mut event: Event) -> Event {
 	if matches!(
 		event.kind.as_str(),
 		"marketplace.published" | "marketplace.distribution_changed"
-	) {
-		if let Some(data) = event.data.as_object_mut() {
-			data.remove("actor");
-		}
+	) && let Some(data) = event.data.as_object_mut()
+	{
+		data.remove("actor");
 	}
 	event
 }
