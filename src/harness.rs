@@ -613,7 +613,7 @@ impl Harness {
 		let entry = self
 			.federation
 			.registry
-			.get(&run.agent_id, &run.agent_version)
+			.get_for_run(run, &run.agent_id, &run.agent_version)
 			.await?;
 		let agent: AgentConfig = serde_json::from_value(entry.config.clone())?;
 		match run.phase.as_str() {

@@ -1179,11 +1179,14 @@ async fn run_message(
 					content,
 				)?);
 			}
-			let agent = f.registry.get(&run.agent_id, &run.agent_version).await?;
+			let agent = f
+				.registry
+				.get_for_run(&run, &run.agent_id, &run.agent_version)
+				.await?;
 			let agent: crate::registry::AgentConfig = serde_json::from_value(agent.config)?;
 			let model = f
 				.registry
-				.get(&agent.model.id, &agent.model.version)
+				.get_for_run(&run, &agent.model.id, &agent.model.version)
 				.await?;
 			let model: crate::registry::ModelConfig = serde_json::from_value(model.config)?;
 			model.require_media_types(

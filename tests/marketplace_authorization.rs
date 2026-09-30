@@ -496,9 +496,9 @@ async fn browse_pages_hidden_versions_before_returning_a_visible_package(
 	approve(&f, "a", &reference("paged-source")).await;
 	let published = publish(&app, &a, "paged-source").await;
 	let source_key = published["key"].as_str().unwrap();
-	let document: Value = sqlx::query_scalar(
+	let (document, source_content): (Value, String) = sqlx::query_as(
 		&Query::select()
-			.column(Alias::new("document"))
+			.columns(["document", "source_content"].map(Alias::new))
 			.from(Alias::new("marketplace_versions"))
 			.and_where(Expr::cust("key=$1"))
 			.to_string(PostgresQueryBuilder),
@@ -507,6 +507,8 @@ async fn browse_pages_hidden_versions_before_returning_a_visible_package(
 	.fetch_one(&f.store.pool)
 	.await
 	.unwrap();
+	let source_id = document["source"]["id"].as_str().unwrap();
+	let source_version = document["source"]["version"].as_str().unwrap();
 	for i in 0..64 {
 		let key = format!("!hidden-{i:03}");
 		let package_id = format!("hidden-{i:03}");
@@ -525,10 +527,13 @@ async fn browse_pages_hidden_versions_before_returning_a_visible_package(
 						"package_id",
 						"version",
 						"kind",
+						"source_id",
+						"source_version",
+						"source_content",
 					]
 					.map(Alias::new),
 				)
-				.values_panic(["$1", "$2", "$3", "$4", "$5", "$6", "$7"].map(Expr::cust))
+				.values_panic((1..=10).map(|i| Expr::cust(format!("${i}"))))
 				.to_string(PostgresQueryBuilder),
 		)
 		.bind(key)
@@ -538,6 +543,9 @@ async fn browse_pages_hidden_versions_before_returning_a_visible_package(
 		.bind(package_id)
 		.bind("1.0.0")
 		.bind("tool")
+		.bind(source_id)
+		.bind(source_version)
+		.bind(&source_content)
 		.execute(&f.store.pool)
 		.await
 		.unwrap();
@@ -2653,6 +2661,65 @@ async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
 }
 
 #[rstest::rstest]
+#[tokio::test]
+async fn installation_rejects_missing_private_knowledge(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+	use sha2::{Digest, Sha256};
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = common::setup(&environment).await;
+	let app = api::router(f.clone());
+	let a = token(&f, "a", "user").await;
+	enable(&app, &f).await;
+	let model: Entry = serde_json::from_value(json!({"id":"private-model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
+	f.registry.register(model).await.unwrap();
+	let documents = json!([{"name":"Note","media_type":"text/plain","text":"source"}]);
+	let digest = format!("{:x}", Sha256::digest(documents.to_string().as_bytes()));
+	let agent: Entry = serde_json::from_value(json!({"id":"private-agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("private-model"),"instructions":"Private context","knowledge_digest":digest}})).unwrap();
+	f.registry.register(agent).await.unwrap();
+	for id in ["private-model", "private-agent"] {
+		approve(&f, "a", &reference(id)).await;
+	}
+	let package = publish(&app, &a, "private-agent").await;
+	let failed = install(&app, &a, &package, &install_input(&package)).await;
+	assert_eq!(failed.0, 403, "{failed:?}");
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("agent_knowledge"))
+			.columns(["agent_id", "agent_version", "documents"].map(Alias::new))
+			.values_panic(["$1", "$2", "$3"].map(Expr::cust))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind("private-agent")
+	.bind("1.0.0")
+	.bind(json!([]))
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let mismatched = install(&app, &a, &package, &install_input(&package)).await;
+	assert_eq!(mismatched.0, 403, "{mismatched:?}");
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("agent_knowledge"))
+			.value(Alias::new("documents"), Expr::cust("$1"))
+			.and_where(Expr::cust(
+				"agent_id='private-agent' AND agent_version='1.0.0'",
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(documents)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let installed = install(&app, &a, &package, &install_input(&package)).await;
+	assert_eq!(installed.0, 200, "{installed:?}");
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
 #[case(false)]
 #[case(true)]
 #[tokio::test]
@@ -2685,6 +2752,11 @@ async fn compatibility_disable_orders_new_run_admission(
 		id: original.1["entry"]["id"].as_str().unwrap().into(),
 		version: "1.0.0".into(),
 	};
+	let exact_path = format!("/api/registry/{}/{}", old_ref.id, old_ref.version);
+	assert_eq!(
+		request(&app, &a, "GET", &exact_path, Value::Null).await.0,
+		200
+	);
 	let mut authority = bundle("a", "user");
 	authority["subjects"]
 		[aidash::domain::qualified_agent(&f.config.node_id, &old_ref.id, &old_ref.version)] =
@@ -2803,6 +2875,10 @@ async fn compatibility_disable_orders_new_run_admission(
 	assert_eq!(
 		f.store.runs().await.unwrap().len(),
 		usize::from(admission_wins)
+	);
+	assert_eq!(
+		request(&app, &a, "GET", &exact_path, Value::Null).await.0,
+		403
 	);
 	common::cleanup(f, &url, &schema).await;
 }

@@ -405,26 +405,33 @@ async fn stage_in(
 			.is_some_and(|d| !d.is_null())
 	{
 		let original = distribution::manifest(source)?.entity;
+		let documents: Value = sqlx::query_scalar(
+			&Query::select()
+				.column(Alias::new("documents"))
+				.from(Alias::new("agent_knowledge"))
+				.and_where(Expr::cust("agent_id=$1 AND agent_version=$2"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(&original.id)
+		.bind(&original.version)
+		.fetch_optional(&mut **tx)
+		.await?
+		.ok_or(Error::Forbidden)?;
+		if entry.config["knowledge_digest"].as_str()
+			!= Some(crate::knowledge::digest(&documents).as_str())
+		{
+			return Err(Error::Forbidden);
+		}
 		sqlx::query(
 			&Query::insert()
 				.into_table(Alias::new("agent_knowledge"))
 				.columns(["agent_id", "agent_version", "documents"].map(Alias::new))
-				.select_from(
-					Query::select()
-						.expr(Expr::cust("$1"))
-						.expr(Expr::cust("$2"))
-						.column(Alias::new("documents"))
-						.from(Alias::new("agent_knowledge"))
-						.and_where(Expr::cust("agent_id=$3 AND agent_version=$4"))
-						.to_owned(),
-				)
-				.map_err(|_| Error::Forbidden)?
+				.values_panic(["$1", "$2", "$3"].map(Expr::cust))
 				.to_string(PostgresQueryBuilder),
 		)
 		.bind(&entry.id)
 		.bind(&entry.version)
-		.bind(original.id)
-		.bind(original.version)
+		.bind(documents)
 		.execute(&mut **tx)
 		.await?;
 	}

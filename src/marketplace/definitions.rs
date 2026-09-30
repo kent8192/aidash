@@ -190,15 +190,31 @@ pub(super) async fn publication_graph(
 		} else {
 			// A locally published exact dependency also supplies a disclosure
 			// path before recipients install it. Names alone never bind content.
-			let versions: Vec<Version> = documents(&mut access.tx, "marketplace_versions").await?;
-			versions
-				.into_iter()
-				.find(|v| {
-					v.owner_tenant == access.identity.tenant
-						&& v.source == r && super::distribution::manifest(v)
-						.is_ok_and(|p| content(&p.entity) == content(&entry))
-				})
-				.map(|v| v.key)
+			let version: Option<Value> = sqlx::query_scalar(
+				&Query::select()
+					.column(Alias::new("document"))
+					.from(Alias::new("marketplace_versions"))
+					.and_where(Expr::cust(
+						"owner=$1 AND source_id=$2 AND source_version=$3 AND source_content=$4",
+					))
+					.limit(1)
+					.to_string(PostgresQueryBuilder),
+			)
+			.bind(&access.identity.tenant)
+			.bind(&r.id)
+			.bind(&r.version)
+			.bind(content(&entry))
+			.fetch_optional(&mut **access.tx)
+			.await?;
+			let version = version.map(serde_json::from_value::<Version>).transpose()?;
+			version.and_then(|v| {
+				if v.owner_tenant != access.identity.tenant || v.source != r {
+					return None;
+				}
+				super::distribution::manifest(&v)
+					.is_ok_and(|p| content(&p.entity) == content(&entry))
+					.then_some(v.key)
+			})
 		};
 		result.push(Dependency {
 			reference: r,

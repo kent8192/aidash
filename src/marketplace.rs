@@ -250,6 +250,11 @@ pub(crate) async fn registry_response(
 		let mut output = vec![];
 		for entry in entries {
 			let checked = async {
+				// Exact retained revisions remain readable only while the
+				// Marketplace compatibility contract is enabled.
+				if entry.installation.is_some() {
+					storage::gate(&mut access.tx).await?;
+				}
 				let entry = catalog::entry(
 					&mut access,
 					&definitions::reference(&entry),
@@ -332,7 +337,7 @@ pub(crate) async fn state_response(
 			if !event.kind.starts_with("marketplace.")
 				|| events::visible(&mut access, &event, &store.node_id).await?
 			{
-				visible_events.push(event);
+				visible_events.push(events::recipient_event(event));
 			}
 		}
 		state.events = visible_events;

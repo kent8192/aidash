@@ -9,6 +9,19 @@ use crate::{
 };
 use axum::response::Response;
 
+pub(super) fn recipient_event(mut event: Event) -> Event {
+	// Older durable events may still contain the publisher's private subject.
+	if matches!(
+		event.kind.as_str(),
+		"marketplace.published" | "marketplace.distribution_changed"
+	) {
+		if let Some(data) = event.data.as_object_mut() {
+			data.remove("actor");
+		}
+	}
+	event
+}
+
 pub(crate) async fn visible(access: &mut Access, event: &Event, node: &str) -> Result<bool> {
 	if event.kind == "marketplace.audit" {
 		return Ok(false);
@@ -62,7 +75,7 @@ pub(crate) async fn response(
 				false
 			};
 			if allowed {
-				output.push(event);
+				output.push(recipient_event(event));
 			}
 		}
 		Ok(output)
@@ -84,7 +97,7 @@ pub(crate) async fn frame(
 		if !visible(&mut access, event, &store.node_id).await? {
 			return Ok(None);
 		}
-		let payload = event.cloud_event().to_string();
+		let payload = recipient_event(event.clone()).cloud_event().to_string();
 		if payload.len() > 65_536 {
 			return Err(Error::Forbidden);
 		}
@@ -97,4 +110,26 @@ pub(crate) async fn frame(
 	}
 	.await;
 	access.finish(result).await
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use serde_json::json;
+	use uuid::Uuid;
+
+	#[test]
+	fn recipient_replay_removes_legacy_publisher_subject() {
+		let event = Event {
+			sequence: 1,
+			id: Uuid::nil(),
+			node_id: "node".into(),
+			workspace_id: None,
+			kind: "marketplace.published".into(),
+			data: json!({"key":"package","tenant":"owner","actor":"private-subject"}),
+			created_at: chrono::Utc::now(),
+		};
+		let received = recipient_event(event);
+		assert_eq!(received.data, json!({"key":"package","tenant":"owner"}));
+	}
 }

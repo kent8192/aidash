@@ -202,7 +202,10 @@ impl Federation {
 		if run.home_node != self.config.node_id {
 			return Ok(Vec::new());
 		}
-		let agent = self.registry.get(&run.agent_id, &run.agent_version).await?;
+		let agent = self
+			.registry
+			.get_for_run(run, &run.agent_id, &run.agent_version)
+			.await?;
 		let agent: AgentConfig = serde_json::from_value(agent.config)?;
 		let model = self
 			.registry
@@ -213,7 +216,10 @@ impl Federation {
 	}
 
 	pub(crate) async fn run_request_headroom(&self, run: &Run) -> Result<usize> {
-		let agent_entry = self.registry.get(&run.agent_id, &run.agent_version).await?;
+		let agent_entry = self
+			.registry
+			.get_for_run(run, &run.agent_id, &run.agent_version)
+			.await?;
 		let agent: AgentConfig = serde_json::from_value(agent_entry.config.clone())?;
 		let mut references = Vec::with_capacity(1 + agent.skills.len() + agent.tools.len());
 		references.push(

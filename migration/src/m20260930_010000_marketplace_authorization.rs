@@ -30,7 +30,16 @@ impl MigrationTrait for Migration {
 						.not_null(),
 				);
 			if *name == "marketplace_versions" {
-				for column in ["repository", "owner", "package_id", "version", "kind"] {
+				for column in [
+					"repository",
+					"owner",
+					"package_id",
+					"version",
+					"kind",
+					"source_id",
+					"source_version",
+					"source_content",
+				] {
 					table.col(ColumnDef::new(Alias::new(column)).text().not_null());
 				}
 				table.index(
@@ -100,6 +109,18 @@ impl MigrationTrait for Migration {
 			// SeaQuery cannot express PostgreSQL trigger definitions or attachments.
 			manager.get_connection().execute_unprepared(&format!("CREATE TRIGGER atomic_write_guard BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON {name} FOR EACH STATEMENT EXECUTE FUNCTION atomic_write_guard()" )).await?;
 		}
+		manager
+			.create_index(
+				Index::create()
+					.name("marketplace_versions_source_content")
+					.table(Alias::new("marketplace_versions"))
+					.col(Alias::new("owner"))
+					.col(Alias::new("source_id"))
+					.col(Alias::new("source_version"))
+					.col(Alias::new("source_content"))
+					.to_owned(),
+			)
+			.await?;
 		manager
 			.get_connection()
 			.execute(

@@ -436,7 +436,7 @@ pub(super) async fn publish(store: &Store, access: &mut Access, input: &Publish)
 				&mut access.tx,
 				None,
 				"marketplace.published",
-				json!({"key":version.key,"tenant":version.owner_tenant,"actor":access.identity.subject}),
+				json!({"key":version.key,"tenant":version.owner_tenant}),
 			)
 			.await?;
 	}
@@ -460,6 +460,7 @@ pub(super) async fn insert_in(
 	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 	version: &Version,
 ) -> Result<()> {
+	let source_content = definitions::content(&manifest(version)?.entity);
 	sqlx::query(
 		&Query::insert()
 			.into_table(Alias::new("marketplace_versions"))
@@ -472,10 +473,13 @@ pub(super) async fn insert_in(
 					"package_id",
 					"version",
 					"kind",
+					"source_id",
+					"source_version",
+					"source_content",
 				]
 				.map(Alias::new),
 			)
-			.values_panic((1..=7).map(|i| Expr::cust(format!("${i}"))))
+			.values_panic((1..=10).map(|i| Expr::cust(format!("${i}"))))
 			.to_string(PostgresQueryBuilder),
 	)
 	.bind(&version.key)
@@ -485,6 +489,9 @@ pub(super) async fn insert_in(
 	.bind(&version.package_id)
 	.bind(&version.version)
 	.bind(&version.kind)
+	.bind(&version.source.id)
+	.bind(&version.source.version)
+	.bind(source_content)
 	.execute(&mut **tx)
 	.await?;
 	put(
@@ -554,6 +561,13 @@ pub(super) async fn share(
 	};
 	put(&mut access.tx, table, &target, &next).await?;
 	authority(access, format!("{table}:{target}"), next.revision);
-	store.event(&mut access.tx,None,"marketplace.distribution_changed",json!({"key":key,"tenant":version.owner_tenant,"revision":next.revision,"actor":access.identity.subject})).await?;
+	store
+		.event(
+			&mut access.tx,
+			None,
+			"marketplace.distribution_changed",
+			json!({"key":key,"tenant":version.owner_tenant,"revision":next.revision}),
+		)
+		.await?;
 	Ok(next)
 }
