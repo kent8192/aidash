@@ -9,6 +9,7 @@ mod storage;
 
 pub use api::routes;
 pub(crate) use installations::{active, catalog_owner, propagate_provenance};
+pub(crate) use storage::lock as lock_catalog;
 
 use crate::registry::{EntityRef, Entry, Localized, Package};
 use serde::{Deserialize, Serialize};

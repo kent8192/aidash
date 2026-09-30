@@ -22,6 +22,20 @@ pub struct Workspaces {
 	pub identity: SubjectIdentity,
 }
 
+// Keep the disjunction structured so every caller's cursor bounds both arms.
+fn event_scope(include_marketplace: bool) -> Condition {
+	let scope = Condition::any().add(Expr::cust("workspace_id=ANY($1)"));
+	if include_marketplace {
+		scope.add(
+			Condition::all()
+				.add(Expr::col(Alias::new("workspace_id")).is_null())
+				.add(Expr::col(Alias::new("kind")).like("marketplace.%")),
+		)
+	} else {
+		scope
+	}
+}
+
 impl Access {
 	/// Evaluate both stream actions from one locked ownership read. Each call
 	/// still uses this transaction's current credential and policy snapshot.
@@ -393,7 +407,11 @@ impl Access {
 		}
 	}
 
-	async fn latest_visible_events(&mut self, workspaces: &[Uuid]) -> Result<Vec<Event>> {
+	async fn latest_visible_events(
+		&mut self,
+		workspaces: &[Uuid],
+		include_marketplace: bool,
+	) -> Result<Vec<Event>> {
 		let mut cursor = i64::MAX;
 		let mut result = vec![];
 		loop {
@@ -401,7 +419,7 @@ impl Access {
 				&Query::select()
 					.column(Asterisk)
 					.from(Alias::new("events"))
-					.and_where(Expr::cust("workspace_id=ANY($1)"))
+					.cond_where(event_scope(include_marketplace))
 					.and_where(Expr::col(Alias::new("sequence")).lt(Expr::cust("$2")))
 					.order_by(Alias::new("sequence"), Order::Desc)
 					.limit(100)
@@ -475,7 +493,7 @@ impl Access {
 		let workspace = self.workspace(id).await?;
 		self.require(&workspace, "workspace.read").await?;
 		let events = if self.decide(&workspace, "workspace.events").await? {
-			self.latest_visible_events(&[id]).await?
+			self.latest_visible_events(&[id], false).await?
 		} else {
 			vec![]
 		};
@@ -954,7 +972,9 @@ impl Workspaces {
 				runs: vec![],
 				human_requests: vec![],
 				conversations: vec![],
-				events: access.latest_visible_events(&event_workspaces).await?,
+				events: access
+					.latest_visible_events(&event_workspaces, true)
+					.await?,
 			};
 			let mut offset = 0_u64;
 			loop {
@@ -1238,13 +1258,7 @@ impl Workspaces {
 					.from(Alias::new("events"))
 					.cond_where(
 						Condition::all()
-							.add(if workspace.is_none() {
-								Expr::cust(
-									"workspace_id=ANY($1) OR (workspace_id IS NULL AND kind LIKE 'marketplace.%')",
-								)
-							} else {
-								Expr::cust("workspace_id=ANY($1)")
-							})
+							.add(event_scope(workspace.is_none()))
 							.add(Expr::col(Alias::new("sequence")).gt(Expr::cust("$2"))),
 					)
 					.order_by(Alias::new("sequence"), Order::Asc)
@@ -1304,13 +1318,7 @@ impl Workspaces {
 						.from(Alias::new("events"))
 						.cond_where(
 							Condition::all()
-								.add(if workspace.is_none() {
-									Expr::cust(
-										"workspace_id=ANY($1) OR (workspace_id IS NULL AND kind LIKE 'marketplace.%')",
-									)
-								} else {
-									Expr::cust("workspace_id=ANY($1)")
-								})
+								.add(event_scope(workspace.is_none()))
 								.add(Expr::col(Alias::new("sequence")).gt(Expr::cust("$2"))),
 						)
 						.order_by(Alias::new("sequence"), Order::Asc)

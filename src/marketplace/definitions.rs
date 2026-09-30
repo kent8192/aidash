@@ -219,17 +219,32 @@ pub(super) async fn resolve(
 ) -> Result<(Entry, Vec<EntityRef>, Vec<DependencyBinding>)> {
 	let package = super::distribution::manifest(source)?;
 	let mut entry = package.entity;
+	// Configuration may tune local behavior, but executable references must
+	// pass through the exact dependency bindings below (including tool kind).
+	let protected: &[&str] = match entry.kind.as_str() {
+		"agent" => &["model", "tools", "skills", "cluster"],
+		"tool" => &["transport", "node_id", "agent"],
+		"cluster" => &["coordinator"],
+		_ => &[],
+	};
+	if protected.iter().any(|field| config.get(*field).is_some()) {
+		return Err(Error::Invalid(
+			"dependency references require bindings, not configuration overrides".into(),
+		));
+	}
 	crate::registry::overlay_config(&mut entry.config, config)?;
+	let direct = refs(&entry, node)?;
 	let mut bindings = vec![];
 	let mut seen = BTreeSet::new();
 	for binding in submitted {
 		if !seen.insert((binding.source.id.clone(), binding.source.version.clone())) {
 			return Err(Error::Invalid("duplicate dependency binding".into()));
 		}
-		if !source
-			.dependencies
-			.iter()
-			.any(|d| d.reference == binding.source)
+		if !direct.iter().any(|(r, _)| *r == binding.source)
+			|| !source
+				.dependencies
+				.iter()
+				.any(|d| d.reference == binding.source)
 		{
 			return Err(Error::Forbidden);
 		}
@@ -237,7 +252,9 @@ pub(super) async fn resolve(
 	for dep in &source.dependencies {
 		let target = if let Some(binding) = submitted.iter().find(|b| b.source == dep.reference) {
 			binding.target.clone()
-		} else if let Some(package) = &dep.package {
+		} else if let Some(package) = &dep.package
+			&& direct.iter().any(|(r, _)| *r == dep.reference)
+		{
 			let id = super::installations::id(&access.identity.tenant, package);
 			let installed: Option<Installation> =
 				get(&mut access.tx, "marketplace_installations", &id).await?;

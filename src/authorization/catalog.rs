@@ -65,6 +65,11 @@ pub(crate) async fn entry(
 	if access.inherited_lease && !access.approved_catalog.contains(&key) {
 		return Err(Error::Forbidden);
 	}
+	// Acquire distribution authority before catalog rows, matching activation.
+	// An inherited transaction borrows the outer lease's locks.
+	if !access.inherited_lease {
+		crate::marketplace::lock_catalog(&mut access.tx, false).await?;
+	}
 	let query = if access.inherited_lease {
 		Query::select()
 			.column((Alias::new("r"), Alias::new("metadata")))
@@ -147,6 +152,11 @@ pub(crate) fn resource(access: &Access, entry: &Entry) -> super::policy::Resourc
 }
 
 pub(crate) async fn list_in(access: &mut Access, search: &Search) -> Result<Vec<Entry>> {
+	// Acquire distribution authority before catalog rows, matching activation.
+	// An inherited transaction borrows the outer lease's locks.
+	if !access.inherited_lease {
+		crate::marketplace::lock_catalog(&mut access.tx, false).await?;
+	}
 	let query = if access.inherited_lease {
 		Query::select()
 			.column((Alias::new("r"), Alias::new("metadata")))

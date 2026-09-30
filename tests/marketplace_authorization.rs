@@ -1424,6 +1424,31 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 	assert_eq!(activate(&app, &f, "b", &root.1, 1, 0, 0, true).await.0, 200);
 	let dep_changed = request(&app, &b, "POST", &format!("/api/marketplace/installations/{}",dep_local.1["installation"]["id"].as_str().unwrap()), json!({"expected_revision":1,"config":{"endpoint":"http://localhost:9/new"},"idempotency_key":Uuid::new_v4()})).await;
 	assert_eq!(dep_changed.0, 200, "{dep_changed:?}");
+	for config in [
+		json!({"model":reference("model")}),
+		json!({"tools":[]}),
+		json!({"skills":[]}),
+		json!({"cluster":null}),
+	] {
+		let mut input = install_input(&agent);
+		input["config"] = config.clone();
+		assert_eq!(install(&app, &b, &agent, &input).await.0, 400);
+		assert_eq!(
+			request(
+				&app,
+				&b,
+				"POST",
+				&format!(
+					"/api/marketplace/installations/{}",
+					root.1["installation"]["id"].as_str().unwrap()
+				),
+				json!({"expected_revision":1,"config":config,"idempotency_key":Uuid::new_v4()})
+			)
+			.await
+			.0,
+			400
+		);
+	}
 	let root_path = format!(
 		"/api/marketplace/installations/{}",
 		root.1["installation"]["id"].as_str().unwrap()
@@ -1494,6 +1519,16 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 		.0,
 		200
 	);
+	let state = request(&app, &b, "GET", "/api/state", Value::Null).await;
+	assert_eq!(state.0, 200, "{state:?}");
+	assert!(
+		state.1["events"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|e| e["kind"] == "marketplace.published" && e["data"]["key"] == key)
+	);
+	assert!(!state.1["events"].to_string().contains("marketplace.audit"));
 	let get = |path: &str| {
 		Request::get(path)
 			.header("authorization", format!("Bearer {b}"))
@@ -1546,6 +1581,13 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 	.await
 	.expect("slow HTTP or SSE consumers must not retain database leases");
 	assert_eq!(withdrawn.0, 200);
+	let state = request(&app, &b, "GET", "/api/state", Value::Null).await;
+	assert_eq!(state.0, 200);
+	assert!(
+		!state.1["events"].to_string().contains(key),
+		"withdrawn package leaked through initial state"
+	);
+
 	let authorized_before_revoke = axum::body::to_bytes(response.into_body(), 2_097_152)
 		.await
 		.unwrap();
@@ -2209,6 +2251,321 @@ async fn browser_logout_is_ordered_with_pending_marketplace_requests(
 		.authenticate(&issued.token)
 		.await
 		.is_ok()
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn global_event_cursors_bound_workspace_and_marketplace_candidates(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	use axum::{body::Body, http::Request};
+	use futures_util::StreamExt;
+	use tower::ServiceExt;
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = common::setup(&environment).await;
+	let app = api::router(f.clone());
+	let a = token(&f, "a", "user").await;
+	let workspace = request(
+		&app,
+		&a,
+		"POST",
+		"/api/workspaces",
+		json!({"title":"Cursor", "goal":"Bound replay"}),
+	)
+	.await;
+	assert_eq!(workspace.0, 200);
+	let ws = workspace.1["id"].as_str().unwrap().parse().unwrap();
+	let mut after = 0;
+	for i in 0..501 {
+		after = f
+			.store
+			.emit(Some(ws), "workspace.updated", json!({"id":ws,"number":i}))
+			.await
+			.unwrap()
+			.sequence;
+	}
+	enable(&app, &f).await;
+	f.registry.register(tool("cursor-source")).await.unwrap();
+	approve(&f, "a", &reference("cursor-source")).await;
+	let package = publish(&app, &a, "cursor-source").await;
+	let newest = f
+		.store
+		.emit(Some(ws), "workspace.updated", json!({"id":ws,"number":502}))
+		.await
+		.unwrap();
+	let result = tokio::time::timeout(
+		std::time::Duration::from_secs(5),
+		request(
+			&app,
+			&a,
+			"GET",
+			&format!("/api/events?after={after}&limit=1000"),
+			Value::Null,
+		),
+	)
+	.await
+	.expect("global polling must advance past a full page of old workspace events");
+	assert_eq!(result.0, 200);
+	let events = result.1.as_array().unwrap();
+	assert!(
+		events
+			.iter()
+			.all(|e| e["sequence"].as_i64().unwrap() > after)
+	);
+	assert!(events.iter().any(|e| e["data"]["key"] == package["key"]));
+	assert!(events.iter().any(|e| e["sequence"] == newest.sequence));
+	let response = app
+		.clone()
+		.oneshot(
+			Request::get(format!("/api/events/stream?after={after}"))
+				.header("authorization", format!("Bearer {a}"))
+				.body(Body::empty())
+				.unwrap(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(response.status(), 200);
+	let mut frames = response.into_body().into_data_stream();
+	let frame = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+		.await
+		.unwrap()
+		.unwrap()
+		.unwrap();
+	let frame = String::from_utf8_lossy(&frame);
+	assert!(
+		frame.contains("marketplace.published"),
+		"old workspace frames must not replay: {frame}"
+	);
+	drop(frames);
+	let state = request(&app, &a, "GET", "/api/state", Value::Null).await;
+	assert_eq!(state.0, 200);
+	assert!(
+		state.1["events"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|e| e["data"]["key"] == package["key"])
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn transitive_bindings_cannot_claim_to_rewrite_immutable_dependencies(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = common::setup(&environment).await;
+	let app = api::router(f.clone());
+	let a = token(&f, "a", "user").await;
+	enable(&app, &f).await;
+	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
+	f.registry.register(model).await.unwrap();
+	let agent:Entry=serde_json::from_value(json!({"id":"nested","version":"1.0.0","kind":"agent","name":{"en":"Nested"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Nested agent"}})).unwrap();
+	f.registry.register(agent.clone()).await.unwrap();
+	let mut replacement = agent.clone();
+	replacement.id = "replacement".into();
+	f.registry.register(replacement).await.unwrap();
+	let mut bridge = tool("bridge");
+	bridge.config =
+		json!({"transport":"agent","node_id":f.config.node_id,"agent":reference("nested")});
+	f.registry.register(bridge).await.unwrap();
+	let mut root = agent;
+	root.id = "root".into();
+	root.config["tools"] = json!([reference("bridge")]);
+	f.registry.register(root).await.unwrap();
+	for id in ["model", "nested", "replacement", "bridge", "root"] {
+		approve(&f, "a", &reference(id)).await;
+	}
+	let package = publish(&app, &a, "root").await;
+	let mut input = install_input(&package);
+	input["bindings"] = json!([{"source":reference("nested"),"target":reference("replacement")}]);
+	assert_eq!(install(&app, &a, &package, &input).await.0, 403);
+	let installed = install(&app, &a, &package, &install_input(&package)).await;
+	assert_eq!(installed.0, 200, "{installed:?}");
+	assert_eq!(request(&app, &a, "POST", &format!("/api/marketplace/installations/{}",installed.1["installation"]["id"].as_str().unwrap()),
+		json!({"expected_revision":1,"config":{},"bindings":input["bindings"],"idempotency_key":Uuid::new_v4()})).await.0, 403);
+	let bridge_package = request(&app, &a, "POST", "/api/marketplace/packages", json!({"source":reference("bridge"),"package_id":"bridge","author":"A","idempotency_key":Uuid::new_v4()})).await.1;
+	let mut bridge_input = install_input(&bridge_package);
+	bridge_input["bindings"] = input["bindings"].clone();
+	let bound = install(&app, &a, &bridge_package, &bridge_input).await;
+	assert_eq!(bound.0, 200, "direct bindings must still work: {bound:?}");
+	assert_eq!(
+		bound.1["entry"]["config"]["agent"],
+		json!(reference("replacement"))
+	);
+	for config in [
+		json!({"agent":reference("replacement")}),
+		json!({"node_id":f.config.node_id}),
+		json!({"transport":"agent"}),
+	] {
+		bridge_input["config"] = config;
+		bridge_input["idempotency_key"] = json!(Uuid::new_v4());
+		assert_eq!(
+			install(&app, &a, &bridge_package, &bridge_input).await.0,
+			400
+		);
+	}
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn compatibility_disable_orders_new_run_admission(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+	#[case] admission_wins: bool,
+) {
+	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = common::setup(&environment).await;
+	let app = api::router(f.clone());
+	let a = token(&f, "a", "user").await;
+	enable(&app, &f).await;
+	let model:Entry=serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
+	f.registry.register(model).await.unwrap();
+	let agent:Entry=serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Original instructions"}})).unwrap();
+	f.registry.register(agent).await.unwrap();
+	approve(&f, "a", &reference("agent")).await;
+	approve(&f, "a", &reference("model")).await;
+	let package = publish(&app, &a, "agent").await;
+	let original = install(&app, &a, &package, &install_input(&package)).await;
+	assert_eq!(original.0, 200, "{original:?}");
+	assert_eq!(
+		activate(&app, &f, "a", &original.1, 1, 0, 0, true).await.0,
+		200
+	);
+	let old_ref = EntityRef {
+		id: original.1["entry"]["id"].as_str().unwrap().into(),
+		version: "1.0.0".into(),
+	};
+	let mut authority = bundle("a", "user");
+	authority["subjects"]
+		[aidash::domain::qualified_agent(&f.config.node_id, &old_ref.id, &old_ref.version)] =
+		json!({"kind":"agent","roles":["manager"]});
+	policy(&f, "a", 1, authority.clone()).await;
+	let workspace = request(
+		&app,
+		&a,
+		"POST",
+		"/api/workspaces",
+		json!({"title":"Pinned","goal":"Test pinned definitions"}),
+	)
+	.await;
+	assert_eq!(workspace.0, 200, "{workspace:?}");
+	let task_path = format!(
+		"/api/workspaces/{}/tasks",
+		workspace.1["id"].as_str().unwrap()
+	);
+	let task = request(
+		&app,
+		&a,
+		"POST",
+		&task_path,
+		json!({"title":"First","description":"Pinned old run"}),
+	)
+	.await;
+
+	let mut barrier = f.store.pool.begin().await.unwrap();
+	let lock = if admission_wins {
+		"pg_advisory_xact_lock(71003201)"
+	} else {
+		"pg_advisory_xact_lock(74003201)"
+	};
+	sqlx::query(
+		&Query::select()
+			.expr(Expr::cust(lock))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *barrier)
+	.await
+	.unwrap();
+	if !admission_wins {
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("marketplace_gate"))
+				.value(Alias::new("document"), Expr::cust("$1"))
+				.and_where(Expr::col(Alias::new("key")).eq("v1"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(json!({"enabled":false,"revision":3,"contract":1}))
+		.execute(&mut *barrier)
+		.await
+		.unwrap();
+	}
+	let app2 = app.clone();
+	let a2 = a.clone();
+	let claim_path = format!("/api/tasks/{}/claim", task.1["id"].as_str().unwrap());
+	let claim = tokio::spawn(async move {
+		request(
+			&app2,
+			&a2,
+			"POST",
+			&claim_path,
+			json!({"revision":0,"agent":old_ref}),
+		)
+		.await
+	});
+	wait_for_lock(
+		&f,
+		&schema,
+		if admission_wins {
+			"%71003201%"
+		} else {
+			"%74003201%"
+		},
+	)
+	.await;
+	let disable = if admission_wins {
+		let app2 = app.clone();
+		let operator = f.config.api_token.clone();
+		let disable = tokio::spawn(async move {
+			request(
+				&app2,
+				&operator,
+				"PUT",
+				"/api/marketplace/compatibility",
+				json!({"enabled":false,"expected_revision":2,"compatible_instances_confirmed":true}),
+			)
+			.await
+		});
+		wait_for_lock(&f, &schema, "%74003201%").await;
+		Some(disable)
+	} else {
+		None
+	};
+	barrier.commit().await.unwrap();
+	let result = tokio::time::timeout(std::time::Duration::from_secs(5), claim)
+		.await
+		.unwrap()
+		.unwrap();
+	assert_eq!(
+		result.0,
+		if admission_wins { 200 } else { 403 },
+		"{result:?}"
+	);
+	if let Some(disable) = disable {
+		assert_eq!(
+			tokio::time::timeout(std::time::Duration::from_secs(5), disable)
+				.await
+				.unwrap()
+				.unwrap()
+				.0,
+			200
+		);
+	}
+	assert_eq!(
+		f.store.runs().await.unwrap().len(),
+		usize::from(admission_wins)
 	);
 	common::cleanup(f, &url, &schema).await;
 }

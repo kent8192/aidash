@@ -127,6 +127,9 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         return route.fulfill({ status: 403, json: { error: "forbidden" } });
       if (path === "/api/marketplace/packages" && body) {
         published = body;
+        // Revoke before the successful mutation invalidates its queries. The
+        // resulting refetch must clear protected content without another action.
+        denied = true;
         return route.fulfill({
           json: { key: summary.key, digest: summary.digest },
         });
@@ -245,10 +248,6 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         author: "Alice",
       });
     expect(published).not.toHaveProperty("manifest");
-    denied = true;
-    await page
-      .getByLabel(ja ? "パッケージを検索" : "Search packages")
-      .fill("changed");
     await expect(page.getByRole("alert")).toHaveText(
       ja
         ? "現在の権限ではこの項目を利用できません"

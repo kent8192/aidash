@@ -526,6 +526,11 @@ pub(crate) async fn active(access: &mut Access, entry: &Entry) -> Result<bool> {
 	if p.tenant != access.identity.tenant || p.contract != 1 {
 		return Ok(false);
 	}
+	// Retain the shared gate lease until admission commits. Catalog readers
+	// acquire it before row locks; inherited transactions use their outer lease.
+	if !access.inherited_lease {
+		lock(&mut access.tx, false).await?;
+	}
 	match gate(&mut access.tx).await {
 		Ok(()) => {}
 		Err(Error::Forbidden) => return Ok(false),
