@@ -2069,6 +2069,9 @@ async fn foreign_generation_waits_for_approval_and_replays_one_exact_definition(
 	}
 	let grant = json!({"id":p.grant,"node_id":p.b.config.node_id,"agent":pending["agent"],"ttl_seconds":300,"semantic":{"mode":"required_home","embedding":{"id":"home-embedding","version":"1.0.0"}}});
 	let grant_route = format!("/api/tasks/{}/remote-grants", p.task);
+	let mut nil_grant = grant.clone();
+	nil_grant["id"] = json!(Uuid::nil());
+	assert_eq!(request(&p.aa, &p.token, "POST", &grant_route, nil_grant).await.0, 400);
 	assert_ne!(
 		request(&p.aa, &p.token, "POST", &grant_route, grant.clone())
 			.await
@@ -2258,6 +2261,43 @@ async fn foreign_preparation_termination_releases_unused_allocations_once(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn cancelled_foreign_intent_retries_delivery_after_an_uncertain_ack(
+	#[future(awt)]
+	#[with(true, true, true)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let (_, prepared) = p.generation.as_ref().unwrap();
+	let intent: Uuid = serde_json::from_value(prepared["intent_id"].clone()).unwrap();
+	let route = format!("/api/tasks/{}/remote-generation/{intent}/cancel", p.task);
+	assert_eq!(request(&p.aa, &p.token, "POST", &route, json!({})).await.0, 200);
+	let delivered = || {
+		let pool = p.a.store.pool.clone();
+		async move {
+			sqlx::query_scalar::<_, bool>(&Query::select()
+				.column(Alias::new("cancel_delivered"))
+				.from(Alias::new("generation_remote_intents"))
+				.and_where(Expr::cust("id=$1"))
+				.to_string(PostgresQueryBuilder))
+				.bind(intent).fetch_one(&pool).await.unwrap()
+		}
+	};
+	assert!(delivered().await);
+	// Model an acknowledgement lost before Home persisted its delivery mark.
+	sqlx::query(&Query::update()
+		.table(Alias::new("generation_remote_intents"))
+		.value(Alias::new("cancel_delivered"), false)
+		.value(Alias::new("cancel_retry_at"), Expr::cust("CLOCK_TIMESTAMP()-INTERVAL '1 second'"))
+		.and_where(Expr::cust("id=$1"))
+		.to_string(PostgresQueryBuilder))
+		.bind(intent).execute(&p.a.store.pool).await.unwrap();
+	aidash::generation::provision::reconcile(&p.a).await.unwrap();
+	assert!(delivered().await);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn generated_foreign_executor_and_home_ancestor_share_durable_provider_allowances(
 	#[future(awt)]
 	#[with(true, true)]
@@ -2404,6 +2444,37 @@ async fn generated_foreign_executor_and_home_ancestor_share_durable_provider_all
 		assert_eq!(usage["inference_attempts"], 1);
 	}
 	pair.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn operator_polling_advances_past_hidden_event_pages(
+	#[future(awt)]
+	#[with(true)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let workspace = p.a.store.task(p.task).await.unwrap().workspace_id;
+	let cursor: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COALESCE(MAX(sequence),0)"))
+			.from(Alias::new("events"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&p.a.store.pool)
+	.await
+	.unwrap();
+	let mut tx = p.a.store.pool.begin().await.unwrap();
+	for _ in 0..501 {
+		p.a.store.event(&mut tx, Some(workspace), "test.hidden", json!({"secret":"hidden-burst"})).await.unwrap();
+	}
+	p.a.store.event(&mut tx, None, "test.visible", json!({"marker":"after-hidden-burst"})).await.unwrap();
+	tx.commit().await.unwrap();
+	let (status, page) = request(&p.aa, &p.a.config.api_token, "GET", &format!("/api/events?after={cursor}"), Value::Null).await;
+	assert_eq!(status, 200, "{page}");
+	assert!(page.to_string().contains("after-hidden-burst"), "operator polling stalled behind hidden events: {page}");
+	assert!(!page.to_string().contains("\"secret\""));
+	p.close().await;
 }
 
 #[rstest::rstest]

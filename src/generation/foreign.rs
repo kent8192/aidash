@@ -704,14 +704,50 @@ pub(crate) async fn cancel(
 	}
 	.await;
 	access.finish(result).await?;
-	let done: bool = peer::authority_request(
-		&f,
-		&intent.target_node,
+	if let Err(error) = deliver_cancel(&f, id, &intent.target_node).await {
+		tracing::warn!(%error, %id, "remote generation cancellation queued for retry");
+	}
+	Ok(Json(true))
+}
+
+async fn deliver_cancel(f: &Federation, id: Uuid, target: &str) -> Result<()> {
+	// Reserve a retry slot before sending, so a failed RPC or process exit leaves
+	// a durable pending intent without hot-looping the reconciliation worker.
+	let reserved = sqlx::query(
+		&Query::update()
+			.table(Alias::new("generation_remote_intents"))
+			.value(Alias::new("cancel_retry_at"), Expr::cust("CLOCK_TIMESTAMP() + INTERVAL '30 seconds'"))
+			.and_where(Expr::cust("id=$1 AND cancelled AND NOT cancel_delivered AND (cancel_retry_at IS NULL OR cancel_retry_at<=CLOCK_TIMESTAMP())"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(id)
+	.execute(&f.store.pool)
+	.await?
+	.rows_affected();
+	if reserved == 0 {
+		return Ok(());
+	}
+	let acknowledged: bool = peer::authority_request(
+		f,
+		target,
 		"/scoped/generation/cancel",
 		&json!({"intent_id":id}),
 	)
 	.await?;
-	Ok(Json(done))
+	if !acknowledged {
+		return Err(Error::Conflict("remote generation cancellation was not acknowledged".into()));
+	}
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("generation_remote_intents"))
+			.value(Alias::new("cancel_delivered"), true)
+			.and_where(Expr::cust("id=$1 AND cancelled"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(id)
+	.execute(&f.store.pool)
+	.await?;
+	Ok(())
 }
 pub(crate) async fn cancel_at(
 	State(f): State<Federation>,
@@ -758,6 +794,23 @@ async fn terminate(f: &Federation, job: &Request, status: &str) -> Result<()> {
 	Ok(())
 }
 pub(crate) async fn reconcile(f: &Federation) -> Result<()> {
+	let pending: Vec<(Uuid, Value)> = sqlx::query_as(
+		&Query::select()
+			.columns([Alias::new("id"), Alias::new("binding")])
+			.from(Alias::new("generation_remote_intents"))
+			.and_where(Expr::cust("cancelled AND NOT cancel_delivered AND (cancel_retry_at IS NULL OR cancel_retry_at<=CLOCK_TIMESTAMP())"))
+			.order_by(Alias::new("cancel_retry_at"), sea_orm::sea_query::Order::Asc)
+			.limit(16)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(&f.store.pool)
+	.await?;
+	for (id, binding) in pending {
+		let intent: Intent = serde_json::from_value(binding)?;
+		if let Err(error) = deliver_cancel(f, id, &intent.target_node).await {
+			tracing::warn!(%error, %id, "remote generation cancellation retry failed");
+		}
+	}
 	let jobs:Vec<Request>=sqlx::query_as(&Query::select().column((Alias::new("g"),Asterisk)).from_as(Alias::new("generation_requests"),Alias::new("g"))
     .join_as(sea_orm::sea_query::JoinType::LeftJoin,Alias::new("runs"),Alias::new("r"),Expr::cust("r.id=g.admission_id AND r.home_node=g.home_node"))
     .and_where(Expr::cust("g.home_node<>'' AND g.status IN ('PENDING_APPROVAL','QUEUED','ACTIVE') AND (g.expires_at<=CLOCK_TIMESTAMP() OR r.phase IN ('COMPLETED','FAILED','CANCELLED'))"))

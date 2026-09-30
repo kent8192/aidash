@@ -162,18 +162,22 @@ export function RemoteMemoryProvenance({ url }: { url: string }) {
   const { locale, t } = useI18n();
   const ja = locale === "ja-JP";
   const [open, setOpen] = useState(false);
+  const [inspection, setInspection] = useState(0);
   const query = useQuery({
-    queryKey: ["remote-memory-provenance", url],
+    queryKey: ["remote-memory-provenance", url, inspection],
     queryFn: () => apiFetch<RemoteSemanticProvenance | null>(url),
     enabled: open,
     retry: false,
     refetchInterval: open ? 5000 : false,
   });
   // Never render cached source identities after a refresh is denied or fails.
-  const receipt = query.isError ? undefined : query.data;
+  const receipt = open && !query.isFetching && !query.isError ? query.data : undefined;
   return (
     <div>
-      <button type="button" onClick={() => setOpen(!open)}>
+      <button type="button" onClick={() => {
+        if (open) setInspection((value) => value + 1);
+        setOpen(!open);
+      }}>
         {open
           ? ja
             ? "参照情報を閉じる"

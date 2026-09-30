@@ -199,6 +199,15 @@ impl MigrationTrait for Migration {
 				.to_owned(),
 		)
 		.await?;
+		m.create_index(
+			Index::create()
+				.name("generation_remote_usage_attempt_digest")
+				.table(Alias::new("generation_remote_usage"))
+				.col(Alias::new("attempt_id"))
+				.col(Alias::new("digest"))
+				.to_owned(),
+		)
+		.await?;
 		m.create_table(
 			Table::create()
 				.table(Alias::new("generation_remote_dispatches"))

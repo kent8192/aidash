@@ -297,7 +297,10 @@ async fn prepare(
 	let Actor::Subject(identity) = actor else {
 		return Err(Error::Forbidden);
 	};
-	if input.node_id == f.config.node_id || !(1..=3600).contains(&input.ttl_seconds) {
+	if input.id.is_nil()
+		|| input.node_id == f.config.node_id
+		|| !(1..=3600).contains(&input.ttl_seconds)
+	{
 		return Err(Error::Invalid(
 			"invalid remote grant destination or lifetime".into(),
 		));

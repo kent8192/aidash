@@ -30,6 +30,7 @@ export function RemoteGenerationAssignForm({
   const [error, setError] = useState("");
   const grant = useRef<{ binding: string; id: string } | null>(null);
   const [memory, setMemory] = useState(true);
+  const terminalPrepared = prepared && !["PENDING_APPROVAL", "QUEUED", "ACTIVE"].includes(prepared.status);
   const prepare = async (input: RemoteGenerationInput) => {
     setDraft(input);
     setBusy(true);
@@ -127,7 +128,7 @@ export function RemoteGenerationAssignForm({
             <textarea name="reason" maxLength={4096} required />
           </Field>
         </fieldset>
-        <button disabled={busy}>
+        <button disabled={busy || !!terminalPrepared}>
           {draft
             ? ja
               ? "同じ準備・承認状態を再確認"
@@ -138,7 +139,16 @@ export function RemoteGenerationAssignForm({
         </button>
       </form>
       {error && <p role="alert">{error}</p>}
-      {draft && (
+      {terminalPrepared && (
+        <button type="button" disabled={busy} onClick={() => {
+          setDraft(null);
+          setPrepared(null);
+          grant.current = null;
+        }}>
+          {ja ? "新しい依頼を作成" : "Create a new intent"}
+        </button>
+      )}
+      {draft && !terminalPrepared && (
         <button type="button" disabled={busy} onClick={() => void cancel()}>
           {ja ? "準備を中止" : "Cancel preparation"}
         </button>
@@ -146,7 +156,11 @@ export function RemoteGenerationAssignForm({
       {prepared && (
         <>
           <p role="status">
-            {prepared.prepared
+            {terminalPrepared
+              ? ja
+                ? "準備は終了しました。新しい依頼を作成してください。"
+                : "Preparation has ended. Create a new intent."
+              : prepared.prepared
               ? ja
                 ? "準備が完了しました。実行許可を設定できます。"
                 : "Prepared. Configure its execution grant."
@@ -166,7 +180,7 @@ export function RemoteGenerationAssignForm({
           </dl>
         </>
       )}
-      {prepared?.prepared && (
+      {prepared?.prepared && ["QUEUED", "ACTIVE"].includes(prepared.status) && (
         <form
           onSubmit={(event) => {
             event.preventDefault();

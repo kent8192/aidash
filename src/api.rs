@@ -1412,14 +1412,29 @@ async fn events(
 	if let Some(scope) = scoped(&f, actor) {
 		return Ok(Json(scope.events(q.after, q.workspace_id, 500).await?));
 	}
-	let events = f.store.events(q.after, q.workspace_id, 500).await?;
-	Ok(Json(
-		crate::authorization::remote::operator::filter_events(
-			&mut *f.store.pool.acquire().await?,
-			events,
-		)
-		.await?,
-	))
+	let mut cursor = q.after;
+	let mut visible = Vec::new();
+	let mut connection = f.store.pool.acquire().await?;
+	if let Some(workspace) = q.workspace_id
+		&& !crate::authorization::remote::operator::visible(&mut connection, workspace).await?
+	{
+		return Ok(Json(visible));
+	}
+	loop {
+		let page = f.store.events(cursor, q.workspace_id, 500).await?;
+		let exhausted = page.len() < 500;
+		if let Some(last) = page.last() {
+			cursor = last.sequence;
+		}
+		visible.extend(
+			crate::authorization::remote::operator::filter_events(&mut connection, page).await?,
+		);
+		if visible.len() >= 500 || exhausted {
+			visible.truncate(500);
+			break;
+		}
+	}
+	Ok(Json(visible))
 }
 #[utoipa::path(get, path = "/events/stream", operation_id = "stream", params(EventQuery), responses((status = 200, body = String, content_type = "text/event-stream")), security(("bearer_auth" = [])))]
 async fn stream(

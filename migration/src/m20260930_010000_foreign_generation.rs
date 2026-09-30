@@ -104,6 +104,13 @@ impl MigrationTrait for Migration {
 						.default(false),
 				)
 				.col(
+					ColumnDef::new(a("cancel_delivered"))
+						.boolean()
+						.not_null()
+						.default(false),
+				)
+				.col(ColumnDef::new(a("cancel_retry_at")).timestamp_with_time_zone())
+				.col(
 					ColumnDef::new(a("created_at"))
 						.timestamp_with_time_zone()
 						.not_null()
@@ -119,6 +126,16 @@ impl MigrationTrait for Migration {
 						.from(a("generation_remote_intents"), a("credential_id"))
 						.to(a("authorization_credentials"), a("id")),
 				)
+				.to_owned(),
+		)
+		.await?;
+		m.create_index(
+			Index::create()
+				.name("generation_remote_intents_cancel_retry")
+				.table(a("generation_remote_intents"))
+				.col(a("cancelled"))
+				.col(a("cancel_delivered"))
+				.col(a("cancel_retry_at"))
 				.to_owned(),
 		)
 		.await?;
