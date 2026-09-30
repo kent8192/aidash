@@ -3642,7 +3642,10 @@ impl Store {
 	}
 	pub async fn save_run(&self, run: &Run, worker: Uuid, kind: &str) -> Result<Run> {
 		let mut pending = run.pending.clone();
-		let retrying = matches!(kind, "run.retrying" | "run.failure_pending");
+		let retrying = matches!(
+			kind,
+			"run.retrying" | "run.semantic_retrying" | "run.failure_pending"
+		);
 		if !retrying && let Some(object) = pending.as_object_mut() {
 			object.remove("retry_count");
 			object.remove("retry_at");
@@ -3790,6 +3793,7 @@ impl Store {
 		let changed = sqlx::query(
 			&sea_orm::sea_query::Query::update()
 				.table(sea_orm::sea_query::Alias::new("runs"))
+                .value(sea_orm::sea_query::Alias::new("pending"), sea_orm::sea_query::Expr::cust("CASE WHEN $4='run.semantic_blocked' AND control='ACTIVE' THEN pending || $5::jsonb ELSE pending END"))
 				.value(
 					sea_orm::sea_query::Alias::new("control"),
 					sea_orm::sea_query::Expr::cust(
@@ -3824,6 +3828,8 @@ impl Store {
 		.bind(run.id)
 		.bind(worker)
 		.bind(reason)
+        .bind(event_kind)
+        .bind(json!({"semantic_reason":run.pending.get("semantic_reason").cloned().unwrap_or(Value::Null)}))
 		.execute(&mut *tx)
 		.await?
 		.rows_affected();

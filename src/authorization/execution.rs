@@ -1,3 +1,4 @@
+pub(crate) mod management;
 use super::{access::Access, catalog, identity::SubjectIdentity, policy::SubjectKind};
 use crate::{
 	Error, Result,
@@ -1005,7 +1006,11 @@ impl Guard {
 		}))
 	}
 	pub async fn suspend(&self) -> Result<()> {
-		self.access.lock().await.suspend().await
+		let mut access = self.access.lock().await;
+		if access.tx.is_active() {
+			access.suspend().await?;
+		}
+		Ok(())
 	}
 	pub async fn resume(&self, f: &Federation) -> Result<()> {
 		if self.remote.is_some() {
@@ -1086,18 +1091,28 @@ impl Guard {
 	pub async fn semantic_context(
 		&self,
 		store: &Store,
-		query: &str,
+		task: &Task,
+		inputs: &[(crate::semantic::remote::InputRead, String)],
 		budget: usize,
-	) -> Result<Option<crate::semantic::SearchResult>> {
-		if self.remote.is_some() {
-			return Ok(None);
+	) -> Result<Option<Value>> {
+		let mut query = format!("{}\n{}", task.title, task.description);
+		for (_, text) in inputs {
+			query.push('\n');
+			query.push_str(text);
+		}
+		if let Some(f) = &self.remote {
+			self.suspend().await?;
+			let result =
+				super::peer::semantic::context(f, &self.run, task, inputs, &query, budget).await?;
+			self.refresh_remote().await?;
+			return Ok(result);
 		}
 		let mut access = self.access.lock().await;
 		let result = crate::semantic::service::context_in(
 			store,
 			&mut crate::semantic::service::Lease::Inherited(&mut access),
 			&self.run,
-			query,
+			&query,
 			budget,
 			&self.agent,
 		)
@@ -1135,7 +1150,10 @@ impl Guard {
 			}
 			tx.commit().await?;
 		}
-		Ok(result)
+		result
+			.map(serde_json::to_value)
+			.transpose()
+			.map_err(Error::from)
 	}
 
 	pub async fn human_read(&self, id: Uuid) -> Result<()> {
@@ -1197,6 +1215,7 @@ impl Guard {
 			store: f.store.clone(),
 			run: self.run.clone(),
 			client: f.client.clone(),
+			remote: self.remote.clone(),
 		}
 	}
 
@@ -1206,10 +1225,52 @@ impl Guard {
 		attempt: Uuid,
 		window: usize,
 		output: u32,
-	) -> Result<Option<crate::generation::budget::Reservation>> {
+		request: &crate::provider::ModelRequest,
+	) -> Result<Option<crate::generation::budget::InferenceReservation>> {
+		use crate::generation::{
+			budget::InferenceReservation,
+			remote::{Purpose, protocol},
+		};
+		if let Some(f) = &self.remote {
+			self.suspend().await?;
+			let media = request
+				.content_parts
+				.iter()
+				.map(|part| match part {
+					crate::provider::ContentPart::Text(text) => {
+						json!({"text":crate::semantic::service::content_digest(text)})
+					}
+					crate::provider::ContentPart::Image { media_type, bytes } => {
+						json!({"media_type":media_type,"digest":crate::capabilities::objects::digest(bytes)})
+					}
+					crate::provider::ContentPart::Audio { format, bytes } => {
+						json!({"format":format,"digest":crate::capabilities::objects::digest(bytes)})
+					}
+				})
+				.collect::<Vec<_>>();
+			let digest = crate::registry::digest(&json!({"request":request,"media":media}));
+			let reservation = protocol::admit(
+				f,
+				&self.run,
+				attempt,
+				Purpose::Inference,
+				digest,
+				(window + output as usize) as i64,
+			)
+			.await?;
+			return Ok(Some(InferenceReservation::Remote(Box::new(reservation))));
+		}
 		let mut access = self.access.lock().await;
-		crate::generation::budget::reserve(&mut access, store, self.run.id, attempt, window, output)
-			.await
+		Ok(crate::generation::budget::reserve(
+			&mut access,
+			store,
+			self.run.id,
+			attempt,
+			window,
+			output,
+		)
+		.await?
+		.map(InferenceReservation::Local))
 	}
 
 	pub async fn inference(&self) -> Result<()> {
@@ -1571,9 +1632,11 @@ pub async fn details_page(
 		.fetch_optional(&mut **access.tx)
 		.await?
 		.ok_or(Error::Forbidden)?;
-		let workspace = access.workspace(run.workspace_id).await?;
-		access.context = workspace.attributes.clone();
-		access.require(&workspace, "workspace.read").await?;
+		if run.home_node == f.config.node_id {
+			let workspace = access.workspace(run.workspace_id).await?;
+			access.context = workspace.attributes.clone();
+			access.require(&workspace, "workspace.read").await?;
+		}
 		if !access.run_visible(&run).await? {
 			return Err(Error::Forbidden);
 		}

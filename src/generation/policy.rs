@@ -51,6 +51,8 @@ pub struct Embedding {
 #[serde(deny_unknown_fields)]
 #[schema(as = GenerationSpec)]
 pub struct Spec {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub remote: Option<super::remote::Approvals>,
 	pub enabled: bool,
 	pub template: Entry,
 	pub permissions: Permissions,
@@ -75,7 +77,42 @@ pub struct Policy {
 }
 
 impl Spec {
+	pub(crate) fn embedding_limits(&self) -> Option<(i64, i64)> {
+		self.embedding
+			.as_ref()
+			.map(|c| (c.calls_per_agent, c.call_budget))
+			.or_else(|| {
+				self.remote
+					.as_ref()?
+					.embedding
+					.as_ref()
+					.map(|c| (c.calls_per_agent, c.call_budget))
+			})
+	}
+	pub(crate) fn compaction_limits(&self) -> Option<(i64, i64)> {
+		self.compaction
+			.as_ref()
+			.map(|c| (c.calls_per_agent, c.call_budget))
+			.or_else(|| {
+				self.remote
+					.as_ref()?
+					.compaction
+					.as_ref()
+					.map(|c| (c.calls_per_agent, c.call_budget))
+			})
+	}
+
 	pub fn validate(&self, bundle: &PolicyBundle) -> Result<AgentConfig> {
+		if let Some(remote) = &self.remote {
+			remote.validate()?;
+			if (self.embedding.is_some() && remote.embedding.is_some())
+				|| (self.compaction.is_some() && remote.compaction.is_some())
+			{
+				return Err(Error::Invalid(
+					"select one owning node for each generation provider allowance".into(),
+				));
+			}
+		}
 		crate::registry::validate(&self.template)?;
 		if self.template.kind != "agent" {
 			return Err(Error::Invalid(

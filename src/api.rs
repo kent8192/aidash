@@ -52,8 +52,10 @@ fn ordinary_routes() -> OpenApiRouter<Federation> {
 		.merge(crate::collaboration::api::routes())
 		.merge(crate::generation::api::routes())
 		.merge(crate::semantic::api::routes())
+		.merge(crate::semantic::remote::status::routes())
 		.merge(crate::workbench::routes())
 		.merge(crate::authorization::remote::routes())
+		.merge(crate::authorization::execution::management::routes())
 		.merge(crate::authorization::peer::graph::api_routes())
 		.routes(routes!(human_answer))
 		.routes(routes!(run_message))
@@ -154,12 +156,48 @@ pub fn router_with_settings(f: Federation, settings: crate::http::Settings) -> R
 			post(crate::authorization::peer::graph::project),
 		)
 		.route(
+			"/scoped/dependencies/verify",
+			post(crate::authorization::peer::dependencies::verify),
+		)
+		.route(
 			"/scoped/registry/verify",
 			post(crate::authorization::peer::reads::verify),
 		)
 		.route(
 			"/scoped/execution/inspect",
 			post(crate::authorization::peer::execution::inspect),
+		)
+		.route(
+			"/scoped/generation/cancel",
+			post(crate::generation::foreign::cancel_at),
+		)
+		.route(
+			"/scoped/generation/describe",
+			post(crate::generation::foreign::describe),
+		)
+		.route(
+			"/scoped/generation/prepare",
+			post(crate::generation::foreign::prepare),
+		)
+		.route(
+			"/scoped/usage/reserve",
+			post(crate::generation::remote::protocol::reserve),
+		)
+		.route(
+			"/scoped/usage/verify",
+			post(crate::generation::remote::protocol::verify),
+		)
+		.route(
+			"/scoped/usage/finalize",
+			post(crate::generation::remote::protocol::finalize),
+		)
+		.route(
+			"/scoped/semantic/query",
+			post(crate::authorization::remote::semantic::search),
+		)
+		.route(
+			"/scoped/semantic/verify-operation",
+			post(crate::authorization::peer::semantic::verify_operation),
 		)
 		.route(
 			"/scoped/execution/grants/verify",
@@ -329,7 +367,7 @@ fn browser_operator_allowed(method: &Method, path: &str) -> bool {
 	let segments: Vec<&str> = path.split('/').collect();
 	if matches!(
 		segments.as_slice(),
-		["", "runs", _, "control"] | ["", "tasks", _, "abandon"]
+		["", "runs", _, "control"] | ["", "runs", _, "management"] | ["", "tasks", _, "abandon"]
 	) {
 		return true;
 	}
@@ -431,7 +469,19 @@ async fn task_list(
 	if let Some(scope) = scoped(&f, actor) {
 		return Ok(Json(scope.task_page(page.offset).await?));
 	}
-	Ok(Json(f.store.task_page(page.offset).await?))
+	let mut page = f.store.task_page(page.offset).await?;
+	let denied = crate::authorization::remote::operator::blocked(
+		&mut *f.store.pool.acquire().await?,
+		&page
+			.tasks
+			.iter()
+			.map(|task| task.workspace_id)
+			.collect::<Vec<_>>(),
+	)
+	.await?;
+	page.tasks
+		.retain(|task| !denied.contains(&task.workspace_id));
+	Ok(Json(page))
 }
 #[utoipa::path(get, path = "/state", operation_id = "state", responses((status = 200, body = StateResponse)), security(("bearer_auth" = [])))]
 async fn state(
@@ -558,7 +608,7 @@ async fn state(
 	)
 	.fetch_all(&f.store.pool)
 	.await?;
-	Ok(Json(StateResponse {
+	let mut state = StateResponse {
 		access: AccessProfile::Operator,
 		node: f.config.identity(vec![]),
 		registry: records,
@@ -571,7 +621,13 @@ async fn state(
 		events,
 		artifacts,
 		installations,
-	}))
+	};
+	crate::authorization::remote::operator::filter_state(
+		&mut *f.store.pool.acquire().await?,
+		&mut state,
+	)
+	.await?;
+	Ok(Json(state))
 }
 #[utoipa::path(get, path = "/registry", operation_id = "registry_list", params(Search), responses((status = 200, body = [Entry])), security(("bearer_auth" = [])))]
 async fn registry_list(
@@ -673,6 +729,8 @@ async fn workspace_get(
 	if let Some(scope) = scoped(&f, actor) {
 		return Ok(Json(scope.snapshot(id).await?));
 	}
+	crate::authorization::remote::operator::require(&mut *f.store.pool.acquire().await?, id)
+		.await?;
 	Ok(Json(f.store.snapshot(id).await?))
 }
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
@@ -691,6 +749,8 @@ async fn workspace_update(
 	if let Some(scope) = scoped(&f, actor) {
 		return Ok(Json(scope.update(id, input.revision, input.state).await?));
 	}
+	crate::authorization::remote::operator::require(&mut *f.store.pool.acquire().await?, id)
+		.await?;
 	Ok(Json(
 		f.store
 			.update_state(id, input.revision, input.state)
@@ -826,6 +886,12 @@ async fn task_abandon(
 			interaction::abandon(&f, &identity, id, input.revision, &input.reason).await?,
 		));
 	}
+	let existing = f.store.task(id).await?;
+	crate::authorization::remote::operator::require(
+		&mut *f.store.pool.acquire().await?,
+		existing.workspace_id,
+	)
+	.await?;
 	let task = f
 		.store
 		.abandon_task(id, input.revision, &input.reason)
@@ -981,6 +1047,11 @@ async fn run_get(
 		));
 	}
 	let run = f.store.run(id).await?;
+	crate::authorization::remote::operator::require(
+		&mut *f.store.pool.acquire().await?,
+		run.workspace_id,
+	)
+	.await?;
 	let invocations: Vec<Invocation> = sqlx::query_as(
 		&crate::store::invocation_summary(None)
 			.from(sea_orm::sea_query::Alias::new("invocations"))
@@ -1029,6 +1100,12 @@ async fn run_control(
 			execution::control(&f, &identity, id, &input.action).await?,
 		));
 	}
+	let existing = f.store.run(id).await?;
+	crate::authorization::remote::operator::require(
+		&mut *f.store.pool.acquire().await?,
+		existing.workspace_id,
+	)
+	.await?;
 	let r = f.store.control(id, &input.action).await?;
 	f.notify.notify_waiters();
 	Ok(Json(r))
@@ -1328,7 +1405,14 @@ async fn events(
 	if let Some(scope) = scoped(&f, actor) {
 		return Ok(Json(scope.events(q.after, q.workspace_id, 500).await?));
 	}
-	Ok(Json(f.store.events(q.after, q.workspace_id, 500).await?))
+	let events = f.store.events(q.after, q.workspace_id, 500).await?;
+	Ok(Json(
+		crate::authorization::remote::operator::filter_events(
+			&mut *f.store.pool.acquire().await?,
+			events,
+		)
+		.await?,
+	))
 }
 #[utoipa::path(get, path = "/events/stream", operation_id = "stream", params(EventQuery), responses((status = 200, body = String, content_type = "text/event-stream")), security(("bearer_auth" = [])))]
 async fn stream(
@@ -1397,6 +1481,9 @@ async fn stream(
 							Ok(false) => continue,
 							Err(_) => { yield Ok(SseEvent::default().event("error").data("event stream interrupted")); return; }
 						}
+					} else {
+						let mut connection=match f.store.pool.acquire().await {Ok(value)=>value,Err(_)=>return};
+						if !crate::authorization::remote::operator::event_visible(&mut connection,&event).await.unwrap_or(false) {continue;}
 					}
 					drop(visibility);
 					yield Ok(SseEvent::default().id(cursor.to_string()).event("mesh").data(event.cloud_event().to_string()));

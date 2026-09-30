@@ -54,9 +54,10 @@ pub(crate) struct Access {
 	pub core_gc_complete: bool,
 	pub(super) remote_read_cache: std::collections::BTreeMap<(Uuid, String), bool>,
 	pub(super) unavailable_peers: std::collections::BTreeSet<String>,
-	pub(super) checking_reads: std::collections::BTreeSet<(Uuid, String)>,
+	pub(super) checking_reads: std::collections::BTreeSet<(String, Uuid, String)>,
 	pub(super) peer_client: reqwest::Client,
 	pub(super) node_id: String,
+	pub(super) dependency_frontier: Option<Vec<super::peer::dependencies::Reference>>,
 	pub tx: AccessTransaction,
 	pub identity: SubjectIdentity,
 	pub snapshot: Snapshot,
@@ -103,6 +104,7 @@ impl Access {
 			remote_read_cache: Default::default(),
 			unavailable_peers: Default::default(),
 			checking_reads: Default::default(),
+			dependency_frontier: None,
 			peer_client: store.semantic_client.clone(),
 			node_id: store.node_id.clone(),
 			tx: AccessTransaction::new(tx),
@@ -133,6 +135,7 @@ impl Access {
 			remote_read_cache: Default::default(),
 			unavailable_peers: Default::default(),
 			checking_reads: Default::default(),
+			dependency_frontier: None,
 			peer_client: lease.peer_client.clone(),
 			node_id: lease.node_id.clone(),
 			tx: AccessTransaction::new(tx),
@@ -178,6 +181,7 @@ impl Access {
 		self.remote_read_cache.clear();
 		self.unavailable_peers.clear();
 		self.checking_reads.clear();
+		self.dependency_frontier = None;
 		self.subjects = vec![self.identity.subject.clone()];
 		self.durable_audit = true;
 		self.audit = true;

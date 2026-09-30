@@ -1,6 +1,6 @@
 # Aidash
 
-Aidash coordinates Agents and their durable work. This glossary records the shared language for execution, capabilities, transactions, Agent collaboration, event subscriptions, federation, evidence gathering and Web research; it is not an implementation specification.
+Aidash coordinates Agents and their durable work. This glossary records the shared language for execution, capabilities, transactions, Agent collaboration, event subscriptions, federation, semantic memory, evidence gathering and Web research; it is not an implementation specification.
 
 ## Language
 
@@ -207,3 +207,57 @@ _Avoid_: Unrestricted Workspace access, local working-area operation
 **Pinned definition**:
 The exact version and contents of an Agent or execution dependency to which an authorization applies.
 _Avoid_: Latest version, compatible replacement
+
+### Semantic memory
+
+**Semantic memory**:
+Retained information that can be found by meaning and used as context within its authorized scope. It is distinct from an Agent's current conversation or a complete execution journal.
+_Avoid_: Conversation history, model knowledge
+
+**Home memory**:
+Semantic memory belonging to a Workspace at its Home node, including when an Agent performs that Workspace's work on another Node.
+_Avoid_: Execution-node memory, globally shared memory
+
+**Semantic source**:
+An identifiable, revisioned item of retained information from which semantic context can be retrieved. A source is distinct from a representation used to find it.
+_Avoid_: Vector, search result
+
+**Semantic context**:
+The selected information and its provenance obtained from authorized Semantic sources for an Agent's work.
+_Avoid_: Unattributed text, embedding
+
+**Semantic retrieval outcome**:
+The disposition of a requested semantic lookup, distinguishing a completed search, an intentional absence of retrieval, and an inability to complete retrieval. A completed search can contain no matches.
+_Avoid_: Missing context, successful execution
+
+**Agent memory scope**:
+The semantic-memory boundary for one exact Agent definition, qualified by its owning Node, within a particular tenant and Workspace. It is shared by authorized Runs using that definition and is distinct from a Logical Agent's private memory.
+_Avoid_: Logical Agent identity, Run-private memory
+
+**Semantic disclosure permission**:
+Permission to send Semantic context outside its Home node to specified execution and processing recipients, including an inference model or context-compaction service. Permission to read the source locally does not imply this permission.
+_Avoid_: Local read permission, peer trust
+
+**Embedding service operator**:
+The Home-node operator responsible for the embedding-service account used by Home memory and its usage costs. This responsibility is distinct from a generated Agent's permission and resource allowance to request that service.
+_Avoid_: Executing Agent, generation budget owner
+
+**Generated embedding allowance**:
+The permission and bounded usage assigned to a generated Agent and constrained by its generated ancestors for embedding work. An allowance remains associated with its originating generation authority when another Node provides the service.
+_Avoid_: Provider account balance, unrestricted service access
+
+**Semantic read dependency**:
+A Run's dependence on an exact revision of a Semantic source that contributed to its context or work. The dependency is distinct from the source's current contents.
+_Avoid_: Latest source, citation alone
+
+**Semantic retrieval operation**:
+A request for bounded Semantic context for one inference boundary, under a fixed query and execution scope. Re-delivery of that request is distinct from asking for context for a later inference.
+_Avoid_: Provider call, entire Run
+
+**Semantic read receipt**:
+Evidence of the exact sources and revisions delivered for a Semantic retrieval operation. It records an observation and does not grant continuing authority to use its contents.
+_Avoid_: Bearer credential, permanent read permission
+
+**Generated remote assignment**:
+The association of an Agent generated at an Execution node with the Home Task for which it was generated. It retains the generation authority and is distinct from permission to start a Run.
+_Avoid_: Copied Agent definition, ordinary remote assignment

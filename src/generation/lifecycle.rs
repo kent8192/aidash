@@ -63,6 +63,17 @@ impl Request {
 		if !access.inherited_lease {
 			access.context = json!({});
 		}
+		if !self.home_node.is_empty() {
+			let resource = access.resource(
+				"task",
+				format!("{}/tasks/{}", self.home_node, self.task_id),
+				json!({}),
+			);
+			return Ok(access.decide(&resource, "task.read").await?
+				&& access
+					.decide(&self.resource(access), "generation.read")
+					.await?);
+		}
 		let workspace = access.workspace(self.workspace_id).await?;
 		let task: Option<crate::domain::Task> = sqlx::query_as(
 			&sea_orm::sea_query::Query::select()
@@ -178,11 +189,13 @@ pub(crate) async fn transition(
 					sea_orm::sea_query::Expr::cust("'CANCELLED'"),
 				)
 				.and_where(sea_orm::sea_query::Expr::cust(
-					"task_id = $1 AND NOT phase IN ('COMPLETED', 'FAILED', 'CANCELLED')",
+					"task_id = $1 AND (home_node = $2 OR ($2='' AND home_node=$3)) AND NOT phase IN ('COMPLETED', 'FAILED', 'CANCELLED')",
 				))
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 		)
 		.bind(job.task_id)
+		.bind(&job.home_node)
+		.bind(&f.config.node_id)
 		.execute(&mut **tx)
 		.await?;
 	}
@@ -346,14 +359,16 @@ pub(crate) async fn transition(
 	.bind(reason)
 	.execute(&mut **tx)
 	.await?;
-	f.store
-		.event(
-			tx,
-			Some(job.workspace_id),
-			"generation.changed",
-			json!({"id":job.id,"task_id":job.task_id,"policy_id":job.policy_id,"status":status}),
-		)
-		.await?;
+	if job.home_node.is_empty() {
+		f.store
+			.event(
+				tx,
+				Some(job.workspace_id),
+				"generation.changed",
+				json!({"id":job.id,"task_id":job.task_id,"policy_id":job.policy_id,"status":status}),
+			)
+			.await?;
+	}
 	Ok(updated)
 }
 pub(crate) async fn control(

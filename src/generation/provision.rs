@@ -80,128 +80,8 @@ async fn activate(f: &Federation, job: &Request) -> Result<()> {
 			catalog::entry(&mut access, reference, "registry.read").await?;
 			catalog::entry(&mut access, reference, action).await?;
 		}
+		publish(f, &mut access, &job, &spec).await?;
 		let entry: Entry = serde_json::from_value(job.definition.clone())?;
-		let subject = qualified_agent(&f.config.node_id, &entry.id, &entry.version);
-		if access.snapshot.bundle.subjects.contains_key(&subject) {
-			return Err(Error::Conflict("generated subject already exists".into()));
-		}
-		access.snapshot.bundle.subjects.insert(
-			subject,
-			Subject {
-				kind: SubjectKind::Agent,
-				roles: spec.permissions.roles,
-				groups: spec.permissions.groups,
-				attributes: spec.permissions.attributes,
-				enabled: true,
-				delegated_by: job.subject_chain.last().cloned(),
-			},
-		);
-		access.snapshot.bundle.validate()?;
-		access.snapshot.revision = access
-			.snapshot
-			.revision
-			.checked_add(1)
-			.ok_or_else(|| Error::Invalid("authorization revision exhausted".into()))?;
-		sqlx::query(
-			&sea_orm::sea_query::Query::update()
-				.table(sea_orm::sea_query::Alias::new("authorization_bundles"))
-				.value(
-					sea_orm::sea_query::Alias::new("revision"),
-					sea_orm::sea_query::Expr::cust("$2"),
-				)
-				.value(
-					sea_orm::sea_query::Alias::new("document"),
-					sea_orm::sea_query::Expr::cust("$3"),
-				)
-				.value(
-					sea_orm::sea_query::Alias::new("updated_at"),
-					sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP"),
-				)
-				.and_where(sea_orm::sea_query::Expr::cust("tenant = $1"))
-				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
-		)
-		.bind(&job.tenant)
-		.bind(access.snapshot.revision)
-		.bind(json!(access.snapshot.bundle))
-		.execute(&mut **access.tx)
-		.await?;
-		sqlx::query(
-			&sea_orm::sea_query::Query::insert()
-				.into_table(sea_orm::sea_query::Alias::new("authorization_revisions"))
-				.columns([
-					sea_orm::sea_query::Alias::new("tenant"),
-					sea_orm::sea_query::Alias::new("revision"),
-					sea_orm::sea_query::Alias::new("document"),
-					sea_orm::sea_query::Alias::new("actor"),
-				])
-				.values_panic([
-					sea_orm::sea_query::Expr::cust("$1"),
-					sea_orm::sea_query::Expr::cust("$2"),
-					sea_orm::sea_query::Expr::cust("$3"),
-					sea_orm::sea_query::Expr::cust("$4"),
-				])
-				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
-		)
-		.bind(&job.tenant)
-		.bind(access.snapshot.revision)
-		.bind(json!(access.snapshot.bundle))
-		.bind(&job.root_subject)
-		.execute(&mut **access.tx)
-		.await?;
-		crate::registry::register_in(&mut access.tx, &entry, &f.config.node_id).await?;
-		sqlx::query(
-			&sea_orm::sea_query::Query::insert()
-				.into_table(sea_orm::sea_query::Alias::new("authorization_catalog"))
-				.columns([
-					sea_orm::sea_query::Alias::new("tenant"),
-					sea_orm::sea_query::Alias::new("entry_id"),
-					sea_orm::sea_query::Alias::new("entry_version"),
-					sea_orm::sea_query::Alias::new("enabled"),
-					sea_orm::sea_query::Alias::new("revision"),
-				])
-				.values_panic([
-					sea_orm::sea_query::Expr::cust("$1"),
-					sea_orm::sea_query::Expr::cust("$2"),
-					sea_orm::sea_query::Expr::cust("$3"),
-					sea_orm::sea_query::Expr::cust("TRUE"),
-					sea_orm::sea_query::Expr::cust("1"),
-				])
-				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
-		)
-		.bind(&job.tenant)
-		.bind(&entry.id)
-		.bind(&entry.version)
-		.execute(&mut **access.tx)
-		.await?;
-		sqlx::query(
-			&sea_orm::sea_query::Query::insert()
-				.into_table(sea_orm::sea_query::Alias::new(
-					"authorization_catalog_history",
-				))
-				.columns([
-					sea_orm::sea_query::Alias::new("tenant"),
-					sea_orm::sea_query::Alias::new("entry_id"),
-					sea_orm::sea_query::Alias::new("entry_version"),
-					sea_orm::sea_query::Alias::new("revision"),
-					sea_orm::sea_query::Alias::new("enabled"),
-					sea_orm::sea_query::Alias::new("actor"),
-				])
-				.values_panic([
-					sea_orm::sea_query::Expr::cust("$1"),
-					sea_orm::sea_query::Expr::cust("$2"),
-					sea_orm::sea_query::Expr::cust("$3"),
-					sea_orm::sea_query::Expr::cust("1"),
-					sea_orm::sea_query::Expr::cust("TRUE"),
-					sea_orm::sea_query::Expr::cust("$4"),
-				])
-				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
-		)
-		.bind(&job.tenant)
-		.bind(&entry.id)
-		.bind(&entry.version)
-		.bind(&job.root_subject)
-		.execute(&mut **access.tx)
-		.await?;
 		lifecycle::transition(
 			f,
 			&mut access.tx,
@@ -237,6 +117,137 @@ async fn activate(f: &Federation, job: &Request) -> Result<()> {
 	access.finish(result).await
 }
 
+pub(crate) async fn publish(
+	f: &Federation,
+	access: &mut Access,
+	job: &Request,
+	spec: &policy::Spec,
+) -> Result<()> {
+	let entry: Entry = serde_json::from_value(job.definition.clone())?;
+	let subject = qualified_agent(&f.config.node_id, &entry.id, &entry.version);
+	if access.snapshot.bundle.subjects.contains_key(&subject) {
+		return Err(Error::Conflict("generated subject already exists".into()));
+	}
+	access.snapshot.bundle.subjects.insert(
+		subject,
+		Subject {
+			kind: SubjectKind::Agent,
+			roles: spec.permissions.roles.clone(),
+			groups: spec.permissions.groups.clone(),
+			attributes: spec.permissions.attributes.clone(),
+			enabled: true,
+			delegated_by: job.subject_chain.last().cloned(),
+		},
+	);
+	access.snapshot.bundle.validate()?;
+	access.snapshot.revision = access
+		.snapshot
+		.revision
+		.checked_add(1)
+		.ok_or_else(|| Error::Invalid("authorization revision exhausted".into()))?;
+	sqlx::query(
+		&sea_orm::sea_query::Query::update()
+			.table(sea_orm::sea_query::Alias::new("authorization_bundles"))
+			.value(
+				sea_orm::sea_query::Alias::new("revision"),
+				sea_orm::sea_query::Expr::cust("$2"),
+			)
+			.value(
+				sea_orm::sea_query::Alias::new("document"),
+				sea_orm::sea_query::Expr::cust("$3"),
+			)
+			.value(
+				sea_orm::sea_query::Alias::new("updated_at"),
+				sea_orm::sea_query::Expr::cust("CURRENT_TIMESTAMP"),
+			)
+			.and_where(sea_orm::sea_query::Expr::cust("tenant = $1"))
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(&job.tenant)
+	.bind(access.snapshot.revision)
+	.bind(json!(access.snapshot.bundle))
+	.execute(&mut **access.tx)
+	.await?;
+	sqlx::query(
+		&sea_orm::sea_query::Query::insert()
+			.into_table(sea_orm::sea_query::Alias::new("authorization_revisions"))
+			.columns([
+				sea_orm::sea_query::Alias::new("tenant"),
+				sea_orm::sea_query::Alias::new("revision"),
+				sea_orm::sea_query::Alias::new("document"),
+				sea_orm::sea_query::Alias::new("actor"),
+			])
+			.values_panic([
+				sea_orm::sea_query::Expr::cust("$1"),
+				sea_orm::sea_query::Expr::cust("$2"),
+				sea_orm::sea_query::Expr::cust("$3"),
+				sea_orm::sea_query::Expr::cust("$4"),
+			])
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(&job.tenant)
+	.bind(access.snapshot.revision)
+	.bind(json!(access.snapshot.bundle))
+	.bind(&job.root_subject)
+	.execute(&mut **access.tx)
+	.await?;
+	crate::registry::register_in(&mut access.tx, &entry, &f.config.node_id).await?;
+	sqlx::query(
+		&sea_orm::sea_query::Query::insert()
+			.into_table(sea_orm::sea_query::Alias::new("authorization_catalog"))
+			.columns([
+				sea_orm::sea_query::Alias::new("tenant"),
+				sea_orm::sea_query::Alias::new("entry_id"),
+				sea_orm::sea_query::Alias::new("entry_version"),
+				sea_orm::sea_query::Alias::new("enabled"),
+				sea_orm::sea_query::Alias::new("revision"),
+			])
+			.values_panic([
+				sea_orm::sea_query::Expr::cust("$1"),
+				sea_orm::sea_query::Expr::cust("$2"),
+				sea_orm::sea_query::Expr::cust("$3"),
+				sea_orm::sea_query::Expr::cust("TRUE"),
+				sea_orm::sea_query::Expr::cust("1"),
+			])
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(&job.tenant)
+	.bind(&entry.id)
+	.bind(&entry.version)
+	.execute(&mut **access.tx)
+	.await?;
+	sqlx::query(
+		&sea_orm::sea_query::Query::insert()
+			.into_table(sea_orm::sea_query::Alias::new(
+				"authorization_catalog_history",
+			))
+			.columns([
+				sea_orm::sea_query::Alias::new("tenant"),
+				sea_orm::sea_query::Alias::new("entry_id"),
+				sea_orm::sea_query::Alias::new("entry_version"),
+				sea_orm::sea_query::Alias::new("revision"),
+				sea_orm::sea_query::Alias::new("enabled"),
+				sea_orm::sea_query::Alias::new("actor"),
+			])
+			.values_panic([
+				sea_orm::sea_query::Expr::cust("$1"),
+				sea_orm::sea_query::Expr::cust("$2"),
+				sea_orm::sea_query::Expr::cust("$3"),
+				sea_orm::sea_query::Expr::cust("1"),
+				sea_orm::sea_query::Expr::cust("TRUE"),
+				sea_orm::sea_query::Expr::cust("$4"),
+			])
+			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	)
+	.bind(&job.tenant)
+	.bind(&entry.id)
+	.bind(&entry.version)
+	.bind(&job.root_subject)
+	.execute(&mut **access.tx)
+	.await?;
+	Ok(())
+}
+
 async fn terminal(f: &Federation, job: &Request, status: &str, reason: &str) -> Result<()> {
 	let mut tx = f.store.pool.begin().await?;
 	Authorization::load_with_mode(&mut tx, &job.tenant, true).await?;
@@ -253,10 +264,13 @@ async fn terminal(f: &Federation, job: &Request, status: &str, reason: &str) -> 
 					sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("phase")),
 				))
 				.from(sea_orm::sea_query::Alias::new("runs"))
-				.and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+				.and_where(sea_orm::sea_query::Expr::cust(
+					"task_id = $1 AND home_node=$2",
+				))
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 		)
 		.bind(job.task_id)
+		.bind(&f.config.node_id)
 		.fetch_optional(&mut *tx)
 		.await?;
 		let terminal_phase = match phase.as_deref() {
@@ -279,8 +293,12 @@ async fn terminal(f: &Federation, job: &Request, status: &str, reason: &str) -> 
 /// Resume durable generation work after restart; bounded scans are safe with
 /// concurrent provisioners because each transition rechecks state under locks.
 pub async fn reconcile(f: &Federation) -> Result<usize> {
+	// All generation scans, including foreign lifecycle and settlement work,
+	// must observe the same atomic visibility boundary as local provisioning.
 	let _visibility = crate::transactions::gate::ReadLease::begin(&f.store).await?;
-	let jobs:Vec<Request>=sqlx::query_as(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((sea_orm::sea_query::Alias::new("g"), sea_orm::sea_query::Asterisk)))).from_as(sea_orm::sea_query::Alias::new("generation_requests"), sea_orm::sea_query::Alias::new("g")).join_as(sea_orm::sea_query::JoinType::LeftJoin, sea_orm::sea_query::Alias::new("runs"), sea_orm::sea_query::Alias::new("r"), sea_orm::sea_query::Expr::cust("r.task_id = g.task_id")).and_where(sea_orm::sea_query::Expr::cust("g.status IN ('PENDING_APPROVAL', 'QUEUED', 'ACTIVE') AND (g.status = 'QUEUED' OR g.expires_at <= CLOCK_TIMESTAMP() OR r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED'))")).order_by_expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((sea_orm::sea_query::Alias::new("g"), sea_orm::sea_query::Alias::new("created_at")))), sea_orm::sea_query::Order::Asc).order_by_expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((sea_orm::sea_query::Alias::new("g"), sea_orm::sea_query::Alias::new("id")))), sea_orm::sea_query::Order::Asc).limit(32).to_string(sea_orm::sea_query::PostgresQueryBuilder))
+	super::remote::dispatch::reconcile(f).await?;
+	super::foreign::reconcile(f).await?;
+	let jobs:Vec<Request>=sqlx::query_as(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((sea_orm::sea_query::Alias::new("g"), sea_orm::sea_query::Asterisk)))).from_as(sea_orm::sea_query::Alias::new("generation_requests"), sea_orm::sea_query::Alias::new("g")).join_as(sea_orm::sea_query::JoinType::LeftJoin, sea_orm::sea_query::Alias::new("runs"), sea_orm::sea_query::Alias::new("r"), sea_orm::sea_query::Expr::cust("r.task_id = g.task_id AND r.agent_id = g.agent_id AND r.agent_version = g.agent_version")).and_where(sea_orm::sea_query::Expr::cust("g.home_node='' AND g.status IN ('PENDING_APPROVAL', 'QUEUED', 'ACTIVE') AND (g.status = 'QUEUED' OR g.expires_at <= CLOCK_TIMESTAMP() OR r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED'))")).order_by_expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((sea_orm::sea_query::Alias::new("g"), sea_orm::sea_query::Alias::new("created_at")))), sea_orm::sea_query::Order::Asc).order_by_expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((sea_orm::sea_query::Alias::new("g"), sea_orm::sea_query::Alias::new("id")))), sea_orm::sea_query::Order::Asc).limit(32).to_string(sea_orm::sea_query::PostgresQueryBuilder))
         .fetch_all(&f.store.pool).await?;
 	let count = jobs.len();
 	for job in jobs {
@@ -338,7 +356,7 @@ pub(crate) async fn require_live(
 			|| !enabled
 			|| (job.agent_id == agent.id
 				&& job.agent_version == agent.version
-				&& job.task_id != task)
+				&& (job.task_id != task || !job.home_node.is_empty()))
 		{
 			return Err(Error::Forbidden);
 		}

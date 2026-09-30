@@ -92,28 +92,100 @@ impl JevClient {
 			}))
 	}
 	async fn send(&self, state: &Value, questions: &Questions, key: &str) -> Result<Value> {
+		self.send_checked(state, questions, key, false).await
+	}
+
+	pub(crate) fn check_remote_credential(&self) -> Result<()> {
+		let key = config::secret(&self.credential_env)
+			.map_err(|_| Error::RemoteSemantic(crate::semantic::remote::Failure::Configuration))?;
+		if key.trim().is_empty() {
+			return Err(Error::RemoteSemantic(
+				crate::semantic::remote::Failure::Configuration,
+			));
+		}
+		Ok(())
+	}
+
+	/// Keep remote retries and provider-contract failures on the same durable
+	/// semantic pause path as embedding and inference, without exposing bodies.
+	pub(crate) async fn ask_remote(&self, state: &Value, questions: &Questions) -> Result<Value> {
+		use crate::semantic::remote::Failure;
+		let key = config::secret(&self.credential_env)
+			.map_err(|_| Error::RemoteSemantic(Failure::Configuration))?;
+		if key.trim().is_empty() {
+			return Err(Error::RemoteSemantic(Failure::Configuration));
+		}
+		self.send_checked(state, questions, &key, true).await
+	}
+
+	async fn send_checked(
+		&self,
+		state: &Value,
+		questions: &Questions,
+		key: &str,
+		remote: bool,
+	) -> Result<Value> {
+		use crate::semantic::remote::Failure;
+		let failure = |reason, error| {
+			if remote {
+				Error::RemoteSemantic(reason)
+			} else {
+				error
+			}
+		};
 		self.check_request(state, questions)?;
-		let mut response = self.request(state, questions, key).send().await?;
+		let mut response = self
+			.request(state, questions, key)
+			.send()
+			.await
+			.map_err(|error| failure(Failure::Unavailable, Error::from(error)))?;
 		if !response.status().is_success() {
 			// Provider error bodies may include private history or credentials.
-			return Err(Error::External(format!(
-				"Jev provider returned {}",
-				response.status()
-			)));
+			let status = response.status();
+			let reason =
+				if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+					Failure::Unavailable
+				} else if matches!(status.as_u16(), 401 | 403) {
+					Failure::Configuration
+				} else {
+					Failure::ProviderContract
+				};
+			return Err(failure(
+				reason,
+				Error::External(format!("Jev provider returned {}", status)),
+			));
 		}
 		let mut bytes = Vec::new();
-		while let Some(chunk) = response.chunk().await? {
+		while let Some(chunk) = response
+			.chunk()
+			.await
+			.map_err(|error| failure(Failure::Unavailable, Error::from(error)))?
+		{
 			if bytes.len().saturating_add(chunk.len()) > self.max_response_bytes {
-				return Err(Error::External(
-					"compaction response exceeds approved bounds".into(),
+				return Err(failure(
+					Failure::ProviderContract,
+					Error::External("compaction response exceeds approved bounds".into()),
 				));
 			}
 			bytes.extend_from_slice(&chunk);
 		}
-		let value: Value = serde_json::from_slice(&bytes)
-			.map_err(|_| Error::External("invalid compaction response JSON".into()))?;
+		let value: Value = serde_json::from_slice(&bytes).map_err(|_| {
+			failure(
+				Failure::ProviderContract,
+				Error::External("invalid compaction response JSON".into()),
+			)
+		})?;
 		if !value["answers"].is_object() {
-			return Err(Error::External("Jev response is missing answers".into()));
+			return Err(failure(
+				Failure::ProviderContract,
+				Error::External("Jev response is missing answers".into()),
+			));
+		}
+		if remote {
+			for name in questions.keys() {
+				probability(&value, name)
+					.map_err(|_| Error::RemoteSemantic(Failure::ProviderContract))?;
+			}
 		}
 		Ok(value)
 	}

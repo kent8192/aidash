@@ -287,7 +287,39 @@ impl Harness {
 			};
 			let mut current = store.run(id).await?;
 			let attempts = current.pending["retry_count"].as_u64().unwrap_or(0) + 1;
-			if matches!(
+			if let Error::RemoteSemantic(reason) = e {
+				use crate::semantic::remote::Failure;
+				if reason == Failure::Pending || (reason.transient() && attempts <= 5) {
+					let delay = if reason == Failure::Pending {
+						1
+					} else {
+						current.pending["retry_count"] = json!(attempts);
+						2_i64.pow(attempts as u32)
+					};
+					current.pending["semantic_reason"] = json!(reason);
+					current.pending["retry_at"] =
+						json!(chrono::Utc::now() + chrono::Duration::seconds(delay));
+					current.error = Some(reason.to_string());
+					store
+						.save_run(&current, token, "run.semantic_retrying")
+						.await?;
+				} else {
+					let reason = if reason.transient() {
+						Failure::RetriesExhausted
+					} else {
+						reason
+					};
+					current.pending["semantic_reason"] = json!(reason);
+					store
+						.pause_for_execution(
+							&current,
+							token,
+							&reason.to_string(),
+							"run.semantic_blocked",
+						)
+						.await?;
+				}
+			} else if matches!(
 				e,
 				Error::Forbidden | Error::Unauthorized | Error::IdentityStatusUnavailable
 			) {
@@ -928,13 +960,24 @@ impl Harness {
 					return Err(error);
 				}
 				let semantic_budget = budget.remaining(&Context::default(), &pinned) / 2;
+				let semantic_inputs = inputs
+					.iter()
+					.filter_map(|input| {
+						let message = run_messages.iter().find(|m| m["seq"] == input.seq)?;
+						let text = message["content"].as_str()?;
+						Some((
+							crate::semantic::remote::InputRead {
+								id: input.message_id?,
+								sequence: input.seq,
+								digest: crate::semantic::service::content_digest(text),
+							},
+							text.to_owned(),
+						))
+					})
+					.collect::<Vec<_>>();
 				if let Some(guard) = guard {
 					if let Some(semantic) = guard
-						.semantic_context(
-							store,
-							&format!("{}\n{}", task.title, task.description),
-							semantic_budget,
-						)
+						.semantic_context(store, &task, &semantic_inputs, semantic_budget)
 						.await?
 					{
 						pinned["semantic_memory"] = json!(semantic);
@@ -966,19 +1009,37 @@ impl Harness {
 						self.federation.client.clone(),
 					)?)
 				};
-				context::compact(&mut context, compactor.as_ref(), &budget, &pinned).await?;
+				context::compact(&mut context, compactor.as_ref(), &budget, &pinned)
+					.await
+					.map_err(|error| {
+						if guard.is_some_and(|guard| guard.is_remote())
+							&& matches!(error, Error::Invalid(_))
+						{
+							Error::RemoteSemantic(crate::semantic::remote::Failure::ContextBudget)
+						} else {
+							error
+						}
+					})?;
 				if let Some(guard) = guard {
 					guard.inference().await?;
 				}
 				let mut request = budget.request(&context, &pinned);
 				request.content_parts = media.parts;
-				crate::generation::budget::Reservation::check_request(window, &request)?;
+				crate::generation::budget::Reservation::check_request(window, &request).map_err(
+					|error| {
+						if guard.is_some_and(|guard| guard.is_remote()) {
+							Error::RemoteSemantic(crate::semantic::remote::Failure::ContextBudget)
+						} else {
+							error
+						}
+					},
+				)?;
 				let request_tokens = request.estimated_total_tokens();
 				let media_inferred_seq_before_response = context.media_inferred_seq;
 				let observed_input_seq_before_response = run.observed_input_seq;
 				let reservation = if let Some(guard) = guard {
 					guard
-						.reserve_inference(store, token, window, output)
+						.reserve_inference(store, token, window, output, &request)
 						.await?
 				} else {
 					None

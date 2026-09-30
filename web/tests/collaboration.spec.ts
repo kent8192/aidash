@@ -1,6 +1,502 @@
 import { expect, test } from "@playwright/test";
 import { setup } from "./collaboration-fixture";
 
+for (const locale of ["en-US", "ja-JP"] as const) {
+  test(`remote assignment pins the selected memory providers in ${locale}`, async ({
+    page,
+  }) => {
+    const ja = locale === "ja-JP";
+    const { errors } = await setup(page, {
+      subject: true,
+      locale,
+      openTask: true,
+      remoteAssignment: true,
+    });
+    const grants: Record<string, unknown>[] = [];
+    await page.route("**/api/tasks/task-0/remote-grants**", async (route) => {
+      if (new URL(route.request().url()).pathname.endsWith("/remote-grants")) {
+        grants.push(route.request().postDataJSON());
+        return route.fulfill({ json: { id: grants.at(-1)!.id } });
+      }
+      return route.fulfill({
+        json: {
+          admission_id: "remote-run",
+          phase: "RECEIVED",
+          control: "ACTIVE",
+        },
+      });
+    });
+    await page.goto("/collaboration?channel=workspace-one");
+    await page
+      .getByRole("button", {
+        name: ja ? "タスクと成果物" : "Tasks and results",
+        exact: true,
+      })
+      .click();
+    await page
+      .locator(".collab-channel .collab-task")
+      .filter({ hasText: "Collect evidence" })
+      .click();
+    await page
+      .getByRole("button", {
+        name: ja ? "担当を割り当て" : "Assign agent",
+        exact: true,
+      })
+      .click();
+    const dialog = page.getByRole("dialog");
+    await dialog
+      .locator("select[name=agent]")
+      .selectOption(JSON.stringify(["aidash://remote", "researcher", "1.0.0"]));
+    const enabled = dialog.getByLabel(
+      ja
+        ? "各推論の前に Home の記憶を検索する"
+        : "Require Home memory before each inference",
+    );
+    await expect(enabled).not.toBeChecked();
+    await enabled.check();
+    await dialog
+      .locator("select[name=embedding]")
+      .selectOption("home-embedding@1.0.0");
+    await dialog
+      .locator("input[name=compactor]")
+      .fill("approved-compactor@2.0.0");
+    await dialog
+      .getByRole("button", {
+        name: ja ? "担当を割り当て" : "Assign agent",
+        exact: true,
+      })
+      .click();
+    await expect(dialog).toHaveCount(0);
+    expect(grants).toHaveLength(1);
+    expect(grants[0]).toMatchObject({
+      node_id: "aidash://remote",
+      agent: { id: "researcher", version: "1.0.0" },
+      semantic: {
+        mode: "required_home",
+        embedding: { id: "home-embedding", version: "1.0.0" },
+        compactor: { id: "approved-compactor", version: "2.0.0" },
+      },
+    });
+    expect(errors).toEqual([]);
+  });
+
+  test(`hidden run retains only stop controls in ${locale}`, async ({
+    page,
+  }) => {
+    const ja = locale === "ja-JP";
+    const { errors } = await setup(page, { subject: true, locale });
+    let control = "PAUSED";
+    const actions: unknown[] = [];
+    await page.route("**/api/runs/run-0**", async (route) => {
+      if (new URL(route.request().url()).pathname.endsWith("/management")) {
+        if (route.request().method() === "POST") {
+          actions.push(route.request().postDataJSON());
+          control = "CANCELLED";
+        }
+        return route.fulfill({
+          json: {
+            id: "run-0",
+            phase: "THINKING",
+            control,
+            semantic_reason: "invalidated",
+          },
+        });
+      }
+      return route.fulfill({
+        status: 403,
+        json: {
+          error: { message: "Current reader cannot access dependent content" },
+        },
+      });
+    });
+    await page.goto("/collaboration?channel=workspace-one");
+    await page
+      .getByRole("button", {
+        name: ja ? "実行履歴" : "Execution history",
+        exact: true,
+      })
+      .click();
+    await page.locator(".collab-channel .collab-task").click();
+    const panel = page.getByRole("region", {
+      name: ja ? "実行の管理" : "Execution management",
+    });
+    await expect(panel).toContainText(
+      ja ? "参照済みのソース" : "A consumed source changed",
+    );
+    await expect(
+      page
+        .getByRole("dialog")
+        .getByRole("button", { name: ja ? "再開" : "Resume", exact: true }),
+    ).toHaveCount(0);
+    await panel
+      .getByRole("button", {
+        name: ja ? "実行を中止" : "Cancel execution",
+        exact: true,
+      })
+      .click();
+    await expect(panel.getByRole("button")).toHaveCount(0);
+    expect(actions).toEqual([{ action: "cancel" }]);
+    expect(errors).toEqual([]);
+  });
+
+  test(`remote generation preserves approval and activation bindings in ${locale}`, async ({
+    page,
+  }) => {
+    const ja = locale === "ja-JP";
+    const { errors } = await setup(page, {
+      subject: true,
+      locale,
+      openTask: true,
+    });
+    const intents: Record<string, unknown>[] = [];
+    const grants: Record<string, unknown>[] = [];
+    let approved = false;
+    let unavailable = false;
+    let activationAttempts = 0;
+    let cancellations = 0;
+    await page.route("**/api/generation/acme/policies", (route) =>
+      route.fulfill({ json: [] }),
+    );
+    await page.route("**/api/tasks/task-0/remote-**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path.endsWith("/remote-generation")) {
+        const body = route.request().postDataJSON();
+        intents.push(body);
+        if (unavailable)
+          return route.fulfill({
+            status: 403,
+            json: { error: { message: "Current authority unavailable" } },
+          });
+        return route.fulfill({
+          json: {
+            intent_id: body.id,
+            node_id: body.node_id,
+            request_id: "receiver-request",
+            agent: { id: "prepared-agent", version: "1.0.0" },
+            prepared: approved,
+            status: approved ? "QUEUED" : "PENDING_APPROVAL",
+            expires_at: new Date(Date.now() + 3600000).toISOString(),
+          },
+        });
+      }
+      if (path.endsWith("/cancel")) {
+        cancellations++;
+        return route.fulfill({ json: true });
+      }
+      if (path.endsWith("/remote-grants")) {
+        grants.push(route.request().postDataJSON());
+        return route.fulfill({ json: { id: grants.at(-1)!.id } });
+      }
+      if (path.endsWith("/activate")) {
+        activationAttempts++;
+        if (activationAttempts === 1)
+          return route.fulfill({
+            status: 503,
+            json: { error: { message: "Temporary response loss" } },
+          });
+        return route.fulfill({
+          json: {
+            run_id: "receiver-run",
+            admission_id: "receiver-run",
+            phase: "RECEIVED",
+            control: "ACTIVE",
+          },
+        });
+      }
+      return route.fallback();
+    });
+    await page.goto("/collaboration?channel=workspace-one");
+    await page
+      .getByRole("button", {
+        name: ja ? "タスクと成果物" : "Tasks and results",
+        exact: true,
+      })
+      .click();
+    await page
+      .locator(".collab-channel .collab-task")
+      .filter({ hasText: "Collect evidence" })
+      .click();
+    await page
+      .getByRole("button", {
+        name: ja ? "ポリシーで割り当て" : "Assign with policy",
+        exact: true,
+      })
+      .click();
+    const dialog = page.getByRole("dialog");
+    await dialog
+      .getByText(
+        ja ? "別の Node で Agent を生成" : "Generate an agent at another node",
+        { exact: true },
+      )
+      .click();
+    const form = dialog
+      .locator("details")
+      .filter({ has: page.locator("input[name=node]") });
+    await form
+      .getByLabel(ja ? "実行 Node" : "Execution node", { exact: true })
+      .fill("aidash://remote");
+    await form
+      .getByLabel(
+        ja ? "実行 Node の生成ポリシー" : "Execution node generation policy",
+        { exact: true },
+      )
+      .fill("specialist");
+    await form
+      .getByLabel(ja ? "生成を依頼する理由" : "Reason for generation", {
+        exact: true,
+      })
+      .fill("Approved remote research");
+    await form
+      .getByRole("button", {
+        name: ja ? "Agent を準備" : "Prepare agent",
+        exact: true,
+      })
+      .click();
+    await expect(
+      form.getByRole("button", {
+        name: ja ? "許可して実行" : "Authorize and execute",
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    await form
+      .getByRole("button", {
+        name: ja ? "準備を中止" : "Cancel preparation",
+        exact: true,
+      })
+      .click();
+    await expect.poll(() => cancellations).toBe(1);
+    await form
+      .getByRole("button", {
+        name: ja ? "Agent を準備" : "Prepare agent",
+        exact: true,
+      })
+      .click();
+    await expect.poll(() => intents.length).toBe(2);
+    expect(intents[0].id).not.toBe(intents[1].id);
+    approved = true;
+    const refresh = form.getByRole("button", {
+      name: ja
+        ? "同じ準備・承認状態を再確認"
+        : "Recheck the same preparation and approval",
+      exact: true,
+    });
+    await refresh.click();
+    await expect(
+      form.getByText("prepared-agent@1.0.0", { exact: true }),
+    ).toBeVisible();
+    expect(intents[2]).toEqual(intents[1]);
+    unavailable = true;
+    await refresh.click();
+    await expect(
+      form.getByText("prepared-agent@1.0.0", { exact: true }),
+    ).toHaveCount(0);
+    unavailable = false;
+    await refresh.click();
+    await form
+      .getByLabel(ja ? "Home の embedding 定義" : "Home embedding definition", {
+        exact: true,
+      })
+      .fill("home-embedding@1.0.0");
+    const activate = form.getByRole("button", {
+      name: ja ? "許可して実行" : "Authorize and execute",
+      exact: true,
+    });
+    await activate.click();
+    await expect(dialog.getByRole("alert")).toContainText(
+      "Temporary response loss",
+    );
+    await activate.click();
+    await expect(dialog).toHaveCount(0);
+    expect(activationAttempts).toBe(2);
+    expect(grants).toHaveLength(2);
+    expect(grants[1]).toEqual(grants[0]);
+    expect(grants[0]).toMatchObject({
+      node_id: "aidash://remote",
+      agent: { id: "prepared-agent", version: "1.0.0" },
+      semantic: {
+        mode: "required_home",
+        embedding: { id: "home-embedding", version: "1.0.0" },
+      },
+    });
+    expect(errors).toEqual([]);
+  });
+
+  test(`remote memory shows provenance and invalidation controls in ${locale}`, async ({
+    page,
+  }) => {
+    const ja = locale === "ja-JP";
+    const { errors } = await setup(page, { subject: true, locale });
+    const grant = {
+      id: "4191ce62-a1a8-42d6-9926-bd32f5e0dc34",
+      task_id: "task-0",
+      node_id: "aidash://remote",
+      agent: { id: "researcher", version: "1.0.0" },
+      expires_at: new Date(Date.now() + 3600000).toISOString(),
+      revoked: false,
+    };
+    const execution = {
+      grant_id: grant.id,
+      admission_id: "829cb342-d2c8-43e4-99c2-0dbe96bc4f70",
+      run_id: "829cb342-d2c8-43e4-99c2-0dbe96bc4f70",
+      phase: "THINKING",
+      control: "ACTIVE",
+      error: null,
+    };
+    const semantic = {
+      state: "ready",
+      reason: null as string | null,
+      operation_id: "c8cf392a-f1d4-42e1-8261-a003d1422660",
+      retry_count: 0,
+      retry_at: null,
+      result_count: 2,
+      truncated: false,
+      retrieved_at: new Date().toISOString(),
+    };
+    let denied = false;
+    let followup: Record<string, unknown> | null = null;
+    await page.route("**/api/tasks/task-0/remote-**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path.endsWith("/remote-executions"))
+        return route.fulfill({
+          json: [{ grant, execution, semantic, unavailable: false }],
+        });
+      if (path.endsWith("/semantic"))
+        return denied
+          ? route.fulfill({
+              status: 403,
+              json: { error: { message: "forbidden" } },
+            })
+          : route.fulfill({
+              json: {
+                home_node: "aidash://home",
+                operation_id: semantic.operation_id,
+                executor: "aidash://remote/agents/researcher@1.0.0",
+                binding: { mode: "required_home" },
+                model: "home-vector",
+                model_version: "1",
+                retrieved_at: semantic.retrieved_at,
+                truncated: false,
+                allowance_node: "aidash://home",
+                allowances: [
+                  {
+                    request_id: "origin-allowance",
+                    used_tokens: 1234,
+                    token_limit: 800000,
+                    embedding_calls: 2,
+                    embedding_call_limit: 10,
+                    compaction_calls: 1,
+                    compaction_call_limit: 4,
+                  },
+                ],
+                sources: [
+                  {
+                    entry_id: "verified-source",
+                    revision: 1,
+                    content_digest: "sha256:fixture",
+                    agent: null,
+                  },
+                ],
+              },
+            });
+      if (path.endsWith("/follow-up")) {
+        followup = route.request().postDataJSON();
+        return route.fulfill({ json: { id: "fresh-task" } });
+      }
+      if (path.endsWith("/control")) {
+        execution.control = "CANCELLED";
+        return route.fulfill({ json: execution });
+      }
+      return route.fallback();
+    });
+    await page.goto("/collaboration?channel=workspace-one");
+    await page
+      .getByRole("button", {
+        name: ja ? "タスクと成果物" : "Tasks and results",
+        exact: true,
+      })
+      .click();
+    await page
+      .locator(".collab-channel .collab-task")
+      .filter({ hasText: "Collect evidence" })
+      .click();
+    const panel = page.getByRole("region", {
+      name: ja ? "遠隔実行" : "Remote execution",
+      exact: true,
+    });
+    await panel
+      .getByRole("button", {
+        name: ja ? "参照情報を確認" : "Inspect provenance",
+        exact: true,
+      })
+      .click();
+    await expect(
+      panel.getByText("verified-source", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      panel.getByText("origin-allowance", { exact: true }),
+    ).toBeVisible();
+    await expect(panel).toContainText("1,234 / 800,000");
+    denied = true;
+    await expect(
+      panel.getByText("verified-source", { exact: true }),
+    ).toHaveCount(0, { timeout: 12000 });
+    await expect(panel.getByRole("status")).toContainText(
+      ja ? "現在の権限" : "current authority",
+    );
+    semantic.state = "invalidated";
+    semantic.reason = "invalidated";
+    execution.control = "PAUSED";
+    await panel
+      .getByRole("button", {
+        name: ja ? "状態を再読み込み" : "Refresh status",
+        exact: true,
+      })
+      .click();
+    await expect(
+      panel.getByRole("button", {
+        name: ja ? "権限を再確認して再開" : "Recheck authority and resume",
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    await panel
+      .getByRole("button", {
+        name: ja ? "Follow-up Task を作成" : "Create follow-up task",
+        exact: true,
+      })
+      .click();
+    await panel
+      .getByLabel(ja ? "タイトル" : "Title", { exact: true })
+      .fill("New independent intent");
+    await panel
+      .getByLabel(ja ? "新しい指示" : "New instructions", { exact: true })
+      .fill("Use currently authorized material.");
+    await panel
+      .getByRole("button", { name: ja ? "作成" : "Create", exact: true })
+      .click();
+    await expect
+      .poll(() => followup)
+      .toMatchObject({
+        title: "New independent intent",
+        description: "Use currently authorized material.",
+        requirements: {},
+      });
+    expect(followup).not.toHaveProperty("parent_id");
+    await panel
+      .getByRole("button", {
+        name: ja ? "実行を中止" : "Cancel execution",
+        exact: true,
+      })
+      .click();
+    await expect(
+      panel.getByRole("button", {
+        name: ja ? "実行を中止" : "Cancel execution",
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+}
+
 for (const viewport of [
   { width: 1440, height: 700 },
   { width: 390, height: 600 },

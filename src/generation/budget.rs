@@ -232,3 +232,16 @@ pub(crate) async fn reserve(
 		amount,
 	}))
 }
+
+pub(crate) enum InferenceReservation {
+	Local(Reservation),
+	Remote(Box<super::remote::protocol::Reservation>),
+}
+impl InferenceReservation {
+	pub(crate) async fn settle(self, response: &ModelResponse) -> Result<()> {
+		match self {
+			Self::Local(r) => r.settle(response).await,
+			Self::Remote(r) => r.settle(response).await,
+		}
+	}
+}

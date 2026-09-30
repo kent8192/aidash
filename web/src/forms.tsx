@@ -1,3 +1,4 @@
+import { apiFetch } from "./transport";
 import {
   CapabilityConfiguration,
   emptyCore,
@@ -692,11 +693,19 @@ export function AssignForm({
   data: State;
   submit: Submit;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const ja = locale === "ja-JP";
+  const [selected, setSelected] = useState("");
+  const [memory, setMemory] = useState(false);
+  const request = useRef<{ binding: string; id: string } | null>(null);
   const agentLabel = useAgentLabel(data, discovery);
-  const agents = discovery.agents.filter(
-    (a) => data.access.kind === "operator" || a.node_id === data.node.id,
+  const agents = discovery.agents;
+  const chosen = agents.find(
+    (a) =>
+      JSON.stringify([a.node_id, a.entity.id, a.entity.version]) === selected,
   );
+  const scopedRemote =
+    data.access.kind === "subject" && chosen && chosen.node_id !== data.node.id;
   return (
     <form
       onSubmit={(e) => {
@@ -711,16 +720,55 @@ export function AssignForm({
             ]) === d.get("agent"),
         );
         if (!a) return;
-        void submit(() =>
-          taskDelegate(task.id, {
+        void submit(async () => {
+          if (data.access.kind !== "subject" || a.node_id === data.node.id) {
+            return taskDelegate(task.id, {
+              node_id: a.node_id,
+              agent: { id: a.entity.id, version: a.entity.version },
+            });
+          }
+          const compactor = String(d.get("compactor") ?? "").trim();
+          const input = {
             node_id: a.node_id,
             agent: { id: a.entity.id, version: a.entity.version },
-          }),
-        );
+            ttl_seconds: 3600,
+            semantic: memory
+              ? {
+                  mode: "required_home",
+                  embedding: ref(String(d.get("embedding"))),
+                  ...(compactor ? { compactor: ref(compactor) } : {}),
+                }
+              : { mode: "disabled" },
+          };
+          const binding = JSON.stringify(input);
+          if (request.current?.binding !== binding)
+            request.current = { binding, id: crypto.randomUUID() };
+          const id = request.current.id;
+          await apiFetch(`/api/tasks/${task.id}/remote-grants`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ id, ...input }),
+          });
+          const result = await apiFetch(
+            `/api/tasks/${task.id}/remote-grants/${id}/activate`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: "{}",
+            },
+          );
+          request.current = null;
+          return result;
+        });
       }}
     >
       <Field label={t("agent")}>
-        <select name="agent" required defaultValue="">
+        <select
+          name="agent"
+          required
+          value={selected}
+          onChange={(e) => setSelected(e.target.value)}
+        >
           <option value="">{t("choose")}</option>
           {agents.map((a) => (
             <option
@@ -733,6 +781,58 @@ export function AssignForm({
           ))}
         </select>
       </Field>
+      {scopedRemote && (
+        <fieldset>
+          <legend>
+            {ja ? "遠隔実行で参照する記憶" : "Memory for remote execution"}
+          </legend>
+          <label>
+            <input
+              type="checkbox"
+              checked={memory}
+              onChange={(e) => setMemory(e.target.checked)}
+            />
+            {ja
+              ? "各推論の前に Home の記憶を検索する"
+              : "Require Home memory before each inference"}
+          </label>
+          {memory && (
+            <>
+              <label>
+                {ja ? "Home の embedding 定義" : "Home embedding definition"}
+                <select name="embedding" required defaultValue="">
+                  <option value="">{t("choose")}</option>
+                  {data.registry
+                    .filter((entry) => entry.kind === "embedding")
+                    .map((entry) => (
+                      <option
+                        key={`${entry.id}@${entry.version}`}
+                        value={`${entry.id}@${entry.version}`}
+                      >
+                        {entry.id}@{entry.version}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label>
+                {ja
+                  ? "任意: 実行 Node の承認済み compactor"
+                  : "Optional: approved compactor at the execution node"}
+                <input
+                  name="compactor"
+                  placeholder="compactor-id@1.0.0"
+                  pattern=".+@[0-9]+\.[0-9]+\.[0-9]+.*"
+                />
+              </label>
+              <p>
+                {ja
+                  ? "検索結果を選択した Agent のモデルへ開示します。予算や権限が不足すると実行は一時停止します。"
+                  : "Retrieval results are disclosed to the selected agent's model. Execution pauses when authority or budget is insufficient."}
+              </p>
+            </>
+          )}
+        </fieldset>
+      )}
       <button className="primary">{t("delegate")}</button>
     </form>
   );
