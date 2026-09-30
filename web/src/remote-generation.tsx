@@ -30,7 +30,9 @@ export function RemoteGenerationAssignForm({
   const [error, setError] = useState("");
   const grant = useRef<{ binding: string; id: string } | null>(null);
   const [memory, setMemory] = useState(true);
-  const terminalPrepared = prepared && !["PENDING_APPROVAL", "QUEUED", "ACTIVE"].includes(prepared.status);
+  const terminalPrepared =
+    prepared &&
+    !["PENDING_APPROVAL", "QUEUED", "ACTIVE"].includes(prepared.status);
   const prepare = async (input: RemoteGenerationInput) => {
     setDraft(input);
     setBusy(true);
@@ -140,11 +142,15 @@ export function RemoteGenerationAssignForm({
       </form>
       {error && <p role="alert">{error}</p>}
       {terminalPrepared && (
-        <button type="button" disabled={busy} onClick={() => {
-          setDraft(null);
-          setPrepared(null);
-          grant.current = null;
-        }}>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => {
+            setDraft(null);
+            setPrepared(null);
+            grant.current = null;
+          }}
+        >
           {ja ? "新しい依頼を作成" : "Create a new intent"}
         </button>
       )}
@@ -161,12 +167,12 @@ export function RemoteGenerationAssignForm({
                 ? "準備は終了しました。新しい依頼を作成してください。"
                 : "Preparation has ended. Create a new intent."
               : prepared.prepared
-              ? ja
-                ? "準備が完了しました。実行許可を設定できます。"
-                : "Prepared. Configure its execution grant."
-              : ja
-                ? "実行 Node で必要な承認を完了してから再確認してください。"
-                : "Complete the required approval at the execution node, then recheck."}
+                ? ja
+                  ? "準備が完了しました。実行許可を設定できます。"
+                  : "Prepared. Configure its execution grant."
+                : ja
+                  ? "実行 Node で必要な承認を完了してから再確認してください。"
+                  : "Complete the required approval at the execution node, then recheck."}
           </p>
           <dl>
             <dt>{ja ? "承認対象のリクエスト" : "Request for approval"}</dt>

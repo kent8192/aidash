@@ -171,13 +171,17 @@ export function RemoteMemoryProvenance({ url }: { url: string }) {
     refetchInterval: open ? 5000 : false,
   });
   // Never render cached source identities after a refresh is denied or fails.
-  const receipt = open && !query.isFetching && !query.isError ? query.data : undefined;
+  const receipt =
+    open && !query.isFetching && !query.isError ? query.data : undefined;
   return (
     <div>
-      <button type="button" onClick={() => {
-        if (open) setInspection((value) => value + 1);
-        setOpen(!open);
-      }}>
+      <button
+        type="button"
+        onClick={() => {
+          if (open) setInspection((value) => value + 1);
+          setOpen(!open);
+        }}
+      >
         {open
           ? ja
             ? "参照情報を閉じる"

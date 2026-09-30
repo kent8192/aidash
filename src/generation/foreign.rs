@@ -735,7 +735,9 @@ async fn deliver_cancel(f: &Federation, id: Uuid, target: &str) -> Result<()> {
 	)
 	.await?;
 	if !acknowledged {
-		return Err(Error::Conflict("remote generation cancellation was not acknowledged".into()));
+		return Err(Error::Conflict(
+			"remote generation cancellation was not acknowledged".into(),
+		));
 	}
 	sqlx::query(
 		&Query::update()
