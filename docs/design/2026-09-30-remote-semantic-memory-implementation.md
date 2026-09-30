@@ -4,7 +4,8 @@ This ledger maps the [accepted specification](2026-09-30-remote-semantic-memory-
 
 ## Delivery identity
 
-- Base: `827480c13d796bca142787be5bbd25ce34c80551` (`develop/0.1.0`).
+- Original implementation base: `827480c13d796bca142787be5bbd25ce34c80551` (`develop/0.1.0`).
+- Integrated `develop/0.1.0` at `3cb803544c37ebbeb413bc8554accb0a06d916fa` (SSE delivery, PR #92). Required-Home operator checks now run at the new SSE frame handoff; both-node stream assertions extend the existing operator regression.
 - Branch: `feat/issue-75-remote-semantic-memory`.
 - Cluster reports retain the base revision, dirty state, hashes of every runtime source input, actual container image IDs, distribution version and synthetic provider requests. The final PR identifies the committed source revision.
 
@@ -49,16 +50,17 @@ The named integration cases below are in `tests/scoped_remote_execution.rs` unle
 
 ## Verification results
 
-- `cargo clippy --locked --workspace --all-targets -- -D warnings`: passed (`/tmp/aidash-75-clippy-final4.log`).
-- `npm run build --prefix web`: passed, including generated API types.
+- `cargo clippy --locked --workspace --all-targets -- -D warnings`: passed (`/tmp/aidash-75-clippy-merged.log`).
+- `npm run build --prefix web`: passed again after the SSE integration, including generated API types (`/tmp/aidash-75-web-merged.log`).
 - `npm run test:graph --prefix web` and `npm run test:collaboration --prefix web`: passed.
 - Full Playwright suite: **152 passed**, no skipped, unexpected or flaky results. The required core-capability browser evidence validator also passed.
 - Cluster visibility-oracle unit suite: **9 passed**.
-- Scoped integration: **53 passed** again after the final repair (`/tmp/aidash-75-rust-boundary-followup.log`); the revoked-discovery and legacy remote-message regressions also passed in the whole-workspace invocation.
-- Trunk full check: **506 files passed** (`/tmp/aidash-75-trunk-final4.log`). Design/ADR links and formatting also passed.
+- SSE functional suite after integration: **19 passed**, with its separately invoked load/idle benchmark excluded (`/tmp/aidash-75-sse-final.log`, `.ignore/sse-issue75-merge/invocation.json`). No new SSE performance claim is made by this change.
+- After the SSE integration, **60 passed** across scoped execution (53), revoked-discovery (1) and legacy remote-message fences (6), including the added both-node operator SSE assertions (`/tmp/aidash-75-merged-regressions.log`).
+- Trunk full check: **514 files passed** (`/tmp/aidash-75-trunk-merged.log`). Design/ADR links and formatting also passed.
 - Whole-workspace Rust invocation: **592 passed, 4 failed** (`/tmp/aidash-75-rust-isolated-all-r2.log`). All four failures exposed the same generation-reconciliation ordering regression at the atomic visibility boundary. After moving the visibility lease before the new recovery scans, **all four passed** unchanged (`/tmp/aidash-75-transaction-boundary-fixed.log`). The follow-up invocation passed **180 tests** across the affected generation/semantic suites and the previously unreached transaction/workbench/worker targets (`/tmp/aidash-75-rust-boundary-followup.log`). The outer harness intentionally ignores one subprocess helper; both dedicated-broker parent cases execute it and passed.
 
-The 53-case suite includes the real child-worker SIGKILL, combined generated lineage accounting, read-only tool rejection and bearer-header assertion. All eight new locale journeys passed within the 152-case browser suite. The combined Rust evidence contains **680 distinct passing tests** and the one subprocess helper. Whole-workspace, focused repair/follow-up and cluster results are recorded separately.
+The 53-case suite includes the real child-worker SIGKILL, combined generated lineage accounting, read-only tool rejection and bearer-header assertion. All eight new locale journeys passed within the 152-case browser suite. The pre-integration Rust checkpoint contains **680 distinct passing tests** and the one subprocess helper; the post-integration suites are listed separately above. Whole-workspace, focused repair/follow-up and cluster results are recorded separately.
 
 ## Cluster evidence
 
@@ -66,8 +68,8 @@ The remote-memory profile provisions two HTTP Nodes and their workers, separate 
 
 A forced Kubernetes Pod deletion alone was insufficient evidence of process death: the old process could still finish before the runtime stopped it. The driver now freezes the owned container process, scales its deployment to zero, sends SIGKILL through that disposable cluster node's runtime PID, and observes process exit before releasing the provider response. Evidence records the Pod UID, container ID, runtime PID and signal.
 
-- Kubernetes **v1.34.0: all three selected scenarios passed** (`aidash-tx-8f5e4a0452`, `/tmp/aidash-75-kubernetes-r8.log`). Runtime source digest: `ac7b087d0d58d722006afb5a9314e3298225f89f127f333fb39cf62e480ad88d`; actual server image ID: `sha256:edd3a85c0e69e547c89c0048fb34374abf325e0fce2e4d03423dea4eee3f9828`. No runtime source file differed from the verified checkout.
-- k3s **v1.34.11+k3s1: all three selected scenarios passed** (`aidash-tx-f87be2a652`, `/tmp/aidash-75-k3s-r3.log`), using the same runtime source digest and actual server image ID. The pre-build fixture/driver hashes also match the delivered checkout.
+- Kubernetes **v1.34.0: all three selected scenarios passed** (`aidash-tx-41622f389b`, `/tmp/aidash-75-kubernetes-r9.log`). Runtime source digest: `b425a2d6eabcde14fbc909e9dad665235cf6cb7236342e9da2d1e39d11f01490`; actual server image ID: `sha256:3dbc6f73517ab58ba5859ab35dd979e46992709b9f938b4157ee93373ccdcd39`. No runtime source file differed from the verified checkout.
+- k3s **v1.34.11+k3s1: all three selected scenarios passed** (`aidash-tx-74d73c6edd`, `/tmp/aidash-75-k3s-r4.log`), using the same runtime source digest and actual server image ID. The pre-build fixture/driver hashes also match the delivered checkout.
 - Raw reports: `.ignore/transaction-acceptance/<namespace>/remote-memory.json`, `provider-requests.json`, `source-inputs.json`, `build-inputs.json`, `environment.json`, `images-final.json` and node logs. For these local runs, `build-inputs.json` is a copy of the pre-build manifest including fixture and driver hashes. CI uploads this directory for each distribution/profile.
 
 Earlier failed driver runs remain in their separate evidence directories. They exposed an unnecessary diagnostic lease mutation, Pod-to-Service readiness timing, and the process-death observation gap; they are not reported as passing acceptance.
