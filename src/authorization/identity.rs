@@ -290,20 +290,25 @@ impl SubjectIdentity {
 			.bind(identity_id)
 			.fetch_optional(&mut **tx)
 			.await?;
-			let Some((issuer, Some(last_valid_at), None)) = validity else {
-				return Err(Error::Forbidden);
-			};
-			// Google validates identity at login and has no service-account status
-			// endpoint. Local revocation above still applies to every provider.
-			if issuer != crate::config::GOOGLE_OIDC_ISSUER
-				&& last_valid_at <= Utc::now() - Duration::minutes(15)
-			{
-				return Err(Error::IdentityStatusUnavailable);
-			}
+			validate_dashboard_status(validity)?;
 		}
 		if !enabled(&snapshot, &self.subject) {
 			return Err(Error::Forbidden);
 		}
 		Ok(snapshot)
 	}
+}
+
+/// Shared provider-status rule for protected leases and non-authorizing idle checks.
+pub(crate) fn validate_dashboard_status(validity: Option<IdentityValidity>) -> Result<()> {
+	let Some((issuer, Some(last_valid_at), None)) = validity else {
+		return Err(Error::Forbidden);
+	};
+	// Google has no service-account status endpoint; local revocation still applies.
+	if issuer != crate::config::GOOGLE_OIDC_ISSUER
+		&& last_valid_at <= Utc::now() - Duration::minutes(15)
+	{
+		return Err(Error::IdentityStatusUnavailable);
+	}
+	Ok(())
 }

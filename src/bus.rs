@@ -8,6 +8,9 @@ use futures_util::StreamExt;
 use serde_json::Value;
 use std::time::Duration;
 
+mod connection;
+pub(crate) use connection::options as connection_options;
+
 #[derive(Clone)]
 pub struct EventBus {
 	pub context: jetstream::Context,
@@ -39,7 +42,9 @@ impl EventBus {
 	}
 
 	pub async fn connect(url: &str, node_id: &str) -> Result<Self> {
-		let client = async_nats::connect(url)
+		let (address, options) = connection_options(url, async_nats::ConnectOptions::new())?;
+		let client = options
+			.connect(address)
 			.await
 			.map_err(|e| Error::External(e.to_string()))?;
 		let context = jetstream::new(client);
@@ -160,11 +165,29 @@ impl EventBus {
 		Ok(published)
 	}
 	pub async fn publisher(&self, f: Federation) -> Result<()> {
+		let mut active_until = tokio::time::Instant::now();
 		loop {
-			if let Err(e) = self.publish_once(&f).await {
-				tracing::warn!(error=%e,"outbox publish failed; retained for retry");
-			}
-			tokio::time::sleep(Duration::from_millis(250)).await;
+			let published = self.publish_once(&f).await;
+			let delay = match published {
+				Ok(count) => {
+					if count > 0 {
+						active_until = tokio::time::Instant::now() + Duration::from_secs(1);
+					}
+					// Spread sustained notifications across smaller batches instead
+					// of bursting every 250 ms into serialized per-frame audits.
+					// Quiescent publishers retain their existing idle scan cadence.
+					if tokio::time::Instant::now() < active_until {
+						Duration::from_millis(50)
+					} else {
+						Duration::from_millis(250)
+					}
+				}
+				Err(e) => {
+					tracing::warn!(error=%e,"outbox publish failed; retained for retry");
+					Duration::from_millis(250)
+				}
+			};
+			tokio::time::sleep(delay).await;
 		}
 	}
 	pub async fn consumer(&self, f: Federation) -> Result<()> {

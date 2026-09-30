@@ -54,11 +54,9 @@ impl Broker {
 		.map_err(|_| Error::External("activation setup timeout".into()))?
 	}
 	async fn setup(url: &str, node: &str, settings: &Settings, worker: bool) -> Result<Self> {
-		let mut address = reqwest::Url::parse(url)
-			.map_err(|_| Error::Invalid("invalid activation broker address".into()))?;
 		let disconnected = Arc::new(AtomicBool::new(false));
 		let lost = disconnected.clone();
-		let mut options = async_nats::ConnectOptions::new().event_callback(move |event| {
+		let options = async_nats::ConnectOptions::new().event_callback(move |event| {
 			let lost = lost.clone();
 			async move {
 				if matches!(
@@ -70,28 +68,7 @@ impl Broker {
 				}
 			}
 		});
-		let decode = |value: &str| {
-			percent_encoding::percent_decode_str(value)
-				.decode_utf8()
-				.map(|s| s.into_owned())
-				.map_err(|_| {
-					Error::Invalid("invalid activation broker authentication encoding".into())
-				})
-		};
-		if !address.username().is_empty() {
-			options = match address.password() {
-				Some(password) => {
-					options.user_and_password(decode(address.username())?, decode(password)?)
-				}
-				None => options.token(decode(address.username())?),
-			};
-			address
-				.set_username("")
-				.map_err(|_| Error::Invalid("invalid activation broker address".into()))?;
-			address
-				.set_password(None)
-				.map_err(|_| Error::Invalid("invalid activation broker address".into()))?;
-		}
+		let (address, mut options) = crate::bus::connection_options(url, options)?;
 		if let Some(path) = std::env::var_os("AIDASH_ACTIVATION_NATS_CREDENTIALS") {
 			options = options
 				.credentials_file(path)

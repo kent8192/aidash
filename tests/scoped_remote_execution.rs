@@ -2461,6 +2461,51 @@ async fn operator_content_views_cannot_bypass_both_node_subject_authority(
 				);
 			}
 		}
+		// The notification-backed stream must enforce the same boundary at
+		// delivery, including receiver Run events without a Workspace FK.
+		let (status, body) = request(
+			app,
+			&f.config.api_token,
+			"POST",
+			"/api/workspaces",
+			json!({"title":"operator-stream-tail","goal":"Independent stream marker"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		let response = app
+			.clone()
+			.oneshot(
+				axum::http::Request::get("/api/events/stream")
+					.header("authorization", format!("Bearer {}", f.config.api_token))
+					.body(Body::empty())
+					.unwrap(),
+			)
+			.await
+			.unwrap();
+		assert_eq!(response.status(), 200);
+		let mut stream = response.into_body().into_data_stream();
+		tokio::time::timeout(std::time::Duration::from_secs(20), async {
+			loop {
+				let chunk = stream.next().await.unwrap().unwrap();
+				let frame = String::from_utf8_lossy(&chunk);
+				for hidden in [
+					"ochre falcon",
+					"Scoped remote result",
+					"Scoped remote progress",
+				] {
+					assert!(
+						!frame.contains(hidden),
+						"operator stream leaked {hidden}: {frame}"
+					);
+				}
+				if frame.contains("operator-stream-tail") {
+					break;
+				}
+			}
+		})
+		.await
+		.unwrap();
+		drop(stream);
 	}
 	for path in [
 		format!("/api/workspaces/{}", task.workspace_id),

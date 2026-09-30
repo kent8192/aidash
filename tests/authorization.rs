@@ -560,7 +560,8 @@ async fn subject_receives_thread_opened_event_for_a_visible_root_message(
 	)
 	.await;
 	assert_eq!(status, 200, "{thread}");
-	let frame = tokio::time::timeout(Duration::from_secs(2), stream.next())
+	// This router fixture has no broker supervisor; exercise canonical fallback.
+	let frame = tokio::time::timeout(Duration::from_secs(6), stream.next())
 		.await
 		.unwrap()
 		.unwrap()

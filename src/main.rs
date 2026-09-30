@@ -59,9 +59,11 @@ async fn main() -> Result<()> {
 	let config = Config::from_env()?;
 	let activation_settings = aidash::activation::Settings::from_env()?;
 	let http_settings = aidash::http::Settings::from_env()?;
+	let sse_settings = aidash::sse::Settings::from_env()?;
 	let metrics = metrics_exporter_prometheus::PrometheusBuilder::new()
 		.install_recorder()
 		.map_err(|error| aidash::Error::External(format!("metrics recorder: {error}")))?;
+	let event_streams = aidash::sse::Service::new(sse_settings);
 	let store = Store::connect(&config.database_url, config.node_id.clone()).await?;
 	if mode == "migrate" {
 		return Ok(());
@@ -216,13 +218,18 @@ async fn main() -> Result<()> {
 	}
 	let mut http = tokio::task::JoinSet::new();
 	if mode != "worker" {
+		let service = event_streams.clone();
+		let url = config.nats_url.clone();
+		let node = config.node_id.clone();
+		let subscriber_stopping = stopping.clone();
+		background.spawn(async move { service.run(&url, &node, subscriber_stopping).await });
 		let listener = tokio::net::TcpListener::bind(config.listen).await?;
 		tracing::info!(node=%config.node_id,listen=%config.listen,"Aidash node started");
 		let mut stopping = stopping.clone();
 		http.spawn(async move {
 			axum::serve(
 				listener,
-				api::router_with_settings(federation, http_settings)
+				api::router_with_event_streams(federation, http_settings, event_streams)
 					.into_make_service_with_connect_info::<std::net::SocketAddr>(),
 			)
 			.with_graceful_shutdown(async move { aidash::lifecycle::stopped(&mut stopping).await })
