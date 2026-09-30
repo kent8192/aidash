@@ -17,19 +17,13 @@ use axum::{
 	extract::{Path, Query, Request, State},
 	http::{HeaderMap, Method},
 	middleware::{self, Next},
-	response::{
-		Response, Sse,
-		sse::{Event as SseEvent, KeepAlive},
-	},
+	response::{Response, Sse, sse::KeepAlive},
 	routing::{get, post},
 };
 use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{
-	convert::Infallible,
-	time::{Duration, Instant},
-};
+use std::time::Duration;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
@@ -119,6 +113,18 @@ pub fn router(f: Federation) -> Router {
 }
 
 pub fn router_with_settings(f: Federation, settings: crate::http::Settings) -> Router {
+	router_with_event_streams(
+		f,
+		settings,
+		crate::sse::Service::new(crate::sse::Settings::default()),
+	)
+}
+
+pub fn router_with_event_streams(
+	f: Federation,
+	settings: crate::http::Settings,
+	event_streams: crate::sse::Service,
+) -> Router {
 	let body_limit = crate::http::body_limit(crate::http::BODY_LIMIT);
 	let (api, _) = ordinary_routes().split_for_parts();
 	let (transactions, _) = crate::transactions::api::routes()
@@ -248,6 +254,7 @@ pub fn router_with_settings(f: Federation, settings: crate::http::Settings) -> R
 		)
 		.nest("/auth", crate::http::private_responses(auth))
 		.layer(Extension(slots))
+		.layer(Extension(event_streams))
 		.with_state(f);
 	crate::http::protect(router, &settings)
 }
@@ -1334,98 +1341,31 @@ async fn events(
 async fn stream(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
+	Extension(service): Extension<crate::sse::Service>,
+	lease: Option<Extension<crate::http::SseLeaseHandle>>,
 	browser: Option<Extension<crate::dashboard_auth::BrowserOrigin>>,
 	headers: HeaderMap,
 	Query(q): Query<EventQuery>,
-) -> Result<Sse<impl futures_util::Stream<Item = std::result::Result<SseEvent, Infallible>>>> {
-	let browser = browser.map(|Extension(origin)| origin);
-	let operator = matches!(&actor, Actor::Operator);
-	let scope = scoped(&f, actor);
-	let mut cursor = headers
+) -> Result<impl axum::response::IntoResponse> {
+	let cursor = headers
 		.get("last-event-id")
 		.and_then(|h| h.to_str().ok())
 		.and_then(|s| s.parse().ok())
 		.unwrap_or(q.after);
-	if cursor < 0 {
-		cursor = sqlx::query_scalar(
-			&sea_orm::sea_query::Query::select()
-				.expr(sea_orm::sea_query::Expr::cust("coalesce(max(sequence),0)"))
-				.from(sea_orm::sea_query::Alias::new("events"))
-				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+	let stream = service
+		.open(
+			f,
+			crate::sse::StreamRequest {
+				actor,
+				browser: browser.map(|Extension(origin)| origin),
+				headers,
+				cursor,
+				workspace: q.workspace_id,
+				lease: lease.map(|Extension(handle)| handle),
+			},
 		)
-		.fetch_one(&f.store.pool)
 		.await?;
-	}
-	// Validate the requested workspace before committing the SSE response.
-	if let Some(scope) = &scope {
-		scope.events(cursor, q.workspace_id, 1).await?;
-	}
-	let stream = async_stream::stream! {
-		let mut last_browser_check = Instant::now();
-		loop {
-			if let Some(origin) = &browser
-				&& last_browser_check.elapsed() >= Duration::from_secs(5)
-			{
-				if !browser_stream_authorized(&f, &headers, origin, operator).await { return; }
-				last_browser_check = Instant::now();
-			}
-			let visibility=match crate::transactions::gate::ReadLease::begin(&f.store).await {
-				Ok(lease)=>lease,
-				Err(Error::TransactionPending)=>{tokio::time::sleep(Duration::from_millis(250)).await;continue;},
-				Err(_)=>{yield Ok(SseEvent::default().event("error").data("event stream interrupted"));return;}
-			};
-			let events = if let Some(scope) = &scope { scope.poll_events(cursor, q.workspace_id, 100).await }
-				else { f.store.events(cursor, q.workspace_id, 100).await.map(|events| { let scanned = events.last().map_or(cursor, |event| event.sequence); (events, scanned) }) };
-			drop(visibility);
-			match events {
-				Ok((events, scanned)) => { for event in events {
-					let visibility=loop {
-						match crate::transactions::gate::ReadLease::begin(&f.store).await {
-							Ok(lease)=>break lease,
-							Err(Error::TransactionPending)=>tokio::time::sleep(Duration::from_millis(250)).await,
-							Err(_)=>{yield Ok(SseEvent::default().event("error").data("event stream interrupted"));return;}
-						}
-					};
-					cursor = event.sequence;
-					if let Some(origin) = &browser {
-						if !browser_stream_authorized(&f, &headers, origin, operator).await { return; }
-						last_browser_check = Instant::now();
-					}
-					if let Some(scope) = &scope {
-						match scope.can_emit(&event).await {
-							Ok(true) => {},
-							Ok(false) => continue,
-							Err(_) => { yield Ok(SseEvent::default().event("error").data("event stream interrupted")); return; }
-						}
-					}
-					drop(visibility);
-					yield Ok(SseEvent::default().id(cursor.to_string()).event("mesh").data(event.cloud_event().to_string()));
-				} cursor = scanned; },
-				Err(e) => { tracing::error!(error=%e,"SSE read failed"); yield Ok(SseEvent::default().event("error").data("event stream interrupted")); break; }
-			}
-			tokio::time::sleep(Duration::from_millis(250)).await;
-		}
-	};
 	Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
-}
-
-async fn browser_stream_authorized(
-	f: &Federation,
-	headers: &HeaderMap,
-	origin: &crate::dashboard_auth::BrowserOrigin,
-	operator: bool,
-) -> bool {
-	match crate::dashboard_auth::actor_from_headers(f, headers, &Method::GET).await {
-		Ok((actor, current)) => {
-			current.identity_id == origin.identity_id
-				&& current.mapping_id == origin.mapping_id
-				&& matches!(
-					(operator, actor),
-					(true, Actor::Operator) | (false, Actor::Subject(_))
-				)
-		}
-		Err(_) => false,
-	}
 }
 
 async fn peer_discover(

@@ -23,6 +23,44 @@ pub struct Workspaces {
 }
 
 impl Access {
+	/// Evaluate both stream actions from one locked ownership read. Each call
+	/// still uses this transaction's current credential and policy snapshot.
+	async fn event_workspaces(&mut self, selected: Option<Uuid>) -> Result<Vec<Uuid>> {
+		let mut query = Query::select();
+		query
+			.columns([Alias::new("workspace_id"), Alias::new("owner_subject")])
+			.from(Alias::new("authorization_workspaces"))
+			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
+			.order_by(Alias::new("workspace_id"), Order::Asc)
+			.lock(LockType::Share);
+		if selected.is_some() {
+			query.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::cust("$2")));
+		}
+		let sql = query.to_string(PostgresQueryBuilder);
+		let mut query = sqlx::query_as::<_, (Uuid, String)>(&sql).bind(&self.identity.tenant);
+		if let Some(id) = selected {
+			query = query.bind(id);
+		}
+		let rows = query.fetch_all(&mut **self.tx).await?;
+		if rows.is_empty()
+			&& let Some(id) = selected
+		{
+			self.workspace_decide(id, "workspace.read", None).await?;
+		}
+		let mut visible = Vec::new();
+		for (id, owner) in rows {
+			if self
+				.workspace_decide(id, "workspace.read", Some(&owner))
+				.await? && self
+				.workspace_decide(id, "workspace.events", Some(&owner))
+				.await?
+			{
+				visible.push(id);
+			}
+		}
+		Ok(visible)
+	}
+
 	pub(crate) async fn create_workspace(
 		&mut self,
 		store: &Store,
@@ -1067,6 +1105,161 @@ impl Workspaces {
 		self.read_events(after, workspace, limit, false).await
 	}
 
+	/// A single current MVCC snapshot checks idle liveness. It grants no right
+	/// to emit: the protected per-frame path still takes all authority leases.
+	/// Read-only idle checks must not create row-lock/MultiXact contention with
+	/// hundreds of observers of the same credential, or append decision audits.
+	pub(crate) async fn stream_authority(&self, workspace: Option<Uuid>) -> Result<()> {
+		#[derive(sqlx::FromRow)]
+		struct Current {
+			revision: i64,
+			document: Value,
+			owner_subject: Option<String>,
+			mapping_id: Option<Uuid>,
+			mapping_enabled: Option<bool>,
+			issuer: Option<String>,
+			last_valid_at: Option<chrono::DateTime<chrono::Utc>>,
+			disabled_at: Option<chrono::DateTime<chrono::Utc>>,
+		}
+		let col = |table: &str, column: &str| Expr::col((Alias::new(table), Alias::new(column)));
+		let mut query = Query::select();
+		query
+			.columns([
+				(Alias::new("b"), Alias::new("revision")),
+				(Alias::new("b"), Alias::new("document")),
+				(Alias::new("w"), Alias::new("owner_subject")),
+			])
+			.expr_as(col("m", "id"), Alias::new("mapping_id"))
+			.expr_as(col("m", "enabled"), Alias::new("mapping_enabled"))
+			.columns(
+				["issuer", "last_valid_at", "disabled_at"]
+					.map(|name| (Alias::new("i"), Alias::new(name))),
+			)
+			.from_as(Alias::new("authorization_credentials"), Alias::new("c"))
+			.join_as(
+				sea_orm::sea_query::JoinType::InnerJoin,
+				Alias::new("authorization_bundles"),
+				Alias::new("b"),
+				col("b", "tenant").equals((Alias::new("c"), Alias::new("tenant"))),
+			)
+			.join_as(
+				sea_orm::sea_query::JoinType::LeftJoin,
+				Alias::new("dashboard_mappings"),
+				Alias::new("m"),
+				col("m", "credential_id").equals((Alias::new("c"), Alias::new("id"))),
+			)
+			.join_as(
+				sea_orm::sea_query::JoinType::LeftJoin,
+				Alias::new("dashboard_identities"),
+				Alias::new("i"),
+				col("i", "id").equals((Alias::new("m"), Alias::new("identity_id"))),
+			)
+			.join_as(
+				sea_orm::sea_query::JoinType::LeftJoin,
+				Alias::new("authorization_workspaces"),
+				Alias::new("w"),
+				Condition::all()
+					.add(col("w", "workspace_id").eq(Expr::cust("$4")))
+					.add(col("w", "tenant").equals((Alias::new("c"), Alias::new("tenant")))),
+			)
+			.and_where(col("c", "id").eq(Expr::cust("$1")))
+			.and_where(col("c", "tenant").eq(Expr::cust("$2")))
+			.and_where(col("c", "subject").eq(Expr::cust("$3")))
+			.and_where(col("c", "revoked_at").is_null())
+			.and_where(col("c", "expires_at").gt(Expr::cust("clock_timestamp()")));
+		let current: Current = sqlx::query_as(&query.to_string(PostgresQueryBuilder))
+			.bind(self.identity.credential_id)
+			.bind(&self.identity.tenant)
+			.bind(&self.identity.subject)
+			.bind(workspace)
+			.fetch_optional(&self.store.pool)
+			.await?
+			.ok_or(Error::Unauthorized)?;
+		if current.mapping_id.is_some() {
+			if current.mapping_enabled != Some(true) {
+				return Err(Error::Forbidden);
+			}
+			super::identity::validate_dashboard_status(
+				current
+					.issuer
+					.map(|issuer| (issuer, current.last_valid_at, current.disabled_at)),
+			)?;
+		}
+		let snapshot = super::Snapshot {
+			revision: current.revision,
+			bundle: serde_json::from_value(current.document)?,
+		};
+		if !super::identity::enabled(&snapshot, &self.identity.subject) {
+			return Err(Error::Forbidden);
+		}
+		if let Some(id) = workspace {
+			let owner = current.owner_subject.ok_or(Error::Forbidden)?;
+			for action in ["workspace.read", "workspace.events"] {
+				let input = Evaluation {
+					subject: self.identity.subject.clone(),
+					action: action.into(),
+					resource: Resource {
+						tenant: self.identity.tenant.clone(),
+						kind: "workspace".into(),
+						id: id.to_string(),
+						attributes: json!({"owner":owner,"workspace_id":id}),
+					},
+					environment: json!({"node_id":self.store.node_id,"transport":"api"}),
+				};
+				if !snapshot.bundle.evaluate(&input).allowed {
+					return Err(Error::Forbidden);
+				}
+			}
+		}
+		Ok(())
+	}
+
+	/// One bounded candidate page; the SSE reader owns continuation and fairness.
+	pub(crate) async fn stream_page(
+		&self,
+		after: i64,
+		workspace: Option<Uuid>,
+		on_query: impl FnOnce(),
+	) -> Result<(Vec<Event>, i64, bool)> {
+		let mut access = Access::begin(&self.store, &self.identity).await?;
+		access.audit = false;
+		let result = async {
+			let visible = access.event_workspaces(workspace).await?;
+			if workspace.is_some() && visible.is_empty() {
+				return Err(Error::Forbidden);
+			}
+			on_query();
+			let batch: Vec<Event> = sqlx::query_as(
+				&Query::select()
+					.column(Asterisk)
+					.from(Alias::new("events"))
+					.cond_where(
+						Condition::all()
+							.add(Expr::cust("workspace_id=ANY($1)"))
+							.add(Expr::col(Alias::new("sequence")).gt(Expr::cust("$2"))),
+					)
+					.order_by(Alias::new("sequence"), Order::Asc)
+					.limit(100)
+					.to_string(PostgresQueryBuilder),
+			)
+			.bind(&visible)
+			.bind(after.max(0))
+			.fetch_all(&mut **access.tx)
+			.await?;
+			let more = batch.len() == 100;
+			let scanned = batch.last().map_or(after, |event| event.sequence);
+			let mut events = Vec::new();
+			for event in batch {
+				if access.event_visible(&event).await? {
+					events.push(event);
+				}
+			}
+			Ok((events, scanned, more))
+		}
+		.await;
+		access.finish(result).await
+	}
+
 	async fn read_events(
 		&self,
 		after: i64,
@@ -1141,8 +1334,7 @@ impl Workspaces {
 			let Some(id) = event.workspace_id else {
 				return Ok(false);
 			};
-			Ok(access.allowed(id, "workspace.read").await?
-				&& access.allowed(id, "workspace.events").await?
+			Ok(!access.event_workspaces(Some(id)).await?.is_empty()
 				&& access.event_visible(event).await?)
 		}
 		.await;

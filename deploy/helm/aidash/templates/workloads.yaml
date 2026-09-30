@@ -85,6 +85,10 @@ spec:
             - { name: AIDASH_ACTIVATION_MAX_BYTES, value: {{ $.Values.activation.maxBytes | int64 | toString | quote }} }
             - { name: AIDASH_ACTIVATION_REPLICAS, value: {{ $.Values.activation.replicas | int64 | toString | quote }} }
             - { name: AIDASH_WORKER_SLOTS, value: {{ $.Values.worker.slots | int64 | toString | quote }} }
+            {{- if eq $role "server" }}
+            - { name: AIDASH_SSE_RECONCILE_INTERVAL_MS, value: {{ $.Values.sse.reconcileIntervalMs | int64 | toString | quote }} }
+            - { name: AIDASH_SSE_BACKPRESSURE_TIMEOUT_SECONDS, value: {{ $.Values.sse.backpressureTimeoutSeconds | int64 | toString | quote }} }
+            {{- end }}
             - name: AIDASH_ENDPOINT
               value: {{ $.Values.node.endpoint | default (printf "http://%s.%s.svc:8080" $backend $.Release.Namespace) | quote }}
             - { name: AIDASH_LISTEN, value: "0.0.0.0:8080" }
