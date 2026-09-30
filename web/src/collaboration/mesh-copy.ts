@@ -23,6 +23,10 @@ export const meshCopy = {
       model: "Models",
       skill: "Skills",
     },
+    executionRegion: "Execution node",
+    sharedData: "Workspace shared data",
+    homeNode: "Home",
+    configurationReferences: "Configuration references",
     relations: {
       contains: "contains",
       goal: "works toward",
@@ -159,6 +163,10 @@ export const meshCopy = {
       model: "モデル",
       skill: "スキル",
     },
+    executionRegion: "実行ノード",
+    sharedData: "ワークスペースの共有データ",
+    homeNode: "正本",
+    configurationReferences: "設定・参照",
     relations: {
       contains: "含む",
       goal: "目指す",

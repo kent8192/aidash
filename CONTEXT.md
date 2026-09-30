@@ -185,7 +185,7 @@ An independently operated Aidash participant with its own identity, resources an
 _Avoid_: Worker, Agent
 
 **Home node**:
-The Node that owns a Workspace and its Tasks and published Artifacts, including when another Node performs the work.
+The Node that owns a Workspace and its Tasks, Conversations, Messages and published Artifacts, including when another Node performs the work.
 _Avoid_: Execution node, central server
 
 **Execution node**:
@@ -215,3 +215,29 @@ _Avoid_: Unrestricted Workspace access, local working-area operation
 **Pinned definition**:
 The exact version and contents of an Agent or execution dependency to which an authorization applies.
 _Avoid_: Latest version, compatible replacement
+
+## Workspace Graph View
+
+**Node execution region**:
+A visual boundary identifying the Node responsible for the Agents and Runs shown within it. It identifies placement independently of current execution activity or Workspace data ownership.
+_Avoid_: Workspace-owned Node, Workspace boundary, storage service
+
+**Workspace shared data**:
+A Workspace's shared Goal, Tasks, Conversations, Messages and published Artifacts whose authoritative owner is its Home node. Remote execution does not transfer ownership of these resources.
+_Avoid_: Remote executor data, independent shared database
+
+**Graph Agent identity**:
+An Agent identity distinguished by its execution Node, Agent identifier and exact definition version. It can have several Runs and does not establish the identity of a distinct Logical Agent participant.
+_Avoid_: Agent name alone, Run, worker replica, Logical Agent identity
+
+**Configuration reference group**:
+A visual collection of versioned Tools, Models, Skills and Clusters referenced by the displayed Agents, with their registering Nodes identified. Referencing a definition does not establish an invocation or membership in a Workspace.
+_Avoid_: Execution region, Workspace shared data
+
+**Workspace shared-data group**:
+A visual collection of one Workspace's authoritative shared resources, identified by that Workspace and its Home node. It is independent of the execution regions of Nodes working on the Workspace.
+_Avoid_: Node container, independent storage service, all Workspaces with the same title
+
+**Result sharing**:
+A recorded communication of a work result with an identifiable sending Agent, receiving Agent and result. Task completion, Artifact publication and recipient reading are distinct occurrences.
+_Avoid_: Task completion, Artifact creation, confirmed recipient reading

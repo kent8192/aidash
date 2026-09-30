@@ -474,6 +474,31 @@
   transform-origin: 0 0;
   pointer-events: none;
 }
+.mesh-region-label {
+  position: absolute;
+  width: 290px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 5px;
+  color: #b9d5ce;
+  background: #0b2525e8;
+  font: 600 11px/1.25 "DM Sans", "Noto Sans JP", sans-serif;
+  text-align: center;
+  transform: translateX(-50%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mesh-region-execution-label {
+  color: #dfc9f2;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.mesh-region-execution-label:hover,
+.mesh-region-execution-label:focus-visible {
+  background: #4a2f61;
+  outline: 2px solid #b899d0;
+}
 .mesh-graph .mesh-node-label {
   position: absolute;
   display: flex;
@@ -1350,19 +1375,6 @@
     flex: 0 0 auto;
     grid-template-columns: minmax(0, 1fr);
   }
-}
-.mesh-graph .mesh-node-label.execution-label {
-  width: 150px;
-  text-align: left;
-  align-items: flex-start;
-  gap: 5px;
-}
-.mesh-node-label.execution-label strong {
-  max-width: 146px;
-  font-size: 13px;
-}
-.mesh-node-label.execution-label .mesh-node-kind {
-  display: none;
 }
 .mesh-execution .mesh-canvas.collab-cytoscape,
 .mesh-execution .mesh-label-layer {

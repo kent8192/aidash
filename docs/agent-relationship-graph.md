@@ -61,22 +61,31 @@ application at `AIDASH_E2E_URL` (default `http://127.0.0.1:18080`).
 
 ## Workspace Graph View
 
-Open **Graph View** from the collaboration sidebar. The workspace selector scopes
-workspace, goal, task, conversation, artifact and recorded run activity. Authorized
-registry configuration remains available for context. The new canvas uses the
+Open **Graph View** from the collaboration sidebar. The workspace selector keeps
+only shared resources owned by the selected Home Workspace, its recorded Runs,
+Agents with an explicit Task, Run or Conversation relationship, and their
+referenced configuration. **All workspaces** groups shared resources separately
+by `(Home Node, Workspace)`. The canvas uses the
 existing Cytoscape dependency and Lucide icons. The user-provided Mesh + Accent
 logo kit supplies the sidebar, compact mark, sign-in wordmark and favicon; the
 original SVG/ICO files are kept in `web/public/brand` without redrawing.
 
-Five perspectives share the same authorized projection:
+Five perspectives share the same authorized projection and placement rules.
+Outlined execution regions contain only Agents and Runs, grouped by their
+executing Node. Shared Workspace data is grouped by Home Node and Workspace;
+referenced configuration has a separate origin-labeled group, and Humans remain
+outside these regions. A region appears only while it has visible resources.
+Peer controls remain available when an authorized Node has no visible region.
+The Node type filter controls execution frames without hiding Agent or Run
+resources. Individual Messages remain represented by their Conversation vertex.
 
-| Perspective     | Organization                                                                                                                                                       |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Agent mesh      | People and goals above tasks; agent clusters, tools, artifacts and discovered peers in separate groups.                                                            |
-| Collaboration   | A workspace at the center of its people, conversations, goals, agents, tasks and artifacts.                                                                        |
-| Knowledge graph | Goals, tasks and artifacts with their explicit producers, tools, models, skills and conversations.                                                                 |
-| Execution flow  | Request authors, delegating agents, task cards, executing agents and produced artifacts. Current task counts and a time-scaled event timeline accompany the graph. |
-| Topology        | Local and directly authorized peer nodes, separate agent clusters and configured tool links. Available to authorized Subjects and operators.                       |
+| Perspective     | Resource focus |
+| --------------- | -------------- |
+| Agent mesh      | Agents, Runs, Tasks, Goals, Artifacts and referenced configuration. |
+| Collaboration   | Workspace, people, conversations and their recorded work. |
+| Knowledge graph | Goals, Tasks, Artifacts and their explicit producers and dependencies. |
+| Execution flow  | Recorded Tasks, Runs and events, with counts and a time-scaled timeline. |
+| Topology        | Visible Agents and their exact configuration relationships. |
 
 **Agent relationships** retains the previous agent-focused exploration and topology
 controls. Agent-focus links open this perspective so exact entity selection stays

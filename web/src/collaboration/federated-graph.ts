@@ -250,7 +250,7 @@ export function mergeGraphPages(
           id: run.agent_id,
           version: run.agent_version,
         }),
-        resourceKey(localNode, "run", run.id),
+        resourceKey(peer, "run", run.id),
         "executes",
         "activity",
       );

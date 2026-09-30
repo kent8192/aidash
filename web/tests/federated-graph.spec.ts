@@ -66,6 +66,18 @@ const projected = {
       goal_body: null,
       at: null,
     },
+    {
+      id: key(firstPeer, "run", "b-run"),
+      node_id: firstPeer,
+      kind: "run",
+      name: { en: "B Run" },
+      resource_id: "b-run",
+      version: null,
+      workspace_id: workspace,
+      status: "THINKING",
+      goal_body: null,
+      at: timestamp,
+    },
   ],
   edges: [
     {
@@ -78,6 +90,18 @@ const projected = {
       source: key(firstPeer, "goal", workspace),
       target: key(firstPeer, "task", task),
       relation: "contains",
+      layer: "activity",
+    },
+    {
+      source: entity(firstPeer, "agent", "worker", "1.0.0"),
+      target: key(firstPeer, "run", "b-run"),
+      relation: "executes",
+      layer: "activity",
+    },
+    {
+      source: key(firstPeer, "run", "b-run"),
+      target: key(firstPeer, "task", task),
+      relation: "executes",
       layer: "activity",
     },
   ],
@@ -214,12 +238,12 @@ test("subject expands only direct authorized peers and clears remote details on 
   );
   await page.getByLabel("Graph perspective").selectOption("topology");
   await expect(
-    page.locator(".mesh-node-label").filter({ hasText: firstPeer }),
-  ).toBeVisible();
+    page.locator(".mesh-region-execution-label").filter({ hasText: firstPeer }),
+  ).toHaveCount(0);
   await page.getByRole("button", { name: "Expand node" }).first().click();
   await expect(
     page.locator(".mesh-node-label").filter({ hasText: "B Agent" }),
-  ).toBeVisible();
+  ).toHaveCount(0);
   await expect
     .poll(() =>
       requests.some(
@@ -230,6 +254,15 @@ test("subject expands only direct authorized peers and clears remote details on 
     )
     .toBe(true);
   await page.getByLabel("Graph workspace").selectOption("");
+  await expect(
+    page.locator(".mesh-node-label").filter({ hasText: "B Agent" }),
+  ).toBeVisible();
+  await expect(
+    page.locator(".mesh-region-execution-label").filter({ hasText: firstPeer }),
+  ).toBeVisible();
+  await expect(
+    page.locator(".mesh-node-label").filter({ hasText: firstPeer }),
+  ).toHaveCount(0);
   await expect
     .poll(() =>
       requests.some(
@@ -289,6 +322,139 @@ test("subject expands only direct authorized peers and clears remote details on 
   await expect(page.getByText("B Workspace")).toHaveCount(0);
 });
 
+test("three authorized execution Nodes share one Home Workspace without merging Peer Runs", async ({
+  page,
+}) => {
+  const scene = meshScene();
+  scene.data.access = { kind: "subject", tenant: "acme", subject: "ryota" };
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await installBearerDashboard(page, "synthetic-three-node-regions", {
+    tenant: "acme",
+    name: "ryota",
+  });
+  await page.addInitScript(() =>
+    localStorage.setItem("aidash-locale", "en-US"),
+  );
+  const projection = (peer: string) => ({
+    node_id: peer,
+    generation: `sha256:${"c".repeat(64)}`,
+    checked_at: timestamp,
+    nodes: [
+      {
+        id: entity(peer, "agent", "worker", "1.0.0"),
+        node_id: peer,
+        kind: "agent",
+        name: { en: "Peer Worker" },
+        resource_id: "worker",
+        version: "1.0.0",
+        workspace_id: null,
+        status: null,
+        goal_body: null,
+        at: null,
+      },
+      {
+        id: key(peer, "run", "same-run-id"),
+        node_id: peer,
+        kind: "run",
+        name: { en: "Peer Run" },
+        resource_id: "same-run-id",
+        version: null,
+        workspace_id: "product-lab",
+        status: "THINKING",
+        goal_body: null,
+        at: timestamp,
+      },
+    ],
+    edges: [
+      {
+        source: entity(peer, "agent", "worker", "1.0.0"),
+        target: key(peer, "run", "same-run-id"),
+        relation: "executes",
+        layer: "activity",
+      },
+    ],
+    activity: [],
+    next_cursor: null,
+  });
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/events/stream") return route.abort();
+    if (path === "/api/federation/graph/peers")
+      return route.fulfill({
+        json: [firstPeer, secondPeer].map((node_id) => ({ node_id })),
+      });
+    if (path === "/api/federation/graph")
+      return route.fulfill({
+        json: projection(route.request().postDataJSON().node_id),
+      });
+    return route.fulfill({
+      json:
+        path === "/api/session"
+          ? { access: scene.data.access, node_id: scene.data.node.id }
+          : path === "/api/state"
+            ? scene.data
+            : path === "/api/discover"
+              ? scene.discovery
+              : path === "/api/mesh"
+                ? { nodes: [], errors: [] }
+                : [],
+    });
+  });
+  await page.goto("/graph?channel=product-lab");
+  await expect(page.getByRole("button", { name: "Expand node" })).toHaveCount(
+    2,
+  );
+  await page.getByRole("button", { name: "Expand node" }).first().click();
+  await page.getByRole("button", { name: "Expand node" }).click();
+  await expect(page.locator(".mesh-region-execution-label")).toHaveCount(3);
+  for (const node of [scene.data.node.id, firstPeer, secondPeer])
+    await expect(
+      page.locator(".mesh-region-execution-label").filter({ hasText: node }),
+    ).toBeVisible();
+  await expect(
+    page.locator(".mesh-node-label").filter({ hasText: "Peer Worker" }),
+  ).toHaveCount(2);
+  await expect(
+    page.locator(".mesh-node-label").filter({ hasText: "Peer Run" }),
+  ).toHaveCount(2);
+  await expect(
+    page
+      .locator(".mesh-region-label")
+      .filter({ hasText: "Workspace shared data" }),
+  ).toHaveCount(1);
+  await expect(
+    page
+      .locator(".mesh-region-label")
+      .filter({ hasText: "Home: aidash://product-lab" }),
+  ).toHaveCount(1);
+  await expect(
+    page.locator(".mesh-node-label").filter({ hasText: firstPeer }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Close details" }).click();
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: "test-results/issue-95-three-node.png" });
+  await page.getByRole("checkbox", { name: "Nodes", exact: true }).uncheck();
+  await expect(page.locator(".mesh-region-execution-label")).toHaveCount(0);
+  await expect(
+    page.locator(".mesh-node-label").filter({ hasText: "Peer Worker" }),
+  ).toHaveCount(2);
+  await page.getByRole("checkbox", { name: "Nodes", exact: true }).check();
+  for (const layout of ["force", "circle", "structured"])
+    await page.getByLabel("Layout", { exact: true }).selectOption(layout);
+  await expect(page.locator(".mesh-region-execution-label")).toHaveCount(3);
+  await page.getByRole("button", { name: "Collapse node" }).first().click();
+  await expect(
+    page.locator(".mesh-region-execution-label").filter({ hasText: firstPeer }),
+  ).toHaveCount(0);
+  await expect(
+    page
+      .locator(".mesh-region-execution-label")
+      .filter({ hasText: secondPeer }),
+  ).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test("compact Japanese view replaces page windows and clears outages and forged third-node data", async ({
   page,
 }) => {
@@ -321,6 +487,18 @@ test("compact Japanese view replaces page windows and clears outages and forged 
     goal_body: null,
     at: null,
   });
+  const run = () => ({
+    id: key(firstPeer, "run", "workspace-run"),
+    node_id: firstPeer,
+    kind: "run",
+    name: { ja: "Bの実行" },
+    resource_id: "workspace-run",
+    version: null,
+    workspace_id: "product-lab",
+    status: "THINKING",
+    goal_body: null,
+    at: timestamp,
+  });
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/events/stream") return route.abort();
@@ -346,8 +524,28 @@ test("compact Japanese view replaces page windows and clears outages and forged 
                   response === "forged"
                     ? agent("C非公開", secondPeer)
                     : agent(next ? "B次ページ" : "B最初のページ"),
+                  run(),
                 ],
-          edges: [],
+          edges:
+            response === "empty" && !next
+              ? []
+              : [
+                  {
+                    source: entity(
+                      response === "forged" ? secondPeer : firstPeer,
+                      "agent",
+                      response === "forged"
+                        ? "C非公開"
+                        : next
+                          ? "B次ページ"
+                          : "B最初のページ",
+                      "1.0.0",
+                    ),
+                    target: key(firstPeer, "run", "workspace-run"),
+                    relation: "executes",
+                    layer: "activity",
+                  },
+                ],
           activity: [],
           next_cursor: next ? null : "next",
         },

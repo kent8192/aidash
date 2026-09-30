@@ -314,14 +314,16 @@ export function buildMeshGraph(
     )
       edge(author, owner, "delegates", "activity");
   }
+  const enabledPeers = new Set(
+    options.authorizedPeers ??
+      data.peers.filter((peer) => peer.enabled).map((peer) => peer.node_id),
+  );
   const activity = (
     options.runs ?? data.runs.map((run) => ({ node: nodeId, run }))
   )
     .filter(
       ({ node, run }) =>
-        (node === nodeId ||
-          data.access.kind === "operator" ||
-          options.authorizedPeers !== undefined) &&
+        (node === nodeId || enabledPeers.has(node)) &&
         (!run.home_node || run.home_node === nodeId) &&
         workspaceIds.has(run.workspace_id) &&
         (activeRun(run) || inWindow(run.updated_at, hours, now)),
@@ -332,16 +334,19 @@ export function buildMeshGraph(
         Date.parse(b.run.updated_at) - Date.parse(a.run.updated_at),
     );
   const statusSet = new Set<string>();
-  const enabledPeers = new Set(
-    data.peers.filter((peer) => peer.enabled).map((peer) => peer.node_id),
-  );
   for (const { node, run } of activity) {
-    const runNode = resource(
-      "run",
-      run.id,
-      `Run ${run.id.slice(0, 8)}`,
-      run.workspace_id,
-    );
+    // A remote Run is journaled on its executor. Keep that Node in its graph
+    // identity even when the Home supplies the Task and Workspace records.
+    const runNode = add({
+      id: resourceKey(node, "run", run.id),
+      kind: "run",
+      name: { en: `Run ${run.id.slice(0, 8)}` },
+      nodeId: node,
+      resourceId: run.id,
+      workspaceId: run.workspace_id,
+      available: true,
+      remote: node !== nodeId,
+    });
     nodes.get(runNode)!.status =
       run.control === "PAUSED" ? "PAUSED" : run.phase;
     edge(
