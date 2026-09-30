@@ -2261,6 +2261,32 @@ async fn foreign_preparation_termination_releases_unused_allocations_once(
 		4,
 		"preparation makes no query embedding call"
 	);
+	let (input, _) = p.generation.as_ref().unwrap();
+	let mut replacement = input.clone();
+	replacement["id"] = json!(Uuid::new_v4());
+	let (status, fresh) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/tasks/{}/remote-generation", p.task),
+		replacement,
+	)
+	.await;
+	assert_eq!(status, 200, "{fresh}");
+	assert_ne!(fresh["request_id"], pending["request_id"]);
+	let retained: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(Alias::new("generation_requests"))
+			.and_where(Expr::cust("home_node=$1 AND task_id=$2"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(&p.a.config.node_id)
+	.bind(p.task)
+	.fetch_one(&p.b.store.pool)
+	.await
+	.unwrap();
+	assert_eq!(retained, 2, "terminal history must survive replacement");
 	p.close().await;
 }
 
@@ -2409,6 +2435,17 @@ async fn generated_foreign_executor_and_home_ancestor_share_durable_provider_all
 			"both embedding and inference must debit {}: {usage:?}",
 			node.config.node_id
 		);
+		let finalized: i64 = sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("COUNT(*)"))
+				.from(Alias::new("generation_remote_finalizations"))
+				.and_where(Expr::cust("result IS NOT NULL"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(&node.store.pool)
+		.await
+		.unwrap();
+		assert_eq!(finalized, 2, "each owner retains a terminal attempt fence");
 		assert_eq!(usage[0].0, "embedding");
 		assert_eq!(usage[0].1, "SETTLED");
 		assert_eq!(usage[0].3, Some(1));
@@ -2488,6 +2525,15 @@ async fn operator_polling_advances_past_hidden_event_pages(
 	.await
 	.unwrap();
 	let mut tx = p.a.store.pool.begin().await.unwrap();
+	p.a.store
+		.event(
+			&mut tx,
+			None,
+			"test.visible",
+			json!({"marker":"before-hidden-burst"}),
+		)
+		.await
+		.unwrap();
 	for _ in 0..501 {
 		p.a.store
 			.event(
@@ -2523,6 +2569,20 @@ async fn operator_polling_advances_past_hidden_event_pages(
 		"operator polling stalled behind hidden events: {page}"
 	);
 	assert!(!page.to_string().contains("\"secret\""));
+	let (status, state) = request(
+		&p.aa,
+		&p.a.config.api_token,
+		"GET",
+		"/api/state",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{state}");
+	assert!(
+		state["events"].to_string().contains("before-hidden-burst"),
+		"{state}"
+	);
+	assert!(!state["events"].to_string().contains("\"secret\""));
 	p.close().await;
 }
 

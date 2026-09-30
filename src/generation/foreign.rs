@@ -444,7 +444,9 @@ async fn prepare_at(f: &Federation, source: &str, id: Uuid) -> Result<Prepared> 
 			&Query::select()
 				.column(Asterisk)
 				.from(Alias::new("generation_requests"))
-				.and_where(Expr::cust("home_node=$1 AND task_id=$2"))
+				.and_where(Expr::cust(
+					"home_node=$1 AND task_id=$2 AND status IN ('PENDING_APPROVAL','QUEUED','ACTIVE')",
+				))
 				.lock(LockType::Update)
 				.to_string(PostgresQueryBuilder),
 		)
@@ -464,6 +466,24 @@ async fn prepare_at(f: &Federation, source: &str, id: Uuid) -> Result<Prepared> 
 			}
 			job
 		} else {
+			// A terminal attempt stays in history, but its intent cannot be
+			// replayed to create another executor.
+			let replayed: bool = sqlx::query_scalar(
+				&Query::select()
+					.expr(Expr::cust(
+						"EXISTS(SELECT 1 FROM generation_requests WHERE home_node=$1 AND foreign_intent->>'id'=$2)",
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.bind(source)
+			.bind(id.to_string())
+			.fetch_one(&mut **access.tx)
+			.await?;
+			if replayed {
+				return Err(Error::Conflict(
+					"foreign generation intent already finished".into(),
+				));
+			}
 			let Assignment::Generated { generation } = super::create_in(
 				f,
 				&mut access,
@@ -558,7 +578,9 @@ pub(crate) async fn bind(
 		&Query::select()
 			.column(Asterisk)
 			.from(Alias::new("generation_requests"))
-			.and_where(Expr::cust("home_node=$1 AND task_id=$2"))
+			.and_where(Expr::cust(
+				"home_node=$1 AND task_id=$2 AND status IN ('PENDING_APPROVAL','QUEUED','ACTIVE')",
+			))
 			.lock(LockType::Update)
 			.to_string(PostgresQueryBuilder),
 	)

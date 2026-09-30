@@ -11,7 +11,9 @@ use crate::{
 	store::Store,
 };
 use chrono::Utc;
-use sea_orm::sea_query::{Alias, Asterisk, Expr, LockType, Order, PostgresQueryBuilder, Query};
+use sea_orm::sea_query::{
+	Alias, Asterisk, Expr, LockType, OnConflict, Order, PostgresQueryBuilder, Query,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -292,6 +294,12 @@ pub(crate) async fn reserve(
 	}
 	let digest = usage.digest()?;
 	let mut tx = store.pool.begin().await?;
+	if lock_attempt(&mut tx, usage.attempt_id, &digest)
+		.await?
+		.is_some()
+	{
+		return Err(Error::Conflict("provider attempt already finalized".into()));
+	}
 	let mut reservations = vec![];
 	for job in jobs {
 		// One sorted budget row lock serializes local, remote and duplicate RPCs.
@@ -318,7 +326,7 @@ pub(crate) async fn reserve(
 		.fetch_optional(&mut *tx)
 		.await?;
 		if let Some((previous, state)) = existing {
-			if previous != digest || state == "RELEASED" {
+			if previous != digest || state != "RESERVED" {
 				return Err(Error::Conflict(
 					"provider attempt already has a different or final reservation".into(),
 				));
@@ -394,6 +402,48 @@ pub(crate) enum Finalization {
 	Settled { reported: Option<i64> },
 	Aborted {},
 }
+
+/// The attempt row serializes reservation insertion and finalization even
+/// when finalization arrives before any usage row exists.
+async fn lock_attempt(
+	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	attempt: Uuid,
+	digest: &str,
+) -> Result<Option<Value>> {
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("generation_remote_finalizations"))
+			.columns(["attempt_id", "digest"].map(Alias::new))
+			.values_panic(["$1", "$2"].map(Expr::cust))
+			.on_conflict(
+				OnConflict::column(Alias::new("attempt_id"))
+					.do_nothing()
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(attempt)
+	.bind(digest)
+	.execute(&mut **tx)
+	.await?;
+	let (saved_digest, result): (String, Option<Value>) = sqlx::query_as(
+		&Query::select()
+			.columns(["digest", "result"].map(Alias::new))
+			.from(Alias::new("generation_remote_finalizations"))
+			.and_where(Expr::cust("attempt_id=$1"))
+			.lock(LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(attempt)
+	.fetch_one(&mut **tx)
+	.await?;
+	if saved_digest != digest {
+		return Err(Error::Conflict(
+			"provider attempt has a different reservation".into(),
+		));
+	}
+	Ok(result)
+}
 /// Called only by the bound dispatcher's authenticated finalization path. A
 /// pre-dispatch abort must already be durable before the caller may release.
 /// Unknown or oversized usage retains the entire debit; settlement is a CAS.
@@ -411,6 +461,13 @@ pub(crate) async fn finalize(store: &Store, usage: &Usage, result: &Finalization
 		),
 	};
 	let mut tx = store.pool.begin().await?;
+	if let Some(previous) = lock_attempt(&mut tx, usage.attempt_id, &digest).await?
+		&& previous != json!(result)
+	{
+		return Err(Error::Conflict(
+			"provider attempt already finalized differently".into(),
+		));
+	}
 	let rows: Vec<(Uuid, String, Option<i64>)> = sqlx::query_as(
 		&Query::select()
 			.columns(["request_id", "state", "reported_tokens"].map(Alias::new))
@@ -519,6 +576,17 @@ pub(crate) async fn finalize(store: &Store, usage: &Usage, result: &Finalization
 		.execute(&mut *tx)
 		.await?;
 	}
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("generation_remote_finalizations"))
+			.value(Alias::new("result"), Expr::cust("$2"))
+			.and_where(Expr::cust("attempt_id=$1"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(usage.attempt_id)
+	.bind(json!(result))
+	.execute(&mut *tx)
+	.await?;
 	tx.commit().await?;
 	if reported.is_some_and(|n| n > usage.reserved_tokens) {
 		return Err(Error::RemoteSemantic(Failure::ProviderContract));

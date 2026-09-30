@@ -2,10 +2,20 @@
 //! Content in a workspace bound to required Home retrieval requires a Subject
 //! view. Operator APIs retain content-free stop controls and infrastructure data.
 use crate::{Error, Result, domain::Event};
-use sea_orm::sea_query::{Alias, Expr, JoinType, PostgresQueryBuilder, Query, UnionType};
+use sea_orm::sea_query::{
+	Alias, Expr, JoinType, PostgresQueryBuilder, Query, SimpleExpr, UnionType,
+};
 use sqlx::PgConnection;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+
+/// Apply the required-Home exclusion before a state collection's LIMIT.
+/// `column` is a fixed query alias supplied by the caller.
+pub(crate) fn state_visible(column: &str) -> SimpleExpr {
+	Expr::cust(format!(
+		"NOT EXISTS (SELECT 1 FROM tasks v_task JOIN authorization_remote_grants v_grant ON v_grant.task_id=v_task.id WHERE v_task.workspace_id={column} AND v_grant.semantic->>'mode'='required_home') AND NOT EXISTS (SELECT 1 FROM runs v_run JOIN authorization_remote_admissions v_admission ON v_admission.id=v_run.id WHERE v_run.workspace_id={column} AND v_admission.description->'semantic'->>'mode'='required_home')"
+	))
+}
 
 pub(crate) async fn blocked(
 	connection: &mut PgConnection,

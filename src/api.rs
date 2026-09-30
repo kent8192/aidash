@@ -499,61 +499,56 @@ async fn state(
 		return Ok(Json(scope.state(f.config.identity(vec![])).await?));
 	}
 	let records = f.registry.list(&Search::default()).await?;
-	let events: Vec<crate::domain::Event> = sqlx::query_as(
-		&sea_orm::sea_query::Query::select()
-			.expr(sea_orm::sea_query::SimpleExpr::from(
-				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("sequence")),
-			))
-			.expr(sea_orm::sea_query::SimpleExpr::from(
-				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id")),
-			))
-			.expr(sea_orm::sea_query::SimpleExpr::from(
-				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("node_id")),
-			))
-			.expr(sea_orm::sea_query::SimpleExpr::from(
-				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("workspace_id")),
-			))
-			.expr(sea_orm::sea_query::SimpleExpr::from(
-				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("kind")),
-			))
-			.expr(sea_orm::sea_query::SimpleExpr::from(
-				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("data")),
-			))
-			.expr(sea_orm::sea_query::SimpleExpr::from(
-				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("created_at")),
-			))
-			.from_subquery(
-				sea_orm::sea_query::Query::select()
-					.expr(sea_orm::sea_query::SimpleExpr::from(
-						sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
-					))
-					.from(sea_orm::sea_query::Alias::new("events"))
-					.order_by_expr(
-						sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
-							sea_orm::sea_query::Alias::new("sequence"),
-						)),
-						sea_orm::sea_query::Order::Desc,
-					)
-					.limit(100)
-					.to_owned(),
-				sea_orm::sea_query::Alias::new("e"),
-			)
-			.order_by_expr(
-				sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+	// Scan newest first until 100 visible events are collected. Hidden
+	// required-Home events may occupy any number of candidate pages.
+	let mut events = Vec::new();
+	let mut before = i64::MAX;
+	loop {
+		let batch: Vec<crate::domain::Event> = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.column(sea_orm::sea_query::Asterisk)
+				.from(sea_orm::sea_query::Alias::new("events"))
+				.and_where(sea_orm::sea_query::Expr::cust("sequence < $1"))
+				.order_by(
 					sea_orm::sea_query::Alias::new("sequence"),
-				)),
-				sea_orm::sea_query::Order::Asc,
+					sea_orm::sea_query::Order::Desc,
+				)
+				.limit(500)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(before)
+		.fetch_all(&f.store.pool)
+		.await?;
+		if batch.is_empty() {
+			break;
+		}
+		before = batch.last().expect("nonempty event batch").sequence;
+		let exhausted = batch.len() < 500;
+		events.extend(
+			crate::authorization::remote::operator::filter_events(
+				&mut *f.store.pool.acquire().await?,
+				batch,
 			)
-			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
-	)
-	.fetch_all(&f.store.pool)
-	.await?;
+			.await?,
+		);
+		if events.len() >= 100 || exhausted {
+			break;
+		}
+	}
+	events.truncate(100);
+	events.reverse();
 	let human: Vec<HumanRequest> = sqlx::query_as(
 		&sea_orm::sea_query::Query::select()
 			.expr(sea_orm::sea_query::SimpleExpr::from(
 				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
 			))
-			.from(sea_orm::sea_query::Alias::new("human_requests"))
+			.from_as(
+				sea_orm::sea_query::Alias::new("human_requests"),
+				sea_orm::sea_query::Alias::new("h"),
+			)
+			.and_where(crate::authorization::remote::operator::state_visible(
+				"h.workspace_id",
+			))
 			.order_by_expr(
 				sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
 					sea_orm::sea_query::Alias::new("created_at"),
@@ -570,7 +565,13 @@ async fn state(
 			.expr(sea_orm::sea_query::SimpleExpr::from(
 				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
 			))
-			.from(sea_orm::sea_query::Alias::new("conversations"))
+			.from_as(
+				sea_orm::sea_query::Alias::new("conversations"),
+				sea_orm::sea_query::Alias::new("c"),
+			)
+			.and_where(crate::authorization::remote::operator::state_visible(
+				"c.workspace_id",
+			))
 			.order_by_expr(
 				sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
 					sea_orm::sea_query::Alias::new("created_at"),
@@ -587,7 +588,13 @@ async fn state(
 			.expr(sea_orm::sea_query::SimpleExpr::from(
 				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
 			))
-			.from(sea_orm::sea_query::Alias::new("artifacts"))
+			.from_as(
+				sea_orm::sea_query::Alias::new("artifacts"),
+				sea_orm::sea_query::Alias::new("a"),
+			)
+			.and_where(crate::authorization::remote::operator::state_visible(
+				"a.workspace_id",
+			))
 			.order_by_expr(
 				sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
 					sea_orm::sea_query::Alias::new("created_at"),
@@ -620,8 +627,48 @@ async fn state(
 		node: f.config.identity(vec![]),
 		registry: records,
 		workspaces: f.store.workspaces().await?,
-		tasks: f.store.task_page(0).await?.tasks,
-		runs: f.store.runs().await?,
+		tasks: sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.column(sea_orm::sea_query::Asterisk)
+				.from_as(
+					sea_orm::sea_query::Alias::new("tasks"),
+					sea_orm::sea_query::Alias::new("t"),
+				)
+				.and_where(crate::authorization::remote::operator::state_visible(
+					"t.workspace_id",
+				))
+				.order_by(
+					sea_orm::sea_query::Alias::new("created_at"),
+					sea_orm::sea_query::Order::Desc,
+				)
+				.order_by(
+					sea_orm::sea_query::Alias::new("id"),
+					sea_orm::sea_query::Order::Desc,
+				)
+				.limit(500)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.fetch_all(&f.store.pool)
+		.await?,
+		runs: sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.column(sea_orm::sea_query::Asterisk)
+				.from_as(
+					sea_orm::sea_query::Alias::new("runs"),
+					sea_orm::sea_query::Alias::new("r"),
+				)
+				.and_where(crate::authorization::remote::operator::state_visible(
+					"r.workspace_id",
+				))
+				.order_by(
+					sea_orm::sea_query::Alias::new("updated_at"),
+					sea_orm::sea_query::Order::Desc,
+				)
+				.limit(500)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.fetch_all(&f.store.pool)
+		.await?,
 		human_requests: human,
 		conversations,
 		peers: f.peers().await?,

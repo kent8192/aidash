@@ -73,16 +73,9 @@ impl MigrationTrait for Migration {
 		.await?;
 		// SeaQuery has no ALTER DROP UNIQUE CONSTRAINT / ADD CHECK operation.
 		m.get_connection().execute_unprepared("ALTER TABLE generation_requests DROP CONSTRAINT generation_requests_task_id_key, ADD CONSTRAINT generation_foreign_binding CHECK ((home_node='' AND foreign_intent IS NULL AND grant_id IS NULL AND admission_id IS NULL) OR (home_node<>'' AND foreign_intent IS NOT NULL))").await?;
-		m.create_index(
-			Index::create()
-				.name("generation_requests_home_task")
-				.table(a("generation_requests"))
-				.col(a("home_node"))
-				.col(a("task_id"))
-				.unique()
-				.to_owned(),
-		)
-		.await?;
+		// SeaQuery cannot express a partial unique index. Terminal history must
+		// remain durable while a fresh intent may bind the same foreign Task.
+		m.get_connection().execute_unprepared("CREATE UNIQUE INDEX generation_requests_local_task ON generation_requests (task_id) WHERE home_node=''; CREATE UNIQUE INDEX generation_requests_home_task ON generation_requests (home_node, task_id) WHERE home_node<>'' AND status IN ('PENDING_APPROVAL','QUEUED','ACTIVE')").await?;
 		m.create_table(
 			Table::create()
 				.table(a("generation_remote_intents"))
@@ -169,6 +162,13 @@ impl MigrationTrait for Migration {
 		m.drop_index(
 			Index::drop()
 				.name("generation_requests_home_task")
+				.table(a("generation_requests"))
+				.to_owned(),
+		)
+		.await?;
+		m.drop_index(
+			Index::drop()
+				.name("generation_requests_local_task")
 				.table(a("generation_requests"))
 				.to_owned(),
 		)

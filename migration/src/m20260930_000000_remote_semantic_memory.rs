@@ -12,6 +12,7 @@ const TABLES: &[&str] = &[
 	"semantic_remote_reads",
 	"semantic_remote_receipts",
 	"generation_remote_usage",
+	"generation_remote_finalizations",
 	"generation_remote_dispatches",
 ];
 
@@ -205,6 +206,15 @@ impl MigrationTrait for Migration {
 				.table(Alias::new("generation_remote_usage"))
 				.col(Alias::new("attempt_id"))
 				.col(Alias::new("digest"))
+				.to_owned(),
+		)
+		.await?;
+		m.create_table(
+			Table::create()
+				.table(Alias::new("generation_remote_finalizations"))
+				.col(c("attempt_id").uuid().not_null().primary_key())
+				.col(c("digest").text().not_null())
+				.col(c("result").json_binary())
 				.to_owned(),
 		)
 		.await?;
