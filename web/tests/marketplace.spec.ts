@@ -4,7 +4,7 @@ import { installBearerDashboard } from "./auth-fixture";
 for (const locale of ["en-US", "ja-JP"] as const) {
   test(`scoped Marketplace stages and publishes exact definitions (${locale})`, async ({
     page,
-  }) => {
+  }, testInfo) => {
     await installBearerDashboard(page, "fixture", {
       tenant: "a",
       name: "alice",
@@ -190,6 +190,15 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         { exact: true },
       ),
     ).toBeVisible();
+    await page
+      .locator(".panel")
+      .filter({
+        has: page.getByRole("heading", {
+          name: ja ? "テナントの導入一覧" : "Tenant installations",
+          exact: true,
+        }),
+      })
+      .screenshot({ path: testInfo.outputPath(`marketplace-${locale}.png`) });
     await page
       .getByRole("button", {
         name: ja ? "設定変更を申請" : "Stage configuration",

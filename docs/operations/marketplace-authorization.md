@@ -93,6 +93,14 @@ The lock deliberately serializes Marketplace mutations for one database. It keep
 
 Browser logout is ordered against pending requests, including SSE frame delivery. Session expiry is rechecked at response handoff. A durable Run reconstructs its credential/subject authority without the originating HTTP session; logout does not silently cancel previously admitted work, while credential, identity, mapping, policy and catalog revocation still apply.
 
+## Dashboard examples
+
+The en-US and ja-JP browser fixtures show the same tenant installation awaiting approval. These screenshots use test data; they do not represent deployment enablement.
+
+![English pending installation](../screenshots/marketplace/en-US.png)
+
+![Japanese pending installation](../screenshots/marketplace/ja-JP.png)
+
 ## Local verification and acceptance coverage
 
 The focused integration suite uses real disposable PostgreSQL services. Its intentional lock barriers run in serial fixtures because advisory locks are database-wide even when test data has separate schemas; the competing requests within each fixture still run concurrently.
@@ -109,8 +117,8 @@ The focused integration suite uses real disposable PostgreSQL services. Its inte
 | MKT-A14           | `web/tests/marketplace.spec.ts` runs en-US and ja-JP browse/detail/install/pending/configuration-conflict/publish/403/context-switch workflows. Tests use mocked API responses; server boundaries are covered separately by the PostgreSQL integration suite.                                 |
 | MKT-A15           | `explicit_legacy_adoption_and_mixed_writer_fence`, existing `registry_and_execution_contracts`, `record_constraints`, and `execution_authorization` regressions.                                                                                                                              |
 
-Run `cargo test --locked --test marketplace_authorization --test dashboard_oidc` for the scoped boundaries, `cargo clippy --locked --workspace --all-targets -- -D warnings`, and `npm run build --prefix web` (which regenerates OpenAPI/client types). From `web`, run `npx playwright test --config playwright.ui.config.ts marketplace.spec.ts` and ESLint on the changed dashboard files. OpenAPI route assertions live in `api::schema_tests`.
+Run `cargo test --locked --lib --test marketplace_authorization --test dashboard_oidc --test sse_delivery` for the scoped boundaries, `cargo clippy --locked --workspace --all-targets -- -D warnings`, and `npm run build --prefix web` (which regenerates OpenAPI/client types). From `web`, run `npx playwright test --config playwright.ui.config.ts marketplace.spec.ts` and ESLint on the changed dashboard files. OpenAPI route assertions live in `api::schema_tests`.
 
-Verified locally on 2026-09-30: all 21 Marketplace integration cases and four OIDC integration cases passed. The relevant regression run passed 151 library tests plus 80 existing policy, execution, Registry, record-constraint and scoped-remote tests. Both dashboard locale cases, API generation/TypeScript/Vite build, Clippy with warnings denied, focused ESLint, formatting and whitespace checks passed. The browser tests use API fixtures; live server authorization is exercised by the database tests. The Vite build retains its existing large-chunk warning.
+Verified locally on 2026-09-30 after integration with the current SSE delivery service: all 21 Marketplace cases, four OIDC cases, 19 SSE cases and 155 library tests passed. The separate SSE load benchmark remains ignored by default. The earlier focused regression run also passed 80 existing policy, execution, Registry, record-constraint and scoped-remote tests. Both dashboard locale cases, API generation/TypeScript/Vite build, Clippy with warnings denied, focused ESLint, formatting and whitespace checks passed. The browser tests use API fixtures; live server authorization is exercised by the database tests. The Vite build retains its existing large-chunk warning.
 
 These checks establish local implementation behavior. The deployment gate remains disabled until an operator verifies and enables a compatible fleet; no hosted CI, deployment or release is implied by local tests.

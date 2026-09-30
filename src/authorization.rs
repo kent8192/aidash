@@ -1,5 +1,6 @@
 use sea_orm::sea_query::{
-	Alias, Condition, Expr, LockType, OnConflict, Order, PostgresQueryBuilder, Query,
+	Alias, CommonTableExpression, Condition, Expr, LockType, OnConflict, Order,
+	PostgresQueryBuilder, Query, UnionType,
 };
 pub(crate) mod access;
 pub mod api;
@@ -187,48 +188,92 @@ impl Authorization {
 		input: &Evaluation,
 		decision: &Decision,
 	) -> Result<()> {
-		// Audit records are authority metadata; ordinary resource writes remain guarded.
+		Self::record_many(tx, tenant, &[(input.clone(), decision.clone())]).await
+	}
+
+	/// Retain every decision and its allocation/commit order, while acquiring
+	/// the transaction-wide audit controls only once for a compound check.
+	pub(super) async fn record_many(
+		tx: &mut Transaction<'_, Postgres>,
+		tenant: &str,
+		records: &[(Evaluation, Decision)],
+	) -> Result<()> {
+		if records.is_empty() {
+			return Ok(());
+		}
 		crate::transactions::authority::control(tx).await?;
-		// Hold allocation order through commit, matching the decision cursor.
-		sqlx::query(
-			&Query::select()
-				.expr(Expr::cust("pg_advisory_xact_lock(71003202)"))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(&mut **tx)
-		.await?;
-		sqlx::query(
-			&Query::insert()
+		// Bound parameter count even for large replay/authorization operations.
+		for records in records.chunks(100) {
+			let columns = [
+				"tenant",
+				"revision",
+				"subject",
+				"action",
+				"resource_kind",
+				"resource_id",
+				"decision",
+			];
+			let mut values = Query::select();
+			for index in 0..records.len() {
+				let mut row = Query::select();
+				for (column, name) in columns.iter().enumerate() {
+					let ty = match column {
+						1 => "bigint",
+						6 => "jsonb",
+						_ => "text",
+					};
+					row.expr_as(
+						Expr::cust(format!("${}::{ty}", index * 7 + column + 1)),
+						Alias::new(*name),
+					);
+				}
+				row.expr_as(Expr::val(index as i32), Alias::new("ordinal"));
+				if index == 0 {
+					values = row;
+				} else {
+					values.union(UnionType::All, row);
+				}
+			}
+			// The INSERT's source must read this materialized barrier before
+			// defaults allocate any audit sequence. Retain the lock until commit,
+			// but avoid a client round trip between acquiring it and inserting.
+			let barrier = CommonTableExpression::new()
+				.table_name("audit_lock")
+				.materialized(true)
+				.query(
+					Query::select()
+						.expr(Expr::cust("pg_advisory_xact_lock(71003202)"))
+						.to_owned(),
+				)
+				.to_owned();
+			let mut insert = Query::insert();
+			insert
+				.with_cte(barrier)
 				.into_table(Alias::new("authorization_decisions"))
-				.columns([
-					Alias::new("tenant"),
-					Alias::new("revision"),
-					Alias::new("subject"),
-					Alias::new("action"),
-					Alias::new("resource_kind"),
-					Alias::new("resource_id"),
-					Alias::new("decision"),
-				])
-				.values_panic([
-					Expr::cust("$1"),
-					Expr::cust("$2"),
-					Expr::cust("$3"),
-					Expr::cust("$4"),
-					Expr::cust("$5"),
-					Expr::cust("$6"),
-					Expr::cust("$7"),
-				])
-				.to_string(PostgresQueryBuilder),
-		)
-		.bind(tenant)
-		.bind(decision.revision)
-		.bind(&input.subject)
-		.bind(&input.action)
-		.bind(&input.resource.kind)
-		.bind(&input.resource.id)
-		.bind(serde_json::to_value(decision)?)
-		.execute(&mut **tx)
-		.await?;
+				.columns(columns.map(Alias::new))
+				.select_from(
+					Query::select()
+						.columns(columns.map(|name| (Alias::new("decisions"), Alias::new(name))))
+						.from(Alias::new("audit_lock"))
+						.from_subquery(values, Alias::new("decisions"))
+						.order_by((Alias::new("decisions"), Alias::new("ordinal")), Order::Asc)
+						.to_owned(),
+				)
+				.expect("audit source matches insert columns");
+			let sql = insert.to_string(PostgresQueryBuilder);
+			let mut query = sqlx::query(&sql);
+			for (input, decision) in records {
+				query = query
+					.bind(tenant)
+					.bind(decision.revision)
+					.bind(&input.subject)
+					.bind(&input.action)
+					.bind(&input.resource.kind)
+					.bind(&input.resource.id)
+					.bind(serde_json::to_value(decision)?);
+			}
+			query.execute(&mut **tx).await?;
+		}
 		Ok(())
 	}
 

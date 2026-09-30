@@ -1500,6 +1500,25 @@ async fn response_handoff_releases_locks_before_body_drain_and_rechecks_event_re
 			.body(Body::empty())
 			.unwrap()
 	};
+	// The shared SSE service must include authorized global Marketplace events,
+	// even though this subject has no Workspace events. Audit events stay hidden.
+	let readable = app
+		.clone()
+		.oneshot(get("/api/events/stream?after=0"))
+		.await
+		.unwrap();
+	assert_eq!(readable.status(), 200);
+	let mut readable = readable.into_body().into_data_stream();
+	let frame = tokio::time::timeout(std::time::Duration::from_secs(3), readable.next())
+		.await
+		.expect("authorized Marketplace replay must emit a frame")
+		.unwrap()
+		.unwrap();
+	let frame = String::from_utf8_lossy(&frame);
+	assert!(frame.contains("marketplace.published"), "{frame}");
+	assert!(frame.contains(key), "{frame}");
+	assert!(!frame.contains("marketplace.audit"), "{frame}");
+	drop(readable);
 	// Do not poll either body until the distribution has been withdrawn.
 	let response = app
 		.clone()

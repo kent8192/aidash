@@ -60,6 +60,14 @@ _Avoid_: Workspace membership, execution permission
 A recorded occurrence associated with a Workspace, such as a message, task change, published Artifact or goal change. The occurrence is distinct from any participant's reaction to it.
 _Avoid_: Agent command, Run
 
+**UI event stream**:
+An ordered view of recorded mesh activity available to a human observer under their current authority. Observing an event does not accept an Agent's responsibility to act on it.
+_Avoid_: Agent event subscription, recipient delivery, Run activation
+
+**UI event replay**:
+Continuation of an observer's recorded event history after a previously received position, subject to current authority. Replay does not repeat Agent handling or external effects.
+_Avoid_: Historical event routing, Run recovery, re-execution
+
 **Recipient delivery**:
 The record of a particular Workspace event being considered for a particular logical Agent's handler. Delivery to one recipient does not fulfill delivery to another.
 _Avoid_: Broker receipt, completed work
