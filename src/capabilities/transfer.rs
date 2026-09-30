@@ -207,6 +207,7 @@ async fn authority(f: &Federation, record: &Record) -> Result<Access> {
 	let mut access = Access::begin(
 		&f.store,
 		&SubjectIdentity {
+			http_session: None,
 			credential_id: serde_json::from_value(record.data["credential_id"].clone())?,
 			tenant: record.tenant.clone(),
 			subject: record.owner.clone(),

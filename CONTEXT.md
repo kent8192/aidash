@@ -1,6 +1,6 @@
 # Aidash
 
-Aidash coordinates Agents and their durable work. This glossary records the shared language for execution, capabilities, transactions, Agent collaboration, event subscriptions, federation, evidence gathering and Web research; it is not an implementation specification.
+Aidash coordinates Agents and their durable work. This glossary records the shared language for execution, capabilities, transactions, Agent collaboration, event subscriptions, federation, evidence gathering, Web research and Marketplace distribution; it is not an implementation specification.
 
 ## Language
 
@@ -207,3 +207,93 @@ _Avoid_: Unrestricted Workspace access, local working-area operation
 **Pinned definition**:
 The exact version and contents of an Agent or execution dependency to which an authorization applies.
 _Avoid_: Latest version, compatible replacement
+
+## Marketplace distribution
+
+**Marketplace package**:
+A versioned distribution of an Agent, Tool or Skill definition with its author, declared permissions and dependencies. A package is distinct from its installation or permission to execute it.
+_Avoid_: Installed Agent, execution grant
+
+**Package owner tenant**:
+The tenant to which a Marketplace package belongs. Ownership is distinct from authorship credit or an individual subject's permission to operate on the package.
+_Avoid_: Author, package publisher
+
+**Package publisher**:
+The authenticated actor responsible for a package publication on behalf of its owner tenant or within the operator's legacy scope.
+_Avoid_: Author, package owner tenant
+
+**Package author**:
+The authorship credit displayed in a package's metadata. This credit is distinct from its authenticated publisher and owner tenant.
+_Avoid_: Package publisher, authorization owner
+
+**Package sharing**:
+The owner tenant's explicit inclusion of another tenant in an exact package version's distribution audience. Audience membership is distinct from a subject's permission to browse, read or install the package.
+_Avoid_: Public access, execution permission
+
+**Package identity**:
+The identity of a package within its repository Node and owner tenant, distinct from its display name and individual published versions.
+_Avoid_: Unqualified package name, author name
+
+**Package version**:
+An immutable publication belonging to one qualified package identity. Another version is a separate distribution resource rather than a replacement for an earlier publication.
+_Avoid_: Latest package, installation revision
+
+**Package summary**:
+The discovery description of a package, distinct from its complete definition and dependency contents.
+_Avoid_: Manifest, installed definition
+
+**Redistribution consent**:
+The source owner's explicit permission to distribute an exact package version onward to a stated audience. It is distinct from the recipient's permission to install or use the package.
+_Avoid_: Installation permission, catalog approval
+
+**Tenant installation**:
+A tenant's installed package and local configuration, available to that tenant's subjects according to their permissions. An installation is distinct from tenant catalog approval.
+_Avoid_: Node-wide installation, personal installation, execution approval
+
+**Installation revision**:
+An immutable configuration of a tenant installation for an exact package version. A new installation revision is distinct from a new publication of that package.
+_Avoid_: Package version, catalog policy revision
+
+**Pending installation revision**:
+An installation revision awaiting the tenant's approval for use. It is distinct from any earlier approved revision that remains active.
+_Avoid_: Active configuration, partially installed package
+
+**Active installation revision**:
+The approved installation revision selected for new Runs. It is distinct from an earlier revision still pinned by admitted Runs.
+_Avoid_: Latest package version, configuration of every running Agent
+
+**Installed definition**:
+The exact Registry definition bound to a tenant installation revision, with that tenant's local configuration and dependency bindings. Its existence is distinct from approval for execution.
+_Avoid_: Source manifest, node-wide override
+
+**Legacy Marketplace resource**:
+A preexisting operator-managed package or installation without tenant ownership. It is distinct from a tenant-owned copy explicitly adopted from that resource.
+_Avoid_: Public package, default-tenant package
+
+**Distribution withdrawal**:
+The withdrawal of authority for further Marketplace disclosure or acquisition. It is distinct from the installing tenant's withdrawal of approval to use a previously installed definition.
+_Avoid_: Uninstall, execution revocation
+
+**Registry registration**:
+The admission of a versioned definition into the Registry. Registration is distinct from Marketplace publication and permission to use the definition.
+_Avoid_: Publish, catalog approval
+
+**Tenant catalog approval**:
+A tenant's explicit admission of an exact Registry definition for authorized use, including its installation revision when local configuration applies. Approval is distinct from installation and the subject permissions required for individual operations.
+_Avoid_: Installation, execution grant
+
+
+## Issue #74 implementation
+
+Subject-scoped Marketplace routes now use qualified package identities, explicit
+per-version audiences and live source consent, with pending immutable installation
+revisions and separate operator approval/activation. Existing Runs retain exact
+approved references; configuration never mutates the active definition. Scoped
+HTTP/SSE handoff retains current authority through bounded serialization and queueing,
+including browser sessions, while durable Runs remain independent of browser logout.
+
+The additive migration starts the compatibility gate disabled. Legacy package and
+node-wide overlay behavior remain explicit operator operations; adoption produces an
+independent pending tenant copy. See
+[operations and acceptance coverage](docs/operations/marketplace-authorization.md)
+for rollout, actions, integration tests and English/Japanese dashboard checks.

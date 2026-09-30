@@ -206,7 +206,7 @@ impl Federation {
 		let agent: AgentConfig = serde_json::from_value(agent.config)?;
 		let model = self
 			.registry
-			.get(&agent.model.id, &agent.model.version)
+			.get_for_run(run, &agent.model.id, &agent.model.version)
 			.await?;
 		let model: ModelConfig = serde_json::from_value(model.config)?;
 		Ok(model.current_media_input_routes())
@@ -218,11 +218,15 @@ impl Federation {
 		let mut references = Vec::with_capacity(1 + agent.skills.len() + agent.tools.len());
 		references.push(
 			self.registry
-				.get(&agent.model.id, &agent.model.version)
+				.get_for_run(run, &agent.model.id, &agent.model.version)
 				.await?,
 		);
 		for reference in agent.skills.iter().chain(&agent.tools) {
-			references.push(self.registry.get(&reference.id, &reference.version).await?);
+			references.push(
+				self.registry
+					.get_for_run(run, &reference.id, &reference.version)
+					.await?,
+			);
 		}
 		let private_context = if agent.knowledge_digest.is_some() {
 			json!({"reference_documents":crate::knowledge::load(&self.registry.db, &agent_entry).await?})

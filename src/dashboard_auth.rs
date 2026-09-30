@@ -677,6 +677,7 @@ async fn resume_status_waiting(f: &Federation, identity_id: Uuid) -> Result<()> 
 			continue;
 		}
 		let identity = SubjectIdentity {
+			http_session: None,
 			credential_id,
 			tenant,
 			subject,
@@ -1265,6 +1266,11 @@ pub async fn actor_from_headers(
 		return Err(Error::Forbidden);
 	}
 	let identity = SubjectIdentity {
+		http_session: Some(crate::authorization::identity::HttpSession {
+			id: session.id,
+			identity_id: session.identity_id,
+			idle_seconds: config.session_idle_seconds,
+		}),
 		credential_id: mapping.credential_id,
 		tenant: mapping.tenant,
 		subject: mapping.subject,

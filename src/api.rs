@@ -18,7 +18,7 @@ use axum::{
 	http::{HeaderMap, Method},
 	middleware::{self, Next},
 	response::{
-		Response, Sse,
+		IntoResponse, Response, Sse,
 		sse::{Event as SseEvent, KeepAlive},
 	},
 	routing::{get, post},
@@ -49,6 +49,7 @@ fn ordinary_routes() -> OpenApiRouter<Federation> {
 		.route_layer(middleware::from_fn(operator_only));
 	OpenApiRouter::new()
 		.merge(administration)
+		.merge(crate::marketplace::routes())
 		.merge(crate::collaboration::api::routes())
 		.merge(crate::generation::api::routes())
 		.merge(crate::semantic::api::routes())
@@ -437,9 +438,10 @@ async fn task_list(
 async fn state(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
-) -> Result<Json<StateResponse>> {
+) -> Result<Response> {
 	if let Some(scope) = scoped(&f, actor) {
-		return Ok(Json(scope.state(f.config.identity(vec![])).await?));
+		let state = scope.state(f.config.identity(vec![])).await?;
+		return crate::marketplace::state_response(&scope.store, &scope.identity, state).await;
 	}
 	let records = f.registry.list(&Search::default()).await?;
 	let events: Vec<crate::domain::Event> = sqlx::query_as(
@@ -571,31 +573,32 @@ async fn state(
 		events,
 		artifacts,
 		installations,
-	}))
+	})
+	.into_response())
 }
 #[utoipa::path(get, path = "/registry", operation_id = "registry_list", params(Search), responses((status = 200, body = [Entry])), security(("bearer_auth" = [])))]
 async fn registry_list(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
 	Query(search): Query<Search>,
-) -> Result<Json<Vec<Entry>>> {
+) -> Result<Response> {
 	if let Actor::Subject(identity) = actor {
-		return Ok(Json(catalog::list(&f.store, &identity, &search).await?));
+		let entries = catalog::list(&f.store, &identity, &search).await?;
+		return crate::marketplace::registry_response(&f.store, &identity, entries, false).await;
 	}
-	Ok(Json(f.registry.list(&search).await?))
+	Ok(Json(f.registry.list(&search).await?).into_response())
 }
 #[utoipa::path(get, path = "/registry/{id}/{version}", operation_id = "registry_get", params(("id" = String, Path),("version" = String, Path)), responses((status = 200, body = Entry)), security(("bearer_auth" = [])))]
 async fn registry_get(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
 	Path((id, version)): Path<(String, String)>,
-) -> Result<Json<Entry>> {
+) -> Result<Response> {
 	if let Actor::Subject(identity) = actor {
-		return Ok(Json(
-			catalog::get(&f.store, &identity, &EntityRef { id, version }).await?,
-		));
+		let entry = catalog::get(&f.store, &identity, &EntityRef { id, version }).await?;
+		return crate::marketplace::registry_response(&f.store, &identity, vec![entry], true).await;
 	}
-	Ok(Json(f.registry.get(&id, &version).await?))
+	Ok(Json(f.registry.get(&id, &version).await?).into_response())
 }
 
 #[utoipa::path(get, path = "/providers/openrouter/models", operation_id = "openrouter_models", responses((status = 200, body = Vec<crate::openrouter::CatalogModel>)), security(("bearer_auth" = [])))]
@@ -1324,11 +1327,12 @@ async fn events(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
 	Query(q): Query<EventQuery>,
-) -> Result<Json<Vec<crate::domain::Event>>> {
+) -> Result<Response> {
 	if let Some(scope) = scoped(&f, actor) {
-		return Ok(Json(scope.events(q.after, q.workspace_id, 500).await?));
+		let events = scope.events(q.after, q.workspace_id, 500).await?;
+		return crate::marketplace::events::response(&scope.store, &scope.identity, events).await;
 	}
-	Ok(Json(f.store.events(q.after, q.workspace_id, 500).await?))
+	Ok(Json(f.store.events(q.after, q.workspace_id, 500).await?).into_response())
 }
 #[utoipa::path(get, path = "/events/stream", operation_id = "stream", params(EventQuery), responses((status = 200, body = String, content_type = "text/event-stream")), security(("bearer_auth" = [])))]
 async fn stream(
@@ -1390,6 +1394,13 @@ async fn stream(
 					if let Some(origin) = &browser {
 						if !browser_stream_authorized(&f, &headers, origin, operator).await { return; }
 						last_browser_check = Instant::now();
+					}
+					if let Some(scope)=&scope && event.kind.starts_with("marketplace.") {
+						match crate::marketplace::events::frame(&scope.store,&scope.identity,&event).await {
+							Ok(Some(frame))=>{ drop(visibility); yield Ok(SseEvent::default().id(cursor.to_string()).event("mesh").data(frame)); continue; },
+							Ok(None)=>continue,
+							Err(_)=>{ yield Ok(SseEvent::default().event("error").data("event stream interrupted")); return; }
+						}
 					}
 					if let Some(scope) = &scope {
 						match scope.can_emit(&event).await {
@@ -2286,6 +2297,22 @@ mod schema_tests {
 			}
 		}
 		for (path, method) in [
+			("/api/marketplace/packages", "get"),
+			("/api/marketplace/packages", "post"),
+			("/api/marketplace/packages/{key}", "get"),
+			("/api/marketplace/packages/{key}/install", "post"),
+			("/api/marketplace/packages/{key}/audience", "put"),
+			("/api/marketplace/packages/{key}/consents/{tenant}", "put"),
+			("/api/marketplace/sources", "get"),
+			("/api/marketplace/publication-access", "post"),
+			("/api/marketplace/installations", "get"),
+			("/api/marketplace/installations/{id}", "get"),
+			("/api/marketplace/installations/{id}", "post"),
+			("/api/marketplace/installations/{id}/activation", "post"),
+			("/api/marketplace/compatibility", "get"),
+			("/api/marketplace/compatibility", "put"),
+			("/api/marketplace/administration", "get"),
+			("/api/marketplace/adoptions", "post"),
 			("/api/working-areas", "get"),
 			("/api/working-files", "get"),
 			("/api/runs/{id}/files/read", "post"),

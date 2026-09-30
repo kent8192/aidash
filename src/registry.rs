@@ -33,6 +33,8 @@ pub type Localized = BTreeMap<String, String>;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Entry {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub installation: Option<crate::marketplace::Projection>,
 	pub id: String,
 	pub version: String,
 	pub kind: String,
@@ -519,6 +521,7 @@ impl Registry {
 		loop {
 			let rows = record::Entity::find()
 				.filter(record::Column::Kind.eq("agent"))
+				.filter(Expr::cust("NOT (metadata ? 'installation')"))
 				.order_by_asc(record::Column::Id)
 				.order_by_asc(record::Column::Version)
 				.limit(64)
@@ -579,6 +582,28 @@ impl Registry {
 				});
 			}
 		}
+	}
+	/// Installed Runs bind immutable Registry documents. Legacy overlays remain
+	/// available only to existing native/legacy execution paths.
+	pub(crate) async fn get_for_run(
+		&self,
+		run: &crate::domain::Run,
+		id: &str,
+		version: &str,
+	) -> Result<Entry> {
+		let root = record::Entity::find_by_id((run.agent_id.clone(), run.agent_version.clone()))
+			.one(&self.db)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		let root: Entry = serde_json::from_value(root.metadata)?;
+		if root.installation.is_none() {
+			return self.get(id, version).await;
+		}
+		let entry = record::Entity::find_by_id((id.to_string(), version.to_string()))
+			.one(&self.db)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		Ok(serde_json::from_value(entry.metadata)?)
 	}
 	pub async fn register(&self, e: Entry) -> Result<Entry> {
 		self.validate_references(&e).await?;
@@ -666,6 +691,11 @@ pub(crate) fn validate_structure(e: &Entry) -> Result<()> {
 	validate_in(e, false)
 }
 fn validate_in(e: &Entry, local: bool) -> Result<()> {
+	if local && e.installation.is_some() {
+		return Err(Error::Invalid(
+			"installed definitions require the Marketplace revision API".into(),
+		));
+	}
 	let schema = json!({"type":"object","required":["id","version","kind","name","description","capabilities","tags","languages","schema","config"],
         "properties":{
             "id":{"type":"string","pattern":"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$"},
@@ -1375,7 +1405,7 @@ pub(crate) async fn register_in(
 	Ok(inserted)
 }
 
-fn overlay_config(target: &mut Value, overrides: &Value) -> Result<()> {
+pub(crate) fn overlay_config(target: &mut Value, overrides: &Value) -> Result<()> {
 	let object = overrides
 		.as_object()
 		.ok_or_else(|| Error::Invalid("installation config must be an object".into()))?;

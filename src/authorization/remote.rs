@@ -64,6 +64,7 @@ pub struct Prepared {
 impl Grant {
 	fn identity(&self) -> SubjectIdentity {
 		SubjectIdentity {
+			http_session: None,
 			credential_id: self.credential_id,
 			tenant: self.tenant.clone(),
 			subject: self.root_subject.clone(),

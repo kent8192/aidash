@@ -180,6 +180,9 @@ impl Access {
 	}
 
 	pub(crate) async fn event_visible(&mut self, event: &Event) -> Result<bool> {
+		if event.kind.starts_with("marketplace.") {
+			return crate::marketplace::events::visible(self, event, &self.node_id.clone()).await;
+		}
 		if let Some(visible) = self.resource_event_visible(event).await? {
 			return Ok(visible);
 		}
@@ -1102,7 +1105,13 @@ impl Workspaces {
 						.from(Alias::new("events"))
 						.cond_where(
 							Condition::all()
-								.add(Expr::cust("workspace_id=ANY($1)"))
+								.add(if workspace.is_none() {
+									Expr::cust(
+										"workspace_id=ANY($1) OR (workspace_id IS NULL AND kind LIKE 'marketplace.%')",
+									)
+								} else {
+									Expr::cust("workspace_id=ANY($1)")
+								})
 								.add(Expr::col(Alias::new("sequence")).gt(Expr::cust("$2"))),
 						)
 						.order_by(Alias::new("sequence"), Order::Asc)

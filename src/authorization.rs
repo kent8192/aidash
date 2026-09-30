@@ -120,7 +120,7 @@ impl Authorization {
 		Ok(Snapshot { revision, bundle })
 	}
 
-	async fn load(tx: &mut Transaction<'_, Postgres>, tenant: &str) -> Result<Snapshot> {
+	pub(crate) async fn load(tx: &mut Transaction<'_, Postgres>, tenant: &str) -> Result<Snapshot> {
 		Self::load_with_mode(tx, tenant, false).await
 	}
 
