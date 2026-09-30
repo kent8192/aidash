@@ -46,6 +46,28 @@ pub(super) async fn documents<T: DeserializeOwned>(
 		.map(|v| serde_json::from_value(v).map_err(Into::into))
 		.collect()
 }
+pub(super) async fn documents_page<T: DeserializeOwned>(
+	tx: &mut Transaction<'_, Postgres>,
+	table: &str,
+	after: &str,
+	limit: u64,
+) -> Result<Vec<(String, T)>> {
+	let rows: Vec<(String, Value)> = sqlx::query_as(
+		&Query::select()
+			.columns([Alias::new("key"), Alias::new("document")])
+			.from(Alias::new(table))
+			.and_where(Expr::col(Alias::new("key")).gt(Expr::cust("$1")))
+			.order_by(Alias::new("key"), Order::Asc)
+			.limit(limit)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(after)
+	.fetch_all(&mut **tx)
+	.await?;
+	rows.into_iter()
+		.map(|(key, value)| Ok((key, serde_json::from_value(value)?)))
+		.collect()
+}
 pub(super) async fn put(
 	tx: &mut Transaction<'_, Postgres>,
 	table: &str,

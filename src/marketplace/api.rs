@@ -22,7 +22,7 @@ pub fn routes() -> OpenApiRouter<Federation> {
 		.routes(routes!(detail))
 		.routes(routes!(install))
 		.routes(routes!(share))
-		.routes(routes!(consent))
+		.routes(routes!(read_consent, consent))
 		.routes(routes!(list_installations))
 		.routes(routes!(installation, configure))
 		.routes(routes!(compatibility, set_compatibility))
@@ -133,49 +133,60 @@ async fn browse(
 		return Err(Error::Invalid("invalid search bounds".into()));
 	}
 	let mut access = begin(&f.store, subject(&actor)?, false).await?;
+	operation(&mut access, "marketplace.browse", json!({"query":input.q,"offset":input.offset,"limit":input.limit}), None);
 	let result = async {
-		let candidates: Vec<Version> = documents(&mut access.tx, "marketplace_versions").await?;
 		let mut visible = vec![];
 		let mut skipped = 0;
-		for candidate in candidates {
-			let result = async {
-				access
-					.require(
-						&distribution::resource(&access, &candidate),
-						"marketplace.browse",
-					)
-					.await?;
-				distribution::distributed(&mut access, &candidate, &subject(&actor)?.tenant)
-					.await?;
-				distribution::summary(&mut access, &candidate, &f.store.node_id).await
+		let mut cursor = String::new();
+		let search_query = input.q.to_lowercase();
+		loop {
+			let candidates: Vec<(String, Version)> =
+				documents_page(&mut access.tx, "marketplace_versions", &cursor, 64).await?;
+			let exhausted = candidates.len() < 64;
+			for (key, candidate) in candidates {
+				cursor = key;
+				let result = async {
+					access
+						.require(
+							&distribution::resource(&access, &candidate),
+							"marketplace.browse",
+						)
+						.await?;
+					distribution::distributed(&mut access, &candidate, &subject(&actor)?.tenant)
+						.await?;
+					distribution::summary(&mut access, &candidate, &f.store.node_id).await
+				}
+				.await;
+				let summary = match result {
+					Ok(s) => s,
+					Err(Error::Forbidden) => continue,
+					Err(e) => return Err(e),
+				};
+				// Search only public summary fields, never configuration/dependency IDs.
+				let search = json!([
+					summary.name,
+					summary.description,
+					summary.package_id,
+					summary.author,
+					summary.kind,
+					summary.capabilities,
+					summary.languages
+				])
+				.to_string()
+				.to_lowercase();
+				if !search.contains(&search_query) {
+					continue;
+				}
+				if skipped < input.offset {
+					skipped += 1;
+					continue;
+				}
+				visible.push(summary);
+				if visible.len() == input.limit {
+					break;
+				}
 			}
-			.await;
-			let summary = match result {
-				Ok(s) => s,
-				Err(Error::Forbidden) => continue,
-				Err(e) => return Err(e),
-			};
-			// Search only public summary fields, never configuration/dependency IDs.
-			let search = json!([
-				summary.name,
-				summary.description,
-				summary.package_id,
-				summary.author,
-				summary.kind,
-				summary.capabilities,
-				summary.languages
-			])
-			.to_string()
-			.to_lowercase();
-			if !search.contains(&input.q.to_lowercase()) {
-				continue;
-			}
-			if skipped < input.offset {
-				skipped += 1;
-				continue;
-			}
-			visible.push(summary);
-			if visible.len() == input.limit {
+			if visible.len() == input.limit || exhausted {
 				break;
 			}
 		}
@@ -210,6 +221,7 @@ async fn sources(
 	Extension(actor): Extension<Actor>,
 ) -> Result<Response> {
 	let mut access = begin(&f.store, subject(&actor)?, false).await?;
+	operation(&mut access, "marketplace.sources", json!({}), None);
 	let result = async {
 		let entries =
 			crate::authorization::catalog::list_in(&mut access, &Default::default()).await?;
@@ -278,6 +290,32 @@ async fn consent(
 ) -> Result<Response> {
 	let mut access = begin(&f.store, subject(&actor)?, true).await?;
 	let result = distribution::share(&f.store, &mut access, &key, Some(&tenant), input).await;
+	handoff(&f.store, access, result).await
+}
+#[utoipa::path(get,path="/marketplace/packages/{key}/consents/{tenant}",operation_id="marketplace_read_consent",params(("key"=String,Path),("tenant"=String,Path)),responses((status=200,body=Audience)),security(("bearer_auth"=[])))]
+async fn read_consent(
+	State(f): State<Federation>,
+	Extension(actor): Extension<Actor>,
+	Path((key, tenant)): Path<(String, String)>,
+) -> Result<Response> {
+	crate::authorization::policy::identifier(&tenant)?;
+	let mut access = begin(&f.store, subject(&actor)?, false).await?;
+	operation(&mut access, "marketplace.redistribution.manage", json!({"key":key,"redistributor":tenant}), None);
+	let result = async {
+		let version: Version = get(&mut access.tx, "marketplace_versions", &key)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		if version.owner_tenant != access.identity.tenant {
+			return Err(Error::Forbidden);
+		}
+		access.require(&distribution::resource(&access, &version), "marketplace.redistribution.manage").await?;
+		let consent_key = super::storage::key(&(&key, &tenant));
+		let current: Audience = get(&mut access.tx, "marketplace_consents", &consent_key)
+			.await?
+			.unwrap_or(Audience { revision: 0, tenants: Default::default() });
+		authority(&mut access, format!("marketplace_consents:{consent_key}"), current.revision);
+		Ok(current)
+	}.await;
 	handoff(&f.store, access, result).await
 }
 #[utoipa::path(get,path="/marketplace/installations",operation_id="marketplace_installations",responses((status=200,body=[InstallationRevision])),security(("bearer_auth"=[])))]
@@ -470,6 +508,7 @@ async fn publication_access(
 	Json(input): Json<Publish>,
 ) -> Result<Response> {
 	let mut access = begin(&f.store, subject(&actor)?, false).await?;
+	operation(&mut access, "marketplace.publication_preview", json!({"source":input.source,"package_id":input.package_id.chars().take(256).collect::<String>()}), None);
 	let result = match distribution::prepare(&f.store, &mut access, &input).await {
 		Ok(version) => Ok(PublicationPreview {
 			allowed: true,

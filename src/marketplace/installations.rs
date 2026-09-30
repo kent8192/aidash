@@ -6,6 +6,7 @@ use crate::{
 };
 use sea_orm::sea_query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Transaction};
 
 pub(super) fn id(tenant: &str, package: &str) -> String {
@@ -502,18 +503,16 @@ pub(crate) async fn catalog_owner(
 	tx: &mut Transaction<'_, Postgres>,
 	tenant: &str,
 	r: &EntityRef,
-	enabled: bool,
+	_enabled: bool,
 ) -> Result<()> {
 	let entry = definitions::raw(tx, r).await?;
 	if let Some(p) = entry.installation {
 		if p.tenant != tenant || p.contract != 1 {
 			return Err(Error::Forbidden);
 		}
-		lock(tx, false).await?;
-		if enabled {
-			gate(tx).await?;
-		}
-		writer(tx).await?;
+		// Projection approvals are managed only by Marketplace activation, which
+		// validates the pinned graph and advances the active revision atomically.
+		return Err(Error::Forbidden);
 	}
 	Ok(())
 }
@@ -662,22 +661,28 @@ pub(super) async fn adopt(store: &Store, input: Adopt) -> Result<Installation> {
 	.fetch_optional(&mut *tx)
 	.await?;
 	let (manifest_source, digest) = record.ok_or(Error::Forbidden)?;
-	let package: crate::registry::Package = serde_json::from_str(&manifest_source)?;
+	let mut package: crate::registry::Package = serde_json::from_str(&manifest_source)?;
 	if package.entity != raw {
 		return Err(conflict());
 	}
-	let mut queue = definitions::refs(&raw, &store.node_id)?;
-	queue.extend(
-		package
-			.dependencies
-			.iter()
-			.cloned()
-			.map(|r| (r, String::new())),
-	);
+	if format!("sha256:{:x}", Sha256::digest(manifest_source.as_bytes())) != digest {
+		return Err(conflict());
+	}
+	// Adoption freezes the executable overlay, so its graph and manifest must
+	// describe the same references as the staged definition.
+	let mut queue = definitions::refs(&effective, &store.node_id)?;
 	let mut seen = BTreeSet::new();
 	let mut deps = vec![];
 	while let Some((reference, kind)) = queue.pop() {
 		let entry = definitions::raw(&mut tx, &reference).await?;
+		let effective_dependency =
+			crate::registry::effective_in(&mut tx, &reference.id, &reference.version).await?;
+		let frozen_refs = definitions::refs(&entry, &store.node_id)?;
+		let effective_refs = definitions::refs(&effective_dependency, &store.node_id)?;
+		if frozen_refs != effective_refs {
+			// A transitive legacy overlay cannot be frozen into this root revision.
+			return Err(Error::Forbidden);
+		}
 		if !kind.is_empty() && entry.kind != kind {
 			return Err(Error::Forbidden);
 		}
@@ -693,7 +698,7 @@ pub(super) async fn adopt(store: &Store, input: Adopt) -> Result<Installation> {
 		{
 			return Err(Error::Forbidden);
 		}
-		queue.extend(definitions::refs(&entry, &store.node_id)?);
+		queue.extend(effective_refs);
 		deps.push(Dependency {
 			reference,
 			kind: entry.kind.clone(),
@@ -701,6 +706,13 @@ pub(super) async fn adopt(store: &Store, input: Adopt) -> Result<Installation> {
 			package: None,
 		});
 	}
+	package.entity = effective.clone();
+	package.dependencies = deps.iter().map(|d| d.reference.clone()).collect();
+	let manifest_source = serde_json::to_string(&package)?;
+	if manifest_source.len() > 1_048_576 {
+		return Err(Error::Invalid("package exceeds one MiB".into()));
+	}
+	let digest = format!("sha256:{:x}", Sha256::digest(manifest_source.as_bytes()));
 	let source_key = key(&(&store.node_id, &input.tenant, &raw.id, &raw.version));
 	let source = Version {
 		key: source_key.clone(),

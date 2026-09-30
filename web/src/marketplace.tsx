@@ -20,10 +20,11 @@ import {
   authorizationCatalog,
 } from "./generated/aidash";
 import type {
+  MarketplaceAudience,
   MarketplaceInstallationRevision,
   MarketplaceDependencyBinding,
 } from "./generated/models";
-import { ApiError, dashboardContext } from "./transport";
+import { ApiError, apiFetch, dashboardContext } from "./transport";
 import { useI18n, Panel, Field } from "./ui";
 import { RecordView } from "./record-view";
 import { marketplaceCopy } from "./marketplace-copy";
@@ -83,6 +84,22 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
     retry: false,
     staleTime: 0,
   });
+  const consentQuery = useQuery({
+    queryKey: [...context, "consent", selected, redistributor],
+    queryFn: () => apiFetch<MarketplaceAudience>(`/api/marketplace/packages/${encodeURIComponent(selected!)}/consents/${encodeURIComponent(redistributor)}`),
+    enabled: !!selected && !!redistributor && !denied,
+    retry: false,
+    staleTime: 0,
+  });
+  useEffect(() => {
+    if (consentQuery.isFetching || consentQuery.isError || !consentQuery.data) {
+      setConsentRevision(0);
+      setConsentAudience("");
+      return;
+    }
+    setConsentRevision(consentQuery.data.revision);
+    setConsentAudience([...consentQuery.data.tenants].join(" "));
+  }, [consentQuery.data, consentQuery.isFetching, consentQuery.isError]);
   const editingQuery = useQuery({
     queryKey: [
       ...context,
@@ -119,6 +136,7 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
     installs.error,
     sources.error,
     detail.error,
+    consentQuery.error,
     canPublish.error,
     editingQuery.error,
   ].find(
@@ -135,6 +153,8 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
     setSource("");
     setConfig("{}");
     setBindings("[]");
+    setConsentRevision(0);
+    setConsentAudience("");
   }
   async function run(
     action: () => Promise<unknown>,
@@ -154,6 +174,8 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
         setSource("");
         setConfig("{}");
         setBindings("[]");
+        setConsentRevision(0);
+        setConsentAudience("");
         cache.removeQueries({ queryKey: ["marketplace"] });
         setMessage(copy.operationUnavailable);
       } else
@@ -318,7 +340,7 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
                 />
               </Field>
               <button
-                disabled={busy || !redistributor}
+                disabled={busy || !redistributor || !consentQuery.data || consentQuery.isFetching}
                 onClick={() =>
                   void run(async () => {
                     const next = await marketplaceConsent(

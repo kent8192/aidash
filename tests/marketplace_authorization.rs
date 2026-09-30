@@ -211,6 +211,11 @@ async fn tenant_publication_pending_installation_and_revisions(
 	assert!(!catalog.1.to_string().contains(&entry.id));
 	let active = activate(&app, &f, "a", &installed.1, 1, 0, 0, true).await;
 	assert_eq!(active.0, 200, "{active:?}");
+	for enabled in [false, true] {
+		assert!(Authorization { pool: f.store.pool.clone() }
+			.set_catalog("a", &EntityRef { id: entry.id.clone(), version: entry.version.clone() }, 1, enabled, "operator")
+			.await.is_err(), "projection catalog writes must use activation");
+	}
 	let change = json!({"expected_revision":1,"config":{"endpoint":"http://localhost:9/reconfigured"},"idempotency_key":Uuid::new_v4()});
 	let changed = request(
 		&app,
@@ -461,6 +466,60 @@ async fn hidden_typed_dependency_and_denial_leave_no_installation(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn browse_pages_hidden_versions_before_returning_a_visible_package(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = common::setup(&environment).await;
+	let app = api::router(f.clone());
+	let a = token(&f, "a", "user").await;
+	enable(&app, &f).await;
+	f.registry.register(tool("paged-source")).await.unwrap();
+	approve(&f, "a", &reference("paged-source")).await;
+	let published = publish(&app, &a, "paged-source").await;
+	let source_key = published["key"].as_str().unwrap();
+	let document: Value = sqlx::query_scalar(&Query::select()
+		.column(Alias::new("document"))
+		.from(Alias::new("marketplace_versions"))
+		.and_where(Expr::cust("key=$1"))
+		.to_string(PostgresQueryBuilder))
+		.bind(source_key).fetch_one(&f.store.pool).await.unwrap();
+	for i in 0..64 {
+		let key = format!("!hidden-{i:03}");
+		let package_id = format!("hidden-{i:03}");
+		let mut hidden = document.clone();
+		hidden["key"] = json!(key);
+		hidden["package_id"] = json!(package_id);
+		sqlx::query(&Query::insert()
+			.into_table(Alias::new("marketplace_versions"))
+			.columns(["key", "document", "repository", "owner", "package_id", "version", "kind"].map(Alias::new))
+			.values_panic(["$1", "$2", "$3", "$4", "$5", "$6", "$7"].map(Expr::cust))
+			.to_string(PostgresQueryBuilder))
+			.bind(key).bind(hidden).bind(&f.store.node_id).bind("a").bind(package_id).bind("1.0.0").bind("tool")
+			.execute(&f.store.pool).await.unwrap();
+	}
+	let (status, page) = request(&app, &a, "GET", "/api/marketplace/packages?q=shared-name&limit=1", Value::Null).await;
+	assert_eq!(status, 200, "{page}");
+	assert_eq!(page.as_array().unwrap().len(), 1);
+	assert_eq!(page[0]["key"], source_key);
+	let audit: Value = sqlx::query_scalar(&Query::select()
+		.column(Alias::new("data"))
+		.from(Alias::new("events"))
+		.and_where(Expr::cust("kind='marketplace.audit'"))
+		.order_by(Alias::new("sequence"), sea_orm::sea_query::Order::Desc)
+		.limit(1)
+		.to_string(PostgresQueryBuilder))
+		.fetch_one(&f.store.pool).await.unwrap();
+	assert_eq!(audit["operation"], "marketplace.browse");
+	assert_eq!(audit["resource"]["query"], "shared-name");
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 	#[future(awt)]
 	#[from(test_environment)]
@@ -525,6 +584,30 @@ async fn live_redistribution_consent_retains_local_copies_and_export_bytes(
 		.await
 		.0,
 		200
+	);
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"GET",
+			&format!("/api/marketplace/packages/{key}/consents/b"),
+			Value::Null,
+		)
+		.await
+		.1,
+		json!({"revision":1,"tenants":["b","c"]}),
+	);
+	assert_eq!(
+		request(
+			&app,
+			&b,
+			"GET",
+			&format!("/api/marketplace/packages/{key}/consents/b"),
+			Value::Null,
+		)
+		.await
+		.0,
+		403,
 	);
 	let downstream = request(
 		&app,
@@ -817,6 +900,46 @@ async fn explicit_legacy_adoption_and_mixed_writer_fence(
 	// Same-tenant known content remains linked to its source, including copies.
 	let copy = publish(&app, &a, "known-copy").await;
 	assert_ne!(copy["key"], adopted.1["package_key"]);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn adoption_freezes_the_effective_dependency_graph(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = common::setup(&environment).await;
+	let app = api::router(f.clone());
+	let a = token(&f, "a", "user").await;
+	enable(&app, &f).await;
+	for id in ["legacy-model-original", "legacy-model-overlay"] {
+		let model: Entry = serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"model","name":{"en":id},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
+		f.registry.register(model).await.unwrap();
+	}
+	approve(&f, "a", &reference("legacy-model-overlay")).await;
+	let agent: Entry = serde_json::from_value(json!({"id":"legacy-agent","version":"1.0.0","kind":"agent","name":{"en":"Legacy agent"},"description":{"en":"fixture"},"config":{"model":reference("legacy-model-original"),"instructions":"Original"}})).unwrap();
+	let legacy = aidash::registry::Package {
+		entity: agent,
+		author: "legacy".into(),
+		permissions: vec![],
+		dependencies: vec![reference("legacy-model-original")],
+	};
+	let package = f.registry.publish(&f.store.pool, legacy).await.unwrap();
+	f.registry.install(&f.store.pool, "legacy-agent", "1.0.0", &package.digest, json!({"model":reference("legacy-model-overlay")})).await.unwrap();
+	let adopted = request(&app, &f.config.api_token, "POST", "/api/marketplace/adoptions", json!({"tenant":"a","source":reference("legacy-agent"),"idempotency_key":Uuid::new_v4()})).await;
+	assert_eq!(adopted.0, 200, "{adopted:?}");
+	let id = adopted.1["id"].as_str().unwrap();
+	let installed = request(&app, &a, "GET", &format!("/api/marketplace/installations/{id}"), Value::Null).await;
+	assert_eq!(installed.0, 200, "{installed:?}");
+	assert_eq!(installed.1["entry"]["config"]["model"], json!(reference("legacy-model-overlay")));
+	assert_eq!(installed.1["dependencies"], json!([reference("legacy-model-overlay")]));
+	let key = adopted.1["package_key"].as_str().unwrap();
+	let detail = request(&app, &a, "GET", &format!("/api/marketplace/packages/{key}"), Value::Null).await;
+	assert_eq!(detail.0, 200, "{detail:?}");
+	assert_eq!(detail.1["manifest"]["entity"]["config"]["model"], json!(reference("legacy-model-overlay")));
 	common::cleanup(f, &url, &schema).await;
 }
 
@@ -1175,6 +1298,10 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		.0,
 		403
 	);
+	let authorization = Authorization { pool: f.store.pool.clone() };
+	authorization.set_catalog("a", &reference("model"), 1, false, "operator").await.unwrap();
+	assert_eq!(request(&app, &a, "POST", &claim_path, json!({"revision":0,"agent":new_ref})).await.0, 403);
+	authorization.set_catalog("a", &reference("model"), 2, true, "operator").await.unwrap();
 	assert_eq!(
 		request(
 			&app,

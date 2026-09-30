@@ -294,6 +294,7 @@ async fn admit(
 	if entry.kind != "agent" {
 		return Err(Error::Invalid("executor must be an agent".into()));
 	}
+	crate::marketplace::check_pinned(access, &entry).await?;
 	access.require(&task_resource, "task.execute").await?;
 	let config = serde_json::from_value(entry.config.clone())?;
 	// Lock and recheck the inherited thread before claim_in allocates an event.
