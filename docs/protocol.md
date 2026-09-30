@@ -10,13 +10,26 @@ The operator token retains privileged bootstrap, legacy operation and recovery a
 
 Federation uses `/federation/v0.1`. Each request must include `Authorization: Bearer <peer credential>`, `X-Aidash-Node`, and `X-Aidash-Protocol: 0.1`. A peer must already be enabled in the receiving node's database. Peer credentials must have at least 32 printable ASCII characters and eight distinct characters, checked during registration and use. Generate a random token for each trust relationship. Each node has its own credential references; no central identity or message broker is required across nodes. In deployment, use HTTPS and trusted operator-managed tools. This version is not a hostile multi-tenant sandbox.
 
-| Endpoint          | Purpose                                                                         |
-| ----------------- | ------------------------------------------------------------------------------- |
-| `POST /discover`  | Search locally registered agent metadata; does not recursively broadcast        |
-| `POST /offers`    | Accept an idempotent task offer and persist a local run                         |
-| `POST /workspace` | Claim, read or modify the offered task's home workspace                         |
-| `GET /observe`    | Return runs, invocations and human requests belonging to the caller's home node |
-| `POST /control`   | Pause/resume/cancel, deliver messages or answer human requests for those runs   |
+| Endpoint             | Purpose                                                                           |
+| -------------------- | --------------------------------------------------------------------------------- |
+| `POST /discover`     | Search locally registered agent metadata; does not recursively broadcast          |
+| `POST /offers`       | Accept an idempotent task offer and persist a local run                           |
+| `POST /workspace`    | Claim, read or modify the offered task's home workspace                           |
+| `GET /observe`       | Return runs, invocations and human requests belonging to the caller's home node   |
+| `POST /control`      | Pause/resume/cancel, deliver messages or answer human requests for those runs     |
+| `POST /scoped/graph` | Return a bounded, receiver-authorized Graph View projection for one mapped viewer |
+
+The scoped graph endpoint authenticates the source Peer before resolving its
+exact Subject mapping or named operator grant. It returns display metadata and
+evidence-backed edges for B-owned resources after B's current read decisions;
+it never returns raw State. Requests bound the mode, kinds, relations, activity
+window, page size and traversal depth. Depth is exactly one direct Peer hop; a
+larger value is rejected. Each opaque cursor is tied to that source, viewer, scope
+and projection generation, and the receiver rechecks authority per page. A can
+expand C only through its own separately authorized direct Peer relationship;
+B's connection to C is not included in B's graph projection. See the
+[authorization contract](authorization.md#federated-graph-view-authority) and
+[Graph View controls](agent-relationship-graph.md#workspace-graph-view).
 
 The home node persists a delegation grant before sending an offer. Grants are scoped to the task, peer and exact agent version. Retrying an offer cannot replace its executor. Claims enforce capability requirements, dependency completion, `OPEN` status and the expected revision in one SQL update. A task's qualified owner is derived from the authenticated peer, never accepted as an arbitrary caller-supplied identity. Unknown task requirement/search fields are rejected. A terminal task grant permits snapshot/task reads, exact idempotent completion replay, or acknowledgment of the same terminal transition; it no longer authorizes workspace mutations.
 

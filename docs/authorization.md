@@ -203,6 +203,49 @@ Generated semantic queries and background indexing use resource kind `embedding`
 
 ## Inbound peer identity mappings
 
+### Federated Graph View authority
+
+Graph View calls `GET /api/federation/graph/peers` on the local Node to list
+directly configured Peers visible to the current viewer. A Subject needs
+`federation.graph.read` on each destination Node. An operator must have a
+currently authenticated named browser identity; the shared recovery API token
+cannot read a remote graph. Topology is available to authorized Subjects.
+
+Expansion calls `POST /api/federation/graph` with one `node_id`, a Graph mode,
+an optional local `scope_workspace`, `depth: 1`, allowlisted `kinds` and `relations`, an
+activity window (`hours`), a page `limit` of 2–80 and an optional opaque
+`cursor`. An operator also selects exactly one `target_tenant` at the receiving
+Node. The local Node checks the active viewer and selected Workspace before
+sending the request over its configured Peer credential. It never accepts a
+caller supplied Subject or operator identity for forwarding.
+
+The receiving Node serves `POST /federation/v0.1/scoped/graph` only to an
+authenticated Peer. For a Subject, its exact inbound Peer mapping and current
+local credential, policy and delegation ancestors must allow
+`federation.graph.read` on the receiving Node. Each resource then passes its
+existing read gate and tenant catalog approval. The source Node's local
+`registry.read` policy does not replace the receiver's decision for a B owned
+resource. The mapping, Peer and authority are rechecked on every page.
+
+For a named operator, the receiving operator can create or change a typed grant
+with `POST /api/authorization/{tenant}/graph-operator-grants` and list grants
+with `GET` on the same path (`offset`, `limit`, maximum 200). The body contains
+`source_node`, `source_operator` (the source browser identity UUID), `enabled`
+and `expected_revision` (zero on creation). A grant applies to one tenant and
+one named source operator; it never turns a subject mapping into an operator
+mapping. Disabling the grant or Peer denies the next page or refresh. Catalog
+approvals and the graph display allowlist still apply under an operator grant.
+
+The projection returns only authorized display fields and edges backed by an
+authorized record. A readable Workspace's Goal node carries its full current
+Goal body; task descriptions, artifact content, message bodies, human requests,
+raw Registry configuration and raw Event data are excluded. Message activity
+requires `workspace.events`, `message.read` and a visible endpoint. There is
+no transitive Peer traversal. Pages use a short lived cursor bound to the
+source Peer, viewer, tenant, requested scope and projection generation; changes
+to current authority or relevant data invalidate continuation. An oversized
+Goal fails explicitly instead of returning a shortened body.
+
 An operator can bind an authenticated source node, source tenant and source subject to an existing local subject credential using `POST /api/authorization/{tenant}/peer-mappings`. The body contains `source_node`, `source_tenant`, `source_subject`, `credential_id`, `enabled` and `expected_revision` (zero for creation). `GET` on the same path lists the tenant's mappings with `offset` (default zero) and `limit` (default 100, maximum 200). A source identity has one target tenant; it cannot be reassigned through another tenant's management endpoint. Concurrent or stale revisions return a conflict. Disabled mappings can retain expired or revoked credentials for audit, but enabling one requires a currently usable credential and configured peer.
 
 `GET /api/authorization/{tenant}/peer-mapping-history?after=0&limit=100` returns committed revisions in ascending sequence order. Use the last `sequence` as the next cursor; the maximum page size is 200. Failed or conflicting updates do not create history. All mapping management and history endpoints require the operator token.

@@ -12,6 +12,7 @@ import {
   type MeshNode,
 } from "./mesh-model";
 import type { Selection } from "./details";
+import type { GraphActivity } from "./federated-graph";
 
 export function MeshInspector({
   node,
@@ -27,6 +28,7 @@ export function MeshInspector({
   close,
   open,
   visitChannel,
+  remoteActivity = [],
 }: {
   node: MeshNode;
   graph: MeshGraph;
@@ -41,31 +43,33 @@ export function MeshInspector({
   close: () => void;
   open: (selection: Selection) => void;
   visitChannel: (id: string) => void;
+  remoteActivity?: GraphActivity[];
 }) {
   const { local, locale, t } = useI18n();
+  const localNode = node.nodeId === data.node.id;
   const [tab, setTab] = useState<"overview" | "tasks" | "events" | "config">(
     "overview",
   );
-  const entity =
-    node.nodeId === data.node.id
-      ? data.registry.find(
-          (e) =>
-            e.kind === node.kind &&
-            e.id === node.entity?.id &&
-            e.version === node.entity.version,
-        )
-      : undefined;
+  const entity = localNode
+    ? data.registry.find(
+        (e) =>
+          e.kind === node.kind &&
+          e.id === node.entity?.id &&
+          e.version === node.entity.version,
+      )
+    : undefined;
   const task =
-    node.kind === "task"
+    localNode && node.kind === "task"
       ? data.tasks.find((v) => v.id === node.resourceId)
       : undefined;
   const artifact =
-    node.kind === "artifact"
+    localNode && node.kind === "artifact"
       ? data.artifacts.find((v) => v.id === node.resourceId)
       : undefined;
-  const workspace = node.workspaceId
-    ? data.workspaces.find((v) => v.id === node.workspaceId)
-    : undefined;
+  const workspace =
+    localNode && node.workspaceId
+      ? data.workspaces.find((v) => v.id === node.workspaceId)
+      : undefined;
   const connectedEdges = graph.edges.filter(
     (e) => e.source === node.id || e.target === node.id,
   );
@@ -75,16 +79,41 @@ export function MeshInspector({
   const neighbors = graph.nodes.filter(
     (n) => n.id !== node.id && neighborIds.has(n.id),
   );
+  const connectedRunIds = new Set(
+    neighbors
+      .filter((neighbor) => neighbor.kind === "run")
+      .map((neighbor) => neighbor.id),
+  );
   const tasks =
     node.kind === "workspace" || node.kind === "goal"
       ? graph.nodes.filter(
-          (n) => n.kind === "task" && n.workspaceId === node.workspaceId,
+          (n) =>
+            n.kind === "task" &&
+            n.nodeId === node.nodeId &&
+            n.workspaceId === node.workspaceId,
         )
-      : neighbors.filter((n) => n.kind === "task");
-  const events = nodeEvents(node, graph, data, hours, now, channel);
+      : graph.nodes.filter(
+          (candidate) =>
+            candidate.kind === "task" &&
+            (neighborIds.has(candidate.id) ||
+              graph.edges.some(
+                (edge) =>
+                  (connectedRunIds.has(edge.source) &&
+                    edge.target === candidate.id) ||
+                  (connectedRunIds.has(edge.target) &&
+                    edge.source === candidate.id),
+              )),
+        );
+  const events = localNode
+    ? nodeEvents(node, graph, data, hours, now, channel)
+    : remoteActivity.map((marker, index) => ({
+        id: `${marker.reference}:${marker.at}:${index}`,
+        kind: marker.kind,
+        created_at: marker.at,
+      }));
   const related = workspace
     ? [workspace]
-    : node.nodeId === data.node.id
+    : localNode
       ? relatedChannels(
           node,
           {
@@ -247,6 +276,12 @@ export function MeshInspector({
                 )}
                 <dt>{copy.node}</dt>
                 <dd>{node.nodeId}</dd>
+                {node.at && (
+                  <>
+                    <dt>{copy.time}</dt>
+                    <dd>{date(node.at)}</dd>
+                  </>
+                )}
                 {modelRef && (
                   <>
                     <dt>{copy.model}</dt>
@@ -264,6 +299,11 @@ export function MeshInspector({
                 )}
               </dl>
               {task && <p className="mesh-description">{task.description}</p>}
+              {node.kind === "goal" && node.goalBody && (
+                <p className="mesh-description mesh-goal-body">
+                  {node.goalBody}
+                </p>
+              )}
               {(node.kind === "workspace" || node.kind === "goal") &&
                 workspace && (
                   <p className="mesh-description">{workspace.goal}</p>

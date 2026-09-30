@@ -40,6 +40,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "futures-util",
+ "hmac",
  "jsonschema",
  "jsonwebtoken",
  "libc",

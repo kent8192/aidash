@@ -87,7 +87,7 @@ impl Access {
 		Ok(decision.allowed)
 	}
 
-	async fn allowed(&mut self, id: Uuid, action: &str) -> Result<bool> {
+	pub(crate) async fn allowed(&mut self, id: Uuid, action: &str) -> Result<bool> {
 		let owner: Option<String> = sqlx::query_scalar(
 			&Query::select()
 				.column(Alias::new("owner_subject"))
@@ -107,7 +107,7 @@ impl Access {
 		self.workspace_decide(id, action, owner.as_deref()).await
 	}
 
-	async fn require_workspace(&mut self, id: Uuid, action: &str) -> Result<()> {
+	pub(crate) async fn require_workspace(&mut self, id: Uuid, action: &str) -> Result<()> {
 		if self.allowed(id, action).await? {
 			Ok(())
 		} else {
@@ -115,7 +115,7 @@ impl Access {
 		}
 	}
 
-	async fn visible(&mut self, action: &str) -> Result<Vec<Uuid>> {
+	pub(crate) async fn visible(&mut self, action: &str) -> Result<Vec<Uuid>> {
 		let rows: Vec<(Uuid, String)> = sqlx::query_as(
 			&Query::select()
 				.column(Alias::new("workspace_id"))
@@ -179,7 +179,7 @@ impl Access {
 		Ok(allowed && self.human_reads(run.workspace_id, run.id).await?)
 	}
 
-	async fn event_visible(&mut self, event: &Event) -> Result<bool> {
+	pub(crate) async fn event_visible(&mut self, event: &Event) -> Result<bool> {
 		if let Some(visible) = self.resource_event_visible(event).await? {
 			return Ok(visible);
 		}

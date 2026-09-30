@@ -4,12 +4,23 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { Clock3, Filter, Focus, List, Network, RotateCcw } from "lucide-react";
 import type { Discovery, Run, State } from "../types";
 import { useI18n } from "../ui";
 import { disambiguateLabels } from "../display-labels";
+import {
+  graphError,
+  graphPage,
+  graphPeers,
+  mergeGraphPages,
+  validateGraphPage,
+  type GraphPage,
+  type RemoteExpansion,
+} from "./federated-graph";
+import { mergeGraphTimeline } from "./graph-timeline";
 import { meshCopy } from "./mesh-copy";
 import { meshColors, MeshIcon } from "./mesh-icons";
 import {
@@ -34,6 +45,25 @@ const MeshCanvas = lazy(() =>
 const Neighborhood = lazy(() =>
   import("./agent-neighborhood").then((m) => ({ default: m.Graph })),
 );
+const supportedRelations = [
+  "contains",
+  "goal",
+  "depends",
+  "produces",
+  "executes",
+  "tool",
+  "model",
+  "skill",
+  "member",
+  "hosts",
+  "coordinates",
+  "participates",
+] as const;
+
+const validGraphTenant = (value: string) =>
+  value.length > 0 &&
+  new TextEncoder().encode(value).length <= 256 &&
+  !/[\s\p{Cc}*]/u.test(value);
 
 export function Graph({
   data,
@@ -76,15 +106,279 @@ export function Graph({
   const [list, setList] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [peerIds, setPeerIds] = useState<string[]>([]);
+  const [expansions, setExpansions] = useState<Record<string, RemoteExpansion>>(
+    {},
+  );
+  const [targetTenant, setTargetTenant] = useState("");
+  const [graphWorkspace, setGraphWorkspace] = useState(channel);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const requests = useRef(new Map<string, number>());
+  const expansionsRef = useRef(expansions);
+  useEffect(() => {
+    expansionsRef.current = expansions;
+  }, [expansions]);
+  useEffect(() => {
+    setGraphWorkspace(channel);
+  }, [channel]);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
   }, []);
-  const full = useMemo(
-    () => buildMeshGraph(data, { channel, discovery, runs, hours, now }),
-    [data, channel, discovery, runs, hours, now],
-  );
   const graphMode = mode === "neighborhood" ? "mesh" : mode;
+  const expandedKey = Object.keys(expansions).sort().join("\u0000");
+  const projectedKinds = useMemo(
+    () => kinds.filter((kind) => kind !== "human" && kind !== "remote"),
+    [kinds],
+  );
+  const projectedRelations = useMemo(
+    () =>
+      supportedRelations.filter(
+        (relation) => !relations || relations.includes(relation),
+      ),
+    [relations],
+  );
+  const scope = JSON.stringify([
+    graphWorkspace,
+    graphMode,
+    [...projectedKinds].sort(),
+    [...projectedRelations].sort(),
+    hours,
+    targetTenant,
+  ]);
+  useEffect(() => {
+    setExpansions((previous) => {
+      if (Object.values(previous).every((value) => value.scope === scope))
+        return previous;
+      return Object.fromEntries(
+        Object.entries(previous).map(([peer]) => [
+          peer,
+          { state: "loading", scope },
+        ]),
+      );
+    });
+  }, [scope]);
+  useEffect(() => {
+    const deadlines = Object.values(expansions)
+      .filter((value) => value.page && value.checkedAt)
+      .map((value) => value.checkedAt! + 30_000);
+    if (!deadlines.length) return;
+    const timer = window.setTimeout(
+      () => {
+        const time = Date.now();
+        setExpansions((previous) =>
+          Object.fromEntries(
+            Object.entries(previous).map(([peer, value]) => [
+              peer,
+              value.page && time >= (value.checkedAt ?? 0) + 30_000
+                ? { state: "loading", scope: value.scope }
+                : value,
+            ]),
+          ),
+        );
+      },
+      Math.max(0, Math.min(...deadlines) - Date.now()),
+    );
+    return () => window.clearTimeout(timer);
+  }, [expansions]);
+  useEffect(() => {
+    let live = true;
+    const refresh = async () => {
+      try {
+        const peers = await graphPeers();
+        if (!live) return;
+        const ids = [...new Set(peers.map((peer) => peer.node_id))].sort();
+        setPeerIds((previous) =>
+          previous.length === ids.length &&
+          previous.every((id, index) => id === ids[index])
+            ? previous
+            : ids,
+        );
+        setExpansions((previous) =>
+          Object.fromEntries(
+            Object.entries(previous).filter(([id]) => ids.includes(id)),
+          ),
+        );
+      } catch {
+        if (!live) return;
+        setPeerIds([]);
+        setExpansions({});
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 25_000);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+  const requestPeer = useCallback(
+    async (peer: string, cursor: string | null, requestScope: string) => {
+      if (document.hidden) return;
+      const nonce = (requests.current.get(peer) ?? 0) + 1;
+      requests.current.set(peer, nonce);
+      setExpansions((previous) =>
+        previous[peer]
+          ? {
+              ...previous,
+              [peer]: {
+                ...previous[peer],
+                state: "loading",
+                scope: requestScope,
+                page:
+                  previous[peer].scope === requestScope
+                    ? previous[peer].page
+                    : undefined,
+              },
+            }
+          : previous,
+      );
+      try {
+        let page: GraphPage;
+        let windowCursor = cursor;
+        const options = {
+          node_id: peer,
+          scope_workspace: graphWorkspace || null,
+          depth: 1 as const,
+          mode: graphMode,
+          kinds: projectedKinds,
+          relations: projectedRelations,
+          hours,
+          limit: 80,
+          target_tenant: data.access.kind === "operator" ? targetTenant : null,
+        };
+        try {
+          page = await graphPage({ ...options, cursor });
+        } catch (error) {
+          if (
+            !(
+              error instanceof Error &&
+              "status" in error &&
+              error.status === 409 &&
+              cursor
+            )
+          )
+            throw error;
+          windowCursor = null;
+          page = await graphPage({ ...options, cursor: null });
+        }
+        if (!validateGraphPage(page, peer))
+          throw new Error("Invalid graph projection");
+        if (requests.current.get(peer) !== nonce) return;
+        setExpansions((previous) =>
+          previous[peer]
+            ? {
+                ...previous,
+                [peer]: {
+                  state: page.nodes.length ? "ready" : "empty",
+                  page,
+                  windowCursor,
+                  checkedAt: Date.now(),
+                  scope: requestScope,
+                },
+              }
+            : previous,
+        );
+      } catch (error) {
+        if (requests.current.get(peer) !== nonce) return;
+        setExpansions((previous) =>
+          previous[peer]
+            ? {
+                ...previous,
+                [peer]: { state: graphError(error), scope: requestScope },
+              }
+            : previous,
+        );
+      }
+    },
+    [
+      graphWorkspace,
+      graphMode,
+      projectedKinds,
+      projectedRelations,
+      hours,
+      targetTenant,
+      data.access.kind,
+    ],
+  );
+  useEffect(() => {
+    if (mode === "neighborhood" || document.hidden) return;
+    for (const peer of Object.keys(expansionsRef.current)) {
+      if (!peerIds.includes(peer)) continue;
+      const current = expansionsRef.current[peer];
+      void requestPeer(
+        peer,
+        current.scope === scope ? (current.windowCursor ?? null) : null,
+        scope,
+      );
+    }
+    // Only expansion membership, scope and refresh clock start a new request.
+  }, [expandedKey, peerIds, scope, refreshTick, mode, requestPeer]);
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.hidden) {
+        for (const peer of Object.keys(expansionsRef.current))
+          requests.current.set(peer, (requests.current.get(peer) ?? 0) + 1);
+        setExpansions((previous) =>
+          Object.fromEntries(
+            Object.entries(previous).map(([peer, value]) => [
+              peer,
+              { state: "loading", scope: value.scope },
+            ]),
+          ),
+        );
+      } else setRefreshTick((value) => value + 1);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [expandedKey]);
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => setRefreshTick((value) => value + 1),
+      25_000,
+    );
+    return () => window.clearInterval(timer);
+  }, []);
+  useEffect(() => {
+    if (mode === "neighborhood") setExpansions({});
+  }, [mode]);
+  const pages = useMemo(
+    () =>
+      new Map(
+        Object.entries(expansions)
+          .filter(
+            ([peer, value]) =>
+              peerIds.includes(peer) &&
+              value.page &&
+              value.scope === scope &&
+              now - (value.checkedAt ?? 0) < 30_000,
+          )
+          .map(([peer, value]) => [peer, value.page!] as const),
+      ),
+    [expansions, peerIds, scope, now],
+  );
+  const full = useMemo(
+    () =>
+      mergeGraphPages(
+        buildMeshGraph(data, {
+          channel: graphWorkspace,
+          runs,
+          authorizedPeers: peerIds,
+          hours,
+          now,
+        }),
+        data.node.id,
+        pages,
+        runs,
+      ),
+    [data, graphWorkspace, runs, peerIds, pages, hours, now],
+  );
+  useEffect(() => {
+    if (selectedId && !full.nodes.some((node) => node.id === selectedId))
+      setSelectedId("");
+    if (focused && !full.nodes.some((node) => node.id === focused))
+      setFocused("");
+  }, [full, selectedId, focused]);
   const graph = useMemo(
     () =>
       filterMeshGraph(full, {
@@ -154,6 +448,25 @@ export function Graph({
     setSelectedId(id);
     setClosed(false);
   };
+  const togglePeer = (peer: string) => {
+    if (expansions[peer]) {
+      requests.current.set(peer, (requests.current.get(peer) ?? 0) + 1);
+      setExpansions((previous) => {
+        const next = { ...previous };
+        delete next[peer];
+        return next;
+      });
+      if (
+        selectedId &&
+        full.nodes.find((node) => node.id === selectedId)?.nodeId === peer
+      )
+        setSelectedId("");
+    } else
+      setExpansions((previous) => ({
+        ...previous,
+        [peer]: { state: "loading", scope },
+      }));
+  };
   const selectConnected = (id: string) => {
     if (!graph.nodes.some((n) => n.id === id)) {
       const target = full.nodes.find((n) => n.id === id);
@@ -203,15 +516,37 @@ export function Graph({
         )
       : modeKinds[graphMode];
   const relationTypes = [...new Set(full.edges.map((e) => e.relation))];
-  const events = data.events
+  const localEvents = data.events
     .filter(
       (e) =>
-        (!channel || e.workspace_id === channel) &&
+        (!graphWorkspace || e.workspace_id === graphWorkspace) &&
         inWindow(e.created_at, hours, now),
     )
-    .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+    .map((event) => {
+      const references = eventReferences(event);
+      const target = full.nodes.find(
+        (node) =>
+          node.nodeId === data.node.id &&
+          ((node.kind === "task" && node.resourceId === references.task_id) ||
+            (node.kind === "artifact" &&
+              node.resourceId === references.artifact_id)),
+      );
+      return {
+        id: event.id,
+        kind: event.kind,
+        created_at: event.created_at,
+        reference: target?.id ?? null,
+      };
+    });
+  const events = mergeGraphTimeline(
+    localEvents,
+    pages,
+    full.nodes,
+    hours,
+    Date.now(),
+  );
   const tasks = data.tasks.filter(
-    (task) => !channel || task.workspace_id === channel,
+    (task) => !graphWorkspace || task.workspace_id === graphWorkspace,
   );
   const timeline = events.slice(-80);
   const timelineStart = Date.parse(timeline[0]?.created_at ?? "");
@@ -261,6 +596,27 @@ export function Graph({
             <p>{copy.subtitle}</p>
           </div>
           <div className="mesh-toolbar">
+            {mode !== "neighborhood" && (
+              <label className="mesh-select">
+                <span className="sr-only">{copy.workspaceScope}</span>
+                <select
+                  aria-label={copy.workspaceScope}
+                  value={graphWorkspace}
+                  onChange={(event) => {
+                    setGraphWorkspace(event.target.value);
+                    setSelectedId("");
+                    setFocused("");
+                  }}
+                >
+                  <option value="">{copy.allWorkspaces}</option>
+                  {data.workspaces.map((workspace) => (
+                    <option key={workspace.id} value={workspace.id}>
+                      {workspace.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label className="mesh-select">
               <Network size={14} />
               <span className="sr-only">{copy.mode}</span>
@@ -271,15 +627,11 @@ export function Graph({
                   changeMode(e.target.value as MeshMode | "neighborhood")
                 }
               >
-                {(Object.keys(copy.modes) as MeshMode[])
-                  .filter(
-                    (v) => v !== "topology" || data.access.kind === "operator",
-                  )
-                  .map((v) => (
-                    <option key={v} value={v}>
-                      {copy.modes[v]}
-                    </option>
-                  ))}
+                {(Object.keys(copy.modes) as MeshMode[]).map((v) => (
+                  <option key={v} value={v}>
+                    {copy.modes[v]}
+                  </option>
+                ))}
                 <option value="neighborhood">{copy.fullDetails}</option>
               </select>
             </label>
@@ -380,6 +732,96 @@ export function Graph({
                 </button>
               </div>
             </div>
+            {peerIds.length > 0 && (
+              <div
+                className="mesh-peer-controls"
+                aria-label={copy.kinds.remote}
+              >
+                {data.access.kind === "operator" && (
+                  <label>
+                    {copy.peerScope}
+                    <input
+                      aria-label={copy.peerScope}
+                      aria-invalid={
+                        targetTenant.length > 0 &&
+                        !validGraphTenant(targetTenant)
+                      }
+                      value={targetTenant}
+                      onChange={(event) => {
+                        setTargetTenant(event.target.value);
+                        setExpansions({});
+                        setSelectedId("");
+                      }}
+                    />
+                    {targetTenant.length > 0 &&
+                      !validGraphTenant(targetTenant) && (
+                        <span role="alert">{copy.peerInvalidTenant}</span>
+                      )}
+                  </label>
+                )}
+                {peerIds.map((peer) => {
+                  const expansion = expansions[peer];
+                  const state = expansion?.state;
+                  const stateLabel =
+                    state === "loading"
+                      ? copy.peerLoading
+                      : state === "empty"
+                        ? expansion?.page?.next_cursor
+                          ? copy.peerEmptyPage
+                          : copy.peerEmpty
+                        : state === "denied"
+                          ? copy.peerDenied
+                          : state === "unsupported"
+                            ? copy.peerUnsupported
+                            : state === "oversized"
+                              ? copy.peerOversized
+                              : state === "invalid"
+                                ? copy.peerInvalidTenant
+                                : state === "unavailable"
+                                  ? copy.peerUnavailable
+                                  : "";
+                  return (
+                    <div className="mesh-peer" key={peer}>
+                      <span>{peer}</span>
+                      <button
+                        type="button"
+                        onClick={() => togglePeer(peer)}
+                        disabled={
+                          data.access.kind === "operator" &&
+                          !validGraphTenant(targetTenant)
+                        }
+                      >
+                        {expansion ? copy.collapsePeer : copy.expandPeer}
+                      </button>
+                      {expansion && (
+                        <button
+                          type="button"
+                          onClick={() => void requestPeer(peer, null, scope)}
+                        >
+                          {copy.refreshPeer}
+                        </button>
+                      )}
+                      {expansion?.page?.next_cursor &&
+                        expansion.scope === scope && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void requestPeer(
+                                peer,
+                                expansion.page!.next_cursor,
+                                scope,
+                              )
+                            }
+                          >
+                            {copy.loadMorePeer}
+                          </button>
+                        )}
+                      {stateLabel && <small role="status">{stateLabel}</small>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
             {mode === "execution" && (
               <div className="mesh-statistics">
                 {(
@@ -540,12 +982,8 @@ export function Graph({
                 {events.length ? (
                   <div className="mesh-timeline-track">
                     {timeline.map((event, index) => {
-                      const d = eventReferences(event);
                       const target = full.nodes.find(
-                        (v) =>
-                          (v.kind === "task" && v.resourceId === d.task_id) ||
-                          (v.kind === "artifact" &&
-                            v.resourceId === d.artifact_id),
+                        (node) => node.id === event.reference,
                       );
                       const progress =
                         timelineEnd === timelineStart
@@ -618,7 +1056,7 @@ export function Graph({
           data={data}
           hours={hours}
           now={now}
-          channel={channel}
+          channel={graphWorkspace}
           copy={copy}
           label={label}
           status={status}
@@ -626,6 +1064,9 @@ export function Graph({
           close={() => setClosed(true)}
           open={open}
           visitChannel={visitChannel}
+          remoteActivity={pages
+            .get(selected.nodeId)
+            ?.activity.filter((marker) => marker.reference === selected.id)}
         />
       )}
     </section>
