@@ -115,15 +115,13 @@ long-lived streams from response-future concurrency.
 
 Aidash additionally emits:
 
-- `aidash_sse_connections`: live logical SSE connections holding admission. A body deadline or revocation releases admission even if the transport has not polled the body again.
-- `aidash_sse_disconnects_total`: logical SSE admission leases released by body completion/drop or a server-initiated close. It does not confirm a physical TCP disconnect.
+- `aidash_sse_connections`: live accepted SSE bodies.
+- `aidash_sse_disconnects_total`: bodies completed or dropped, including normal closes.
 - `aidash_worker_active_steps`: leased steps currently handled by this process.
 - `aidash_worker_steps_total{outcome="success|error"}`: completed step attempts, not terminal tasks.
 - `aidash_worker_retries_total`: persisted worker retry transitions.
 - `aidash_model_response_headers_seconds`: successful HTTP transport time until model response headers, not first-token latency.
 - `aidash_model_tokens_total{direction="input|output"}`: reported usage from successfully parsed model responses.
-
-The [SSE delivery runbook](sse-delivery.md) describes notification readiness, reconciliation causes, body deadlines, and query/load measurements.
 
 These counters are operational observations, not billing records. Missing provider
 usage is zero; failed/unparseable provider responses are not counted as known

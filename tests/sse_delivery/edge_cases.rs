@@ -239,6 +239,10 @@ async fn duplicate_flood_preserves_fallback_and_idle_revocation(
 	let before = fixture.service.snapshot();
 	assert!(before.notifications >= 100);
 	assert_eq!(before.registered_scopes, 2);
+	// Prove that authority monitoring progresses while notifications continue.
+	// After revocation, a reader may detect denial and close the stream before
+	// the next monitor tick, so that tick is not a condition of safe closure.
+	until(|| fixture.service.snapshot().authority_checks > before.authority_checks).await;
 	let (status, value) = request(
 		&fixture.app,
 		&fixture.f.config.api_token,
@@ -251,10 +255,9 @@ async fn duplicate_flood_preserves_fallback_and_idle_revocation(
 	)
 	.await;
 	assert_eq!(status, 200, "{value}");
-	// Neither body is polled while notifications continue. Monitoring must
+	// Neither body is polled while notifications continue. Revocation must
 	// close both connections and remove registrations independently.
 	until(|| fixture.service.snapshot().registered_scopes == 0).await;
-	assert!(fixture.service.snapshot().authority_checks > before.authority_checks);
 	end.send_replace(true);
 	flood.await.unwrap();
 	stop.send_replace(true);

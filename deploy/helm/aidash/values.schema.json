@@ -17,8 +17,16 @@
       "type": "object",
       "required": ["reconcileIntervalMs", "backpressureTimeoutSeconds"],
       "properties": {
-        "reconcileIntervalMs": { "type": "integer", "minimum": 250, "maximum": 60000 },
-        "backpressureTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 300 }
+        "reconcileIntervalMs": {
+          "type": "integer",
+          "minimum": 250,
+          "maximum": 60000
+        },
+        "backpressureTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300
+        }
       }
     },
     "node": {
