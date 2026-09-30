@@ -302,9 +302,7 @@ impl Access {
 		// its decision audit before effects so a killed worker cannot lose it.
 		if self.durable_audit {
 			let mut audit = self.pool.begin().await?;
-			for (input, decision) in records {
-				Authorization::record(&mut audit, &self.identity.tenant, input, decision).await?;
-			}
+			Authorization::record_many(&mut audit, &self.identity.tenant, records).await?;
 			audit.commit().await?;
 		} else {
 			self.pending_decisions.extend_from_slice(records);
@@ -326,9 +324,8 @@ impl Access {
 				.tx
 				.take()
 				.ok_or_else(|| Error::Conflict("authorization transaction is suspended".into()))?;
-			for (input, decision) in &self.pending_decisions {
-				Authorization::record(&mut tx, &self.identity.tenant, input, decision).await?;
-			}
+			Authorization::record_many(&mut tx, &self.identity.tenant, &self.pending_decisions)
+				.await?;
 			tx.commit().await?;
 		} else {
 			if let Some(tx) = self.tx.take() {
@@ -338,10 +335,12 @@ impl Access {
 				// Roll back every protected change, then retain the denial with
 				// its evaluated policy revision in a separate audit transaction.
 				let mut audit = self.pool.begin().await?;
-				for (input, decision) in &self.pending_decisions {
-					Authorization::record(&mut audit, &self.identity.tenant, input, decision)
-						.await?;
-				}
+				Authorization::record_many(
+					&mut audit,
+					&self.identity.tenant,
+					&self.pending_decisions,
+				)
+				.await?;
 				audit.commit().await?;
 			}
 		}

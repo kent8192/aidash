@@ -301,20 +301,41 @@ async fn normalize_request_id(mut request: Request, next: Next) -> Response {
 
 #[derive(Clone)]
 pub(crate) struct SseSlots(pub Arc<tokio::sync::Semaphore>);
-struct SseLease {
-	_permit: tokio::sync::OwnedSemaphorePermit,
+struct SseLeaseState {
+	permit: Option<tokio::sync::OwnedSemaphorePermit>,
+	counted: bool,
 }
+#[derive(Clone)]
+pub(crate) struct SseLeaseHandle(Arc<std::sync::Mutex<SseLeaseState>>);
+impl SseLeaseHandle {
+	fn activate(&self) {
+		let mut state = self.0.lock().expect("SSE admission");
+		if state.permit.is_some() && !state.counted {
+			state.counted = true;
+			metrics::gauge!("aidash_sse_connections").increment(1);
+		}
+	}
+	pub(crate) fn release(&self) {
+		let mut state = self.0.lock().expect("SSE admission");
+		state.permit.take();
+		if state.counted {
+			state.counted = false;
+			metrics::gauge!("aidash_sse_connections").decrement(1);
+			metrics::counter!("aidash_sse_disconnects_total").increment(1);
+		}
+	}
+}
+struct SseLease(SseLeaseHandle);
 impl Drop for SseLease {
 	fn drop(&mut self) {
-		metrics::gauge!("aidash_sse_connections").decrement(1);
-		metrics::counter!("aidash_sse_disconnects_total").increment(1);
+		self.0.release();
 	}
 }
 
 /// Hold admission for the lifetime of the body, including an unpolled body.
 pub(crate) async fn sse_admission(
 	axum::extract::State(slots): axum::extract::State<SseSlots>,
-	request: Request,
+	mut request: Request,
 	next: Next,
 ) -> Response {
 	let Ok(permit) = slots.0.clone().try_acquire_owned() else {
@@ -325,12 +346,17 @@ pub(crate) async fn sse_admission(
 		)
 			.into_response();
 	};
+	let handle = SseLeaseHandle(Arc::new(std::sync::Mutex::new(SseLeaseState {
+		permit: Some(permit),
+		counted: false,
+	})));
+	let lease = SseLease(handle.clone());
+	request.extensions_mut().insert(handle.clone());
 	let response = next.run(request).await;
 	if !response.status().is_success() {
 		return response;
 	}
-	metrics::gauge!("aidash_sse_connections").increment(1);
-	let lease = SseLease { _permit: permit };
+	handle.activate();
 	let (parts, body) = response.into_parts();
 	let stream = async_stream::stream! {
 		let _lease = lease;

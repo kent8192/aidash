@@ -723,16 +723,24 @@ async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_chan
 	use futures_util::StreamExt;
 	use tower::ServiceExt;
 	let (a, b, manifest, wa, _wb) = pair(&_test_environment).await;
-	let response = api::router(a.f.clone())
-		.oneshot(
-			Request::builder()
-				.uri(format!("/api/events/stream?workspace_id={wa}"))
-				.header("authorization", format!("Bearer {}", a.f.config.api_token))
-				.body(Body::empty())
-				.unwrap(),
-		)
-		.await
-		.unwrap();
+	// This fixture has no Outbox publisher or NATS subscriber. Use a bounded
+	// reconciliation cadence to exercise the visibility gate without waiting
+	// for the production five-second missed-notification fallback.
+	let event_streams = aidash::sse::Service::new(aidash::sse::Settings {
+		reconcile_interval: std::time::Duration::from_millis(250),
+		..Default::default()
+	});
+	let response =
+		api::router_with_event_streams(a.f.clone(), Default::default(), event_streams.clone())
+			.oneshot(
+				Request::builder()
+					.uri(format!("/api/events/stream?workspace_id={wa}"))
+					.header("authorization", format!("Bearer {}", a.f.config.api_token))
+					.body(Body::empty())
+					.unwrap(),
+			)
+			.await
+			.unwrap();
 	assert_eq!(response.status(), 200);
 	let mut stream = response.into_body().into_data_stream();
 	let first = tokio::time::timeout(std::time::Duration::from_secs(3), stream.next())
@@ -743,6 +751,13 @@ async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_chan
 	assert!(String::from_utf8_lossy(&first).contains("workspace.created"));
 	coordinator::submit(&a.f, &manifest).await.unwrap();
 	steps(&a, manifest.id, 6).await;
+	tokio::time::timeout(std::time::Duration::from_secs(3), async {
+		while event_streams.snapshot().visibility_waiters != 1 {
+			tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+		}
+	})
+	.await
+	.expect("the SSE reader must observe the closed transaction visibility gate");
 	assert!(
 		tokio::time::timeout(std::time::Duration::from_millis(300), stream.next())
 			.await
@@ -755,6 +770,7 @@ async fn an_existing_sse_stream_waits_for_atomic_visibility_before_emitting_chan
 		.unwrap()
 		.unwrap();
 	assert!(String::from_utf8_lossy(&event).contains("new-a"));
+	assert_eq!(event_streams.snapshot().visibility_waiters, 0);
 	drop(stream);
 	a.cleanup().await;
 	b.cleanup().await;
