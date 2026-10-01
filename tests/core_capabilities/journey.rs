@@ -349,7 +349,8 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 	.await;
 	assert_eq!(status, 200, "{read}");
 	assert_eq!(read["content"], "42");
-	let history = json!(finished.context)["history"].as_array().unwrap();
+	let context = json!(finished.context);
+	let history = context["history"].as_array().unwrap();
 	assert!(
 		history.iter().any(|e| e["call"]["name"] == "python_poll"
 			&& e["result"]["displays"]

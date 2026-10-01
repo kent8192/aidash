@@ -736,10 +736,17 @@ async fn missing_usage_keeps_reservation_and_stops_before_another_model_call(
 	};
 	// Failure delivery is scheduled by wake_at and compared with PostgreSQL's
 	// clock. Wait for that durable transition rather than counting fast polls.
-	let run = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+	// This deadline includes every worker step and the five-second delivery
+	// retry, so leave room for concurrent coverage-instrumented database work.
+	let mut last_observed = String::from("no Run observed");
+	let run = tokio::time::timeout(std::time::Duration::from_secs(30), async {
 		loop {
 			worker.worker_once().await.unwrap();
 			let run = f.store.runs().await.unwrap().remove(0);
+			last_observed = format!(
+				"state={:?} recovery={:?} error={:?}",
+				run.state, run.recovery, run.error
+			);
 			if run.phase().as_str() == "FAILED" {
 				break run;
 			}
@@ -747,7 +754,12 @@ async fn missing_usage_keeps_reservation_and_stops_before_another_model_call(
 		}
 	})
 	.await
-	.unwrap();
+	.unwrap_or_else(|error| {
+		panic!(
+			"failure delivery timed out: {error}; {last_observed}; model calls={}",
+			calls.load(Ordering::SeqCst)
+		)
+	});
 	assert_eq!(run.phase().as_str(), "FAILED");
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
 	aidash::generation::provision::reconcile(&f).await.unwrap();
