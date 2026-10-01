@@ -42,6 +42,7 @@ import { EntityDetails } from "../entity-details";
 import { ArtifactList } from "./channel";
 import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
+import { resumableRun } from "./workspace-model";
 import {
   runMediaAccept,
   validRunMediaAttachments,
@@ -486,7 +487,7 @@ function RunPanel({
           <div className="button-row">
             <button
               type="button"
-              disabled={run.control === "PAUSED" && !!run.state_error}
+              disabled={run.control === "PAUSED" && !resumableRun(run)}
               onClick={() =>
                 control(run.control === "PAUSED" ? "resume" : "pause")
               }

@@ -66,14 +66,25 @@ impl RawRun {
 				context: Some(run.context),
 				state_error: None,
 			},
-			Err(error) => RunInspection {
-				state_version: StateVersion::default(),
-				metadata: self.metadata,
-				state: None,
-				recovery: None,
-				context: None,
-				state_error: Some(error.to_string()),
-			},
+			Err(error) => {
+				// A validated failure disposition is inspectable without making its
+				// diagnostic Context executable or inventing a replacement Context.
+				let delivery = decode(self.metadata.phase, self.pending)
+					.ok()
+					.filter(|(state, _)| state.failure_delivery());
+				let (state, recovery) = match delivery {
+					Some((state, recovery)) => (Some(state), Some(recovery)),
+					None => (None, None),
+				};
+				RunInspection {
+					state_version: StateVersion::default(),
+					metadata: self.metadata,
+					state,
+					recovery,
+					context: None,
+					state_error: Some(error.to_string()),
+				}
+			}
 		}
 	}
 }

@@ -1,6 +1,6 @@
 use super::*;
 use chrono::{DateTime, Utc};
-use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+use sea_orm::sea_query::{Alias, Condition, Expr, JoinType, PostgresQueryBuilder, Query};
 fn a(name: &str) -> Alias {
 	Alias::new(name)
 }
@@ -15,6 +15,74 @@ pub(crate) struct RecoveryCursors {
 pub(crate) struct FailureDelivery {
 	pub metadata: RunMetadata,
 	pub target: FailureTarget,
+}
+
+/// The same ordering and Area blockers govern claims and deferred notifications.
+pub(crate) fn run_unblocked() -> Condition {
+	let earlier = Query::select()
+		.expr(Expr::val(1))
+		.from_as(Alias::new("core_runs"), Alias::new("mine"))
+		.join_as(
+			JoinType::InnerJoin,
+			Alias::new("core_runs"),
+			Alias::new("earlier"),
+			Condition::all()
+				.add(
+					Expr::col((Alias::new("mine"), Alias::new("area_id")))
+						.equals((Alias::new("earlier"), Alias::new("area_id"))),
+				)
+				.add(
+					Expr::col((Alias::new("mine"), Alias::new("generation")))
+						.equals((Alias::new("earlier"), Alias::new("generation"))),
+				)
+				.add(
+					Expr::col((Alias::new("earlier"), Alias::new("sequence")))
+						.lt(Expr::col((Alias::new("mine"), Alias::new("sequence")))),
+				),
+		)
+		.join_as(
+			JoinType::InnerJoin,
+			Alias::new("runs"),
+			Alias::new("previous"),
+			Expr::col((Alias::new("earlier"), Alias::new("run_id")))
+				.equals((Alias::new("previous"), Alias::new("id"))),
+		)
+		.and_where(
+			Expr::col((Alias::new("mine"), Alias::new("run_id")))
+				.equals((Alias::new("runs"), Alias::new("id"))),
+		)
+		.and_where(
+			Expr::col((Alias::new("previous"), Alias::new("phase"))).is_not_in([
+				"COMPLETED",
+				"FAILED",
+				"CANCELLED",
+			]),
+		)
+		.to_owned();
+	let unready = Query::select()
+		.expr(Expr::val(1))
+		.from_as(Alias::new("core_runs"), Alias::new("q"))
+		.join_as(
+			JoinType::InnerJoin,
+			Alias::new("core_areas"),
+			Alias::new("a"),
+			Expr::col((Alias::new("q"), Alias::new("area_id")))
+				.equals((Alias::new("a"), Alias::new("id"))),
+		)
+		.and_where(
+			Expr::col((Alias::new("q"), Alias::new("run_id")))
+				.equals((Alias::new("runs"), Alias::new("id"))),
+		)
+		.and_where(Expr::col((Alias::new("q"), Alias::new("initialized"))).eq(false))
+		.and_where(Expr::col((Alias::new("a"), Alias::new("state"))).ne("active"))
+		.to_owned();
+	Condition::any()
+		.add(Expr::col(a("control")).eq("CANCELLED"))
+		.add(
+			Condition::all()
+				.add(Expr::exists(earlier).not())
+				.add(Expr::exists(unready).not()),
+		)
 }
 
 impl Store {
@@ -230,6 +298,7 @@ impl Store {
 		tx: &mut Transaction<'_, Postgres>,
 		raw: &RawRun,
 		now: DateTime<Utc>,
+		node_id: &str,
 	) -> Result<Option<DateTime<Utc>>> {
 		let m = &raw.metadata;
 		if m.phase.is_terminal() || m.control == RunControl::Paused {
@@ -240,6 +309,23 @@ impl Store {
 		}
 		if m.control == RunControl::Cancelled {
 			return Ok(Some(now));
+		}
+		let unblocked: bool = sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::exists(
+					Query::select()
+						.expr(Expr::val(1))
+						.from(a("runs"))
+						.and_where(Expr::col(a("id")).eq(m.id))
+						.cond_where(run_unblocked())
+						.to_owned(),
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(&mut **tx)
+		.await?;
+		if !unblocked {
+			return Ok(None);
 		}
 		let Ok((state, recovery)) = crate::domain::run_state::decode(m.phase, raw.pending.clone())
 		else {
@@ -279,7 +365,9 @@ impl Store {
 						Some(_) => Some(now),
 						None => Some(now),
 					}
-				} else if matches!(wait.as_ref(), WaitingState::Dependencies { .. }) {
+				} else if m.home_node == node_id
+					&& matches!(wait.as_ref(), WaitingState::Dependencies { .. })
+				{
 					let mut dependencies = Query::select()
 						.expr(Expr::val(1))
 						.from(a("task_dependencies"))

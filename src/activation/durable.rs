@@ -201,7 +201,7 @@ pub(super) async fn claim(store: &Store, envelope: &Envelope, seconds: i32) -> R
 	)
 	.fetch_one(&mut *tx)
 	.await?;
-	let due = Store::state_due_in(&mut tx, &refreshed, now).await?;
+	let due = Store::state_due_in(&mut tx, &refreshed, now, &store.node_id).await?;
 	sqlx::query(
 		&Query::update()
 			.table(a("run_activations"))

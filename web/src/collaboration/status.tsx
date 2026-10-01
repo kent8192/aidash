@@ -19,7 +19,12 @@ import { taskProgress } from "./model";
 import { workspaceCopy } from "./workspace-copy";
 import { Avatar } from "./avatar";
 
-import { channelAgents, terminalRun, type LocatedRun } from "./workspace-model";
+import {
+  channelAgents,
+  terminalRun,
+  resumableRun,
+  type LocatedRun,
+} from "./workspace-model";
 const MiniTopology = lazy(() => import("./mini-topology"));
 
 export function ChannelStatus({
@@ -71,7 +76,10 @@ export function ChannelStatus({
     setError("");
     let failed = false;
     for (const { run, node } of active) {
-      if ((!paused && run.control === "PAUSED") || (paused && run.state_error))
+      if (
+        (!paused && run.control === "PAUSED") ||
+        (paused && !resumableRun(run))
+      )
         continue;
       try {
         const action = paused ? "resume" : "pause";
@@ -265,7 +273,7 @@ export function ChannelStatus({
           disabled={
             busy ||
             active.length === 0 ||
-            (paused && active.every(({ run }) => !!run.state_error))
+            (paused && active.every(({ run }) => !resumableRun(run)))
           }
           onClick={() => void control()}
         >

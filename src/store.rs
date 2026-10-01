@@ -3567,66 +3567,8 @@ impl Store {
 		cursor: &mut run_state::RecoveryCursor,
 	) -> Result<Option<Run>> {
 		use sea_orm::sea_query::{
-			Alias, Condition, Expr, JoinType, LockBehavior, LockType, Order, PostgresQueryBuilder,
-			Query,
+			Alias, Condition, Expr, LockBehavior, LockType, Order, PostgresQueryBuilder, Query,
 		};
-		let earlier = Query::select()
-			.expr(Expr::val(1))
-			.from_as(Alias::new("core_runs"), Alias::new("mine"))
-			.join_as(
-				JoinType::InnerJoin,
-				Alias::new("core_runs"),
-				Alias::new("earlier"),
-				Condition::all()
-					.add(
-						Expr::col((Alias::new("mine"), Alias::new("area_id")))
-							.equals((Alias::new("earlier"), Alias::new("area_id"))),
-					)
-					.add(
-						Expr::col((Alias::new("mine"), Alias::new("generation")))
-							.equals((Alias::new("earlier"), Alias::new("generation"))),
-					)
-					.add(
-						Expr::col((Alias::new("earlier"), Alias::new("sequence")))
-							.lt(Expr::col((Alias::new("mine"), Alias::new("sequence")))),
-					),
-			)
-			.join_as(
-				JoinType::InnerJoin,
-				Alias::new("runs"),
-				Alias::new("previous"),
-				Expr::col((Alias::new("earlier"), Alias::new("run_id")))
-					.equals((Alias::new("previous"), Alias::new("id"))),
-			)
-			.and_where(
-				Expr::col((Alias::new("mine"), Alias::new("run_id")))
-					.equals((Alias::new("runs"), Alias::new("id"))),
-			)
-			.and_where(
-				Expr::col((Alias::new("previous"), Alias::new("phase"))).is_not_in([
-					"COMPLETED",
-					"FAILED",
-					"CANCELLED",
-				]),
-			)
-			.to_owned();
-		let unready = Query::select()
-			.expr(Expr::val(1))
-			.from_as(Alias::new("core_runs"), Alias::new("q"))
-			.join_as(
-				JoinType::InnerJoin,
-				Alias::new("core_areas"),
-				Alias::new("a"),
-				Expr::col((Alias::new("q"), Alias::new("area_id")))
-					.equals((Alias::new("a"), Alias::new("id"))),
-			)
-			.and_where(
-				Expr::col((Alias::new("q"), Alias::new("run_id")))
-					.equals((Alias::new("runs"), Alias::new("id"))),
-			)
-			.and_where(Expr::col((Alias::new("q"), Alias::new("initialized"))).eq(false))
-			.and_where(Expr::col((Alias::new("a"), Alias::new("state"))).ne("active"))
-			.to_owned();
 		let now: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
 			&Query::select()
 				.expr(Expr::cust("CURRENT_TIMESTAMP"))
@@ -3648,15 +3590,7 @@ impl Store {
 				.and_where(Expr::cust(
 					"lease_until IS NULL OR lease_until <= CURRENT_TIMESTAMP",
 				))
-				.cond_where(
-					Condition::any()
-						.add(Expr::col(Alias::new("control")).eq("CANCELLED"))
-						.add(
-							Condition::all()
-								.add(Expr::exists(earlier.clone()).not())
-								.add(Expr::exists(unready.clone()).not()),
-						),
-				)
+				.cond_where(run_state::run_unblocked())
 				.order_by(Alias::new("updated_at"), Order::Asc)
 				.order_by(Alias::new("id"), Order::Asc)
 				.limit(128)
@@ -3687,7 +3621,7 @@ impl Store {
 			for raw in rows {
 				let m = &raw.metadata;
 				*cursor = Some((m.updated_at, m.id));
-				if Self::state_due_in(tx, &raw, now)
+				if Self::state_due_in(tx, &raw, now, node_id)
 					.await?
 					.is_none_or(|due| due > now)
 				{
@@ -4124,7 +4058,10 @@ impl Store {
 			.bind(id)
 			.fetch_one(&mut **tx)
 			.await?;
-			raw.decode()?;
+			let (state, _) = crate::domain::run_state::decode(raw.phase, raw.pending.clone())?;
+			if !state.failure_delivery() {
+				raw.decode()?;
+			}
 		}
 		// Control-plane updates are emitted by upgraded code and must remain
 		// available while a pre-upgrade worker lease is fenced by run_inputs.

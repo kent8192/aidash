@@ -272,3 +272,210 @@ async fn bounded_recovery_advances_past_a_full_page_of_future_waits(
 	);
 	cleanup(store, &url, &schema).await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn dependency_release_uses_only_the_authoritative_home(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (store, url, schema) = setup(&environment).await;
+	let f = federation_for(&store);
+	let agent = seed(&f.registry).await;
+	let workspace = store
+		.create_workspace("Dependencies", "Home authority")
+		.await
+		.unwrap();
+	let dependency = running_task(&store, &agent, workspace.id, None).await;
+	sqlx::query(
+		&Query::update()
+			.table(a("runs"))
+			.value(a("control"), "PAUSED")
+			.and_where(Expr::col(a("task_id")).eq(dependency.id))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&store.pool)
+	.await
+	.unwrap();
+	let mut input = new_task();
+	input.dependencies = vec![dependency.id];
+	let task = store
+		.create_task(workspace.id, &input, "human", None)
+		.await
+		.unwrap();
+	let local = store
+		.accept_run(&task, &store.node_id, &agent.id, &agent.version)
+		.await
+		.unwrap();
+	let remote = create(&store, &agent, workspace.id).await;
+	sqlx::query(
+		&Query::update()
+			.table(a("runs"))
+			.value(a("home_node"), "aidash://remote-home")
+			.and_where(Expr::col(a("id")).eq(remote.id))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&store.pool)
+	.await
+	.unwrap();
+	let future = chrono::Utc::now() + chrono::Duration::hours(1);
+	for run in [&local, &remote] {
+		damage(
+			&store,
+			run.id,
+			RunPhase::Waiting,
+			common::pending(RunState::Waiting(Box::new(WaitingState::Dependencies {
+				wake_at: future,
+				resume: Default::default(),
+			}))),
+			common::context(json!({})),
+		)
+		.await;
+	}
+	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
+	store
+		.complete(
+			dependency.id,
+			dependency.owner.as_deref().unwrap(),
+			"done",
+			&ArtifactInput {
+				kind: "text".into(),
+				name: "done".into(),
+				content: json!("done"),
+			},
+		)
+		.await
+		.unwrap();
+	let claimed = store.lease_run(Uuid::new_v4(), 30).await.unwrap().unwrap();
+	assert_eq!(
+		claimed.id, local.id,
+		"local completion releases before the deadline"
+	);
+	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
+	damage(
+		&store,
+		remote.id,
+		RunPhase::Waiting,
+		common::pending(RunState::Waiting(Box::new(WaitingState::Dependencies {
+			wake_at: chrono::Utc::now() - chrono::Duration::seconds(1),
+			resume: Default::default(),
+		}))),
+		common::context(json!({})),
+	)
+	.await;
+	assert_eq!(
+		store
+			.lease_run(Uuid::new_v4(), 30)
+			.await
+			.unwrap()
+			.unwrap()
+			.id,
+		remote.id
+	);
+	cleanup(store, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (store, url, schema) = setup(&environment).await;
+	let f = federation_for(&store);
+	let agent = seed(&f.registry).await;
+	let workspace = store
+		.create_workspace("Delivery", "Resume disposition only")
+		.await
+		.unwrap();
+	let ordinary = create(&store, &agent, workspace.id).await;
+	store
+		.control(ordinary.id, RunControlAction::Pause)
+		.await
+		.unwrap();
+	damage(
+		&store,
+		ordinary.id,
+		RunPhase::Ready,
+		common::pending(RunState::default()),
+		json!([]),
+	)
+	.await;
+	assert!(
+		store
+			.control(ordinary.id, RunControlAction::Resume)
+			.await
+			.is_err(),
+		"ordinary execution must still reject an invalid Context"
+	);
+	let run = create(&store, &agent, workspace.id).await;
+	damage(
+		&store,
+		run.id,
+		RunPhase::Ready,
+		common::pending(RunState::default()),
+		json!([]),
+	)
+	.await;
+	// Claiming repairs only the disposition; it never constructs a usable Context.
+	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
+	let pending = store.inspect_run(run.id).await.unwrap();
+	assert!(pending.state.as_ref().unwrap().failure_delivery());
+	assert!(pending.context.is_none());
+	assert!(pending.state_error.is_some());
+	store
+		.control(run.id, RunControlAction::Pause)
+		.await
+		.unwrap();
+	let worker = aidash::harness::Harness {
+		federation: f.clone(),
+	};
+	worker.worker_once().await.unwrap();
+	assert_eq!(
+		store.task(run.task_id).await.unwrap().status,
+		TaskStatus::Running
+	);
+	let resumed = store
+		.control(run.id, RunControlAction::Resume)
+		.await
+		.unwrap();
+	assert_eq!(resumed.control, RunControl::Active);
+	assert!(resumed.state.as_ref().unwrap().failure_delivery());
+	worker.worker_once().await.unwrap();
+	assert_eq!(
+		store.inspect_run(run.id).await.unwrap().phase,
+		RunPhase::Failed
+	);
+	assert_eq!(
+		store.task(run.task_id).await.unwrap().status,
+		TaskStatus::Failed
+	);
+	let context: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(a("context"))
+			.from(a("runs"))
+			.and_where(Expr::col(a("id")).eq(run.id))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&store.pool)
+	.await
+	.unwrap();
+	assert_eq!(context, json!([]), "diagnostic Context remains unmodified");
+	let effects: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(a("invocations"))
+			.and_where(Expr::col(a("run_id")).eq(run.id))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&store.pool)
+	.await
+	.unwrap();
+	assert_eq!(effects, 0);
+	assert_eq!(store.inspect_run(run.id).await.unwrap().step, 0);
+	// seed's provider endpoint is unavailable: any provider replay would fail
+	// worker_once rather than delivering the task's Failed disposition.
+	cleanup(store, &url, &schema).await;
+}

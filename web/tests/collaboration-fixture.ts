@@ -239,14 +239,27 @@ export async function setup(
     coreVersion?: boolean;
     runMediaRoutes?: string[][];
     invalidRun?: boolean;
+    failureDeliveryRun?: boolean;
   } = {},
 ) {
   let data = fixture(options.referenceLayout);
-  if (options.invalidRun) {
+  if (options.invalidRun || options.failureDeliveryRun) {
     data.runs[0].control = "PAUSED";
     data.runs[0].context = null;
     data.runs[0].state = null;
     data.runs[0].state_error = "invalid execution context";
+    if (options.failureDeliveryRun) {
+      data.runs[0].phase = "WAITING";
+      data.runs[0].state = {
+        phase: "WAITING",
+        data: {
+          reason: "failure_delivery",
+          target: "FAILED",
+          wake_at: "2026-09-22T10:00:00Z",
+          last_delivery_error: null,
+        },
+      };
+    }
   }
   let runMediaRoutes = options.runMediaRoutes ?? [["image/png", "audio/wav"]];
   if (options.coreCapabilities) {

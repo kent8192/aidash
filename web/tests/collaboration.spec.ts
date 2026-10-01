@@ -1025,3 +1025,59 @@ test("invalid execution remains inspectable and cancellable with resume disabled
     .toBe(1);
   expect(errors).toEqual([]);
 });
+
+test("paused failure delivery can resume while retaining its invalid Context diagnostic", async ({
+  page,
+}) => {
+  const { submissions, errors } = await setup(page, {
+    failureDeliveryRun: true,
+  });
+  await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Execution history", exact: true })
+    .click();
+  await page.locator(".collab-channel .collab-task").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("alert")).toContainText(
+    "invalid execution context",
+  );
+  const resume = dialog.getByRole("button", { name: "Resume", exact: true });
+  await expect(resume).toBeEnabled();
+  await resume.click();
+  await expect
+    .poll(
+      () =>
+        submissions.filter(
+          (item) =>
+            item.path.endsWith("/control") && item.body.action === "resume",
+        ).length,
+    )
+    .toBe(1);
+  expect(errors).toEqual([]);
+});
+
+test("channel controls resume a validated failure delivery with an invalid Context", async ({
+  page,
+}) => {
+  const { submissions, errors } = await setup(page, {
+    failureDeliveryRun: true,
+  });
+  await page.goto("/collaboration?channel=workspace-one");
+  const resume = page.getByRole("button", {
+    name: "Resume runs in this channel",
+    exact: true,
+  });
+  await expect(resume).toBeEnabled();
+  await resume.click();
+  await expect
+    .poll(
+      () =>
+        submissions.filter(
+          (item) =>
+            item.path === "/api/runs/run-0/control" &&
+            item.body.action === "resume",
+        ).length,
+    )
+    .toBe(1);
+  expect(errors).toEqual([]);
+});
