@@ -261,10 +261,10 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 		harness.worker_once().await.unwrap();
 		let run = j.c.f.store.run(j.run.id).await.unwrap();
 		assert!(
-			!matches!(run.phase.as_str(), "FAILED" | "CANCELLED")
+			!matches!(run.phase().as_str(), "FAILED" | "CANCELLED")
 				&& run.control != aidash::domain::RunControl::Paused,
 			"phase={} control={} error={:?} pending={} context={}",
-			run.phase,
+			run.phase(),
 			run.control,
 			run.error,
 			json!(run.state)["data"],
@@ -283,13 +283,13 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 				entry["result"]
 			);
 		}
-		if run.phase == "COMPLETED" {
+		if run.phase() == aidash::domain::RunPhase::Completed {
 			break run;
 		}
 		assert!(
 			tokio::time::Instant::now() < deadline,
 			"journey stalled: phase={} error={:?} pending={}",
-			run.phase,
+			run.phase(),
 			run.error,
 			json!(run.state)["data"]
 		);
