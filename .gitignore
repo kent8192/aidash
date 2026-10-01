@@ -205,3 +205,5 @@ web/*.tsbuildinfo
 
 __pycache__/
 *.pyc
+
+/docs/design/
