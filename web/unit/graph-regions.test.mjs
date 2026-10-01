@@ -86,6 +86,33 @@ const state = {
   conversations: [],
 };
 
+test("a cluster conversation retains only its participating cluster in either Workspace scope", () => {
+  const nodes = [
+    shared(home, "workspace", "work", "work"),
+    shared(home, "conversation", "talk", "work"),
+    shared(home, "cluster", "recipient", undefined),
+    shared(home, "cluster", "unrelated", undefined),
+  ];
+  const participation = edge(nodes[2].id, nodes[1].id, "participates");
+  const source = { nodes, edges: [participation], omitted: 0, omittedEdges: 0 };
+  for (const workspace of ["work", ""]) {
+    const scoped = workspaceGraph(source, home, workspace, {
+      tasks: [],
+      conversations: [],
+    });
+    assert.deepEqual(scoped.nodes, nodes.slice(0, 3));
+    assert.deepEqual(scoped.edges, [participation]);
+    const filtered = filterMeshGraph(scoped, {
+      mode: "mesh",
+      kinds: ["workspace", "conversation", "cluster"],
+      relations: ["participates"],
+      query: "",
+    });
+    assert.ok(filtered.nodes.some((node) => node.id === nodes[2].id));
+    assert.deepEqual(filtered.edges, [participation]);
+  }
+});
+
 test("selected Home Workspace keeps only proven Agents and puts peer Runs in their executing regions", () => {
   const scoped = workspaceGraph(graph(), home, "work", state);
   assert.ok(scoped.nodes.some((node) => node.id === key(home, "task", "task")));

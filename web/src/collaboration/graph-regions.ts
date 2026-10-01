@@ -125,6 +125,13 @@ export function workspaceGraph(
       keep.add(source.id);
     if (target?.kind === "human" && operational.has(edge.source))
       keep.add(target.id);
+    if (
+      edge.relation === "participates" &&
+      source?.kind === "cluster" &&
+      target?.kind === "conversation" &&
+      operational.has(target.id)
+    )
+      keep.add(source.id);
   }
   // A Home Task can name an exact remote Agent even when the old graph builder
   // cannot make a local Registry edge to that Peer. The Agent must still be in
