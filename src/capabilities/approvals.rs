@@ -185,7 +185,7 @@ pub(crate) async fn prepare(
 		return Err(Error::Conflict("CAPABILITIES_DISABLED".into()));
 	}
 	if sessions::status(access, area).await?.active_run_id != Some(run.id)
-		|| matches!(run.phase.as_str(), "COMPLETED" | "CANCELLED" | "FAILED")
+		|| run.phase().is_terminal()
 	{
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
@@ -313,9 +313,7 @@ pub(crate) async fn decide(
 	{
 		return Err(Error::Conflict("APPROVAL_STALE_OR_EXPIRED".into()));
 	}
-	if run.control == "CANCELLED"
-		|| matches!(run.phase.as_str(), "COMPLETED" | "CANCELLED" | "FAILED")
-	{
+	if run.control == crate::domain::RunControl::Cancelled || run.phase().is_terminal() {
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
 	let subjects = access.subjects.clone();
@@ -415,8 +413,8 @@ pub(crate) async fn authorize(store: &Store, access: &mut Access, record: &Recor
 	if record.state != "attempted"
 		|| record.expires_at.is_some_and(|t| t <= Utc::now())
 		|| record.owner != access.identity.subject
-		|| run.control == "CANCELLED"
-		|| matches!(run.phase.as_str(), "COMPLETED" | "CANCELLED" | "FAILED")
+		|| run.control == crate::domain::RunControl::Cancelled
+		|| run.phase().is_terminal()
 	{
 		return Err(Error::Forbidden);
 	}

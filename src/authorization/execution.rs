@@ -38,7 +38,7 @@ impl Grant {
 	}
 }
 
-async fn grant(store: &Store, run: &Run) -> Result<Option<Grant>> {
+async fn grant(store: &Store, run: &crate::domain::RunMetadata) -> Result<Option<Grant>> {
 	let grant: Option<Grant> = sqlx::query_as(
 		&Query::select()
 			.column(Asterisk)
@@ -75,7 +75,11 @@ async fn grant(store: &Store, run: &Run) -> Result<Option<Grant>> {
 	Ok(grant)
 }
 
-async fn access_for_run(store: &Store, run: &Run, durable_audit: bool) -> Result<Option<Access>> {
+async fn access_for_run(
+	store: &Store,
+	run: &crate::domain::RunMetadata,
+	durable_audit: bool,
+) -> Result<Option<Access>> {
 	let Some(grant) = grant(store, run).await? else {
 		return Ok(None);
 	};
@@ -270,7 +274,7 @@ async fn admit(
 	let task_resource = access.task_resource(&task).await?;
 	access.require(&task_resource, "task.read").await?;
 	access.require(&workspace, "workspace.read").await?;
-	if task.status != "OPEN" {
+	if task.status != crate::domain::TaskStatus::Open {
 		return Err(Error::Conflict("task is already assigned".into()));
 	}
 	if delegation {
@@ -910,7 +914,12 @@ pub(crate) struct Guard {
 	agent: AgentConfig,
 }
 
-async fn authorize_guard(f: &Federation, run: &Run, access: &mut Access) -> Result<AgentConfig> {
+async fn authorize_guard(
+	f: &Federation,
+	run: &RunMetadata,
+	access: &mut Access,
+	read_context: bool,
+) -> Result<AgentConfig> {
 	if !access.run_visible(run).await? {
 		return Err(Error::Forbidden);
 	}
@@ -957,7 +966,7 @@ async fn authorize_guard(f: &Federation, run: &Run, access: &mut Access) -> Resu
 		&qualified_agent(&f.config.node_id, &run.agent_id, &run.agent_version),
 	)?;
 	let agent: AgentConfig = serde_json::from_value(entry.config)?;
-	if agent.core_capabilities.enabled() {
+	if read_context && agent.core_capabilities.enabled() {
 		crate::capabilities::sessions::context_authority(access, run).await?;
 	}
 	// Registry versions are immutable. Recheck every tenant approval before
@@ -974,7 +983,9 @@ async fn authorize_guard(f: &Federation, run: &Run, access: &mut Access) -> Resu
 
 impl Guard {
 	pub async fn begin(f: &Federation, run: &Run) -> Result<Option<Self>> {
-		if let Some((access, agent)) = super::peer::admission::worker_lease(f, run).await? {
+		if let Some((access, agent)) =
+			super::peer::admission::worker_lease(f, &run.metadata()).await?
+		{
 			return Ok(Some(Self {
 				remote: Some(f.clone()),
 				access: Arc::new(Mutex::new(access)),
@@ -982,11 +993,12 @@ impl Guard {
 				agent,
 			}));
 		}
-		let Some(mut access) = access_for_run(&f.store, run, true).await? else {
+		let Some(mut access) = access_for_run(&f.store, &run.metadata(), true).await? else {
 			return Ok(None);
 		};
-		let agent = authorize_guard(f, run, &mut access).await?;
-		if agent.core_capabilities.enabled() && run.control != "CANCELLED" {
+		let agent = authorize_guard(f, &run.metadata(), &mut access, true).await?;
+		if agent.core_capabilities.enabled() && run.control != crate::domain::RunControl::Cancelled
+		{
 			let mut initialization = Access::under_lease(&access).await?;
 			let result = crate::capabilities::sessions::initialize(
 				&f.store,
@@ -1016,7 +1028,7 @@ impl Guard {
 			let mut access = self.access.lock().await;
 			let result = async {
 				refresh_access_for_run(&mut access, &f.store, &self.run).await?;
-				authorize_guard(f, &self.run, &mut access).await?;
+				authorize_guard(f, &self.run.metadata(), &mut access, true).await?;
 				self.authorize_inference_with(&mut access).await
 			}
 			.await;
@@ -1051,7 +1063,7 @@ impl Guard {
 		if access.tx.is_active() {
 			access.suspend().await?;
 		}
-		let (fresh, _) = super::peer::admission::worker_lease(f, &self.run)
+		let (fresh, _) = super::peer::admission::worker_lease(f, &self.run.metadata())
 			.await?
 			.ok_or(Error::Forbidden)?;
 		*access = fresh;
@@ -1484,15 +1496,50 @@ impl Guard {
 	}
 }
 
+pub(crate) struct DeliveryGuard {
+	access: Arc<Mutex<Access>>,
+	remote: bool,
+}
+impl DeliveryGuard {
+	pub async fn begin(f: &Federation, run: &RunMetadata) -> Result<Option<Self>> {
+		if let Some((access, _)) = super::peer::admission::worker_lease(f, run).await? {
+			return Ok(Some(Self {
+				access: Arc::new(Mutex::new(access)),
+				remote: true,
+			}));
+		}
+		let Some(mut access) = access_for_run(&f.store, run, true).await? else {
+			return Ok(None);
+		};
+		authorize_guard(f, run, &mut access, false).await?;
+		Ok(Some(Self {
+			access: Arc::new(Mutex::new(access)),
+			remote: false,
+		}))
+	}
+	pub fn local_authority(&self) -> Option<WorkerAuthority> {
+		(!self.remote).then(|| WorkerAuthority {
+			access: self.access.clone(),
+		})
+	}
+	pub async fn finish<T>(self, result: Result<T>) -> Result<T> {
+		Arc::try_unwrap(self.access)
+			.map_err(|_| Error::Conflict("delivery boundary still in use".into()))?
+			.into_inner()
+			.finish(result)
+			.await
+	}
+}
+
 pub async fn control(
 	f: &Federation,
 	identity: &SubjectIdentity,
 	id: Uuid,
-	action: &str,
-) -> Result<Run> {
+	action: RunControlAction,
+) -> Result<RunInspection> {
 	let mut access = Access::begin(&f.store, identity).await?;
 	let result = async {
-		let run: Run = sqlx::query_as(
+		let raw: RawRun = sqlx::query_as(
 			&Query::select()
 				.column(Asterisk)
 				.from(Alias::new("runs"))
@@ -1503,17 +1550,18 @@ pub async fn control(
 		.fetch_optional(&mut **access.tx)
 		.await?
 		.ok_or(Error::Forbidden)?;
+		let run = raw.inspect();
 		let workspace = access.workspace(run.workspace_id).await?;
 		access.context = workspace.attributes.clone();
 		access.require(&workspace, "workspace.read").await?;
-		// The control response includes the run's persisted context/pending data.
+		// Control responses include the Run's persisted execution details.
 		if !access.run_visible(&run).await? {
 			return Err(Error::Forbidden);
 		}
 		access
 			.require(&access.resource("run", id, json!({})), "run.control")
 			.await?;
-		if action == "resume" {
+		if action == RunControlAction::Resume {
 			let grant: Grant = sqlx::query_as(
 				&Query::select()
 					.column(Asterisk)
@@ -1560,7 +1608,7 @@ pub async fn details_page(
 ) -> Result<RunDetails> {
 	let mut access = Access::begin(&f.store, identity).await?;
 	let result = async {
-		let run: Run = sqlx::query_as(
+		let raw: RawRun = sqlx::query_as(
 			&Query::select()
 				.column(Asterisk)
 				.from(Alias::new("runs"))
@@ -1571,6 +1619,7 @@ pub async fn details_page(
 		.fetch_optional(&mut **access.tx)
 		.await?
 		.ok_or(Error::Forbidden)?;
+		let run = raw.inspect();
 		let workspace = access.workspace(run.workspace_id).await?;
 		access.context = workspace.attributes.clone();
 		access.require(&workspace, "workspace.read").await?;
@@ -1606,11 +1655,11 @@ pub async fn details_page(
 		.bind(&run.agent_id)
 		.bind(&run.agent_version)
 		.bind(run.workspace_id)
-		.bind(f.store.memory_home(&run))
+		.bind(f.store.memory_home(&run.metadata))
 		.fetch_optional(&mut **access.tx)
 		.await?;
 		Ok(RunDetails {
-			media_input_routes: f.run_media_input_routes(&run).await?,
+			media_input_routes: f.run_media_input_routes(&run.metadata).await?,
 			run,
 			invocations,
 			memory: memory.unwrap_or_else(|| json!({})),
@@ -1629,23 +1678,22 @@ pub async fn discover(
 }
 
 pub(crate) async fn cancel_if_scoped(store: &Store, run: &Run, token: Uuid) -> Result<bool> {
-	if run.control != "CANCELLED" {
+	if run.control != crate::domain::RunControl::Cancelled {
 		return Ok(false);
 	}
-	if super::peer::admission::run_grant(store, run)
+	if super::peer::admission::run_grant(store, &run.metadata())
 		.await?
 		.is_some()
 	{
 		// The source control route owns its task cancellation. Receiver cleanup
 		// must also finish when that source is unavailable or authority expired.
 		let mut cancelled = run.clone();
-		cancelled.phase = "CANCELLED".into();
-		cancelled.pending = json!({});
+		cancelled.state = crate::domain::RunState::Cancelled(crate::domain::TerminalState {});
 		cancelled.error = None;
 		store.save_run(&cancelled, token, "run.cancelled").await?;
 		return Ok(true);
 	}
-	if grant(store, run).await?.is_none() {
+	if grant(store, &run.metadata()).await?.is_none() {
 		return Ok(false);
 	}
 	store.cancel_execution(run, token).await?;

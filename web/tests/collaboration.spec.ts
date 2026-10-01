@@ -995,3 +995,33 @@ for (const width of [1440, 390]) {
     expect(errors).toEqual([]);
   });
 }
+
+test("invalid execution remains inspectable and cancellable with resume disabled", async ({
+  page,
+}) => {
+  const { submissions, errors } = await setup(page, { invalidRun: true });
+  await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Execution history", exact: true })
+    .click();
+  await page.locator(".collab-channel .collab-task").click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("alert")).toContainText(
+    "invalid execution context",
+  );
+  await expect(
+    dialog.getByRole("button", { name: "Resume", exact: true }),
+  ).toBeDisabled();
+  page.once("dialog", (dialog) => dialog.accept());
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect
+    .poll(
+      () =>
+        submissions.filter(
+          (item) =>
+            item.path.endsWith("/control") && item.body.action === "cancel",
+        ).length,
+    )
+    .toBe(1);
+  expect(errors).toEqual([]);
+});

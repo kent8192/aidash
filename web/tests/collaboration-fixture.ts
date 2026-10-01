@@ -64,8 +64,24 @@ function fixture(reference = false) {
     agent_version: "1.0.0",
     phase: "THINKING",
     control: "ACTIVE",
-    context: {},
-    pending: {},
+    state_version: 1,
+    context: {} as unknown,
+    state: {
+      phase: "THINKING",
+      data: {
+        force_workspace_read_compaction: false,
+        deferred_workspace_read: null,
+        deferred_skill_read: null,
+        deferred_workspace_observation: null,
+        selected_media: [],
+        media_intake_through_seq: null,
+        deferred_run_message_reads: [],
+      },
+    } as unknown,
+    recovery: { retry: null, lease_recovered: false },
+    state_error: null as string | null,
+    observed_input_seq: 0,
+    ledger_worker_ready: true,
     step: 1,
     revision: 1,
     error: null,
@@ -222,9 +238,16 @@ export async function setup(
     coreCapabilities?: boolean;
     coreVersion?: boolean;
     runMediaRoutes?: string[][];
+    invalidRun?: boolean;
   } = {},
 ) {
   let data = fixture(options.referenceLayout);
+  if (options.invalidRun) {
+    data.runs[0].control = "PAUSED";
+    data.runs[0].context = null;
+    data.runs[0].state = null;
+    data.runs[0].state_error = "invalid execution context";
+  }
   let runMediaRoutes = options.runMediaRoutes ?? [["image/png", "audio/wav"]];
   if (options.coreCapabilities) {
     data.registry[0].config = {

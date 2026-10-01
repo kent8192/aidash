@@ -219,7 +219,16 @@ async fn approval_notifications_target_only_the_bound_run(
 		sqlx::query(
 			&Query::update()
 				.table(a("runs"))
-				.value(a("pending"), json!({"core_approval_id":approval}))
+				.value(a("phase"), "WAITING")
+				.value(
+					a("pending"),
+					common::pending(aidash::domain::RunState::Waiting(Box::new(
+						aidash::domain::WaitingState::CoreApproval {
+							approval_id: approval,
+							resume: Default::default(),
+						},
+					))),
+				)
 				.and_where(Expr::col(a("id")).eq(run))
 				.to_string(PostgresQueryBuilder),
 		)

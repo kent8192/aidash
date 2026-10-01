@@ -151,7 +151,7 @@ pub(crate) async fn assign_in(
 			generation: Box::new(existing),
 		});
 	}
-	if task.status != "OPEN" {
+	if task.status != crate::domain::TaskStatus::Open {
 		let existing: Option<(String, String, Vec<String>)> = sqlx::query_as(
 			&sea_orm::sea_query::Query::select()
 				.expr(sea_orm::sea_query::SimpleExpr::from(

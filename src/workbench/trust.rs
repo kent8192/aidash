@@ -1,6 +1,6 @@
 //! Factual inspection only. No Trust verdict or certification is inferred.
 use super::*;
-use crate::{authorization::access::Access, domain::Run, registry::EntityRef};
+use crate::{authorization::access::Access, domain::RunMetadata, registry::EntityRef};
 use axum::{
 	extract::Query as AxumQuery,
 	response::{Html, IntoResponse, Response},
@@ -166,7 +166,7 @@ impl InspectionLease {
 		}
 	}
 
-	async fn run_visible(&mut self, run: &Run) -> Result<bool> {
+	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool> {
 		match self {
 			Self::Operator(_) => Ok(true),
 			Self::Subject(access) => {
@@ -197,7 +197,10 @@ impl InspectionLease {
 	}
 }
 
-async fn visible_runs(lease: &mut InspectionLease, reference: &EntityRef) -> Result<Vec<Run>> {
+async fn visible_runs(
+	lease: &mut InspectionLease,
+	reference: &EntityRef,
+) -> Result<Vec<RunMetadata>> {
 	let mut visible = Vec::new();
 	let mut cursor: Option<(DateTime<Utc>, Uuid)> = None;
 	loop {
@@ -222,7 +225,7 @@ async fn visible_runs(lease: &mut InspectionLease, reference: &EntityRef) -> Res
 			);
 		}
 		let sql = query.to_string(PostgresQueryBuilder);
-		let mut select = sqlx::query_as::<_, Run>(&sql)
+		let mut select = sqlx::query_as::<_, RunMetadata>(&sql)
 			.bind(&reference.id)
 			.bind(&reference.version);
 		if let Some((updated_at, id)) = cursor {
@@ -350,9 +353,9 @@ async fn inspect(
 async fn add_use(
 	tx: &mut Transaction<'_, Postgres>,
 	uses: &mut std::collections::BTreeMap<Uuid, WorkspaceUse>,
-	run: &Run,
+	run: &RunMetadata,
 ) -> Result<()> {
-	let active = !matches!(run.phase.as_str(), "COMPLETED" | "FAILED" | "CANCELLED");
+	let active = !run.phase().is_terminal();
 	if let Some(existing) = uses.get_mut(&run.workspace_id) {
 		existing.current |= active;
 		if run.updated_at > existing.latest_run_at {

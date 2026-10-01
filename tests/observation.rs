@@ -167,7 +167,12 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 			.unwrap();
 		if index == 0 {
 			f.store
-				.transition(child.id, child.revision, "human", "FAILED")
+				.transition(
+					child.id,
+					child.revision,
+					"human",
+					aidash::domain::TaskStatus::Failed,
+				)
 				.await
 				.unwrap();
 		}
@@ -300,10 +305,10 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		assert!(record.to_string().contains(expected));
 	}
 	let mut prepared_run = run.clone();
-	prepared_run.pending = json!({
+	prepared_run.state = aidash::domain::RunState::ToolCall(Box::new(common::tool_call(json!({
 		"response":{"tool_calls":[{"id":"read-1","name":"workspace_read","arguments":{"max_chars":97}}]},
-		"workspace_read_plan":{"step":prepared_run.step,"cursor":0,"result":{"content":"stable chunk"}}
-	});
+		"workspace_read_plan":{"step":prepared_run.step,"cursor":0,"call":{"id":"read-1","name":"workspace_read","arguments":{"max_chars":97}},"result":{"content":"stable chunk"}}
+	}))));
 	let prepared_input = json!({"kind":"artifact","id":Uuid::new_v4(),"max_chars":97});
 	f.store
 		.invocation_start(
@@ -317,7 +322,11 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		.await
 		.unwrap();
 	let recovered = f.store.run(run.id).await.unwrap();
-	assert_eq!(recovered.pending, prepared_run.pending);
+	assert_eq!(recovered.phase(), aidash::domain::RunPhase::ToolCall);
+	assert_eq!(
+		json!(recovered.state)["data"],
+		json!(prepared_run.state)["data"]
+	);
 	let other = f
 		.store
 		.create_workspace("Private", "Another workspace")

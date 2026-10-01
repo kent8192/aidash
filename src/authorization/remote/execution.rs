@@ -34,11 +34,54 @@ pub struct RemoteExecutionActivation {
 	pub grant_id: Uuid,
 	pub admission_id: Uuid,
 	pub run_id: Uuid,
-	pub phase: String,
-	pub control: String,
+	pub phase: RemoteExecutionPhase,
+	pub control: RemoteExecutionControlState,
 	pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RemoteExecutionPhase {
+	Admitted,
+	Ready,
+	Thinking,
+	ToolCall,
+	Waiting,
+	Completed,
+	Failed,
+	Cancelled,
+}
+impl From<crate::domain::RunPhase> for RemoteExecutionPhase {
+	fn from(p: crate::domain::RunPhase) -> Self {
+		use crate::domain::RunPhase as P;
+		match p {
+			P::Ready => Self::Ready,
+			P::Thinking => Self::Thinking,
+			P::ToolCall => Self::ToolCall,
+			P::Waiting => Self::Waiting,
+			P::Completed => Self::Completed,
+			P::Failed => Self::Failed,
+			P::Cancelled => Self::Cancelled,
+		}
+	}
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RemoteExecutionControlState {
+	Inactive,
+	Active,
+	Paused,
+	Cancelled,
+}
+impl From<crate::domain::RunControl> for RemoteExecutionControlState {
+	fn from(c: crate::domain::RunControl) -> Self {
+		match c {
+			crate::domain::RunControl::Active => Self::Active,
+			crate::domain::RunControl::Paused => Self::Paused,
+			crate::domain::RunControl::Cancelled => Self::Cancelled,
+		}
+	}
+}
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct RemoteExecutionStatus {
 	pub grant: Prepared,
@@ -54,11 +97,11 @@ pub enum RemoteExecutionControl {
 	Cancel,
 }
 impl RemoteExecutionControl {
-	pub(crate) fn action(&self) -> &'static str {
+	pub(crate) fn action(&self) -> crate::domain::RunControlAction {
 		match self {
-			Self::Pause => "pause",
-			Self::Resume => "resume",
-			Self::Cancel => "cancel",
+			Self::Pause => crate::domain::RunControlAction::Pause,
+			Self::Resume => crate::domain::RunControlAction::Resume,
+			Self::Cancel => crate::domain::RunControlAction::Cancel,
 		}
 	}
 }
@@ -182,7 +225,7 @@ pub(crate) async fn control(
 			.bind(&identity.subject)
 			.execute(&mut **access.tx)
 			.await?;
-			if current.status != "CANCELLED" {
+			if current.status != crate::domain::TaskStatus::Cancelled {
 				let keys: Vec<String> = sqlx::query_scalar(
 					&Query::select()
 						.column(Alias::new("idempotency_key"))
@@ -206,7 +249,7 @@ pub(crate) async fn control(
 						task,
 						current.revision,
 						&owner,
-						"CANCELLED",
+						crate::domain::TaskStatus::Cancelled,
 						admission,
 						crate::store::TerminalRunMessageInputs::Keys(&keys),
 					)

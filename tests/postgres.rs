@@ -154,7 +154,12 @@ async fn concurrent_claims_dependencies_and_idempotent_completion(
 			.is_err()
 	);
 	let running = store
-		.transition(task.id, claimed.revision, &owner, "RUNNING")
+		.transition(
+			task.id,
+			claimed.revision,
+			&owner,
+			aidash::domain::TaskStatus::Running,
+		)
 		.await
 		.unwrap();
 	assert_eq!(running.revision, 2);
@@ -251,7 +256,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 	.unwrap();
 	let new_token = Uuid::new_v4();
 	let recovered = store.lease_run(new_token, 30).await.unwrap().unwrap();
-	assert_eq!(recovered.pending["lease_recovered"], true);
+	assert!(recovered.recovery.lease_recovered);
 	assert!(
 		store
 			.invocation_finish(&leased, token, "effect", &json!("stale"))
@@ -298,7 +303,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 		)
 		.await
 		.unwrap();
-	assert_eq!(replay.status, "COMPLETED");
+	assert_eq!(replay.status.as_str(), "COMPLETED");
 	assert_eq!(replay.result, Some(json!("verified")));
 	assert!(
 		store
@@ -503,12 +508,20 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 		.execute(&store.pool)
 		.await
 		.unwrap();
-	let explicitly_paused = store.control(run.id, "pause").await.unwrap();
-	assert_eq!(explicitly_paused.control, "PAUSED");
+	let explicitly_paused = store
+		.control(run.id, aidash::domain::RunControlAction::Pause)
+		.await
+		.unwrap();
+	assert_eq!(explicitly_paused.control.as_str(), "PAUSED");
 	assert_eq!(explicitly_paused.error, None);
 	assert!(!harness.worker_once().await.unwrap());
 	assert_eq!(
-		store.control(run.id, "resume").await.unwrap().control,
+		store
+			.control(run.id, aidash::domain::RunControlAction::Resume)
+			.await
+			.unwrap()
+			.control
+			.as_str(),
 		"ACTIVE"
 	);
 	for kind in [
@@ -564,12 +577,29 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 	assert_eq!(response.status(), StatusCode::OK);
 	let snapshot = store.snapshot(workspace.id).await.unwrap();
 	assert_eq!(snapshot.messages[0].sender, "human");
-	store.control(run.id, "cancel").await.unwrap();
+	store
+		.control(run.id, aidash::domain::RunControlAction::Cancel)
+		.await
+		.unwrap();
 	assert!(harness.worker_once().await.unwrap());
-	assert_eq!(store.run(run.id).await.unwrap().phase, "CANCELLED");
-	assert_eq!(store.task(task.id).await.unwrap().status, "CANCELLED");
-	assert_eq!(store.task(dependency.id).await.unwrap().status, "OPEN");
-	assert!(store.control(run.id, "resume").await.is_err());
+	assert_eq!(
+		store.run(run.id).await.unwrap().phase().as_str(),
+		"CANCELLED"
+	);
+	assert_eq!(
+		store.task(task.id).await.unwrap().status.as_str(),
+		"CANCELLED"
+	);
+	assert_eq!(
+		store.task(dependency.id).await.unwrap().status.as_str(),
+		"OPEN"
+	);
+	assert!(
+		store
+			.control(run.id, aidash::domain::RunControlAction::Resume)
+			.await
+			.is_err()
+	);
 	cleanup(store, &url, &schema).await;
 }
 
@@ -608,7 +638,12 @@ async fn running_task(store: &Store, agent: &Entry, workspace: Uuid, parent: Opt
 		.await
 		.unwrap();
 	store
-		.transition(task.id, task.revision, &owner, "RUNNING")
+		.transition(
+			task.id,
+			task.revision,
+			&owner,
+			aidash::domain::TaskStatus::Running,
+		)
 		.await
 		.unwrap()
 }
@@ -632,7 +667,9 @@ async fn final_response(store: &Store, task: Uuid) {
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(task)
-	.bind(json!({"response":response,"cursor":0}))
+	.bind(common::tool_pending(
+		json!({"response":response,"cursor":0}),
+	))
 	.execute(&store.pool)
 	.await
 	.unwrap();
@@ -654,7 +691,11 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 		.unwrap();
 	let parent = running_task(&store, &agent, workspace.id, None).await;
 	let mut children = Vec::new();
-	for status in ["FAILED", "BLOCKED", "CANCELLED"] {
+	for status in [
+		aidash::domain::TaskStatus::Failed,
+		aidash::domain::TaskStatus::Blocked,
+		aidash::domain::TaskStatus::Cancelled,
+	] {
 		let child = running_task(&store, &agent, workspace.id, Some(parent.id)).await;
 		let child = store
 			.transition(
@@ -699,8 +740,8 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 	.fetch_one(&store.pool)
 	.await
 	.unwrap();
-	assert_eq!(run.phase, "WAITING");
-	let request_id = run.pending["human_request_id"]
+	assert_eq!(run.phase().as_str(), "WAITING");
+	let request_id = json!(run.state)["data"]["request_id"]
 		.as_str()
 		.unwrap()
 		.parse()
@@ -722,17 +763,26 @@ async fn parent_can_finish_after_explicit_child_abandonment(
             .header("authorization", "Bearer test-access-token").header("content-type", "application/json")
             .body(Body::from(json!({"revision":child.revision,"reason":"Operator accepts partial results"}).to_string())).unwrap()).await.unwrap();
 		assert_eq!(response.status(), StatusCode::OK);
-		assert_eq!(store.task(child.id).await.unwrap().status, "ABANDONED");
+		assert_eq!(
+			store.task(child.id).await.unwrap().status.as_str(),
+			"ABANDONED"
+		);
 	}
 	store
 		.answer(request_id, json!("Continue with the remaining results"))
 		.await
 		.unwrap();
 	harness.worker_once().await.unwrap();
-	assert_eq!(store.run(run.id).await.unwrap().phase, "THINKING");
+	assert_eq!(
+		store.run(run.id).await.unwrap().phase().as_str(),
+		"THINKING"
+	);
 	final_response(&store, parent.id).await;
 	harness.worker_once().await.unwrap();
-	assert_eq!(store.task(parent.id).await.unwrap().status, "COMPLETED");
+	assert_eq!(
+		store.task(parent.id).await.unwrap().status.as_str(),
+		"COMPLETED"
+	);
 	assert_eq!(
 		store.snapshot(workspace.id).await.unwrap().artifacts.len(),
 		1
@@ -826,7 +876,14 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(task.id)
-	.bind(json!({"response":response,"cursor":0,"retry_count":5}))
+	.bind({
+		let mut fixture = common::tool_pending(json!({"response":response,"cursor":0}));
+		fixture["recovery"]["retry"] = json!(aidash::domain::RetryState {
+			count: 5,
+			at: chrono::Utc::now() - chrono::Duration::seconds(1)
+		});
+		fixture
+	})
 	.execute(&store.pool)
 	.await
 	.unwrap();
@@ -845,14 +902,17 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 	.fetch_one(&store.pool)
 	.await
 	.unwrap();
-	assert_eq!(run.pending["cursor"], 1);
-	assert!(run.pending.get("retry_count").is_none());
+	assert_eq!(json!(run.state)["data"]["cursor"], 1);
+	assert!(run.recovery.retry.is_none());
 	assert!(run.error.is_none());
 	harness.worker_once().await.unwrap();
 	let run = store.run(run.id).await.unwrap();
-	assert_eq!(run.phase, "TOOL_CALL");
-	assert_eq!(run.pending["retry_count"], 1);
-	assert_eq!(store.task(task.id).await.unwrap().status, "RUNNING");
+	assert_eq!(run.phase().as_str(), "TOOL_CALL");
+	assert_eq!(run.recovery.retry.as_ref().unwrap().count, 1);
+	assert_eq!(
+		store.task(task.id).await.unwrap().status.as_str(),
+		"RUNNING"
+	);
 	server.abort();
 	cleanup(store, &url, &schema).await;
 }
@@ -942,7 +1002,9 @@ async fn write_approval(
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(task.id)
-	.bind(json!({"response":response,"cursor":0}))
+	.bind(common::tool_pending(
+		json!({"response":response,"cursor":0}),
+	))
 	.execute(&store.pool)
 	.await
 	.unwrap();
@@ -962,7 +1024,7 @@ async fn write_approval(
 	.fetch_one(&store.pool)
 	.await
 	.unwrap();
-	let first = run.pending["human_request_id"]
+	let first = json!(run.state)["data"]["request_id"]
 		.as_str()
 		.unwrap()
 		.parse()
@@ -982,8 +1044,13 @@ async fn write_approval(
 		.execute(&store.pool)
 		.await
 		.unwrap();
-		let mut pending = run.pending.clone();
-		pending["wake_at"] = json!(past);
+		let mut state = run.state.clone();
+		if let RunState::Waiting(wait) = &mut state
+			&& let WaitingState::ExternalApproval { expires_at, .. } = wait.as_mut()
+		{
+			*expires_at = past;
+		}
+		let pending = common::pending(state);
 		sqlx::query(
 			&Query::update()
 				.table(Alias::new("runs"))
@@ -1057,7 +1124,7 @@ async fn managed_external_write_requires_exact_one_call_approval(
 		server,
 		_environment,
 	} = write_approval;
-	assert_eq!(run.phase, "WAITING");
+	assert_eq!(run.phase().as_str(), "WAITING");
 	assert_eq!(effects.load(Ordering::SeqCst), 0);
 	if !_expired {
 		store
@@ -1076,7 +1143,7 @@ async fn managed_external_write_requires_exact_one_call_approval(
 	harness.worker_once().await.unwrap();
 	harness.worker_once().await.unwrap();
 	run = store.run(run.id).await.unwrap();
-	assert_eq!(run.pending["cursor"], 1);
+	assert_eq!(json!(run.state)["data"]["cursor"], 1);
 	assert_eq!(effects.load(Ordering::SeqCst), 0);
 	if _expired {
 		let row: HumanRequest = sqlx::query_as(
@@ -1099,8 +1166,8 @@ async fn managed_external_write_requires_exact_one_call_approval(
 	}
 	harness.worker_once().await.unwrap();
 	run = store.run(run.id).await.unwrap();
-	assert_eq!(run.phase, "WAITING");
-	let second = run.pending["human_request_id"]
+	assert_eq!(run.phase().as_str(), "WAITING");
+	let second = json!(run.state)["data"]["request_id"]
 		.as_str()
 		.unwrap()
 		.parse()
@@ -1219,17 +1286,22 @@ async fn rejected_web_sources_reach_the_agent_without_retrying_or_escaping_allow
 		if !harness.worker_once().await.unwrap() {
 			break;
 		}
-		if store.task(task.id).await.unwrap().status == "COMPLETED" {
+		if store.task(task.id).await.unwrap().status == aidash::domain::TaskStatus::Completed {
 			break;
 		}
 	}
 	let run = store.runs().await.unwrap().remove(0);
 	assert_eq!(
-		run.phase, "COMPLETED",
+		run.phase().as_str(),
+		"COMPLETED",
 		"error={:?}, pending={}",
-		run.error, run.pending
+		run.error,
+		json!(run.state)["data"]
 	);
-	assert_eq!(store.task(task.id).await.unwrap().status, "COMPLETED");
+	assert_eq!(
+		store.task(task.id).await.unwrap().status.as_str(),
+		"COMPLETED"
+	);
 	assert_eq!(
 		source_hits.load(Ordering::SeqCst),
 		3,
@@ -1279,8 +1351,11 @@ async fn add_test_peer(store: &Store, node: &str, endpoint: &str) {
 	.unwrap();
 }
 #[rstest::rstest]
+#[case::valid_context(false)]
+#[case::invalid_context(true)]
 #[tokio::test]
 async fn failed_home_transition_survives_outage_and_worker_restart(
+	#[case] invalid_context: bool,
 	#[future(awt)]
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
@@ -1296,7 +1371,7 @@ async fn failed_home_transition_survives_outage_and_worker_restart(
 		.create_task(workspace.id, &new_task(), "human", None)
 		.await
 		.unwrap();
-	task.status = "RUNNING".into();
+	task.status = aidash::domain::TaskStatus::Running;
 	task.owner = Some(qualified_agent(&store.node_id, &agent.id, &agent.version));
 	let home_task = Arc::new(std::sync::Mutex::new(task.clone()));
 	let online = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1321,7 +1396,8 @@ async fn failed_home_transition_survives_outage_and_worker_restart(
 					match body["operation"].as_str() {
 						Some("task") => {}
 						Some("run_message_terminal_transition") => {
-							task.status = body["data"]["status"].as_str().unwrap().into();
+							task.status =
+								serde_json::from_value(body["data"]["status"].clone()).unwrap();
 						}
 						_ => {
 							return (
@@ -1356,27 +1432,51 @@ async fn failed_home_transition_survives_outage_and_worker_restart(
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(run.id)
-	.bind(json!({"retry_count":5}))
+	.bind({
+		let mut pending = common::pending(RunState::Thinking(Default::default()));
+		pending["recovery"]["retry"] =
+			json!({"count":5,"at":chrono::Utc::now()-chrono::Duration::seconds(1)});
+		pending
+	})
 	.execute(&store.pool)
 	.await
 	.unwrap();
+	if invalid_context {
+		sqlx::query(
+			&sea_orm::sea_query::Query::update()
+				.table(sea_orm::sea_query::Alias::new("runs"))
+				.value(sea_orm::sea_query::Alias::new("context"), json!([]))
+				.and_where(
+					sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id")).eq(run.id),
+				)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.execute(&store.pool)
+		.await
+		.unwrap();
+	}
 	aidash::harness::Harness {
 		federation: f.clone(),
 	}
 	.worker_once()
 	.await
 	.unwrap();
-	let pending = store.run(run.id).await.unwrap();
-	assert_eq!(pending.phase, "WAITING");
-	assert_eq!(pending.pending["terminal_transition"], "FAILED");
+	let pending = store.inspect_run(run.id).await.unwrap();
+	assert_eq!(pending.phase().as_str(), "WAITING");
+	if !invalid_context {
+		assert_eq!(json!(pending.state.unwrap())["data"]["target"], "FAILED");
+	}
 	aidash::harness::Harness {
 		federation: f.clone(),
 	}
 	.worker_once()
 	.await
 	.unwrap();
-	assert_eq!(store.run(run.id).await.unwrap().phase, "WAITING");
-	assert_eq!(home_task.lock().unwrap().status, "RUNNING");
+	assert_eq!(
+		store.inspect_run(run.id).await.unwrap().phase().as_str(),
+		"WAITING"
+	);
+	assert_eq!(home_task.lock().unwrap().status.as_str(), "RUNNING");
 	online.store(true, std::sync::atomic::Ordering::SeqCst);
 	sqlx::query(
 		&sea_orm::sea_query::Query::update()
@@ -1384,7 +1484,7 @@ async fn failed_home_transition_survives_outage_and_worker_restart(
 			.value(
 				sea_orm::sea_query::Alias::new("pending"),
 				sea_orm::sea_query::Expr::cust(
-					"JSONB_SET(pending, '{wake_at}', TO_JSONB(CURRENT_TIMESTAMP - INTERVAL '1 SECOND'))",
+					"JSONB_SET(pending, '{data,wake_at}', TO_JSONB(CURRENT_TIMESTAMP - INTERVAL '1 SECOND'))",
 				),
 			)
 			.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
@@ -1398,8 +1498,11 @@ async fn failed_home_transition_survives_outage_and_worker_restart(
 		.worker_once()
 		.await
 		.unwrap();
-	assert_eq!(store.run(run.id).await.unwrap().phase, "FAILED");
-	assert_eq!(home_task.lock().unwrap().status, "FAILED");
+	assert_eq!(
+		store.inspect_run(run.id).await.unwrap().phase().as_str(),
+		"FAILED"
+	);
+	assert_eq!(home_task.lock().unwrap().status.as_str(), "FAILED");
 	server.abort();
 	cleanup(store, &url, &schema).await;
 }
@@ -1456,7 +1559,12 @@ async fn terminal_delegations_allow_reads_and_exact_completion_replay_only(
 		.await
 		.unwrap();
 	store
-		.transition(task.id, task.revision, &owner, "RUNNING")
+		.transition(
+			task.id,
+			task.revision,
+			&owner,
+			aidash::domain::TaskStatus::Running,
+		)
 		.await
 		.unwrap();
 	let artifact = ArtifactInput {
@@ -1564,8 +1672,8 @@ async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait(
 		federation: f.clone(),
 	};
 	harness.worker_once().await.unwrap();
-	assert_eq!(store.run(run.id).await.unwrap().phase, "WAITING");
-	assert_eq!(store.task(task.id).await.unwrap().status, "OPEN");
+	assert_eq!(store.run(run.id).await.unwrap().phase().as_str(), "WAITING");
+	assert_eq!(store.task(task.id).await.unwrap().status.as_str(), "OPEN");
 	store
 		.complete(
 			prerequisite.id,
@@ -1610,7 +1718,7 @@ async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait(
 			.value(
 				sea_orm::sea_query::Alias::new("pending"),
 				sea_orm::sea_query::Expr::cust(
-					"JSONB_SET(pending, '{wake_at}', TO_JSONB(CURRENT_TIMESTAMP - INTERVAL '1 SECOND'))",
+					"JSONB_SET(pending, '{data,wake_at}', TO_JSONB(CURRENT_TIMESTAMP - INTERVAL '1 SECOND'))",
 				),
 			)
 			.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
@@ -1622,7 +1730,10 @@ async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait(
 	.unwrap();
 	harness.worker_once().await.unwrap();
 	harness.worker_once().await.unwrap();
-	assert_eq!(store.task(task.id).await.unwrap().status, "RUNNING");
+	assert_eq!(
+		store.task(task.id).await.unwrap().status.as_str(),
+		"RUNNING"
+	);
 	cleanup(store, &url, &schema).await;
 }
 
@@ -1659,9 +1770,17 @@ async fn child_creation_and_parent_completion_are_serialized(
 	);
 	assert_ne!(child.is_ok(), completed.is_ok());
 	if let Ok(child) = child {
-		assert_eq!(store.task(parent.id).await.unwrap().status, "RUNNING");
+		assert_eq!(
+			store.task(parent.id).await.unwrap().status.as_str(),
+			"RUNNING"
+		);
 		let cancelled = store
-			.transition(child.id, child.revision, "human", "CANCELLED")
+			.transition(
+				child.id,
+				child.revision,
+				"human",
+				aidash::domain::TaskStatus::Cancelled,
+			)
 			.await
 			.unwrap();
 		store
@@ -1744,7 +1863,9 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording(
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(task.id)
-	.bind(json!({"response":response,"cursor":0,"request_tokens":7500,"request_window":10000}))
+	.bind(common::tool_pending(
+		json!({"response":response,"cursor":0,"request_tokens":7500,"request_window":10000}),
+	))
 	.execute(&store.pool)
 	.await
 	.unwrap();
@@ -1755,12 +1876,12 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording(
 	.await
 	.unwrap();
 	let run = store.runs().await.unwrap().remove(0);
-	let result = &run.context["history"][0]["result"];
+	let result = &json!(run.context)["history"][0]["result"];
 	let text = result["text"].as_str().unwrap();
 	assert!(!text.is_empty() && text.len() < 8000);
 	assert_eq!(result["budget_limited"], true);
 	assert_eq!(result["next_offset"], text.len());
-	assert!(run.pending["request_tokens"].as_u64().unwrap() <= 10000);
+	assert!(json!(run.state)["data"]["request_tokens"].as_u64().unwrap() <= 10000);
 	cleanup(store, &url, &schema).await;
 }
 
@@ -1802,7 +1923,9 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(parent.id)
-	.bind(json!({"response":response,"cursor":0}))
+	.bind(common::tool_pending(
+		json!({"response":response,"cursor":0}),
+	))
 	.execute(&store.pool)
 	.await
 	.unwrap();
@@ -1823,9 +1946,9 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 	.fetch_one(&store.pool)
 	.await
 	.unwrap();
-	assert_eq!(run.pending["cursor"], 1);
+	assert_eq!(json!(run.state)["data"]["cursor"], 1);
 	assert!(
-		run.context["history"][0]["result"]["error"]
+		json!(run.context)["history"][0]["result"]["error"]
 			.as_str()
 			.unwrap()
 			.contains("missing_tool")
@@ -1839,10 +1962,15 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 	final_response(&store, parent.id).await;
 	harness.worker_once().await.unwrap();
 	let waiting = store.run(run.id).await.unwrap();
-	assert_eq!(waiting.phase, "WAITING");
+	assert_eq!(waiting.phase().as_str(), "WAITING");
 	assert_eq!(waiting.step, run.step + 1);
 	let child = store
-		.transition(child.id, child.revision, "human", "CANCELLED")
+		.transition(
+			child.id,
+			child.revision,
+			"human",
+			aidash::domain::TaskStatus::Cancelled,
+		)
 		.await
 		.unwrap();
 	store
@@ -1868,12 +1996,17 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(run.id)
-	.bind(json!({"response":response,"cursor":0}))
+	.bind(common::tool_pending(
+		json!({"response":response,"response_epoch":waiting.step,"cursor":0}),
+	))
 	.execute(&store.pool)
 	.await
 	.unwrap();
 	harness.worker_once().await.unwrap();
-	assert_eq!(store.task(parent.id).await.unwrap().status, "COMPLETED");
+	assert_eq!(
+		store.task(parent.id).await.unwrap().status.as_str(),
+		"COMPLETED"
+	);
 	cleanup(store, &url, &schema).await;
 }
 
@@ -2216,7 +2349,9 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(task.id)
-	.bind(json!({"response":response,"cursor":0}))
+	.bind(common::tool_pending(
+		json!({"response":response,"cursor":0}),
+	))
 	.execute(&store.pool)
 	.await
 	.unwrap();
@@ -2246,12 +2381,12 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 		.await
 		.unwrap();
 	let current = store.run(run.id).await.unwrap();
-	let request = current.pending["human_request_id"]
+	let request = json!(current.state)["data"]["request_id"]
 		.as_str()
 		.unwrap()
 		.parse()
 		.unwrap();
-	assert_eq!(current.pending["uncertain_key"], key);
+	assert_eq!(json!(current.state)["data"]["key"], key);
 	assert!(matches!(
 		store.answer(request, json!("done")).await,
 		Err(aidash::Error::Invalid(_))
@@ -2467,7 +2602,7 @@ async fn terminal_dependencies_fail_dependents_instead_of_polling_forever(
 		tokio::time::timeout(std::time::Duration::from_secs(5), async {
 			loop {
 				worker.worker_once().await.unwrap();
-				if store.run(run.id).await.unwrap().phase == "FAILED" {
+				if store.run(run.id).await.unwrap().phase().as_str() == "FAILED" {
 					break;
 				}
 				tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -2476,9 +2611,9 @@ async fn terminal_dependencies_fail_dependents_instead_of_polling_forever(
 		.await
 		.expect("terminal dependency must settle rather than wait indefinitely");
 		let run = store.run(run.id).await.unwrap();
-		assert_eq!(run.phase, "FAILED");
+		assert_eq!(run.phase().as_str(), "FAILED");
 		assert!(run.error.unwrap().contains(terminal));
-		assert_eq!(store.task(task.id).await.unwrap().status, "FAILED");
+		assert_eq!(store.task(task.id).await.unwrap().status.as_str(), "FAILED");
 		assert!(!worker.worker_once().await.unwrap());
 	}
 	cleanup(store, &url, &schema).await;
@@ -2584,3 +2719,6 @@ async fn remote_workspace_snapshot_pages_large_accumulated_artifacts(
 	cleanup(worker_store, &worker_url, &worker_schema).await;
 	cleanup(home, &url, &schema).await;
 }
+
+#[path = "postgres/typed_state.rs"]
+mod typed_state;

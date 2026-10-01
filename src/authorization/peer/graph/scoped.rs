@@ -1,8 +1,8 @@
 //! A source-owned workspace has no receiver-local workspace or task row.
 //! Its receiving admission, not a coincidental local workspace UUID, owns the run.
 use super::{
-	Candidate, GraphActivity, GraphAuthority, GraphNode, GraphOptions, Run, event_reference,
-	kind_allowed,
+	Candidate, GraphActivity, GraphAuthority, GraphNode, GraphOptions, RunMetadata,
+	event_reference, kind_allowed,
 };
 use crate::{
 	Result,
@@ -39,7 +39,7 @@ pub(super) async fn candidates(
 	offset: u64,
 ) -> Result<Vec<Candidate>> {
 	let tenant = authority.tenant().to_owned();
-	let rows: Vec<Run> = sqlx::query_as(
+	let rows: Vec<RunMetadata> = sqlx::query_as(
 		&runs()
 			.expr(Expr::cust("r.*"))
 			.order_by((Alias::new("r"), Alias::new("id")), Order::Asc)
@@ -67,7 +67,7 @@ fn workspace_resource(access: &Access, source: &str, workspace: Uuid) -> Resourc
 pub(super) async fn visible(
 	f: &Federation,
 	authority: &mut GraphAuthority<'_>,
-	run: &Run,
+	run: &RunMetadata,
 ) -> Result<bool> {
 	let tenant = authority.tenant().to_owned();
 	let record: Option<(Uuid, Value)> = sqlx::query_as(

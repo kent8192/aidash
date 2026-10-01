@@ -635,7 +635,9 @@ async fn resume_status_waiting(f: &Federation, identity_id: Uuid) -> Result<()> 
 	}
 	for run_id in status_waiting_run_ids(f, identity_id).await? {
 		let run = f.store.run(run_id).await?;
-		if run.control != "PAUSED" || run.error.as_deref() != Some("identity status unavailable") {
+		if run.control != crate::domain::RunControl::Paused
+			|| run.error.as_deref() != Some("identity status unavailable")
+		{
 			continue;
 		}
 		let origin = Query::select()

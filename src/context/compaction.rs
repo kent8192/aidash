@@ -1,6 +1,7 @@
 //! Rust adaptation of fast-jev-compaction for Aidash's paired history events.
 //! Upstream: e3f262a7f4d42bd8dd32ced30d26176f7cb545b0 (MIT).
 //! See LICENSE.
+use super::ContextEvent;
 use super::jev::{JevAsker, Questions, probability};
 use crate::{Error, Result};
 use futures_util::{FutureExt, StreamExt, TryStreamExt, stream};
@@ -58,7 +59,7 @@ struct Fitted {
 }
 
 pub(super) struct Compacted {
-	pub history: Vec<Value>,
+	pub history: Vec<ContextEvent>,
 	pub requests: usize,
 	pub stage: &'static str,
 	pub calls_dropped: usize,
@@ -113,40 +114,37 @@ pub(super) fn estimate_tokens(value: &str) -> usize {
 	tenths.div_ceil(10)
 }
 
-fn collect_calls(history: &[Value], recent: usize) -> Vec<Call<'_>> {
+fn collect_calls(history: &[ContextEvent], recent: usize) -> Vec<Call<'_>> {
 	let mut calls = Vec::new();
 	for (index, event) in history.iter().enumerate() {
-		// Aidash records a complete call/result pair in one event. Incomplete
-		// or unfamiliar events are preserved as text, never deletion candidates.
-		if event["kind"] != "tool"
-			|| event.get("result").is_none()
-			|| event.get("text").is_some_and(|v| v != "")
-			|| event.get("content").is_some_and(|v| v != "")
-		{
-			continue;
-		}
-		let call = &event["call"];
-		let Some(tool) = call["name"].as_str() else {
+		let ContextEvent::Tool { call, result } = event else {
 			continue;
 		};
-		if call["id"].as_str().is_none_or(str::is_empty) || !call["arguments"].is_object() {
+		let tool = call.name.as_str();
+		if call.id.is_empty() || !call.arguments.is_object() {
 			continue;
 		}
+
 		calls.push(Call {
 			id: format!("t{}", calls.len() + 1),
 			index,
 			tool,
-			input: &call["arguments"],
-			result: text(&event["result"]),
-			is_error: !event["result"]["error"].is_null()
-				|| (event["result"]["is_error"] == true || event["result"]["isError"] == true),
+			input: &call.arguments,
+			result: text(result),
+			is_error: !result["error"].is_null()
+				|| (result["is_error"] == true || result["isError"] == true),
 			pinned: pinned(index, history.len(), recent),
 		});
 	}
 	calls
 }
 
-fn entries(history: &[Value], calls: &[Call<'_>], current: &Value, limit: usize) -> Vec<Entry> {
+fn entries(
+	history: &[ContextEvent],
+	calls: &[Call<'_>],
+	current: &Value,
+	limit: usize,
+) -> Vec<Entry> {
 	let current = current.to_string();
 	let mut result = vec![Entry {
 		i: None,
@@ -159,7 +157,7 @@ fn entries(history: &[Value], calls: &[Call<'_>], current: &Value, limit: usize)
 	for (i, event) in history.iter().enumerate() {
 		let mut entry = Entry {
 			i: Some(i),
-			role: if event["kind"] == "human" {
+			role: if matches!(event, ContextEvent::Human { .. }) {
 				"user"
 			} else {
 				"assistant"
@@ -185,7 +183,7 @@ fn entries(history: &[Value], calls: &[Call<'_>], current: &Value, limit: usize)
 }
 
 fn fit_state(
-	history: &[Value],
+	history: &[ContextEvent],
 	calls: &[Call<'_>],
 	current: &Value,
 	options: &Options,
@@ -354,7 +352,7 @@ fn batches<'a>(
 }
 
 pub(super) async fn prune(
-	history: &[Value],
+	history: &[ContextEvent],
 	current: &Value,
 	asker: &dyn JevAsker,
 	options: &Options,
@@ -417,12 +415,18 @@ pub(super) async fn prune(
 		if keep_result >= options.keep_threshold {
 			output.history.push(event.clone());
 		} else if keep_call >= options.keep_threshold {
-			let result = text(&event["result"]);
+			let ContextEvent::Tool { result, .. } = event else {
+				return Err(Error::Invalid("invalid compaction target".into()));
+			};
+			let result = text(result);
 			let length = result.chars().count();
 			let mut kept = event.clone();
 			if length > options.truncate_head_chars.saturating_add(120) {
 				let head: String = result.chars().take(options.truncate_head_chars).collect();
-				kept["result"] = json!(format!(
+				let ContextEvent::Tool { result, .. } = &mut kept else {
+					return Err(Error::Invalid("invalid compaction target".into()));
+				};
+				*result = json!(format!(
 					"{}[fast-jev-compaction truncated {} chars of this tool result; full result remains in the execution journal]",
 					if head.is_empty() {
 						head
@@ -444,15 +448,18 @@ pub(super) async fn prune(
 #[cfg(test)]
 mod tests {
 	use super::*;
+	fn event(v: Value) -> ContextEvent {
+		serde_json::from_value(v).unwrap()
+	}
 	#[rstest::rstest]
 	fn persisted_mcp_errors_are_classified_as_failures() {
 		for result in [
 			serde_json::json!({"is_error":true,"content":[]}),
 			serde_json::json!({"isError":true,"content":[]}),
 		] {
-			let history = vec![
+			let history = vec![event(
 				serde_json::json!({"kind":"tool","call":{"id":"mcp","name":"plugin_0","arguments":{}},"result":result}),
-			];
+			)];
 			assert!(collect_calls(&history, 0)[0].is_error);
 		}
 	}

@@ -12,6 +12,34 @@ _Avoid_: Model, Agent
 A durable execution of a task using an exact Agent definition version. A Run is distinct from a single model request or capability invocation.
 _Avoid_: Model request, tool call
 
+**Run state**:
+The execution-lifecycle position of a Run together with the continuation information belonging to that position. It is distinct from instructions governing whether the Run may advance.
+_Avoid_: Run control, Task status
+
+**Run phase**:
+The position of a Run in its execution lifecycle, including whether its work is ready, advancing, waiting or terminal. A phase is distinct from an instruction to pause or cancel execution.
+_Avoid_: Run control, Task status
+
+**Run control**:
+The recorded instruction governing whether a Run may advance, is paused or must cancel. It is distinct from the Run's execution phase and the outcome of its Task.
+_Avoid_: Run phase, Task status
+
+**Task status**:
+The lifecycle position or outcome of a Task owned by its Home node. A Task's status is distinct from the phase of an individual Run carrying out that work.
+_Avoid_: Run phase, Run control
+
+**Execution context**:
+The durable account of prior work and observations available to a Run's reasoning, including summaries and evidence of which inputs it has examined. It is distinct from outstanding continuation work or permission to act.
+_Avoid_: Pending state, execution authority
+
+**Pending state**:
+The durable continuation information needed to resume a Run, including outstanding decisions, planned work and recovery obligations. Pending state is distinct from a single waiting reason or proof that an external effect completed.
+_Avoid_: Waiting reason, invocation outcome
+
+**Waiting reason**:
+The outstanding condition or obligation preventing a Run from progressing, such as a decision, dependency, deadline or terminal delivery. It is distinct from the continuation that becomes eligible when the condition is resolved.
+_Avoid_: Pending state, Run control
+
 **Harness worker**:
 A runtime executor that advances Runs on behalf of logical Agents. It is distinct from the Agent whose identity and definition a Run uses.
 _Avoid_: Agent, Agent subscription

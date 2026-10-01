@@ -279,19 +279,30 @@ async fn scoped_remote_worker_finishes_at_home_and_retries_keep_one_execution(
 	assert_eq!(status, 200, "{replay}");
 	assert_eq!(replay["run_id"], p.admission.to_string());
 	for _ in 0..10 {
-		if p.run().await.phase == "COMPLETED" {
+		if p.run().await.phase().as_str() == "COMPLETED" {
 			break;
 		}
 		p.step().await;
 		let run = p.run().await;
-		assert_eq!(run.control, "ACTIVE", "{} {:?}", run.phase, run.error);
-		assert!(run.error.is_none(), "{} {:?}", run.phase, run.error);
+		assert_eq!(
+			run.control.as_str(),
+			"ACTIVE",
+			"{} {:?}",
+			run.phase().as_str(),
+			run.error
+		);
+		assert!(
+			run.error.is_none(),
+			"{} {:?}",
+			run.phase().as_str(),
+			run.error
+		);
 	}
 	let run = p.run().await;
-	assert_eq!(run.phase, "COMPLETED", "{:?}", run.error);
+	assert_eq!(run.phase().as_str(), "COMPLETED", "{:?}", run.error);
 	assert_eq!(run.agent_version, "1.0.0");
 	let task = p.a.store.task(p.task).await.unwrap();
-	assert_eq!(task.status, "COMPLETED");
+	assert_eq!(task.status.as_str(), "COMPLETED");
 	let snapshot = p.a.store.snapshot(task.workspace_id).await.unwrap();
 	assert_eq!(snapshot.artifacts.len(), 1);
 	assert_eq!(snapshot.artifacts[0].content, "Scoped remote result");
@@ -367,18 +378,18 @@ async fn transaction_finalization_uses_the_actual_home_and_executor_admission(
 		);
 	}
 	for _ in 0..4 {
-		if p.a.store.task(p.task).await.unwrap().status == "RUNNING" {
+		if p.a.store.task(p.task).await.unwrap().status == aidash::domain::TaskStatus::Running {
 			break;
 		}
 		p.step().await;
 	}
 	let task = p.a.store.task(p.task).await.unwrap();
-	assert_eq!(task.status, "RUNNING");
+	assert_eq!(task.status.as_str(), "RUNNING");
 	let run = p.run().await;
 	sqlx::query(&Query::update().table(Alias::new("runs"))
 		.value(Alias::new("phase"),"TOOL_CALL").value(Alias::new("pending"),Expr::cust("$2"))
 		.and_where(Expr::cust("id=$1")).to_string(PostgresQueryBuilder))
-		.bind(run.id).bind(json!({"response":{"text":"Atomic remote answer","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0}))
+		.bind(run.id).bind(common::tool_pending(json!({"response":{"text":"Atomic remote answer","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0})))
 		.execute(&p.b.store.pool).await.unwrap();
 	let mut manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":p.a.config.node_id,"isolation":"serializable","deadline":chrono::Utc::now()+chrono::Duration::minutes(5),
 		"participants":[{"node_id":p.a.config.node_id,"mutations":[{"kind":"complete_task","task_id":task.id,"expected_revision":task.revision,"artifact":{"kind":"text","name":"Answer","content":"Atomic remote answer"}}]},
@@ -427,8 +438,11 @@ async fn transaction_finalization_uses_the_actual_home_and_executor_admission(
 			.await
 			.unwrap();
 	}
-	assert_eq!(p.a.store.task(task.id).await.unwrap().status, "COMPLETED");
-	assert_eq!(p.run().await.phase, "COMPLETED");
+	assert_eq!(
+		p.a.store.task(task.id).await.unwrap().status.as_str(),
+		"COMPLETED"
+	);
+	assert_eq!(p.run().await.phase().as_str(), "COMPLETED");
 	let artifacts =
 		p.a.store
 			.snapshot(task.workspace_id)
@@ -534,7 +548,7 @@ async fn a_changed_execution_boundary_stops_before_inference(
 ) {
 	let p = scoped_pair;
 	p.step().await;
-	assert_eq!(p.run().await.phase, "THINKING");
+	assert_eq!(p.run().await.phase().as_str(), "THINKING");
 	match fault {
 		"source_policy" | "receiver_policy" => {
 			let (f, app, mut bundle, revision) = if fault == "source_policy" {
@@ -670,13 +684,15 @@ async fn a_changed_execution_boundary_stops_before_inference(
 	p.step().await;
 	let run = p.run().await;
 	assert_eq!(
-		run.control, "PAUSED",
+		run.control.as_str(),
+		"PAUSED",
 		"{fault}: {} {:?}",
-		run.phase, run.error
+		run.phase().as_str(),
+		run.error
 	);
 	assert!(p.requests.lock().await.is_empty());
 	let task = p.a.store.task(p.task).await.unwrap();
-	assert_eq!(task.status, "RUNNING");
+	assert_eq!(task.status.as_str(), "RUNNING");
 	assert!(
 		p.a.store
 			.snapshot(task.workspace_id)
@@ -730,7 +746,7 @@ async fn remote_inputs_are_durable_and_idempotent_and_controls_remain_scoped(
 			.0,
 		200
 	);
-	assert_eq!(p.run().await.control, "PAUSED");
+	assert_eq!(p.run().await.control.as_str(), "PAUSED");
 	let states = request(
 		&p.aa,
 		&p.token,
@@ -754,15 +770,21 @@ async fn remote_inputs_are_durable_and_idempotent_and_controls_remain_scoped(
 		200
 	);
 	for _ in 0..10 {
-		if p.run().await.phase == "COMPLETED" {
+		if p.run().await.phase().as_str() == "COMPLETED" {
 			break;
 		}
 		p.step().await;
 		let run = p.run().await;
-		assert_eq!(run.control, "ACTIVE", "{} {:?}", run.phase, run.error);
+		assert_eq!(
+			run.control.as_str(),
+			"ACTIVE",
+			"{} {:?}",
+			run.phase().as_str(),
+			run.error
+		);
 		assert!(run.error.is_none(), "{:?}", run.error);
 	}
-	assert_eq!(p.run().await.phase, "COMPLETED");
+	assert_eq!(p.run().await.phase().as_str(), "COMPLETED");
 	assert!(
 		p.requests
 			.lock()
@@ -811,7 +833,7 @@ async fn revocation_during_remote_inference_discards_response_and_cancel_closes_
 			.unwrap()
 			.unwrap()
 	);
-	assert_eq!(p.run().await.control, "PAUSED");
+	assert_eq!(p.run().await.control.as_str(), "PAUSED");
 	let task = p.a.store.task(p.task).await.unwrap();
 	let snapshot = p.a.store.snapshot(task.workspace_id).await.unwrap();
 	assert!(snapshot.artifacts.is_empty());
@@ -839,8 +861,11 @@ async fn revocation_during_remote_inference_discards_response_and_cancel_closes_
 	.await;
 	assert_eq!(cancelled.0, 200, "{}", cancelled.1);
 	p.step().await;
-	assert_eq!(p.run().await.phase, "CANCELLED");
-	assert_eq!(p.a.store.task(p.task).await.unwrap().status, "CANCELLED");
+	assert_eq!(p.run().await.phase().as_str(), "CANCELLED");
+	assert_eq!(
+		p.a.store.task(p.task).await.unwrap().status.as_str(),
+		"CANCELLED"
+	);
 	assert_eq!(
 		request(
 			&p.aa,
@@ -868,7 +893,7 @@ async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
 		let _ = server.await;
 	}
 	p.step().await;
-	assert!(p.run().await.pending["retry_at"].is_string());
+	assert!(p.run().await.recovery.retry.is_some());
 	assert!(p.run().await.error.is_some());
 	assert!(p.requests.lock().await.is_empty());
 	assert!(
@@ -909,12 +934,12 @@ async fn peer_outage_and_both_node_restarts_reconcile_one_scoped_execution(
 	.await;
 	assert_eq!(resumed.0, 200, "{}", resumed.1);
 	for _ in 0..10 {
-		if p.run().await.phase == "COMPLETED" {
+		if p.run().await.phase().as_str() == "COMPLETED" {
 			break;
 		}
 		p.step().await;
 	}
-	assert_eq!(p.run().await.phase, "COMPLETED");
+	assert_eq!(p.run().await.phase().as_str(), "COMPLETED");
 	let runs = p.b.store.runs().await.unwrap();
 	assert_eq!(
 		runs.iter()
@@ -963,12 +988,12 @@ async fn lost_home_effect_reply_reconciles_without_duplicate_effects(
 	let p = scoped_pair;
 	*p.drop_reply.lock().await = Some(operation.to_owned());
 	for _ in 0..15 {
-		if p.run().await.phase == "COMPLETED" {
+		if p.run().await.phase().as_str() == "COMPLETED" {
 			break;
 		}
 		p.step().await;
 		let run = p.run().await;
-		if run.control == "PAUSED" {
+		if run.control == aidash::domain::RunControl::Paused {
 			let response = request(
 				&p.aa,
 				&p.token,
@@ -985,7 +1010,7 @@ async fn lost_home_effect_reply_reconciles_without_duplicate_effects(
 		"the fault must be exercised"
 	);
 	assert_eq!(
-		p.run().await.phase,
+		p.run().await.phase().as_str(),
 		"COMPLETED",
 		"{:?}",
 		p.run().await.error

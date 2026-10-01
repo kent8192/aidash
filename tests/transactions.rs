@@ -40,7 +40,7 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 			task.id,
 			task.revision,
 			task.owner.as_deref().unwrap(),
-			"RUNNING",
+			aidash::domain::TaskStatus::Running,
 		)
 		.await
 		.unwrap();
@@ -50,7 +50,7 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 		.value(Alias::new("phase"), "TOOL_CALL")
 		.value(Alias::new("pending"), Expr::cust("$2"))
 		.and_where(Expr::cust("id=$1")).to_string(PostgresQueryBuilder))
-		.bind(run.id).bind(json!({"response":{"text":"Atomic answer","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0}))
+		.bind(run.id).bind(common::tool_pending(json!({"response":{"text":"Atomic answer","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0})))
 		.execute(&f.store.pool).await.unwrap();
 	if denied {
 		let agent = aidash::domain::qualified_agent(&f.config.node_id, "research", "1.0.0");
@@ -79,7 +79,10 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 			coordinator::status(&f, manifest.id).await,
 			Err(aidash::Error::NotFound(_))
 		));
-		assert_eq!(f.store.run(run.id).await.unwrap().phase, "TOOL_CALL");
+		assert_eq!(
+			f.store.run(run.id).await.unwrap().phase().as_str(),
+			"TOOL_CALL"
+		);
 		assert!(
 			f.store
 				.snapshot(task.workspace_id)
@@ -106,8 +109,14 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 				.await
 				.unwrap();
 		}
-		assert_eq!(f.store.task(task_id).await.unwrap().status, "COMPLETED");
-		assert_eq!(f.store.run(run.id).await.unwrap().phase, "COMPLETED");
+		assert_eq!(
+			f.store.task(task_id).await.unwrap().status.as_str(),
+			"COMPLETED"
+		);
+		assert_eq!(
+			f.store.run(run.id).await.unwrap().phase().as_str(),
+			"COMPLETED"
+		);
 		let artifacts = f.store.snapshot(task.workspace_id).await.unwrap().artifacts;
 		assert_eq!(artifacts.len(), 1);
 		assert_eq!(artifacts[0].created_by, task.owner.unwrap());

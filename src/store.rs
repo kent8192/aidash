@@ -15,6 +15,7 @@ pub struct Store {
 	pub control_pool: PgPool,
 	pub node_id: String,
 	pub semantic_client: reqwest::Client,
+	pub(crate) recovery_cursors: std::sync::Arc<run_state::RecoveryCursors>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -92,6 +93,8 @@ pub(crate) enum TerminalRunMessageInputs<'a> {
 	Keys(&'a [String]),
 	Through(i64),
 }
+
+mod run_state;
 
 impl Store {
 	async fn ensure_run_response_current_in(
@@ -253,6 +256,7 @@ impl Store {
 			control_pool,
 			node_id,
 			semantic_client: crate::semantic::backend::client()?,
+			recovery_cursors: Default::default(),
 			capabilities: crate::capabilities::Runtime::from_env()?,
 		})
 	}
@@ -287,6 +291,7 @@ impl Store {
 			control_pool: self.control_pool.clone(),
 			node_id: self.node_id.clone(),
 			semantic_client: self.semantic_client.clone(),
+			recovery_cursors: self.recovery_cursors.clone(),
 			capabilities: self.capabilities.clone(),
 		})
 	}
@@ -316,6 +321,7 @@ impl Store {
 			control_pool,
 			node_id: self.node_id.clone(),
 			semantic_client: self.semantic_client.clone(),
+			recovery_cursors: self.recovery_cursors.clone(),
 			capabilities: self.capabilities.clone(),
 		})
 	}
@@ -619,7 +625,7 @@ impl Store {
 		}
 		if let Some(parent) = input.parent_id {
 			// Completion takes the same row lock before testing its children.
-			let status: String = sqlx::query_scalar(
+			let status: TaskStatus = sqlx::query_scalar(
 				&sea_orm::sea_query::Query::select()
 					.expr(sea_orm::sea_query::SimpleExpr::from(
 						sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("status")),
@@ -642,11 +648,7 @@ impl Store {
 			.bind(key)
 			.fetch_one(&mut **tx)
 			.await?;
-			if matches!(
-				status.as_str(),
-				"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
-			) && !replay
-			{
+			if status.is_terminal() && !replay {
 				return Err(Error::Conflict(
 					"cannot add a child to a terminal parent".into(),
 				));
@@ -844,7 +846,7 @@ impl Store {
 		id: Uuid,
 		revision: i64,
 		owner: &str,
-		next: &str,
+		next: TaskStatus,
 	) -> Result<Task> {
 		let mut tx = self.pool.begin().await?;
 		let result = self
@@ -859,7 +861,7 @@ impl Store {
 		id: Uuid,
 		revision: i64,
 		owner: &str,
-		next: &str,
+		next: TaskStatus,
 	) -> Result<Task> {
 		let task: Task = sqlx::query_as(
 			&sea_orm::sea_query::Query::select()
@@ -872,14 +874,14 @@ impl Store {
 		.bind(id)
 		.fetch_one(&mut **tx)
 		.await?;
-		let terminate_unclaimed =
-			matches!(next, "CANCELLED" | "FAILED") && task.status == "OPEN" && task.owner.is_none();
+		let terminate_unclaimed = matches!(next, TaskStatus::Cancelled | TaskStatus::Failed)
+			&& task.status == crate::domain::TaskStatus::Open
+			&& task.owner.is_none();
 		if task.owner.as_deref() != Some(owner) && !terminate_unclaimed {
 			return Err(Error::Unauthorized);
 		}
-		let before: TaskStatus = serde_json::from_value(json!(task.status))?;
-		let after: TaskStatus = serde_json::from_value(json!(next))
-			.map_err(|_| Error::Invalid("invalid task status".into()))?;
+		let before = task.status;
+		let after = next;
 		if after == TaskStatus::Completed {
 			return Err(Error::Invalid(
 				"use completion with an idempotency key".into(),
@@ -907,7 +909,7 @@ impl Store {
 		id: Uuid,
 		revision: i64,
 		owner: &str,
-		next: &str,
+		next: TaskStatus,
 		run_id: Uuid,
 		keys: &[String],
 	) -> Result<Task> {
@@ -926,7 +928,7 @@ impl Store {
 		id: Uuid,
 		revision: i64,
 		owner: &str,
-		next: &str,
+		next: TaskStatus,
 		run_id: Uuid,
 		through_seq: i64,
 	) -> Result<Task> {
@@ -948,7 +950,7 @@ impl Store {
 		id: Uuid,
 		revision: i64,
 		owner: &str,
-		next: &str,
+		next: TaskStatus,
 		run_id: Uuid,
 		inputs: TerminalRunMessageInputs<'_>,
 	) -> Result<Task> {
@@ -967,11 +969,11 @@ impl Store {
 		id: Uuid,
 		revision: i64,
 		owner: &str,
-		next: &str,
+		next: TaskStatus,
 		run_id: Uuid,
 		inputs: TerminalRunMessageInputs<'_>,
 	) -> Result<Task> {
-		if !matches!(next, "CANCELLED" | "FAILED") {
+		if !matches!(next, TaskStatus::Cancelled | TaskStatus::Failed) {
 			return Err(Error::Invalid(
 				"remote run-message terminal transition must be cancelled or failed".into(),
 			));
@@ -987,8 +989,9 @@ impl Store {
 		.bind(id)
 		.fetch_one(&mut **tx)
 		.await?;
-		let terminate_unclaimed =
-			task.status == "OPEN" && task.owner.is_none() && matches!(next, "CANCELLED" | "FAILED");
+		let terminate_unclaimed = task.status == crate::domain::TaskStatus::Open
+			&& task.owner.is_none()
+			&& matches!(next, TaskStatus::Cancelled | TaskStatus::Failed);
 		if task.owner.as_deref() != Some(owner) && !terminate_unclaimed {
 			return Err(Error::Unauthorized);
 		}
@@ -996,9 +999,8 @@ impl Store {
 			return Err(Error::Conflict("task revision changed".into()));
 		}
 		if task.status != next {
-			let before: TaskStatus = serde_json::from_value(json!(task.status))?;
-			let after: TaskStatus = serde_json::from_value(json!(next))
-				.map_err(|_| Error::Invalid("invalid task status".into()))?;
+			let before = task.status;
+			let after = next;
 			if !before.can_transition(&after) {
 				return Err(Error::Conflict(format!(
 					"invalid task transition {} -> {next}",
@@ -1126,8 +1128,12 @@ impl Store {
 		.fetch_one(&mut **tx)
 		.await?;
 		if task.revision != revision
-			|| !matches!(task.status.as_str(), "FAILED" | "BLOCKED" | "CANCELLED")
-		{
+			|| !matches!(
+				task.status,
+				crate::domain::TaskStatus::Failed
+					| crate::domain::TaskStatus::Blocked
+					| crate::domain::TaskStatus::Cancelled
+			) {
 			return Err(Error::Conflict(
 				"only a failed, blocked or cancelled task at the current revision can be abandoned"
 					.into(),
@@ -1264,7 +1270,7 @@ impl Store {
 				|| a.content != artifact.content
 				|| a.kind != artifact.kind
 				|| a.name != artifact.name
-				|| t.status != "COMPLETED"
+				|| t.status != crate::domain::TaskStatus::Completed
 			{
 				return Err(Error::Conflict(
 					"completion key reused with different input".into(),
@@ -1274,7 +1280,7 @@ impl Store {
 				.await?;
 			return Ok(t);
 		}
-		if t.status != "RUNNING" {
+		if t.status != crate::domain::TaskStatus::Running {
 			return Err(Error::Conflict("only a running task can complete".into()));
 		}
 		let unresolved: bool = sqlx::query_scalar(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::Expr::cust("EXISTS(SELECT 1 FROM tasks WHERE parent_id = $1 AND NOT status IN ('COMPLETED', 'ABANDONED'))")).to_string(sea_orm::sea_query::PostgresQueryBuilder))
@@ -1991,8 +1997,11 @@ impl Store {
 		if !committed
 			&& !consumed
 			&& matches!(
-				task.status.as_str(),
-				"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+				task.status,
+				crate::domain::TaskStatus::Completed
+					| crate::domain::TaskStatus::Failed
+					| crate::domain::TaskStatus::Cancelled
+					| crate::domain::TaskStatus::Abandoned
 			) {
 			return Err(Error::Conflict("home task is terminal".into()));
 		}
@@ -2067,8 +2076,11 @@ impl Store {
 		.fetch_one(&mut **tx)
 		.await?;
 		let terminal = matches!(
-			task.status.as_str(),
-			"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+			task.status,
+			crate::domain::TaskStatus::Completed
+				| crate::domain::TaskStatus::Failed
+				| crate::domain::TaskStatus::Cancelled
+				| crate::domain::TaskStatus::Abandoned
 		);
 		let full_message_key = format!("{peer_node}:{task_id}:{key}");
 		let message_exists: bool = sqlx::query_scalar(
@@ -2288,8 +2300,11 @@ impl Store {
 			&& input_seq.is_none()
 			&& (!active
 				|| matches!(
-					task.status.as_str(),
-					"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+					task.status,
+					crate::domain::TaskStatus::Completed
+						| crate::domain::TaskStatus::Failed
+						| crate::domain::TaskStatus::Cancelled
+						| crate::domain::TaskStatus::Abandoned
 				)) {
 			return Err(Error::Conflict(
 				"remote run message reservation expired before admission was committed".into(),
@@ -2409,8 +2424,11 @@ impl Store {
 			return Err(Error::Unauthorized);
 		}
 		if matches!(
-			task.status.as_str(),
-			"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+			task.status,
+			crate::domain::TaskStatus::Completed
+				| crate::domain::TaskStatus::Failed
+				| crate::domain::TaskStatus::Cancelled
+				| crate::domain::TaskStatus::Abandoned
 		) {
 			return Err(Error::Conflict("home task is terminal".into()));
 		}
@@ -2478,8 +2496,11 @@ impl Store {
 			return Err(Error::Unauthorized);
 		}
 		if matches!(
-			task.status.as_str(),
-			"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+			task.status,
+			crate::domain::TaskStatus::Completed
+				| crate::domain::TaskStatus::Failed
+				| crate::domain::TaskStatus::Cancelled
+				| crate::domain::TaskStatus::Abandoned
 		) {
 			return Err(Error::Conflict("home task is terminal".into()));
 		}
@@ -2649,10 +2670,10 @@ impl Store {
 		.bind(run.task_id)
 		.fetch_optional(&mut **tx)
 		.await?;
-		if matches!(run.phase.as_str(), "COMPLETED" | "FAILED" | "CANCELLED")
-			|| run.pending["finalizing"] == true
-			|| run.control == "CANCELLED"
-			|| run.pending["terminal_transition"].as_str().is_some()
+		if run.phase().is_terminal()
+			|| matches!(&run.state,RunState::ToolCall(s) if s.finalizing)
+			|| run.control == crate::domain::RunControl::Cancelled
+			|| run.state.failure_delivery()
 			|| task_status.as_deref().is_some_and(|status| {
 				matches!(status, "COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED")
 			}) {
@@ -2862,7 +2883,7 @@ impl Store {
 		.fetch_one(&self.pool)
 		.await?)
 	}
-	pub async fn pending_terminal_run_message(&self) -> Result<Option<Run>> {
+	pub async fn pending_terminal_run_message(&self) -> Result<Option<RunMetadata>> {
 		Ok(sqlx::query_as(
 			&sea_orm::sea_query::Query::select()
 				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
@@ -2997,10 +3018,10 @@ impl Store {
 			.await?;
 		let previous = inputs.iter().find(|input| input.idempotency_key == key);
 		if previous.is_none()
-			&& (current.pending["finalizing"] == true
-				|| current.pending["terminal_transition"].as_str().is_some()
-				|| current.control == "CANCELLED"
-				|| matches!(current.phase.as_str(), "COMPLETED" | "FAILED" | "CANCELLED"))
+			&& (matches!(&current.state,RunState::ToolCall(s) if s.finalizing)
+				|| current.state.failure_delivery()
+				|| current.control == crate::domain::RunControl::Cancelled
+				|| current.phase().is_terminal())
 		{
 			return Err(Error::Conflict(
 				"historical run message arrived after finalization".into(),
@@ -3106,7 +3127,7 @@ impl Store {
 	}
 	pub async fn begin_final_completion(&self, run: &Run, worker: Uuid) -> Result<bool> {
 		let mut tx = self.pool.begin().await?;
-		let current: Run = sqlx::query_as(
+		let mut current: Run = sqlx::query_as(
 			&sea_orm::sea_query::Query::select()
 				.expr(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))
 				.from(sea_orm::sea_query::Alias::new("runs"))
@@ -3121,9 +3142,9 @@ impl Store {
 		.await?
 		.ok_or_else(|| Error::Conflict("worker lease lost".into()))?;
 		if current.lease_owner != Some(worker)
-			|| current.phase != "TOOL_CALL"
-			|| current.control == "CANCELLED"
-			|| current.pending["terminal_transition"].as_str().is_some()
+			|| current.phase() != crate::domain::RunPhase::ToolCall
+			|| current.control == crate::domain::RunControl::Cancelled
+			|| current.state.failure_delivery()
 		{
 			return Err(Error::Conflict("worker lease lost".into()));
 		}
@@ -3141,12 +3162,13 @@ impl Store {
 		if stale {
 			return Ok(false);
 		}
+		current.state.tool_mut()?.finalizing = true;
 		let changed = sqlx::query(
 			&sea_orm::sea_query::Query::update()
 				.table(sea_orm::sea_query::Alias::new("runs"))
 				.value(
 					sea_orm::sea_query::Alias::new("pending"),
-					sea_orm::sea_query::Expr::cust("pending || '{\"finalizing\":true}'::jsonb"),
+					sea_orm::sea_query::Expr::cust("$3"),
 				)
 				.and_where(sea_orm::sea_query::Expr::cust(
 					"id = $1 AND lease_owner = $2 AND lease_until > CURRENT_TIMESTAMP",
@@ -3155,6 +3177,7 @@ impl Store {
 		)
 		.bind(run.id)
 		.bind(worker)
+		.bind(current.stored_pending()?)
 		.execute(&mut *tx)
 		.await?;
 		if changed.rows_affected() != 1 {
@@ -3502,8 +3525,9 @@ impl Store {
 		.await?
 		.ok_or_else(|| Error::NotFound("run".into()))
 	}
+	/// List validated executable records. Inspection uses inspect_runs and retains invalid rows.
 	pub async fn runs(&self) -> Result<Vec<Run>> {
-		Ok(sqlx::query_as(
+		let rows: Vec<RawRun> = sqlx::query_as(
 			&sea_orm::sea_query::Query::select()
 				.expr(sea_orm::sea_query::SimpleExpr::from(
 					sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
@@ -3519,11 +3543,17 @@ impl Store {
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 		)
 		.fetch_all(&self.pool)
-		.await?)
+		.await?;
+		Ok(rows
+			.into_iter()
+			.filter_map(|raw| raw.decode().ok())
+			.collect())
 	}
 	pub async fn lease_run(&self, worker: Uuid, seconds: i32) -> Result<Option<Run>> {
 		let mut tx = self.pool.begin().await?;
-		let run = Self::lease_run_in(&mut tx, worker, seconds, None).await?;
+		let mut cursor = self.recovery_cursors.execution.lock().await;
+		let run =
+			Self::lease_run_in(&mut tx, worker, seconds, None, &self.node_id, &mut cursor).await?;
 		tx.commit().await?;
 		Ok(run)
 	}
@@ -3533,6 +3563,8 @@ impl Store {
 		worker: Uuid,
 		seconds: i32,
 		run_id: Option<Uuid>,
+		node_id: &str,
+		cursor: &mut run_state::RecoveryCursor,
 	) -> Result<Option<Run>> {
 		use sea_orm::sea_query::{
 			Alias, Condition, Expr, JoinType, LockBehavior, LockType, Order, PostgresQueryBuilder,
@@ -3595,29 +3627,130 @@ impl Store {
 			.and_where(Expr::col((Alias::new("q"), Alias::new("initialized"))).eq(false))
 			.and_where(Expr::col((Alias::new("a"), Alias::new("state"))).ne("active"))
 			.to_owned();
-		let mut ready = Query::select().column(Alias::new("id")).from(Alias::new("runs"))
-            .and_where(Expr::col(Alias::new("phase")).is_not_in(["COMPLETED","FAILED","CANCELLED"]))
-            .and_where(Expr::col(Alias::new("control")).ne("PAUSED"))
-            .and_where(Expr::col(Alias::new("revision")).lt(i64::MAX-2))
-            .and_where(Expr::cust("lease_until IS NULL OR lease_until < CURRENT_TIMESTAMP"))
-            .and_where(Expr::cust("NOT (pending ? 'retry_at') OR CAST((pending ->> 'retry_at') AS TIMESTAMPTZ) < CURRENT_TIMESTAMP"))
-            .and_where(Expr::cust("phase <> 'WAITING' OR control = 'CANCELLED' OR CAST((pending ->> 'wake_at') AS TIMESTAMPTZ) < CURRENT_TIMESTAMP OR (pending ->> 'resume_phase' = 'READY' AND NOT (pending ? 'human_request_id' OR pending ? 'core_approval_id') AND EXISTS(SELECT 1 FROM tasks AS t WHERE t.id = runs.task_id AND cardinality(t.dependencies) > 0 AND (NOT EXISTS(SELECT 1 FROM tasks AS d WHERE d.id = ANY(t.dependencies) AND d.status <> 'COMPLETED') OR EXISTS(SELECT 1 FROM tasks AS d WHERE d.id = ANY(t.dependencies) AND d.status IN ('FAILED','CANCELLED','ABANDONED'))))) OR EXISTS(SELECT 1 FROM human_requests AS h WHERE CAST(h.id AS TEXT) = runs.pending ->> 'human_request_id' AND h.response IS NOT NULL) OR EXISTS(SELECT 1 FROM core_records AS c WHERE CAST(c.id AS TEXT) = runs.pending ->> 'core_approval_id' AND (c.state <> 'pending' OR c.expires_at < CURRENT_TIMESTAMP))"))
-            .cond_where(Condition::any().add(Expr::col(Alias::new("control")).eq("CANCELLED")).add(Condition::all().add(Expr::exists(earlier).not()).add(Expr::exists(unready).not())))
-            .order_by(Alias::new("updated_at"),Order::Asc).limit(1).lock_with_behavior(LockType::Update,LockBehavior::SkipLocked).to_owned();
-		if let Some(id) = run_id {
-			ready.and_where(Expr::col(Alias::new("id")).eq(id));
+		let now: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
+			&Query::select()
+				.expr(Expr::cust("CURRENT_TIMESTAMP"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(&mut **tx)
+		.await?;
+		{
+			let mut ready = Query::select()
+				.column(sea_orm::sea_query::Asterisk)
+				.from(Alias::new("runs"))
+				.and_where(Expr::col(Alias::new("phase")).is_not_in([
+					"COMPLETED",
+					"FAILED",
+					"CANCELLED",
+				]))
+				.and_where(Expr::col(Alias::new("control")).ne("PAUSED"))
+				.and_where(Expr::col(Alias::new("revision")).lt(i64::MAX - 2))
+				.and_where(Expr::cust(
+					"lease_until IS NULL OR lease_until <= CURRENT_TIMESTAMP",
+				))
+				.cond_where(
+					Condition::any()
+						.add(Expr::col(Alias::new("control")).eq("CANCELLED"))
+						.add(
+							Condition::all()
+								.add(Expr::exists(earlier.clone()).not())
+								.add(Expr::exists(unready.clone()).not()),
+						),
+				)
+				.order_by(Alias::new("updated_at"), Order::Asc)
+				.order_by(Alias::new("id"), Order::Asc)
+				.limit(128)
+				.lock_with_behavior(LockType::Update, LockBehavior::SkipLocked)
+				.to_owned();
+			if let Some(id) = run_id {
+				ready.and_where(Expr::col(Alias::new("id")).eq(id));
+			}
+			if let Some((at, id)) = *cursor {
+				ready.cond_where(
+					Condition::any()
+						.add(Expr::col(Alias::new("updated_at")).gt(at))
+						.add(
+							Condition::all()
+								.add(Expr::col(Alias::new("updated_at")).eq(at))
+								.add(Expr::col(Alias::new("id")).gt(id)),
+						),
+				);
+			}
+			let rows: Vec<RawRun> = sqlx::query_as(&ready.to_string(PostgresQueryBuilder))
+				.fetch_all(&mut **tx)
+				.await?;
+			if rows.is_empty() {
+				*cursor = None;
+				return Ok(None);
+			}
+			let more = rows.len() == 128 && run_id.is_none();
+			for raw in rows {
+				let m = &raw.metadata;
+				*cursor = Some((m.updated_at, m.id));
+				if Self::state_due_in(tx, &raw, now)
+					.await?
+					.is_none_or(|due| due > now)
+				{
+					continue;
+				}
+				// Failure-only delivery is claimed separately and never needs Context.
+				if crate::domain::run_state::decode(m.phase, raw.pending.clone())
+					.is_ok_and(|(s, _)| s.failure_delivery())
+				{
+					continue;
+				}
+				let mut run = match raw.decode() {
+					Ok(run) => run,
+					Err(error) => {
+						Self::fail_invalid_in(
+							tx,
+							&raw,
+							worker,
+							seconds,
+							&error.to_string(),
+							node_id,
+						)
+						.await?;
+						continue;
+					}
+				};
+				run.recovery.lease_recovered |= m.lease_owner.is_some();
+				let claimed: Option<Run> = sqlx::query_as(
+					&Query::update()
+						.table(Alias::new("runs"))
+						.value(Alias::new("pending"), Expr::cust("$3"))
+						.value(Alias::new("lease_owner"), Expr::cust("$1"))
+						.value(
+							Alias::new("lease_until"),
+							Expr::cust("CURRENT_TIMESTAMP + MAKE_INTERVAL(secs => $2)"),
+						)
+						.value(
+							Alias::new("revision"),
+							Expr::col(Alias::new("revision")).add(1),
+						)
+						.value(Alias::new("ledger_worker_ready"), true)
+						.and_where(Expr::col(Alias::new("id")).eq(m.id))
+						.and_where(Expr::col(Alias::new("revision")).eq(m.revision))
+						.and_where(Expr::cust(
+							"set_config('aidash.input_ledger_worker','true',true)='true'",
+						))
+						.returning_all()
+						.to_string(PostgresQueryBuilder),
+				)
+				.bind(worker)
+				.bind(seconds as f64)
+				.bind(run.stored_pending()?)
+				.fetch_optional(&mut **tx)
+				.await?;
+				if claimed.is_some() {
+					return Ok(claimed);
+				}
+			}
+			if !more {
+				*cursor = None;
+			}
+			Ok(None)
 		}
-		// Session admission precedes Run leasing. Waiting retains its position; controls bypass it.
-		Ok(sqlx::query_as(&Query::update().table(Alias::new("runs"))
-            .value(Alias::new("pending"),Expr::cust("CASE WHEN lease_owner IS NOT NULL THEN pending || CAST('{\"lease_recovered\":true}' AS JSONB) ELSE pending END"))
-            .value(Alias::new("lease_owner"),Expr::cust("$1"))
-            .value(Alias::new("lease_until"),Expr::cust("CURRENT_TIMESTAMP + MAKE_INTERVAL(secs => $2)"))
-            .value(Alias::new("revision"),Expr::col(Alias::new("revision")).add(1))
-            .value(Alias::new("ledger_worker_ready"),true)
-            .and_where(Expr::col(Alias::new("id")).in_subquery(ready))
-            .and_where(Expr::cust("set_config('aidash.input_ledger_worker', 'true', true) = 'true'"))
-            .returning_all().to_string(PostgresQueryBuilder))
-            .bind(worker).bind(seconds as f64).fetch_optional(&mut **tx).await?)
 	}
 	pub async fn renew_lease(&self, id: Uuid, worker: Uuid, seconds: i32) -> Result<bool> {
 		Ok(sqlx::query(
@@ -3641,12 +3774,12 @@ impl Store {
 			== 1)
 	}
 	pub async fn save_run(&self, run: &Run, worker: Uuid, kind: &str) -> Result<Run> {
-		let mut pending = run.pending.clone();
+		let mut recovery = run.recovery.clone();
 		let retrying = matches!(kind, "run.retrying" | "run.failure_pending");
-		if !retrying && let Some(object) = pending.as_object_mut() {
-			object.remove("retry_count");
-			object.remove("retry_at");
+		if !retrying {
+			recovery.retry = None;
 		}
+		let pending = crate::domain::run_state::encode(&run.state, &recovery)?;
 		let error = if retrying || kind == "run.failed" {
 			run.error.as_deref()
 		} else {
@@ -3675,11 +3808,7 @@ impl Store {
 					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 			)
 			.bind(run.id)
-			.bind(
-				pending["included_input_seq"]
-					.as_i64()
-					.unwrap_or(run.observed_input_seq),
-			)
+			.bind(run.included_input_seq())
 			.fetch_one(&mut *tx)
 			.await?;
 			if stale {
@@ -3737,8 +3866,8 @@ impl Store {
 		)
 		.bind(run.id)
 		.bind(worker)
-		.bind(&run.phase)
-		.bind(&run.context)
+		.bind(run.phase())
+		.bind(sqlx::types::Json(&run.context))
 		.bind(&pending)
 		.bind(run.step)
 		.bind(error)
@@ -3748,7 +3877,7 @@ impl Store {
 		.await?
 		.ok_or_else(|| Error::Conflict("worker lease lost".into()))?;
 		self.event(&mut tx, (run.home_node == self.node_id).then_some(run.workspace_id), kind,
-            json!({"run_id":saved.id,"task_id":saved.task_id,"workspace_id":saved.workspace_id,"agent_id":saved.agent_id,"phase":saved.phase,"step":saved.step,"error":saved.error,"context_usage":saved.context.get("usage")})).await?;
+            json!({"run_id":saved.id,"task_id":saved.task_id,"workspace_id":saved.workspace_id,"agent_id":saved.agent_id,"phase":saved.phase(),"step":saved.step,"error":saved.error,"context_usage":saved.context.usage})).await?;
 		tx.commit().await?;
 		Ok(saved)
 	}
@@ -3781,11 +3910,12 @@ impl Store {
 	}
 	pub(crate) async fn pause_for_execution(
 		&self,
-		run: &Run,
+		run: impl Into<RunMetadata>,
 		worker: Uuid,
 		reason: &str,
 		event_kind: &str,
 	) -> Result<()> {
+		let run = run.into();
 		let mut tx = self.pool.begin().await?;
 		let changed = sqlx::query(
 			&sea_orm::sea_query::Query::update()
@@ -3874,14 +4004,16 @@ impl Store {
 		.bind(run.task_id)
 		.fetch_one(&mut *tx)
 		.await?;
-		let phase = if task.status == "COMPLETED" {
+		let phase = if task.status == crate::domain::TaskStatus::Completed {
 			"COMPLETED"
 		} else {
 			"CANCELLED"
 		};
 		if !matches!(
-			task.status.as_str(),
-			"COMPLETED" | "CANCELLED" | "ABANDONED"
+			task.status,
+			crate::domain::TaskStatus::Completed
+				| crate::domain::TaskStatus::Cancelled
+				| crate::domain::TaskStatus::Abandoned
 		) {
 			let task: Task = sqlx::query_as(
 				&sea_orm::sea_query::Query::update()
@@ -3913,7 +4045,7 @@ impl Store {
 				)
 				.value(
 					sea_orm::sea_query::Alias::new("pending"),
-					sea_orm::sea_query::Expr::cust("'{}'"),
+					sea_orm::sea_query::Expr::cust("$4"),
 				)
 				.value(
 					sea_orm::sea_query::Alias::new("error"),
@@ -3943,6 +4075,14 @@ impl Store {
 		.bind(run.id)
 		.bind(worker)
 		.bind(phase)
+		.bind(crate::domain::run_state::encode(
+			&if phase == "COMPLETED" {
+				RunState::Completed(TerminalState {})
+			} else {
+				RunState::Cancelled(TerminalState {})
+			},
+			&RecoveryState::default(),
+		)?)
 		.execute(&mut *tx)
 		.await?;
 		self.event(
@@ -3959,7 +4099,7 @@ impl Store {
 		tx.commit().await?;
 		Ok(())
 	}
-	pub async fn control(&self, id: Uuid, action: &str) -> Result<Run> {
+	pub async fn control(&self, id: Uuid, action: RunControlAction) -> Result<RunInspection> {
 		let mut tx = self.pool.begin().await?;
 		let run = self.control_in(&mut tx, id, action).await?;
 		tx.commit().await?;
@@ -3969,18 +4109,23 @@ impl Store {
 		&self,
 		tx: &mut Transaction<'_, Postgres>,
 		id: Uuid,
-		action: &str,
-	) -> Result<Run> {
-		let control = match action {
-			"pause" => "PAUSED",
-			"resume" => "ACTIVE",
-			"cancel" => "CANCELLED",
-			_ => {
-				return Err(Error::Invalid(
-					"control must be pause, resume or cancel".into(),
-				));
-			}
-		};
+		action: RunControlAction,
+	) -> Result<RunInspection> {
+		let control = action.control();
+		if action == RunControlAction::Resume {
+			let raw: RawRun = sqlx::query_as(
+				&sea_orm::sea_query::Query::select()
+					.column(sea_orm::sea_query::Asterisk)
+					.from(sea_orm::sea_query::Alias::new("runs"))
+					.and_where(sea_orm::sea_query::Expr::cust("id=$1"))
+					.lock(sea_orm::sea_query::LockType::Update)
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(id)
+			.fetch_one(&mut **tx)
+			.await?;
+			raw.decode()?;
+		}
 		// Control-plane updates are emitted by upgraded code and must remain
 		// available while a pre-upgrade worker lease is fenced by run_inputs.
 		sqlx::query_scalar::<_, String>(
@@ -3992,7 +4137,7 @@ impl Store {
 		)
 		.fetch_one(&mut **tx)
 		.await?;
-		let r: Run = sqlx::query_as(
+		let r: RawRun = sqlx::query_as(
 			&sea_orm::sea_query::Query::update()
 				.table(sea_orm::sea_query::Alias::new("runs"))
 				.value(
@@ -4028,12 +4173,12 @@ impl Store {
 		})?;
 		self.event(
 			tx,
-			(r.home_node == self.node_id).then_some(r.workspace_id),
+			(r.metadata.home_node == self.node_id).then_some(r.metadata.workspace_id),
 			"run.control",
 			json!({"run_id":id,"action":action}),
 		)
 		.await?;
-		Ok(r)
+		Ok(r.inspect())
 	}
 	pub async fn human_request(
 		&self,
@@ -4152,10 +4297,11 @@ impl Store {
 				&format!("{key}:reconcile"),
 			)
 			.await?;
-		run.pending["human_request_id"] = json!(h.id);
-		run.pending["uncertain_key"] = json!(key);
-		run.pending["resume_phase"] = json!("TOOL_CALL");
-		run.phase = "WAITING".into();
+		run.state = RunState::Waiting(Box::new(WaitingState::Reconciliation {
+			request_id: h.id,
+			key: key.into(),
+			resume: Box::new(run.state.tool()?.clone()),
+		}));
 		let changed = sqlx::query(
 			&sea_orm::sea_query::Query::update()
 				.table(sea_orm::sea_query::Alias::new("runs"))
@@ -4174,7 +4320,7 @@ impl Store {
 		)
 		.bind(run.id)
 		.bind(worker)
-		.bind(&run.pending)
+		.bind(run.stored_pending()?)
 		.execute(&mut *tx)
 		.await?
 		.rows_affected();
@@ -4258,7 +4404,7 @@ impl Store {
 		.fetch_one(&mut **tx)
 		.await?;
 		let expired = old.kind == "APPROVAL_REQUIRED"
-			&& run.pending["workbench_approval"]["request_id"] == json!(id)
+			&& matches!(&run.state,RunState::Waiting(s) if matches!(s.as_ref(),WaitingState::ExternalApproval{request_id,..} if *request_id == id))
 			&& old.created_at + chrono::Duration::minutes(15) <= chrono::Utc::now();
 		let automatic_expiry = expired && (actor == "system" || old.response.is_none());
 		let (response, actor) = if automatic_expiry {
@@ -4274,11 +4420,7 @@ impl Store {
 				return Err(Error::Conflict("human request already answered".into()));
 			}
 		}
-		if run
-			.pending
-			.get("uncertain_key")
-			.and_then(Value::as_str)
-			.is_some()
+		if matches!(&run.state,RunState::Waiting(s) if matches!(s.as_ref(),WaitingState::Reconciliation{..}))
 			&& response.get("result").is_none()
 		{
 			return Err(Error::Invalid(
@@ -4324,21 +4466,18 @@ impl Store {
 		replay_safe: bool,
 	) -> Result<Invocation> {
 		let mut tx = self.pool.begin().await?;
-		self.ensure_run_response_current_in(
-			&mut tx,
-			run.id,
-			worker,
-			run.pending["included_input_seq"]
-				.as_i64()
-				.unwrap_or(run.observed_input_seq),
-		)
-		.await?;
+		self.ensure_run_response_current_in(&mut tx, run.id, worker, run.included_input_seq())
+			.await?;
 		// The bounded call and any prepared workspace-read chunk must survive a
 		// worker crash once the idempotency key becomes durable. Keep this update
-		// in the same transaction as invocation creation.
+		// and its derived phase in the same transaction as invocation creation.
 		let persisted = sqlx::query(
 			&sea_orm::sea_query::Query::update()
 				.table(sea_orm::sea_query::Alias::new("runs"))
+				.value(
+					sea_orm::sea_query::Alias::new("phase"),
+					run.phase().as_str(),
+				)
 				.value(
 					sea_orm::sea_query::Alias::new("pending"),
 					sea_orm::sea_query::Expr::cust("$3"),
@@ -4354,11 +4493,19 @@ impl Store {
 				.and_where(sea_orm::sea_query::Expr::cust(
 					"id = $1 AND lease_owner = $2 AND lease_until > CURRENT_TIMESTAMP",
 				))
+				.and_where(
+					sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("phase"))
+						.is_not_in([
+							RunPhase::Completed.as_str(),
+							RunPhase::Failed.as_str(),
+							RunPhase::Cancelled.as_str(),
+						]),
+				)
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 		)
 		.bind(run.id)
 		.bind(worker)
-		.bind(&run.pending)
+		.bind(run.stored_pending()?)
 		.execute(&mut *tx)
 		.await?
 		.rows_affected();
@@ -4512,7 +4659,7 @@ impl Store {
 	}
 	// The empty namespace preserves pre-federation local memory. Peer node IDs
 	// are validated nonempty, so no remote home can address this namespace.
-	pub(crate) fn memory_home<'a>(&self, run: &'a Run) -> &'a str {
+	pub(crate) fn memory_home<'a>(&self, run: &'a RunMetadata) -> &'a str {
 		if run.home_node == self.node_id {
 			""
 		} else {
@@ -4570,12 +4717,13 @@ impl Store {
 		.bind(&run.agent_version)
 		.bind(run.workspace_id)
 		.bind(data)
-		.bind(self.memory_home(run))
+		.bind(self.memory_home(&run.metadata()))
 		.execute(&mut **tx)
 		.await?;
 		Ok(())
 	}
-	pub async fn memory(&self, run: &Run) -> Result<Value> {
+	pub async fn memory(&self, run: impl Into<RunMetadata>) -> Result<Value> {
+		let run = run.into();
 		Ok(sqlx::query_scalar(
 			&sea_orm::sea_query::Query::select()
 				.expr(sea_orm::sea_query::SimpleExpr::from(
@@ -4590,7 +4738,7 @@ impl Store {
 		.bind(&run.agent_id)
 		.bind(&run.agent_version)
 		.bind(run.workspace_id)
-		.bind(self.memory_home(run))
+		.bind(self.memory_home(&run))
 		.fetch_optional(&self.pool)
 		.await?
 		.unwrap_or_else(empty_object))

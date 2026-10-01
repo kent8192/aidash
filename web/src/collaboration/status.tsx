@@ -71,7 +71,8 @@ export function ChannelStatus({
     setError("");
     let failed = false;
     for (const { run, node } of active) {
-      if (!paused && run.control === "PAUSED") continue;
+      if ((!paused && run.control === "PAUSED") || (paused && run.state_error))
+        continue;
       try {
         const action = paused ? "resume" : "pause";
         if (node === data.node.id) await runControl(run.id, { action });
@@ -261,7 +262,11 @@ export function ChannelStatus({
         )}
         <button
           type="button"
-          disabled={busy || active.length === 0}
+          disabled={
+            busy ||
+            active.length === 0 ||
+            (paused && active.every(({ run }) => !!run.state_error))
+          }
           onClick={() => void control()}
         >
           {paused ? <Play size={13} /> : <Pause size={13} />}

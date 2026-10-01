@@ -164,7 +164,7 @@ async fn complete(f: &Federation, id: Uuid) {
 
 	loop {
 		let run = f.store.run(id).await.unwrap();
-		if run.phase == "COMPLETED" {
+		if run.phase().as_str() == "COMPLETED" {
 			break;
 		}
 		assert!(
@@ -536,14 +536,29 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 	assert!(within >= original + 2);
 	tx.rollback().await.unwrap();
 	assert_eq!(count(&f, "TRUE").await, original);
-	assert_eq!(f.store.run(run).await.unwrap().control, "ACTIVE");
+	assert_eq!(f.store.run(run).await.unwrap().control.as_str(), "ACTIVE");
 	// Rollback preserved both state and scheduling; a committed future wait
 	// now has an independent deadline and must not be claimed early.
-	sqlx::query(&Query::update().table(a("runs")).value(a("phase"),"WAITING")
-        .value(a("revision"),Expr::col(a("revision")).add(1))
-        .value(a("pending"),Expr::cust("jsonb_build_object('resume_phase','READY','wake_at',CURRENT_TIMESTAMP + INTERVAL '3 seconds')"))
-        .and_where(Expr::col(a("id")).eq(run)).to_string(PostgresQueryBuilder))
-        .execute(&f.store.pool).await.unwrap();
+	sqlx::query(
+		&Query::update()
+			.table(a("runs"))
+			.value(a("phase"), "WAITING")
+			.value(a("revision"), Expr::col(a("revision")).add(1))
+			.value(
+				a("pending"),
+				Expr::val(common::pending(aidash::domain::RunState::Waiting(
+					Box::new(aidash::domain::WaitingState::Timer {
+						wake_at: chrono::Utc::now() + chrono::Duration::seconds(3),
+						resume: aidash::domain::ResumeState::Ready(Default::default()),
+					}),
+				))),
+			)
+			.and_where(Expr::col(a("id")).eq(run))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
 	std::fs::remove_file(&pause).unwrap();
 	tokio::time::sleep(Duration::from_millis(1200)).await;
 	assert!(f.store.run(run).await.unwrap().lease_owner.is_none());
@@ -621,7 +636,10 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 		tokio::time::sleep(Duration::from_millis(20)).await;
 	}
 	assert_eq!(calls.load(Ordering::SeqCst), before);
-	assert_eq!(f.store.run(run).await.unwrap().phase, "COMPLETED");
+	assert_eq!(
+		f.store.run(run).await.unwrap().phase().as_str(),
+		"COMPLETED"
+	);
 	// New accepted input during inference is deferred by another free worker,
 	// then survives the old response's stale-inference rejection and retry.
 	blocked.store(true, Ordering::SeqCst);

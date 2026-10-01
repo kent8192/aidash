@@ -6,7 +6,7 @@ mod scoped;
 use super::super::{Authorization, access::Access, identity::Actor, policy::identifier};
 use crate::{
 	Error, Result,
-	domain::{Artifact, Conversation, Event, Run, Task, Workspace},
+	domain::{Artifact, Conversation, Event, RunMetadata, Task, Workspace},
 	federation::Federation,
 	registry::Entry,
 };
@@ -493,7 +493,7 @@ enum Candidate {
 	Registry(Entry),
 	Workspace(Workspace),
 	Task(Task),
-	Run(Run),
+	Run(RunMetadata),
 	Artifact(Artifact),
 	Conversation(Conversation),
 }
@@ -569,7 +569,7 @@ impl Candidate {
 				resource_id: Some(task.id.to_string()),
 				version: None,
 				workspace_id: Some(task.workspace_id),
-				status: Some(task.status.clone()),
+				status: Some(task.status.to_string()),
 				goal_body: None,
 				at: Some(task.created_at),
 			}),
@@ -581,10 +581,10 @@ impl Candidate {
 				resource_id: Some(run.id.to_string()),
 				version: None,
 				workspace_id: Some(run.workspace_id),
-				status: Some(if run.control == "PAUSED" {
+				status: Some(if run.control == crate::domain::RunControl::Paused {
 					"PAUSED".into()
 				} else {
-					run.phase.clone()
+					run.phase().to_string()
 				}),
 				goal_body: None,
 				at: Some(run.updated_at),
@@ -727,7 +727,7 @@ async fn candidates(
 			.into_iter()
 			.map(Candidate::Artifact)
 			.collect()),
-		3 => Ok(sqlx::query_as::<_, Run>(&sql)
+		3 => Ok(sqlx::query_as::<_, RunMetadata>(&sql)
 			.bind(&tenant)
 			.fetch_all(conn)
 			.await?
@@ -1495,7 +1495,7 @@ async fn project_in(
 			}
 			if let Candidate::Run(run) = &candidate
 				&& options.hours > 0
-				&& matches!(run.phase.as_str(), "COMPLETED" | "FAILED" | "CANCELLED")
+				&& run.phase().is_terminal()
 				&& run.updated_at.timestamp() < cursor.window_end - i64::from(options.hours) * 3600
 			{
 				continue;

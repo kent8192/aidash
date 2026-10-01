@@ -455,7 +455,7 @@ function RunPanel({
   const mediaAccept = runMediaAccept(mediaInputRoutes);
   const canAttach = local && run.home_node === data.node.id && !!mediaAccept;
   const terminal = ["COMPLETED", "FAILED", "CANCELLED"].includes(run.phase);
-  const control = (action: string) => {
+  const control = (action: "pause" | "resume" | "cancel") => {
     if (action === "cancel" && !window.confirm(t("confirmCancel"))) return;
     void submit(() =>
       local
@@ -486,6 +486,7 @@ function RunPanel({
           <div className="button-row">
             <button
               type="button"
+              disabled={run.control === "PAUSED" && !!run.state_error}
               onClick={() =>
                 control(run.control === "PAUSED" ? "resume" : "pause")
               }
@@ -684,6 +685,11 @@ function RunPanel({
             </button>
           </form>
         </>
+      )}
+      {run.state_error && (
+        <p role="alert" className="error">
+          {run.state_error}
+        </p>
       )}
       {run.error && <p className="error">{run.error}</p>}
       <h3>{t("toolCalls")}</h3>

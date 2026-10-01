@@ -171,9 +171,22 @@ impl Federation {
 	/// Explicit cancellation or failure supersedes any still-unobserved
 	/// correction. Consume the home fences in the same task-row transaction as
 	/// the terminal transition so a legacy completion cannot enter between them.
-	pub async fn transition_terminal_run_messages(&self, run: &Run, target: &str) -> Result<Task> {
+	pub async fn transition_terminal_run_messages(
+		&self,
+		run: &Run,
+		target: TaskStatus,
+	) -> Result<Task> {
+		self.transition_terminal_metadata(&run.metadata(), target, None)
+			.await
+	}
+	pub(crate) async fn transition_terminal_metadata(
+		&self,
+		run: &RunMetadata,
+		target: TaskStatus,
+		authority: Option<crate::authorization::execution::WorkerAuthority>,
+	) -> Result<Task> {
 		let through_seq = self.store.run_input_high_watermark(run.id).await?;
-		let home = Home::new(self.clone(), run.clone());
+		let home = Home::for_delivery(self.clone(), run.clone()).with_authority(authority);
 		home.transition_terminal(target, through_seq).await
 	}
 	pub async fn require_terminal_safe_delivery(&self, run: &Run) -> Result<()> {
@@ -198,7 +211,10 @@ impl Federation {
 		Ok((available / 4).min(16_384))
 	}
 
-	pub(crate) async fn run_media_input_routes(&self, run: &Run) -> Result<Vec<Vec<String>>> {
+	pub(crate) async fn run_media_input_routes(
+		&self,
+		run: &RunMetadata,
+	) -> Result<Vec<Vec<String>>> {
 		if run.home_node != self.config.node_id {
 			return Ok(Vec::new());
 		}
@@ -241,10 +257,13 @@ impl Federation {
 	}
 
 	pub async fn deliver_run_messages(&self, run: &Run) -> Result<()> {
+		self.deliver_run_message_metadata(&run.metadata()).await
+	}
+	pub(crate) async fn deliver_run_message_metadata(&self, run: &RunMetadata) -> Result<()> {
 		if run.home_node == self.config.node_id {
 			return Ok(());
 		}
-		let home = Home::new(self.clone(), run.clone());
+		let home = Home::for_delivery(self.clone(), run.clone());
 		for input in self.store.run_inputs(run.id).await? {
 			if input.message_id.is_some() && input.seq <= run.observed_input_seq {
 				continue;
@@ -706,7 +725,7 @@ impl Federation {
 		self.store
 			.require_legacy_execution(task.workspace_id)
 			.await?;
-		if task.status != "OPEN"
+		if task.status != crate::domain::TaskStatus::Open
 			&& task.owner.as_deref() != Some(&qualified_agent(node, &agent.id, &agent.version))
 		{
 			return Err(Error::Conflict("task is already assigned".into()));
@@ -773,7 +792,8 @@ impl Federation {
 		let owner = qualified_agent(node, &agent.id, &agent.version);
 		if current.revision != task.revision
 			|| (current.owner.is_some() && current.owner.as_deref() != Some(&owner))
-			|| (current.status != "OPEN" && current.owner.as_deref() != Some(&owner))
+			|| (current.status != crate::domain::TaskStatus::Open
+				&& current.owner.as_deref() != Some(&owner))
 		{
 			return Err(Error::Conflict(
 				"task changed or is already assigned".into(),
@@ -807,7 +827,7 @@ impl Federation {
 		.bind(&agent.version)
 		.execute(&mut **tx)
 		.await?;
-		if inserted.rows_affected() > 0 && current.status == "OPEN" {
+		if inserted.rows_affected() > 0 && current.status == TaskStatus::Open {
 			// The delegation record reserves the claimant while the task stays
 			// OPEN for dependency waiting. Bump its revision under this lock so
 			// a concurrent claim cannot commit against a pre-delegation snapshot.
@@ -927,7 +947,9 @@ impl Federation {
 #[derive(Clone)]
 pub struct Home {
 	pub federation: Federation,
-	pub run: Run,
+	pub run: RunMetadata,
+	included_input_seq: i64,
+	execution: Option<Run>,
 	pub(crate) authority: Option<crate::authorization::execution::WorkerAuthority>,
 }
 
@@ -935,9 +957,25 @@ impl Home {
 	pub fn new(federation: Federation, run: Run) -> Self {
 		Self {
 			federation,
-			run,
+			included_input_seq: run.included_input_seq(),
+			run: run.metadata(),
+			execution: Some(run),
 			authority: None,
 		}
+	}
+	pub(crate) fn for_delivery(federation: Federation, run: RunMetadata) -> Self {
+		Self {
+			included_input_seq: run.observed_input_seq,
+			federation,
+			run,
+			execution: None,
+			authority: None,
+		}
+	}
+	fn execution_run(&self) -> Result<&Run> {
+		self.execution
+			.as_ref()
+			.ok_or_else(|| Error::Invalid("delivery has no executable continuation".into()))
 	}
 	pub(crate) fn with_authority(
 		mut self,
@@ -1209,7 +1247,9 @@ impl Home {
 		}
 	}
 	pub async fn claim(&self, task: &Task, agent: &Entry) -> Result<Task> {
-		if task.owner.as_deref() == Some(&self.owner()) && task.status != "OPEN" {
+		if task.owner.as_deref() == Some(&self.owner())
+			&& task.status != crate::domain::TaskStatus::Open
+		{
 			return Ok(task.clone());
 		}
 		if self.local() {
@@ -1222,7 +1262,7 @@ impl Home {
 				.await
 		}
 	}
-	pub async fn transition(&self, next: &str) -> Result<Task> {
+	pub async fn transition(&self, next: TaskStatus) -> Result<Task> {
 		let t = self.task().await?;
 		if t.status == next {
 			return Ok(t);
@@ -1237,7 +1277,7 @@ impl Home {
 				.await
 		}
 	}
-	pub async fn transition_terminal(&self, next: &str, through_seq: i64) -> Result<Task> {
+	pub async fn transition_terminal(&self, next: TaskStatus, through_seq: i64) -> Result<Task> {
 		let task = self.task().await?;
 		if self.local() {
 			return self
@@ -1279,9 +1319,7 @@ impl Home {
 				)
 				.await
 		} else {
-			let through_seq = self.run.pending["included_input_seq"]
-				.as_i64()
-				.unwrap_or(self.run.observed_input_seq);
+			let through_seq = self.included_input_seq;
 			self.command(
 				"run_message_complete",
 				json!({"run_id":self.run.id,"through_seq":through_seq,"key":key,"artifact":artifact}),
@@ -1314,13 +1352,19 @@ impl Home {
 	) -> Result<crate::generation::Assignment> {
 		let authority = self.authority.as_ref().ok_or(Error::Forbidden)?;
 		authority
-			.assign(&self.federation, &self.run, task, policy, reason)
+			.assign(
+				&self.federation,
+				self.execution_run()?,
+				task,
+				policy,
+				reason,
+			)
 			.await
 	}
 	pub async fn create_task(&self, key: &str, input: &NewTask) -> Result<Task> {
 		if let Some(authority) = &self.authority {
 			return authority
-				.create_task(&self.federation, &self.run, key, input)
+				.create_task(&self.federation, self.execution_run()?, key, input)
 				.await;
 		}
 		if self.local() {
@@ -1354,7 +1398,13 @@ impl Home {
 	) -> Result<Delegation> {
 		if let Some(authority) = &self.authority {
 			return authority
-				.delegate(&self.federation, &self.run, task_id, node, agent)
+				.delegate(
+					&self.federation,
+					self.execution_run()?,
+					task_id,
+					node,
+					agent,
+				)
 				.await;
 		}
 		if self.local() {
@@ -1375,7 +1425,7 @@ impl Home {
 		if self.authority.is_some() {
 			self.federation
 				.store
-				.message_from_run(&self.run, &self.owner(), content, key)
+				.message_from_run(self.execution_run()?, &self.owner(), content, key)
 				.await
 		} else if self.local() {
 			self.federation
@@ -1399,7 +1449,7 @@ impl Home {
 			self.federation
 				.store
 				.response_message_in_run(RunResponseMessage {
-					run: &self.run,
+					run: self.execution_run()?,
 					worker,
 					included_input_seq,
 					sender: &self.owner(),
@@ -1644,7 +1694,7 @@ mod review_tests {
 			has_failed: false,
 		};
 		for status in ["RUNNING", "FAILED"] {
-			summary.include_status(status);
+			summary.include_status(serde_json::from_value(json!(status)).unwrap());
 		}
 		assert!(summary.has_pending && summary.has_failed);
 		assert!(serde_json::to_vec(&summary).unwrap().len() < 64);

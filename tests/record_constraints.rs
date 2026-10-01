@@ -1358,7 +1358,7 @@ async fn compactor_and_embedding_configs_reject_undecodable_shapes(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn requirements_and_run_state_reject_wrong_shapes(
+async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	#[future(awt)]
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
@@ -1415,66 +1415,50 @@ async fn requirements_and_run_state_reject_wrong_shapes(
 		.accept_run(&task, "aidash://remote", "executor", "1.0.0")
 		.await
 		.unwrap();
+	// Storage accepts damaged machine payloads so metadata controls and the
+	// fenced failure path remain available. The codec is the shape authority.
 	for column in ["context", "pending"] {
-		for invalid in [Value::Null, json!([]), json!(7), json!("text")] {
-			check_rejected(
-				update(&f.store.pool, "runs", column, Expr::val(invalid)).await,
-				"runs_counters",
+		for invalid in [Value::Null, json!([]), json!(7), json!("text"), json!({})] {
+			update(&f.store.pool, "runs", column, Expr::val(invalid))
+				.await
+				.unwrap();
+			assert!(f.store.run(run.id).await.is_err());
+			assert!(
+				f.store
+					.inspect_run(run.id)
+					.await
+					.unwrap()
+					.state_error
+					.is_some()
 			);
 		}
-		update(&f.store.pool, "runs", column, Expr::val(json!({})))
-			.await
-			.unwrap();
-	}
-	for malformed in [
-		json!({"retry_at":"not a timestamp"}),
-		json!({"retry_at":null}),
-		json!({"wake_at":"not a timestamp"}),
-		json!({"wake_at":[]}),
-	] {
-		check_rejected(
-			update(&f.store.pool, "runs", "pending", Expr::val(malformed)).await,
-			"runs_counters",
-		);
-	}
-	update(
-		&f.store.pool,
-		"runs",
-		"pending",
-		Expr::val(json!({
-			"retry_at":"2030-01-01T00:00:00Z",
-			"wake_at":"2030-01-01T00:00:00+00:00"
-		})),
-	)
-	.await
-	.unwrap();
-	update_run_state(
-		&f.store.pool,
-		run.id,
-		"WAITING",
-		json!({"wake_at":"2030-01-01T00:00:00Z"}),
-	)
-	.await
-	.unwrap();
-	update_run_state(&f.store.pool, run.id, "READY", json!({}))
+		update(
+			&f.store.pool,
+			"runs",
+			column,
+			Expr::val(if column == "context" {
+				common::context(json!({}))
+			} else {
+				common::pending(aidash::domain::RunState::default())
+			}),
+		)
 		.await
 		.unwrap();
-	check_rejected(
-		update_run_state(
-			&f.store.pool,
-			run.id,
-			"WAITING",
-			json!({"human_request_id":"not-a-uuid"}),
-		)
-		.await,
-		"runs_waiting_request",
-	);
+	}
+	let human = |id| {
+		common::pending(aidash::domain::RunState::Waiting(Box::new(
+			aidash::domain::WaitingState::Human {
+				request_id: id,
+				resume: aidash::domain::ResumeState::Thinking(Default::default()),
+			},
+		)))
+	};
 	check_foreign_key_rejected(
 		update_run_state(
 			&f.store.pool,
 			run.id,
 			"WAITING",
-			json!({"human_request_id":uuid::Uuid::new_v4()}),
+			human(uuid::Uuid::new_v4()),
 		)
 		.await,
 		"runs_human_request_ref",
@@ -1484,14 +1468,9 @@ async fn requirements_and_run_state_reject_wrong_shapes(
 		.human_request(&run, "QUESTION", "Continue?", "waiting-shape-test")
 		.await
 		.unwrap();
-	update_run_state(
-		&f.store.pool,
-		run.id,
-		"WAITING",
-		json!({"human_request_id":request.id}),
-	)
-	.await
-	.unwrap();
+	update_run_state(&f.store.pool, run.id, "WAITING", human(request.id))
+		.await
+		.unwrap();
 	check_foreign_key_rejected(
 		update(
 			&f.store.pool,
@@ -1545,67 +1524,51 @@ async fn requirements_and_run_state_reject_wrong_shapes(
 			.map(|_| ()),
 		"runs_human_request_ref",
 	);
-	update_run_state(&f.store.pool, other_run.id, "COMPLETED", json!({}))
-		.await
-		.unwrap();
-	update_run_state(&f.store.pool, run.id, "READY", json!({}))
-		.await
-		.unwrap();
-	let tool_response = json!({
-		"text":"",
-		"tool_calls":[{"id":"call-1","name":"echo","arguments":{}}],
-		"input_tokens":0,
-		"output_tokens":0
-	});
-	let valid_tool_pending = json!({"response":tool_response,"cursor":1});
 	update_run_state(
 		&f.store.pool,
-		run.id,
-		"TOOL_CALL",
-		valid_tool_pending.clone(),
+		other_run.id,
+		"COMPLETED",
+		common::pending(aidash::domain::RunState::Completed(
+			aidash::domain::TerminalState {},
+		)),
 	)
 	.await
 	.unwrap();
-	update_run_state(&f.store.pool, run.id, "READY", json!({}))
-		.await
-		.unwrap();
-	for invalid in [
-		json!({"response":{"text":"x","tool_calls":"bad","input_tokens":0,"output_tokens":0},"cursor":0}),
-		json!({"response":tool_response,"cursor":2}),
-		json!({"response":{"text":"x","tool_calls":[{"id":7,"name":"echo","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0}),
-		json!({"response":{"tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0}),
-		json!({"response":{"text":"x","tool_calls":[],"output_tokens":0},"cursor":0}),
-		json!({"response":{"text":"x","tool_calls":[{"name":"echo","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0}),
-		json!({"response":{"text":"x","tool_calls":[{"id":"call-1","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0}),
-	] {
-		check_rejected(
-			update_run_state(&f.store.pool, run.id, "TOOL_CALL", invalid).await,
-			"runs_counters",
-		);
-	}
-	let waiting_tool_pending = json!({
-		"resume_phase":"TOOL_CALL",
-		"wake_at":"2030-01-01T00:00:00Z",
-		"response":tool_response,
-		"cursor":1,
-	});
 	update_run_state(
 		&f.store.pool,
 		run.id,
-		"WAITING",
-		waiting_tool_pending.clone(),
+		"READY",
+		common::pending(aidash::domain::RunState::default()),
 	)
 	.await
 	.unwrap();
-	let mut invalid_waiting_tool = waiting_tool_pending;
-	invalid_waiting_tool["cursor"] = json!(2);
-	check_rejected(
-		update_run_state(&f.store.pool, run.id, "WAITING", invalid_waiting_tool).await,
-		"runs_counters",
+	let valid = common::tool_pending(
+		json!({"response":{"text":"","tool_calls":[{"id":"call-1","name":"echo","arguments":{}}]},"cursor":1}),
 	);
-	update_run_state(&f.store.pool, run.id, "READY", json!({}))
+	update_run_state(&f.store.pool, run.id, "TOOL_CALL", valid.clone())
 		.await
 		.unwrap();
+	assert!(f.store.run(run.id).await.is_ok());
+	for (field, value) in [
+		("cursor", json!(2)),
+		("response_epoch", json!(-1)),
+		("future_key", json!(true)),
+	] {
+		let mut invalid = valid.clone();
+		invalid["data"][field] = value;
+		update_run_state(&f.store.pool, run.id, "TOOL_CALL", invalid)
+			.await
+			.unwrap();
+		assert!(f.store.run(run.id).await.is_err());
+	}
+	update_run_state(
+		&f.store.pool,
+		run.id,
+		"READY",
+		common::pending(aidash::domain::RunState::default()),
+	)
+	.await
+	.unwrap();
 	check_rejected(
 		update(&f.store.pool, "runs", "revision", Expr::val(i64::MAX)).await,
 		"runs_counters",
@@ -1680,36 +1643,27 @@ async fn requirements_and_run_state_reject_wrong_shapes(
 		json!({"summary":7}),
 		json!({"history":7}),
 		json!({"usage":7}),
-		json!({"usage":{"input_tokens":0}}),
-		json!({"usage":{"input_tokens":0,"output_tokens":0,"context_window":4096}}),
-		json!({"usage":{"input_tokens":"0","output_tokens":0,"context_window":4096,"compactions":0}}),
 		json!({"compactions":-1}),
-		json!({"compactions":1.5}),
 		json!({"compactions":4294967296_u64}),
+		common::context(json!({"history":[{"kind":"future_event"}]})),
 	] {
-		check_rejected(
-			update(&f.store.pool, "runs", "context", Expr::val(malformed)).await,
-			"runs_counters",
+		update(&f.store.pool, "runs", "context", Expr::val(malformed))
+			.await
+			.unwrap();
+		assert!(
+			f.store
+				.inspect_run(run.id)
+				.await
+				.unwrap()
+				.state_error
+				.is_some()
 		);
 	}
 	update(
 		&f.store.pool,
 		"runs",
 		"context",
-		Expr::val(json!({"usage":{},"history":[{"kind":"message"}]})),
-	)
-	.await
-	.unwrap();
-	update(
-		&f.store.pool,
-		"runs",
-		"context",
-		Expr::val(json!({
-			"summary":"",
-			"history":[],
-			"usage":{"input_tokens":0,"output_tokens":0,"context_window":4096,"compactions":0,"future_metric":true},
-			"compactions":0
-		})),
+		Expr::val(common::context(json!({}))),
 	)
 	.await
 	.unwrap();

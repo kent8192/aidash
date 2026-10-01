@@ -85,7 +85,7 @@ pub(crate) async fn prepare(
 		return Err(Error::Conflict("AREA_REVISION_CHANGED".into()));
 	}
 	if sessions::status(access, area).await?.active_run_id != Some(run.id)
-		|| matches!(run.phase.as_str(), "COMPLETED" | "FAILED" | "CANCELLED")
+		|| run.phase().is_terminal()
 	{
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}

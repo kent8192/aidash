@@ -188,7 +188,7 @@ async fn cancel_stalled_inference(environment: &TestEnvironment, scoped: bool, s
 	};
 	assert!(harness.worker_once().await.unwrap());
 	let run = f.store.runs().await.unwrap().remove(0);
-	assert_eq!(run.phase, "THINKING");
+	assert_eq!(run.phase().as_str(), "THINKING");
 
 	let mut workers = JoinSet::new();
 	let worker = harness.clone();
@@ -227,17 +227,23 @@ async fn cancel_stalled_inference(environment: &TestEnvironment, scoped: bool, s
 
 	// Finish the existing durable cancellation path without another inference.
 	for _ in 0..3 {
-		if f.store.run(run.id).await.unwrap().phase == "CANCELLED" {
+		if f.store.run(run.id).await.unwrap().phase().as_str() == "CANCELLED" {
 			break;
 		}
 		assert!(harness.worker_once().await.unwrap());
 	}
 	let cancelled = f.store.run(run.id).await.unwrap();
-	assert_eq!(cancelled.phase, "CANCELLED");
-	assert_eq!(cancelled.control, "CANCELLED");
-	assert!(cancelled.pending.get("retry_at").is_none());
-	assert!(cancelled.pending.get("response").is_none());
-	assert_eq!(f.store.task(run.task_id).await.unwrap().status, "CANCELLED");
+	assert_eq!(cancelled.phase().as_str(), "CANCELLED");
+	assert_eq!(cancelled.control.as_str(), "CANCELLED");
+	assert!(cancelled.recovery.retry.is_none());
+	assert!(matches!(
+		cancelled.state,
+		aidash::domain::RunState::Cancelled(_)
+	));
+	assert_eq!(
+		f.store.task(run.task_id).await.unwrap().status.as_str(),
+		"CANCELLED"
+	);
 	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
 	assert!(snapshot.artifacts.is_empty());
 	assert!(!snapshot.events.iter().any(|e| e.kind == "model.completed"));
@@ -269,7 +275,7 @@ async fn model_completion_save_cannot_overwrite_a_committed_cancellation(
 	};
 	assert!(harness.worker_once().await.unwrap());
 	let run = f.store.runs().await.unwrap().remove(0);
-	assert_eq!(run.phase, "THINKING");
+	assert_eq!(run.phase().as_str(), "THINKING");
 	let worker = uuid::Uuid::new_v4();
 	let mut leased = f
 		.store
@@ -277,18 +283,21 @@ async fn model_completion_save_cannot_overwrite_a_committed_cancellation(
 		.await
 		.unwrap()
 		.unwrap();
-	f.store.control(run.id, "cancel").await.unwrap();
-	leased.phase = "TOOL_CALL".into();
-	leased.pending = json!({
+	f.store
+		.control(run.id, aidash::domain::RunControlAction::Cancel)
+		.await
+		.unwrap();
+
+	leased.state = aidash::domain::RunState::ToolCall(Box::new(common::tool_call(json!({
 		"response":{"text":"must not be published","tool_calls":[]},
 		"cursor":0
-	});
+	}))));
 	let saved = f.store.save_run(&leased, worker, "model.completed").await;
 	assert!(matches!(saved, Err(aidash::Error::Conflict(_))));
 	let current = f.store.run(run.id).await.unwrap();
-	assert_eq!(current.control, "CANCELLED");
-	assert_eq!(current.phase, "THINKING");
-	assert!(current.pending.get("response").is_none());
+	assert_eq!(current.control.as_str(), "CANCELLED");
+	assert_eq!(current.phase().as_str(), "THINKING");
+	assert!(json!(current.state)["data"].get("response").is_none());
 	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
 	assert!(
 		!snapshot
@@ -326,7 +335,7 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 	};
 	assert!(harness.worker_once().await.unwrap());
 	let run = f.store.runs().await.unwrap().remove(0);
-	assert_eq!(run.phase, "THINKING");
+	assert_eq!(run.phase().as_str(), "THINKING");
 	let control_application_name: String = sqlx::query_scalar(
 		&Query::select()
 			.expr(Expr::cust("current_setting('application_name')"))
@@ -406,9 +415,9 @@ async fn credential_revocation_can_finish_during_inference_and_blocks_result(
 	);
 	server.tasks.join_next().await.unwrap().unwrap();
 	let current = f.store.run(run.id).await.unwrap();
-	assert_eq!(current.control, "PAUSED");
-	assert_eq!(current.phase, "THINKING");
-	assert!(current.pending.get("response").is_none());
+	assert_eq!(current.control.as_str(), "PAUSED");
+	assert_eq!(current.phase().as_str(), "THINKING");
+	assert!(json!(current.state)["data"].get("response").is_none());
 	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
 	assert!(
 		!snapshot
@@ -477,9 +486,9 @@ async fn model_infer_policy_revocation_during_inference_blocks_result(
 	);
 	server.tasks.join_next().await.unwrap().unwrap();
 	let current = f.store.run(run.id).await.unwrap();
-	assert_eq!(current.control, "PAUSED");
-	assert_eq!(current.phase, "THINKING");
-	assert!(current.pending.get("response").is_none());
+	assert_eq!(current.control.as_str(), "PAUSED");
+	assert_eq!(current.phase().as_str(), "THINKING");
+	assert!(json!(current.state)["data"].get("response").is_none());
 	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
 	assert!(
 		!snapshot
@@ -560,8 +569,11 @@ async fn inference_completion_waits_for_visibility_gate_reacquisition(
 		"worker exited while gate reservation was active: {worker_result:?}"
 	);
 	assert_eq!(worker_result, Ok(true));
-	assert_eq!(current.phase, "TOOL_CALL");
-	assert_eq!(current.pending["response"]["text"], "Revoked output");
+	assert_eq!(current.phase().as_str(), "TOOL_CALL");
+	assert_eq!(
+		json!(current.state)["data"]["response"]["text"],
+		"Revoked output"
+	);
 	assert!(
 		snapshot
 			.events
@@ -626,9 +638,9 @@ async fn inference_result_is_retried_after_atomic_commit_during_provider_wait(
 	let snapshot = f.store.snapshot(run.workspace_id).await.unwrap();
 	cleanup(f, &url, &schema).await;
 	assert_eq!(worker_result, Ok(true));
-	assert_eq!(current.phase, "THINKING");
-	assert!(current.pending.get("retry_at").is_some());
-	assert!(current.pending.get("response").is_none());
+	assert_eq!(current.phase().as_str(), "THINKING");
+	assert!(current.recovery.retry.is_some());
+	assert!(json!(current.state)["data"].get("response").is_none());
 	assert!(
 		!snapshot
 			.events

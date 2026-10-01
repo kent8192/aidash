@@ -571,7 +571,7 @@ async fn state(
 		registry: records,
 		workspaces: f.store.workspaces().await?,
 		tasks: f.store.task_page(0).await?.tasks,
-		runs: f.store.runs().await?,
+		runs: f.store.inspect_runs().await?,
 		human_requests: human,
 		conversations,
 		peers: f.peers().await?,
@@ -987,7 +987,7 @@ async fn run_get(
 			execution::details_page(&f, &identity, id, page.offset).await?,
 		));
 	}
-	let run = f.store.run(id).await?;
+	let run = f.store.inspect_run(id).await?;
 	let invocations: Vec<Invocation> = sqlx::query_as(
 		&crate::store::invocation_summary(None)
 			.from(sea_orm::sea_query::Alias::new("invocations"))
@@ -1010,33 +1010,36 @@ async fn run_get(
 	.fetch_all(&f.store.pool)
 	.await?;
 	Ok(Json(RunDetails {
-		memory: f.store.memory(&run).await?,
-		media_input_routes: f.run_media_input_routes(&run).await?,
+		memory: f.store.memory(&run.metadata).await?,
+		media_input_routes: f.run_media_input_routes(&run.metadata).await?,
 		run,
 		invocations,
 	}))
 }
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
 struct ControlInput {
-	action: String,
+	action: RunControlAction,
 }
-#[utoipa::path(post, path = "/runs/{id}/control", operation_id = "run_control", request_body = ControlInput, params(("id" = Uuid, Path)), responses((status = 200, body = Run)), security(("bearer_auth" = [])))]
+#[utoipa::path(post, path = "/runs/{id}/control", operation_id = "run_control", request_body = ControlInput, params(("id" = Uuid, Path)), responses((status = 200, body = RunInspection)), security(("bearer_auth" = [])))]
 async fn run_control(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
 	browser: Option<Extension<crate::dashboard_auth::BrowserOrigin>>,
 	Path(id): Path<Uuid>,
 	Json(input): Json<ControlInput>,
-) -> Result<Json<Run>> {
-	if matches!(actor, Actor::Operator) && browser.is_some() && input.action == "resume" {
+) -> Result<Json<RunInspection>> {
+	if matches!(actor, Actor::Operator)
+		&& browser.is_some()
+		&& input.action == RunControlAction::Resume
+	{
 		return Err(Error::Forbidden);
 	}
 	if let Actor::Subject(identity) = actor {
 		return Ok(Json(
-			execution::control(&f, &identity, id, &input.action).await?,
+			execution::control(&f, &identity, id, input.action).await?,
 		));
 	}
-	let r = f.store.control(id, &input.action).await?;
+	let r = f.store.control(id, input.action).await?;
 	f.notify.notify_waiters();
 	Ok(Json(r))
 }
@@ -1482,8 +1485,11 @@ async fn peer_workspace(
 		return Err(Error::Unauthorized);
 	}
 	if matches!(
-		task.status.as_str(),
-		"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+		task.status,
+		crate::domain::TaskStatus::Completed
+			| crate::domain::TaskStatus::Failed
+			| crate::domain::TaskStatus::Cancelled
+			| crate::domain::TaskStatus::Abandoned
 	) {
 		let read = matches!(
 			command.operation.as_str(),
@@ -1500,10 +1506,11 @@ async fn peer_workspace(
 		let replay_completion = matches!(
 			command.operation.as_str(),
 			"complete" | "run_message_complete"
-		) && task.status == "COMPLETED";
-		let replay_transition = command.operation == "transition" && d["status"] == task.status;
-		let replay_terminal_transition =
-			command.operation == "run_message_terminal_transition" && d["status"] == task.status;
+		) && task.status == crate::domain::TaskStatus::Completed;
+		let replay_transition =
+			command.operation == "transition" && d["status"] == json!(task.status);
+		let replay_terminal_transition = command.operation == "run_message_terminal_transition"
+			&& d["status"] == json!(task.status);
 		if !read
 			&& !replay_completion
 			&& !replay_transition
@@ -1603,7 +1610,7 @@ async fn peer_workspace(
 						.as_i64()
 						.ok_or_else(|| Error::Invalid("revision required".into()))?,
 					&owner,
-					required(d, "status")?
+					serde_json::from_value(d["status"].clone())?
 				)
 				.await?
 		),
@@ -1614,7 +1621,7 @@ async fn peer_workspace(
 			let revision = d["revision"]
 				.as_i64()
 				.ok_or_else(|| Error::Invalid("revision required".into()))?;
-			let status = required(d, "status")?;
+			let status = serde_json::from_value(d["status"].clone())?;
 			if let Some(value) = d.get("through_seq") {
 				let through_seq = value
 					.as_i64()
@@ -1979,7 +1986,7 @@ async fn peer_workspace(
 }
 async fn peer_observe(State(f): State<Federation>, headers: HeaderMap) -> Result<Json<Value>> {
 	let node = peer_node(&headers)?;
-	let runs: Vec<Run> = sqlx::query_as(
+	let runs: Vec<RawRun> = sqlx::query_as(
 		&sea_orm::sea_query::Query::select()
 			.columns([
 				sea_orm::sea_query::Alias::new("id"),
@@ -2024,6 +2031,7 @@ async fn peer_observe(State(f): State<Federation>, headers: HeaderMap) -> Result
 	.bind(node)
 	.fetch_all(&f.store.pool)
 	.await?;
+	let runs: Vec<RunInspection> = runs.into_iter().map(RawRun::inspect).collect();
 	let requests: Vec<HumanRequest> = sqlx::query_as(
         &sea_orm::sea_query::Query::select().columns([(sea_orm::sea_query::Alias::new("h"),sea_orm::sea_query::Alias::new("answered_by")),(sea_orm::sea_query::Alias::new("h"),sea_orm::sea_query::Alias::new("id")),(sea_orm::sea_query::Alias::new("h"),sea_orm::sea_query::Alias::new("workspace_id")),(sea_orm::sea_query::Alias::new("h"),sea_orm::sea_query::Alias::new("run_id")),(sea_orm::sea_query::Alias::new("h"),sea_orm::sea_query::Alias::new("kind")),(sea_orm::sea_query::Alias::new("h"),sea_orm::sea_query::Alias::new("created_at"))])
  .expr_as(sea_orm::sea_query::Expr::cust("left(h.prompt,1024)"), sea_orm::sea_query::Alias::new("prompt"))
@@ -2083,29 +2091,57 @@ async fn peer_observe(State(f): State<Federation>, headers: HeaderMap) -> Result
 	))
 }
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
-struct RemoteControl {
-	run_id: Uuid,
-	action: String,
-	request_id: Option<Uuid>,
-	response: Option<Value>,
-	content: Option<String>,
-	idempotency_key: Option<Uuid>,
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+enum RemoteControl {
+	Pause {
+		run_id: Uuid,
+	},
+	Resume {
+		run_id: Uuid,
+	},
+	Cancel {
+		run_id: Uuid,
+	},
+	Answer {
+		run_id: Uuid,
+		request_id: Uuid,
+		#[serde(deserialize_with = "crate::domain::required_json")]
+		response: Value,
+	},
+	Message {
+		run_id: Uuid,
+		content: String,
+		idempotency_key: Uuid,
+	},
 }
+impl RemoteControl {
+	fn run_id(&self) -> Uuid {
+		match self {
+			Self::Pause { run_id }
+			| Self::Resume { run_id }
+			| Self::Cancel { run_id }
+			| Self::Answer { run_id, .. }
+			| Self::Message { run_id, .. } => *run_id,
+		}
+	}
+}
+
 async fn peer_control(
 	State(f): State<Federation>,
 	headers: HeaderMap,
 	Json(input): Json<RemoteControl>,
 ) -> Result<Json<Value>> {
 	let node = peer_node(&headers)?;
-	let run = f.store.run(input.run_id).await?;
-	if run.home_node != node {
+	let metadata = f.store.inspect_run(input.run_id()).await?.metadata;
+	if metadata.home_node != node {
 		return Err(Error::Unauthorized);
 	}
-	match input.action.as_str() {
-		"answer" => {
-			let id = input
-				.request_id
-				.ok_or_else(|| Error::Invalid("request_id required".into()))?;
+	match input {
+		RemoteControl::Answer {
+			run_id: _,
+			request_id: id,
+			response,
+		} => {
 			let valid: bool = sqlx::query_scalar(
 				&sea_orm::sea_query::Query::select()
 					.expr(sea_orm::sea_query::Expr::cust(
@@ -2114,32 +2150,21 @@ async fn peer_control(
 					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 			)
 			.bind(id)
-			.bind(run.id)
+			.bind(metadata.id)
 			.fetch_one(&f.store.pool)
 			.await?;
 			if !valid {
 				return Err(Error::Unauthorized);
 			}
-			Ok(Json(json!(
-				f.store
-					.answer(
-						id,
-						input
-							.response
-							.ok_or_else(|| Error::Invalid("response required".into()))?
-					)
-					.await?
-			)))
+			Ok(Json(json!(f.store.answer(id, response).await?)))
 		}
-		"message" => {
-			let content = input
-				.content
-				.ok_or_else(|| Error::Invalid("content required".into()))?;
-			let key = format!(
-				"human:{}:{}",
-				run.id,
-				input.idempotency_key.unwrap_or_else(Uuid::new_v4)
-			);
+		RemoteControl::Message {
+			run_id: _,
+			content,
+			idempotency_key,
+		} => {
+			let run = f.store.run(metadata.id).await?;
+			let key = format!("human:{}:{}", run.id, idempotency_key);
 			let limit = f.run_message_limit(&run).await?;
 			f.require_terminal_safe_delivery(&run).await?;
 			f.admit_run_message(&run, "human", &content, &key, limit)
@@ -2150,7 +2175,21 @@ async fn peer_control(
 			f.notify.notify_waiters();
 			Ok(Json(json!({"sent":true})))
 		}
-		action => Ok(Json(json!(f.store.control(run.id, action).await?))),
+		RemoteControl::Pause { .. } => Ok(Json(json!(
+			f.store
+				.control(metadata.id, RunControlAction::Pause)
+				.await?
+		))),
+		RemoteControl::Resume { .. } => Ok(Json(json!(
+			f.store
+				.control(metadata.id, RunControlAction::Resume)
+				.await?
+		))),
+		RemoteControl::Cancel { .. } => Ok(Json(json!(
+			f.store
+				.control(metadata.id, RunControlAction::Cancel)
+				.await?
+		))),
 	}
 }
 #[utoipa::path(get, path = "/mesh", operation_id = "mesh", responses((status = 200, body = MeshResponse)), security(("bearer_auth" = [])))]
@@ -2205,6 +2244,27 @@ struct RemoteActionInput {
 
 #[cfg(test)]
 mod schema_tests {
+	#[rstest::rstest]
+	fn typed_peer_commands_require_their_variant_payload() {
+		let id = "0b31d0f7-cd83-4f5a-adb8-0d23abb44ebf";
+		for action in ["pause", "resume", "cancel"] {
+			let value = serde_json::json!({"run_id":id,"action":action});
+			let command: super::RemoteControl = serde_json::from_value(value.clone()).unwrap();
+			assert_eq!(serde_json::to_value(command).unwrap(), value);
+		}
+		let answer =
+			serde_json::json!({"run_id":id,"action":"answer","request_id":id,"response":null});
+		assert!(serde_json::from_value::<super::RemoteControl>(answer).is_ok());
+		for value in [
+			serde_json::json!({"run_id":id,"action":"answer"}),
+			serde_json::json!({"run_id":id,"action":"answer","request_id":id}),
+			serde_json::json!({"run_id":id,"action":"message","content":"text"}),
+			serde_json::json!({"run_id":id,"action":"pause","future":true}),
+		] {
+			assert!(serde_json::from_value::<super::RemoteControl>(value).is_err());
+		}
+	}
+
 	#[rstest::rstest]
 	fn openapi_describes_authenticated_management_routes_and_streams() {
 		// The router itself registers these operations with utoipa-axum, so an

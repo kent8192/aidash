@@ -142,11 +142,11 @@ async fn failed_admission_with_unavailable_release_expires_at_home(
 			task.id,
 			task.revision,
 			task.owner.as_deref().unwrap(),
-			"CANCELLED",
+			aidash::domain::TaskStatus::Cancelled,
 		)
 		.await
 		.unwrap();
-	assert_eq!(cancelled.status, "CANCELLED");
+	assert_eq!(cancelled.status.as_str(), "CANCELLED");
 	fixture.cleanup().await;
 }
 
@@ -231,7 +231,12 @@ impl RemoteFixture {
 			.unwrap();
 		let task = home
 			.store
-			.transition(task.id, task.revision, &owner, "RUNNING")
+			.transition(
+				task.id,
+				task.revision,
+				&owner,
+				aidash::domain::TaskStatus::Running,
+			)
 			.await
 			.unwrap();
 		let run = executor
@@ -260,8 +265,11 @@ impl RemoteFixture {
 }
 
 #[rstest::rstest]
+#[case::valid_context(false)]
+#[case::terminal_invalid_context(true)]
 #[tokio::test]
 async fn admitted_input_recovers_promotion_after_expiry_and_terminal_home(
+	#[case] invalid_context: bool,
 	#[future(awt)]
 	#[from(test_environment)]
 	test_environment: Arc<TestEnvironment>,
@@ -314,16 +322,54 @@ async fn admitted_input_recovers_promotion_after_expiry_and_terminal_home(
 			task.id,
 			task.revision,
 			task.owner.as_deref().unwrap(),
-			"CANCELLED",
+			aidash::domain::TaskStatus::Cancelled,
 		)
 		.await
 		.unwrap();
 	fixture.outage.store(false, Ordering::SeqCst);
-	fixture
-		.executor
-		.deliver_run_messages(run)
+	if invalid_context {
+		// A terminal receiver still owes accepted input delivery, even when its
+		// execution Context is unreadable. The worker must use metadata only.
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("runs"))
+				.value(Alias::new("phase"), "CANCELLED")
+				.value(
+					Alias::new("pending"),
+					common::pending(aidash::domain::RunState::Cancelled(
+						aidash::domain::TerminalState {},
+					)),
+				)
+				.value(Alias::new("context"), json!([]))
+				.and_where(Expr::col(Alias::new("id")).eq(run.id))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&fixture.executor.store.pool)
 		.await
-		.expect("a durable executor input must recover its exact expired reservation");
+		.unwrap();
+		Harness {
+			federation: fixture.executor.clone(),
+		}
+		.worker_once()
+		.await
+		.unwrap();
+		assert!(
+			fixture
+				.executor
+				.store
+				.inspect_run(run.id)
+				.await
+				.unwrap()
+				.state_error
+				.is_some()
+		);
+	} else {
+		fixture
+			.executor
+			.deliver_run_messages(run)
+			.await
+			.expect("a durable executor input must recover its exact expired reservation");
+	}
 	let inputs = fixture.executor.store.run_inputs(run.id).await.unwrap();
 	assert!(inputs[0].message_id.is_some());
 	for (proof_run, proof_seq, proof_content) in [
@@ -409,7 +455,14 @@ async fn admitted_input_recovers_promotion_after_expiry_and_terminal_home(
 	.await
 	.unwrap();
 	assert_eq!(
-		fixture.executor.store.run(run.id).await.unwrap().phase,
+		fixture
+			.executor
+			.store
+			.inspect_run(run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
 		"CANCELLED"
 	);
 	fixture.cleanup().await;
@@ -574,7 +627,12 @@ async fn migration_backfills_active_remote_fences_before_legacy_effects(
 	fixture
 		.home
 		.store
-		.transition(terminal.id, terminal.revision, "human", "CANCELLED")
+		.transition(
+			terminal.id,
+			terminal.revision,
+			"human",
+			aidash::domain::TaskStatus::Cancelled,
+		)
 		.await
 		.unwrap();
 	fixture
@@ -666,7 +724,7 @@ async fn migration_backfills_active_remote_fences_before_legacy_effects(
 				task.id,
 				task.revision,
 				task.owner.as_deref().unwrap(),
-				"CANCELLED"
+				aidash::domain::TaskStatus::Cancelled
 			)
 			.await
 			.is_err()
@@ -710,10 +768,10 @@ async fn terminal_rpc_is_bounded_for_large_historical_ledgers(
 		.unwrap();
 	let task = fixture
 		.executor
-		.transition_terminal_run_messages(run, "FAILED")
+		.transition_terminal_run_messages(run, aidash::domain::TaskStatus::Failed)
 		.await
 		.expect("terminal RPC size must not grow with the imported input ledger");
-	assert_eq!(task.status, "FAILED");
+	assert_eq!(task.status.as_str(), "FAILED");
 	fixture.cleanup().await;
 }
 
@@ -755,7 +813,7 @@ async fn bounded_terminal_transition_keeps_unadmitted_reservations_and_rolls_bac
 	assert!(
 		fixture
 			.executor
-			.transition_terminal_run_messages(run, "CANCELLED")
+			.transition_terminal_run_messages(run, aidash::domain::TaskStatus::Cancelled)
 			.await
 			.is_err(),
 		"an unadmitted home reservation must not be consumed by the executor's watermark"
@@ -776,7 +834,14 @@ async fn bounded_terminal_transition_keeps_unadmitted_reservations_and_rolls_bac
 		"fence consumption must roll back with the blocked task transition"
 	);
 	assert_eq!(
-		fixture.home.store.task(run.task_id).await.unwrap().status,
+		fixture
+			.home
+			.store
+			.task(run.task_id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
 		"RUNNING"
 	);
 	fixture
@@ -792,9 +857,9 @@ async fn bounded_terminal_transition_keeps_unadmitted_reservations_and_rolls_bac
 		.unwrap();
 	let task = fixture
 		.executor
-		.transition_terminal_run_messages(run, "CANCELLED")
+		.transition_terminal_run_messages(run, aidash::domain::TaskStatus::Cancelled)
 		.await
 		.unwrap();
-	assert_eq!(task.status, "CANCELLED");
+	assert_eq!(task.status.as_str(), "CANCELLED");
 	fixture.cleanup().await;
 }

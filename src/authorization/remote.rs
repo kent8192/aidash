@@ -288,7 +288,7 @@ async fn prepare(
 	let result = async {
         inherit_task_origin(&mut access,task_id).await?;
         let task = access.task_read(task_id).await?;
-        if task.status!="OPEN" {return Err(Error::Conflict("task is already assigned".into()));}
+        if task.status!=crate::domain::TaskStatus::Open {return Err(Error::Conflict("task is already assigned".into()));}
         if access.subjects.len()>=32 {return Err(Error::Invalid("execution delegation depth exceeds 32".into()));}
         let executor = qualified_agent(&input.node_id,&input.agent.id,&input.agent.version);
         if access.snapshot.bundle.subjects.get(&executor).is_none_or(|s| s.kind!=SubjectKind::Agent) {return Err(Error::Forbidden);}
@@ -304,7 +304,7 @@ async fn prepare(
         let metadata=serde_json::to_value(&inspection)?;
         // Retain the task revision through persistence, after read authorization.
         let current: Task=sqlx::query_as(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))).from(sea_orm::sea_query::Alias::new("tasks")).and_where(sea_orm::sea_query::Expr::cust("id = $1")).lock(sea_orm::sea_query::LockType::Share).to_string(sea_orm::sea_query::PostgresQueryBuilder)).bind(task_id).fetch_one(&mut **access.tx).await?;
-        if current.revision!=task.revision || current.status!="OPEN" {return Err(Error::Conflict("task changed during grant preparation".into()));}
+        if current.revision!=task.revision || current.status!=crate::domain::TaskStatus::Open {return Err(Error::Conflict("task changed during grant preparation".into()));}
         let inserted=sqlx::query(&sea_orm::sea_query::Query::insert().into_table(sea_orm::sea_query::Alias::new("authorization_remote_grants")).columns([sea_orm::sea_query::Alias::new("id"), sea_orm::sea_query::Alias::new("task_id"), sea_orm::sea_query::Alias::new("task_revision"), sea_orm::sea_query::Alias::new("workspace_id"), sea_orm::sea_query::Alias::new("node_id"), sea_orm::sea_query::Alias::new("tenant"), sea_orm::sea_query::Alias::new("credential_id"), sea_orm::sea_query::Alias::new("root_subject"), sea_orm::sea_query::Alias::new("subject_chain"), sea_orm::sea_query::Alias::new("inspection"), sea_orm::sea_query::Alias::new("expires_at")]).values_panic([sea_orm::sea_query::Expr::cust("$1"), sea_orm::sea_query::Expr::cust("$2"), sea_orm::sea_query::Expr::cust("$3"), sea_orm::sea_query::Expr::cust("$4"), sea_orm::sea_query::Expr::cust("$5"), sea_orm::sea_query::Expr::cust("$6"), sea_orm::sea_query::Expr::cust("$7"), sea_orm::sea_query::Expr::cust("$8"), sea_orm::sea_query::Expr::cust("$9"), sea_orm::sea_query::Expr::cust("$10"), sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP() + MAKE_INTERVAL(secs => $11)")]).on_conflict(sea_orm::sea_query::OnConflict::new().do_nothing().to_owned()).to_string(sea_orm::sea_query::PostgresQueryBuilder))
             .bind(input.id).bind(task.id).bind(task.revision).bind(task.workspace_id).bind(&input.node_id).bind(&identity.tenant).bind(identity.credential_id).bind(&identity.subject).bind(&access.subjects).bind(&metadata).bind(input.ttl_seconds as f64).execute(&mut **access.tx).await?.rows_affected();
         let grant: Grant=sqlx::query_as(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))).from(sea_orm::sea_query::Alias::new("authorization_remote_grants")).and_where(sea_orm::sea_query::Expr::cust("id = $1")).lock(sea_orm::sea_query::LockType::Share).to_string(sea_orm::sea_query::PostgresQueryBuilder)).bind(input.id).fetch_one(&mut **access.tx).await?;
@@ -557,7 +557,7 @@ async fn description_lease_mode(
 			.map_or(current.task_revision, |bound| bound.task_revision);
 		if task.revision != expected_revision
 			|| task.workspace_id != current.workspace_id
-			|| (execution.is_none() && task.status != "OPEN")
+			|| (execution.is_none() && task.status != crate::domain::TaskStatus::Open)
 		{
 			return Err(Error::Forbidden);
 		}

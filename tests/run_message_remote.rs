@@ -218,7 +218,12 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 	assert!(retained);
 	assert!(
 		f.store
-			.transition(task.id, task.revision, &owner, "CANCELLED")
+			.transition(
+				task.id,
+				task.revision,
+				&owner,
+				aidash::domain::TaskStatus::Cancelled
+			)
 			.await
 			.is_err(),
 		"the committed correction must fence an ordinary terminal transition"
@@ -229,13 +234,13 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 			task.id,
 			task.revision,
 			&owner,
-			"CANCELLED",
+			aidash::domain::TaskStatus::Cancelled,
 			run.id,
 			std::slice::from_ref(&key),
 		)
 		.await
 		.unwrap();
-	assert_eq!(cancelled.status, "CANCELLED");
+	assert_eq!(cancelled.status.as_str(), "CANCELLED");
 	let consumed: bool = sqlx::query_scalar(
 		"SELECT consumed FROM remote_run_message_fences WHERE task_id = $1 AND idempotency_key = $2",
 	)
@@ -441,7 +446,12 @@ async fn remote_admission_imports_legacy_history_before_new_input(
 		.unwrap();
 	let task = home
 		.store
-		.transition(task.id, task.revision, &owner, "RUNNING")
+		.transition(
+			task.id,
+			task.revision,
+			&owner,
+			aidash::domain::TaskStatus::Running,
+		)
 		.await
 		.unwrap();
 	let run = executor
@@ -575,7 +585,12 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 		.unwrap();
 	let task = home
 		.store
-		.transition(task.id, task.revision, &owner, "RUNNING")
+		.transition(
+			task.id,
+			task.revision,
+			&owner,
+			aidash::domain::TaskStatus::Running,
+		)
 		.await
 		.unwrap();
 	let run = executor
@@ -975,7 +990,12 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	let current_task = home.store.task(task.id).await.unwrap();
 	let error = home
 		.store
-		.transition(task.id, current_task.revision, &owner, "CANCELLED")
+		.transition(
+			task.id,
+			current_task.revision,
+			&owner,
+			aidash::domain::TaskStatus::Cancelled,
+		)
 		.await
 		.expect_err("home termination must wait until the correction reaches inference");
 	let response = error.into_response();
@@ -989,7 +1009,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	);
 	assert!(matches!(
 		Home::new(executor.clone(), run.clone())
-			.transition("CANCELLED")
+			.transition(aidash::domain::TaskStatus::Cancelled)
 			.await,
 		Err(aidash::error::Error::TransactionPending)
 	));
@@ -1341,7 +1361,12 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	let current_task = home.store.task(task.id).await.unwrap();
 	assert!(
 		home.store
-			.transition(task.id, current_task.revision, &owner, "CANCELLED")
+			.transition(
+				task.id,
+				current_task.revision,
+				&owner,
+				aidash::domain::TaskStatus::Cancelled
+			)
 			.await
 			.is_err(),
 		"admitted input must fence cancellation even during delivery outage"
@@ -1373,7 +1398,12 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	// Acknowledging this run cannot consume that separate run's correction.
 	assert!(
 		home.store
-			.transition(task.id, current_task.revision, &owner, "CANCELLED")
+			.transition(
+				task.id,
+				current_task.revision,
+				&owner,
+				aidash::domain::TaskStatus::Cancelled
+			)
 			.await
 			.is_err(),
 		"backfilled corrections for another run must still fence termination"
@@ -1406,7 +1436,9 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 		.map(|input| input.seq)
 		.unwrap_or(0);
 	let mut completion_run = executor.store.run(run.id).await.unwrap();
-	completion_run.pending = json!({"included_input_seq":through_seq});
+	completion_run.state = aidash::domain::RunState::ToolCall(Box::new(common::tool_call(
+		json!({"included_input_seq":through_seq}),
+	)));
 	let artifact = ArtifactInput {
 		kind: "text".into(),
 		name: "Answer".into(),
@@ -1428,7 +1460,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 		.complete(&format!("{}:complete", run.id), &artifact)
 		.await
 		.unwrap();
-	assert_eq!(completed.status, "COMPLETED");
+	assert_eq!(completed.status.as_str(), "COMPLETED");
 	let remaining_current_fences: bool = sqlx::query_scalar(
 		"SELECT EXISTS(SELECT 1 FROM remote_run_message_fences WHERE task_id = $1 AND run_id = $2 AND NOT consumed)",
 	)
@@ -1516,7 +1548,9 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 			.table(Alias::new("runs"))
 			.value(
 				Alias::new("pending"),
-				Expr::cust("'{\"finalizing\":true}'::jsonb"),
+				Expr::val(common::pending(aidash::domain::RunState::Cancelled(
+					aidash::domain::TerminalState {},
+				))),
 			)
 			.and_where(Expr::cust("id = $1"))
 			.to_string(PostgresQueryBuilder),
@@ -1660,10 +1694,15 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	);
 	let cancelled = home
 		.store
-		.transition(expiry_task.id, expiry_task.revision, "human", "CANCELLED")
+		.transition(
+			expiry_task.id,
+			expiry_task.revision,
+			"human",
+			aidash::domain::TaskStatus::Cancelled,
+		)
 		.await
 		.unwrap();
-	assert_eq!(cancelled.status, "CANCELLED");
+	assert_eq!(cancelled.status.as_str(), "CANCELLED");
 	home.store
 		.reserve_remote_run_message(
 			task.id,

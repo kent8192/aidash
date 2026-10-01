@@ -348,14 +348,19 @@ async fn completed_dependencies_release_wait_without_expiring_timer(
 	};
 	assert!(harness.worker_once().await.unwrap());
 	let waiting = f.store.run(run.id).await.unwrap();
-	assert_eq!(waiting.phase, "WAITING");
+	assert_eq!(waiting.phase().as_str(), "WAITING");
 	// Widen the ordinary two-second timer so elapsed test time cannot mask the bug.
 	sqlx::query(
 		&Query::update()
 			.table(a("runs"))
 			.value(
 				a("pending"),
-				json!({"resume_phase":"READY","wake_at":chrono::Utc::now()+chrono::Duration::hours(1)}),
+				common::pending(aidash::domain::RunState::Waiting(Box::new(
+					aidash::domain::WaitingState::Dependencies {
+						wake_at: chrono::Utc::now() + chrono::Duration::hours(1),
+						resume: Default::default(),
+					},
+				))),
 			)
 			.and_where(Expr::col(a("id")).eq(run.id))
 			.to_string(PostgresQueryBuilder),
@@ -516,4 +521,99 @@ async fn terminal_delivery_drains_a_burst_without_per_run_sleep(
 		"healthy delivery still sleeps between Runs: {delivered}/24"
 	);
 	assert_eq!(delivered, 24);
+}
+
+#[rstest::rstest]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn notification_claim_disposes_invalid_context_without_poisoning_healthy_work(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let _serial = PROCESS_TESTS.lock().await;
+	let (mut f, url, schema) = setup(&environment).await;
+	let address = std::net::TcpListener::bind("127.0.0.1:0")
+		.unwrap()
+		.local_addr()
+		.unwrap();
+	f.config.listen = address;
+	f.config.endpoint = format!("http://{address}");
+	let directory = evidence_directory("invalid-state", &schema);
+	std::fs::create_dir_all(&directory).unwrap();
+	let calls = Arc::new(AtomicUsize::new(0));
+	let counted = calls.clone();
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let provider = tokio::spawn(async move {
+		axum::serve(listener,Router::new().route("/v1/chat/completions",post(move || {let calls=counted.clone();async move {
+		calls.fetch_add(1,Ordering::SeqCst);Json(json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+	}}))).await.unwrap();
+	});
+	let (_, token, task) = bootstrap(&f, &api::router(f.clone()), &endpoint).await;
+	let settings = Settings {
+		namespace: schema.clone(),
+		..Settings::default()
+	};
+	let broker = Broker::provision(&f.config.nats_url, &f.config.node_id, &settings)
+		.await
+		.unwrap();
+	let mut server = Process::start(&f, &url, &schema, "server", &directory, 0, true);
+	server.ready().await;
+	let mut worker = Process::start(&f, &url, &schema, "worker", &directory, 1, true);
+	worker.ready().await;
+	let pause = directory.join("pause-consumers");
+	std::fs::write(&pause, "pause").unwrap();
+	tokio::time::sleep(Duration::from_millis(300)).await;
+	let invalid = admit(&f, &token, task).await;
+	sqlx::query(
+		&Query::update()
+			.table(a("runs"))
+			.value(a("context"), json!([]))
+			.and_where(Expr::col(a("id")).eq(invalid))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let healthy = admit(&f, &token, fresh_task(&f, &token).await).await;
+	std::fs::remove_file(pause).unwrap();
+	complete(&f, healthy).await;
+	tokio::time::timeout(Duration::from_secs(10), async {
+		while f.store.inspect_run(invalid).await.unwrap().phase != aidash::domain::RunPhase::Failed
+		{
+			tokio::time::sleep(Duration::from_millis(20)).await;
+		}
+	})
+	.await
+	.unwrap();
+	let inspected = f.store.inspect_run(invalid).await.unwrap();
+	assert!(inspected.state_error.is_some());
+	assert_eq!(
+		f.store.task(task).await.unwrap().status,
+		aidash::domain::TaskStatus::Failed
+	);
+	assert_eq!(calls.load(Ordering::SeqCst), 1);
+	assert_eq!(count(&f, "claim_source = 'recovery'").await, 0);
+	assert!(
+		count(
+			&f,
+			&format!("run_id='{healthy}' AND claim_source='notification'")
+		)
+		.await > 0
+	);
+	let events = f.store.events(0, None, 500).await.unwrap();
+	assert!(
+		events
+			.iter()
+			.any(|e| e.kind == "run.invalid_state" && e.data["run_id"] == invalid.to_string())
+	);
+	worker.stop();
+	server.stop();
+	provider.abort();
+	broker
+		.context
+		.delete_stream(&broker.stream_name)
+		.await
+		.unwrap();
+	cleanup(f, &url, &schema).await;
 }

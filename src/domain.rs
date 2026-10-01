@@ -4,8 +4,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[derive(
+	Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, sqlx::Type, utoipa::ToSchema,
+)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[sqlx(type_name = "text", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum TaskStatus {
 	Open,
 	Claimed,
@@ -33,8 +36,11 @@ impl TaskStatus {
 	}
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[derive(
+	Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, sqlx::Type, utoipa::ToSchema,
+)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[sqlx(type_name = "text", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum RunPhase {
 	Ready,
 	Thinking,
@@ -43,6 +49,94 @@ pub enum RunPhase {
 	Completed,
 	Failed,
 	Cancelled,
+}
+
+pub mod run_state;
+pub use run_state::*;
+
+#[derive(
+	Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, sqlx::Type, utoipa::ToSchema,
+)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[sqlx(type_name = "text", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RunControl {
+	Active,
+	Paused,
+	Cancelled,
+}
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RunControlAction {
+	Pause,
+	Resume,
+	Cancel,
+}
+impl RunControlAction {
+	pub fn control(self) -> RunControl {
+		match self {
+			Self::Pause => RunControl::Paused,
+			Self::Resume => RunControl::Active,
+			Self::Cancel => RunControl::Cancelled,
+		}
+	}
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Pause => "pause",
+			Self::Resume => "resume",
+			Self::Cancel => "cancel",
+		}
+	}
+}
+macro_rules! text_enum {
+	($name:ident { $($variant:ident => $text:literal),+ $(,)? }) => {
+		impl $name {
+			pub fn as_str(self) -> &'static str {
+				match self { $(Self::$variant => $text),+ }
+			}
+		}
+		impl std::fmt::Display for $name {
+			fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+				f.write_str(self.as_str())
+			}
+		}
+	};
+}
+text_enum!(TaskStatus {
+	Open => "OPEN",
+	Claimed => "CLAIMED",
+	Running => "RUNNING",
+	Completed => "COMPLETED",
+	Failed => "FAILED",
+	Blocked => "BLOCKED",
+	Cancelled => "CANCELLED",
+	Abandoned => "ABANDONED",
+});
+text_enum!(RunPhase {
+	Ready => "READY",
+	Thinking => "THINKING",
+	ToolCall => "TOOL_CALL",
+	Waiting => "WAITING",
+	Completed => "COMPLETED",
+	Failed => "FAILED",
+	Cancelled => "CANCELLED",
+});
+text_enum!(RunControl {
+	Active => "ACTIVE",
+	Paused => "PAUSED",
+	Cancelled => "CANCELLED",
+});
+impl RunPhase {
+	pub fn is_terminal(self) -> bool {
+		matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+	}
+}
+impl TaskStatus {
+	pub fn is_terminal(self) -> bool {
+		matches!(
+			self,
+			Self::Completed | Self::Failed | Self::Cancelled | Self::Abandoned
+		)
+	}
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
@@ -62,7 +156,7 @@ pub struct Task {
 	pub workspace_id: Uuid,
 	pub title: String,
 	pub description: String,
-	pub status: String,
+	pub status: TaskStatus,
 	#[schema(value_type = std::collections::BTreeMap<String, Value>)]
 	pub requirements: Value,
 	pub owner: Option<String>,
@@ -80,9 +174,12 @@ pub struct ChildTaskSummary {
 }
 
 impl ChildTaskSummary {
-	pub fn include_status(&mut self, status: &str) {
-		self.has_pending |= !matches!(status, "COMPLETED" | "ABANDONED");
-		self.has_failed |= matches!(status, "FAILED" | "BLOCKED" | "CANCELLED");
+	pub fn include_status(&mut self, status: TaskStatus) {
+		self.has_pending |= !matches!(status, TaskStatus::Completed | TaskStatus::Abandoned);
+		self.has_failed |= matches!(
+			status,
+			TaskStatus::Failed | TaskStatus::Blocked | TaskStatus::Cancelled
+		);
 	}
 }
 
@@ -177,7 +274,8 @@ pub struct HumanRequest {
 	pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Run {
 	pub id: Uuid,
 	pub task_id: Uuid,
@@ -185,16 +283,14 @@ pub struct Run {
 	pub home_node: String,
 	pub agent_id: String,
 	pub agent_version: String,
-	pub phase: String,
-	pub control: String,
-	#[schema(value_type = crate::context::Context)]
-	pub context: Value,
-	pub pending: Value,
+	pub state_version: StateVersion,
+	pub state: RunState,
+	pub recovery: RecoveryState,
+	pub control: RunControl,
+	pub context: crate::context::Context,
 	pub step: i32,
 	pub revision: i64,
-	#[serde(default)]
 	pub observed_input_seq: i64,
-	#[serde(default)]
 	pub ledger_worker_ready: bool,
 	pub error: Option<String>,
 	pub lease_owner: Option<Uuid>,
@@ -247,16 +343,11 @@ mod tests {
 	}
 
 	#[rstest::rstest]
-	fn run_from_old_peer_defaults_observed_input_sequence() {
-		let id = Uuid::new_v4();
-		let wire = json!({
-			"id":id,"task_id":id,"workspace_id":id,"home_node":"aidash://old",
-			"agent_id":"research","agent_version":"1.0.0","phase":"THINKING",
-			"control":"ACTIVE","context":{},"pending":{},"step":0,"revision":0,
-			"error":null,"lease_owner":null,"lease_until":null,"updated_at":Utc::now()
-		});
-		let run: Run = serde_json::from_value(wire).unwrap();
-		assert_eq!(run.observed_input_seq, 0);
+	fn unsupported_wire_format_is_rejected() {
+		assert!(
+			serde_json::from_value::<Run>(json!({"phase":"THINKING","pending":{},"context":{}}))
+				.is_err()
+		);
 	}
 }
 
@@ -268,4 +359,12 @@ pub struct Message {
 	pub content: String,
 	pub idempotency_key: Option<String>,
 	pub created_at: DateTime<Utc>,
+}
+
+// A required JSON content field may contain null, but may not be absent.
+// deserialize_with prevents serde's missing-field adapter from supplying null.
+pub(crate) fn required_json<'de, D: serde::Deserializer<'de>>(
+	deserializer: D,
+) -> std::result::Result<Value, D::Error> {
+	Value::deserialize(deserializer)
 }

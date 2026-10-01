@@ -30,7 +30,7 @@ pub struct StateResponse {
 	pub registry: Vec<Entry>,
 	pub workspaces: Vec<Workspace>,
 	pub tasks: Vec<Task>,
-	pub runs: Vec<Run>,
+	pub runs: Vec<RunInspection>,
 	pub human_requests: Vec<HumanRequest>,
 	pub conversations: Vec<Conversation>,
 	pub peers: Vec<Peer>,
@@ -55,7 +55,7 @@ pub struct ConversationResponse {
 }
 #[derive(Serialize, ToSchema)]
 pub struct RunDetails {
-	pub run: Run,
+	pub run: RunInspection,
 	pub invocations: Vec<Invocation>,
 	pub memory: Value,
 	/// Each current route lists MIME types accepted together by the run model.
@@ -69,7 +69,7 @@ pub struct PeerError {
 #[derive(Serialize, Deserialize, ToSchema)]
 pub struct MeshNode {
 	pub node_id: String,
-	pub runs: Vec<Run>,
+	pub runs: Vec<RunInspection>,
 	pub human_requests: Vec<HumanRequest>,
 	pub invocations: Vec<Invocation>,
 }
