@@ -431,6 +431,20 @@ test("three authorized execution Nodes share one Home Workspace without merging 
   await expect(
     page.locator(".mesh-node-label").filter({ hasText: firstPeer }),
   ).toHaveCount(0);
+  await page
+    .locator(".mesh-region-execution-label")
+    .filter({ hasText: firstPeer })
+    .click();
+  await page.getByRole("button", { name: "Focus neighborhood" }).click();
+  await expect(
+    page.locator(".mesh-node-label").filter({ hasText: "Peer Worker" }),
+  ).toHaveCount(1);
+  await expect(
+    page.locator(".mesh-node-label").filter({ hasText: "Peer Run" }),
+  ).toHaveCount(1);
+  await expect(page.locator(".mesh-region-execution-label")).toHaveCount(1);
+  await page.getByRole("button", { name: "Show full graph" }).click();
+  await expect(page.locator(".mesh-region-execution-label")).toHaveCount(3);
   await page.getByRole("button", { name: "Close details" }).click();
   await page.waitForTimeout(300);
   await page.screenshot({ path: "test-results/issue-95-three-node.png" });
@@ -453,6 +467,134 @@ test("three authorized execution Nodes share one Home Workspace without merging 
       .filter({ hasText: secondPeer }),
   ).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+test("Home-observed Peer Runs retain Home details before and after projection expansion", async ({
+  page,
+}) => {
+  const scene = meshScene();
+  const observed = {
+    ...scene.data.runs[0],
+    id: "observed-run",
+    agent_id: "worker",
+  };
+  scene.data.events.push({
+    ...scene.data.events[0],
+    id: "home-run-event",
+    kind: "run.home.observed",
+    data: { run_id: observed.id },
+  });
+  const projection = (peer: string) => ({
+    ...projected,
+    node_id: peer,
+    nodes: projected.nodes
+      .filter((node) => node.kind === "agent" || node.kind === "run")
+      .map((node) => ({
+        ...node,
+        id:
+          node.kind === "run"
+            ? key(peer, "run", observed.id)
+            : entity(peer, "agent", "worker", "1.0.0"),
+        node_id: peer,
+        resource_id: node.kind === "run" ? observed.id : "worker",
+        workspace_id: node.kind === "run" ? observed.workspace_id : null,
+        name: {
+          en:
+            node.kind === "run"
+              ? peer === firstPeer
+                ? "Projected observed Run"
+                : "Unobserved Peer Run"
+              : "Projected Worker",
+        },
+      })),
+    edges: [
+      {
+        source: entity(peer, "agent", "worker", "1.0.0"),
+        target: key(peer, "run", observed.id),
+        relation: "executes",
+        layer: "activity",
+      },
+    ],
+    activity: [
+      {
+        kind: "run.peer.only",
+        at: timestamp,
+        reference: key(peer, "run", observed.id),
+      },
+    ],
+  });
+  await installBearerDashboard(page, "synthetic-home-observed-run");
+  await page.addInitScript(() =>
+    localStorage.setItem("aidash-locale", "en-US"),
+  );
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/events/stream") return route.abort();
+    if (path === "/api/federation/graph/peers")
+      return route.fulfill({
+        json: [firstPeer, secondPeer].map((node_id) => ({ node_id })),
+      });
+    if (path === "/api/federation/graph")
+      return route.fulfill({
+        json: projection(route.request().postDataJSON().node_id),
+      });
+    return route.fulfill({
+      json:
+        path === "/api/session"
+          ? { access: scene.data.access, node_id: scene.data.node.id }
+          : path === "/api/state"
+            ? scene.data
+            : path === "/api/mesh"
+              ? {
+                  nodes: [
+                    {
+                      node_id: firstPeer,
+                      runs: [observed],
+                      human_requests: [],
+                      invocations: [],
+                    },
+                  ],
+                  errors: [],
+                }
+              : [],
+    });
+  });
+  await page.goto("/graph?channel=product-lab");
+  await page.getByLabel("Peer tenant").fill("acme");
+  await page.getByRole("button", { name: "Relationship list" }).click();
+  const list = page.getByRole("table", { name: "Relationship list" });
+  await list.getByRole("button", { name: "Run observed", exact: true }).click();
+  const inspector = page.getByRole("complementary", { name: "Node details" });
+  await expect(inspector).toContainText(firstPeer);
+  await expect(inspector).toContainText("run.home.observed");
+  await expect(
+    inspector.getByRole("button", { name: "# Product Lab", exact: true }),
+  ).toBeVisible();
+  await page
+    .locator(".mesh-peer")
+    .filter({ hasText: firstPeer })
+    .getByRole("button", { name: "Expand node" })
+    .click();
+  await expect(
+    list.getByRole("button", { name: "Projected observed Run", exact: true }),
+  ).toBeVisible();
+  await expect(inspector).toContainText("run.home.observed");
+  await expect(
+    inspector.getByRole("button", { name: "# Product Lab", exact: true }),
+  ).toBeVisible();
+  await page
+    .locator(".mesh-peer")
+    .filter({ hasText: secondPeer })
+    .getByRole("button", { name: "Expand node" })
+    .click();
+  await list
+    .getByRole("button", { name: "Unobserved Peer Run", exact: true })
+    .click();
+  await expect(inspector).toContainText("run.peer.only");
+  await expect(inspector).not.toContainText("run.home.observed");
+  await expect(
+    inspector.getByRole("button", { name: "# Product Lab", exact: true }),
+  ).toHaveCount(0);
 });
 
 test("compact Japanese view replaces page windows and clears outages and forged third-node data", async ({

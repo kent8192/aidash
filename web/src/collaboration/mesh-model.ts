@@ -49,6 +49,8 @@ export type MeshNode = {
   kind: MeshKind;
   name: Record<string, string>;
   nodeId: string;
+  /** Home details provenance for an observed Run; nodeId remains its executor. */
+  homeNodeId?: string;
   available: boolean;
   resourceId?: string;
   workspaceId?: string;
@@ -342,6 +344,7 @@ export function buildMeshGraph(
       kind: "run",
       name: { en: `Run ${run.id.slice(0, 8)}` },
       nodeId: node,
+      homeNodeId: run.home_node || nodeId,
       resourceId: run.id,
       workspaceId: run.workspace_id,
       available: true,
@@ -472,7 +475,7 @@ export function filterMeshGraph(
     kinds: readonly MeshKind[];
     query: string;
     relations?: readonly MeshRelation[];
-    focus?: string;
+    focus?: string | readonly string[];
     pin?: string;
     maxNodes?: number;
     maxEdges?: number;
@@ -519,10 +522,16 @@ export function filterMeshGraph(
         visible.add(e.source);
         visible.add(e.target);
       }
+  const focusIds = new Set(
+    typeof options.focus === "string"
+      ? [options.focus]
+      : (options.focus?.filter((id) => eligible.some((n) => n.id === id)) ??
+        []),
+  );
   if (options.focus) {
-    const adjacent = new Set([options.focus]);
+    const adjacent = new Set(focusIds);
     for (const e of edges)
-      if (e.source === options.focus || e.target === options.focus) {
+      if (focusIds.has(e.source) || focusIds.has(e.target)) {
         adjacent.add(e.source);
         adjacent.add(e.target);
       }
@@ -534,7 +543,7 @@ export function filterMeshGraph(
   // Share a crowded canvas across kinds so registry entries cannot exhaust the
   // budget before any workspace or recorded activity becomes visible.
   if (candidates.length > maxNodes) {
-    const priority = [options.focus, options.pin]
+    const priority = [...focusIds, options.pin]
       .map((id) => candidates.find((n) => n.id === id))
       .filter((n): n is MeshNode => Boolean(n));
     const groups = new Map<MeshKind, MeshNode[]>();

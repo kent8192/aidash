@@ -221,6 +221,7 @@ export function mergeGraphPages(
         kind,
         name: item.name,
         nodeId: peer,
+        homeNodeId: nodes.get(item.id)?.homeNodeId,
         available: true,
         resourceId: item.resource_id ?? undefined,
         workspaceId: item.workspace_id ?? undefined,

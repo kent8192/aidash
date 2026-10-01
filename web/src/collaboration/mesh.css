@@ -482,7 +482,10 @@
   border-radius: 5px;
   color: #b9d5ce;
   background: #0b2525e8;
-  font: 600 11px/1.25 "DM Sans", "Noto Sans JP", sans-serif;
+  font:
+    600 11px/1.25 "DM Sans",
+    "Noto Sans JP",
+    sans-serif;
   text-align: center;
   transform: translateX(-50%);
   overflow: hidden;

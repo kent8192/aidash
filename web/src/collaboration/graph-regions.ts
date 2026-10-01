@@ -94,19 +94,16 @@ export function workspaceGraph(
   const selectedWorkspace = workspace
     ? JSON.stringify([localNode, workspace])
     : "";
-  const relatedWorkspaceIds = new Set(
-    [...workspaceIds].map((key) => (JSON.parse(key) as [string, string])[1]),
-  );
   for (const node of graph.nodes) {
     if (!node.workspaceId) continue;
     const owner = JSON.stringify([node.nodeId, node.workspaceId]);
-    if (sharedKinds.has(node.kind) && workspaceIds.has(owner))
+    // Authorized continuation pages need not repeat the Workspace vertex.
+    if (sharedKinds.has(node.kind) && (!workspace || workspaceIds.has(owner)))
       keep.add(node.id);
     if (
       node.kind === "run" &&
-      (workspace
-        ? workspaceIds.has(selectedWorkspace) && node.workspaceId === workspace
-        : relatedWorkspaceIds.has(node.workspaceId))
+      (!workspace ||
+        (workspaceIds.has(selectedWorkspace) && node.workspaceId === workspace))
     )
       keep.add(node.id);
   }

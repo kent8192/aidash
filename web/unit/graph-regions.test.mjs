@@ -169,3 +169,54 @@ test("All Workspaces keeps Home-qualified ownership and Node-qualified execution
       positions[key(home, "run", "local-run")].y,
   );
 });
+
+test("All Workspaces retains authorized continuation resources without their Workspace vertex", () => {
+  for (const kind of ["run", "artifact"]) {
+    const nodes = [
+      shared(home, "workspace", "work", "work"),
+      shared(b, "task", "page-task", "peer-work"),
+      shared(b, kind, "page-resource", "peer-work"),
+      agent(b, "worker"),
+      shared(c, "task", "page-task", "peer-work"),
+      agent(c, "unrelated"),
+    ];
+    const page = {
+      nodes,
+      edges: [
+        edge(key(b, "task", "page-task"), entity(b, "worker"), "assigned"),
+        edge(
+          key(b, "task", "page-task"),
+          key(b, kind, "page-resource"),
+          kind === "run" ? "executes" : "produces",
+        ),
+      ],
+      omitted: 0,
+      omittedEdges: 0,
+    };
+    const scoped = workspaceGraph(page, home, "", state);
+    assert.deepEqual(
+      scoped.nodes.map((node) => node.id).sort(),
+      nodes
+        .slice(0, -1)
+        .map((node) => node.id)
+        .sort(),
+      kind,
+    );
+    assert.deepEqual(
+      graphRegions(scoped, home)
+        .filter((region) => region.kind === "shared")
+        .map((region) => [region.nodeId, region.workspaceId]),
+      [
+        [home, "work"],
+        [b, "peer-work"],
+        [c, "peer-work"],
+      ],
+      kind,
+    );
+    assert.deepEqual(
+      workspaceGraph(page, home, "work", state).nodes.map((node) => node.id),
+      [key(home, "workspace", "work")],
+      kind,
+    );
+  }
+});

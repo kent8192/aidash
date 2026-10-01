@@ -375,18 +375,27 @@ export function Graph({
     if (selectedId && !stillVisible(selectedId)) setSelectedId("");
     if (focused && !stillVisible(focused)) setFocused("");
   }, [full, merged, selectedId, focused]);
-  const graph = useMemo(
-    () =>
-      filterMeshGraph(full, {
-        mode: graphMode,
-        kinds,
-        query: search,
-        relations,
-        focus: focused,
-        pin: selectedId,
-      }),
-    [full, graphMode, kinds, search, relations, focused, selectedId],
-  );
+  const graph = useMemo(() => {
+    const boundary = merged.nodes.find(
+      (node) => node.id === focused && node.kind === "remote",
+    );
+    return filterMeshGraph(full, {
+      mode: graphMode,
+      kinds,
+      query: search,
+      relations,
+      focus: boundary
+        ? full.nodes
+            .filter(
+              (node) =>
+                node.nodeId === boundary.nodeId &&
+                (node.kind === "agent" || node.kind === "run"),
+            )
+            .map((node) => node.id)
+        : focused,
+      pin: selectedId,
+    });
+  }, [full, merged, graphMode, kinds, search, relations, focused, selectedId]);
   const labels = useMemo(
     () =>
       disambiguateLabels(
