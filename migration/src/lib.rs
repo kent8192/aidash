@@ -52,6 +52,8 @@ mod m20260929_030000_graph_operator_grants;
 mod m20260929_030000_media_route_constraints;
 mod m20260929_040000_graph_grant_revocation;
 
+mod m20260930_010000_marketplace_authorization;
+
 pub struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
@@ -107,6 +109,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260929_030000_media_route_constraints::Migration),
 			Box::new(m20260929_030000_graph_operator_grants::Migration),
 			Box::new(m20260929_040000_graph_grant_revocation::Migration),
+			Box::new(m20260930_010000_marketplace_authorization::Migration),
 		]
 	}
 }

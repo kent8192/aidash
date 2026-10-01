@@ -1,0 +1,5 @@
+# Two API processes and two workers share this disposable PostgreSQL service.
+# Match the cluster acceptance fixture's capacity for their independent pools.
+services:
+  postgres:
+    command: [postgres, -c, max_connections=400]

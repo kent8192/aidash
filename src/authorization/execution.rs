@@ -31,6 +31,7 @@ struct Grant {
 impl Grant {
 	fn identity(&self) -> SubjectIdentity {
 		SubjectIdentity {
+			http_session: None,
 			credential_id: self.credential_id,
 			tenant: self.tenant.clone(),
 			subject: self.root_subject.clone(),
@@ -287,9 +288,13 @@ async fn admit(
 	access.subjects.push(subject.clone());
 	access.require(&workspace, "workspace.read").await?;
 	let entry = catalog::entry(access, agent, "agent.execute").await?;
+	if !crate::marketplace::active(access, &entry).await? {
+		return Err(Error::Forbidden);
+	}
 	if entry.kind != "agent" {
 		return Err(Error::Invalid("executor must be an agent".into()));
 	}
+	crate::marketplace::check_pinned(access, &entry).await?;
 	access.require(&task_resource, "task.execute").await?;
 	let config = serde_json::from_value(entry.config.clone())?;
 	// Lock and recheck the inherited thread before claim_in allocates an event.
@@ -956,6 +961,7 @@ async fn authorize_guard(f: &Federation, run: &Run, access: &mut Access) -> Resu
 		access,
 		&qualified_agent(&f.config.node_id, &run.agent_id, &run.agent_version),
 	)?;
+	crate::marketplace::check_pinned(access, &entry).await?;
 	let agent: AgentConfig = serde_json::from_value(entry.config)?;
 	if agent.core_capabilities.enabled() {
 		crate::capabilities::sessions::context_authority(access, run).await?;

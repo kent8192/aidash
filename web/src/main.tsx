@@ -468,6 +468,7 @@ function Dashboard({
             "run",
             "mesh",
             "packages",
+            "marketplace",
             "generation",
           ]) {
             void client.invalidateQueries({ queryKey: [key] });
@@ -1154,7 +1155,7 @@ function Dashboard({
                   </button>
                 </div>
                 <div className="workspace-sidebar-bottom">
-                  {operator && (
+                  {
                     <button
                       type="button"
                       className="workspace-marketplace"
@@ -1172,7 +1173,7 @@ function Dashboard({
                         <ArrowUpRight size={12} />
                       </span>
                     </button>
-                  )}
+                  }
                   <button
                     type="button"
                     className="workspace-settings-link"

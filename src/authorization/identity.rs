@@ -19,9 +19,19 @@ pub enum Actor {
 
 #[derive(Clone)]
 pub struct SubjectIdentity {
+	// Request-only authority. Durable Run identities intentionally reconstruct
+	// this as None: browser logout must not revoke already admitted work.
+	pub(crate) http_session: Option<HttpSession>,
 	pub(crate) credential_id: Uuid,
 	pub(crate) tenant: String,
 	pub(crate) subject: String,
+}
+
+#[derive(Clone)]
+pub(crate) struct HttpSession {
+	pub id: Uuid,
+	pub identity_id: Uuid,
+	pub idle_seconds: i64,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow, utoipa::ToSchema)]
@@ -218,6 +228,7 @@ impl Authorization {
 		.await?;
 		let (credential_id, tenant, subject) = row.ok_or(Error::Unauthorized)?;
 		Ok(Actor::Subject(SubjectIdentity {
+			http_session: None,
 			credential_id,
 			tenant,
 			subject,
@@ -295,7 +306,46 @@ impl SubjectIdentity {
 		if !enabled(&snapshot, &self.subject) {
 			return Err(Error::Forbidden);
 		}
+		self.session_current(tx, true).await?;
 		Ok(snapshot)
+	}
+
+	/// Order logout with an HTTP boundary after credential, mapping and identity
+	/// locks. Recheck clock expiry at disclosure without reacquiring a lock.
+	pub(crate) async fn session_current(
+		&self,
+		tx: &mut Transaction<'_, Postgres>,
+		lock: bool,
+	) -> Result<()> {
+		let Some(session) = &self.http_session else {
+			return Ok(());
+		};
+		session.current(tx, lock).await
+	}
+}
+
+impl HttpSession {
+	pub(crate) async fn current(
+		&self,
+		tx: &mut Transaction<'_, Postgres>,
+		lock: bool,
+	) -> Result<()> {
+		let mut query = Query::select();
+		query.column(Alias::new("id")).from(Alias::new("dashboard_sessions"))
+			.and_where(Expr::cust("id=$1 AND identity_id=$2 AND revoked_at IS NULL AND expires_at>clock_timestamp() AND last_activity_at>clock_timestamp()-$3::bigint*interval '1 second'"));
+		if lock {
+			query.lock(LockType::Share);
+		}
+		let valid: Option<Uuid> = sqlx::query_scalar(&query.to_string(PostgresQueryBuilder))
+			.bind(self.id)
+			.bind(self.identity_id)
+			.bind(self.idle_seconds)
+			.fetch_optional(&mut **tx)
+			.await?;
+		if valid.is_none() {
+			return Err(Error::Unauthorized);
+		}
+		Ok(())
 	}
 }
 

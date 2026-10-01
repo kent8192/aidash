@@ -378,6 +378,12 @@ pub(crate) async fn admit(
 				"task already has an incompatible execution".into(),
 			));
 		}
+		let existing: Option<Uuid> = sqlx::query_scalar(&Query::select().column(Alias::new("id"))
+			.from(Alias::new("authorization_remote_admissions")).and_where(Expr::cust("source_node=$1 AND grant_id=$2"))
+			.to_string(PostgresQueryBuilder)).bind(source).bind(input.grant_id).fetch_optional(&mut **access.tx).await?;
+		if existing.is_none() && !crate::marketplace::active(&mut access,&description.inspection.agent).await? {
+			return Err(Error::Forbidden);
+		}
 		let proposed = Uuid::new_v4();
 		sqlx::query(
 			&sea_orm::sea_query::Query::insert()
