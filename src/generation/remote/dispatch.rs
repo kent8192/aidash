@@ -160,6 +160,7 @@ pub(crate) async fn finish(f: &Federation, input: &Input, result: Finalization) 
 	deliver(f, input.usage.attempt_id).await
 }
 async fn deliver(f: &Federation, attempt: Uuid) -> Result<()> {
+	let mut visibility = crate::transactions::gate::ReadLease::begin(&f.store).await?;
 	let record: Record = sqlx::query_as(
 		&Query::select()
 			.column(Asterisk)
@@ -178,6 +179,7 @@ async fn deliver(f: &Federation, attempt: Uuid) -> Result<()> {
 		result: serde_json::from_value(record.finalization.ok_or(Error::Forbidden)?)?,
 	};
 	let local = super::finalize(&f.store, &input.usage, &input.result).await;
+	visibility.suspend().await?;
 	if !record.peer_finalized {
 		let _: bool = crate::authorization::peer::authority_request(
 			f,
@@ -208,6 +210,7 @@ async fn deliver(f: &Federation, attempt: Uuid) -> Result<()> {
 /// Durable finalizations can be replayed after either node restarts. No provider
 /// is contacted by this reconciliation path and no unknown dispatch is released.
 pub(crate) async fn reconcile(f: &Federation) -> Result<()> {
+	let mut visibility = crate::transactions::gate::ReadLease::begin(&f.store).await?;
 	// A stale preparer can never pass admitted() after this atomic abort. Even
 	// if a reservation reply was lost, its owner receives the same finalization.
 	sqlx::query(
@@ -238,6 +241,7 @@ pub(crate) async fn reconcile(f: &Federation) -> Result<()> {
 	)
 	.fetch_all(&f.store.pool)
 	.await?;
+	visibility.suspend().await?;
 	for id in ids {
 		let _ = deliver(f, id).await;
 	}

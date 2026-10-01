@@ -45,9 +45,9 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 				.ok_or(Error::Forbidden)?;
 			let config: crate::registry::CompactorConfig =
 				serde_json::from_value(definition.metadata.config.clone())?;
-			if usage.reserved_tokens < 1025
-				|| usage.reserved_tokens > (config.max_request_bytes + 1024) as i64
-			{
+			// Home cannot verify the execution peer's compaction body. Charge
+			// the approved maximum instead of trusting its claimed byte count.
+			if usage.reserved_tokens != (config.max_request_bytes + 1024) as i64 {
 				return Err(Error::Forbidden);
 			}
 		}

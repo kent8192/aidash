@@ -175,7 +175,14 @@ impl Access {
 			Err(Error::Unauthorized | Error::Forbidden) => return Ok(false),
 			Err(error) => return Err(error),
 		};
-		let historical: Option<crate::registry::Entry> = if run.phase == "COMPLETED"
+		let terminal_statuses: &[&str] = match run.phase.as_str() {
+			"COMPLETED" => &["COMPLETED"],
+			"FAILED" => &["FAILED"],
+			"CANCELLED" => &["STOPPED", "EXPIRED"],
+			_ if run.control == "CANCELLED" => &["STOPPED", "EXPIRED"],
+			_ => &[],
+		};
+		let historical: Option<crate::registry::Entry> = if !terminal_statuses.is_empty()
 			&& d.inspection.generation.is_some()
 		{
 			let value: Option<serde_json::Value> = sqlx::query_scalar(
@@ -188,13 +195,7 @@ impl Access {
 						Alias::new("c"),
 						Expr::cust("c.tenant=g.tenant AND c.entry_id=g.agent_id AND c.entry_version=g.agent_version"),
 					)
-					.join_as(
-						JoinType::InnerJoin,
-						Alias::new("authorization_catalog_history"),
-						Alias::new("h"),
-						Expr::cust("h.tenant=c.tenant AND h.entry_id=c.entry_id AND h.entry_version=c.entry_version AND h.revision=c.revision"),
-					)
-					.and_where(Expr::cust("g.tenant=$1 AND g.home_node=$2 AND g.task_id=$3 AND g.grant_id=$4 AND g.admission_id=$5 AND g.agent_id=$6 AND g.agent_version=$7 AND g.foreign_intent=$8 AND g.credential_id=$9 AND g.prepared AND g.status='COMPLETED' AND g.quota_released AND NOT c.enabled AND h.actor='generation-service'"))
+					.and_where(Expr::cust("g.tenant=$1 AND g.home_node=$2 AND g.task_id=$3 AND g.grant_id=$4 AND g.admission_id=$5 AND g.agent_id=$6 AND g.agent_version=$7 AND g.foreign_intent=$8 AND g.credential_id=$9 AND g.prepared AND g.status=ANY($10) AND g.quota_released AND NOT c.enabled AND g.retired_catalog_revision=c.revision"))
 					.lock_with_tables(LockType::Share, [Alias::new("g"), Alias::new("c")])
 					.to_string(PostgresQueryBuilder),
 			)
@@ -207,6 +208,7 @@ impl Access {
 			.bind(&run.agent_version)
 			.bind(&d.inspection.generation)
 			.bind(credential_id)
+			.bind(terminal_statuses)
 			.fetch_optional(&mut **self.tx)
 			.await?;
 			value.map(serde_json::from_value).transpose()?
@@ -224,9 +226,10 @@ impl Access {
 			{
 				return Ok(false);
 			}
-			// This read uses the exact completed admission's executor. Automatic
-			// retirement stops future execution; current roles, denies and live
-			// delegators still govern disclosure. No stored authority is enabled.
+			// Match the exact terminal admission and catalog retirement revision
+			// recorded by lifecycle. Later explicit catalog changes
+			// cannot use this fallback. Current roles, denies and delegators still
+			// govern disclosure; no stored execution authority is enabled.
 			subject.enabled = true;
 		}
 		let viewer_snapshot = std::mem::replace(&mut self.snapshot, snapshot);

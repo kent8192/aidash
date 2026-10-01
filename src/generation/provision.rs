@@ -293,11 +293,11 @@ async fn terminal(f: &Federation, job: &Request, status: &str, reason: &str) -> 
 /// Resume durable generation work after restart; bounded scans are safe with
 /// concurrent provisioners because each transition rechecks state under locks.
 pub async fn reconcile(f: &Federation) -> Result<usize> {
-	// All generation scans, including foreign lifecycle and settlement work,
-	// must observe the same atomic visibility boundary as local provisioning.
-	let _visibility = crate::transactions::gate::ReadLease::begin(&f.store).await?;
+	// Each remote reconciler fences its durable work under a short visibility
+	// lease and releases it before outbox delivery.
 	super::remote::dispatch::reconcile(f).await?;
 	super::foreign::reconcile(f).await?;
+	let _visibility = crate::transactions::gate::ReadLease::begin(&f.store).await?;
 	let jobs:Vec<Request>=sqlx::query_as(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((sea_orm::sea_query::Alias::new("g"), sea_orm::sea_query::Asterisk)))).from_as(sea_orm::sea_query::Alias::new("generation_requests"), sea_orm::sea_query::Alias::new("g")).join_as(sea_orm::sea_query::JoinType::LeftJoin, sea_orm::sea_query::Alias::new("runs"), sea_orm::sea_query::Alias::new("r"), sea_orm::sea_query::Expr::cust("r.task_id = g.task_id AND r.agent_id = g.agent_id AND r.agent_version = g.agent_version")).and_where(sea_orm::sea_query::Expr::cust("g.home_node='' AND g.status IN ('PENDING_APPROVAL', 'QUEUED', 'ACTIVE') AND (g.status = 'QUEUED' OR g.expires_at <= CLOCK_TIMESTAMP() OR r.phase IN ('COMPLETED', 'FAILED', 'CANCELLED'))")).order_by_expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((sea_orm::sea_query::Alias::new("g"), sea_orm::sea_query::Alias::new("created_at")))), sea_orm::sea_query::Order::Asc).order_by_expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col((sea_orm::sea_query::Alias::new("g"), sea_orm::sea_query::Alias::new("id")))), sea_orm::sea_query::Order::Asc).limit(32).to_string(sea_orm::sea_query::PostgresQueryBuilder))
         .fetch_all(&f.store.pool).await?;
 	let count = jobs.len();

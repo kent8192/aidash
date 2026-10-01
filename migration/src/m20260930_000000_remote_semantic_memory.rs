@@ -31,6 +31,13 @@ impl MigrationTrait for Migration {
 				.to_owned(),
 		)
 		.await?;
+		m.alter_table(
+			Table::alter()
+				.table(Alias::new("generation_requests"))
+				.add_column(c("retired_catalog_revision").big_integer())
+				.to_owned(),
+		)
+		.await?;
 		// Operations and usage have explicit cross-node bindings, not foreign keys
 		// to a fictional local Run or Task on the other node.
 		m.create_table(
@@ -251,6 +258,25 @@ impl MigrationTrait for Migration {
 				.to_owned(),
 		)
 		.await?;
+		m.create_index(
+			Index::create()
+				.name("generation_remote_dispatches_preparing")
+				.table(Alias::new("generation_remote_dispatches"))
+				.col(Alias::new("created_at"))
+				.and_where(Expr::col(Alias::new("state")).eq("PREPARING"))
+				.to_owned(),
+		)
+		.await?;
+		m.create_index(
+			Index::create()
+				.name("generation_remote_dispatches_pending_finalization")
+				.table(Alias::new("generation_remote_dispatches"))
+				.col(Alias::new("created_at"))
+				.and_where(Expr::col(Alias::new("state")).is_in(["ABORTED", "SETTLED"]))
+				.and_where(Expr::col(Alias::new("peer_finalized")).eq(false))
+				.to_owned(),
+		)
+		.await?;
 		for table in TABLES {
 			// PostgreSQL statement-trigger DDL has no SeaQuery representation.
 			m.get_connection().execute_unprepared(&format!("CREATE TRIGGER atomic_write_guard BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON {table} FOR EACH STATEMENT EXECUTE FUNCTION atomic_write_guard()")).await?;
@@ -262,6 +288,13 @@ impl MigrationTrait for Migration {
 			m.drop_table(Table::drop().table(Alias::new(*table)).to_owned())
 				.await?;
 		}
+		m.alter_table(
+			Table::alter()
+				.table(Alias::new("generation_requests"))
+				.drop_column(Alias::new("retired_catalog_revision"))
+				.to_owned(),
+		)
+		.await?;
 		m.alter_table(
 			Table::alter()
 				.table(Alias::new("authorization_remote_grants"))

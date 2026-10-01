@@ -65,10 +65,11 @@ impl ApprovedCompactor {
 		}
 		let config: CompactorConfig = serde_json::from_value(entry.config)
 			.map_err(|_| Error::RemoteSemantic(Failure::Configuration))?;
+		let reserved_tokens = (config.max_request_bytes + 1024) as i64;
 		let transport = JevClient::approved(config)
 			.map_err(|_| Error::RemoteSemantic(Failure::Configuration))?;
 		transport.check_remote_credential()?;
-		let bytes = transport
+		transport
 			.check_request(state, questions)
 			.map_err(|_| Error::RemoteSemantic(Failure::ContextBudget))?;
 		access.suspend().await?;
@@ -78,7 +79,7 @@ impl ApprovedCompactor {
 			Uuid::new_v4(),
 			super::remote::Purpose::Compaction,
 			crate::registry::digest(&serde_json::json!({"state":state,"questions":questions})),
-			(bytes + 1024) as i64,
+			reserved_tokens,
 		)
 		.await?;
 		let response = transport.ask_remote(state, questions).await;

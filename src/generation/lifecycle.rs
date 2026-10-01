@@ -289,6 +289,23 @@ pub(crate) async fn transition(
 		.fetch_optional(&mut **tx)
 		.await?;
 		if let Some(revision) = revision {
+			// The exact lifecycle retirement revision is the historical-read
+			// proof. A later explicit catalog change must supersede it, even
+			// when both changes occur in the same database transaction.
+			sqlx::query(
+				&sea_orm::sea_query::Query::update()
+					.table(sea_orm::sea_query::Alias::new("generation_requests"))
+					.value(
+						sea_orm::sea_query::Alias::new("retired_catalog_revision"),
+						sea_orm::sea_query::Expr::cust("$2"),
+					)
+					.and_where(sea_orm::sea_query::Expr::cust("id=$1"))
+					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+			)
+			.bind(job.id)
+			.bind(revision)
+			.execute(&mut **tx)
+			.await?;
 			sqlx::query(
 				&sea_orm::sea_query::Query::insert()
 					.into_table(sea_orm::sea_query::Alias::new(

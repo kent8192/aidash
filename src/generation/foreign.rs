@@ -663,6 +663,10 @@ pub(crate) async fn check_home(
 	{
 		return Err(Error::Forbidden);
 	}
+	let lineage = super::remote::lineage(access, &intent.home_node).await?;
+	if lineage != intent.lineage {
+		return Err(Error::Forbidden);
+	}
 	home_authority(access, task, node, &intent.policy_id).await
 }
 
@@ -733,6 +737,7 @@ pub(crate) async fn cancel(
 }
 
 async fn deliver_cancel(f: &Federation, id: Uuid, target: &str) -> Result<()> {
+	let mut visibility = crate::transactions::gate::ReadLease::begin(&f.store).await?;
 	// Reserve a retry slot before sending, so a failed RPC or process exit leaves
 	// a durable pending intent without hot-looping the reconciliation worker.
 	let reserved = sqlx::query(
@@ -746,6 +751,7 @@ async fn deliver_cancel(f: &Federation, id: Uuid, target: &str) -> Result<()> {
 	.execute(&f.store.pool)
 	.await?
 	.rows_affected();
+	visibility.suspend().await?;
 	if reserved == 0 {
 		return Ok(());
 	}
@@ -818,6 +824,7 @@ async fn terminate(f: &Federation, job: &Request, status: &str) -> Result<()> {
 	Ok(())
 }
 pub(crate) async fn reconcile(f: &Federation) -> Result<()> {
+	let mut visibility = crate::transactions::gate::ReadLease::begin(&f.store).await?;
 	let pending: Vec<(Uuid, Value)> = sqlx::query_as(
 		&Query::select()
 			.columns([Alias::new("id"), Alias::new("binding")])
@@ -829,12 +836,16 @@ pub(crate) async fn reconcile(f: &Federation) -> Result<()> {
 	)
 	.fetch_all(&f.store.pool)
 	.await?;
+	visibility.suspend().await?;
 	for (id, binding) in pending {
 		let intent: Intent = serde_json::from_value(binding)?;
 		if let Err(error) = deliver_cancel(f, id, &intent.target_node).await {
 			tracing::warn!(%error, %id, "remote generation cancellation retry failed");
 		}
 	}
+	// Lifecycle transitions use only local durable state. Reacquire a fresh
+	// visibility boundary after any network wait before selecting those jobs.
+	let _visibility = crate::transactions::gate::ReadLease::begin(&f.store).await?;
 	let jobs:Vec<Request>=sqlx::query_as(&Query::select().column((Alias::new("g"),Asterisk)).from_as(Alias::new("generation_requests"),Alias::new("g"))
     .join_as(sea_orm::sea_query::JoinType::LeftJoin,Alias::new("runs"),Alias::new("r"),Expr::cust("r.id=g.admission_id AND r.home_node=g.home_node"))
     .and_where(Expr::cust("g.home_node<>'' AND g.status IN ('PENDING_APPROVAL','QUEUED','ACTIVE') AND (g.expires_at<=CLOCK_TIMESTAMP() OR r.phase IN ('COMPLETED','FAILED','CANCELLED'))"))

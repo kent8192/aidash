@@ -300,17 +300,19 @@ pub(crate) async fn list(
 			let f = &f;
 			let identity = &identity;
 			async move {
-				let status: Result<Option<RemoteExecutionActivation>> = tokio::time::timeout(
-					std::time::Duration::from_secs(2),
-					super::super::peer::authority_request(
-						f,
-						&grant.node_id,
-						"/scoped/execution/status",
-						&json!({"grant_id":grant.id}),
-					),
-				)
-				.await
-				.unwrap_or_else(|_| Err(Error::External("remote status unavailable".into())));
+				let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+				let mut status: Result<Option<RemoteExecutionActivation>> =
+					tokio::time::timeout_at(
+						deadline,
+						super::super::peer::authority_request(
+							f,
+							&grant.node_id,
+							"/scoped/execution/status",
+							&json!({"grant_id":grant.id}),
+						),
+					)
+					.await
+					.unwrap_or_else(|_| Err(Error::External("remote status unavailable".into())));
 				let semantic_binding: crate::semantic::remote::Binding =
 					serde_json::from_value(grant.semantic.clone())?;
 				let mut reason = status
@@ -319,16 +321,30 @@ pub(crate) async fn list(
 					.and_then(|r| r.as_ref())
 					.and_then(|r| r.semantic_reason);
 				if !semantic_binding.disabled() {
-					let mut reader = Access::begin(&f.store, identity).await?;
-					let allowed = async {
-						reader.remote_semantic_sources(grant.id).await?;
-						reader.grant_output_visible(grant.id).await
-					}
-					.await;
-					match reader.finish(allowed).await {
-						Ok(true) => {}
-						Err(Error::RemoteSemantic(failure)) => reason = Some(failure),
-						_ => reason = Some(crate::semantic::remote::Failure::Authority),
+					if let Err(error) = &status {
+						// An unavailable status must not start another traversal of
+						// that peer. The whole per-grant RPC/check shares one deadline.
+						reason = Some(super::semantic::failure(error));
+					} else {
+						let allowed = tokio::time::timeout_at(deadline, async {
+							let mut reader = Access::begin(&f.store, identity).await?;
+							let allowed = async {
+								reader.remote_semantic_sources(grant.id).await?;
+								reader.grant_output_visible(grant.id).await
+							}
+							.await;
+							reader.finish(allowed).await
+						})
+						.await;
+						match allowed {
+							Ok(Ok(true)) => {}
+							Ok(Err(Error::RemoteSemantic(failure))) => reason = Some(failure),
+							Ok(_) => reason = Some(crate::semantic::remote::Failure::Authority),
+							Err(_) => {
+								reason = Some(crate::semantic::remote::Failure::Unavailable);
+								status = Err(Error::External("remote status unavailable".into()));
+							}
+						}
 					}
 				}
 				let semantic = crate::semantic::remote::status::load(
