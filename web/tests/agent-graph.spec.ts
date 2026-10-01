@@ -293,6 +293,12 @@ for (const locale of ["en-US", "ja-JP"]) {
     });
     await canvas.scrollIntoViewIfNeeded();
     await expect(fit).toBeEnabled();
+    await page.evaluate(() => document.fonts.ready);
+    const zoomOut = graph.getByRole("button", {
+      name: locale === "ja-JP" ? "縮小" : "Zoom out",
+      exact: true,
+    });
+    for (let i = 0; i < 4; i++) await zoomOut.click();
     const positions = await graph
       .locator("[data-graph-node]")
       .evaluateAll((nodes) =>
@@ -307,9 +313,17 @@ for (const locale of ["en-US", "ja-JP"]) {
       exact: true,
     });
     for (let i = 0; i < 15; i++) await right.click();
-    const requestCount = requests.filter(
-      (path) => path !== "/api/state",
-    ).length;
+    // Dashboard polling continues independently of camera input.
+    const backgroundPaths = new Set([
+      "/api/state",
+      "/api/session",
+      "/api/mesh",
+      "/api/discover",
+      "/api/events/stream",
+    ]);
+    const resourceRequests = () =>
+      requests.filter((path) => !backgroundPaths.has(path));
+    const requestCount = resourceRequests().length;
     await fit.focus();
     await fit.press("Space");
     await expectSvgFitted(canvas);
@@ -348,9 +362,7 @@ for (const locale of ["en-US", "ja-JP"]) {
     expect(await graph.locator(".agent-graph-selection").innerText()).toEqual(
       selected,
     );
-    expect(requests.filter((path) => path !== "/api/state")).toHaveLength(
-      requestCount,
-    );
+    expect(resourceRequests()).toHaveLength(requestCount);
     await page.screenshot({
       path: `test-results/whole-graph-fit-svg-${locale}.png`,
     });

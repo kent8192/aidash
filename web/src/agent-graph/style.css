@@ -61,6 +61,8 @@ dialog:has(.agent-graph) {
 }
 .agent-graph-canvas > svg {
   display: block;
+  /* Keep measured text bounds stable when the camera changes scale. */
+  text-rendering: geometricPrecision;
   width: 100%;
   max-height: 65vh;
   min-height: 260px;
