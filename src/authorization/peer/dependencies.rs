@@ -8,7 +8,7 @@ use crate::{
 	registry::{EntityRef, digest},
 };
 use axum::{Json, extract::State, http::HeaderMap};
-use sea_orm::sea_query::{Alias, Asterisk, Expr, LockType, PostgresQueryBuilder, Query};
+use sea_orm::sea_query::{Alias, Asterisk, Expr, JoinType, LockType, PostgresQueryBuilder, Query};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -170,11 +170,65 @@ impl Access {
 			tenant: self.identity.tenant.clone(),
 			subject: root.clone(),
 		};
-		let snapshot = match identity.lock_with_mode(&mut self.tx, false).await {
+		let mut snapshot = match identity.lock_with_mode(&mut self.tx, false).await {
 			Ok(snapshot) => snapshot,
 			Err(Error::Unauthorized | Error::Forbidden) => return Ok(false),
 			Err(error) => return Err(error),
 		};
+		let historical: Option<crate::registry::Entry> = if run.phase == "COMPLETED"
+			&& d.inspection.generation.is_some()
+		{
+			let value: Option<serde_json::Value> = sqlx::query_scalar(
+				&Query::select()
+					.column((Alias::new("g"), Alias::new("definition")))
+					.from_as(Alias::new("generation_requests"), Alias::new("g"))
+					.join_as(
+						JoinType::InnerJoin,
+						Alias::new("authorization_catalog"),
+						Alias::new("c"),
+						Expr::cust("c.tenant=g.tenant AND c.entry_id=g.agent_id AND c.entry_version=g.agent_version"),
+					)
+					.join_as(
+						JoinType::InnerJoin,
+						Alias::new("authorization_catalog_history"),
+						Alias::new("h"),
+						Expr::cust("h.tenant=c.tenant AND h.entry_id=c.entry_id AND h.entry_version=c.entry_version AND h.revision=c.revision"),
+					)
+					.and_where(Expr::cust("g.tenant=$1 AND g.home_node=$2 AND g.task_id=$3 AND g.grant_id=$4 AND g.admission_id=$5 AND g.agent_id=$6 AND g.agent_version=$7 AND g.foreign_intent=$8 AND g.credential_id=$9 AND g.prepared AND g.status='COMPLETED' AND g.quota_released AND NOT c.enabled AND h.actor='generation-service'"))
+					.lock_with_tables(LockType::Share, [Alias::new("g"), Alias::new("c")])
+					.to_string(PostgresQueryBuilder),
+			)
+			.bind(&self.identity.tenant)
+			.bind(&run.home_node)
+			.bind(run.task_id)
+			.bind(d.grant_id)
+			.bind(run.id)
+			.bind(&run.agent_id)
+			.bind(&run.agent_version)
+			.bind(&d.inspection.generation)
+			.bind(credential_id)
+			.fetch_optional(&mut **self.tx)
+			.await?;
+			value.map(serde_json::from_value).transpose()?
+		} else {
+			None
+		};
+		if historical.is_some() {
+			let executor =
+				crate::domain::qualified_agent(&self.node_id, &run.agent_id, &run.agent_version);
+			let Some(subject) = snapshot.bundle.subjects.get_mut(&executor) else {
+				return Ok(false);
+			};
+			if subject.kind != super::super::policy::SubjectKind::Agent
+				|| subjects.last() != Some(&executor)
+			{
+				return Ok(false);
+			}
+			// This read uses the exact completed admission's executor. Automatic
+			// retirement stops future execution; current roles, denies and live
+			// delegators still govern disclosure. No stored authority is enabled.
+			subject.enabled = true;
+		}
 		let viewer_snapshot = std::mem::replace(&mut self.snapshot, snapshot);
 		let viewer_subjects = std::mem::replace(&mut self.subjects, subjects);
 		let result = async {
@@ -186,10 +240,22 @@ impl Access {
 				return Ok(false);
 			}
 			for definition in &d.inspection.definitions {
-				let entry = match catalog::entry(self, &definition.entry, "registry.read").await {
-					Ok(entry) => entry,
-					Err(Error::Forbidden | Error::NotFound(_)) => return Ok(false),
-					Err(error) => return Err(error),
+				let entry = if let Some(entry) = historical.as_ref().filter(|entry| {
+					entry.id == definition.entry.id && entry.version == definition.entry.version
+				}) {
+					if !self
+						.decide(&catalog::resource(self, entry), "registry.read")
+						.await?
+					{
+						return Ok(false);
+					}
+					entry.clone()
+				} else {
+					match catalog::entry(self, &definition.entry, "registry.read").await {
+						Ok(entry) => entry,
+						Err(Error::Forbidden | Error::NotFound(_)) => return Ok(false),
+						Err(error) => return Err(error),
+					}
 				};
 				let action = match entry.kind.as_str() {
 					"agent" => "agent.execute",

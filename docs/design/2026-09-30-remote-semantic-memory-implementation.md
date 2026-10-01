@@ -19,6 +19,8 @@ Semantic operations retain attempts, retry deadlines, input bindings and source 
 
 Current readers must satisfy authority at every dependency node, and the producer's original authority must remain valid. Leaf dependency RPCs and a bounded visited-set traversal avoid recursive cross-node callbacks. Denied reads hide both nodes' journals, output resources, graph/state/event/stream projections and semantic re-ingestion. Operator content APIs also withhold these subject-bound workspaces; minimal management metadata still permits cancellation. Buffered SSE delivery and UI refreshes recheck visibility.
 
+Completed foreign generation retains a read-only identity for the exact prepared grant/admission and stored Agent definition after automatic retirement. It does not enable the stored subject or catalog entry for new execution. Current credentials, peer mappings, delegators, roles, deny policies and dependency approvals still govern disclosure; an explicit catalog revision supersedes automatic retirement. Home-derived outputs use the same check.
+
 The dashboard provides en-US/ja-JP assignment configuration, foreign generation approval/preparation, semantic outcomes and pause reasons, provenance, generation allowances, retry/cancel and explicit Follow-up controls.
 
 ## Acceptance map

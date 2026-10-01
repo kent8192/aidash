@@ -111,8 +111,7 @@ pub(crate) async fn reserve(
 				|| operation.grant_id != input.usage.grant_id
 				|| operation.admission_id != input.usage.admission_id
 				|| operation.home_node != source
-				|| input.usage.reserved_tokens < 1025
-				|| input.usage.reserved_tokens > (operation.query.len() + 1024) as i64
+				|| input.usage.reserved_tokens != (operation.query.len() + 1024) as i64
 			{
 				return Err(Error::Forbidden);
 			}

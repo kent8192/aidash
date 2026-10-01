@@ -2507,6 +2507,71 @@ async fn generated_foreign_executor_and_home_ancestor_share_durable_provider_all
 }
 
 #[rstest::rstest]
+#[case(-1)]
+#[case(1)]
+#[tokio::test]
+async fn embedding_callback_rejects_a_nonexact_reservation(
+	#[future(awt)]
+	#[with(true, true)]
+	scoped_pair: Pair,
+	#[case] delta: i64,
+) {
+	let p = scoped_pair;
+	for _ in 0..4 {
+		p.step().await;
+		if !p.requests.lock().await.is_empty() {
+			break;
+		}
+	}
+	let (mut usage, boundary): (Value, Value) = sqlx::query_as(
+		&Query::select()
+			.columns(["usage", "boundary"].map(Alias::new))
+			.from(Alias::new("generation_remote_dispatches"))
+			.and_where(Expr::cust("usage->>'purpose'='embedding'"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&p.a.store.pool)
+	.await
+	.unwrap();
+	let exact = boundary["query"].as_str().unwrap().len() as i64 + 1024;
+	assert_eq!(usage["reserved_tokens"], exact);
+	usage["reserved_tokens"] = json!(exact + delta);
+	usage["attempt_id"] = json!(Uuid::new_v4());
+	let response = reqwest::Client::new()
+		.post(format!(
+			"{}/federation/v0.1/scoped/usage/reserve",
+			p.b.config.endpoint
+		))
+		.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
+		.header("x-aidash-node", &p.a.config.node_id)
+		.header("x-aidash-protocol", "0.1")
+		.json(&json!({"usage":usage,"boundary":boundary}))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status(), 403, "{}", response.text().await.unwrap());
+	let count: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(Alias::new("generation_remote_usage"))
+			.and_where(Expr::cust("attempt_id=$1"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(
+		usage["attempt_id"]
+			.as_str()
+			.unwrap()
+			.parse::<Uuid>()
+			.unwrap(),
+	)
+	.fetch_one(&p.b.store.pool)
+	.await
+	.unwrap();
+	assert_eq!(count, 0, "rejected callbacks must not debit an ancestor");
+	p.close().await;
+}
+
+#[rstest::rstest]
 #[tokio::test]
 async fn operator_polling_advances_past_hidden_event_pages(
 	#[future(awt)]
@@ -2746,6 +2811,142 @@ async fn operator_content_views_cannot_bypass_both_node_subject_authority(
 		.await
 		.0,
 		200
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn generated_foreign_completion_retains_reads_with_current_dependency_authority(
+	#[future(awt)]
+	#[with(true, true)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	for _ in 0..8 {
+		p.step().await;
+		if p.run().await.phase == "COMPLETED" {
+			break;
+		}
+	}
+	assert_eq!(p.run().await.phase, "COMPLETED");
+	aidash::generation::provision::reconcile(&p.b)
+		.await
+		.unwrap();
+	let run = p.run().await;
+	let catalog: (bool, i64) = sqlx::query_as(
+		&Query::select()
+			.columns(["enabled", "revision"].map(Alias::new))
+			.from(Alias::new("authorization_catalog"))
+			.and_where(Expr::cust(
+				"tenant='acme' AND entry_id=$1 AND entry_version=$2",
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(&run.agent_id)
+	.bind(&run.agent_version)
+	.fetch_one(&p.b.store.pool)
+	.await
+	.unwrap();
+	assert!(!catalog.0, "completion must retire the generated executor");
+	let path = format!("/api/runs/{}", p.admission);
+	let (status, view) = request(&p.ba, &p.receiver_token, "GET", &path, Value::Null).await;
+	assert_eq!(
+		status, 200,
+		"completed execution must remain readable: {view}"
+	);
+	assert_eq!(view["run"]["id"], json!(p.admission));
+	assert_eq!(view["run"]["phase"], "COMPLETED");
+	assert_eq!(view["memory"], json!(p.b.store.memory(&run).await.unwrap()));
+	let home_path = format!("/api/workspaces/{}", run.workspace_id);
+	let (status, output) = request(&p.aa, &p.token, "GET", &home_path, Value::Null).await;
+	assert_eq!(status, 200, "{output}");
+	assert!(
+		output.to_string().contains("Scoped remote result"),
+		"{output}"
+	);
+	let (status, revoked) = request(
+		&p.ba,
+		&p.b.config.api_token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"entry":{"id":"model","version":"1.0.0"},"expected_revision":1,"enabled":false}),
+	)
+	.await;
+	assert_eq!(status, 200, "{revoked}");
+	assert_ne!(
+		request(&p.ba, &p.receiver_token, "GET", &path, Value::Null)
+			.await
+			.0,
+		200
+	);
+	let (status, restored) = request(
+		&p.ba,
+		&p.b.config.api_token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"entry":{"id":"model","version":"1.0.0"},"expected_revision":2,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{restored}");
+	let snapshot = aidash::authorization::Authorization {
+		pool: p.b.store.pool.clone(),
+	}
+	.snapshot("acme")
+	.await
+	.unwrap();
+	let mut denied = serde_json::to_value(&snapshot.bundle).unwrap();
+	denied["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-retired-agent-model", "effect":"deny",
+		"subjects":{"ids":[aidash::domain::qualified_agent(&p.b.config.node_id,&run.agent_id,&run.agent_version)]},
+		"actions":["model.infer"], "resources":{"kinds":["model"]}
+	}));
+	let (status, policy) = request(
+		&p.ba,
+		&p.b.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":snapshot.revision,"bundle":denied}),
+	)
+	.await;
+	assert_eq!(status, 200, "{policy}");
+	assert_ne!(
+		request(&p.ba, &p.receiver_token, "GET", &path, Value::Null)
+			.await
+			.0,
+		200,
+		"current denies must still govern the retired executor's reads"
+	);
+	let (status, restored) = request(
+		&p.ba,
+		&p.b.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":snapshot.revision+1,"bundle":snapshot.bundle}),
+	)
+	.await;
+	assert_eq!(status, 200, "{restored}");
+	assert_eq!(
+		request(&p.ba, &p.receiver_token, "GET", &path, Value::Null)
+			.await
+			.0,
+		200
+	);
+	let (status, revoked) = request(
+		&p.ba,
+		&p.b.config.api_token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"entry":{"id":run.agent_id,"version":run.agent_version},"expected_revision":catalog.1,"enabled":false}),
+	)
+	.await;
+	assert_eq!(status, 200, "{revoked}");
+	assert_ne!(
+		request(&p.ba, &p.receiver_token, "GET", &path, Value::Null)
+			.await
+			.0,
+		200,
+		"explicit catalog revocation must supersede automatic retirement"
 	);
 	p.close().await;
 }
