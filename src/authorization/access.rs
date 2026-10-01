@@ -51,6 +51,7 @@ impl DerefMut for AccessTransaction {
 }
 
 pub(crate) struct Access {
+	pub marketplace_audit: Option<serde_json::Value>,
 	pub core_gc_complete: bool,
 	pub(super) remote_read_cache: std::collections::BTreeMap<(Uuid, String), bool>,
 	pub(super) unavailable_peers: std::collections::BTreeSet<String>,
@@ -100,6 +101,7 @@ impl Access {
 		let mut tx = store.pool.begin().await?;
 		let snapshot = identity.lock_with_mode(&mut tx, exclusive).await?;
 		Ok(Self {
+			marketplace_audit: None,
 			core_gc_complete: false,
 			remote_read_cache: Default::default(),
 			unavailable_peers: Default::default(),
@@ -131,6 +133,7 @@ impl Access {
 	pub async fn under_lease(lease: &Self) -> Result<Self> {
 		let tx = lease.pool.begin().await?;
 		Ok(Self {
+			marketplace_audit: None,
 			core_gc_complete: false,
 			remote_read_cache: Default::default(),
 			unavailable_peers: Default::default(),

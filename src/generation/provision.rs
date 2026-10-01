@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 async fn activate(f: &Federation, job: &Request) -> Result<()> {
 	let identity = SubjectIdentity {
+		http_session: None,
 		credential_id: job.credential_id,
 		tenant: job.tenant.clone(),
 		subject: job.root_subject.clone(),

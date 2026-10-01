@@ -482,7 +482,11 @@ impl Harness {
 		self.tool_error(run, token, call, cursor, message).await
 	}
 
-	async fn tools(&self, config: &AgentConfig) -> Result<BTreeMap<String, Arc<dyn Tool>>> {
+	async fn tools(
+		&self,
+		run: &Run,
+		config: &AgentConfig,
+	) -> Result<BTreeMap<String, Arc<dyn Tool>>> {
 		let mut tools = builtins();
 		crate::capabilities::tools::add(&mut tools, &config.core_capabilities);
 		tools.retain(|name, _| config.permits_builtin(name));
@@ -490,7 +494,7 @@ impl Harness {
 			let entry = self
 				.federation
 				.registry
-				.get(&reference.id, &reference.version)
+				.get_for_run(run, &reference.id, &reference.version)
 				.await?;
 			let cfg: ToolConfig = serde_json::from_value(entry.config.clone())?;
 			if matches!(cfg, ToolConfig::Agent { .. })
@@ -641,7 +645,7 @@ impl Harness {
 		let entry = self
 			.federation
 			.registry
-			.get(&run.agent_id, &run.agent_version)
+			.get_for_run(run, &run.agent_id, &run.agent_version)
 			.await?;
 		let agent: AgentConfig = serde_json::from_value(entry.config.clone())?;
 		match run.phase.as_str() {
@@ -692,13 +696,13 @@ impl Harness {
 				let model_entry = self
 					.federation
 					.registry
-					.get(&agent.model.id, &agent.model.version)
+					.get_for_run(run, &agent.model.id, &agent.model.version)
 					.await?;
 				let model_cfg: ModelConfig = serde_json::from_value(model_entry.config)?;
 				let window = model_cfg.context_window;
 				let output_limit = model_cfg.output_token_limit();
 				let model = provider(self.federation.client.clone(), model_cfg.clone())?;
-				let mut tools = self.tools(&agent).await?;
+				let mut tools = self.tools(run, &agent).await?;
 				if let Some(guard) = guard {
 					guard.filter_core_tools(&mut tools).await?;
 				}
@@ -713,7 +717,7 @@ impl Harness {
 					let entry = self
 						.federation
 						.registry
-						.get(&skill.id, &skill.version)
+						.get_for_run(run, &skill.id, &skill.version)
 						.await?;
 					instructions.push('\n');
 					instructions.push_str(&format!("Skill {}@{}:\n", skill.id, skill.version));
@@ -1646,7 +1650,7 @@ impl Harness {
 					}
 				}
 				let call = &call;
-				let mut tools = self.tools(&agent).await?;
+				let mut tools = self.tools(run, &agent).await?;
 				if let Some(guard) = guard {
 					guard.filter_core_tools(&mut tools).await?;
 				}
@@ -1687,7 +1691,7 @@ impl Harness {
 					let entry = self
 						.federation
 						.registry
-						.get(&reference.id, &reference.version)
+						.get_for_run(run, &reference.id, &reference.version)
 						.await?;
 					let config: ToolConfig = serde_json::from_value(entry.config)?;
 					let writes = matches!(config, ToolConfig::Http { ref replay, .. } | ToolConfig::Mcp { ref replay, .. } if replay != "read_only");
@@ -1829,7 +1833,7 @@ impl Harness {
 							let model_entry = self
 								.federation
 								.registry
-								.get(&agent.model.id, &agent.model.version)
+								.get_for_run(run, &agent.model.id, &agent.model.version)
 								.await?;
 							let model: ModelConfig = serde_json::from_value(model_entry.config)?;
 							match check_model_media_headroom(headroom, parts, &model) {

@@ -74,6 +74,7 @@ pub(crate) async fn settings(access: &mut Access, run: &Run) -> Result<AgentConf
 		"agent.execute",
 	)
 	.await?;
+	crate::marketplace::check_pinned(access, &entry).await?;
 	Ok(serde_json::from_value(entry.config)?)
 }
 pub(crate) async fn invoke(
@@ -205,10 +206,12 @@ pub(crate) async fn invoke(
 					.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
 				crate::provider::ContentPart::modality_for_media_type(&file.media_type)?;
 				let registry = crate::registry::Registry::new(store.pool.clone(), &store.node_id);
-				let agent = registry.get(&run.agent_id, &run.agent_version).await?;
+				let agent = registry
+					.get_for_run(run, &run.agent_id, &run.agent_version)
+					.await?;
 				let agent: AgentConfig = serde_json::from_value(agent.config)?;
 				let entry = catalog::entry(access, &agent.model, "registry.read").await?;
-				let effective = registry.get(&entry.id, &entry.version).await?;
+				let effective = registry.get_for_run(run, &entry.id, &entry.version).await?;
 				let model: crate::registry::ModelConfig = serde_json::from_value(effective.config)?;
 				model.require_media_types([file.media_type.as_str()])?;
 			}

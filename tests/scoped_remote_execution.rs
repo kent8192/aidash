@@ -2665,6 +2665,43 @@ async fn operator_polling_advances_past_hidden_event_pages(
 		"{state}"
 	);
 	assert!(!state["events"].to_string().contains("\"secret\""));
+
+	// A full visible page may span hidden candidate pages. Its cursor must
+	// retain visible events beyond the response limit for the next request.
+	let mut tx = p.a.store.pool.begin().await.unwrap();
+	for index in 0..600 {
+		p.a.store
+			.event(&mut tx, None, "test.visible", json!({"index": index}))
+			.await
+			.unwrap();
+	}
+	tx.commit().await.unwrap();
+	let server = axum_test::TestServer::new(p.aa.clone()).unwrap();
+	let first = server
+		.get(&format!("/api/events?after={cursor}"))
+		.authorization_bearer(&p.a.config.api_token)
+		.await;
+	first.assert_status_ok();
+	let first_cursor: i64 = first.headers()["x-aidash-event-cursor"]
+		.to_str()
+		.unwrap()
+		.parse()
+		.unwrap();
+	let first_events: Vec<Value> = first.json();
+	assert_eq!(first_events.len(), 500);
+	assert_eq!(first_events.last().unwrap()["sequence"], first_cursor);
+	let second = server
+		.get(&format!("/api/events?after={first_cursor}"))
+		.authorization_bearer(&p.a.config.api_token)
+		.await;
+	second.assert_status_ok();
+	let second_events: Vec<Value> = second.json();
+	let indices: Vec<i64> = first_events
+		.iter()
+		.chain(&second_events)
+		.filter_map(|event| event["data"]["index"].as_i64())
+		.collect();
+	assert_eq!(indices, (0..600).collect::<Vec<_>>());
 	p.close().await;
 }
 

@@ -70,6 +70,7 @@ async fn mapped(f: &Federation, source: &str, description: &Description) -> Resu
 			"agent.execute",
 		)
 		.await?;
+		crate::marketplace::check_pinned(&mut access, &entry).await?;
 		let config: crate::registry::AgentConfig = serde_json::from_value(entry.config)?;
 		if !config.core_capabilities.sharing {
 			return Err(Error::Forbidden);

@@ -3357,6 +3357,27 @@ impl Store {
 
 impl Store {
 	pub(crate) async fn require_legacy_agent(&self, id: &str, version: &str) -> Result<()> {
+		let scoped: bool = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::exists(
+					sea_orm::sea_query::Query::select()
+						.expr(sea_orm::sea_query::Expr::cust("1"))
+						.from(sea_orm::sea_query::Alias::new("registry"))
+						.and_where(sea_orm::sea_query::Expr::cust(
+							"id=$1 AND version=$2 AND metadata ? 'installation'",
+						))
+						.to_owned(),
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(id)
+		.bind(version)
+		.fetch_one(&self.pool)
+		.await?;
+		if scoped {
+			return Err(Error::Forbidden);
+		}
+
 		let generated: bool = sqlx::query_scalar(
 			&sea_orm::sea_query::Query::select()
 				.expr(sea_orm::sea_query::Expr::cust(

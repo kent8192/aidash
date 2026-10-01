@@ -677,6 +677,7 @@ async fn resume_status_waiting(f: &Federation, identity_id: Uuid) -> Result<()> 
 			continue;
 		}
 		let identity = SubjectIdentity {
+			http_session: None,
 			credential_id,
 			tenant,
 			subject,
@@ -1193,6 +1194,50 @@ pub fn csrf_allowed(
 pub struct BrowserOrigin {
 	pub identity_id: Uuid,
 	pub mapping_id: Option<Uuid>,
+	pub(crate) session: identity::HttpSession,
+}
+
+impl BrowserOrigin {
+	pub(crate) async fn require_operator(
+		&self,
+		tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+		lock: bool,
+	) -> Result<()> {
+		if self.mapping_id.is_some() {
+			return Err(Error::Forbidden);
+		}
+		// Operator-grant writes lock the identity before the grant. Retain that
+		// order, followed by the session, through the Marketplace commit.
+		let mut query = Query::select();
+		query
+			.columns(["issuer", "last_valid_at", "disabled_at"].map(table))
+			.from(table("dashboard_identities"))
+			.and_where(Expr::col(table("id")).eq(Expr::cust("$1")));
+		if lock {
+			query.lock(LockType::Share);
+		}
+		let status = sqlx::query_as(&query.to_string(PostgresQueryBuilder))
+			.bind(self.identity_id)
+			.fetch_optional(&mut **tx)
+			.await?;
+		identity::validate_dashboard_status(status)?;
+		let mut query = Query::select();
+		query
+			.column(table("enabled"))
+			.from(table("dashboard_operator_grants"))
+			.and_where(Expr::col(table("identity_id")).eq(Expr::cust("$1")));
+		if lock {
+			query.lock(LockType::Share);
+		}
+		let enabled: Option<bool> = sqlx::query_scalar(&query.to_string(PostgresQueryBuilder))
+			.bind(self.identity_id)
+			.fetch_optional(&mut **tx)
+			.await?;
+		if enabled != Some(true) {
+			return Err(Error::Forbidden);
+		}
+		self.session.current(tx, lock).await
+	}
 }
 
 #[derive(FromRow)]
@@ -1211,6 +1256,11 @@ pub async fn actor_from_headers(
 ) -> Result<(Actor, BrowserOrigin)> {
 	let config = required_config(f)?;
 	let session = session_from_headers(f, headers).await?;
+	let http_session = identity::HttpSession {
+		id: session.id,
+		identity_id: session.identity_id,
+		idle_seconds: config.session_idle_seconds,
+	};
 	if !csrf_allowed(config, headers, &session, method) {
 		return Err(Error::Forbidden);
 	}
@@ -1237,6 +1287,7 @@ pub async fn actor_from_headers(
 			BrowserOrigin {
 				identity_id: session.identity_id,
 				mapping_id: None,
+				session: http_session,
 			},
 		));
 	}
@@ -1265,6 +1316,11 @@ pub async fn actor_from_headers(
 		return Err(Error::Forbidden);
 	}
 	let identity = SubjectIdentity {
+		http_session: Some(crate::authorization::identity::HttpSession {
+			id: session.id,
+			identity_id: session.identity_id,
+			idle_seconds: config.session_idle_seconds,
+		}),
 		credential_id: mapping.credential_id,
 		tenant: mapping.tenant,
 		subject: mapping.subject,
@@ -1275,6 +1331,7 @@ pub async fn actor_from_headers(
 		BrowserOrigin {
 			identity_id: session.identity_id,
 			mapping_id: Some(id),
+			session: http_session,
 		},
 	))
 }

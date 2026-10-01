@@ -54,6 +54,8 @@ mod m20260929_040000_graph_grant_revocation;
 mod m20260930_000000_remote_semantic_memory;
 mod m20260930_010000_foreign_generation;
 
+mod m20260930_010000_marketplace_authorization;
+
 pub struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
@@ -111,6 +113,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260929_040000_graph_grant_revocation::Migration),
 			Box::new(m20260930_000000_remote_semantic_memory::Migration),
 			Box::new(m20260930_010000_foreign_generation::Migration),
+			Box::new(m20260930_010000_marketplace_authorization::Migration),
 		]
 	}
 }

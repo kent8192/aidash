@@ -139,6 +139,7 @@ async fn home_lease(
 		return Err(Error::Forbidden);
 	}
 	let identity = SubjectIdentity {
+		http_session: None,
 		credential_id: record.credential_id,
 		tenant: record.tenant.clone(),
 		subject: record.root_subject.clone(),

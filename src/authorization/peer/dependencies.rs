@@ -166,6 +166,7 @@ impl Access {
 			return Ok(false);
 		};
 		let identity = super::super::identity::SubjectIdentity {
+			http_session: None,
 			credential_id,
 			tenant: self.identity.tenant.clone(),
 			subject: root.clone(),

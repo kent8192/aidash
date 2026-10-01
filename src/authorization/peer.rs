@@ -222,6 +222,7 @@ pub async fn write(f: &Federation, tenant: &str, input: PeerMappingInput) -> Res
 	.fetch_optional(&mut *tx)
 	.await?;
 	let identity = SubjectIdentity {
+		http_session: None,
 		credential_id: input.credential_id,
 		tenant: tenant.into(),
 		subject: subject.ok_or(Error::Forbidden)?,
@@ -345,6 +346,7 @@ pub(crate) async fn access_mode(
 	.await?
 	.ok_or(Error::Forbidden)?;
 	let identity = SubjectIdentity {
+		http_session: None,
 		credential_id: mapping.credential_id,
 		tenant: mapping.tenant.clone(),
 		subject: local_subject,

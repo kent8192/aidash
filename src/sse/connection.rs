@@ -181,11 +181,11 @@ impl Context {
 		}
 		Ok(())
 	}
-	async fn can_emit(
+	async fn frame(
 		&self,
 		event: &Event,
 		control: &Control,
-	) -> std::result::Result<bool, Closed> {
+	) -> std::result::Result<Option<Frame>, Closed> {
 		loop {
 			self.service.gate_check();
 			match ReadLease::begin(&self.f.store).await {
@@ -194,10 +194,19 @@ impl Context {
 					if !self.browser_authorized().await {
 						return Err(Closed::Browser);
 					}
-					let allowed = match &self.scope {
-						Some(scope) => {
-							scope.can_emit(event).await.map_err(|_| Closed::Authority)?
+					let payload = match &self.scope {
+						Some(scope) if event.kind.starts_with("marketplace.") => {
+							// The Marketplace boundary serializes and queues the frame
+							// while distribution and browser-session leases are held.
+							crate::marketplace::events::frame(&scope.store, &scope.identity, event)
+								.await
+								.map_err(|_| Closed::Authority)?
 						}
+						Some(scope) => scope
+							.can_emit(event)
+							.await
+							.map_err(|_| Closed::Authority)?
+							.then(|| event.cloud_event().to_string()),
 						None => {
 							let mut connection = self
 								.f
@@ -212,10 +221,16 @@ impl Context {
 							)
 							.await
 							.map_err(|_| Closed::Authority)?
+							.then(|| event.cloud_event().to_string())
 						}
 					};
 					drop(visibility);
-					return Ok(allowed);
+					return Ok(payload.map(|payload| {
+						Frame::default()
+							.id(event.sequence.to_string())
+							.event("mesh")
+							.data(payload)
+					}));
 				}
 				Err(Error::TransactionPending) => {
 					control.waiting_for_gate(&self.service, true);
@@ -328,21 +343,20 @@ impl Service {
 					let last = consumed.is_some();
 					// Database/visibility waits are server work, not a slow reader.
 					body_control.progress(false);
-					let allowed = tokio::select! {
+					let frame = tokio::select! {
 						biased;
 						_ = closed.wait_for(|state| state.is_some()) => return,
-						allowed = context.can_emit(&event, &body_control) => allowed,
+						frame = context.frame(&event, &body_control) => frame,
 					};
-					let allowed = match allowed {
-						Ok(allowed) => allowed,
+					let frame = match frame {
+						Ok(frame) => frame,
 						Err(reason) => {
 							body_control.close(reason);
 							return;
 						}
 					};
 					body_control.progress(!last);
-					if allowed {
-						let frame = Frame::default().id(event.sequence.to_string()).event("mesh").data(event.cloud_event().to_string());
+					if let Some(frame) = frame {
 						drop(event);
 						// No await between the last frame's final check and handoff.
 						if let Some(consumed) = consumed { let _ = consumed.send(()); }
@@ -355,7 +369,8 @@ impl Service {
 					if last { break; }
 				}
 			}
-		}.boxed();
+		}
+		.boxed();
 		Ok(EventStream {
 			inner: stream,
 			tasks: Tasks {
