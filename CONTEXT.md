@@ -215,3 +215,17 @@ _Avoid_: Unrestricted Workspace access, local working-area operation
 **Pinned definition**:
 The exact version and contents of an Agent or execution dependency to which an authorization applies.
 _Avoid_: Latest version, compatible replacement
+
+## Graph exploration
+
+**Graph vertex**:
+A visual representative of an Aidash resource in a graph. A vertex is distinct from the independently operated Aidash Node it may represent.
+_Avoid_: Node when referring to an arbitrary visual resource
+
+**Current graph**:
+The vertices, relationships and grouping regions included in the chosen graph perspective after its Workspace scope, filters, authority, expansion state and presentation limits have been applied. Membership includes off-screen elements but excludes omitted elements and other pages.
+_Avoid_: Entire federation, visible screen contents, selected neighborhood unless it is the active scope
+
+**Whole-graph fit**:
+A user-requested overview of the current graph, including its labels and grouping boundaries. It changes the viewpoint without changing graph membership, resource selection or arrangement.
+_Avoid_: Fullscreen, filter reset, selected-resource focus, rearrangement

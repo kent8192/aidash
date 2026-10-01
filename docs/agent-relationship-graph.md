@@ -25,7 +25,7 @@ agent, the dialog removes its graph and old metadata.
 ## Navigation
 
 - Drag the background to pan, use the wheel or zoom buttons to zoom, and drag a
-  neighbor to position it. The focused agent stays anchored. **Fit graph** and
+  neighbor to position it. The focused agent stays anchored. **Fit entire graph** and
   **Center selection** adjust the viewport without changing any execution state.
 - Select a node and choose **Expand neighbors** to explore another recorded hop.
   **Open details** opens the existing entity, Run or Task dialog. Missing references
@@ -104,6 +104,32 @@ dialog is also unchanged.
   sheet. Native buttons, focus styles, labeled controls and the relationship table
   support keyboard navigation. Both Japanese and English are supported.
 
+### Fit entire graph
+
+Choose **Fit entire graph / 全体表示** beside the zoom controls to recover an
+overview after panning or zooming. The Scan icon, visible label and tooltip stay
+available on compact screens, including with the inspector open. Focus the button
+and press Enter or Space to activate it.
+
+One activation centers all current nodes, displayed labels, edges and group
+boundaries in the measured area clear of the inspector, minimap and controls.
+It includes disconnected and off-screen elements and already-loaded authorized
+remote projections within the current filters and rendering limits. Selection,
+Workspace, filters, expanded Peers and node positions are retained.
+
+Fit caps magnification at unit scale and permits an overview below the usual
+minimum zoom for large graphs. Manual zoom remains gradual at that scale. Padding
+is 36 CSS px, or 16 CSS px in compact usable areas, reduced further only when the
+available area is extremely small. The button is disabled with an accessible
+explanation when the graph is empty or cannot be measured safely.
+
+The workspace mesh, agent neighborhood and agent detail graph share this behavior.
+Initial display and deliberate perspective/layout changes frame the graph;
+ordinary polling, filtering, expansion, resizing and opening the inspector retain
+the camera until an explicit fit. Temporary empty filter results also retain the
+camera. Fit does not load resources or rerun a layout. See the
+[fit design and local validation](design/2026-09-30-issue-96-entire-graph-fit.md).
+
 ### Data boundaries
 
 `collaboration/mesh-model.ts` projects only explicit, version-pinned configuration
@@ -164,3 +190,8 @@ imports or inserts them. The mesh browser tests cover the five perspectives,
 three layouts, filters, inspector navigation, snapshot preservation/revocation,
 subject isolation and compact viewports, and save visual captures in the ignored
 `web/test-results` directory.
+
+The fit tests additionally check full visual containment and centering within
+1 CSS px, recovery from an off-screen view, native keyboard activation in both
+languages, inspector/resize geometry, single/empty/large graphs and loaded remote
+projections. They compare camera and graph state independently of the fit helper.

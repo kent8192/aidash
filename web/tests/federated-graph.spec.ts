@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
+import { expectCytoscapeFitted } from "./graph-fit-assertions";
+import type { Core } from "cytoscape";
 import { meshScene } from "./mesh-scene.mjs";
 
 const firstPeer = "aidash://graph-b";
@@ -249,6 +251,20 @@ test("subject expands only direct authorized peers and clears remote details on 
       page.locator(".mesh-node-label").filter({ hasText: "B Agent" }),
     ).toBeVisible();
   }
+  const requestCount = requests.length;
+  await page.locator(".mesh-canvas").evaluate((element) => {
+    const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;
+    cy.zoom(2);
+    cy.pan({ x: 50000, y: -50000 });
+  });
+  await page
+    .getByRole("button", { name: "Fit entire graph", exact: true })
+    .click();
+  await expectCytoscapeFitted(page.locator(".mesh-canvas"));
+  expect(requests).toHaveLength(requestCount);
+  await expect(
+    page.locator(".mesh-node-label").filter({ hasText: "B Agent" }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Relationship list" }).click();
   const list = page.getByRole("table", { name: "Relationship list" });
   await expect(list).toContainText("B Workspace");

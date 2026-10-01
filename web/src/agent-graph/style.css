@@ -59,7 +59,7 @@ dialog:has(.agent-graph) {
 .agent-graph-selection strong {
   overflow-wrap: anywhere;
 }
-.agent-graph-canvas svg {
+.agent-graph-canvas > svg {
   display: block;
   width: 100%;
   max-height: 65vh;
@@ -71,7 +71,7 @@ dialog:has(.agent-graph) {
   cursor: grab;
   user-select: none;
 }
-.agent-graph-canvas svg:active {
+.agent-graph-canvas > svg:active {
   cursor: grabbing;
 }
 .agent-graph-edge path {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import cytoscape, {
   type Core,
@@ -6,6 +6,9 @@ import cytoscape, {
   type Layouts,
 } from "cytoscape";
 import { Crosshair, Maximize, Minus, Plus, Scan } from "lucide-react";
+import { useGraphFit } from "../graph-fit-view";
+import type { Bounds } from "../graph-fit";
+import { cytoscapeFit } from "./graph-camera";
 import type { MeshCopy } from "./mesh-copy";
 import { meshColors, meshIcons } from "./mesh-icons";
 import {
@@ -101,6 +104,15 @@ function elements(
   ];
 }
 
+function labelOffset(node: MeshNode, mode: MeshMode) {
+  if (mode === "execution" && ["task", "agent"].includes(node.kind))
+    return { x: 29, y: -23 };
+  return {
+    x: 0,
+    y: node.kind === "goal" || node.kind === "workspace" ? 39 : 29,
+  };
+}
+
 export function MeshCanvas({
   graph,
   mode,
@@ -121,6 +133,9 @@ export function MeshCanvas({
   copy: MeshCopy;
 }) {
   const host = useRef<HTMLDivElement>(null);
+  const labelLayer = useRef<HTMLDivElement>(null);
+  const needsFraming = useRef(true);
+  const fitDescription = useId();
   const mini = useRef<HTMLCanvasElement>(null);
   const instance = useRef<Core | null>(null);
   const runningLayout = useRef<Layouts | null>(null);
@@ -135,6 +150,49 @@ export function MeshCanvas({
     y: number;
     points: Record<string, { x: number; y: number }>;
   }>({ zoom: 1, x: 0, y: 0, points: {} });
+  const fit = useGraphFit(
+    host,
+    () => {
+      const cy = instance.current;
+      const layer = labelLayer.current;
+      if (!cy || !host.current || !layer || !graph.nodes.length) return null;
+      const labels = new Map(
+        [...layer.querySelectorAll<HTMLElement>("[data-mesh-node]")].map(
+          (element) => [element.dataset.meshNode, element],
+        ),
+      );
+      const bounds: Bounds[] = [];
+      for (const node of graph.nodes) {
+        const rendered = cy.getElementById(node.id);
+        if (rendered.empty()) return null;
+        if (rendered.isParent()) continue;
+        const element = labels.get(node.id);
+        if (!element || !element.offsetWidth || !element.offsetHeight)
+          return null;
+        const point = rendered.position();
+        const offset = labelOffset(node, mode);
+        bounds.push({
+          x1: point.x + offset.x - element.offsetWidth / 2,
+          y1: point.y + offset.y,
+          x2: point.x + offset.x + element.offsetWidth / 2,
+          y2: point.y + offset.y + element.offsetHeight,
+        });
+      }
+      return cytoscapeFit(cy, host.current, 0.12, bounds);
+    },
+    (camera) => {
+      needsFraming.current = false;
+      instance.current?.viewport({
+        zoom: camera.zoom,
+        pan: { x: camera.x, y: camera.y },
+      });
+    },
+    `${mode}:${layout}`,
+  );
+  useEffect(() => {
+    if (needsFraming.current && fit.available && graph.nodes.length)
+      fit.request();
+  });
   useEffect(() => {
     selectRef.current = select;
     graphRef.current = graph;
@@ -318,14 +376,15 @@ export function MeshCanvas({
           });
         const canvas = mini.current;
         const ctx = canvas?.getContext("2d");
-        if (!canvas || !ctx || cy.nodes().empty()) return;
+        if (!canvas || !ctx) return;
+        ctx.clearRect(0, 0, 132, 92);
+        if (cy.nodes().empty()) return;
         const bounds = cy.elements().boundingBox();
         const scale = Math.min(
           116 / Math.max(bounds.w, 1),
           76 / Math.max(bounds.h, 1),
         );
         miniBounds.current = { x: bounds.x1, y: bounds.y1, scale };
-        ctx.clearRect(0, 0, 132, 92);
         const project = (point: { x: number; y: number }) => ({
           x: (point.x - bounds.x1) * scale + 8,
           y: (point.y - bounds.y1) * scale + 8,
@@ -381,7 +440,6 @@ export function MeshCanvas({
     const desired = new Set(definitions.map((e) => e.data.id));
     const key = `${mode}:${layout}`;
     const reset = key !== resetKey.current;
-    const wasEmpty = cy.nodes().empty();
     runningLayout.current?.stop();
     cy.batch(() => {
       // Detach surviving children before removing a filtered compound parent.
@@ -409,19 +467,19 @@ export function MeshCanvas({
         }
       }
     });
-    if (reset || wasEmpty) {
+    if (reset) {
+      needsFraming.current = true;
       resetKey.current = key;
       // Perspectives change the canvas height (statistics and timeline) and width.
       // Measure that viewport before fitting, rather than waiting for ResizeObserver.
       cy.resize();
-      if (layout === "structured") cy.fit(undefined, 36);
-      else {
+      if (layout !== "structured") {
         const run = cy.layout(
           layout === "force"
             ? {
                 name: "cose",
                 animate: false,
-                fit: true,
+                fit: false,
                 padding: 65,
                 nodeRepulsion: () => 32000,
                 idealEdgeLength: () => 150,
@@ -430,7 +488,7 @@ export function MeshCanvas({
               }
             : {
                 name: "circle",
-                fit: true,
+                fit: false,
                 padding: 70,
                 spacingFactor: 1.5,
                 animate: false,
@@ -451,6 +509,8 @@ export function MeshCanvas({
     selected.connectedEdges().addClass("is-connected");
   }, [selectedId, graph, mode, layout, label, copy]);
   const zoom = (factor: number) => {
+    fit.cancel();
+    needsFraming.current = false;
     const cy = instance.current;
     if (cy)
       cy.zoom({
@@ -470,6 +530,7 @@ export function MeshCanvas({
         aria-label={copy.canvas}
       />
       <div
+        ref={labelLayer}
         className="mesh-label-layer"
         style={{
           transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.zoom})`,
@@ -482,27 +543,20 @@ export function MeshCanvas({
             <button
               type="button"
               key={node.id}
+              data-mesh-node={node.id}
               className={`mesh-node-label ${mode === "execution" && ["task", "agent"].includes(node.kind) ? "execution-label" : ""} ${selectedId === node.id ? "selected" : ""}`}
               aria-pressed={selectedId === node.id}
               onClick={() => select(node.id)}
               onFocus={(event) => {
                 if (!event.currentTarget.matches(":focus-visible")) return;
                 const cy = instance.current;
+                fit.cancel();
+                needsFraming.current = false;
                 if (cy) cy.center(cy.getElementById(node.id));
               }}
               style={{
-                left:
-                  point.x +
-                  (mode === "execution" && ["task", "agent"].includes(node.kind)
-                    ? 29
-                    : 0),
-                top:
-                  point.y +
-                  (mode === "execution" && ["task", "agent"].includes(node.kind)
-                    ? -23
-                    : node.kind === "goal" || node.kind === "workspace"
-                      ? 39
-                      : 29),
+                left: point.x + labelOffset(node, mode).x,
+                top: point.y + labelOffset(node, mode).y,
               }}
               title={`${label(node)} · ${copy.kinds[node.kind]}`}
             >
@@ -526,13 +580,16 @@ export function MeshCanvas({
         type="button"
         className="mesh-minimap"
         aria-label={copy.minimap}
+        disabled={!graph.nodes.length}
         onClick={(event) => {
           const cy = instance.current;
-          if (!cy) return;
+          if (!cy || cy.nodes().empty()) return;
           if (event.detail === 0) {
-            cy.fit(undefined, 36);
+            fit.request();
             return;
           }
+          fit.cancel();
+          needsFraming.current = false;
           const canvas = mini.current;
           if (!canvas) return;
           const rect = canvas.getBoundingClientRect();
@@ -575,10 +632,16 @@ export function MeshCanvas({
         <button
           type="button"
           aria-label={copy.fit}
-          title={copy.fit}
-          onClick={() => instance.current?.fit(undefined, 36)}
+          className="graph-fit-button"
+          title={
+            fit.available ? copy.fit : `${copy.fit}: ${copy.fitUnavailable}`
+          }
+          aria-describedby={fitDescription}
+          disabled={!fit.available}
+          onClick={fit.request}
         >
-          <Scan size={16} />
+          <Scan size={16} aria-hidden="true" />
+          <span>{copy.fit}</span>
         </button>
         <button
           type="button"
@@ -586,6 +649,8 @@ export function MeshCanvas({
           title={copy.center}
           disabled={!selectedId}
           onClick={() => {
+            fit.cancel();
+            needsFraming.current = false;
             const cy = instance.current;
             if (cy) cy.center(cy.getElementById(selectedId));
           }}
@@ -609,6 +674,9 @@ export function MeshCanvas({
           <Maximize size={16} />
         </button>
       </div>
+      <span id={fitDescription} className="graph-fit-status" role="status">
+        {fit.available ? "" : copy.fitUnavailable}
+      </span>
     </div>
   );
 }

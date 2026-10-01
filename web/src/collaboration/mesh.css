@@ -546,10 +546,12 @@
 }
 .mesh-camera {
   position: absolute;
-  bottom: 15px;
+  top: 14px;
   right: 14px;
-  z-index: 6;
-  display: grid;
+  z-index: 14;
+  display: flex;
+  flex-wrap: wrap;
+  max-width: calc(100% - 28px);
   background: #0a271f;
   border: 1px solid #325143;
   border-radius: 6px;
@@ -559,10 +561,10 @@
   padding: 8px;
   border: 0;
   border-radius: 0;
-  border-bottom: 1px solid #254938;
+  border-right: 1px solid #254938;
 }
 .mesh-camera button:last-child {
-  border-bottom: 0;
+  border-right: 0;
 }
 .mesh-graph .mesh-minimap {
   position: absolute;
@@ -606,6 +608,7 @@
 .mesh-empty {
   position: absolute;
   inset: 25% 30px auto 190px;
+  z-index: 2;
   text-align: center;
   color: #a2c3b2;
 }
