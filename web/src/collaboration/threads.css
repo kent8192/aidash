@@ -47,3 +47,34 @@
     padding: 8px 12px;
   }
 }
+.web-citation {
+  display: inline;
+}
+.web-citation > button {
+  padding: 0 0.25rem;
+  color: var(--accent, #5271cc);
+  background: transparent;
+  border: 0;
+}
+.web-excerpt {
+  display: block;
+  margin: 0.5rem 0;
+  padding: 0.75rem;
+  background: var(--surface, #f6f7fa);
+  border-radius: 0.5rem;
+}
+.web-excerpt small,
+.web-excerpt-text {
+  display: block;
+}
+.web-excerpt-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin-top: 0.5rem;
+}
+.web-research pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 20rem;
+  overflow: auto;
+}

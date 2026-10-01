@@ -16,6 +16,39 @@ const POST_TOOL_CONTEXT_RESERVE: usize = 4096;
 const TOOL_EVENT_RESERVE: usize = 512;
 const RUN_MESSAGE_SUMMARY_OUTPUT_LIMIT: u32 = 2048;
 
+async fn filter_web_tools(
+	tools: &mut BTreeMap<String, Arc<dyn Tool>>,
+	guard: Option<&Guard>,
+) -> Result<()> {
+	let names = tools
+		.keys()
+		.filter(|name| crate::web_research::contracts::is_web(name))
+		.cloned()
+		.collect::<Vec<_>>();
+	for name in names {
+		let allowed = if let Some(guard) = guard {
+			match guard
+				.tool(&crate::provider::ToolCall {
+					id: "schema-admission".into(),
+					name: name.clone(),
+					arguments: json!({}),
+				})
+				.await
+			{
+				Ok(()) => true,
+				Err(Error::Forbidden | Error::Unauthorized | Error::NotFound(_)) => false,
+				Err(error) => return Err(error),
+			}
+		} else {
+			false
+		};
+		if !allowed {
+			tools.remove(&name);
+		}
+	}
+	Ok(())
+}
+
 enum WorkspaceReadFit {
 	Skip,
 	NoEnvelopeRoom,
@@ -453,6 +486,7 @@ impl Harness {
 	async fn tools(&self, config: &AgentConfig) -> Result<BTreeMap<String, Arc<dyn Tool>>> {
 		let mut tools = builtins();
 		crate::capabilities::tools::add(&mut tools, &config.core_capabilities);
+		crate::web_research::tools::add(&mut tools, &self.federation.store, config);
 		tools.retain(|name, _| config.permits_builtin(name));
 		for (index, reference) in config.tools.iter().enumerate() {
 			let entry = self
@@ -494,6 +528,12 @@ impl Harness {
 			guard
 				.action("message.create", "workspace", run.workspace_id)
 				.await?;
+			if text.contains("[[web:") {
+				let authority = guard
+					.local_authority()
+					.ok_or_else(|| Error::Invalid("remote web evidence unsupported".into()))?;
+				authority.web_citations(run, text).await?;
+			}
 		}
 		home.response_message(
 			worker,
@@ -667,6 +707,7 @@ impl Harness {
 				let output_limit = model_cfg.output_token_limit();
 				let model = provider(self.federation.client.clone(), model_cfg.clone())?;
 				let mut tools = self.tools(&agent).await?;
+				filter_web_tools(&mut tools, guard).await?;
 				if let Some(guard) = guard {
 					guard.filter_core_tools(&mut tools).await?;
 				}
@@ -971,6 +1012,15 @@ impl Harness {
 					guard.inference().await?;
 				}
 				let mut request = budget.request(&context, &pinned);
+				if (agent.core_capabilities.web_search
+					|| agent.core_capabilities.web_open
+					|| agent.core_capabilities.web_find)
+					&& let Some(authority) = guard.and_then(Guard::local_authority)
+				{
+					authority
+						.web_observed_context(run, &instructions, &pinned)
+						.await?;
+				}
 				request.content_parts = media.parts;
 				crate::generation::budget::Reservation::check_request(window, &request)?;
 				let request_tokens = request.estimated_total_tokens();
@@ -1156,6 +1206,30 @@ impl Harness {
 					|| (references_read
 						&& references_inferred
 						&& run.pending["references_read_at_inference"] == true);
+				if informed_response && result.text.contains("[[web:") {
+					let (valid, correct) =
+						if let Some(authority) = guard.and_then(Guard::local_authority) {
+							authority.web_citation_check(run, &result.text).await?
+						} else {
+							(false, false)
+						};
+					if !valid && correct {
+						context.history.push(json!({"kind":"web_citation_correction_required","instruction":"Correct the answer once. Use only evidence_ref values actually returned by web_open or web_find in this Run, formatted [[web:ev_UUID]]. If evidence is unavailable, state that it could not be verified. Do not invent IDs."}));
+						run.context = json!(context);
+						run.phase = "THINKING".into();
+						run.step += 1;
+						run.pending = json!({});
+						store
+							.save_run(run, token, "run.web_citation_correction_required")
+							.await?;
+						return Ok(());
+					}
+					if !valid {
+						result.text="Web evidence could not be verified. The answer was withheld because its citations were unavailable or invalid.".into();
+						result.tool_calls.clear();
+						run.pending["response"] = json!(result);
+					}
+				}
 				let cursor = run.pending["cursor"].as_u64().unwrap_or(0) as usize;
 				if !informed_response
 					&& let Some(call) = result.tool_calls.get(cursor)
@@ -1586,6 +1660,7 @@ impl Harness {
 				}
 				let call = &call;
 				let mut tools = self.tools(&agent).await?;
+				filter_web_tools(&mut tools, guard).await?;
 				if let Some(guard) = guard {
 					guard.filter_core_tools(&mut tools).await?;
 				}
@@ -1613,6 +1688,7 @@ impl Harness {
 					.as_i64()
 					.unwrap_or(run.revision);
 				let key = format!("{}:{}:{}", run.id, response_epoch, cursor);
+				run.pending["response_epoch"] = json!(response_epoch);
 				// New workbench versions require an explicit, one-call approval for
 				// external writes. Legacy versions have no behavior flags and keep
 				// their existing execution contract.
@@ -1690,7 +1766,9 @@ impl Harness {
 						tool.replay_safe(),
 					)
 					.await?;
-				if invocation.status == "UNCERTAIN" {
+				if invocation.status == "UNCERTAIN"
+					&& !crate::web_research::contracts::is_web(&call.name)
+				{
 					if let Some(guard) = guard {
 						guard.action("human.request", "run", run.id).await?;
 					}
@@ -1717,6 +1795,25 @@ impl Harness {
 						Err(e) => return Err(e),
 					}
 				};
+				if crate::web_research::contracts::is_web(&call.name) {
+					if let Some(guard) = guard {
+						guard.resume(&self.federation).await?;
+					}
+					if output["status"] == "approval_required"
+						&& let Some(id) = output.get("approval_id")
+					{
+						// Resume this exact invocation, without exposing a completed
+						// tool result or asking the model to reconstruct the query.
+						run.pending["core_approval_id"] = id.clone();
+						run.pending["resume_phase"] = json!("TOOL_CALL");
+						run.phase = "WAITING".into();
+						run.pending["wake_at"] = output["data"]["expires_at"].clone();
+						store
+							.save_run(run, token, "run.web_disclosure_waiting")
+							.await?;
+						return Ok(());
+					}
+				}
 				if call.name == "file_read"
 					&& call.arguments["representation"] == "model_input"
 					&& output["status"] == "completed"
@@ -2840,6 +2937,7 @@ mod review_tests {
 		pool.close().await;
 		let store = crate::store::Store {
 			capabilities: crate::capabilities::Runtime::new(Default::default()).unwrap(),
+			web: crate::web_research::Runtime::default(),
 			pool: pool.clone(),
 			control_pool: pool,
 			node_id: "cancellation-poll-test".into(),

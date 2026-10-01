@@ -1,5 +1,4 @@
-//! Bounded Brave Web Search adapter. Harness admission, disclosure and durable
-//! accounting must authorize a call before this module's transport is wired in.
+//! Bounded Brave Web Search adapter; `web_research` owns admission and accounting.
 use crate::{Error, Result, config::secret};
 use chrono::{DateTime, NaiveDate, Utc};
 use reqwest::{StatusCode, Url, header};
@@ -7,9 +6,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::time::Duration;
 
-// The transport is staged behind the admission work; it is intentionally not
-// registered as a callable Harness tool yet.
-#[allow(dead_code)]
 const BRAVE_ENDPOINT: &str = "https://api.search.brave.com/res/v1/web/search";
 const MAX_PROVIDER_BYTES: usize = 1024 * 1024;
 const MAX_MODEL_BYTES: usize = 32 * 1024;
@@ -23,7 +19,7 @@ const COUNTRIES: &[&str] = &[
 /// Operator-attested terms for one paid Brave account. This record is an
 /// admission prerequisite, not proof that an agreement has been executed.
 /// The actual agreement must be checked and recorded by the operator.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AccountProfile {
 	pub account_id: String,
@@ -166,6 +162,53 @@ pub struct ValidatedSearch {
 }
 
 impl ValidatedSearch {
+	pub(crate) fn constrained(
+		mut input: Value,
+		preferred: Option<Language>,
+		allowed: &[String],
+		denied: &[String],
+	) -> Result<Self> {
+		// Validate caller input before intersecting operator restrictions. An
+		// empty intersection is denied rather than relaxed to an unrestricted query.
+		let requested = Self::parse(input.clone(), preferred)?;
+		let mut included = vec![];
+		if !allowed.is_empty() {
+			if requested.input.include_domains.is_empty() {
+				included = allowed.to_vec();
+			} else {
+				for caller in &requested.input.include_domains {
+					for operator in allowed {
+						let narrower = if domain_matches(caller, operator) {
+							Some(caller)
+						} else if domain_matches(operator, caller) {
+							Some(operator)
+						} else {
+							None
+						};
+						if let Some(domain) = narrower
+							&& !included.contains(domain)
+						{
+							included.push(domain.clone());
+						}
+					}
+				}
+			}
+			if included.is_empty() {
+				return Err(Error::Invalid("operator_domain_denied".into()));
+			}
+		} else {
+			included = requested.input.include_domains.clone();
+		}
+		let mut excluded = requested.input.exclude_domains.clone();
+		for domain in denied {
+			if !excluded.contains(domain) {
+				excluded.push(domain.clone());
+			}
+		}
+		input["include_domains"] = json!(included);
+		input["exclude_domains"] = json!(excluded);
+		Self::parse(input, preferred)
+	}
 	/// The caller supplies the Agent's supported preferred language. An explicit
 	/// argument takes precedence; no supported preference falls back to English.
 	pub fn parse(input: Value, preferred_language: Option<Language>) -> Result<Self> {
@@ -251,7 +294,7 @@ impl ValidatedSearch {
 		})
 	}
 
-	fn provider_body(&self) -> Value {
+	pub(crate) fn provider_body(&self) -> Value {
 		let mut body = json!({
 			"q": self.outbound_query,
 			"count": self.input.count.unwrap_or(5),
@@ -417,7 +460,7 @@ fn valid_query(query: &str) -> bool {
 	query.chars().count() <= 600 && query.split_whitespace().count() <= 75
 }
 
-fn valid_domain(domain: &str) -> bool {
+pub(crate) fn valid_domain(domain: &str) -> bool {
 	domain.len() <= 253
 		&& domain.contains('.')
 		&& domain.split('.').all(|label| {
@@ -431,7 +474,7 @@ fn valid_domain(domain: &str) -> bool {
 		})
 }
 
-fn domain_matches(host: &str, domain: &str) -> bool {
+pub(crate) fn domain_matches(host: &str, domain: &str) -> bool {
 	// DNS absolute names retain their root dot in URL hosts. It must not change
 	// the domain restriction applied to the equivalent relative DNS name.
 	let host = host.trim_end_matches('.');
@@ -509,6 +552,9 @@ fn outcome(status: &str, code: &str) -> Value {
 	})
 }
 
+pub(crate) fn credential_available(account: &AccountProfile) -> bool {
+	search_credential(&account.credential_env).is_ok()
+}
 fn search_credential(name: &str) -> Result<header::HeaderValue> {
 	let token = secret(name)?;
 	if token.trim().is_empty() {
@@ -535,16 +581,15 @@ fn status_outcome(status: StatusCode) -> Value {
 	}
 }
 
-#[allow(dead_code)]
 pub(crate) struct BraveClient {
 	client: reqwest::Client,
 	endpoint: Url,
 }
 
-#[allow(dead_code)]
 impl BraveClient {
 	pub(crate) fn new() -> Result<Self> {
 		let client = reqwest::Client::builder()
+			.retry(reqwest::retry::never())
 			.timeout(Duration::from_secs(15))
 			.connect_timeout(Duration::from_secs(5))
 			.redirect(reqwest::redirect::Policy::none())
@@ -577,8 +622,22 @@ impl BraveClient {
 	) -> Result<Value> {
 		let operation = async {
 			let searched_at = chrono::Utc::now();
-			let mut response = match self
-				.client
+			let pinned;
+			let client = if self.endpoint.as_str() == BRAVE_ENDPOINT {
+				pinned = match crate::web_research::network::client(
+					&self.endpoint,
+					Duration::from_secs(15),
+				)
+				.await
+				{
+					Ok(client) => client,
+					Err(_) => return Ok(outcome("uncertain", "transport_error")),
+				};
+				&pinned
+			} else {
+				&self.client
+			};
+			let mut response = match client
 				.post(self.endpoint.clone())
 				.header("x-subscription-token", token)
 				.header(header::ACCEPT, "application/json")
@@ -591,7 +650,17 @@ impl BraveClient {
 				Err(_) => return Ok(outcome("uncertain", "transport_error")),
 			};
 			if !response.status().is_success() {
-				return Ok(status_outcome(response.status()));
+				let mut result = status_outcome(response.status());
+				if let Some(value) = response
+					.headers()
+					.get(header::RETRY_AFTER)
+					.and_then(|v| v.to_str().ok())
+				{
+					// The broker interprets this against its original deadline; the
+					// adapter never sleeps or sends a second request by itself.
+					result["error"]["retry_after"] = json!(bounded(value, 128).0);
+				}
+				return Ok(result);
 			}
 			let mut bytes = Vec::new();
 			loop {
@@ -712,6 +781,57 @@ mod tests {
 		let output = search_request.normalize_response(&provider_results, search_time);
 		assert_eq!(output["data"]["sources"].as_array().unwrap().len(), 1);
 		assert!(output["data"]["sources"][0].get("source_id").is_none());
+	}
+
+	#[rstest]
+	#[case(vec![], vec!["docs.example.com"], "docs.example.com")]
+	#[case(vec!["example.com"], vec!["docs.example.com"], "docs.example.com")]
+	#[case(vec!["docs.example.com"], vec!["example.com"], "docs.example.com")]
+	fn operator_domains_intersect_caller_scope_and_filter_provider_candidates(
+		#[case] caller: Vec<&str>,
+		#[case] allowed: Vec<&str>,
+		#[case] effective: &str,
+		search_time: DateTime<Utc>,
+	) {
+		let request = ValidatedSearch::constrained(
+			json!({"query":"public evidence", "include_domains":caller}),
+			Some(Language::Ja),
+			&allowed.into_iter().map(str::to_owned).collect::<Vec<_>>(),
+			&["blocked.test".into()],
+		)
+		.unwrap();
+		assert_eq!(
+			request.provider_body()["q"],
+			format!("public evidence (site:{effective}) NOT site:blocked.test")
+		);
+		assert_eq!(request.provider_body()["search_lang"], "ja");
+		let output = request.normalize_response(
+			&serde_json::to_vec(&json!({"web":{"results":[
+				{"url":"https://docs.example.com/allowed","title":"Allowed","description":"evidence"},
+				{"url":"https://other.test/outside","title":"Outside","description":"evidence"},
+				{"url":"https://docs.example.com.evil.test/spoof","title":"Spoof","description":"evidence"}
+			]}}))
+			.unwrap(),
+			search_time,
+		);
+		assert_eq!(output["data"]["returned_count"], 1);
+		assert_eq!(
+			output["data"]["sources"][0]["url"],
+			"https://docs.example.com/allowed"
+		);
+	}
+
+	#[rstest]
+	fn disjoint_operator_domains_do_not_become_unrestricted_searches() {
+		assert!(
+			ValidatedSearch::constrained(
+				json!({"query":"public evidence", "include_domains":["outside.test"]}),
+				None,
+				&["example.com".into()],
+				&[]
+			)
+			.is_err()
+		);
 	}
 
 	struct CredentialEnvironment {

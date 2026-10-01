@@ -12,6 +12,9 @@ export type Flags = {
   patch: boolean;
   skills: boolean;
   sharing: boolean;
+  web_search: boolean;
+  web_open: boolean;
+  web_find: boolean;
 };
 export type SkillAttachment = SkillPayload & {
   skill_id: string;
@@ -33,6 +36,9 @@ export const emptyCore: CoreConfiguration = {
     patch: false,
     skills: false,
     sharing: false,
+    web_search: false,
+    web_open: false,
+    web_find: false,
   },
   skill_attachments: [],
   skill_roots: [],
@@ -77,6 +83,9 @@ export function CapabilityConfiguration({
         patch: "パッチ適用",
         skills: "直接追加する Skills",
         sharing: "ファイル共有",
+        web_search: "Web 検索（Brave）",
+        web_open: "公開ページ・PDF の閲覧",
+        web_find: "取得済みページ内の検索",
       }
     : {
         files: "Search and read files",
@@ -85,6 +94,9 @@ export function CapabilityConfiguration({
         patch: "Apply patches",
         skills: "Direct Skills",
         sharing: "Share files",
+        web_search: "Web search (Brave)",
+        web_open: "Read public pages and PDFs",
+        web_find: "Find in saved pages",
       };
   return (
     <fieldset className="core-config">

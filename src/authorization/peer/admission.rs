@@ -335,8 +335,12 @@ async fn lease(f: &Federation, source: &str, grant: Uuid) -> Result<(Access, Des
 fn require_workspace_agent(agent: &AgentConfig) -> Result<()> {
 	// Local working areas require a local conversation; a foreign workspace
 	// grant cannot manufacture that conversation or inherit its private files.
-	if agent.core_capabilities.enabled() {
-		return Err(Error::Invalid("remote execution requires a workspace Agent without local core working-area capabilities; transfer files into an explicitly admitted local thread".into()));
+	if agent.core_capabilities.enabled()
+		|| agent.core_capabilities.web_search
+		|| agent.core_capabilities.web_open
+		|| agent.core_capabilities.web_find
+	{
+		return Err(Error::Invalid("remote execution does not support local working-area or Web-research capabilities; use an explicitly admitted local thread".into()));
 	}
 	Ok(())
 }

@@ -26,6 +26,9 @@ environment = {key: value for key, value in os.environ.items() if key in {
 }}
 if request["kind"] == "python":
     os.execve("/usr/local/bin/python", ["python", "-I", "/opt/aidash/kernel.py"], environment)
+if request["kind"] == "web_extract":
+    # No shell, child process or Agent-supplied command is involved.
+    os.execve("/usr/local/bin/python", ["python", "-I", "/opt/aidash/web_extract.py", request["code"]], environment)
 process = subprocess.Popen(["/bin/sh", "-c", request["code"]], start_new_session=True, env=environment)
 result = process.wait()
 # PID 1 adopts orphaned descendants. Background jobs retain the operation's

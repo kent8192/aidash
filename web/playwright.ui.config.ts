@@ -10,6 +10,7 @@ export default defineConfig({
     "google-auth.spec.ts",
     "collaboration.spec.ts",
     "core-capabilities.spec.ts",
+    "web-research.spec.ts",
     "mesh-graph.spec.ts",
     "federated-graph.spec.ts",
     "agent-graph.spec.ts",

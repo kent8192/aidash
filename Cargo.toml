@@ -67,6 +67,7 @@ sha2 = "0.10"
 hmac = "0.12"
 percent-encoding = "2"
 regex = "1.12"
+unicode-casefold = "=0.2.0"
 libc = "0.2"
 sqlx = { version = "0.8.6", default-features = false, features = [
   "runtime-tokio",

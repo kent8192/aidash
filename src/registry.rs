@@ -1598,6 +1598,7 @@ pub(crate) fn agent_prompt_headroom(
 	instructions.push_str(&config.instructions);
 	let mut builtins = crate::tool::builtins();
 	crate::capabilities::tools::add(&mut builtins, &config.core_capabilities);
+	crate::web_research::tools::add_declared(&mut builtins, config);
 	let mut specifications = builtins
 		.into_iter()
 		.filter(|(name, _)| config.permits_builtin(name))

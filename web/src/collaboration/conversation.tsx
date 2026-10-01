@@ -1,4 +1,5 @@
 import { ThreadCapabilities } from "../capabilities/thread";
+import { ResearchText, WebResearch } from "../web-research";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
@@ -42,7 +43,15 @@ type Drafts = Record<string, Draft>;
 const emptyDraft: Draft = { text: "", files: [] };
 
 /** Only inline composer syntax is interpreted. React escapes all other content. */
-export function MessageText({ text }: { text: string }) {
+export function MessageText({ text, run }: { text: string; run?: string }) {
+  if (run && text.includes("[[web:"))
+    return (
+      <ResearchText
+        run={run}
+        text={text}
+        render={(part) => <MessageText text={part} />}
+      />
+    );
   return (
     <>
       {text
@@ -97,6 +106,13 @@ export function ChannelConversation({
               requests={undefined}
               threadList={false}
             />
+            {props.data.access.kind === "subject" && (
+              <WebResearch
+                workspace={props.workspace}
+                thread={props.thread}
+                data={props.data}
+              />
+            )}
             {props.data.access.kind === "subject" && (
               <ThreadCapabilities
                 key={props.thread}
@@ -461,7 +477,17 @@ function ConversationFeed({
                         </time>
                       </div>
                       <p>
-                        <MessageText text={message.content} />
+                        <MessageText
+                          text={message.content}
+                          run={
+                            data.runs.find(
+                              (run) =>
+                                message.idempotency_key?.startsWith(
+                                  `${run.id}:`,
+                                ) && run.workspace_id === workspace,
+                            )?.id
+                          }
+                        />
                       </p>
                       {entry.attachments.length > 0 && (
                         <ul className="collab-attachments">

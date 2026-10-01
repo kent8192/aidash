@@ -51,6 +51,6 @@ Summarize median and maximum observed search/read durations, successes, failures
 Evaluation manifest: NOT CREATED FOR EXECUTION.
 Provider calls: NOT RUN.
 Query relevance and freshness: NOT MEASURED.
-Reader/citation behavior: NOT VERIFIED.
+Reader/citation behavior: Controlled isolated formats and a real public text fetch through Harness/citations are locally verified; see [implementation evidence](../operations/evidence/2026-10-01-web-research/README.md). Pilot candidate reading/citation support remains NOT MEASURED.
 Latency and billed cost: NOT MEASURED.
-Rollout decision: PENDING IMPLEMENTATION, ACCOUNT ELIGIBILITY AND EVIDENCE.
+Rollout decision: PENDING ACCOUNT ELIGIBILITY AND LIVE PILOT EVIDENCE. Product implementation and automated verification are recorded separately; no real Brave account has been configured.

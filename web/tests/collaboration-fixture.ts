@@ -221,11 +221,18 @@ export async function setup(
     failFirstUpload?: boolean;
     coreCapabilities?: boolean;
     coreVersion?: boolean;
+    webCapabilities?: boolean;
+    webCitation?: string;
     runMediaRoutes?: string[][];
   } = {},
 ) {
   let data = fixture(options.referenceLayout);
   let runMediaRoutes = options.runMediaRoutes ?? [["image/png", "audio/wav"]];
+  if (options.webCapabilities)
+    data.registry[0].config = {
+      ...data.registry[0].config,
+      core_capabilities: { web_search: true, web_open: true, web_find: true },
+    };
   if (options.coreCapabilities) {
     data.registry[0].config = {
       ...data.registry[0].config,
@@ -304,6 +311,11 @@ export async function setup(
       idempotency_key: null,
       created_at: `2026-09-24T01:${32 + index * 2}:00Z`,
     }));
+  }
+  if (options.webCitation) {
+    messages["workspace-one"][0].content =
+      `Recorded answer [[web:${options.webCitation}]]`;
+    messages["workspace-one"][0].idempotency_key = "run-0:1:model-response";
   }
   const uploads = new Map<
     string,
@@ -410,6 +422,8 @@ export async function setup(
             : [],
         },
       });
+    if (path.endsWith("/web/runs") && request.method() === "GET")
+      return route.fulfill({ json: [] });
     if (path === "/api/discover")
       return route.fulfill({
         json: {

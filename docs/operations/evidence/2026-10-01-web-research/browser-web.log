@@ -1,0 +1,12 @@
+[WebServer] (node:93564) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+
+Running 3 tests using 1 worker
+
+(node:93566) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 tests/web-research.spec.ts:101:1 › Web-only research stays in the thread and sends exact typed approvals and stop actions (656ms)
+  ✓  2 tests/web-research.spec.ts:148:1 › Citations render delivered escaped excerpts and clear them when current authority is revoked (2.9s)
+  ✓  3 tests/web-research.spec.ts:178:1 › Retained research remains visible after Web Agents are removed from the current catalog (696ms)
+
+  3 passed (4.8s)

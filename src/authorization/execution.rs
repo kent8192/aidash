@@ -477,8 +477,146 @@ pub(crate) async fn delegate_in(
 pub(crate) struct WorkerAuthority {
 	access: Arc<Mutex<Access>>,
 }
+fn web_error_code(code: &str) -> &str {
+	match code {
+		"monthly_limit"
+		| "run_attempt_limit"
+		| "cache_limit"
+		| "observation_limit"
+		| "source_limit"
+		| "document_expired"
+		| "invalid_cursor"
+		| "disclosure_context_changed"
+		| "disclosure_expired_or_revoked"
+		| "disclosure_account_changed"
+		| "deadline_exceeded"
+		| "local_deadline_exceeded"
+		| "account_unavailable"
+		| "secret_disclosure_denied"
+		| "response_too_large"
+		| "find_excerpt_limit"
+		| "max_bytes_cannot_hold_character"
+		| "non_public_destination"
+		| "invalid_public_url"
+		| "credential_url_forbidden" => code,
+		"operator_domain_denied" | "disclosure_request_changed" => code,
+		_ => "invalid_input",
+	}
+}
 
 impl WorkerAuthority {
+	pub async fn web_observed_context(
+		&self,
+		run: &Run,
+		instructions: &str,
+		pinned: &Value,
+	) -> Result<()> {
+		let outer = self.access.lock().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let mut state = crate::web_research::persistence::state(&mut access, run).await?;
+		let digest =
+			crate::registry::digest(&json!(["web-observed-context/1", instructions, pinned]));
+		if state["observed_context"] != digest {
+			state["observed_context"] = json!(digest);
+			// Conservative join: changes to inferred, compacted, inherited or
+			// retrieved context never acquire a public label from the model.
+			state["classification"] = json!("unclassified");
+			crate::web_research::persistence::save_state(&mut access, run, &state).await?;
+		}
+		access.finish(Ok(())).await
+	}
+	pub async fn web_tool(
+		&self,
+		store: &Store,
+		run: &Run,
+		name: &str,
+		input: Value,
+		key: &str,
+	) -> Result<Value> {
+		let mut outer = self.access.lock().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result =
+			crate::web_research::tools::prepare(store, &mut access, run, name, input, key).await;
+		let prepared = match access.finish(result).await {
+			Ok(prepared) => prepared,
+			Err(Error::Invalid(code)) => {
+				return Ok(crate::web_research::contracts::failure(
+					name,
+					"error",
+					web_error_code(&code),
+				));
+			}
+			Err(Error::Conflict(_)) => {
+				return Ok(crate::web_research::contracts::failure(
+					name,
+					"error",
+					"invocation_conflict",
+				));
+			}
+			Err(Error::NotFound(_)) => {
+				return Ok(crate::web_research::contracts::failure(
+					name,
+					"error",
+					"evidence_unavailable",
+				));
+			}
+			Err(Error::Forbidden) => {
+				return Ok(crate::web_research::contracts::failure(
+					name,
+					"error",
+					"authorization_denied",
+				));
+			}
+			Err(error) => return Err(error),
+		};
+		match prepared {
+			crate::web_research::service::Prepared::Output(result) => Ok(result),
+			crate::web_research::service::Prepared::Dispatch(id) => {
+				outer.suspend().await?;
+				drop(outer);
+				// Harness reacquires and rechecks the Guard before delivering output.
+				match crate::web_research::service::drive(store, id).await {
+					Err(Error::Invalid(code)) => Ok(crate::web_research::contracts::failure(
+						name,
+						"error",
+						web_error_code(&code),
+					)),
+					Err(Error::Forbidden | Error::Unauthorized | Error::NotFound(_)) => {
+						Ok(crate::web_research::contracts::failure(
+							name,
+							"cancelled",
+							"authority_withdrawn",
+						))
+					}
+					result => result,
+				}
+			}
+		}
+	}
+	pub async fn web_citations(&self, run: &Run, text: &str) -> Result<()> {
+		let outer = self.access.lock().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let result = crate::web_research::evidence::validate_text(&mut access, run, text).await;
+		access.finish(result).await
+	}
+	pub async fn web_citation_check(&self, run: &Run, text: &str) -> Result<(bool, bool)> {
+		let outer = self.access.lock().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let valid = match crate::web_research::evidence::validate_text(&mut access, run, text).await
+		{
+			Ok(()) => true,
+			Err(Error::Invalid(_) | Error::NotFound(_)) => false,
+			Err(error) => return Err(error),
+		};
+		if valid {
+			return access.finish(Ok((true, false))).await;
+		}
+		let mut state = crate::web_research::persistence::state(&mut access, run).await?;
+		let can_correct = state["citation_corrections"].as_u64().unwrap_or(0) == 0;
+		state["citation_corrections"] = json!(1);
+		crate::web_research::persistence::save_state(&mut access, run, &state).await?;
+		access.finish(Ok((false, can_correct))).await
+	}
 	pub async fn core_tool(
 		&self,
 		store: &Store,
@@ -1342,6 +1480,13 @@ impl Guard {
 		}
 		let resource = access.resource("tool", format!("builtin:{}", call.name), json!({}));
 		access.require(&resource, "tool.invoke").await?;
+		if crate::web_research::contracts::is_web(&call.name) {
+			return if self.remote.is_none() && self.agent.core_capabilities.permits(&call.name) {
+				Ok(())
+			} else {
+				Err(Error::Forbidden)
+			};
+		}
 		if matches!(
 			call.name.as_str(),
 			"file_read"

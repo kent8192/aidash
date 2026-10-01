@@ -41,7 +41,7 @@ impl Tool for CoreTool {
 }
 /// The model and HTTP APIs share the exact deserialization types. Inline local
 /// OpenAPI references because model providers do not resolve component catalogs.
-fn schema<T: utoipa::ToSchema>() -> Value {
+pub(crate) fn schema<T: utoipa::ToSchema>() -> Value {
 	let mut children = vec![];
 	T::schemas(&mut children);
 	let mut catalog = children
@@ -238,6 +238,7 @@ mod tests {
 				patch: true,
 				skills: true,
 				sharing: true,
+				..Default::default()
 			},
 		);
 		assert_eq!(tools.len(), 15);

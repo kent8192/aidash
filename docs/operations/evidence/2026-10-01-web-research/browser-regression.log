@@ -1,0 +1,90 @@
+[WebServer] (node:88581) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+
+Running 50 tests using 1 worker
+
+(node:88701) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓   1 tests/collaboration.spec.ts:9:3 › long registration dialog stays contained at 1440x700 (1.6s)
+  ✓   2 tests/collaboration.spec.ts:9:3 › long registration dialog stays contained at 390x600 (1.5s)
+  ✓   3 tests/collaboration.spec.ts:9:3 › long registration dialog stays contained at 900x400 (1.5s)
+  ✓   4 tests/collaboration.spec.ts:48:1 › collaboration is the landing view, with two primary destinations and secondary settings (508ms)
+  ✓   5 tests/collaboration.spec.ts:70:1 › failed message keeps its draft and idempotency key on retry (523ms)
+  ✓   6 tests/collaboration.spec.ts:97:1 › message attachments show their names and download in the selected tab context (472ms)
+  ✓   7 tests/collaboration.spec.ts:121:1 › preparing a channel does not invoke agent execution (781ms)
+  ✓   8 tests/collaboration.spec.ts:145:1 › graph renders with Cytoscape and offers current related channel first (592ms)
+  ✓   9 tests/collaboration.spec.ts:166:1 › graph focus survives selection, links, reload, and history (1.8s)
+  ✓  10 tests/collaboration.spec.ts:229:1 › channel intervention answers a human request without settings navigation (750ms)
+  ✓  11 tests/collaboration.spec.ts:252:1 › revoked history is hidden rather than retaining a stale conversation (2.9s)
+  ✓  12 tests/collaboration.spec.ts:267:1 › an inaccessible explicit channel is not silently replaced with another channel (417ms)
+  ✓  13 tests/collaboration.spec.ts:283:1 › legacy management links are routed into secondary settings (1.1s)
+  ✓  14 tests/collaboration.spec.ts:295:1 › mobile conversation and channel switching do not require horizontal scrolling (484ms)
+  ✓  15 tests/collaboration.spec.ts:317:1 › thread replies persist separately and channel drafts survive thread navigation (623ms)
+  ✓  16 tests/collaboration.spec.ts:357:1 › older message pages are prepended without losing the latest messages (502ms)
+  ✓  17 tests/collaboration.spec.ts:382:1 › remote channel participants are displayed without linking to the local graph (474ms)
+  ✓  18 tests/collaboration.spec.ts:401:1 › partial mesh responses tell operators which peer was omitted (347ms)
+  ✓  19 tests/collaboration.spec.ts:412:1 › remote human requests remain visible without a run in the capped snapshot (368ms)
+  ✓  20 tests/collaboration.spec.ts:425:1 › local run details retain execution memory (1.3s)
+  ✓  21 tests/collaboration.spec.ts:439:1 › run message attachments stay fixed while an upload is pending (1.5s)
+  ✓  22 tests/collaboration.spec.ts:489:1 › run media picker follows the effective model route before uploads (5.1s)
+  ✓  23 tests/collaboration.spec.ts:529:1 › the mobile channel toggle is absent outside Collaboration (447ms)
+  ✓  24 tests/collaboration.spec.ts:544:1 › a same-length refreshed page follows a new latest message (2.8s)
+  ✓  25 tests/collaboration.spec.ts:573:1 › revoking a thread read hides cached replies without exposing another conversation (2.9s)
+  ✓  26 tests/collaboration.spec.ts:596:1 › attachment retries preserve uploads, files and message identity (541ms)
+  ✓  27 tests/collaboration.spec.ts:635:1 › upload failures retain their key and file limits apply before network use (570ms)
+  ✓  28 tests/collaboration.spec.ts:673:1 › channel controls scope run changes and persist approval responses (541ms)
+  ✓  29 tests/collaboration.spec.ts:703:1 › search, notifications, thread navigation and persisted theme work (1.2s)
+  ✓  30 tests/collaboration.spec.ts:753:1 › composer preserves IME input and safely renders inline formatting (454ms)
+  ✓  31 tests/collaboration.spec.ts:784:3 › composer and status remain in view at 390x844 (549ms)
+  ✓  32 tests/collaboration.spec.ts:784:3 › composer and status remain in view at 900x400 (500ms)
+  ✓  33 tests/collaboration.spec.ts:813:1 › workspace reference renders light, dark and thread layouts (1.2s)
+  ✓  34 tests/collaboration.spec.ts:852:1 › shared files can be inspected without leaving the workspace (494ms)
+  ✓  35 tests/collaboration.spec.ts:874:3 › remote execution reconciles controls and retries one instruction at 1440px (1.7s)
+  ✓  36 tests/collaboration.spec.ts:874:3 › remote execution reconciles controls and retries one instruction at 390px (1.7s)
+  ✓  37 tests/core-capabilities.spec.ts:230:1 › capability setup attaches a direct Skill and failed-extraction original to a new immutable version (1.6s)
+  ✓  38 tests/core-capabilities.spec.ts:417:1 › queue, steer and stop remain usable; stale Python requires explicit acknowledgement (786ms)
+  ✓  39 tests/core-capabilities.spec.ts:467:1 › located search, progressive Skills, denied approval and uncertain transfer show actionable state (963ms)
+  ✓  40 tests/core-capabilities.spec.ts:515:1 › narrow keyboard cleanup keeps default, separates confirmation and restores retained files (1.3s)
+  ✓  41 tests/core-capabilities.spec.ts:581:1 › deleting a thread requires its file retention choice before controls disappear (572ms)
+  ✓  42 tests/core-capabilities.spec.ts:611:1 › thread deletion waits for every working-area page before submitting choices (631ms)
+  ✓  43 tests/core-capabilities.spec.ts:672:1 › outbound retries reuse an ambiguous request key and a new fetch uses a fresh key (646ms)
+  ✓  44 tests/core-capabilities.spec.ts:711:1 › thread run retries reuse an ambiguous idempotency key and changed prompts get a new key (650ms)
+  ✓  45 tests/core-capabilities.spec.ts:746:1 › steering retries reuse an ambiguous key and changed prompts get a new key (614ms)
+  ✓  46 tests/core-capabilities.spec.ts:776:1 › generated image and outbound downloads use the authenticated file endpoint (680ms)
+  ✓  47 tests/core-capabilities.spec.ts:882:1 › working file downloads above 100 MiB preserve all chunks and integrity (6.3s)
+  ✓  48 tests/web-research.spec.ts:101:1 › Web-only research stays in the thread and sends exact typed approvals and stop actions (630ms)
+  ✓  49 tests/web-research.spec.ts:148:1 › Citations render delivered escaped excerpts and clear them when current authority is revoked (2.9s)
+  ✘  50 tests/web-research.spec.ts:178:1 › Retained research remains visible after Web Agents are removed from the current catalog (30.1s)
+
+
+  1) tests/web-research.spec.ts:178:1 › Retained research remains visible after Web Agents are removed from the current catalog 
+
+    Test timeout of 30000ms exceeded.
+
+    Error: locator.click: Test timeout of 30000ms exceeded.
+    Call log:
+      - waiting for getByRole('button', { name: 'Reply in thread', exact: true })
+
+
+      184 |   await page
+      185 |     .getByRole("button", { name: "Reply in thread", exact: true })
+    > 186 |     .click();
+          |      ^
+      187 |   const panel = page.getByRole("region", { name: "Web research", exact: true });
+      188 |   await expect(panel).toBeVisible();
+      189 |   await expect(panel.getByText("Search 10/10", { exact: false })).toBeVisible();
+        at /Users/kent8192/Projects/worktrees/feat/issue-44-web-search/web/tests/web-research.spec.ts:186:6
+
+    Error Context: test-results/web-research-Retained-rese-ec378-ed-from-the-current-catalog/error-context.md
+
+    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/web-research-Retained-rese-ec378-ed-from-the-current-catalog/trace.zip
+    Usage:
+
+        npx playwright show-trace test-results/web-research-Retained-rese-ec378-ed-from-the-current-catalog/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    tests/web-research.spec.ts:178:1 › Retained research remains visible after Web Agents are removed from the current catalog 
+  49 passed (1.5m)

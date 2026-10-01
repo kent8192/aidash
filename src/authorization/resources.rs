@@ -545,6 +545,12 @@ impl Access {
 			if !visited.insert(run) {
 				continue;
 			}
+			let revoked: bool = sqlx::query_scalar(&Query::select()
+				.expr(Expr::cust("EXISTS(SELECT 1 FROM web_runs AS w WHERE run_id=$1 AND (data->>'revoked'='true' OR (data->>'retention_until')::timestamptz<=CURRENT_TIMESTAMP OR EXISTS(SELECT 1 FROM core_records AS c WHERE c.kind='thread_tombstone' AND c.id::text=w.data->>'thread_id')))"))
+				.to_string(PostgresQueryBuilder)).bind(run).fetch_one(&mut **self.tx).await?;
+			if revoked {
+				return Ok(false);
+			}
 			if !self.registry_reads_visible(run).await?
 				|| !self.remote_reads_visible(run).await?
 				|| !self.semantic_reads_visible(run).await?

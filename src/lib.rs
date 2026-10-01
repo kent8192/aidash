@@ -23,6 +23,7 @@ pub mod sse;
 pub mod store;
 pub mod tool;
 pub mod transactions;
+pub mod web_research;
 pub mod web_search;
 pub mod workbench;
 

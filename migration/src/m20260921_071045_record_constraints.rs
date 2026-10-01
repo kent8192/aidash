@@ -275,9 +275,12 @@ fn agent_content_extended(config: &str, core: bool) -> String {
 	)
 }
 
-fn core_settings(config: &str) -> String {
+fn core_settings(config: &str, web: bool) -> String {
 	let value = format!("({config}->'core_capabilities')");
-	let flags = ["files", "shell", "python", "patch", "skills", "sharing"];
+	let mut flags = vec!["files", "shell", "python", "patch", "skills", "sharing"];
+	if web {
+		flags.extend(["web_search", "web_open", "web_find"]);
+	}
 	let mut parts = vec![object_fields(&value, &flags)];
 	for flag in flags {
 		parts.push(format!(
@@ -310,17 +313,22 @@ pub(crate) fn checks_extended(
 	personal_agents: bool,
 	core: bool,
 ) -> Vec<(&'static str, &'static str, String)> {
-	checks_internal(personal_agents, core, false)
+	checks_internal(personal_agents, core, false, false)
 }
 
 pub(crate) fn workbench_checks() -> Vec<(&'static str, &'static str, String)> {
-	checks_internal(true, true, true)
+	checks_internal(true, true, true, false)
+}
+
+pub(crate) fn web_checks() -> Vec<(&'static str, &'static str, String)> {
+	checks_internal(true, true, true, true)
 }
 
 fn checks_internal(
 	personal_agents: bool,
 	core: bool,
 	workbench: bool,
+	web: bool,
 ) -> Vec<(&'static str, &'static str, String)> {
 	let mut checks = Vec::new();
 	let mut agent_fields = vec![
@@ -410,7 +418,10 @@ fn checks_internal(
 			"registry_agent_config" => {
 				let config = "(metadata->'config')";
 				if core {
-					parts.push(format!("kind <> 'agent' OR ({})", core_settings(config)));
+					parts.push(format!(
+						"kind <> 'agent' OR ({})",
+						core_settings(config, web)
+					));
 				}
 				if personal_agents {
 					parts[0] = format!(
@@ -695,7 +706,7 @@ fn checks_internal(
 				if core {
 					parts.push(format!(
 						"{entity}->>'kind' <> 'agent' OR ({})",
-						core_settings(&entity_config)
+						core_settings(&entity_config, web)
 					));
 				}
 				let entity_tools =

@@ -39,7 +39,8 @@ class ControllerLifecycle(unittest.TestCase):
                            namespace="test-runner", image="fixture@sha256:" + "a" * 64,
                            kubectl="unused", kubeconfig="unused", runtime_class="gvisor", node_guard=True,
                            cpu=1, memory_bytes=1 << 28, working_bytes=1 << 20,
-                           temporary_bytes=1 << 20, output_bytes=4096)
+                           temporary_bytes=1 << 20, output_bytes=4096, processes=128,
+                           maximum_seconds=600)
         self.env = patch.dict(os.environ, AIDASH_CONTROLLER_TEST_TOKEN="fixture-token-" + "0" * 32)
         self.env.start()
         self.addCleanup(self.env.stop)
@@ -50,7 +51,7 @@ class ControllerLifecycle(unittest.TestCase):
 
         class FixtureRunner(controller.Runner):
             def kube_json(self, arguments, data=None):
-                return {"handler": "runsc"}
+                return {"handler": "runsc"} if "runtimeclass" in arguments else {"items":[]}
 
             def ensure_network_policy(self):
                 events.append("policy")
@@ -92,7 +93,7 @@ class ControllerLifecycle(unittest.TestCase):
     def shell_recovery_runner(self):
         runner = self.start_controller()
         runner.update(self.operation, status="running", executed=True,
-                      termination_confirmed=False, request={"files": []})
+                      termination_confirmed=False, request={"kind":"shell","files": []})
         return runner
 
     def test_shell_recovery_waits_for_physical_stop_after_collector_loss(self):
@@ -190,6 +191,28 @@ class ControllerLifecycle(unittest.TestCase):
         with self.assertRaisesRegex(controller.Rejected, "no writable space"):
             runner.accept(request)
         self.assertEqual(json.loads(runner.path(self.operation).read_text())["status"], "accepted")
+
+    def test_web_reader_has_fixed_inputs_and_tighter_resources_without_node_credentials(self):
+        runner = self.start_controller()
+        runner.config.update(cpu=2, memory_bytes=2 << 30, working_bytes=1 << 30)
+        operation = str(uuid.uuid4())
+        request = dict(operation_id=operation, area_id=str(uuid.uuid4()), epoch=1,
+                       digest="web-fixture", kind="web_extract", code=json.dumps(["text/html", "identity"]),
+                       seconds=5, files=[dict(file_id=str(uuid.uuid4()), scope="references", path="original", size=1,
+                                              digest=hashlib.sha256(b"x").hexdigest())])
+        self.assertEqual(runner.accept(request)["status"], "awaiting_files")
+        record = runner.get(operation)
+        limits = runner.execution_limits(record)
+        self.assertEqual((limits["cpu"], limits["memory_bytes"], limits["temporary_bytes"]), (1, 256 << 20, 16 << 20))
+        manifest = runner.manifest(record)
+        self.assertEqual(manifest["spec"]["resources"]["limits"], {"cpu":"1", "memory":str(256 << 20)})
+        for container in manifest["spec"]["containers"]:
+            self.assertNotIn("AIDASH_CONTROLLER_TEST_TOKEN", [value["name"] for value in container["env"]])
+        for patch_request in (dict(code="arbitrary-command"), dict(seconds=6),
+                              dict(files=[{**request["files"][0], "scope":"working"}]),
+                              dict(files=[{**request["files"][0], "size":(10 << 20)+1}])):
+            with self.subTest(patch_request=patch_request), self.assertRaises(controller.Rejected):
+                runner.accept({**request, "operation_id":str(uuid.uuid4()), **patch_request})
 
     def test_exporters_reject_control_paths_and_preserve_printable_unicode(self):
         for index, (name, unsafe) in enumerate((("東京.txt", False), ("space name.txt", False), ("zero\u200bwidth.txt", False), ("bad\x1f.txt", True), ("bad\x7f.txt", True), ("bad\x85.txt", True), ("bad\x9f.txt", True))):

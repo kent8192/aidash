@@ -283,15 +283,15 @@ Respect the 10-search Run cap by splitting the pilot across authorized Runs and 
 
 ### Evidence status at document handoff
 
-| Evidence                                                      | Status                                                                                                                                                     |
-| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Q1-Q14 product decisions and provider rationale               | Recorded and confirmed by the user.                                                                                                                        |
-| Official provider-document comparison                         | Performed; architectural recommendation only.                                                                                                              |
-| Actual account/contract/storage/no-training/price eligibility | Not verified.                                                                                                                                              |
-| Product implementation and executable schema/API              | Brave search adapter and input schema have an initial implementation; Harness exposure, reading, evidence, authorization and accounting remain incomplete. |
-| Behavior, database, network isolation, parser and UI tests    | Adapter unit tests and a local HTTP boundary fixture pass; integrated authorization, database, parser and UI tests have not run.                           |
-| Live 20-query pilot and actual provider latency/cost          | Not run.                                                                                                                                                   |
-| Production capability enablement                              | Not performed.                                                                                                                                             |
+| Evidence                                                      | Status                                                                                                                                                                                                                           |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Q1-Q14 product decisions and provider rationale               | Recorded and confirmed by the user.                                                                                                                                                                                              |
+| Official provider-document comparison                         | Performed; architectural recommendation only.                                                                                                                                                                                    |
+| Actual account/contract/storage/no-training/price eligibility | Not verified.                                                                                                                                                                                                                    |
+| Product implementation and executable schema/API              | Implemented on `feat/issue-44-web-search`: Harness tools, scoped reading/evidence, disclosure, accounting/recovery, migration and Thread UI. See [operator instructions](../operations/web-research.md).                         |
+| Behavior, database, network isolation, parser and UI tests    | Local behavioral, database, isolated-format, real public reader/citation and browser evidence is recorded in the [implementation verification](../operations/evidence/2026-10-01-web-research/README.md). Hosted CI is separate. |
+| Live 20-query pilot and actual provider latency/cost          | Not run.                                                                                                                                                                                                                         |
+| Production capability enablement                              | Not performed.                                                                                                                                                                                                                   |
 
 ## 11. Delivery, rollout and scope boundaries
 

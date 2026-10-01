@@ -11,6 +11,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct Store {
 	pub capabilities: crate::capabilities::Runtime,
+	pub web: crate::web_research::Runtime,
 	pub pool: PgPool,
 	pub control_pool: PgPool,
 	pub node_id: String,
@@ -181,6 +182,7 @@ impl Store {
 		let message = self
 			.message_in(&mut tx, run.workspace_id, sender, content, Some(key))
 			.await?;
+		crate::web_research::service::attach_response(&mut tx, run, &message).await?;
 		if track_output {
 			self.record_output_in(
 				&mut tx,
@@ -254,6 +256,7 @@ impl Store {
 			node_id,
 			semantic_client: crate::semantic::backend::client()?,
 			capabilities: crate::capabilities::Runtime::from_env()?,
+			web: crate::web_research::Runtime::from_env()?,
 		})
 	}
 
@@ -288,6 +291,7 @@ impl Store {
 			node_id: self.node_id.clone(),
 			semantic_client: self.semantic_client.clone(),
 			capabilities: self.capabilities.clone(),
+			web: self.web.clone(),
 		})
 	}
 
@@ -317,6 +321,7 @@ impl Store {
 			node_id: self.node_id.clone(),
 			semantic_client: self.semantic_client.clone(),
 			capabilities: self.capabilities.clone(),
+			web: self.web.clone(),
 		})
 	}
 	pub async fn event(

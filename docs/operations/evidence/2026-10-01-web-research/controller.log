@@ -1,0 +1,11 @@
+......Shell reconciliation 79419201-1d80-4a6e-987c-b47854b8d1aa: WaitPID failed: EOF
+Shell reconciliation 79419201-1d80-4a6e-987c-b47854b8d1aa: WaitPID failed: EOF
+.Shell reconciliation a7de5234-a272-4384-8f98-c806e0aa6f67: WaitPID failed: EOF
+Shell recovery a7de5234-a272-4384-8f98-c806e0aa6f67: physical termination proof unavailable
+Shell reconciliation a7de5234-a272-4384-8f98-c806e0aa6f67: WaitPID failed: EOF
+Shell recovery a7de5234-a272-4384-8f98-c806e0aa6f67: runtime state unavailable
+..
+----------------------------------------------------------------------
+Ran 9 tests in 0.025s
+
+OK

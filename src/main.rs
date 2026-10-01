@@ -84,6 +84,12 @@ async fn main() -> Result<()> {
 	let (shutdown, stopping) = tokio::sync::watch::channel(false);
 	let mut background = tokio::task::JoinSet::new();
 	let mut workers = tokio::task::JoinSet::new();
+	{
+		let store = federation.store.worker_pool().await?;
+		let stopping = stopping.clone();
+		background
+			.spawn(async move { aidash::web_research::maintenance::run(store, stopping).await });
+	}
 	if let Ok(address) = std::env::var("AIDASH_METRICS_LISTEN") {
 		let address: std::net::SocketAddr = address
 			.parse()

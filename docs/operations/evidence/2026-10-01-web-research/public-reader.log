@@ -1,0 +1,14 @@
+   Compiling aidash v0.1.0 (/Users/kent8192/Projects/worktrees/feat/issue-44-web-search)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.98s
+     Running tests/web_research.rs (/Volumes/cache/cargo-build/8f/fc10ce63e1ff82/debug/deps/web_research-1f2f2c3d93ed92db)
+
+running 1 test
+test web_reader_real_public_fetch_through_harness_find_and_citation ... ok
+
+successes:
+
+successes:
+    web_reader_real_public_fetch_through_harness_find_and_citation
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 13.37s
+

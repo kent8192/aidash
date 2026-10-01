@@ -37,6 +37,9 @@ pub struct CoreCapabilities {
 	pub patch: bool,
 	pub skills: bool,
 	pub sharing: bool,
+	pub web_search: bool,
+	pub web_open: bool,
+	pub web_find: bool,
 }
 impl CoreCapabilities {
 	pub fn enabled(&self) -> bool {
@@ -44,6 +47,9 @@ impl CoreCapabilities {
 	}
 	pub fn permits(&self, name: &str) -> bool {
 		match name {
+			"web_search" => self.web_search,
+			"web_open" => self.web_open,
+			"web_find" => self.web_find,
 			"file_search" | "file_read" => self.files,
 			"shell" | "shell_poll" | "shell_cancel" => self.shell,
 			"code_interpreter" | "python_install" | "python_poll" | "python_cancel" => self.python,

@@ -788,9 +788,12 @@ export function ThreadCapabilities({
     (e) =>
       e.kind === "agent" &&
       e.config &&
-      Object.values(
-        (e.config.core_capabilities ?? {}) as Record<string, unknown>,
-      ).some(Boolean),
+      ["files", "shell", "python", "patch", "skills", "sharing"].some(
+        (flag) =>
+          ((e.config.core_capabilities ?? {}) as Record<string, unknown>)[
+            flag
+          ] === true,
+      ),
   );
   const refresh = () =>
     Promise.all([query.refetch(), ...(area ? [session.refetch()] : [])]);

@@ -53,6 +53,7 @@ mod m20260929_030000_media_route_constraints;
 mod m20260929_040000_graph_grant_revocation;
 
 pub struct Migrator;
+mod m20261001_000000_web_research;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
 	fn migrations() -> Vec<Box<dyn MigrationTrait>> {
@@ -107,6 +108,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260929_030000_media_route_constraints::Migration),
 			Box::new(m20260929_030000_graph_operator_grants::Migration),
 			Box::new(m20260929_040000_graph_grant_revocation::Migration),
+			Box::new(m20261001_000000_web_research::Migration),
 		]
 	}
 }

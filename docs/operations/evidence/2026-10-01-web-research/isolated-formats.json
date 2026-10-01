@@ -1,0 +1,52 @@
+{
+  "protocol": "aidash-web-extraction/1",
+  "image": "docker.io/library/aidash-sandbox@sha256:bc0e43b54e97c615ad76f96dd8ad4483862d3ad796fd48e395679280347f4a2a",
+  "verified": true,
+  "cases": [
+    {
+      "case": "html-untrusted-script",
+      "state": "complete",
+      "duration_seconds": 4.213
+    },
+    {
+      "case": "plain-unicode-gzip",
+      "state": "complete",
+      "duration_seconds": 4.058
+    },
+    {
+      "case": "text-pdf-pages",
+      "state": "complete",
+      "duration_seconds": 4.386
+    },
+    {
+      "case": "scanned-pdf",
+      "state": "non_extractable",
+      "duration_seconds": 3.691
+    },
+    {
+      "case": "pdf-page-limit",
+      "state": "page_limit",
+      "duration_seconds": 4.102
+    },
+    {
+      "case": "malformed-pdf",
+      "state": "malformed_document",
+      "duration_seconds": 4.119
+    },
+    {
+      "case": "decompression-bomb",
+      "state": "decompressed_limit",
+      "duration_seconds": 3.785
+    },
+    {
+      "case": "text-limit",
+      "state": "text_limit",
+      "duration_seconds": 4.009
+    },
+    {
+      "case": "encrypted-pdf",
+      "state": "encrypted_pdf",
+      "duration_seconds": 3.991
+    }
+  ]
+}

@@ -81,6 +81,7 @@ fn ordinary_routes() -> OpenApiRouter<Federation> {
 		)
 		.layer(crate::http::body_limit(crate::http::BODY_LIMIT))
 		.merge(crate::capabilities::api::routes())
+		.merge(crate::web_research::api::routes())
 }
 
 pub fn openapi() -> utoipa::openapi::OpenApi {

@@ -186,7 +186,7 @@ class Runner:
         if set(request) - {"session_id"} != {"operation_id", "area_id", "epoch", "digest", "kind", "code", "seconds", "files"}:
             raise Rejected(400, "invalid runner contract")
         operation, area = identity(request["operation_id"]), identity(request["area_id"])
-        if request["kind"] not in ("shell", "python") or not isinstance(request["code"], str):
+        if request["kind"] not in ("shell", "python", "web_extract") or not isinstance(request["code"], str):
             raise Rejected(400, "invalid command kind")
         if len(request["code"].encode()) > self.config.get("limits", {}).get("command_bytes", 65536) or len(request["files"]) > 4096:
             raise Rejected(400, "command or file limit")
@@ -194,6 +194,19 @@ class Runner:
             raise Rejected(400, "invalid epoch")
         if not isinstance(request["seconds"], int) or not 1 <= request["seconds"] <= self.config["maximum_seconds"]:
             raise Rejected(400, "operation time limit")
+        if request["kind"] == "web_extract":
+            try:
+                media, encoding = json.loads(request["code"])
+                valid = (media in ("text/html", "text/plain", "application/pdf")
+                         and encoding in ("identity", "gzip", "deflate")
+                         and request["seconds"] <= 5 and len(request["files"]) == 1
+                         and request["files"][0]["scope"] == "references"
+                         and request["files"][0]["path"] == "original"
+                         and request["files"][0]["size"] <= 10 * 1024 * 1024)
+            except (ValueError, TypeError, KeyError):
+                valid = False
+            if not valid:
+                raise Rejected(400, "invalid fixed Web extraction contract")
         session = None
         if request["kind"] == "python":
             if not self.config.get("node_guard"):
@@ -349,6 +362,8 @@ class Runner:
         return "operation-" + operation
 
     def writable_bytes(self, record):
+        if record['request']['kind'] == 'web_extract':
+            return 1024 * 1024
         mounted = sum(file["size"] for file in record["request"]["files"] if file["scope"] != "working")
         remaining = self.config["working_bytes"] - mounted
         if remaining <= 0:
@@ -357,6 +372,8 @@ class Runner:
 
     def execution_limits(self, record):
         limits = {k: self.config[k] for k in ('cpu', 'memory_bytes', 'processes', 'temporary_bytes')}
+        if record['request']['kind'] == 'web_extract':
+            limits.update(cpu=1, memory_bytes=256 * 1024 * 1024, temporary_bytes=16 * 1024 * 1024)
         # tmpfs capacity is rounded up to a physical page after admission has
         # proved that at least one writable byte remains.
         page = os.sysconf('SC_PAGE_SIZE')
@@ -384,7 +401,8 @@ class Runner:
                                             ("received", "/received"), ("request", "/request"), ("temp", "/tmp"))]
         collector_mounts = [{"name": m["name"], "mountPath": m["mountPath"]} for m in worker_mounts if m["name"] != "temp"]
         collector_mounts.append({"name": "control-temp", "mountPath": "/tmp"})
-        worker = container("execution", ["python", "-I", "/opt/aidash/sandbox.py"], profile["cpu"], profile["memory_bytes"], worker_mounts)
+        admitted_limits = self.execution_limits(record)
+        worker = container("execution", ["python", "-I", "/opt/aidash/sandbox.py"], admitted_limits["cpu"], admitted_limits["memory_bytes"], worker_mounts)
         worker["livenessProbe"] = {"httpGet": {"path": "/health", "port": 7070}, "periodSeconds": 1,
                                    "timeoutSeconds": 1, "failureThreshold": 1, "terminationGracePeriodSeconds": 1}
         worker["startupProbe"] = {"httpGet": {"path": "/health", "port": 7070}, "periodSeconds": 1,
@@ -397,12 +415,12 @@ class Runner:
         volumes = [{"name": name, "emptyDir": {"medium": "Memory", "sizeLimit": str(size)}} for name, size in (
             ("work", self.writable_bytes(record)), ("references", profile["working_bytes"]),
             ("received", profile["working_bytes"]), ("request", 1048576),
-            ("temp", profile["temporary_bytes"]), ("control-temp", profile["output_bytes"] * 4 + 1048576))]
+            ("temp", admitted_limits["temporary_bytes"]), ("control-temp", profile["output_bytes"] * 4 + 1048576))]
         return {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": self.pod_name(record["operation_id"]),
                 "labels": {"aidash-sandbox": "true", "aidash-area": record["area_id"]}, "annotations": {"aidash/digest": record["wire_digest"],
                 "aidash/epoch": str(record["epoch"]), "aidash/area": record["area_id"]}},
                 "spec": {"runtimeClassName": profile["runtime_class"], "restartPolicy": "Never",
-                         "resources": {"limits": {"cpu":str(profile['cpu']), "memory":str(profile['memory_bytes'])}},
+                         "resources": {"limits": {"cpu":str(admitted_limits['cpu']), "memory":str(admitted_limits['memory_bytes'])}},
                          "automountServiceAccountToken": False, "enableServiceLinks": False,
                          "shareProcessNamespace": False, "hostNetwork": False, "hostPID": False, "hostIPC": False,
                          "dnsPolicy": "None", "dnsConfig": {"nameservers": ["127.0.0.1"]},
@@ -514,7 +532,7 @@ class Runner:
                                 offset += len(data)
                                 if not data:
                                     break
-                    payload = dict(record["request"], working_bytes=self.config["working_bytes"], processes=self.config["processes"])
+                    payload = dict(record["request"], working_bytes=self.config["working_bytes"], processes=self.execution_limits(record)["processes"])
                     self.exec_collector(pod_operation, ["hydrate"], json.dumps(payload).encode())
                 elif prepared["digest"] != record["request"]["digest"]:
                     raise RuntimeError("Python input identity changed")
@@ -664,7 +682,7 @@ class Runner:
                     record = self.update(operation, pod_uid=uid, container_id=statuses['execution']['containerID'].split('://',1)[1])
                     limits = self.guard(record, 'limits', **self.execution_limits(record))
                     self.update(operation, resource_evidence=limits)
-                    payload = dict(record["request"], working_bytes=self.config["working_bytes"], processes=self.config["processes"])
+                    payload = dict(record["request"], working_bytes=self.config["working_bytes"], processes=self.execution_limits(record)["processes"])
                     prepared = json.loads(self.exec_collector(operation, ["prepared"]).stdout)
                     if prepared["digest"] is None:
                         for file in record["request"]["files"]:
@@ -808,7 +826,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == "GET" and path == "/v1/health":
             return {"protocol": "aidash-runner/1", "runtime_class": runner.config["runtime_class"],
                     "image": runner.config["image"], "maximum_seconds": runner.config["maximum_seconds"],
-                    "instance": runner.instance, "verified": runner.verified, "probe": runner.probe, "python_verified": runner.python_verified}
+                    "instance": runner.instance, "verified": runner.verified, "probe": runner.probe, "python_verified": runner.python_verified,
+                    "web_extraction_protocol": "aidash-web-extraction/1"}
         raise Rejected(404, "runner route unavailable")
 
     def respond(self):

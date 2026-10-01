@@ -1,0 +1,59 @@
+    Blocking waiting for file lock on package cache
+   Compiling aidash v0.1.0 (/Users/kent8192/Projects/worktrees/feat/issue-44-web-search)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.68s
+     Running tests/registry_and_execution_contracts.rs (/Volumes/cache/cargo-build/8f/fc10ce63e1ff82/debug/deps/registry_and_execution_contracts-65bb58f47c8a443b)
+
+running 16 tests
+test agent_versions_fit_the_authorization_identity_limit ... ok
+test installation_reconfiguration_keeps_manifest_and_events_idempotent ... ok
+test delegation_retry_and_run_message_have_one_durable_effect ... ok
+test malformed_broker_messages_do_not_stop_valid_delivery ... ok
+test ancestor_dependencies_and_invalid_local_executor_are_rejected ... ok
+test mesh_rejects_a_peer_substituting_another_node_identity ... ok
+test operator_conversation_returns_the_committed_task_revision ... ok
+test oversized_agent_instructions_skills_and_tools_are_rejected_at_registration ... ok
+test registry_assigns_uuid_v7_to_blank_ids_and_preserves_explicit_ids ... ok
+test remote_manifest_validates_secret_reference_without_resolving_it ... ok
+test registry_replays_emit_once_and_disabled_peers_can_lose_trust ... ok
+test plugin_control_shaped_data_does_not_suspend_execution ... ok
+test registry_server_ids_survive_retries_and_concurrent_requests ... ok
+test scoped_run_details_keep_memory_home_namespace ... ok
+test workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_keys ... ok
+test visible_messages_and_events_survive_a_denied_burst ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.62s
+
+     Running tests/resource_authorization.rs (/Volumes/cache/cargo-build/8f/fc10ce63e1ff82/debug/deps/resource_authorization-0592266cf6e21871)
+
+running 12 tests
+test denied_new_task_read_rolls_back_creation_but_retains_the_decision ... ok
+test artifact_state_page_is_filled_after_task_denials ... ok
+test guarded_child_summary_pages_minimal_visible_rows ... ok
+test discovered_registry_entries_remain_live_journal_dependencies ... ok
+test hidden_task_cannot_be_claimed_or_used_as_a_dependency ... ok
+test legacy_journal_migration_retains_sources_and_cyclic_read_graphs_terminate ... ok
+test stored_message_author_controls_visibility_and_forged_authorship_is_rejected ... ok
+test task_artifact_message_denials_filter_aggregate_events_and_run_details ... ok
+test opened_thread_events_retain_their_root_message_read_dependency ... ok
+test worker_continues_with_visible_subset_and_never_sends_denied_records ... ok
+test recorded_source_revocation_hides_journals_and_pauses_before_provider_io ... ok
+test workspace_event_revocation_hides_journals_and_pauses_before_provider_io ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.47s
+
+     Running tests/web_research.rs (/Volumes/cache/cargo-build/8f/fc10ce63e1ff82/debug/deps/web_research-e0e814fc175312de)
+
+running 10 tests
+test disclosure_resumes_the_same_invocation_and_denial_never_dispatches ... ok
+test current_operator_and_run_limits_block_an_approved_request_before_dns_or_http::case_1 ... ok
+test approval_cannot_override_private_network_targets_or_new_user_context ... ok
+test current_operator_and_run_limits_block_an_approved_request_before_dns_or_http::case_2 ... ok
+test foreign_snapshots_and_forged_cursors_never_trigger_a_hidden_fetch ... ok
+test invalid_citations_get_one_correction_and_never_publish_a_fabricated_reference ... ok
+test local_snapshot_continuation_full_unicode_find_and_citation_survive_cache_expiry ... ok
+test recorded_response_finishes_locally_and_replay_preserves_evidence_identity ... ok
+test unknown_dispatch_is_never_replayed_or_reconciled_by_model_claims ... ok
+test web_only_thread_start_is_idempotent_and_authenticated_url_intent_is_one_use ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.60s
+

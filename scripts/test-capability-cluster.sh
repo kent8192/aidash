@@ -70,6 +70,7 @@ for _ in range(180):
     except (urllib.error.URLError, TimeoutError): time.sleep(1)
 else: raise SystemExit('runner admission did not become ready')
 PY
+python3 scripts/test-web-extractor.py "$state/private" > "$evidence/web-extractor.json" 2> "$evidence/web-extractor-errors.log"
 python3 scripts/test-capability-recovery.py "$state/private" "$evidence" "$runner_pid" > "$evidence/recovery.log" 2>&1
 # Keep each harness result line intact for the evidence parser, then include
 # captured measurements and fault diagnostics in the successful-test output.
