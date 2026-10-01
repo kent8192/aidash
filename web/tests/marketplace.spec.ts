@@ -75,6 +75,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     let installed = false;
     let denied = false;
     let published: Record<string, unknown> | undefined;
+    let shared: Record<string, unknown> | undefined;
     await page.route("**/api/**", async (route) => {
       const url = new URL(route.request().url());
       const path = url.pathname;
@@ -136,6 +137,10 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       }
       if (path === "/api/marketplace/packages")
         return route.fulfill({ json: [summary] });
+      if (path === "/api/marketplace/packages/package-a/audience") {
+        shared = body;
+        return route.fulfill({ json: { revision: 2, tenants: ["a"] } });
+      }
       if (path === "/api/marketplace/packages/package-a")
         return route.fulfill({
           json: {
@@ -158,8 +163,22 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         return route.fulfill({ json: installed ? [installation] : [] });
       if (path === "/api/marketplace/publication-access")
         return route.fulfill({ json: { allowed: true, version: "1.0.0" } });
-      if (path === "/api/marketplace/sources")
-        return route.fulfill({ json: [entry] });
+      if (path === "/api/marketplace/sources") {
+        if (url.searchParams.get("offset") === "50")
+          return route.fulfill({
+            json: [
+              {
+                ...entry,
+                id: "later-source",
+                name: { en: "Later source", ja: "後の定義" },
+              },
+            ],
+          });
+        return route.fulfill({
+          json: [entry],
+          headers: { "x-aidash-next-offset": "50" },
+        });
+      }
       if (path === "/api/marketplace/installations/install-a" && !body)
         return route.fulfill({ json: installation });
       if (path === "/api/marketplace/installations/install-a" && body) {
@@ -182,6 +201,18 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     await page
       .getByRole("button", { name: ja ? "詳細" : "Details", exact: true })
       .click();
+    await page
+      .getByLabel(
+        ja ? "共有先テナント（1行に1件）" : "Recipient tenants (one per line)",
+      )
+      .fill("");
+    await page
+      .getByRole("button", {
+        name: ja ? "共有範囲を更新" : "Update sharing",
+        exact: true,
+      })
+      .click();
+    await expect.poll(() => shared).toMatchObject({ tenants: ["a"] });
     await page
       .getByRole("button", {
         name: ja ? "このテナントに導入" : "Install for this tenant",
@@ -223,6 +254,23 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         ? "Revisionが更新されました。再読み込み後に変更してください。"
         : "The revision changed. Reload before applying another change.",
     );
+    await page
+      .getByRole("button", {
+        name: ja ? "次のページ" : "Next page",
+        exact: true,
+      })
+      .click();
+    await expect(
+      page.getByLabel(ja ? "登録済み定義" : "Registered source", {
+        exact: true,
+      }),
+    ).toContainText(ja ? "後の定義" : "Later source");
+    await page
+      .getByRole("button", {
+        name: ja ? "前のページ" : "Previous page",
+        exact: true,
+      })
+      .click();
     await page
       .getByLabel(ja ? "登録済み定義" : "Registered source", { exact: true })
       .selectOption("source@1.0.0");
@@ -282,6 +330,141 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       page.getByLabel(
         ja ? "ローカル設定（JSON）" : "Local configuration (JSON)",
       ),
+    ).toHaveCount(0);
+  });
+}
+
+for (const locale of ["en-US", "ja-JP"] as const) {
+  test(`operator Marketplace pages retained revisions and clears revoked results (${locale})`, async ({
+    page,
+  }) => {
+    await installBearerDashboard(page, "fixture");
+    await page.addInitScript(
+      (locale) => localStorage.setItem("aidash-locale", locale),
+      locale,
+    );
+    let denied = false;
+    await page.route("**/api/**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === "/api/events/stream") return route.abort();
+      if (url.pathname === "/api/session")
+        return route.fulfill({
+          json: { access: { kind: "operator" }, node_id: "aidash://node" },
+        });
+      if (url.pathname === "/api/mesh")
+        return route.fulfill({ json: { nodes: [], errors: [] } });
+      if (url.pathname === "/api/state")
+        return route.fulfill({
+          json: {
+            access: { kind: "operator" },
+            node: {
+              id: "aidash://node",
+              endpoint: "http://localhost",
+              protocol_version: "0.1",
+              capabilities: [],
+              clusters: [],
+            },
+            registry: [],
+            workspaces: [],
+            tasks: [],
+            artifacts: [],
+            events: [],
+            runs: [],
+            conversations: [],
+            human_requests: [],
+            installations: [],
+            peers: [],
+          },
+        });
+      if (url.pathname === "/api/marketplace/compatibility")
+        return route.fulfill({ json: { enabled: true, revision: 2 } });
+      if (url.pathname === "/api/marketplace/administration") {
+        if (denied)
+          return route.fulfill({ status: 403, json: { error: "forbidden" } });
+        const second = url.searchParams.get("offset") === "50";
+        return route.fulfill({
+          headers: second ? {} : { "x-aidash-next-offset": "50" },
+          json: [
+            {
+              installation: {
+                id: "installation",
+                tenant: "a",
+                package_key: "package",
+                latest_revision: 2,
+                active_revision: null,
+                activation_revision: 0,
+              },
+              revision: second ? 2 : 1,
+              entry: {
+                id: "projected",
+                version: "1.0.0",
+                kind: "tool",
+                name: {
+                  en: second ? "Second revision" : "First revision",
+                  ja: second ? "後のrevision" : "最初のrevision",
+                },
+                description: { en: "fixture" },
+                config: { endpoint: "private-configuration" },
+              },
+              digest: "sha256:fixture",
+              config: {},
+              dependencies: [],
+              bindings: [],
+              approved: false,
+              actions: [],
+            },
+          ],
+        });
+      }
+      if (url.pathname === "/api/info")
+        return route.fulfill({
+          json: { access: { kind: "operator" }, node_id: "aidash://node" },
+        });
+      return route.fulfill({ json: [] });
+    });
+    await page.goto("/settings?view=marketplace");
+    const ja = locale === "ja-JP";
+    const panel = page.locator(".panel").filter({
+      has: page.getByRole("heading", {
+        name: ja ? "テナント導入の承認" : "Tenant installation approval",
+        exact: true,
+      }),
+    });
+    await panel
+      .getByLabel(ja ? "テナント" : "Tenant", { exact: true })
+      .fill("a");
+    await panel
+      .getByRole("button", { name: ja ? "読み込み" : "Load", exact: true })
+      .click();
+    await expect(
+      panel.getByRole("heading", {
+        name: ja ? /最初のrevision/ : /First revision/,
+      }),
+    ).toBeVisible();
+    await panel
+      .getByRole("button", {
+        name: ja ? "次のページ" : "Next page",
+        exact: true,
+      })
+      .click();
+    await expect(
+      panel.getByRole("heading", {
+        name: ja ? /後のrevision/ : /Second revision/,
+      }),
+    ).toBeVisible();
+    denied = true;
+    await panel
+      .getByRole("button", { name: ja ? "読み込み" : "Load", exact: true })
+      .click();
+    await expect(panel.getByRole("alert")).toHaveText(
+      ja
+        ? "現在の権限ではこの項目を利用できません"
+        : "This item is unavailable with your current access",
+    );
+    await expect(
+      panel.getByRole("heading", {
+        name: /First revision|Second revision|最初のrevision|後のrevision/,
+      }),
     ).toHaveCount(0);
   });
 }

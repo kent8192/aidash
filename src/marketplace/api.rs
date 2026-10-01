@@ -55,12 +55,7 @@ pub(crate) async fn handoff<T: Serialize>(
 ) -> Result<Response> {
 	let result = async {
 		let value = result?;
-		let bytes = serde_json::to_vec(&value)?;
-		if bytes.len() > 2_097_152 {
-			return Err(Error::Invalid(
-				"response exceeds two MiB; narrow the query".into(),
-			));
-		}
+		let response = bounded_json(&value)?;
 		if let Some(mut audit) = access.marketplace_audit.clone() {
 			audit["outcome"] = serde_json::json!("allowed");
 			store
@@ -68,23 +63,6 @@ pub(crate) async fn handoff<T: Serialize>(
 				.await?;
 		}
 		super::storage::credential_current(&mut access).await?;
-		let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-		sender
-			.try_send(Ok::<Bytes, std::convert::Infallible>(Bytes::from(bytes)))
-			.map_err(|_| Error::Forbidden)?;
-		drop(sender);
-		let body = Body::from_stream(futures_util::stream::once(async move {
-			receiver.recv().await.expect("one bounded response")
-		}));
-		let mut response = body.into_response();
-		response.headers_mut().insert(
-			header::CONTENT_TYPE,
-			header::HeaderValue::from_static("application/json"),
-		);
-		response.headers_mut().insert(
-			header::CACHE_CONTROL,
-			header::HeaderValue::from_static("no-store"),
-		);
 		Ok(response)
 	}
 	.await;
@@ -108,6 +86,32 @@ pub(crate) async fn handoff<T: Serialize>(
 		tx.commit().await?;
 	}
 	result
+}
+fn bounded_json<T: Serialize>(value: &T) -> Result<Response> {
+	let bytes = serde_json::to_vec(value)?;
+	if bytes.len() > 2_097_152 {
+		return Err(Error::Invalid(
+			"response exceeds two MiB; narrow the query".into(),
+		));
+	}
+	let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+	sender
+		.try_send(Ok::<Bytes, std::convert::Infallible>(Bytes::from(bytes)))
+		.map_err(|_| Error::Forbidden)?;
+	drop(sender);
+	let body = Body::from_stream(futures_util::stream::once(async move {
+		receiver.recv().await.expect("one bounded response")
+	}));
+	let mut response = body.into_response();
+	response.headers_mut().insert(
+		header::CONTENT_TYPE,
+		header::HeaderValue::from_static("application/json"),
+	);
+	response.headers_mut().insert(
+		header::CACHE_CONTROL,
+		header::HeaderValue::from_static("no-store"),
+	);
+	Ok(response)
 }
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -220,27 +224,97 @@ async fn publish(
 	let result = distribution::publish(&f.store, &mut access, &input).await;
 	handoff(&f.store, access, result).await
 }
-#[utoipa::path(get,path="/marketplace/sources",operation_id="marketplace_sources",responses((status=200,body=[Entry])),security(("bearer_auth"=[])))]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+#[serde(deny_unknown_fields)]
+struct SourceQuery {
+	#[serde(default)]
+	offset: usize,
+	#[serde(default = "page_size")]
+	limit: usize,
+}
+fn page_bounds(offset: usize, limit: usize) -> Result<()> {
+	if offset > 10000 || limit == 0 || limit > 100 {
+		return Err(Error::Invalid("invalid page bounds".into()));
+	}
+	Ok(())
+}
+fn next_page(response: &mut Response, offset: Option<usize>) {
+	if let Some(offset) = offset {
+		response
+			.headers_mut()
+			.insert("x-aidash-next-offset", offset.into());
+	}
+}
+#[utoipa::path(get,path="/marketplace/sources",operation_id="marketplace_sources",params(SourceQuery),responses((status=200,body=[Entry],headers(("x-aidash-next-offset"=usize,description="Next candidate offset; may accompany an empty page")))),security(("bearer_auth"=[])))]
 async fn sources(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
+	Params(input): Params<SourceQuery>,
 ) -> Result<Response> {
+	use sea_orm::sea_query::{
+		Alias, Expr, ExprTrait, JoinType, Order, PostgresQueryBuilder, Query,
+	};
+	page_bounds(input.offset, input.limit)?;
 	let mut access = begin(&f.store, subject(&actor)?, false).await?;
-	operation(&mut access, "marketplace.sources", json!({}), None);
+	operation(
+		&mut access,
+		"marketplace.sources",
+		json!({"offset":input.offset,"limit":input.limit}),
+		None,
+	);
+	let mut cursor = input.offset;
+	let mut more = false;
 	let result = async {
-		let entries =
-			crate::authorization::catalog::list_in(&mut access, &Default::default()).await?;
 		let mut sources = vec![];
-		for entry in entries {
-			if matches!(entry.kind.as_str(), "agent" | "tool" | "skill")
-				&& access
-					.decide(
-						&crate::authorization::catalog::resource(&access, &entry),
-						"registry.export",
+		// Bound both loaded candidates and expensive graph traversals, including
+		// denied entries. The header carries progress through an empty page.
+		while cursor - input.offset < 256 {
+			let candidates: Vec<(String, String)> = sqlx::query_as(
+				&Query::select()
+					.columns(
+						["entry_id", "entry_version"]
+							.map(|name| (Alias::new("c"), Alias::new(name))),
 					)
-					.await?
-			{
+					.from_as(Alias::new("authorization_catalog"), Alias::new("c"))
+					.join_as(
+						JoinType::InnerJoin,
+						Alias::new("registry"),
+						Alias::new("r"),
+						Expr::cust("r.id=c.entry_id AND r.version=c.entry_version"),
+					)
+					.and_where(Expr::cust("c.tenant=$1 AND c.enabled"))
+					.and_where(Expr::cust("r.metadata->>'kind'").is_in(["agent", "tool", "skill"]))
+					.order_by((Alias::new("c"), Alias::new("entry_id")), Order::Asc)
+					.order_by((Alias::new("c"), Alias::new("entry_version")), Order::Asc)
+					.limit(64)
+					.offset(cursor as u64)
+					.to_string(PostgresQueryBuilder),
+			)
+			.bind(&access.identity.tenant)
+			.fetch_all(&mut **access.tx)
+			.await?;
+			let count = candidates.len();
+			more = count == 64;
+			for (index, (id, version)) in candidates.into_iter().enumerate() {
+				cursor += 1;
 				let readable = async {
+					let entry = crate::authorization::catalog::entry(
+						&mut access,
+						&EntityRef { id, version },
+						"registry.read",
+					)
+					.await?;
+					if !super::active(&mut access, &entry).await? {
+						return Err(Error::Forbidden);
+					}
+					super::check_pinned(&mut access, &entry).await?;
+					access
+						.require(
+							&crate::authorization::catalog::resource(&access, &entry),
+							"registry.export",
+						)
+						.await?;
 					super::definitions::private_context(&mut access, &entry).await?;
 					super::definitions::publication_graph(
 						&mut access,
@@ -249,20 +323,29 @@ async fn sources(
 						&f.store.node_id,
 					)
 					.await?;
-					Ok(())
+					Ok(entry)
 				}
 				.await;
 				match readable {
-					Ok(()) => sources.push(entry),
-					Err(Error::Forbidden) => {}
-					Err(e) => return Err(e),
+					Ok(entry) => sources.push(entry),
+					Err(Error::Forbidden | Error::NotFound(_)) => {}
+					Err(error) => return Err(error),
 				}
+				if sources.len() == input.limit {
+					more = index + 1 < count || more;
+					return Ok(sources);
+				}
+			}
+			if !more {
+				break;
 			}
 		}
 		Ok(sources)
 	}
 	.await;
-	handoff(&f.store, access, result).await
+	let mut response = handoff(&f.store, access, result).await?;
+	next_page(&mut response, more.then_some(cursor));
+	Ok(response)
 }
 #[utoipa::path(post,path="/marketplace/packages/{key}/install",operation_id="marketplace_install_scoped",params(("key"=String,Path)),request_body=Install,responses((status=200,body=InstallationRevision)),security(("bearer_auth"=[])))]
 async fn install(
@@ -496,26 +579,51 @@ async fn adopt(
 #[serde(deny_unknown_fields)]
 struct AdministrationQuery {
 	tenant: String,
+	#[serde(default)]
+	offset: usize,
+	#[serde(default = "page_size")]
+	limit: usize,
 }
-#[utoipa::path(get,path="/marketplace/administration",operation_id="marketplace_administration",params(AdministrationQuery),responses((status=200,body=[InstallationRevision])),security(("bearer_auth"=[])))]
+#[utoipa::path(get,path="/marketplace/administration",operation_id="marketplace_administration",params(AdministrationQuery),responses((status=200,body=[InstallationRevision],headers(("x-aidash-next-offset"=usize,description="Next revision offset")))),security(("bearer_auth"=[])))]
 async fn administration(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
+	browser: Option<Extension<crate::dashboard_auth::BrowserOrigin>>,
 	Params(query): Params<AdministrationQuery>,
-) -> Result<Json<Vec<InstallationRevision>>> {
+) -> Result<Response> {
+	use sea_orm::sea_query::{Alias, Expr, JoinType, Order, PostgresQueryBuilder, Query};
 	operator(&actor)?;
 	crate::authorization::policy::identifier(&query.tenant)?;
-	let mut tx = f.store.pool.begin().await?;
+	page_bounds(query.offset, query.limit)?;
+	let origin = browser.as_ref().map(|Extension(origin)| origin);
+	let mut tx = operator_begin(&f.store, origin).await?;
 	lock(&mut tx, false).await?;
-	let installs: Vec<Installation> = documents(&mut tx, "marketplace_installations").await?;
-	let revisions: Vec<Revision> = documents(&mut tx, "marketplace_revisions").await?;
+	let mut rows: Vec<(Value, Value)> = sqlx::query_as(
+		&Query::select()
+			.columns(["i", "r"].map(|name| (Alias::new(name), Alias::new("document"))))
+			.from_as(Alias::new("marketplace_installations"), Alias::new("i"))
+			.join_as(
+				JoinType::InnerJoin,
+				Alias::new("marketplace_revisions"),
+				Alias::new("r"),
+				Expr::cust("r.installation=i.key"),
+			)
+			.and_where(Expr::cust("i.tenant=$1"))
+			.order_by((Alias::new("i"), Alias::new("key")), Order::Asc)
+			.order_by((Alias::new("r"), Alias::new("revision")), Order::Asc)
+			.limit((query.limit + 1) as u64)
+			.offset(query.offset as u64)
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(&query.tenant)
+	.fetch_all(&mut *tx)
+	.await?;
+	let more = rows.len() > query.limit;
+	rows.truncate(query.limit);
 	let mut result = vec![];
-	for rev in revisions.into_iter().filter(|r| r.tenant == query.tenant) {
-		let install = installs
-			.iter()
-			.find(|i| i.id == rev.installation)
-			.ok_or(Error::Forbidden)?
-			.clone();
+	for (installation, revision) in rows {
+		let install: Installation = serde_json::from_value(installation)?;
+		let rev: Revision = serde_json::from_value(revision)?;
 		let approved = installations::approved(
 			&mut tx,
 			&query.tenant,
@@ -534,8 +642,12 @@ async fn administration(
 			actions: vec![],
 		});
 	}
-	tx.commit().await?;
-	Ok(Json(result))
+	// Serialize into the same bounded queue as subject disclosures while the
+	// browser's identity, operator grant and session leases are still held.
+	let mut response = bounded_json(&result)?;
+	operator_commit(tx, origin).await?;
+	next_page(&mut response, more.then_some(query.offset + query.limit));
+	Ok(response)
 }
 
 async fn boundary(request: axum::extract::Request, next: axum::middleware::Next) -> Response {

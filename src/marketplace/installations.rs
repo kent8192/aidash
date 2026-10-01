@@ -693,9 +693,8 @@ pub(super) async fn adopt(
 		let entry = definitions::raw(&mut tx, &reference).await?;
 		let effective_dependency =
 			crate::registry::effective_in(&mut tx, &reference.id, &reference.version).await?;
-		let frozen_refs = definitions::refs(&entry, &store.node_id)?;
 		let effective_refs = definitions::refs(&effective_dependency, &store.node_id)?;
-		if frozen_refs != effective_refs {
+		if entry != effective_dependency {
 			// A transitive legacy overlay cannot be frozen into this root revision.
 			return Err(Error::Forbidden);
 		}

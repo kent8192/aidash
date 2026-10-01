@@ -2,6 +2,8 @@ export const marketplaceCopy = {
   "en-US": {
     publicationVersion: "Publication version",
     search: "Search packages",
+    previous: "Previous page",
+    next: "Next page",
     empty: "No packages available for this search",
     unavailable: "This item is unavailable with your current access",
     operationUnavailable:
@@ -66,6 +68,8 @@ export const marketplaceCopy = {
   "ja-JP": {
     publicationVersion: "公開するバージョン",
     search: "パッケージを検索",
+    previous: "前のページ",
+    next: "次のページ",
     empty: "この検索で表示できるパッケージはありません",
     unavailable: "現在の権限ではこの項目を利用できません",
     operationUnavailable: "現在の権限ではこの操作を利用できません",

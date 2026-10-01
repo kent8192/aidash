@@ -1145,6 +1145,15 @@ impl Workspaces {
 			.map(|(events, _)| events)
 	}
 
+	pub(crate) async fn events_with_cursor(
+		&self,
+		after: i64,
+		workspace: Option<Uuid>,
+		limit: i64,
+	) -> Result<(Vec<Event>, i64)> {
+		self.read_events(after, workspace, limit, true).await
+	}
+
 	/// Polling itself does not append decision audits. Every delivered frame is
 	/// separately checked and audited by can_emit, including buffered frames.
 	pub async fn poll_events(

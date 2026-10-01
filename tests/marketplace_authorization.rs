@@ -1007,12 +1007,14 @@ async fn adoption_freezes_the_effective_dependency_graph(
 	let app = api::router(f.clone());
 	let a = token(&f, "a", "user").await;
 	enable(&app, &f).await;
+	f.registry.register(tool("legacy-tool")).await.unwrap();
+	approve(&f, "a", &reference("legacy-tool")).await;
 	for id in ["legacy-model-original", "legacy-model-overlay"] {
 		let model: Entry = serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":"model","name":{"en":id},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
 		f.registry.register(model).await.unwrap();
 	}
 	approve(&f, "a", &reference("legacy-model-overlay")).await;
-	let agent: Entry = serde_json::from_value(json!({"id":"legacy-agent","version":"1.0.0","kind":"agent","name":{"en":"Legacy agent"},"description":{"en":"fixture"},"config":{"model":reference("legacy-model-original"),"instructions":"Original"}})).unwrap();
+	let agent: Entry = serde_json::from_value(json!({"id":"legacy-agent","version":"1.0.0","kind":"agent","name":{"en":"Legacy agent"},"description":{"en":"fixture"},"config":{"model":reference("legacy-model-original"),"instructions":"Original","tools":[reference("legacy-tool")]}})).unwrap();
 	let legacy = aidash::registry::Package {
 		entity: agent,
 		author: "legacy".into(),
@@ -1055,7 +1057,7 @@ async fn adoption_freezes_the_effective_dependency_graph(
 	);
 	assert_eq!(
 		installed.1["dependencies"],
-		json!([reference("legacy-model-overlay")])
+		json!([reference("legacy-tool"), reference("legacy-model-overlay")])
 	);
 	let key = adopted.1["package_key"].as_str().unwrap();
 	let detail = request(
@@ -1070,6 +1072,42 @@ async fn adoption_freezes_the_effective_dependency_graph(
 	assert_eq!(
 		detail.1["manifest"]["entity"]["config"]["model"],
 		json!(reference("legacy-model-overlay"))
+	);
+	let model = f.registry.get("legacy-tool", "1.0.0").await.unwrap();
+	let published = f
+		.registry
+		.publish(
+			&f.store.pool,
+			aidash::registry::Package {
+				entity: model,
+				author: "legacy".into(),
+				permissions: vec![],
+				dependencies: vec![],
+			},
+		)
+		.await
+		.unwrap();
+	f.registry
+		.install(
+			&f.store.pool,
+			"legacy-tool",
+			"1.0.0",
+			&published.digest,
+			json!({"endpoint":"http://localhost:9/overlaid"}),
+		)
+		.await
+		.unwrap();
+	let changed = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/marketplace/adoptions",
+		json!({"tenant":"a","source":reference("legacy-agent"),"idempotency_key":Uuid::new_v4()}),
+	)
+	.await;
+	assert_eq!(
+		changed.0, 403,
+		"endpoint-only dependency overlays cannot be silently discarded: {changed:?}"
 	);
 	common::cleanup(f, &url, &schema).await;
 }
@@ -2312,12 +2350,19 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 		.0,
 		200
 	);
+	policy(
+		&f,
+		"a",
+		3,
+		deny(bundle("a", "user"), json!(["marketplace.read"])),
+	)
+	.await;
 	assert_eq!(
 		request(&app, &a, "POST", "/api/marketplace/packages", input)
 			.await
 			.0,
 		403,
-		"publication replay cannot recover withdrawn distribution access"
+		"publication replay cannot recover currently denied read access"
 	);
 	assert!(
 		migration::Migrator::down(&db, Some(1)).await.is_err(),
@@ -2382,6 +2427,7 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 	#[from(test_environment)]
 	environment: Arc<TestEnvironment>,
 ) {
+	use tower::ServiceExt;
 	let _fixture = FIXTURE_LOCK.lock().await;
 	let (f, url, schema) = common::setup(&environment).await;
 	let app = api::router(f.clone());
@@ -2469,6 +2515,35 @@ async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 		.await
 		.unwrap();
 	tx.commit().await.unwrap();
+	let response = app
+		.clone()
+		.oneshot(
+			axum::http::Request::get(format!("/api/events?after={after}"))
+				.header("authorization", format!("Bearer {a}"))
+				.body(axum::body::Body::empty())
+				.unwrap(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(response.status(), 200);
+	assert_eq!(
+		response.headers()["x-aidash-event-cursor"],
+		denied_cursor.to_string()
+	);
+	let bytes = axum::body::to_bytes(response.into_body(), 2_097_152)
+		.await
+		.unwrap();
+	assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), json!([]));
+	let page = request(
+		&app,
+		&a,
+		"GET",
+		&format!("/api/events?after={denied_cursor}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(page.0, 200, "{page:?}");
+	assert_eq!(page.1[0]["sequence"], visible.sequence);
 	let (events, cursor) = reader.poll_events(after, None, 1000).await.unwrap();
 	assert!(
 		events.is_empty(),
@@ -2610,8 +2685,13 @@ async fn remote_inspection_obeys_the_marketplace_compatibility_gate(
 #[case("compatibility", "operator_grant", false)]
 #[case("compatibility", "operator_grant", true)]
 #[case("compatibility", "expiry", false)]
+#[case("administration", "logout", false)]
+#[case("administration", "logout", true)]
+#[case("administration", "operator_grant", false)]
+#[case("administration", "operator_grant", true)]
+#[case("administration", "expiry", false)]
 #[tokio::test]
-async fn browser_authority_is_ordered_with_pending_marketplace_mutations(
+async fn browser_authority_is_ordered_with_pending_marketplace_requests(
 	#[future(awt)]
 	#[from(test_environment)]
 	environment: Arc<TestEnvironment>,
@@ -2751,6 +2831,16 @@ async fn browser_authority_is_ordered_with_pending_marketplace_mutations(
 			json!({"enabled":false,"expected_revision":2,"compatible_instances_confirmed":true}),
 			"marketplace.compatibility_changed",
 		),
+		"administration" => {
+			let installed = install(&app, &a, &package, &install_input(&package)).await;
+			assert_eq!(installed.0, 200, "{installed:?}");
+			(
+				"GET",
+				"/api/marketplace/administration?tenant=a".into(),
+				Value::Null,
+				"marketplace.installed",
+			)
+		}
 		"activation" => {
 			let installed = install(&app, &a, &package, &install_input(&package)).await;
 			assert_eq!(installed.0, 200, "{installed:?}");
@@ -2841,7 +2931,11 @@ async fn browser_authority_is_ordered_with_pending_marketplace_mutations(
 	if wait_at_commit {
 		sqlx::query(
 			&Query::select()
-				.expr(Expr::cust("pg_advisory_xact_lock(71003201)"))
+				.expr(Expr::cust(if operation == "administration" {
+					"pg_advisory_xact_lock(74003201)"
+				} else {
+					"pg_advisory_xact_lock(71003201)"
+				}))
 				.to_string(PostgresQueryBuilder),
 		)
 		.execute(&mut *barrier)
@@ -2873,7 +2967,11 @@ async fn browser_authority_is_ordered_with_pending_marketplace_mutations(
 		&f,
 		&schema,
 		if wait_at_commit {
-			"%71003201%"
+			if operation == "administration" {
+				"%74003201%"
+			} else {
+				"%71003201%"
+			}
 		} else if revocation == "operator_grant" {
 			"%dashboard_operator_grants%"
 		} else {
@@ -2944,7 +3042,7 @@ async fn browser_authority_is_ordered_with_pending_marketplace_mutations(
 			.iter()
 			.filter(|e| e.kind == event_kind)
 			.count(),
-		before + usize::from(mutation_wins)
+		before + usize::from(mutation_wins && operation != "administration")
 	);
 	// The separate durable credential stays valid after logout; the browser
 	// session does not become a lifetime requirement for an already admitted Run.
@@ -3339,5 +3437,141 @@ async fn compatibility_disable_orders_new_run_admission(
 		request(&app, &a, "GET", &exact_path, Value::Null).await.0,
 		403
 	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn source_and_administration_pages_preserve_candidate_progress(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	use tower::ServiceExt;
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = common::setup(&environment).await;
+	let app = api::router(f.clone());
+	let a = token(&f, "a", "user").await;
+	enable(&app, &f).await;
+	for i in 0..5 {
+		let id = format!("page-{i}");
+		f.registry.register(tool(&id)).await.unwrap();
+		approve(&f, "a", &reference(&id)).await;
+	}
+	let mut authority = bundle("a", "user");
+	authority["policies"].as_array_mut().unwrap().push(json!({"id":"hide-sources","effect":"deny","subjects":{"any":true},"actions":["registry.export"],"resources":{"kinds":["tool"],"ids":["page-0","page-2"]}}));
+	policy(&f, "a", 1, authority).await;
+	let response = app
+		.clone()
+		.oneshot(
+			axum::http::Request::get("/api/marketplace/sources?limit=2")
+				.header("authorization", format!("Bearer {a}"))
+				.body(axum::body::Body::empty())
+				.unwrap(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(response.status(), 200);
+	let offset = response
+		.headers()
+		.get("x-aidash-next-offset")
+		.expect("remaining candidates have a cursor")
+		.to_str()
+		.unwrap()
+		.to_owned();
+	let bytes = axum::body::to_bytes(response.into_body(), 2_097_152)
+		.await
+		.unwrap();
+	let first: Value = serde_json::from_slice(&bytes).unwrap();
+	assert_eq!(first.as_array().unwrap().len(), 2);
+	assert_eq!(first[0]["id"], "page-1");
+	assert_eq!(first[1]["id"], "page-3");
+	let second = request(
+		&app,
+		&a,
+		"GET",
+		&format!("/api/marketplace/sources?limit=2&offset={offset}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(second.0, 200, "{second:?}");
+	assert_eq!(second.1.as_array().unwrap().len(), 1);
+	assert_eq!(second.1[0]["id"], "page-4");
+	let package = publish(&app, &a, "page-4").await;
+	let installed = install(&app, &a, &package, &install_input(&package)).await;
+	assert_eq!(installed.0, 200, "{installed:?}");
+	let id = installed.1["installation"]["id"].as_str().unwrap();
+	let staged=request(&app,&a,"POST",&format!("/api/marketplace/installations/{id}"),json!({"expected_revision":1,"config":{"endpoint":"http://localhost:9/new"},"idempotency_key":Uuid::new_v4()})).await;
+	assert_eq!(staged.0, 200, "{staged:?}");
+	let first = request(
+		&app,
+		&f.config.api_token,
+		"GET",
+		"/api/marketplace/administration?tenant=a&limit=1",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(first.0, 200, "{first:?}");
+	assert_eq!(first.1.as_array().unwrap().len(), 1);
+	assert_eq!(first.1[0]["revision"], 1);
+	let second = request(
+		&app,
+		&f.config.api_token,
+		"GET",
+		"/api/marketplace/administration?tenant=a&limit=1&offset=1",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(second.0, 200, "{second:?}");
+	assert_eq!(second.1.as_array().unwrap().len(), 1);
+	assert_eq!(second.1[0]["revision"], 2);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn owner_can_reload_and_restore_a_withdrawn_audience(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = common::setup(&environment).await;
+	let app = api::router(f.clone());
+	let a = token(&f, "a", "user").await;
+	let b = token(&f, "b", "user").await;
+	enable(&app, &f).await;
+	f.registry.register(tool("recover-audience")).await.unwrap();
+	approve(&f, "a", &reference("recover-audience")).await;
+	let package = publish(&app, &a, "recover-audience").await;
+	let path = format!(
+		"/api/marketplace/packages/{}",
+		package["key"].as_str().unwrap()
+	);
+	let withdrawn = request(
+		&app,
+		&a,
+		"PUT",
+		&format!("{path}/audience"),
+		json!({"expected_revision":1,"tenants":[]}),
+	)
+	.await;
+	assert_eq!(withdrawn.0, 200, "{withdrawn:?}");
+	assert_eq!(withdrawn.1["tenants"], json!(["a"]));
+	let reload = request(&app, &a, "GET", &path, Value::Null).await;
+	assert_eq!(reload.0, 200, "{reload:?}");
+	assert_eq!(reload.1["audience"]["revision"], 2);
+	assert_eq!(request(&app, &b, "GET", &path, Value::Null).await.0, 403);
+	let restored = request(
+		&app,
+		&a,
+		"PUT",
+		&format!("{path}/audience"),
+		json!({"expected_revision":reload.1["audience"]["revision"],"tenants":["b"]}),
+	)
+	.await;
+	assert_eq!(restored.0, 200, "{restored:?}");
+	assert_eq!(restored.1["tenants"], json!(["a", "b"]));
+	assert_eq!(request(&app, &b, "GET", &path, Value::Null).await.0, 200);
 	common::cleanup(f, &url, &schema).await;
 }

@@ -1332,17 +1332,30 @@ struct EventQuery {
 	after: i64,
 	workspace_id: Option<Uuid>,
 }
-#[utoipa::path(get, path = "/events", operation_id = "events", params(EventQuery), responses((status = 200, body = [crate::domain::Event])), security(("bearer_auth" = [])))]
+#[utoipa::path(get, path = "/events", operation_id = "events", params(EventQuery), responses((status = 200, body = [crate::domain::Event], headers(("x-aidash-event-cursor" = i64, description = "Use as the next after value, including on an empty page")))), security(("bearer_auth" = [])))]
 async fn events(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
 	Query(q): Query<EventQuery>,
 ) -> Result<Response> {
 	if let Some(scope) = scoped(&f, actor) {
-		let events = scope.events(q.after, q.workspace_id, 500).await?;
-		return crate::marketplace::events::response(&scope.store, &scope.identity, events).await;
+		let (events, cursor) = scope
+			.events_with_cursor(q.after, q.workspace_id, 500)
+			.await?;
+		let mut response =
+			crate::marketplace::events::response(&scope.store, &scope.identity, events).await?;
+		response
+			.headers_mut()
+			.insert("x-aidash-event-cursor", cursor.into());
+		return Ok(response);
 	}
-	Ok(Json(f.store.events(q.after, q.workspace_id, 500).await?).into_response())
+	let events = f.store.events(q.after, q.workspace_id, 500).await?;
+	let cursor = events.last().map_or(q.after.max(0), |event| event.sequence);
+	let mut response = Json(events).into_response();
+	response
+		.headers_mut()
+		.insert("x-aidash-event-cursor", cursor.into());
+	Ok(response)
 }
 #[utoipa::path(get, path = "/events/stream", operation_id = "stream", params(EventQuery), responses((status = 200, body = String, content_type = "text/event-stream")), security(("bearer_auth" = [])))]
 async fn stream(

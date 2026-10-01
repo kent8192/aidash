@@ -51,23 +51,6 @@ pub(super) async fn get<T: DeserializeOwned>(
 		.transpose()
 		.map_err(Into::into)
 }
-pub(super) async fn documents<T: DeserializeOwned>(
-	tx: &mut Transaction<'_, Postgres>,
-	table: &str,
-) -> Result<Vec<T>> {
-	let rows: Vec<Value> = sqlx::query_scalar(
-		&Query::select()
-			.column(Alias::new("document"))
-			.from(Alias::new(table))
-			.order_by(Alias::new("key"), Order::Asc)
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_all(&mut **tx)
-	.await?;
-	rows.into_iter()
-		.map(|v| serde_json::from_value(v).map_err(Into::into))
-		.collect()
-}
 pub(super) async fn documents_page<T: DeserializeOwned>(
 	tx: &mut Transaction<'_, Postgres>,
 	table: &str,

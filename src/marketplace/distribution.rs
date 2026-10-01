@@ -510,7 +510,7 @@ pub(super) async fn share(
 	access: &mut Access,
 	key: &str,
 	redistributor: Option<&str>,
-	input: AudienceInput,
+	mut input: AudienceInput,
 ) -> Result<Audience> {
 	if input.tenants.len() > 128
 		|| input.expected_revision < 0
@@ -548,6 +548,14 @@ pub(super) async fn share(
 		None,
 	);
 	access.require(&resource(access, &version), action).await?;
+	if redistributor.is_none() {
+		// Audience withdrawal controls recipients; the owner retains its
+		// policy-governed management/disclosure path and optimistic revision.
+		input.tenants.insert(version.owner_tenant.clone());
+		if input.tenants.len() > 128 {
+			return Err(Error::Invalid("audience exceeds 128 tenants".into()));
+		}
+	}
 	let previous: Option<Audience> = get(&mut access.tx, table, &target).await?;
 	if previous.as_ref().map_or(0, |p| p.revision) != input.expected_revision {
 		return Err(conflict());

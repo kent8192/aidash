@@ -112,7 +112,7 @@ async fn chunked_transfer(#[future] two_nodes: TransferFixture) -> ChunkedTransf
 	.await
 	.unwrap();
 	tx.commit().await.unwrap();
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":id,"expected_digest":digest}],"recipient":{"node_id":c.b.f.config.node_id,"agent_id":"research","agent_version":"1.1.0","thread_id":c.b.task}});
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":id,"expected_digest":digest}],"recipient":{"node_id":c.b.f.config.node_id,"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.b.task}});
 	let (status, pending) = request(
 		&c.a.app,
 		&c.a.token,
@@ -496,7 +496,7 @@ async fn prepare_file(c: &TransferFixture) -> (Value, Value) {
 	)
 	.await;
 	let file = area["manifest"][0].clone();
-	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":c.b.f.config.node_id,"agent_id":"research","agent_version":"1.1.0","thread_id":c.b.task}});
+	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":c.b.f.config.node_id,"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.b.task}});
 	let (status, pending) = request(
 		&c.a.app,
 		&c.a.token,
@@ -686,5 +686,166 @@ async fn transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible
 	)
 	.await;
 	assert_eq!(area["manifest"], json!([]));
+	c.close().await;
+}
+
+async fn marketplace_admit(c: &CoreFixture) -> aidash::domain::Run {
+	let (status, gate) = request(
+		&c.app,
+		&c.f.config.api_token,
+		"PUT",
+		"/api/marketplace/compatibility",
+		json!({"enabled":true,"expected_revision":1,"compatible_instances_confirmed":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{gate}");
+	let entry = c.f.registry.get("research", "1.1.0").await.unwrap();
+	c.f.registry
+		.publish(
+			&c.f.store.pool,
+			aidash::registry::Package {
+				entity: entry,
+				author: "legacy".into(),
+				permissions: vec![],
+				dependencies: vec![],
+			},
+		)
+		.await
+		.unwrap();
+	let (status,installation)=request(&c.app,&c.f.config.api_token,"POST","/api/marketplace/adoptions",
+        json!({"tenant":"acme","source":{"id":"research","version":"1.1.0"},"idempotency_key":Uuid::new_v4()})).await;
+	assert_eq!(status, 200, "{installation}");
+	let id = installation["id"].as_str().unwrap();
+	let (status, revision) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!("/api/marketplace/installations/{id}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{revision}");
+	let entry: aidash::registry::Entry = serde_json::from_value(revision["entry"].clone()).unwrap();
+	let auth = aidash::authorization::Authorization {
+		pool: c.f.store.pool.clone(),
+	};
+	let mut snapshot = auth.snapshot("acme").await.unwrap();
+	snapshot.bundle.subjects.insert(
+		aidash::domain::qualified_agent(&c.f.config.node_id, &entry.id, &entry.version),
+		serde_json::from_value(json!({"kind":"agent"})).unwrap(),
+	);
+	auth.replace("acme", snapshot.revision, snapshot.bundle, "operator")
+		.await
+		.unwrap();
+	let (status,activated)=request(&c.app,&c.f.config.api_token,"POST",&format!("/api/marketplace/installations/{id}/activation"),
+        json!({"tenant":"acme","revision":1,"expected_activation_revision":0,"expected_catalog_revision":0,"enabled":true})).await;
+	assert_eq!(status, 200, "{activated}");
+	let (status, admitted) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/tasks/{}/delegate", c.task),
+		json!({"node_id":c.f.config.node_id,"agent":{"id":entry.id,"version":entry.version}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{admitted}");
+	c.f.store.runs().await.unwrap().remove(0)
+}
+
+#[rstest::rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn staged_transfer_callbacks_recheck_marketplace_dependency_approvals(
+	#[future(awt)] test_environment: Arc<TestEnvironment>,
+	#[case] receiver_revoked: bool,
+) {
+	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+	let mut a = build_core_fixture(test_environment.clone(), "aidash://installed-source").await;
+	let mut b = build_core_fixture(test_environment, "aidash://installed-recipient").await;
+	let (servers, lose_commit_reply) = connect_nodes(&mut a, &mut b, 2).await;
+	let sender = marketplace_admit(&a).await;
+	let receiver = marketplace_admit(&b).await;
+	let auth = aidash::authorization::Authorization {
+		pool: a.f.store.pool.clone(),
+	};
+	let mut snapshot = auth.snapshot("acme").await.unwrap();
+	snapshot.bundle.subjects.insert(
+		aidash::domain::qualified_agent(
+			&b.f.config.node_id,
+			&receiver.agent_id,
+			&receiver.agent_version,
+		),
+		serde_json::from_value(json!({"kind":"agent"})).unwrap(),
+	);
+	auth.replace("acme", snapshot.revision, snapshot.bundle, "operator")
+		.await
+		.unwrap();
+	let c = TransferFixture {
+		a,
+		b,
+		sender,
+		receiver,
+		servers,
+		lose_commit_reply,
+	};
+	let (_, pending) = prepare_file(&c).await;
+	let data: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("data"))
+			.from(Alias::new("core_records"))
+			.and_where(Expr::cust("id=$1"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(Uuid::parse_str(pending["transfer_id"].as_str().unwrap()).unwrap())
+	.fetch_one(&c.a.f.store.pool)
+	.await
+	.unwrap();
+	let identity = json!({"transfer_id":pending["transfer_id"],"input_digest":data["description"]["input_digest"]});
+	let (status, prepared) =
+		peer_request(&c.b, &c.a.f.config.node_id, "prepare", identity.clone()).await;
+	assert_eq!(status, 200, "{prepared}");
+	let revoked = if receiver_revoked { &c.b } else { &c.a };
+	let auth = aidash::authorization::Authorization {
+		pool: revoked.f.store.pool.clone(),
+	};
+	auth.set_catalog(
+		"acme",
+		&aidash::registry::EntityRef {
+			id: "model".into(),
+			version: "1.0.0".into(),
+		},
+		1,
+		false,
+		"operator",
+	)
+	.await
+	.unwrap();
+	let (status, response) = if receiver_revoked {
+		use base64::Engine;
+		let mut chunk = identity.clone();
+		chunk["file"] = json!(0);
+		chunk["offset"] = json!(0);
+		chunk["data"] = json!(base64::engine::general_purpose::STANDARD.encode("immutable 東京\n"));
+		peer_request(&c.b, &c.a.f.config.node_id, "chunk", chunk).await
+	} else {
+		peer_request(&c.a, &c.b.f.config.node_id, "describe", identity).await
+	};
+	assert_eq!(
+		status, 403,
+		"staged callbacks must reject revoked pinned dependencies: {response}"
+	);
+	let visible: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("manifest"))
+			.from(Alias::new("core_areas"))
+			.and_where(Expr::cust("thread_id=$1"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(c.b.task)
+	.fetch_one(&c.b.f.store.pool)
+	.await
+	.unwrap();
+	assert_eq!(visible, json!([]), "staged files must remain invisible");
 	c.close().await;
 }
