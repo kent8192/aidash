@@ -227,8 +227,10 @@ test("transaction dashboard survives reload during a partition, aborts safely an
 
     const committed = manifest(false);
     await submit(committed);
+    // Recovery can finish an in-flight peer request before advancing this one.
     await expect(page.locator(".transaction-details > .badge")).toHaveText(
       "Committed",
+      { timeout: 30000 },
     );
     await expect(
       page.getByRole("button", {
@@ -249,6 +251,7 @@ test("transaction dashboard survives reload during a partition, aborts safely an
     await submit(manifest(false));
     await expect(page.locator(".transaction-details > .badge")).toHaveText(
       "Aborted",
+      { timeout: 30000 },
     );
     expect(
       (await api(`/api/workspaces/${workspace.id}`)).workspace.revision,
@@ -269,20 +272,23 @@ test("transaction dashboard survives reload during a partition, aborts safely an
       ),
     ).toBe(true);
   } finally {
-    if (pending) {
-      await request.post(`/api/transactions/${pending}/abort`, { headers });
-      await expect
-        .poll(
-          async () =>
-            (await api(`/api/transactions/${pending}`)).transaction.complete,
-        )
-        .toBe(true);
+    try {
+      if (pending) {
+        await request.post(`/api/transactions/${pending}/abort`, { headers });
+        await expect
+          .poll(
+            async () =>
+              (await api(`/api/transactions/${pending}`)).transaction.complete,
+            { timeout: 30000 },
+          )
+          .toBe(true);
+      }
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        peer.close((error) => (error ? reject(error) : resolve()));
+        // Close task-owned keep-alive sockets even when recovery times out.
+        peer.closeAllConnections();
+      });
     }
-    await new Promise<void>((resolve, reject) => {
-      peer.close((error) => (error ? reject(error) : resolve()));
-      // The assertions have finished. Close task-owned keep-alive sockets too;
-      // background peer requests must not keep fixture teardown alive.
-      peer.closeAllConnections();
-    });
   }
 });
