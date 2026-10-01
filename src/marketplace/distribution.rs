@@ -146,7 +146,7 @@ pub(super) async fn readable(access: &mut Access, root: &Version, node: &str) ->
 					let revision = super::installations::revision(
 						&mut access.tx,
 						&install.id,
-						install.latest_revision,
+						install.active_revision.unwrap_or(install.latest_revision),
 					)
 					.await?;
 					Some(definitions::reference(&revision.entry))

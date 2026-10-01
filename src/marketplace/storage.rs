@@ -4,6 +4,28 @@ use sea_orm::sea_query::{Alias, Expr, OnConflict, Order, PostgresQueryBuilder, Q
 use serde::de::DeserializeOwned;
 use sqlx::{Postgres, Transaction};
 
+pub(super) async fn operator_begin(
+	store: &crate::store::Store,
+	browser: Option<&crate::dashboard_auth::BrowserOrigin>,
+) -> Result<Transaction<'static, Postgres>> {
+	let mut tx = store.pool.begin().await?;
+	if let Some(browser) = browser {
+		browser.require_operator(&mut tx, true).await?;
+	}
+	Ok(tx)
+}
+
+pub(super) async fn operator_commit(
+	mut tx: Transaction<'static, Postgres>,
+	browser: Option<&crate::dashboard_auth::BrowserOrigin>,
+) -> Result<()> {
+	if let Some(browser) = browser {
+		browser.require_operator(&mut tx, false).await?;
+	}
+	tx.commit().await?;
+	Ok(())
+}
+
 pub(super) fn key(value: &impl Serialize) -> String {
 	crate::registry::digest(&serde_json::to_value(value).expect("serializable identity"))
 		.trim_start_matches("sha256:")

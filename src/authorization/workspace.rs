@@ -12,6 +12,7 @@ use crate::{
 };
 use sea_orm::sea_query::{
 	Alias, Asterisk, Condition, Expr, ExprTrait, LockType, Order, PostgresQueryBuilder, Query,
+	extension::postgres::PgBinOper,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -23,13 +24,37 @@ pub struct Workspaces {
 }
 
 // Keep the disjunction structured so every caller's cursor bounds both arms.
-fn event_scope(include_marketplace: bool) -> Condition {
+const EVENT_SCAN_LIMIT: usize = 4096;
+
+fn event_scope(include_marketplace: bool, tenant: &str) -> Condition {
 	let scope = Condition::any().add(Expr::cust("workspace_id=ANY($1)"));
 	if include_marketplace {
 		scope.add(
 			Condition::all()
 				.add(Expr::col(Alias::new("workspace_id")).is_null())
-				.add(Expr::col(Alias::new("kind")).like("marketplace.%")),
+				.add(Expr::col(Alias::new("kind")).like("marketplace.%"))
+				.add(Expr::col(Alias::new("kind")).ne("marketplace.audit"))
+				.add(
+					Condition::any()
+						.add(Expr::cust("data->>'tenant'").eq(tenant))
+						.add(
+							Expr::cust("data->>'key'").in_subquery(
+								Query::select()
+									.column(Alias::new("key"))
+									.from_as(
+										Alias::new("marketplace_audiences"),
+										Alias::new("audience"),
+									)
+									.and_where(
+										Expr::cust("audience.document->'tenants'").binary(
+											PgBinOper::Contains,
+											Expr::val(json!([tenant])),
+										),
+									)
+									.to_owned(),
+							),
+						),
+				),
 		)
 	} else {
 		scope
@@ -414,22 +439,25 @@ impl Access {
 	) -> Result<Vec<Event>> {
 		let mut cursor = i64::MAX;
 		let mut result = vec![];
-		loop {
+		let mut scanned = 0;
+		while scanned < EVENT_SCAN_LIMIT {
+			let page_size = (EVENT_SCAN_LIMIT - scanned).min(100);
 			let rows: Vec<Event> = sqlx::query_as(
 				&Query::select()
 					.column(Asterisk)
 					.from(Alias::new("events"))
-					.cond_where(event_scope(include_marketplace))
+					.cond_where(event_scope(include_marketplace, &self.identity.tenant))
 					.and_where(Expr::col(Alias::new("sequence")).lt(Expr::cust("$2")))
 					.order_by(Alias::new("sequence"), Order::Desc)
-					.limit(100)
+					.limit(page_size as u64)
 					.to_string(PostgresQueryBuilder),
 			)
 			.bind(workspaces)
 			.bind(cursor)
 			.fetch_all(&mut **self.tx)
 			.await?;
-			let exhausted = rows.len() < 100;
+			let exhausted = rows.len() < page_size;
+			scanned += rows.len();
 			for event in rows {
 				cursor = event.sequence;
 				if self.event_visible(&event).await? {
@@ -1258,7 +1286,7 @@ impl Workspaces {
 					.from(Alias::new("events"))
 					.cond_where(
 						Condition::all()
-							.add(event_scope(workspace.is_none()))
+							.add(event_scope(workspace.is_none(), &access.identity.tenant))
 							.add(Expr::col(Alias::new("sequence")).gt(Expr::cust("$2"))),
 					)
 					.order_by(Alias::new("sequence"), Order::Asc)
@@ -1309,27 +1337,30 @@ impl Workspaces {
 			let limit = limit.clamp(1, 1000) as usize;
 			let mut cursor = after.max(0);
 			let mut result = vec![];
+			let mut scanned = 0;
 			// Continue past rejected events so they cannot starve later
 			// permitted events or trap Last-Event-ID replay on an empty page.
-			loop {
+			while scanned < EVENT_SCAN_LIMIT {
+				let page_size = (EVENT_SCAN_LIMIT - scanned).min(500);
 				let batch: Vec<Event> = sqlx::query_as(
 					&Query::select()
 						.column(Asterisk)
 						.from(Alias::new("events"))
 						.cond_where(
 							Condition::all()
-								.add(event_scope(workspace.is_none()))
+								.add(event_scope(workspace.is_none(), &access.identity.tenant))
 								.add(Expr::col(Alias::new("sequence")).gt(Expr::cust("$2"))),
 						)
 						.order_by(Alias::new("sequence"), Order::Asc)
-						.limit(500)
+						.limit(page_size as u64)
 						.to_string(PostgresQueryBuilder),
 				)
 				.bind(&visible)
 				.bind(cursor)
 				.fetch_all(&mut **access.tx)
 				.await?;
-				let exhausted = batch.len() < 500;
+				let exhausted = batch.len() < page_size;
+				scanned += batch.len();
 				for event in batch {
 					cursor = event.sequence;
 					if access.event_visible(&event).await? {

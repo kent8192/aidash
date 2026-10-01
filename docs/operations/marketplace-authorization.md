@@ -89,9 +89,13 @@ Scoped HTTP handlers have a 30-second deadline. Responses are serialized and ins
 
 Missing, foreign and unreadable resources/dependencies return generic 403; invalid credentials retain 401 behavior. Resource-independent malformed requests use 400/422. Authorized digest/version/revision conflicts use 409. Operator-only `marketplace.audit` events retain request and idempotency IDs, actor, policy revision, package/installation identity and digests, consulted audience/consent revisions and bounded outcomes. A denial is audited separately after the protected transaction rolls back. Neither bearer values nor configuration/secret contents enter this audit. Detailed policy audits and legacy/unknown events remain unavailable through subject Marketplace responses. Marketplace events disclose only a resource reference and mutation metadata after the current package/installation reader authorizes it. Dashboard caches are keyed by authority context and cleared after relevant 401/403 responses.
 
+Subject event queries select tenant/audience candidates before loading documents; audit and unrelated-tenant events do not consume the scan budget. Snapshot and polling requests evaluate at most 4,096 candidates. Polling advances its cursor across denied candidates, so clients can continue through hidden history without repeating the same page. Indexed tenant/package event references and audience membership support this filtering.
+
 The lock deliberately serializes Marketplace mutations for one database. It keeps the first implementation's ordering auditable; it is not a claim of unbounded publication throughput. Source content, retained revisions and provenance are not garbage-collected by this feature.
 
 Browser logout is ordered against pending requests, including SSE frame delivery. Session expiry is rechecked at response handoff. A durable Run reconstructs its credential/subject authority without the originating HTTP session; logout does not silently cancel previously admitted work, while credential, identity, mapping, policy and catalog revocation still apply.
+
+Browser operators retain identity, operator-grant and session leases for compatibility changes, activation and legacy adoption. Those mutations recheck session expiry before commit; a queued request cannot outlive logout or operator-grant revocation.
 
 ## Dashboard examples
 

@@ -579,8 +579,13 @@ pub(super) async fn approved(
 	.await?;
 	Ok(approved == Some(true))
 }
-pub(super) async fn activate(store: &Store, id: &str, input: Activate) -> Result<Installation> {
-	let mut tx = store.pool.begin().await?;
+pub(super) async fn activate(
+	store: &Store,
+	id: &str,
+	input: Activate,
+	browser: Option<&crate::dashboard_auth::BrowserOrigin>,
+) -> Result<Installation> {
+	let mut tx = operator_begin(store, browser).await?;
 	crate::authorization::Authorization::load(&mut tx, &input.tenant).await?;
 	lock(&mut tx, true).await?;
 	if input.enabled {
@@ -621,15 +626,19 @@ pub(super) async fn activate(store: &Store, id: &str, input: Activate) -> Result
 	install.activation_revision += 1;
 	put(&mut tx, "marketplace_installations", id, &install).await?;
 	store.event(&mut tx,None,"marketplace.activation_changed",json!({"installation":id,"tenant":input.tenant,"revision":input.revision,"enabled":input.enabled,"actor":"operator"})).await?;
-	tx.commit().await?;
+	operator_commit(tx, browser).await?;
 	Ok(install)
 }
 
 /// Explicit operator recovery copies legacy bytes/configuration into a new
 /// pending tenant revision. It neither claims nor mutates the legacy overlay.
-pub(super) async fn adopt(store: &Store, input: Adopt) -> Result<Installation> {
+pub(super) async fn adopt(
+	store: &Store,
+	input: Adopt,
+	browser: Option<&crate::dashboard_auth::BrowserOrigin>,
+) -> Result<Installation> {
 	crate::authorization::policy::identifier(&input.tenant)?;
-	let mut tx = store.pool.begin().await?;
+	let mut tx = operator_begin(store, browser).await?;
 	crate::authorization::Authorization::load(&mut tx, &input.tenant).await?;
 	lock(&mut tx, true).await?;
 	gate(&mut tx).await?;
@@ -647,7 +656,7 @@ pub(super) async fn adopt(store: &Store, input: Adopt) -> Result<Installation> {
 		)
 		.await?
 		.ok_or(Error::Forbidden)?;
-		tx.commit().await?;
+		operator_commit(tx, browser).await?;
 		return Ok(install);
 	}
 	let raw = definitions::raw(&mut tx, &input.source).await?;
@@ -792,6 +801,6 @@ pub(super) async fn adopt(store: &Store, input: Adopt) -> Result<Installation> {
 	let install = get(&mut tx, "marketplace_installations", &install.id)
 		.await?
 		.ok_or(Error::Forbidden)?;
-	tx.commit().await?;
+	operator_commit(tx, browser).await?;
 	Ok(install)
 }

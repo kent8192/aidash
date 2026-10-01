@@ -121,6 +121,34 @@ impl MigrationTrait for Migration {
 					.to_owned(),
 			)
 			.await?;
+		for (name, field) in [
+			("events_marketplace_tenant_sequence", "tenant"),
+			("events_marketplace_package_sequence", "key"),
+		] {
+			manager
+				.create_index(
+					Index::create()
+						.name(name)
+						.table(Alias::new("events"))
+						.col(Expr::cust(format!("data->>'{field}'")))
+						.col(Alias::new("sequence"))
+						.and_where(Expr::col(Alias::new("workspace_id")).is_null())
+						.and_where(Expr::col(Alias::new("kind")).like("marketplace.%"))
+						.and_where(Expr::col(Alias::new("kind")).ne("marketplace.audit"))
+						.to_owned(),
+				)
+				.await?;
+		}
+		manager
+			.create_index(
+				Index::create()
+					.name("marketplace_audiences_tenants")
+					.table(Alias::new("marketplace_audiences"))
+					.col(Expr::cust("document->'tenants'"))
+					.index_type(IndexType::Custom(Alias::new("gin").into_iden()))
+					.to_owned(),
+			)
+			.await?;
 		manager
 			.get_connection()
 			.execute(
@@ -160,6 +188,19 @@ impl MigrationTrait for Migration {
 			)
 			.await?;
 		metadata_shape(manager, false).await?;
+		for name in [
+			"events_marketplace_tenant_sequence",
+			"events_marketplace_package_sequence",
+		] {
+			manager
+				.drop_index(
+					Index::drop()
+						.name(name)
+						.table(Alias::new("events"))
+						.to_owned(),
+				)
+				.await?;
+		}
 		for name in TABLES.iter().rev() {
 			manager
 				.drop_table(Table::drop().table(Alias::new(*name)).to_owned())

@@ -348,13 +348,21 @@ async fn list_installations(
 ) -> Result<Response> {
 	let mut access = begin(&f.store, subject(&actor)?, false).await?;
 	let result = async {
-		let installs: Vec<Installation> =
-			documents(&mut access.tx, "marketplace_installations").await?;
+		use sea_orm::sea_query::{Alias, Expr, Order, PostgresQueryBuilder, Query};
+		let documents: Vec<serde_json::Value> = sqlx::query_scalar(
+			&Query::select()
+				.column(Alias::new("document"))
+				.from(Alias::new("marketplace_installations"))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
+				.order_by(Alias::new("key"), Order::Asc)
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(&access.identity.tenant)
+		.fetch_all(&mut **access.tx)
+		.await?;
 		let mut visible = vec![];
-		for install in installs
-			.into_iter()
-			.filter(|i| i.tenant == subject(&actor).expect("subject").tenant)
-		{
+		for document in documents {
+			let install: Installation = serde_json::from_value(document)?;
 			match installations::view(&mut access, &install.id, None, &f.store.node_id).await {
 				Ok(view) => visible.push(view),
 				Err(Error::Forbidden) => {}
@@ -411,6 +419,7 @@ async fn compatibility(
 async fn set_compatibility(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
+	browser: Option<Extension<crate::dashboard_auth::BrowserOrigin>>,
 	Json(input): Json<CompatibilityInput>,
 ) -> Result<Json<Compatibility>> {
 	operator(&actor)?;
@@ -419,7 +428,8 @@ async fn set_compatibility(
 			"confirm every serving instance and worker supports Marketplace contract 1".into(),
 		));
 	}
-	let mut tx = f.store.pool.begin().await?;
+	let origin = browser.as_ref().map(|Extension(origin)| origin);
+	let mut tx = operator_begin(&f.store, origin).await?;
 	lock(&mut tx, true).await?;
 	let current: Compatibility = get(&mut tx, "marketplace_gate", "v1")
 		.await?
@@ -441,27 +451,44 @@ async fn set_compatibility(
 			json!(next),
 		)
 		.await?;
-	tx.commit().await?;
+	operator_commit(tx, origin).await?;
 	Ok(Json(next))
 }
 #[utoipa::path(post,path="/marketplace/installations/{id}/activation",operation_id="marketplace_activate",params(("id"=String,Path)),request_body=Activate,responses((status=200,body=Installation)),security(("bearer_auth"=[])))]
 async fn activate(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
+	browser: Option<Extension<crate::dashboard_auth::BrowserOrigin>>,
 	Path(id): Path<String>,
 	Json(input): Json<Activate>,
 ) -> Result<Json<Installation>> {
 	operator(&actor)?;
-	Ok(Json(installations::activate(&f.store, &id, input).await?))
+	Ok(Json(
+		installations::activate(
+			&f.store,
+			&id,
+			input,
+			browser.as_ref().map(|Extension(origin)| origin),
+		)
+		.await?,
+	))
 }
 #[utoipa::path(post,path="/marketplace/adoptions",operation_id="marketplace_adopt",request_body=Adopt,responses((status=200,body=Installation)),security(("bearer_auth"=[])))]
 async fn adopt(
 	State(f): State<Federation>,
 	Extension(actor): Extension<Actor>,
+	browser: Option<Extension<crate::dashboard_auth::BrowserOrigin>>,
 	Json(input): Json<Adopt>,
 ) -> Result<Json<Installation>> {
 	operator(&actor)?;
-	Ok(Json(installations::adopt(&f.store, input).await?))
+	Ok(Json(
+		installations::adopt(
+			&f.store,
+			input,
+			browser.as_ref().map(|Extension(origin)| origin),
+		)
+		.await?,
+	))
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]

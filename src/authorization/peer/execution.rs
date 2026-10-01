@@ -106,6 +106,9 @@ pub(crate) async fn inspect_in(
 		&mut definitions,
 	)
 	.await?;
+	if !crate::marketplace::active(access, &entry).await? {
+		return Err(Error::Forbidden);
+	}
 	crate::marketplace::check_pinned(access, &entry).await?;
 	if !input.requirements.matches(&entry) {
 		return Err(Error::Invalid(

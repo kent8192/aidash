@@ -74,6 +74,7 @@ pub(crate) async fn settings(access: &mut Access, run: &Run) -> Result<AgentConf
 		"agent.execute",
 	)
 	.await?;
+	crate::marketplace::check_pinned(access, &entry).await?;
 	Ok(serde_json::from_value(entry.config)?)
 }
 pub(crate) async fn invoke(

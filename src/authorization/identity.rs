@@ -320,6 +320,16 @@ impl SubjectIdentity {
 		let Some(session) = &self.http_session else {
 			return Ok(());
 		};
+		session.current(tx, lock).await
+	}
+}
+
+impl HttpSession {
+	pub(crate) async fn current(
+		&self,
+		tx: &mut Transaction<'_, Postgres>,
+		lock: bool,
+	) -> Result<()> {
 		let mut query = Query::select();
 		query.column(Alias::new("id")).from(Alias::new("dashboard_sessions"))
 			.and_where(Expr::cust("id=$1 AND identity_id=$2 AND revoked_at IS NULL AND expires_at>clock_timestamp() AND last_activity_at>clock_timestamp()-$3::bigint*interval '1 second'"));
@@ -327,9 +337,9 @@ impl SubjectIdentity {
 			query.lock(LockType::Share);
 		}
 		let valid: Option<Uuid> = sqlx::query_scalar(&query.to_string(PostgresQueryBuilder))
-			.bind(session.id)
-			.bind(session.identity_id)
-			.bind(session.idle_seconds)
+			.bind(self.id)
+			.bind(self.identity_id)
+			.bind(self.idle_seconds)
 			.fetch_optional(&mut **tx)
 			.await?;
 		if valid.is_none() {

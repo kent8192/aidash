@@ -178,6 +178,38 @@ async fn tenant_publication_pending_installation_and_revisions(
 	let id = installed.1["installation"]["id"].as_str().unwrap();
 	let entry: Entry = serde_json::from_value(installed.1["entry"].clone()).unwrap();
 	assert_eq!(entry.installation.as_ref().unwrap().tenant, "a");
+	// Another tenant's document must never be loaded or decoded by this list.
+	// Its indexed owner remains enough to isolate even damaged foreign data.
+	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("marketplace_installations"))
+			.columns(["key", "document", "tenant", "package_key"].map(Alias::new))
+			.values_panic([
+				Expr::value("foreign-damaged-installation"),
+				Expr::value(json!({"damaged":true})),
+				Expr::value("b"),
+				Expr::value("foreign-package"),
+			])
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let listed = request(
+		&app,
+		&a,
+		"GET",
+		"/api/marketplace/installations",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		listed.0, 200,
+		"foreign data affected the tenant list: {listed:?}"
+	);
+	assert_eq!(listed.1.as_array().unwrap().len(), 1);
+	assert_eq!(listed.1[0]["installation"]["id"], id);
 	assert_eq!(
 		request(
 			&app,
@@ -1400,10 +1432,21 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 	let authorization = Authorization {
 		pool: f.store.pool.clone(),
 	};
+	let area_path = format!("/api/runs/{}/working-area", run.id);
+	let available = request(&app, &a, "GET", &area_path, Value::Null).await;
+	assert_eq!(
+		available.0, 404,
+		"the authorized Run has no working area: {available:?}"
+	);
 	authorization
 		.set_catalog("a", &reference("model"), 1, false, "operator")
 		.await
 		.unwrap();
+	let denied = request(&app, &a, "GET", &area_path, Value::Null).await;
+	assert_eq!(
+		denied.0, 403,
+		"a direct capability boundary must recheck pinned approvals: {denied:?}"
+	);
 	assert_eq!(
 		request(
 			&app,
@@ -1727,6 +1770,41 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 		.await
 		.0,
 		403
+	);
+	// Pending configuration must not replace the still-authorized active
+	// dependency when the publisher withdraws distribution to this recipient.
+	let mut authority = bundle("b", "user");
+	authority["policies"].as_array_mut().unwrap().push(json!({"id":"deny-pending","effect":"deny","subjects":{"any":true},"actions":["installation.read"],"resources":{"kinds":["installation"],"ids":[dep_local.1["installation"]["id"]]},"condition":{"op":"eq","left":{"source":"resource","path":"/installation_revision"},"right":{"source":"literal","value":2}}}));
+	policy(&f, "b", 1, authority).await;
+	assert_eq!(
+		request(
+			&app,
+			&a,
+			"PUT",
+			&format!(
+				"/api/marketplace/packages/{}/audience",
+				dependency["key"].as_str().unwrap()
+			),
+			json!({"expected_revision":2,"tenants":["a"]})
+		)
+		.await
+		.0,
+		200
+	);
+	let detail = request(
+		&app,
+		&b,
+		"GET",
+		&format!(
+			"/api/marketplace/packages/{}",
+			agent["key"].as_str().unwrap()
+		),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		detail.0, 200,
+		"the active local dependency must retain manifest access: {detail:?}"
 	);
 	common::cleanup(f, &url, &schema).await;
 }
@@ -2298,14 +2376,248 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 }
 
 #[rstest::rstest]
-#[case(false)]
-#[case(true)]
 #[tokio::test]
-async fn browser_logout_is_ordered_with_pending_marketplace_requests(
+async fn marketplace_event_polling_bounds_candidates_and_advances_past_denials(
 	#[future(awt)]
 	#[from(test_environment)]
 	environment: Arc<TestEnvironment>,
-	#[case] installation_wins: bool,
+) {
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = common::setup(&environment).await;
+	let app = api::router(f.clone());
+	let a = token(&f, "a", "user").await;
+	enable(&app, &f).await;
+	f.registry.register(tool("events")).await.unwrap();
+	approve(&f, "a", &reference("events")).await;
+	let package = publish(&app, &a, "events").await;
+	let installed = install(&app, &a, &package, &install_input(&package)).await;
+	assert_eq!(installed.0, 200, "{installed:?}");
+	let after = f
+		.store
+		.events(0, None, 1000)
+		.await
+		.unwrap()
+		.last()
+		.unwrap()
+		.sequence;
+	let identity = match (Authorization {
+		pool: f.store.pool.clone(),
+	})
+	.authenticate(&a)
+	.await
+	.unwrap()
+	{
+		aidash::authorization::identity::Actor::Subject(identity) => identity,
+		_ => unreachable!(),
+	};
+	let reader = aidash::authorization::workspace::Workspaces {
+		store: f.store.clone(),
+		identity,
+	};
+	let mut tx = f.store.pool.begin().await.unwrap();
+	for _ in 0..512 {
+		f.store
+			.event(
+				&mut tx,
+				None,
+				"marketplace.audit",
+				json!({"tenant":"a","installation":installed.1["installation"]["id"]}),
+			)
+			.await
+			.unwrap();
+		f.store
+			.event(
+				&mut tx,
+				None,
+				"marketplace.installed",
+				json!({"tenant":"b","installation":"foreign"}),
+			)
+			.await
+			.unwrap();
+	}
+	let mut denied_cursor = after;
+	for i in 0..4097 {
+		let event = f
+			.store
+			.event(
+				&mut tx,
+				None,
+				"marketplace.installed",
+				json!({"tenant":"a","installation":"removed-installation","revision":1}),
+			)
+			.await
+			.unwrap();
+		if i == 4095 {
+			denied_cursor = event.sequence;
+		}
+	}
+	tx.commit().await.unwrap();
+	// A state snapshot must release its authority lease after bounded work,
+	// even when older visible events exist behind thousands of denials.
+	let state = request(&app, &a, "GET", "/api/state", Value::Null).await;
+	assert_eq!(state.0, 200, "{state:?}");
+	assert_eq!(state.1["events"], json!([]));
+	let mut tx = f.store.pool.begin().await.unwrap();
+	let visible = f
+		.store
+		.event(
+			&mut tx,
+			None,
+			"marketplace.installed",
+			json!({"tenant":"a","installation":installed.1["installation"]["id"],"revision":1}),
+		)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
+	let (events, cursor) = reader.poll_events(after, None, 1000).await.unwrap();
+	assert!(
+		events.is_empty(),
+		"one poll must stop before the distant visible event"
+	);
+	assert_eq!(
+		cursor, denied_cursor,
+		"audits and foreign tenants must not consume the candidate budget"
+	);
+	let (events, cursor) = reader.poll_events(cursor, None, 1000).await.unwrap();
+	assert_eq!(
+		events.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+		vec![visible.sequence]
+	);
+	assert_eq!(cursor, visible.sequence);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_inspection_obeys_the_marketplace_compatibility_gate(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+	use tower::ServiceExt;
+	let _fixture = FIXTURE_LOCK.lock().await;
+	let (f, url, schema) = common::setup(&environment).await;
+	let app = api::router(f.clone());
+	let a = token(&f, "a", "user").await;
+	enable(&app, &f).await;
+	let model: Entry = serde_json::from_value(json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":"fixture"},"config":{"provider":"openrouter","model_id":"fixture/model","endpoint":"http://localhost:9","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
+	let agent: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"fixture"},"config":{"model":reference("model"),"instructions":"Installed executor"}})).unwrap();
+	for entry in [model, agent] {
+		let reference = EntityRef {
+			id: entry.id.clone(),
+			version: entry.version.clone(),
+		};
+		f.registry.register(entry).await.unwrap();
+		approve(&f, "a", &reference).await;
+	}
+	let package = publish(&app, &a, "agent").await;
+	let installed = install(&app, &a, &package, &install_input(&package)).await;
+	assert_eq!(installed.0, 200, "{installed:?}");
+	assert_eq!(
+		activate(&app, &f, "a", &installed.1, 1, 0, 0, true).await.0,
+		200
+	);
+	let entry = EntityRef {
+		id: installed.1["entry"]["id"].as_str().unwrap().into(),
+		version: "1.0.0".into(),
+	};
+	let mut authority = bundle("a", "user");
+	authority["subjects"]
+		[aidash::domain::qualified_agent(&f.config.node_id, &entry.id, &entry.version)] =
+		json!({"kind":"agent","roles":["manager"]});
+	policy(&f, "a", 1, authority).await;
+	let authorization = Authorization {
+		pool: f.store.pool.clone(),
+	};
+	let credential = authorization
+		.issue_credential("a", "viewer", 3600, "operator")
+		.await
+		.unwrap();
+	let peer = "aidash://marketplace-inspector";
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("peers"))
+			.columns(
+				[
+					"node_id",
+					"endpoint",
+					"credential_env",
+					"protocol_version",
+					"enabled",
+				]
+				.map(Alias::new),
+			)
+			.values_panic([
+				Expr::value(peer),
+				Expr::value("http://127.0.0.1:9"),
+				Expr::value("AIDASH_SECRET_TEST_PEER"),
+				Expr::value(aidash::config::PROTOCOL_VERSION),
+				Expr::value(true),
+			])
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let mapped = request(&app,&f.config.api_token,"POST","/api/authorization/a/peer-mappings",json!({"source_node":peer,"source_tenant":"source","source_subject":"viewer","credential_id":credential.credential.id,"expected_revision":0,"enabled":true})).await;
+	assert_eq!(mapped.0, 200, "{mapped:?}");
+	let inspect = || {
+		axum::http::Request::post("/federation/v0.1/scoped/execution/inspect")
+			.header(
+				"authorization",
+				format!(
+					"Bearer {}",
+					std::env::var("AIDASH_SECRET_TEST_PEER").unwrap()
+				),
+			)
+			.header("x-aidash-node", peer)
+			.header("x-aidash-protocol", aidash::config::PROTOCOL_VERSION)
+			.header("content-type", "application/json")
+			.body(axum::body::Body::from(
+				json!({"tenant":"source","subject":"viewer","agent":entry,"requirements":{}})
+					.to_string(),
+			))
+			.unwrap()
+	};
+	assert_eq!(app.clone().oneshot(inspect()).await.unwrap().status(), 200);
+	let disabled = request(
+		&app,
+		&f.config.api_token,
+		"PUT",
+		"/api/marketplace/compatibility",
+		json!({"enabled":false,"expected_revision":2,"compatible_instances_confirmed":true}),
+	)
+	.await;
+	assert_eq!(disabled.0, 200, "{disabled:?}");
+	assert_eq!(
+		app.clone().oneshot(inspect()).await.unwrap().status(),
+		403,
+		"an installed definition must not be disclosed while the gate is off"
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[case("install", "logout", false)]
+#[case("install", "logout", true)]
+#[case("compatibility", "logout", false)]
+#[case("compatibility", "logout", true)]
+#[case("activation", "logout", false)]
+#[case("activation", "logout", true)]
+#[case("adoption", "logout", false)]
+#[case("adoption", "logout", true)]
+#[case("compatibility", "operator_grant", false)]
+#[case("compatibility", "operator_grant", true)]
+#[case("compatibility", "expiry", false)]
+#[tokio::test]
+async fn browser_authority_is_ordered_with_pending_marketplace_mutations(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+	#[case] operation: &str,
+	#[case] revocation: &str,
+	#[case] mutation_wins: bool,
 ) {
 	use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 	use sha2::{Digest, Sha256};
@@ -2408,18 +2720,125 @@ async fn browser_logout_is_ordered_with_pending_marketplace_requests(
 	.execute(&f.store.pool)
 	.await
 	.unwrap();
-	let cookie_request = |path: &str, value: Value| {
-		axum::http::Request::post(path)
+
+	let operator = operation != "install";
+	if operator {
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("dashboard_operator_grants"))
+				.columns(["identity_id", "enabled", "revision"].map(Alias::new))
+				.values_panic([Expr::cust("$1"), Expr::value(true), Expr::value(1)])
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(identity)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	}
+	let (method, path, input, event_kind) = match operation {
+		"install" => (
+			"POST",
+			format!(
+				"/api/marketplace/packages/{}/install",
+				package["key"].as_str().unwrap()
+			),
+			install_input(&package),
+			"marketplace.installed",
+		),
+		"compatibility" => (
+			"PUT",
+			"/api/marketplace/compatibility".into(),
+			json!({"enabled":false,"expected_revision":2,"compatible_instances_confirmed":true}),
+			"marketplace.compatibility_changed",
+		),
+		"activation" => {
+			let installed = install(&app, &a, &package, &install_input(&package)).await;
+			assert_eq!(installed.0, 200, "{installed:?}");
+			(
+				"POST",
+				format!(
+					"/api/marketplace/installations/{}/activation",
+					installed.1["installation"]["id"].as_str().unwrap()
+				),
+				json!({"tenant":"a","revision":1,"expected_activation_revision":0,"expected_catalog_revision":0,"enabled":true}),
+				"marketplace.activation_changed",
+			)
+		}
+		"adoption" => {
+			f.registry.register(tool("browser-legacy")).await.unwrap();
+			f.registry
+				.publish(
+					&f.store.pool,
+					aidash::registry::Package {
+						entity: tool("browser-legacy"),
+						author: "legacy".into(),
+						permissions: vec![],
+						dependencies: vec![],
+					},
+				)
+				.await
+				.unwrap();
+			(
+				"POST",
+				"/api/marketplace/adoptions".into(),
+				json!({"tenant":"a","source":reference("browser-legacy"),"idempotency_key":Uuid::new_v4()}),
+				"marketplace.installed",
+			)
+		}
+		_ => unreachable!(),
+	};
+	let before = f
+		.store
+		.events(0, None, 1000)
+		.await
+		.unwrap()
+		.iter()
+		.filter(|e| e.kind == event_kind)
+		.count();
+	if revocation == "expiry" {
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("dashboard_sessions"))
+				.value(
+					Alias::new("expires_at"),
+					Expr::cust("clock_timestamp()+interval '2 seconds'"),
+				)
+				.and_where(Expr::cust("id=$1"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(session)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	}
+	let grant_revoke = Query::update()
+		.table(Alias::new("dashboard_operator_grants"))
+		.value(Alias::new("enabled"), false)
+		.value(Alias::new("revision"), Expr::cust("revision+1"))
+		.and_where(Expr::cust("identity_id=$1"))
+		.to_string(PostgresQueryBuilder);
+	let cookie_request = |method: &str, path: &str, value: Value| {
+		axum::http::Request::builder()
+			.method(method)
+			.uri(path)
 			.header("cookie", "aidash-session=marketplace-test-session")
 			.header("origin", "http://127.0.0.1:8080")
 			.header("x-aidash-csrf", "marketplace-test-csrf")
-			.header("x-aidash-context", format!("mapping:{mapping}"))
+			.header(
+				"x-aidash-context",
+				if operator {
+					"operator".into()
+				} else {
+					format!("mapping:{mapping}")
+				},
+			)
 			.header("content-type", "application/json")
 			.body(axum::body::Body::from(value.to_string()))
 			.unwrap()
 	};
 	let mut barrier = f.store.pool.begin().await.unwrap();
-	if installation_wins {
+	let wait_at_commit = mutation_wins || revocation == "expiry";
+	if wait_at_commit {
 		sqlx::query(
 			&Query::select()
 				.expr(Expr::cust("pg_advisory_xact_lock(71003201)"))
@@ -2428,6 +2847,12 @@ async fn browser_logout_is_ordered_with_pending_marketplace_requests(
 		.execute(&mut *barrier)
 		.await
 		.unwrap();
+	} else if revocation == "operator_grant" {
+		sqlx::query(&grant_revoke)
+			.bind(identity)
+			.execute(&mut *barrier)
+			.await
+			.unwrap();
 	} else {
 		sqlx::query(
 			&Query::update()
@@ -2441,41 +2866,75 @@ async fn browser_logout_is_ordered_with_pending_marketplace_requests(
 		.await
 		.unwrap();
 	}
-	let request = cookie_request(
-		&format!(
-			"/api/marketplace/packages/{}/install",
-			package["key"].as_str().unwrap()
-		),
-		install_input(&package),
-	);
+	let request = cookie_request(method, &path, input);
 	let app2 = app.clone();
 	let installing = tokio::spawn(async move { app2.oneshot(request).await.unwrap() });
 	wait_for_lock(
 		&f,
 		&schema,
-		if installation_wins {
+		if wait_at_commit {
 			"%71003201%"
+		} else if revocation == "operator_grant" {
+			"%dashboard_operator_grants%"
 		} else {
 			"%dashboard_sessions%"
 		},
 	)
 	.await;
-	let logging_out = if installation_wins {
-		let request = cookie_request("/auth/logout", json!({}));
-		let app2 = app.clone();
-		let task = tokio::spawn(async move { app2.oneshot(request).await.unwrap() });
-		wait_for_lock(&f, &schema, "%dashboard_sessions%").await;
+	let revoking = if mutation_wins {
+		let task = if revocation == "operator_grant" {
+			let pool = f.store.pool.clone();
+			let sql = grant_revoke.clone();
+			tokio::spawn(async move {
+				sqlx::query(&sql)
+					.bind(identity)
+					.execute(&pool)
+					.await
+					.unwrap();
+				200u16
+			})
+		} else {
+			let request = cookie_request("POST", "/auth/logout", json!({}));
+			let app2 = app.clone();
+			tokio::spawn(async move { app2.oneshot(request).await.unwrap().status().as_u16() })
+		};
+		wait_for_lock(
+			&f,
+			&schema,
+			if revocation == "operator_grant" {
+				"%dashboard_operator_grants%"
+			} else {
+				"%dashboard_sessions%"
+			},
+		)
+		.await;
 		Some(task)
 	} else {
 		None
 	};
+	if revocation == "expiry" {
+		tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+	}
 	barrier.commit().await.unwrap();
 	assert_eq!(
 		installing.await.unwrap().status().as_u16(),
-		if installation_wins { 200 } else { 401 }
+		if mutation_wins {
+			200
+		} else if revocation == "operator_grant" {
+			403
+		} else {
+			401
+		}
 	);
-	if let Some(task) = logging_out {
-		assert_eq!(task.await.unwrap().status(), 204);
+	if let Some(task) = revoking {
+		assert_eq!(
+			task.await.unwrap(),
+			if revocation == "operator_grant" {
+				200
+			} else {
+				204
+			}
+		);
 	}
 	assert_eq!(
 		f.store
@@ -2483,9 +2942,9 @@ async fn browser_logout_is_ordered_with_pending_marketplace_requests(
 			.await
 			.unwrap()
 			.iter()
-			.filter(|e| e.kind == "marketplace.installed")
+			.filter(|e| e.kind == event_kind)
 			.count(),
-		usize::from(installation_wins)
+		before + usize::from(mutation_wins)
 	);
 	// The separate durable credential stays valid after logout; the browser
 	// session does not become a lifetime requirement for an already admitted Run.
