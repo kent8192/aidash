@@ -149,6 +149,7 @@ examples/examples-twitter/static/admin/
 # Design/planning documents (local only)
 /CONTEXT.md
 /docs/adr/
+/docs/design/
 docs/plans/
 docs/superpowers/
 website/public/
