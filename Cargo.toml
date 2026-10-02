@@ -89,6 +89,7 @@ tower-http = { version = "0.6.7", features = [
   "timeout",
   "limit",
   "set-header",
+  "cors",
 ] }
 tower_governor = { version = "0.8", default-features = false, features = [
   "axum",

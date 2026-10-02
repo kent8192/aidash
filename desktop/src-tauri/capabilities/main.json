@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Only bundled main-window code can manage Aidash connections and sign-in.",
+  "windows": ["main"],
+  "permissions": [
+    "allow-connection-settings",
+    "allow-save-connection",
+    "allow-select-connection",
+    "allow-remove-connection",
+    "allow-desktop-login",
+    "allow-desktop-access",
+    "allow-desktop-logout"
+  ]
+}

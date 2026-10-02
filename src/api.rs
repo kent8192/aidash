@@ -295,7 +295,10 @@ pub fn router_with_event_streams(
 		.layer(Extension(slots))
 		.layer(Extension(event_streams))
 		.with_state(f);
-	crate::http::protect(router, &settings)
+	crate::http::protect(
+		router.layer(crate::dashboard_auth::desktop::cors()),
+		&settings,
+	)
 }
 fn bearer(headers: &HeaderMap) -> Option<String> {
 	use axum_extra::headers::{Authorization, HeaderMapExt, authorization::Bearer};
@@ -337,6 +340,7 @@ async fn api_auth(
 	let actor = if request
 		.headers()
 		.contains_key(axum::http::header::AUTHORIZATION)
+		&& crate::dashboard_auth::desktop::access_token(request.headers()).is_none()
 	{
 		let token = bearer(request.headers()).ok_or(Error::Unauthorized)?;
 		if same_secret(&token, &f.config.api_token) {
