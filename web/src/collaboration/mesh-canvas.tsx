@@ -9,13 +9,17 @@ import { Crosshair, Maximize, Minus, Plus, Scan } from "lucide-react";
 import type { MeshCopy } from "./mesh-copy";
 import { meshColors, meshIcons } from "./mesh-icons";
 import {
-  canvasEdges,
-  meshPositions,
+  resourceKey,
   type MeshGraph,
   type MeshKind,
   type MeshMode,
   type MeshNode,
 } from "./mesh-model";
+import {
+  graphRegionPositions,
+  graphRegions,
+  regionForNode,
+} from "./graph-regions";
 
 export type MeshLayout = "structured" | "force" | "circle";
 const iconUrls = Object.fromEntries(
@@ -27,63 +31,31 @@ const iconUrls = Object.fromEntries(
 
 function elements(
   graph: MeshGraph,
-  mode: MeshMode,
+  localNode: string,
+  showNodeFrames: boolean,
   label: (node: MeshNode) => string,
   copy: MeshCopy,
 ): ElementDefinition[] {
-  const positions = meshPositions(graph, mode);
-  const grouped = mode === "mesh" || mode === "topology";
-  const groups = new Map<string, { label: string; color: string }>();
-  const parent = (node: MeshNode) => {
-    if (!grouped) return undefined;
-    if (node.parent) return node.parent;
-    if (node.kind === "agent")
-      return node.remote ? `group:external:${node.nodeId}` : "group:local";
-    if (node.kind === "tool" || node.kind === "artifact")
-      return `group:${node.kind}`;
-  };
-  for (const n of graph.nodes) {
-    const p = parent(n);
-    if (p?.startsWith("group:"))
-      groups.set(p, {
-        label:
-          n.kind === "tool"
-            ? copy.tools
-            : n.kind === "artifact"
-              ? copy.artifacts
-              : n.remote
-                ? copy.external
-                : copy.local,
-        color: meshColors[n.kind],
-      });
-  }
-  const compoundIds = new Set(graph.nodes.map(parent).filter(Boolean));
+  const positions = graphRegionPositions(graph, localNode);
+  const regions = graphRegions(graph, localNode);
   return [
-    ...[...groups].map(([id, g]) => ({
-      data: { id, label: g.label, color: g.color },
-      classes: "mesh-group",
+    ...regions.map((region) => ({
+      data: { id: region.id, regionKind: region.kind, nodeId: region.nodeId },
+      classes: `mesh-group region-${region.kind} ${region.kind === "execution" && !showNodeFrames ? "region-hidden" : ""}`,
     })),
-    ...[...graph.nodes]
-      .sort((a, b) => Number(Boolean(parent(a))) - Number(Boolean(parent(b))))
-      .map((n) => ({
-        data: {
-          id: n.id,
-          label: label(n),
-          kind: n.kind,
-          parent: parent(n),
-          color: meshColors[n.kind],
-          icon: iconUrls[n.kind],
-        },
-        position: positions[n.id] ?? { x: 500, y: 400 },
-        classes: [
-          compoundIds.has(n.id) ? "mesh-group" : "mesh-node",
-          n.available ? "" : "unavailable",
-          mode === "execution" && ["task", "agent"].includes(n.kind)
-            ? "execution-card"
-            : "",
-        ].join(" "),
-      })),
-    ...canvasEdges(graph, grouped).map((e) => ({
+    ...[...graph.nodes].map((n) => ({
+      data: {
+        id: n.id,
+        label: label(n),
+        kind: n.kind,
+        parent: regionForNode(n)?.id,
+        color: meshColors[n.kind],
+        icon: iconUrls[n.kind],
+      },
+      position: positions[n.id] ?? { x: 500, y: 400 },
+      classes: ["mesh-node", n.available ? "" : "unavailable"].join(" "),
+    })),
+    ...graph.edges.map((e) => ({
       data: {
         id: e.id,
         source: e.source,
@@ -110,6 +82,8 @@ export function MeshCanvas({
   label,
   status,
   copy,
+  localNode,
+  showNodeFrames,
 }: {
   graph: MeshGraph;
   mode: MeshMode;
@@ -119,6 +93,8 @@ export function MeshCanvas({
   label: (node: MeshNode) => string;
   status: (node: MeshNode) => string;
   copy: MeshCopy;
+  localNode: string;
+  showNodeFrames: boolean;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const mini = useRef<HTMLCanvasElement>(null);
@@ -126,6 +102,7 @@ export function MeshCanvas({
   const runningLayout = useRef<Layouts | null>(null);
   const selectRef = useRef(select);
   const graphRef = useRef(graph);
+  const showFramesRef = useRef(showNodeFrames);
   const positions = useRef(new Map<string, { x: number; y: number }>());
   const resetKey = useRef("");
   const miniBounds = useRef({ x: 0, y: 0, scale: 1 });
@@ -134,11 +111,13 @@ export function MeshCanvas({
     x: number;
     y: number;
     points: Record<string, { x: number; y: number }>;
-  }>({ zoom: 1, x: 0, y: 0, points: {} });
+    regions: Record<string, { x: number; y: number }>;
+  }>({ zoom: 1, x: 0, y: 0, points: {}, regions: {} });
   useEffect(() => {
     selectRef.current = select;
     graphRef.current = graph;
-  }, [select, graph]);
+    showFramesRef.current = showNodeFrames;
+  }, [select, graph, showNodeFrames, localNode]);
   useEffect(() => {
     if (!host.current) return;
     const cy = cytoscape({
@@ -193,42 +172,35 @@ export function MeshCanvas({
           },
         },
         {
-          selector: "node.execution-card",
-          style: {
-            shape: "roundrectangle",
-            width: 220,
-            height: 88,
-            "background-position-x": "17%",
-            "background-position-y": "45%",
-            "background-width": 28,
-            "background-height": 28,
-            "underlay-opacity": 0,
-          },
-        },
-        {
           selector: "node.mesh-group",
           style: {
             shape: "roundrectangle",
-            label: "data(label)",
-            "font-size": 12,
-            "font-family": "DM Sans, Noto Sans JP, sans-serif",
-            "font-weight": 500,
-            color: "#c5d9d3",
-            "text-valign": "top",
-            "text-halign": "center",
-            "text-margin-x": 10,
-            "text-margin-y": 20,
             "background-color": "#102e27",
-            "background-opacity": 0.18,
+            "background-opacity": 0.16,
             "border-color": "#507b70",
             "border-style": "dashed",
             "border-width": 1,
-            padding: "42px",
-            "compound-sizing-wrt-labels": "include",
-            "min-width": "110px",
-            "min-height": "65px",
+            padding: "62px",
+            "min-width": "190px",
+            "min-height": "110px",
             "background-image": "none",
           },
+        },
+        {
+          selector: "node.region-execution",
+          style: { "border-color": "#9984bd", "background-color": "#242039" },
+        },
+        {
+          selector: "node.region-shared",
+          style: { "border-color": "#61a7a0", "background-color": "#103a36" },
+        },
+        {
+          selector: "node.region-configuration",
+          style: { "border-color": "#6f8d96", "background-color": "#182d35" },
+        },
+        {
+          selector: "node.region-hidden",
+          style: { "border-opacity": 0, "background-opacity": 0 },
         },
         {
           selector: "node.unavailable",
@@ -310,6 +282,15 @@ export function MeshCanvas({
               .nodes()
               .map((n) => [n.id(), { ...n.position() }]),
           ),
+          regions: Object.fromEntries(
+            cy.nodes(".mesh-group").map((n) => {
+              const bounds = n.boundingBox({ includeLabels: false });
+              return [
+                n.id(),
+                { x: (bounds.x1 + bounds.x2) / 2, y: bounds.y1 + 10 },
+              ];
+            }),
+          ),
         });
         cy.nodes()
           .not(":parent")
@@ -359,6 +340,17 @@ export function MeshCanvas({
     cy.on("tap", "node", (event) => {
       if (graphRef.current.nodes.some((n) => n.id === event.target.id()))
         selectRef.current(event.target.id());
+      else if (
+        showFramesRef.current &&
+        event.target.data("regionKind") === "execution"
+      )
+        selectRef.current(
+          resourceKey(
+            event.target.data("nodeId"),
+            "remote",
+            event.target.data("nodeId"),
+          ),
+        );
     });
     cy.on("pan zoom position add remove layoutstop", update);
     const observer = new ResizeObserver(() => {
@@ -377,7 +369,7 @@ export function MeshCanvas({
   useEffect(() => {
     const cy = instance.current;
     if (!cy) return;
-    const definitions = elements(graph, mode, label, copy);
+    const definitions = elements(graph, localNode, showNodeFrames, label, copy);
     const desired = new Set(definitions.map((e) => e.data.id));
     const key = `${mode}:${layout}`;
     const reset = key !== resetKey.current;
@@ -441,7 +433,7 @@ export function MeshCanvas({
       }
     }
     cy.emit("position");
-  }, [graph, mode, layout, label, copy]);
+  }, [graph, mode, layout, label, copy, localNode, showNodeFrames]);
   useEffect(() => {
     const cy = instance.current;
     if (!cy) return;
@@ -449,7 +441,13 @@ export function MeshCanvas({
     const selected = cy.getElementById(selectedId);
     selected.addClass("is-selected");
     selected.connectedEdges().addClass("is-connected");
-  }, [selectedId, graph, mode, layout, label, copy]);
+    for (const region of graphRegions(graph, localNode))
+      if (
+        region.kind === "execution" &&
+        resourceKey(region.nodeId, "remote", region.nodeId) === selectedId
+      )
+        cy.getElementById(region.id).addClass("is-selected");
+  }, [selectedId, graph, mode, layout, label, copy, localNode]);
   const zoom = (factor: number) => {
     const cy = instance.current;
     if (cy)
@@ -475,6 +473,46 @@ export function MeshCanvas({
           transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.zoom})`,
         }}
       >
+        {graphRegions(graph, localNode).map((region) => {
+          const point = camera.regions[region.id];
+          if (!point || (region.kind === "execution" && !showNodeFrames))
+            return null;
+          const workspace = graph.nodes.find(
+            (node) =>
+              node.kind === "workspace" &&
+              node.nodeId === region.nodeId &&
+              node.resourceId === region.workspaceId,
+          );
+          const heading =
+            region.kind === "execution"
+              ? `${copy.executionRegion} · ${region.nodeId}`
+              : region.kind === "shared"
+                ? `${copy.sharedData} · ${workspace ? label(workspace) : region.workspaceId} · ${copy.homeNode}: ${region.nodeId}`
+                : `${copy.configurationReferences} · ${region.nodeId}`;
+          return region.kind === "execution" ? (
+            <button
+              type="button"
+              className="mesh-region-label mesh-region-execution-label"
+              key={region.id}
+              style={{ left: point.x, top: point.y }}
+              onClick={() =>
+                select(resourceKey(region.nodeId, "remote", region.nodeId))
+              }
+              title={heading}
+            >
+              {heading}
+            </button>
+          ) : (
+            <span
+              className="mesh-region-label"
+              key={region.id}
+              style={{ left: point.x, top: point.y }}
+              title={heading}
+            >
+              {heading}
+            </span>
+          );
+        })}
         {graph.nodes.map((node) => {
           const point = camera.points[node.id];
           if (!point) return null;
@@ -482,7 +520,7 @@ export function MeshCanvas({
             <button
               type="button"
               key={node.id}
-              className={`mesh-node-label ${mode === "execution" && ["task", "agent"].includes(node.kind) ? "execution-label" : ""} ${selectedId === node.id ? "selected" : ""}`}
+              className={`mesh-node-label ${selectedId === node.id ? "selected" : ""}`}
               aria-pressed={selectedId === node.id}
               onClick={() => select(node.id)}
               onFocus={(event) => {
@@ -491,18 +529,10 @@ export function MeshCanvas({
                 if (cy) cy.center(cy.getElementById(node.id));
               }}
               style={{
-                left:
-                  point.x +
-                  (mode === "execution" && ["task", "agent"].includes(node.kind)
-                    ? 29
-                    : 0),
+                left: point.x,
                 top:
                   point.y +
-                  (mode === "execution" && ["task", "agent"].includes(node.kind)
-                    ? -23
-                    : node.kind === "goal" || node.kind === "workspace"
-                      ? 39
-                      : 29),
+                  (node.kind === "goal" || node.kind === "workspace" ? 39 : 29),
               }}
               title={`${label(node)} · ${copy.kinds[node.kind]}`}
             >

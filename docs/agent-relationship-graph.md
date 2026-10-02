@@ -61,22 +61,31 @@ application at `AIDASH_E2E_URL` (default `http://127.0.0.1:18080`).
 
 ## Workspace Graph View
 
-Open **Graph View** from the collaboration sidebar. The workspace selector scopes
-workspace, goal, task, conversation, artifact and recorded run activity. Authorized
-registry configuration remains available for context. The new canvas uses the
+Open **Graph View** from the collaboration sidebar. The workspace selector keeps
+only shared resources owned by the selected Home Workspace, its recorded Runs,
+Agents with an explicit Task, Run or Conversation relationship, and their
+referenced configuration. **All workspaces** groups shared resources separately
+by `(Home Node, Workspace)`. The canvas uses the
 existing Cytoscape dependency and Lucide icons. The user-provided Mesh + Accent
 logo kit supplies the sidebar, compact mark, sign-in wordmark and favicon; the
 original SVG/ICO files are kept in `web/public/brand` without redrawing.
 
-Five perspectives share the same authorized projection:
+Five perspectives share the same authorized projection and placement rules.
+Outlined execution regions contain only Agents and Runs, grouped by their
+executing Node. Shared Workspace data is grouped by Home Node and Workspace;
+referenced configuration has a separate origin-labeled group, and Humans remain
+outside these regions. A region appears only while it has visible resources.
+Peer controls remain available when an authorized Node has no visible region.
+The Node type filter controls execution frames without hiding Agent or Run
+resources. Individual Messages remain represented by their Conversation vertex.
 
-| Perspective     | Organization                                                                                                                                                       |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Agent mesh      | People and goals above tasks; agent clusters, tools, artifacts and discovered peers in separate groups.                                                            |
-| Collaboration   | A workspace at the center of its people, conversations, goals, agents, tasks and artifacts.                                                                        |
-| Knowledge graph | Goals, tasks and artifacts with their explicit producers, tools, models, skills and conversations.                                                                 |
-| Execution flow  | Request authors, delegating agents, task cards, executing agents and produced artifacts. Current task counts and a time-scaled event timeline accompany the graph. |
-| Topology        | Local and directly authorized peer nodes, separate agent clusters and configured tool links. Available to authorized Subjects and operators.                       |
+| Perspective     | Resource focus                                                           |
+| --------------- | ------------------------------------------------------------------------ |
+| Agent mesh      | Agents, Runs, Tasks, Goals, Artifacts and referenced configuration.      |
+| Collaboration   | Workspace, people, conversations and their recorded work.                |
+| Knowledge graph | Goals, Tasks, Artifacts and their explicit producers and dependencies.   |
+| Execution flow  | Recorded Tasks, Runs and events, with counts and a time-scaled timeline. |
+| Topology        | Visible Agents and their exact configuration relationships.              |
 
 **Agent relationships** retains the previous agent-focused exploration and topology
 controls. Agent-focus links open this perspective so exact entity selection stays
@@ -88,7 +97,8 @@ dialog is also unchanged.
 - Search names and resource IDs. Matching nodes and their immediate neighbors are
   retained within the active type and relation filters.
 - Filter node types and relation types, focus the selected neighborhood, switch to
-  the accessible relationship table, or reset the filters.
+  the accessible relationship table, or reset the filters. Focusing an execution
+  region retains its visible Agents and Runs and their immediate neighbors.
 - Select structured, force or circle layout. Drag nodes, pan, zoom, fit, center the
   selection, navigate with the minimap, or use fullscreen. Polling retains positions
   and camera state; changing perspective or layout computes a fresh arrangement.
@@ -129,10 +139,13 @@ read authorization. Remote Task descriptions, Artifact contents, message bodies,
 human requests and raw configuration are not sent. Remote inspector and search
 use only projected fields, never matching local IDs as a fallback. A local Run
 can connect to a remote Agent only when that Agent is in the current authorized
-projection. A selected local Workspace limits remote operational records to
+projection. A Home-observed Run keeps its authorized Home events and related
+Workspace even when its executor is remote or its Peer projection is expanded.
+A selected local Workspace limits remote operational records to
 explicitly related resources; selecting all Workspaces allows the receiving
-Node's own authorized Workspaces. Peer expansion does not traverse onward to a
-third Node.
+Node's own authorized Workspaces. Continuation resources retain their explicit
+Node and Workspace ownership even if their page omits the Workspace vertex.
+Peer expansion does not traverse onward to a third Node.
 
 Expanded projections refresh within 30 seconds while the view is visible.
 Denial, connection loss, expiry, collapse, context change and reload remove

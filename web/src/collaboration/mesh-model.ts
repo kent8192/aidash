@@ -49,6 +49,8 @@ export type MeshNode = {
   kind: MeshKind;
   name: Record<string, string>;
   nodeId: string;
+  /** Home details provenance for an observed Run; nodeId remains its executor. */
+  homeNodeId?: string;
   available: boolean;
   resourceId?: string;
   workspaceId?: string;
@@ -314,14 +316,16 @@ export function buildMeshGraph(
     )
       edge(author, owner, "delegates", "activity");
   }
+  const enabledPeers = new Set(
+    options.authorizedPeers ??
+      data.peers.filter((peer) => peer.enabled).map((peer) => peer.node_id),
+  );
   const activity = (
     options.runs ?? data.runs.map((run) => ({ node: nodeId, run }))
   )
     .filter(
       ({ node, run }) =>
-        (node === nodeId ||
-          data.access.kind === "operator" ||
-          options.authorizedPeers !== undefined) &&
+        (node === nodeId || enabledPeers.has(node)) &&
         (!run.home_node || run.home_node === nodeId) &&
         workspaceIds.has(run.workspace_id) &&
         (activeRun(run) || inWindow(run.updated_at, hours, now)),
@@ -332,16 +336,20 @@ export function buildMeshGraph(
         Date.parse(b.run.updated_at) - Date.parse(a.run.updated_at),
     );
   const statusSet = new Set<string>();
-  const enabledPeers = new Set(
-    data.peers.filter((peer) => peer.enabled).map((peer) => peer.node_id),
-  );
   for (const { node, run } of activity) {
-    const runNode = resource(
-      "run",
-      run.id,
-      `Run ${run.id.slice(0, 8)}`,
-      run.workspace_id,
-    );
+    // A remote Run is journaled on its executor. Keep that Node in its graph
+    // identity even when the Home supplies the Task and Workspace records.
+    const runNode = add({
+      id: resourceKey(node, "run", run.id),
+      kind: "run",
+      name: { en: `Run ${run.id.slice(0, 8)}` },
+      nodeId: node,
+      homeNodeId: run.home_node || nodeId,
+      resourceId: run.id,
+      workspaceId: run.workspace_id,
+      available: true,
+      remote: node !== nodeId,
+    });
     nodes.get(runNode)!.status =
       run.control === "PAUSED" ? "PAUSED" : run.phase;
     edge(
@@ -467,7 +475,7 @@ export function filterMeshGraph(
     kinds: readonly MeshKind[];
     query: string;
     relations?: readonly MeshRelation[];
-    focus?: string;
+    focus?: string | readonly string[];
     pin?: string;
     maxNodes?: number;
     maxEdges?: number;
@@ -514,10 +522,16 @@ export function filterMeshGraph(
         visible.add(e.source);
         visible.add(e.target);
       }
+  const focusIds = new Set(
+    typeof options.focus === "string"
+      ? [options.focus]
+      : (options.focus?.filter((id) => eligible.some((n) => n.id === id)) ??
+        []),
+  );
   if (options.focus) {
-    const adjacent = new Set([options.focus]);
+    const adjacent = new Set(focusIds);
     for (const e of edges)
-      if (e.source === options.focus || e.target === options.focus) {
+      if (focusIds.has(e.source) || focusIds.has(e.target)) {
         adjacent.add(e.source);
         adjacent.add(e.target);
       }
@@ -529,7 +543,7 @@ export function filterMeshGraph(
   // Share a crowded canvas across kinds so registry entries cannot exhaust the
   // budget before any workspace or recorded activity becomes visible.
   if (candidates.length > maxNodes) {
-    const priority = [options.focus, options.pin]
+    const priority = [...focusIds, options.pin]
       .map((id) => candidates.find((n) => n.id === id))
       .filter((n): n is MeshNode => Boolean(n));
     const groups = new Map<MeshKind, MeshNode[]>();

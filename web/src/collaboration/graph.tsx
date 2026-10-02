@@ -35,6 +35,7 @@ import {
   type MeshNode,
   type MeshRelation,
 } from "./mesh-model";
+import { workspaceGraph } from "./graph-regions";
 import { MeshInspector } from "./mesh-inspector";
 import type { MeshLayout } from "./mesh-canvas";
 import type { Selection } from "./details";
@@ -59,6 +60,9 @@ const supportedRelations = [
   "coordinates",
   "participates",
 ] as const;
+const projectionKinds = meshKinds.filter(
+  (kind) => kind !== "human" && kind !== "remote",
+);
 
 const validGraphTenant = (value: string) =>
   value.length > 0 &&
@@ -127,25 +131,7 @@ export function Graph({
   }, []);
   const graphMode = mode === "neighborhood" ? "mesh" : mode;
   const expandedKey = Object.keys(expansions).sort().join("\u0000");
-  const projectedKinds = useMemo(
-    () => kinds.filter((kind) => kind !== "human" && kind !== "remote"),
-    [kinds],
-  );
-  const projectedRelations = useMemo(
-    () =>
-      supportedRelations.filter(
-        (relation) => !relations || relations.includes(relation),
-      ),
-    [relations],
-  );
-  const scope = JSON.stringify([
-    graphWorkspace,
-    graphMode,
-    [...projectedKinds].sort(),
-    [...projectedRelations].sort(),
-    hours,
-    targetTenant,
-  ]);
+  const scope = JSON.stringify([graphWorkspace, hours, targetTenant]);
   useEffect(() => {
     setExpansions((previous) => {
       if (Object.values(previous).every((value) => value.scope === scope))
@@ -240,9 +226,11 @@ export function Graph({
           node_id: peer,
           scope_workspace: graphWorkspace || null,
           depth: 1 as const,
-          mode: graphMode,
-          kinds: projectedKinds,
-          relations: projectedRelations,
+          // Workspace relevance must not disappear when a perspective hides
+          // Runs or the viewer turns off a display-only resource filter.
+          mode: "mesh" as const,
+          kinds: projectionKinds,
+          relations: supportedRelations,
           hours,
           limit: 80,
           target_tenant: data.access.kind === "operator" ? targetTenant : null,
@@ -291,15 +279,7 @@ export function Graph({
         );
       }
     },
-    [
-      graphWorkspace,
-      graphMode,
-      projectedKinds,
-      projectedRelations,
-      hours,
-      targetTenant,
-      data.access.kind,
-    ],
+    [graphWorkspace, hours, targetTenant, data.access.kind],
   );
   useEffect(() => {
     if (mode === "neighborhood" || document.hidden) return;
@@ -357,7 +337,7 @@ export function Graph({
       ),
     [expansions, peerIds, scope, now],
   );
-  const full = useMemo(
+  const merged = useMemo(
     () =>
       mergeGraphPages(
         buildMeshGraph(data, {
@@ -373,24 +353,49 @@ export function Graph({
       ),
     [data, graphWorkspace, runs, peerIds, pages, hours, now],
   );
-  useEffect(() => {
-    if (selectedId && !full.nodes.some((node) => node.id === selectedId))
-      setSelectedId("");
-    if (focused && !full.nodes.some((node) => node.id === focused))
-      setFocused("");
-  }, [full, selectedId, focused]);
-  const graph = useMemo(
-    () =>
-      filterMeshGraph(full, {
-        mode: graphMode,
-        kinds,
-        query: search,
-        relations,
-        focus: focused,
-        pin: selectedId,
-      }),
-    [full, graphMode, kinds, search, relations, focused, selectedId],
+  const full = useMemo(
+    () => workspaceGraph(merged, data.node.id, graphWorkspace, data),
+    [merged, data, graphWorkspace],
   );
+  useEffect(() => {
+    const stillVisible = (id: string) => {
+      if (full.nodes.some((node) => node.id === id)) return true;
+      const boundary = merged.nodes.find(
+        (node) => node.id === id && node.kind === "remote",
+      );
+      return (
+        !!boundary &&
+        full.nodes.some(
+          (node) =>
+            node.nodeId === boundary.nodeId &&
+            (node.kind === "agent" || node.kind === "run"),
+        )
+      );
+    };
+    if (selectedId && !stillVisible(selectedId)) setSelectedId("");
+    if (focused && !stillVisible(focused)) setFocused("");
+  }, [full, merged, selectedId, focused]);
+  const graph = useMemo(() => {
+    const boundary = merged.nodes.find(
+      (node) => node.id === focused && node.kind === "remote",
+    );
+    return filterMeshGraph(full, {
+      mode: graphMode,
+      kinds,
+      query: search,
+      relations,
+      focus: boundary
+        ? full.nodes
+            .filter(
+              (node) =>
+                node.nodeId === boundary.nodeId &&
+                (node.kind === "agent" || node.kind === "run"),
+            )
+            .map((node) => node.id)
+        : focused,
+      pin: selectedId,
+    });
+  }, [full, merged, graphMode, kinds, search, relations, focused, selectedId]);
   const labels = useMemo(
     () =>
       disambiguateLabels(
@@ -410,8 +415,9 @@ export function Graph({
     [full.nodes, locale, copy],
   );
   const label = useCallback(
-    (n: MeshNode) => labels.get(n.id) ?? copy.missing,
-    [labels, copy],
+    (n: MeshNode) =>
+      labels.get(n.id) ?? n.name[locale] ?? n.name.en ?? copy.missing,
+    [labels, copy, locale],
   );
   const status = (n: MeshNode) =>
     n.status === "LOCAL"
@@ -427,6 +433,10 @@ export function Graph({
               : copy.missing;
   const selected =
     graph.nodes.find((n) => n.id === selectedId) ??
+    merged.nodes.find(
+      (n) =>
+        n.id === selectedId && n.kind === "remote" && kinds.includes("remote"),
+    ) ??
     (!selectedId
       ? (graph.nodes.find(
           (n) =>
@@ -469,7 +479,7 @@ export function Graph({
   };
   const selectConnected = (id: string) => {
     if (!graph.nodes.some((n) => n.id === id)) {
-      const target = full.nodes.find((n) => n.id === id);
+      const target = merged.nodes.find((n) => n.id === id);
       setMode(target?.kind === "remote" ? "topology" : "mesh");
       setKinds([...meshKinds]);
       setSearch("");
@@ -967,6 +977,8 @@ export function Graph({
                     label={label}
                     status={status}
                     copy={copy}
+                    localNode={data.node.id}
+                    showNodeFrames={kinds.includes("remote")}
                   />
                 </Suspense>
               )}
