@@ -1,7 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import cytoscape, { type Core } from "cytoscape";
 import type { AgentGraph, GraphNode } from "../agent-graph/model";
 import type { GraphCopy } from "../agent-graph/copy";
+import { Scan } from "lucide-react";
+import { useGraphFit } from "../graph-fit-view";
+import { cytoscapeFit } from "./graph-camera";
 import { synchronizeGraph } from "./cytoscape-model";
 
 export function CytoscapeCanvas({
@@ -18,8 +21,32 @@ export function CytoscapeCanvas({
   copy: GraphCopy;
 }) {
   const container = useRef<HTMLDivElement>(null);
+  const needsFraming = useRef(true);
+  const root = useRef(graph.rootId);
+  const fitDescription = useId();
   const instance = useRef<Core | null>(null);
   const onSelect = useRef(select);
+  const fit = useGraphFit(
+    container,
+    () => {
+      const cy = instance.current;
+      return cy && container.current && cy.nodes().length === graph.nodes.length
+        ? cytoscapeFit(cy, container.current, 0.15)
+        : null;
+    },
+    (camera) => {
+      needsFraming.current = false;
+      instance.current?.viewport({
+        zoom: camera.zoom,
+        pan: { x: camera.x, y: camera.y },
+      });
+    },
+    graph.rootId,
+  );
+  useEffect(() => {
+    if (needsFraming.current && fit.available && graph.nodes.length)
+      fit.request();
+  });
   useEffect(() => {
     onSelect.current = select;
   }, [select]);
@@ -101,10 +128,12 @@ export function CytoscapeCanvas({
   useEffect(() => {
     const cy = instance.current;
     if (!cy) return;
-    const empty = cy.nodes().empty();
+    if (root.current !== graph.rootId) {
+      root.current = graph.rootId;
+      needsFraming.current = true;
+    }
     synchronizeGraph(cy, graph, label);
     // Positions are deterministic; expansions retain both the camera and existing nodes.
-    if (empty) cy.fit(undefined, 42);
   }, [graph, label]);
   useEffect(() => {
     const cy = instance.current;
@@ -128,6 +157,8 @@ export function CytoscapeCanvas({
         <button
           type="button"
           onClick={() => {
+            fit.cancel();
+            needsFraming.current = false;
             const cy = instance.current;
             if (cy) cy.zoom(Math.min(cy.maxZoom(), cy.zoom() * 1.25));
           }}
@@ -138,6 +169,8 @@ export function CytoscapeCanvas({
         <button
           type="button"
           onClick={() => {
+            fit.cancel();
+            needsFraming.current = false;
             const cy = instance.current;
             if (cy) cy.zoom(Math.max(cy.minZoom(), cy.zoom() / 1.25));
           }}
@@ -147,13 +180,23 @@ export function CytoscapeCanvas({
         </button>
         <button
           type="button"
-          onClick={() => instance.current?.fit(undefined, 40)}
+          className="graph-fit-button"
+          aria-label={copy.fit}
+          title={
+            fit.available ? copy.fit : `${copy.fit}: ${copy.fitUnavailable}`
+          }
+          aria-describedby={fitDescription}
+          disabled={!fit.available}
+          onClick={fit.request}
         >
-          {copy.fit}
+          <Scan size={16} aria-hidden="true" />
+          <span>{copy.fit}</span>
         </button>
         <button
           type="button"
           onClick={() => {
+            fit.cancel();
+            needsFraming.current = false;
             const cy = instance.current;
             if (cy) cy.center(cy.getElementById(selectedId));
           }}
@@ -161,6 +204,9 @@ export function CytoscapeCanvas({
           {copy.focus}
         </button>
       </div>
+      <span id={fitDescription} className="graph-fit-status" role="status">
+        {fit.available ? "" : copy.fitUnavailable}
+      </span>
       <div
         ref={container}
         className="collab-cytoscape"

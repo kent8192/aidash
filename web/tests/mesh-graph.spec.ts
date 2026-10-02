@@ -1,8 +1,15 @@
 import { expect, test, type Page } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 import { meshScene } from "./mesh-scene.mjs";
+import type { Core } from "cytoscape";
+import { cytoscapeCamera, expectCytoscapeFitted } from "./graph-fit-assertions";
 
-async function setup(page: Page, subject = false, extraWorkspace = false) {
+async function setup(
+  page: Page,
+  subject = false,
+  extraWorkspace = false,
+  locale = "en-US",
+) {
   const scene = meshScene();
   if (extraWorkspace) {
     scene.data.workspaces.push({
@@ -42,8 +49,9 @@ async function setup(page: Page, subject = false, extraWorkspace = false) {
     "synthetic-mesh-test",
     subject ? { tenant: "acme", name: "ryota" } : undefined,
   );
-  await page.addInitScript(() =>
-    localStorage.setItem("aidash-locale", "en-US"),
+  await page.addInitScript(
+    (locale) => localStorage.setItem("aidash-locale", locale),
+    locale,
   );
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -71,6 +79,8 @@ async function setup(page: Page, subject = false, extraWorkspace = false) {
   await page.goto("/graph?channel=product-lab");
   await expect(page.locator(".mesh-canvas canvas").first()).toBeVisible();
   await expect(page.locator(".mesh-node-label").first()).toBeVisible();
+  // Fit samples current geometry; later font arrival must not trigger a refit.
+  await page.evaluate(() => document.fonts.ready.then(() => undefined));
   return {
     errors,
     warnings,
@@ -189,7 +199,7 @@ test("connected local node opens topology and relationship controls only show ac
   const { errors } = await setup(page);
   await page.getByLabel("Graph perspective").selectOption("topology");
   await page
-    .locator(".mesh-inspector .mesh-connected-node")
+    .locator(".mesh-region-execution-label")
     .filter({ hasText: "aidash://product-lab" })
     .click();
   await expect(page.getByLabel("Graph perspective")).toHaveValue("topology");
@@ -253,6 +263,9 @@ test("all perspectives and layout engines render and execution events select tas
 }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   const { errors, warnings } = await setup(page);
+  await page
+    .getByRole("button", { name: "Fit entire graph", exact: true })
+    .click();
   for (const mode of [
     "mesh",
     "collaboration",
@@ -282,43 +295,27 @@ test("all perspectives and layout engines render and execution events select tas
         "Research & Plan",
       );
     }
-    // Labels follow Cytoscape pan/zoom through an animation-frame projection.
-    await page.evaluate(
-      () =>
-        new Promise<void>((resolve) =>
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-        ),
-    );
-    const clipped = await page
-      .locator(".mesh-node-label")
-      .evaluateAll((labels) => {
-        const stage = document
-          .querySelector(".mesh-stage")!
-          .getBoundingClientRect();
-        return labels
-          .filter((label) => {
-            const r = label.getBoundingClientRect();
-            return (
-              r.bottom > stage.bottom + 1 ||
-              r.top < stage.top - 1 ||
-              r.left < stage.left - 1 ||
-              r.right > stage.right + 1
-            );
-          })
-          .map((label) => label.textContent);
-      });
-    expect(
-      clipped,
-      `${mode} fits its own canvas after a perspective change`,
-    ).toEqual([]);
+    await expectCytoscapeFitted(page.locator(".mesh-canvas"));
+    await page.locator(".mesh-canvas").evaluate((element) => {
+      const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;
+      cy.zoom(2);
+      cy.pan({ x: 50000, y: -50000 });
+    });
+    await page
+      .getByRole("button", { name: "Fit entire graph", exact: true })
+      .click();
+    await expectCytoscapeFitted(page.locator(".mesh-canvas"));
     await page.screenshot({ path: `test-results/mesh-${mode}.png` });
-  }
-  for (const layout of ["force", "circle", "structured"]) {
-    await page.getByLabel("Layout", { exact: true }).selectOption(layout);
-    await expect(page.locator(".mesh-node-label").first()).toBeVisible();
-    await page.getByRole("button", { name: "Zoom in", exact: true }).click();
-    await page.getByRole("button", { name: "Zoom out", exact: true }).click();
-    await page.getByRole("button", { name: "Fit graph", exact: true }).click();
+    for (const layout of ["force", "circle", "structured"]) {
+      await page.getByLabel("Layout", { exact: true }).selectOption(layout);
+      await expect(page.locator(".mesh-node-label").first()).toBeVisible();
+      await page.getByRole("button", { name: "Zoom in", exact: true }).click();
+      await page.getByRole("button", { name: "Zoom out", exact: true }).click();
+      await page
+        .getByRole("button", { name: "Fit entire graph", exact: true })
+        .click();
+      await expectCytoscapeFitted(page.locator(".mesh-canvas"));
+    }
   }
   expect(errors).toEqual([]);
   expect(warnings).toEqual([]);
@@ -397,3 +394,234 @@ for (const viewport of [
     expect(errors).toEqual([]);
   });
 }
+
+test("whole-graph fit recovers all labels and groups below the former zoom floor", async ({
+  page,
+}) => {
+  await setup(page);
+  const state = await page.locator(".mesh-canvas").evaluate((element) => {
+    const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;
+    cy.nodes()
+      .not(":parent")
+      .forEach((node, index) => {
+        node.position({ x: index * 12000, y: (index % 3) * 10000 });
+      });
+    cy.zoom(2);
+    cy.pan({ x: 50000, y: -50000 });
+    return cy
+      .nodes()
+      .map((node) => ({ id: node.id(), position: node.position() }));
+  });
+  const fit = page.getByRole("button", { name: /^Fit (entire )?graph$/ });
+  await fit.click();
+  await expectCytoscapeFitted(page.locator(".mesh-canvas"));
+  await expect(fit).toHaveText("Fit entire graph");
+  const after = await page.locator(".mesh-canvas").evaluate((element) => {
+    const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;
+    return {
+      zoom: cy.zoom(),
+      nodes: cy
+        .nodes()
+        .map((node) => ({ id: node.id(), position: node.position() })),
+    };
+  });
+  expect(after.zoom).toBeGreaterThan(0);
+  expect(after.zoom).toBeLessThan(0.12);
+  expect(after.nodes).toEqual(state);
+  await expect(page.locator(".mesh-inspector h2")).toHaveText("Planner Agent");
+  await page.getByRole("button", { name: "Zoom out", exact: true }).click();
+  const zoomedOut = await cytoscapeCamera(page.locator(".mesh-canvas"));
+  expect(zoomedOut.zoom).toBeLessThan(after.zoom);
+  await page.getByRole("button", { name: "Zoom in", exact: true }).click();
+  expect(
+    (await cytoscapeCamera(page.locator(".mesh-canvas"))).zoom,
+  ).toBeCloseTo(after.zoom, 8);
+});
+
+for (const locale of ["en-US", "ja-JP"]) {
+  test(`whole-graph fit keeps its label and keyboard operation above a compact inspector in ${locale}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await setup(page, false, false, locale);
+    const canvas = page.locator(".mesh-canvas");
+    const fit = page.getByRole("button", {
+      name: locale === "ja-JP" ? "全体表示" : "Fit entire graph",
+      exact: true,
+    });
+    await expect(fit).toBeEnabled();
+    await expect(fit).toBeInViewport();
+    await expect(fit).toHaveText(
+      locale === "ja-JP" ? "全体表示" : "Fit entire graph",
+    );
+    const before = await cytoscapeCamera(canvas);
+    for (const key of ["Enter", "Space"]) {
+      await canvas.evaluate((element) => {
+        const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg
+          .cy;
+        cy.zoom(2);
+        cy.pan({ x: -50000, y: 50000 });
+      });
+      await fit.focus();
+      await fit.press(key);
+      await expectCytoscapeFitted(canvas);
+      await expect(fit).toBeFocused();
+    }
+    const after = await cytoscapeCamera(canvas);
+    expect(after.nodes).toEqual(before.nodes);
+    await expect(page.locator(".mesh-inspector")).toBeVisible();
+    await fit.click();
+    await expectCytoscapeFitted(canvas);
+    const repeated = await cytoscapeCamera(canvas);
+    expect(repeated.zoom).toBeCloseTo(after.zoom, 8);
+    expect(repeated.pan.x).toBeCloseTo(after.pan.x, 6);
+    expect(repeated.pan.y).toBeCloseTo(after.pan.y, 6);
+    await page.screenshot({
+      path: `test-results/whole-graph-fit-${locale}-390.png`,
+    });
+  });
+}
+
+test("empty filters and viewport changes preserve the camera until explicit fit", async ({
+  page,
+}) => {
+  await setup(page);
+  const canvas = page.locator(".mesh-canvas");
+  const fit = page.getByRole("button", {
+    name: "Fit entire graph",
+    exact: true,
+  });
+  await page.getByRole("button", { name: "Zoom in", exact: true }).click();
+  const before = await cytoscapeCamera(canvas);
+  await page.getByRole("searchbox").fill("nothing-matches");
+  await expect(
+    page.getByRole("heading", { name: "No matching nodes" }),
+  ).toBeVisible();
+  await expect(fit).toBeDisabled();
+  await expect
+    .poll(() =>
+      page.locator(".mesh-minimap canvas").evaluate((element) => {
+        const canvas = element as HTMLCanvasElement;
+        return canvas
+          .getContext("2d")!
+          .getImageData(0, 0, canvas.width, canvas.height)
+          .data.every((value) => value === 0);
+      }),
+    )
+    .toBe(true);
+  expect((await cytoscapeCamera(canvas)).zoom).toEqual(before.zoom);
+  await page.getByRole("searchbox").fill("");
+  await expect(fit).toBeEnabled();
+  expect((await cytoscapeCamera(canvas)).pan).toEqual(before.pan);
+  await page
+    .getByRole("button", { name: "Close details", exact: true })
+    .click();
+  await page.setViewportSize({ width: 900, height: 600 });
+  expect((await cytoscapeCamera(canvas)).zoom).toEqual(before.zoom);
+  expect((await cytoscapeCamera(canvas)).pan).toEqual(before.pan);
+  await fit.click();
+  await expectCytoscapeFitted(canvas);
+  const fitted = await cytoscapeCamera(canvas);
+  await canvas.evaluate((element) => {
+    (element as HTMLElement).style.display = "none";
+  });
+  await expect(fit).toBeDisabled();
+  await canvas.evaluate((element) => {
+    (element as HTMLElement).style.display = "";
+  });
+  await expect(fit).toBeEnabled();
+  expect((await cytoscapeCamera(canvas)).pan).toEqual(fitted.pan);
+  expect((await cytoscapeCamera(canvas)).zoom).toEqual(fitted.zoom);
+  await page.locator(".mesh-camera").evaluate((element) => {
+    const buttons = [...element.querySelectorAll<HTMLButtonElement>("button")];
+    buttons
+      .find((button) => button.textContent?.includes("Fit entire graph"))!
+      .click();
+    buttons[0].click();
+  });
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  expect((await cytoscapeCamera(canvas)).zoom).toBeCloseTo(
+    fitted.zoom * 1.25,
+    8,
+  );
+});
+
+test("agent neighborhood fits its current nodes and labels without resetting exploration", async ({
+  page,
+}) => {
+  await setup(page);
+  const focus = JSON.stringify([
+    "entity",
+    "aidash://product-lab",
+    "agent",
+    "planner",
+    "1.0.0",
+  ]);
+  await page.goto(
+    `/graph?channel=product-lab&focus=${encodeURIComponent(focus)}`,
+  );
+  const canvas = page.locator(".collab-cytoscape");
+  await expect(canvas.locator("canvas").first()).toBeVisible();
+  const fit = page.getByRole("button", {
+    name: "Fit entire graph",
+    exact: true,
+  });
+  await expect(fit).toBeEnabled();
+  const before = await canvas.evaluate((element) => {
+    const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;
+    cy.nodes().forEach((node, index) =>
+      node.position({ x: index * 15000, y: (index % 2) * 40000 }),
+    );
+    cy.zoom(3);
+    cy.pan({ x: 50000, y: 50000 });
+    return cy
+      .nodes()
+      .map((node) => ({ id: node.id(), position: node.position() }));
+  });
+  await fit.focus();
+  await fit.press("Enter");
+  await expectCytoscapeFitted(canvas);
+  const after = await cytoscapeCamera(canvas);
+  expect(after.nodes).toEqual(before);
+  expect(after.zoom).toBeGreaterThan(0);
+  expect(after.zoom).toBeLessThan(0.15);
+  await page.getByRole("button", { name: "Zoom in", exact: true }).click();
+  expect((await cytoscapeCamera(canvas)).zoom).toBeCloseTo(
+    after.zoom * 1.25,
+    8,
+  );
+  await expect(page.getByLabel("Graph perspective")).toHaveValue(
+    "neighborhood",
+  );
+});
+
+test("a filtered single resource is centered without automatic magnification", async ({
+  page,
+}) => {
+  await setup(page);
+  await page.getByLabel("Graph perspective").selectOption("collaboration");
+  for (const checkbox of await page
+    .locator(".mesh-filters")
+    .getByRole("checkbox")
+    .all()) {
+    if ((await checkbox.locator("..").innerText()).trim() !== "Conversations")
+      await checkbox.uncheck();
+  }
+  const canvas = page.locator(".mesh-canvas");
+  await expect(page.locator(".mesh-node-label")).toHaveCount(1);
+  await canvas.evaluate((element) => {
+    const cy = (element as HTMLElement & { _cyreg: { cy: Core } })._cyreg.cy;
+    cy.zoom(2.5);
+    cy.pan({ x: -10000, y: 10000 });
+  });
+  await page
+    .getByRole("button", { name: "Fit entire graph", exact: true })
+    .click();
+  await expectCytoscapeFitted(canvas);
+  expect((await cytoscapeCamera(canvas)).zoom).toBe(1);
+});

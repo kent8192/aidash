@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import cytoscape, {
   type Core,
@@ -6,16 +6,23 @@ import cytoscape, {
   type Layouts,
 } from "cytoscape";
 import { Crosshair, Maximize, Minus, Plus, Scan } from "lucide-react";
+import { useGraphFit } from "../graph-fit-view";
+import type { Bounds } from "../graph-fit";
+import { cytoscapeFit } from "./graph-camera";
 import type { MeshCopy } from "./mesh-copy";
 import { meshColors, meshIcons } from "./mesh-icons";
 import {
-  canvasEdges,
-  meshPositions,
+  resourceKey,
   type MeshGraph,
   type MeshKind,
   type MeshMode,
   type MeshNode,
 } from "./mesh-model";
+import {
+  graphRegionPositions,
+  graphRegions,
+  regionForNode,
+} from "./graph-regions";
 
 export type MeshLayout = "structured" | "force" | "circle";
 const iconUrls = Object.fromEntries(
@@ -27,63 +34,31 @@ const iconUrls = Object.fromEntries(
 
 function elements(
   graph: MeshGraph,
-  mode: MeshMode,
+  localNode: string,
+  showNodeFrames: boolean,
   label: (node: MeshNode) => string,
   copy: MeshCopy,
 ): ElementDefinition[] {
-  const positions = meshPositions(graph, mode);
-  const grouped = mode === "mesh" || mode === "topology";
-  const groups = new Map<string, { label: string; color: string }>();
-  const parent = (node: MeshNode) => {
-    if (!grouped) return undefined;
-    if (node.parent) return node.parent;
-    if (node.kind === "agent")
-      return node.remote ? `group:external:${node.nodeId}` : "group:local";
-    if (node.kind === "tool" || node.kind === "artifact")
-      return `group:${node.kind}`;
-  };
-  for (const n of graph.nodes) {
-    const p = parent(n);
-    if (p?.startsWith("group:"))
-      groups.set(p, {
-        label:
-          n.kind === "tool"
-            ? copy.tools
-            : n.kind === "artifact"
-              ? copy.artifacts
-              : n.remote
-                ? copy.external
-                : copy.local,
-        color: meshColors[n.kind],
-      });
-  }
-  const compoundIds = new Set(graph.nodes.map(parent).filter(Boolean));
+  const positions = graphRegionPositions(graph, localNode);
+  const regions = graphRegions(graph, localNode);
   return [
-    ...[...groups].map(([id, g]) => ({
-      data: { id, label: g.label, color: g.color },
-      classes: "mesh-group",
+    ...regions.map((region) => ({
+      data: { id: region.id, regionKind: region.kind, nodeId: region.nodeId },
+      classes: `mesh-group region-${region.kind} ${region.kind === "execution" && !showNodeFrames ? "region-hidden" : ""}`,
     })),
-    ...[...graph.nodes]
-      .sort((a, b) => Number(Boolean(parent(a))) - Number(Boolean(parent(b))))
-      .map((n) => ({
-        data: {
-          id: n.id,
-          label: label(n),
-          kind: n.kind,
-          parent: parent(n),
-          color: meshColors[n.kind],
-          icon: iconUrls[n.kind],
-        },
-        position: positions[n.id] ?? { x: 500, y: 400 },
-        classes: [
-          compoundIds.has(n.id) ? "mesh-group" : "mesh-node",
-          n.available ? "" : "unavailable",
-          mode === "execution" && ["task", "agent"].includes(n.kind)
-            ? "execution-card"
-            : "",
-        ].join(" "),
-      })),
-    ...canvasEdges(graph, grouped).map((e) => ({
+    ...[...graph.nodes].map((n) => ({
+      data: {
+        id: n.id,
+        label: label(n),
+        kind: n.kind,
+        parent: regionForNode(n)?.id,
+        color: meshColors[n.kind],
+        icon: iconUrls[n.kind],
+      },
+      position: positions[n.id] ?? { x: 500, y: 400 },
+      classes: ["mesh-node", n.available ? "" : "unavailable"].join(" "),
+    })),
+    ...graph.edges.map((e) => ({
       data: {
         id: e.id,
         source: e.source,
@@ -101,6 +76,17 @@ function elements(
   ];
 }
 
+function labelOffset(node: MeshNode) {
+  return {
+    x: 0,
+    y: node.kind === "goal" || node.kind === "workspace" ? 39 : 29,
+  };
+}
+
+function regionLabelPosition(bounds: Bounds) {
+  return { x: (bounds.x1 + bounds.x2) / 2, y: bounds.y1 + 10 };
+}
+
 export function MeshCanvas({
   graph,
   mode,
@@ -110,6 +96,8 @@ export function MeshCanvas({
   label,
   status,
   copy,
+  localNode,
+  showNodeFrames,
 }: {
   graph: MeshGraph;
   mode: MeshMode;
@@ -119,13 +107,19 @@ export function MeshCanvas({
   label: (node: MeshNode) => string;
   status: (node: MeshNode) => string;
   copy: MeshCopy;
+  localNode: string;
+  showNodeFrames: boolean;
 }) {
   const host = useRef<HTMLDivElement>(null);
+  const labelLayer = useRef<HTMLDivElement>(null);
+  const needsFraming = useRef(true);
+  const fitDescription = useId();
   const mini = useRef<HTMLCanvasElement>(null);
   const instance = useRef<Core | null>(null);
   const runningLayout = useRef<Layouts | null>(null);
   const selectRef = useRef(select);
   const graphRef = useRef(graph);
+  const showFramesRef = useRef(showNodeFrames);
   const positions = useRef(new Map<string, { x: number; y: number }>());
   const resetKey = useRef("");
   const miniBounds = useRef({ x: 0, y: 0, scale: 1 });
@@ -134,11 +128,78 @@ export function MeshCanvas({
     x: number;
     y: number;
     points: Record<string, { x: number; y: number }>;
-  }>({ zoom: 1, x: 0, y: 0, points: {} });
+    regions: Record<string, { x: number; y: number }>;
+  }>({ zoom: 1, x: 0, y: 0, points: {}, regions: {} });
+  const fit = useGraphFit(
+    host,
+    () => {
+      const cy = instance.current;
+      const layer = labelLayer.current;
+      if (!cy || !host.current || !layer || !graph.nodes.length) return null;
+      const labels = new Map(
+        [...layer.querySelectorAll<HTMLElement>("[data-mesh-node]")].map(
+          (element) => [element.dataset.meshNode, element],
+        ),
+      );
+      const bounds: Bounds[] = [];
+      for (const node of graph.nodes) {
+        const rendered = cy.getElementById(node.id);
+        if (rendered.empty()) return null;
+        if (rendered.isParent()) continue;
+        const element = labels.get(node.id);
+        if (!element || !element.offsetWidth || !element.offsetHeight)
+          return null;
+        const point = rendered.position();
+        const offset = labelOffset(node);
+        bounds.push({
+          x1: point.x + offset.x - element.offsetWidth / 2,
+          y1: point.y + offset.y,
+          x2: point.x + offset.x + element.offsetWidth / 2,
+          y2: point.y + offset.y + element.offsetHeight,
+        });
+      }
+      const regionLabels = new Map(
+        [...layer.querySelectorAll<HTMLElement>("[data-mesh-region]")].map(
+          (element) => [element.dataset.meshRegion, element],
+        ),
+      );
+      for (const region of graphRegions(graph, localNode)) {
+        if (region.kind === "execution" && !showNodeFrames) continue;
+        const rendered = cy.getElementById(region.id);
+        if (rendered.empty()) return null;
+        const element = regionLabels.get(region.id);
+        if (!element || !element.offsetWidth || !element.offsetHeight)
+          return null;
+        const point = regionLabelPosition(
+          rendered.boundingBox({ includeLabels: false }),
+        );
+        bounds.push({
+          x1: point.x - element.offsetWidth / 2,
+          y1: point.y,
+          x2: point.x + element.offsetWidth / 2,
+          y2: point.y + element.offsetHeight,
+        });
+      }
+      return cytoscapeFit(cy, host.current, 0.12, bounds);
+    },
+    (camera) => {
+      needsFraming.current = false;
+      instance.current?.viewport({
+        zoom: camera.zoom,
+        pan: { x: camera.x, y: camera.y },
+      });
+    },
+    `${mode}:${layout}`,
+  );
+  useEffect(() => {
+    if (needsFraming.current && fit.available && graph.nodes.length)
+      fit.request();
+  });
   useEffect(() => {
     selectRef.current = select;
     graphRef.current = graph;
-  }, [select, graph]);
+    showFramesRef.current = showNodeFrames;
+  }, [select, graph, showNodeFrames, localNode]);
   useEffect(() => {
     if (!host.current) return;
     const cy = cytoscape({
@@ -193,42 +254,35 @@ export function MeshCanvas({
           },
         },
         {
-          selector: "node.execution-card",
-          style: {
-            shape: "roundrectangle",
-            width: 220,
-            height: 88,
-            "background-position-x": "17%",
-            "background-position-y": "45%",
-            "background-width": 28,
-            "background-height": 28,
-            "underlay-opacity": 0,
-          },
-        },
-        {
           selector: "node.mesh-group",
           style: {
             shape: "roundrectangle",
-            label: "data(label)",
-            "font-size": 12,
-            "font-family": "DM Sans, Noto Sans JP, sans-serif",
-            "font-weight": 500,
-            color: "#c5d9d3",
-            "text-valign": "top",
-            "text-halign": "center",
-            "text-margin-x": 10,
-            "text-margin-y": 20,
             "background-color": "#102e27",
-            "background-opacity": 0.18,
+            "background-opacity": 0.16,
             "border-color": "#507b70",
             "border-style": "dashed",
             "border-width": 1,
-            padding: "42px",
-            "compound-sizing-wrt-labels": "include",
-            "min-width": "110px",
-            "min-height": "65px",
+            padding: "62px",
+            "min-width": "190px",
+            "min-height": "110px",
             "background-image": "none",
           },
+        },
+        {
+          selector: "node.region-execution",
+          style: { "border-color": "#9984bd", "background-color": "#242039" },
+        },
+        {
+          selector: "node.region-shared",
+          style: { "border-color": "#61a7a0", "background-color": "#103a36" },
+        },
+        {
+          selector: "node.region-configuration",
+          style: { "border-color": "#6f8d96", "background-color": "#182d35" },
+        },
+        {
+          selector: "node.region-hidden",
+          style: { "border-opacity": 0, "background-opacity": 0 },
         },
         {
           selector: "node.unavailable",
@@ -310,6 +364,12 @@ export function MeshCanvas({
               .nodes()
               .map((n) => [n.id(), { ...n.position() }]),
           ),
+          regions: Object.fromEntries(
+            cy.nodes(".mesh-group").map((n) => {
+              const bounds = n.boundingBox({ includeLabels: false });
+              return [n.id(), regionLabelPosition(bounds)];
+            }),
+          ),
         });
         cy.nodes()
           .not(":parent")
@@ -318,14 +378,15 @@ export function MeshCanvas({
           });
         const canvas = mini.current;
         const ctx = canvas?.getContext("2d");
-        if (!canvas || !ctx || cy.nodes().empty()) return;
+        if (!canvas || !ctx) return;
+        ctx.clearRect(0, 0, 132, 92);
+        if (cy.nodes().empty()) return;
         const bounds = cy.elements().boundingBox();
         const scale = Math.min(
           116 / Math.max(bounds.w, 1),
           76 / Math.max(bounds.h, 1),
         );
         miniBounds.current = { x: bounds.x1, y: bounds.y1, scale };
-        ctx.clearRect(0, 0, 132, 92);
         const project = (point: { x: number; y: number }) => ({
           x: (point.x - bounds.x1) * scale + 8,
           y: (point.y - bounds.y1) * scale + 8,
@@ -359,6 +420,17 @@ export function MeshCanvas({
     cy.on("tap", "node", (event) => {
       if (graphRef.current.nodes.some((n) => n.id === event.target.id()))
         selectRef.current(event.target.id());
+      else if (
+        showFramesRef.current &&
+        event.target.data("regionKind") === "execution"
+      )
+        selectRef.current(
+          resourceKey(
+            event.target.data("nodeId"),
+            "remote",
+            event.target.data("nodeId"),
+          ),
+        );
     });
     cy.on("pan zoom position add remove layoutstop", update);
     const observer = new ResizeObserver(() => {
@@ -377,11 +449,10 @@ export function MeshCanvas({
   useEffect(() => {
     const cy = instance.current;
     if (!cy) return;
-    const definitions = elements(graph, mode, label, copy);
+    const definitions = elements(graph, localNode, showNodeFrames, label, copy);
     const desired = new Set(definitions.map((e) => e.data.id));
     const key = `${mode}:${layout}`;
     const reset = key !== resetKey.current;
-    const wasEmpty = cy.nodes().empty();
     runningLayout.current?.stop();
     cy.batch(() => {
       // Detach surviving children before removing a filtered compound parent.
@@ -409,19 +480,19 @@ export function MeshCanvas({
         }
       }
     });
-    if (reset || wasEmpty) {
+    if (reset) {
+      needsFraming.current = true;
       resetKey.current = key;
       // Perspectives change the canvas height (statistics and timeline) and width.
       // Measure that viewport before fitting, rather than waiting for ResizeObserver.
       cy.resize();
-      if (layout === "structured") cy.fit(undefined, 36);
-      else {
+      if (layout !== "structured") {
         const run = cy.layout(
           layout === "force"
             ? {
                 name: "cose",
                 animate: false,
-                fit: true,
+                fit: false,
                 padding: 65,
                 nodeRepulsion: () => 32000,
                 idealEdgeLength: () => 150,
@@ -430,7 +501,7 @@ export function MeshCanvas({
               }
             : {
                 name: "circle",
-                fit: true,
+                fit: false,
                 padding: 70,
                 spacingFactor: 1.5,
                 animate: false,
@@ -441,7 +512,7 @@ export function MeshCanvas({
       }
     }
     cy.emit("position");
-  }, [graph, mode, layout, label, copy]);
+  }, [graph, mode, layout, label, copy, localNode, showNodeFrames]);
   useEffect(() => {
     const cy = instance.current;
     if (!cy) return;
@@ -449,8 +520,16 @@ export function MeshCanvas({
     const selected = cy.getElementById(selectedId);
     selected.addClass("is-selected");
     selected.connectedEdges().addClass("is-connected");
-  }, [selectedId, graph, mode, layout, label, copy]);
+    for (const region of graphRegions(graph, localNode))
+      if (
+        region.kind === "execution" &&
+        resourceKey(region.nodeId, "remote", region.nodeId) === selectedId
+      )
+        cy.getElementById(region.id).addClass("is-selected");
+  }, [selectedId, graph, mode, layout, label, copy, localNode]);
   const zoom = (factor: number) => {
+    fit.cancel();
+    needsFraming.current = false;
     const cy = instance.current;
     if (cy)
       cy.zoom({
@@ -470,11 +549,54 @@ export function MeshCanvas({
         aria-label={copy.canvas}
       />
       <div
+        ref={labelLayer}
         className="mesh-label-layer"
         style={{
           transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.zoom})`,
         }}
       >
+        {graphRegions(graph, localNode).map((region) => {
+          const point = camera.regions[region.id];
+          if (!point || (region.kind === "execution" && !showNodeFrames))
+            return null;
+          const workspace = graph.nodes.find(
+            (node) =>
+              node.kind === "workspace" &&
+              node.nodeId === region.nodeId &&
+              node.resourceId === region.workspaceId,
+          );
+          const heading =
+            region.kind === "execution"
+              ? `${copy.executionRegion} · ${region.nodeId}`
+              : region.kind === "shared"
+                ? `${copy.sharedData} · ${workspace ? label(workspace) : region.workspaceId} · ${copy.homeNode}: ${region.nodeId}`
+                : `${copy.configurationReferences} · ${region.nodeId}`;
+          return region.kind === "execution" ? (
+            <button
+              type="button"
+              className="mesh-region-label mesh-region-execution-label"
+              data-mesh-region={region.id}
+              key={region.id}
+              style={{ left: point.x, top: point.y }}
+              onClick={() =>
+                select(resourceKey(region.nodeId, "remote", region.nodeId))
+              }
+              title={heading}
+            >
+              {heading}
+            </button>
+          ) : (
+            <span
+              className="mesh-region-label"
+              data-mesh-region={region.id}
+              key={region.id}
+              style={{ left: point.x, top: point.y }}
+              title={heading}
+            >
+              {heading}
+            </span>
+          );
+        })}
         {graph.nodes.map((node) => {
           const point = camera.points[node.id];
           if (!point) return null;
@@ -482,27 +604,20 @@ export function MeshCanvas({
             <button
               type="button"
               key={node.id}
-              className={`mesh-node-label ${mode === "execution" && ["task", "agent"].includes(node.kind) ? "execution-label" : ""} ${selectedId === node.id ? "selected" : ""}`}
+              data-mesh-node={node.id}
+              className={`mesh-node-label ${selectedId === node.id ? "selected" : ""}`}
               aria-pressed={selectedId === node.id}
               onClick={() => select(node.id)}
               onFocus={(event) => {
                 if (!event.currentTarget.matches(":focus-visible")) return;
                 const cy = instance.current;
+                fit.cancel();
+                needsFraming.current = false;
                 if (cy) cy.center(cy.getElementById(node.id));
               }}
               style={{
-                left:
-                  point.x +
-                  (mode === "execution" && ["task", "agent"].includes(node.kind)
-                    ? 29
-                    : 0),
-                top:
-                  point.y +
-                  (mode === "execution" && ["task", "agent"].includes(node.kind)
-                    ? -23
-                    : node.kind === "goal" || node.kind === "workspace"
-                      ? 39
-                      : 29),
+                left: point.x + labelOffset(node).x,
+                top: point.y + labelOffset(node).y,
               }}
               title={`${label(node)} · ${copy.kinds[node.kind]}`}
             >
@@ -526,13 +641,16 @@ export function MeshCanvas({
         type="button"
         className="mesh-minimap"
         aria-label={copy.minimap}
+        disabled={!graph.nodes.length}
         onClick={(event) => {
           const cy = instance.current;
-          if (!cy) return;
+          if (!cy || cy.nodes().empty()) return;
           if (event.detail === 0) {
-            cy.fit(undefined, 36);
+            fit.request();
             return;
           }
+          fit.cancel();
+          needsFraming.current = false;
           const canvas = mini.current;
           if (!canvas) return;
           const rect = canvas.getBoundingClientRect();
@@ -575,10 +693,16 @@ export function MeshCanvas({
         <button
           type="button"
           aria-label={copy.fit}
-          title={copy.fit}
-          onClick={() => instance.current?.fit(undefined, 36)}
+          className="graph-fit-button"
+          title={
+            fit.available ? copy.fit : `${copy.fit}: ${copy.fitUnavailable}`
+          }
+          aria-describedby={fitDescription}
+          disabled={!fit.available}
+          onClick={fit.request}
         >
-          <Scan size={16} />
+          <Scan size={16} aria-hidden="true" />
+          <span>{copy.fit}</span>
         </button>
         <button
           type="button"
@@ -586,6 +710,8 @@ export function MeshCanvas({
           title={copy.center}
           disabled={!selectedId}
           onClick={() => {
+            fit.cancel();
+            needsFraming.current = false;
             const cy = instance.current;
             if (cy) cy.center(cy.getElementById(selectedId));
           }}
@@ -609,6 +735,9 @@ export function MeshCanvas({
           <Maximize size={16} />
         </button>
       </div>
+      <span id={fitDescription} className="graph-fit-status" role="status">
+        {fit.available ? "" : copy.fitUnavailable}
+      </span>
     </div>
   );
 }

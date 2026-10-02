@@ -46,7 +46,7 @@ export function MeshInspector({
   remoteActivity?: GraphActivity[];
 }) {
   const { local, locale, t } = useI18n();
-  const localNode = node.nodeId === data.node.id;
+  const localNode = (node.homeNodeId ?? node.nodeId) === data.node.id;
   const [tab, setTab] = useState<"overview" | "tasks" | "events" | "config">(
     "overview",
   );

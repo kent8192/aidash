@@ -25,7 +25,7 @@ agent, the dialog removes its graph and old metadata.
 ## Navigation
 
 - Drag the background to pan, use the wheel or zoom buttons to zoom, and drag a
-  neighbor to position it. The focused agent stays anchored. **Fit graph** and
+  neighbor to position it. The focused agent stays anchored. **Fit entire graph** and
   **Center selection** adjust the viewport without changing any execution state.
 - Select a node and choose **Expand neighbors** to explore another recorded hop.
   **Open details** opens the existing entity, Run or Task dialog. Missing references
@@ -61,22 +61,31 @@ application at `AIDASH_E2E_URL` (default `http://127.0.0.1:18080`).
 
 ## Workspace Graph View
 
-Open **Graph View** from the collaboration sidebar. The workspace selector scopes
-workspace, goal, task, conversation, artifact and recorded run activity. Authorized
-registry configuration remains available for context. The new canvas uses the
+Open **Graph View** from the collaboration sidebar. The workspace selector keeps
+only shared resources owned by the selected Home Workspace, its recorded Runs,
+Agents with an explicit Task, Run or Conversation relationship, and their
+referenced configuration. **All workspaces** groups shared resources separately
+by `(Home Node, Workspace)`. The canvas uses the
 existing Cytoscape dependency and Lucide icons. The user-provided Mesh + Accent
 logo kit supplies the sidebar, compact mark, sign-in wordmark and favicon; the
 original SVG/ICO files are kept in `web/public/brand` without redrawing.
 
-Five perspectives share the same authorized projection:
+Five perspectives share the same authorized projection and placement rules.
+Outlined execution regions contain only Agents and Runs, grouped by their
+executing Node. Shared Workspace data is grouped by Home Node and Workspace;
+referenced configuration has a separate origin-labeled group, and Humans remain
+outside these regions. A region appears only while it has visible resources.
+Peer controls remain available when an authorized Node has no visible region.
+The Node type filter controls execution frames without hiding Agent or Run
+resources. Individual Messages remain represented by their Conversation vertex.
 
-| Perspective     | Organization                                                                                                                                                       |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Agent mesh      | People and goals above tasks; agent clusters, tools, artifacts and discovered peers in separate groups.                                                            |
-| Collaboration   | A workspace at the center of its people, conversations, goals, agents, tasks and artifacts.                                                                        |
-| Knowledge graph | Goals, tasks and artifacts with their explicit producers, tools, models, skills and conversations.                                                                 |
-| Execution flow  | Request authors, delegating agents, task cards, executing agents and produced artifacts. Current task counts and a time-scaled event timeline accompany the graph. |
-| Topology        | Local and directly authorized peer nodes, separate agent clusters and configured tool links. Available to authorized Subjects and operators.                       |
+| Perspective     | Resource focus                                                           |
+| --------------- | ------------------------------------------------------------------------ |
+| Agent mesh      | Agents, Runs, Tasks, Goals, Artifacts and referenced configuration.      |
+| Collaboration   | Workspace, people, conversations and their recorded work.                |
+| Knowledge graph | Goals, Tasks, Artifacts and their explicit producers and dependencies.   |
+| Execution flow  | Recorded Tasks, Runs and events, with counts and a time-scaled timeline. |
+| Topology        | Visible Agents and their exact configuration relationships.              |
 
 **Agent relationships** retains the previous agent-focused exploration and topology
 controls. Agent-focus links open this perspective so exact entity selection stays
@@ -88,7 +97,8 @@ dialog is also unchanged.
 - Search names and resource IDs. Matching nodes and their immediate neighbors are
   retained within the active type and relation filters.
 - Filter node types and relation types, focus the selected neighborhood, switch to
-  the accessible relationship table, or reset the filters.
+  the accessible relationship table, or reset the filters. Focusing an execution
+  region retains its visible Agents and Runs and their immediate neighbors.
 - Select structured, force or circle layout. Drag nodes, pan, zoom, fit, center the
   selection, navigate with the minimap, or use fullscreen. Polling retains positions
   and camera state; changing perspective or layout computes a fresh arrangement.
@@ -103,6 +113,32 @@ dialog is also unchanged.
 - On compact screens, filters are collapsible and the inspector becomes a bottom
   sheet. Native buttons, focus styles, labeled controls and the relationship table
   support keyboard navigation. Both Japanese and English are supported.
+
+### Fit entire graph
+
+Choose **Fit entire graph / 全体表示** beside the zoom controls to recover an
+overview after panning or zooming. The Scan icon, visible label and tooltip stay
+available on compact screens, including with the inspector open. Focus the button
+and press Enter or Space to activate it.
+
+One activation centers all current nodes, displayed labels, edges and group
+boundaries in the measured area clear of the inspector, minimap and controls.
+It includes disconnected and off-screen elements and already-loaded authorized
+remote projections within the current filters and rendering limits. Selection,
+Workspace, filters, expanded Peers and node positions are retained.
+
+Fit caps magnification at unit scale and permits an overview below the usual
+minimum zoom for large graphs. Manual zoom remains gradual at that scale. Padding
+is 36 CSS px, or 16 CSS px in compact usable areas, reduced further only when the
+available area is extremely small. The button is disabled with an accessible
+explanation when the graph is empty or cannot be measured safely.
+
+The workspace mesh, agent neighborhood and agent detail graph share this behavior.
+Initial display and deliberate perspective/layout changes frame the graph;
+ordinary polling, filtering, expansion, resizing and opening the inspector retain
+the camera until an explicit fit. Temporary empty filter results also retain the
+camera. Fit does not load resources or rerun a layout. See the
+[fit design and local validation](design/2026-09-30-issue-96-entire-graph-fit.md).
 
 ### Data boundaries
 
@@ -129,10 +165,13 @@ read authorization. Remote Task descriptions, Artifact contents, message bodies,
 human requests and raw configuration are not sent. Remote inspector and search
 use only projected fields, never matching local IDs as a fallback. A local Run
 can connect to a remote Agent only when that Agent is in the current authorized
-projection. A selected local Workspace limits remote operational records to
+projection. A Home-observed Run keeps its authorized Home events and related
+Workspace even when its executor is remote or its Peer projection is expanded.
+A selected local Workspace limits remote operational records to
 explicitly related resources; selecting all Workspaces allows the receiving
-Node's own authorized Workspaces. Peer expansion does not traverse onward to a
-third Node.
+Node's own authorized Workspaces. Continuation resources retain their explicit
+Node and Workspace ownership even if their page omits the Workspace vertex.
+Peer expansion does not traverse onward to a third Node.
 
 Expanded projections refresh within 30 seconds while the view is visible.
 Denial, connection loss, expiry, collapse, context change and reload remove
@@ -164,3 +203,8 @@ imports or inserts them. The mesh browser tests cover the five perspectives,
 three layouts, filters, inspector navigation, snapshot preservation/revocation,
 subject isolation and compact viewports, and save visual captures in the ignored
 `web/test-results` directory.
+
+The fit tests additionally check full visual containment and centering within
+1 CSS px, recovery from an off-screen view, native keyboard activation in both
+languages, inspector/resize geometry, single/empty/large graphs and loaded remote
+projections. They compare camera and graph state independently of the fit helper.
