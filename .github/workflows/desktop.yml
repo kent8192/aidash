@@ -1,22 +1,35 @@
 name: Desktop
 on:
   pull_request:
-  push:
-    branches: [main, "develop/**"]
+    paths:
+      - "desktop/**"
+      - "web/**"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "scripts/generate-api.sh"
+      - "scripts/install-browser.sh"
+      - ".github/workflows/desktop.yml"
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: desktop-${{ github.ref }}
+  group: desktop-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 env:
   RUSTC_WRAPPER: ""
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
 jobs:
-  linux-native:
-    name: Linux WebKitGTK desktop
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
+  web:
+    name: Shared desktop assets and transport
+    # Standard hosted runners are free for public repositories. Do not silently
+    # incur compute charges if this repository's visibility changes.
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -30,10 +43,67 @@ jobs:
       - run: npm run build --prefix web
       - run: scripts/install-browser.sh
       - run: npm run test:desktop --prefix web
-      - run: bash desktop/tests/linux.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-web-assets
+          path: web/dist/
+          retention-days: 1
+          if-no-files-found: error
+  native:
+    name: Native desktop (${{ matrix.os }})
+    needs: web
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/desktop/src-tauri/target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Linux GUI and credential store
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev xvfb dbus-x11 gnome-keyring
+      - name: Isolated macOS test keychain
+        if: runner.os == 'macOS'
+        run: |
+          security create-keychain -p fixture-password "$RUNNER_TEMP/aidash-e2e.keychain-db"
+          security default-keychain -s "$RUNNER_TEMP/aidash-e2e.keychain-db"
+          security unlock-keychain -p fixture-password "$RUNNER_TEMP/aidash-e2e.keychain-db"
+          security set-keychain-settings -lut 3600 "$RUNNER_TEMP/aidash-e2e.keychain-db"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: desktop-web-assets
+          path: web/dist
+      - run: npm ci --prefix desktop
+      - run: rustup show active-toolchain
+      - name: Check normal build and native unit tests
+        run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml
+      - name: Build instrumented debug app with shared production assets
+        run: npm run build:e2e --prefix desktop
+      - name: Native WebdriverIO acceptance (Linux)
+        if: runner.os == 'Linux'
+        run: dbus-run-session -- xvfb-run -a bash desktop/tests/wdio/linux-session.sh
+      - name: Native WebdriverIO acceptance (Windows and macOS)
+        if: runner.os != 'Linux'
+        run: npm run test:e2e --prefix desktop
+      - name: Remove macOS test keychain
+        if: always() && runner.os == 'macOS'
+        run: security delete-keychain "$RUNNER_TEMP/aidash-e2e.keychain-db"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: linux-desktop-evidence
-          path: desktop/artifacts/
-          if-no-files-found: ignore
+          name: desktop-evidence-${{ matrix.os }}
+          # Small synthetic screenshots and reports only; never binaries, stores
+          # or the temporary profile directory. No long-lived build cache.
+          path: desktop/artifacts/wdio/
+          retention-days: 3
+          if-no-files-found: warn

@@ -1,6 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#[cfg(all(feature = "e2e", not(debug_assertions)))]
+compile_error!("The e2e WebDriver feature must never be enabled in release builds");
 mod auth;
 mod credentials;
+#[cfg(feature = "e2e")]
+mod e2e;
 mod profiles;
 
 use auth::{Access, Cached, Endpoint, Failure, Tokens};
@@ -13,6 +17,7 @@ use std::{
 	time::Instant,
 };
 use tauri::{Manager, State};
+#[cfg(not(feature = "e2e"))]
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::{Mutex, Notify};
 use zeroize::Zeroizing;
@@ -212,7 +217,7 @@ async fn desktop_access(
 }
 #[tauri::command]
 async fn desktop_login(
-	app: tauri::AppHandle,
+	_app: tauri::AppHandle,
 	state: State<'_, DesktopState>,
 ) -> Result<(), String> {
 	let generation = state.generation.load(Ordering::SeqCst);
@@ -245,7 +250,10 @@ async fn desktop_login(
 	let started:auth::Started=auth::request(&state.client,&profile,Endpoint::Start,Some(json!({"redirect_uri":redirect_uri,"state":csrf.as_str(),"code_challenge":auth::challenge(&verifier)}))).await.map_err(Failure::message)?;
 	state.current(generation)?;
 	let url = auth::authorization_url(&started.authorization_url, &profile)?;
-	app.opener()
+	#[cfg(feature = "e2e")]
+	let _fixture_browser = e2e::open_browser(&url)?;
+	#[cfg(not(feature = "e2e"))]
+	_app.opener()
 		.open_url(url.as_str(), None::<&str>)
 		.map_err(|_| "Cannot open the system browser")?;
 	let code = Zeroizing::new(auth::receive(listener, &state, generation, &csrf).await?);
@@ -302,7 +310,16 @@ async fn desktop_logout(state: State<'_, DesktopState>) -> Result<(), String> {
 	Ok(())
 }
 fn main() {
-	tauri::Builder::default()
+	#[cfg(feature = "e2e")]
+	if e2e::prepare().expect("prepare isolated desktop test") {
+		return;
+	}
+	let builder = tauri::Builder::default();
+	#[cfg(feature = "e2e")]
+	let builder = builder
+		.plugin(tauri_plugin_wdio::init())
+		.plugin(tauri_plugin_wdio_webdriver::init());
+	builder
 		.plugin(tauri_plugin_single_instance::init(|app, _, _| {
 			if let Some(window) = app.get_webview_window("main") {
 				let _ = window.show();
@@ -311,6 +328,9 @@ fn main() {
 		}))
 		.plugin(tauri_plugin_opener::init())
 		.setup(|app| {
+			#[cfg(feature = "e2e")]
+			let path = e2e::profiles_path()?;
+			#[cfg(not(feature = "e2e"))]
 			let path = app
 				.path()
 				.app_config_dir()?
@@ -327,10 +347,16 @@ fn main() {
 				cancel: Notify::new(),
 				client: auth::client().map_err(std::io::Error::other)?,
 			});
-			tauri::WebviewWindowBuilder::from_config(app, &app.config().app.windows[0])?
-				.on_navigation(profiles::local_navigation)
-				.on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
-				.build()?;
+			let window =
+				tauri::WebviewWindowBuilder::from_config(app, &app.config().app.windows[0])?
+					.on_navigation(profiles::local_navigation)
+					.on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
+			#[cfg(feature = "e2e")]
+			let window = window.initialization_script(include_str!(concat!(
+				env!("CARGO_MANIFEST_DIR"),
+				"/gen/wdio.js"
+			)));
+			window.build()?;
 			Ok(())
 		})
 		.invoke_handler(tauri::generate_handler![

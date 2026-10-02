@@ -4,6 +4,16 @@ Implementation checkout: `feat/tauri-desktop`, based on
 `d1201622a4110a5d4fb908a15025752f9cae10d2` (`develop/0.1.0`, including PR #100).
 These are local results for the working tree, not hosted CI or release evidence.
 
+The cross-platform CI follow-up also passed the WebdriverIO suite locally on
+macOS arm64: six checks across three distinct native processes, including real
+Keychain persistence, connection switching, SSE cursor recovery, Graph rendering,
+permission denial and logout persistence. The dedicated test build uses a
+separate broker client process in place of the default-browser launcher; it does
+not establish live Google or OS browser-handler acceptance. Normal Cargo builds
+were checked to exclude both optional WDIO plugins. Windows and the new Linux
+WDIO suite are exercised by the PR's three-OS Desktop workflow; consult those
+checks for hosted results rather than treating this local record as CI evidence.
+
 ## Verified
 
 | Check                                                  | Result                                                                   |
@@ -59,12 +69,11 @@ recovery, which can show the reconnecting indicator.
 - Live Google login against the user's deployed OAuth configuration. The native
   test uses an external-browser broker fixture; real broker PKCE, consent,
   single-use exchange, refresh replay/recovery and revocation use backend tests.
-- macOS Keychain login/restore, macOS Graph interaction and all Windows runtime
-  behavior, including Windows Credential Manager and WebView2.
+- Local Windows runtime behavior, including Windows Credential Manager and
+  WebView2; these require the hosted Windows job or a separate Windows run.
 - Physical Linux desktop environments, a locked/unavailable OS store during
   sign-in, screen readers, and signed production installers.
-- Release signing/notarization, installer distribution, automatic updating and
-  hosted CI. The added workflow is a definition, not a completed hosted run.
+- Release signing/notarization, installer distribution and automatic updating.
 
 The built app is a development artifact. Sidecars, background services and bundled
 PostgreSQL/NATS/Qdrant remain outside this client. The default desktop CSP blocks

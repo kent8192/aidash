@@ -10,7 +10,9 @@ pub struct Credential {
 	pub pending: Option<String>,
 }
 fn entry(profile: &Profile) -> Result<keyring::Entry, String> {
-	let build = if cfg!(debug_assertions) {
+	let build = if cfg!(feature = "e2e") {
+		"e2e"
+	} else if cfg!(debug_assertions) {
 		"development"
 	} else {
 		"production"

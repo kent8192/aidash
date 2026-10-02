@@ -129,3 +129,59 @@ Manual release acceptance remains necessary for live Google login, locked-store
 recovery, physical desktop Linux environments, signed installers, and each OS
 not covered by a recorded native run. See `VALIDATION.md` for the actual local
 results; CI definitions are not evidence that hosted checks have passed.
+
+## Cross-platform native CI
+
+The Desktop workflow runs the same WebdriverIO + `@wdio/tauri-service` acceptance
+suite on standard `ubuntu-24.04`, `windows-2022` and `macos-15` runners. It uses the
+[embedded WebDriver provider](https://v2.tauri.app/develop/tests/webdriver/),
+including real WebKitGTK, WebView2 or WKWebView, IPC, HTTP/SSE and OS credential
+storage. No paid driver subscription or external WebDriver installation is needed.
+
+```sh
+npm ci --prefix web
+npm run build --prefix web
+npm ci --prefix desktop
+npm run build:e2e --prefix desktop
+npm run test:e2e --prefix desktop
+```
+
+The runner discovers Cargo's target directory, or accepts `AIDASH_E2E_BINARY`.
+Linux requires a display and unlocked Secret Service. The CI helper
+`desktop/tests/wdio/linux-session.sh` sets up a disposable store under
+`RUNNER_TEMP` inside `dbus-run-session -- xvfb-run -a`; it must not be used to
+unlock an existing personal store. macOS CI uses a disposable test keychain.
+Local runs use the real OS store with a separate `dev.aidash.desktop.e2e`
+credential namespace and random profile IDs, then remove their test credentials.
+
+The tests cover startup, unsafe-origin rejection, fixture broker handoff, Graph
+canvas/labels/fit, connection changes, SSE resume/reset, cookie omission, denied
+navigation/opener IPC, persistent login and logout. Three sequential WDIO
+launchers start distinct native processes, verified by PID, while retaining the
+same profiles and OS store. Each phase has a four-minute process timeout and no
+automatic test retries. Failure cleanup stops the app and removes test credentials.
+Screenshots and a JSON result are written to `desktop/artifacts/wdio/<platform>`.
+
+Google and the OS default-browser launcher are outside this deterministic suite:
+the `e2e` feature substitutes a separate Node broker client for the browser
+launcher. The real PKCE exchange, temporary callback and credential adapter still
+run. This is fixture authentication evidence, not live Google acceptance.
+
+Both WDIO plugins are optional Cargo dependencies behind `e2e`. Normal builds
+include neither plugin, global Tauri APIs nor WDIO permissions. The separate
+`tauri.e2e.conf.json` enables those only for the instrumented debug build; a
+compile-time error rejects `e2e` in release builds. Never distribute test binaries.
+
+### Execution and storage limits
+
+Standard hosted runner compute is free for this public repository under
+[GitHub's current billing policy](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+The workflow uses no larger runners and skips execution if the repository becomes
+private. It runs on relevant pull-request changes or manual dispatch, without a
+duplicate post-merge push run or schedule, and cancels superseded runs. Each
+native job has a 30-minute timeout. Web assets are built once on Linux and shared
+for one day; only small reports/screenshots/logs are retained for three days.
+Native binaries and credential stores are never uploaded, and compiled Rust
+targets are not cached. Only npm's download cache is reused. Artifact/cache
+storage has its own account allowance; these limits are not an account spending
+cap and do not change the account's billing settings.
