@@ -32,6 +32,7 @@ impl From<&SubjectIdentity> for Origin {
 impl Origin {
 	fn identity(&self) -> SubjectIdentity {
 		SubjectIdentity {
+			http_session: None,
 			credential_id: self.credential_id,
 			tenant: self.tenant.clone(),
 			subject: self.subject.clone(),

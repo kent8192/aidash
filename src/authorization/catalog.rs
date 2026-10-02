@@ -34,110 +34,8 @@ impl Authorization {
 		}
 		let mut tx = self.pool.begin().await?;
 		Self::load(&mut tx, tenant).await?;
-		let exists: bool = sqlx::query_scalar(
-			&Query::select()
-				.expr(Expr::exists(
-					Query::select()
-						.expr(Expr::cust("1"))
-						.from(Alias::new("registry"))
-						.cond_where(
-							Condition::all()
-								.add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
-								.add(Expr::col(Alias::new("version")).eq(Expr::cust("$2"))),
-						)
-						.to_owned(),
-				))
-				.to_string(PostgresQueryBuilder),
-		)
-		.bind(&entry.id)
-		.bind(&entry.version)
-		.fetch_one(&mut *tx)
-		.await?;
-		if !exists {
-			return Err(Error::NotFound("registry entry".into()));
-		}
-		let binding: Option<Binding> = if expected_revision == 0 {
-			sqlx::query_as(
-				&Query::insert()
-					.into_table(Alias::new("authorization_catalog"))
-					.columns([
-						Alias::new("tenant"),
-						Alias::new("entry_id"),
-						Alias::new("entry_version"),
-						Alias::new("enabled"),
-						Alias::new("revision"),
-					])
-					.values_panic([
-						Expr::cust("$1"),
-						Expr::cust("$2"),
-						Expr::cust("$3"),
-						Expr::cust("$4"),
-						Expr::cust("1"),
-					])
-					.on_conflict(OnConflict::new().do_nothing().to_owned())
-					.returning_all()
-					.to_string(PostgresQueryBuilder),
-			)
-			.bind(tenant)
-			.bind(&entry.id)
-			.bind(&entry.version)
-			.bind(enabled)
-			.fetch_optional(&mut *tx)
-			.await?
-		} else {
-			sqlx::query_as(
-				&Query::update()
-					.table(Alias::new("authorization_catalog"))
-					.value(Alias::new("enabled"), Expr::cust("$4"))
-					.value(Alias::new("revision"), Expr::cust("revision+1"))
-					.cond_where(
-						Condition::all()
-							.add(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
-							.add(Expr::col(Alias::new("entry_id")).eq(Expr::cust("$2")))
-							.add(Expr::col(Alias::new("entry_version")).eq(Expr::cust("$3")))
-							.add(Expr::col(Alias::new("revision")).eq(Expr::cust("$5"))),
-					)
-					.returning_all()
-					.to_string(PostgresQueryBuilder),
-			)
-			.bind(tenant)
-			.bind(&entry.id)
-			.bind(&entry.version)
-			.bind(enabled)
-			.bind(expected_revision)
-			.fetch_optional(&mut *tx)
-			.await?
-		};
-		let binding = binding.ok_or_else(|| Error::Conflict("catalog revision changed".into()))?;
-		sqlx::query(
-			&Query::insert()
-				.into_table(Alias::new("authorization_catalog_history"))
-				.columns([
-					Alias::new("tenant"),
-					Alias::new("entry_id"),
-					Alias::new("entry_version"),
-					Alias::new("revision"),
-					Alias::new("enabled"),
-					Alias::new("actor"),
-				])
-				.values_panic([
-					Expr::cust("$1"),
-					Expr::cust("$2"),
-					Expr::cust("$3"),
-					Expr::cust("$4"),
-					Expr::cust("$5"),
-					Expr::cust("$6"),
-				])
-				.to_string(PostgresQueryBuilder),
-		)
-		.bind(tenant)
-		.bind(&entry.id)
-		.bind(&entry.version)
-		.bind(binding.revision)
-		.bind(enabled)
-		.bind(actor)
-		.execute(&mut *tx)
-		.await?;
+		crate::marketplace::catalog_owner(&mut tx, tenant, entry, enabled).await?;
+		let binding = set_in(&mut tx, tenant, entry, expected_revision, enabled, actor).await?;
 		tx.commit().await?;
 		Ok(binding)
 	}
@@ -166,6 +64,11 @@ pub(crate) async fn entry(
 	let key = (reference.id.clone(), reference.version.clone());
 	if access.inherited_lease && !access.approved_catalog.contains(&key) {
 		return Err(Error::Forbidden);
+	}
+	// Acquire distribution authority before catalog rows, matching activation.
+	// An inherited transaction borrows the outer lease's locks.
+	if !access.inherited_lease {
+		crate::marketplace::lock_catalog(&mut access.tx, false).await?;
 	}
 	let query = if access.inherited_lease {
 		Query::select()
@@ -234,6 +137,11 @@ pub(crate) async fn entry(
 		.fetch_optional(&mut **access.tx)
 		.await?;
 	let entry: Entry = serde_json::from_value(document.ok_or(Error::Forbidden)?)?;
+	if let Some(p) = &entry.installation
+		&& (p.contract != 1 || p.tenant != access.identity.tenant)
+	{
+		return Err(Error::Forbidden);
+	}
 	access.require(&resource(access, &entry), action).await?;
 	access.approved_catalog.insert(key);
 	Ok(entry)
@@ -244,6 +152,11 @@ pub(crate) fn resource(access: &Access, entry: &Entry) -> super::policy::Resourc
 }
 
 pub(crate) async fn list_in(access: &mut Access, search: &Search) -> Result<Vec<Entry>> {
+	// Acquire distribution authority before catalog rows, matching activation.
+	// An inherited transaction borrows the outer lease's locks.
+	if !access.inherited_lease {
+		crate::marketplace::lock_catalog(&mut access.tx, false).await?;
+	}
 	let query = if access.inherited_lease {
 		Query::select()
 			.column((Alias::new("r"), Alias::new("metadata")))
@@ -309,6 +222,7 @@ pub(crate) async fn list_in(access: &mut Access, search: &Search) -> Result<Vec<
 			|| access
 				.approved_catalog
 				.contains(&(entry.id.clone(), entry.version.clone())))
+			&& crate::marketplace::active(access, &entry).await?
 			&& search.matches(&entry)
 			&& access
 				.decide(&resource(access, &entry), "registry.read")
@@ -317,7 +231,11 @@ pub(crate) async fn list_in(access: &mut Access, search: &Search) -> Result<Vec<
 			access
 				.approved_catalog
 				.insert((entry.id.clone(), entry.version.clone()));
-			entries.push(entry);
+			match crate::marketplace::check_pinned(access, &entry).await {
+				Ok(()) => entries.push(entry),
+				Err(Error::Forbidden) => {}
+				Err(error) => return Err(error),
+			}
 		}
 	}
 	Ok(entries)
@@ -339,6 +257,130 @@ pub async fn get(
 	reference: &EntityRef,
 ) -> Result<Entry> {
 	let mut access = Access::begin(store, identity).await?;
-	let result = entry(&mut access, reference, "registry.read").await;
+	let result = async {
+		let entry = entry(&mut access, reference, "registry.read").await?;
+		crate::marketplace::check_pinned(&mut access, &entry).await?;
+		Ok(entry)
+	}
+	.await;
 	access.finish(result).await
+}
+
+// The caller retains the tenant, compatibility and resource locks until commit.
+pub(crate) async fn set_in(
+	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	tenant: &str,
+	entry: &EntityRef,
+	expected_revision: i64,
+	enabled: bool,
+	actor: &str,
+) -> Result<Binding> {
+	if !(0..i64::MAX).contains(&expected_revision) {
+		return Err(Error::Invalid("invalid catalog revision".into()));
+	}
+	let exists: bool = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::exists(
+				Query::select()
+					.expr(Expr::cust("1"))
+					.from(Alias::new("registry"))
+					.cond_where(
+						Condition::all()
+							.add(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+							.add(Expr::col(Alias::new("version")).eq(Expr::cust("$2"))),
+					)
+					.to_owned(),
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(&entry.id)
+	.bind(&entry.version)
+	.fetch_one(&mut **tx)
+	.await?;
+	if !exists {
+		return Err(Error::NotFound("registry entry".into()));
+	}
+	let binding: Option<Binding> = if expected_revision == 0 {
+		sqlx::query_as(
+			&Query::insert()
+				.into_table(Alias::new("authorization_catalog"))
+				.columns([
+					Alias::new("tenant"),
+					Alias::new("entry_id"),
+					Alias::new("entry_version"),
+					Alias::new("enabled"),
+					Alias::new("revision"),
+				])
+				.values_panic([
+					Expr::cust("$1"),
+					Expr::cust("$2"),
+					Expr::cust("$3"),
+					Expr::cust("$4"),
+					Expr::cust("1"),
+				])
+				.on_conflict(OnConflict::new().do_nothing().to_owned())
+				.returning_all()
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(tenant)
+		.bind(&entry.id)
+		.bind(&entry.version)
+		.bind(enabled)
+		.fetch_optional(&mut **tx)
+		.await?
+	} else {
+		sqlx::query_as(
+			&Query::update()
+				.table(Alias::new("authorization_catalog"))
+				.value(Alias::new("enabled"), Expr::cust("$4"))
+				.value(Alias::new("revision"), Expr::cust("revision+1"))
+				.cond_where(
+					Condition::all()
+						.add(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
+						.add(Expr::col(Alias::new("entry_id")).eq(Expr::cust("$2")))
+						.add(Expr::col(Alias::new("entry_version")).eq(Expr::cust("$3")))
+						.add(Expr::col(Alias::new("revision")).eq(Expr::cust("$5"))),
+				)
+				.returning_all()
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(tenant)
+		.bind(&entry.id)
+		.bind(&entry.version)
+		.bind(enabled)
+		.bind(expected_revision)
+		.fetch_optional(&mut **tx)
+		.await?
+	};
+	let binding = binding.ok_or_else(|| Error::Conflict("catalog revision changed".into()))?;
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("authorization_catalog_history"))
+			.columns([
+				Alias::new("tenant"),
+				Alias::new("entry_id"),
+				Alias::new("entry_version"),
+				Alias::new("revision"),
+				Alias::new("enabled"),
+				Alias::new("actor"),
+			])
+			.values_panic([
+				Expr::cust("$1"),
+				Expr::cust("$2"),
+				Expr::cust("$3"),
+				Expr::cust("$4"),
+				Expr::cust("$5"),
+				Expr::cust("$6"),
+			])
+			.to_string(PostgresQueryBuilder),
+	)
+	.bind(tenant)
+	.bind(&entry.id)
+	.bind(&entry.version)
+	.bind(binding.revision)
+	.bind(enabled)
+	.bind(actor)
+	.execute(&mut **tx)
+	.await?;
+	Ok(binding)
 }

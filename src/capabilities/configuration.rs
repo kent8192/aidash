@@ -74,10 +74,25 @@ pub(crate) async fn configure(
 	if extracted > store.capabilities.0.limits.reference_text_bytes as u64 {
 		return Err(Error::Invalid("REFERENCE_SET_LIMIT".into()));
 	}
+	if entry.installation.is_some() {
+		return Err(Error::Invalid(
+			"use installation.configure for installed definitions".into(),
+		));
+	}
 	entry.version = input.new_version;
 	entry.config = serde_json::to_value(config)?;
 	let inserted = crate::registry::register_in(&mut access.tx, &entry, &store.node_id).await?;
 	if inserted {
+		crate::marketplace::propagate_provenance(
+			&mut access.tx,
+			&EntityRef {
+				id: id.clone(),
+				version: input.source_version.clone(),
+			},
+			&entry,
+			&access.identity.tenant,
+		)
+		.await?;
 		// Preserve historical text-only attachments exactly, without fabricating originals.
 		sqlx::query(
 			&Query::insert()

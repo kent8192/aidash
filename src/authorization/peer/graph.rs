@@ -447,7 +447,19 @@ impl GraphAuthority<'_> {
 
 	async fn visible(&mut self, candidate: &Candidate) -> Result<bool> {
 		let Self::Subject(access) = self else {
-			return Ok(true);
+			let workspace = match candidate {
+				Candidate::Workspace(row) => Some(row.id),
+				Candidate::Task(row) => Some(row.workspace_id),
+				Candidate::Run(row) => Some(row.workspace_id),
+				Candidate::Artifact(row) => Some(row.workspace_id),
+				Candidate::Conversation(row) => Some(row.workspace_id),
+				Candidate::Registry(_) => None,
+			};
+			return if let Some(id) = workspace {
+				super::super::remote::operator::visible(self.connection(), id).await
+			} else {
+				Ok(true)
+			};
 		};
 		match candidate {
 			Candidate::Registry(entry) => {
@@ -480,7 +492,7 @@ impl GraphAuthority<'_> {
 
 	async fn event_visible(&mut self, event: &Event) -> Result<bool> {
 		let Self::Subject(access) = self else {
-			return Ok(true);
+			return super::super::remote::operator::event_visible(self.connection(), event).await;
 		};
 		// project_activity checks workspace.events once per workspace. Retain
 		// the event-specific resource and provenance checks without repeating it.

@@ -73,28 +73,37 @@ pub async fn embed(
 	if config.provider != "openai" {
 		return Err(Error::Invalid("unsupported embedding provider".into()));
 	}
-	let value = response(
-		credential(
-			request(
-				client,
-				reqwest::Method::POST,
-				&config.endpoint,
-				"/embeddings",
-			)?,
-			&config.credential_env,
-			false,
-		)?
-		.json(&json!({"model":config.model,"input":text,"encoding_format":"float"})),
-	)
-	.await?;
+	let request = credential(
+		request(
+			client,
+			reqwest::Method::POST,
+			&config.endpoint,
+			"/embeddings",
+		)?,
+		&config.credential_env,
+		false,
+	)?
+	.json(&json!({"model":config.model,"input":text,"encoding_format":"float"}));
+	let response = request.send().await?;
+	if !response.status().is_success() {
+		use super::remote::Failure;
+		return Err(Error::RemoteSemantic(match response.status().as_u16() {
+			408 | 429 | 500..=599 => Failure::Unavailable,
+			401 | 403 => Failure::Configuration,
+			_ => Failure::ProviderContract,
+		}));
+	}
+	let value: Value = crate::response::json(response, 1_048_576)
+		.await
+		.map_err(|_| Error::RemoteSemantic(super::remote::Failure::ProviderContract))?;
 	let prompt = value["usage"]["prompt_tokens"].as_u64();
 	let total = value["usage"]["total_tokens"].as_u64();
 	let tokens = prompt.filter(|count| *count > 0 && Some(*count) == total);
 	let output: Embeddings = serde_json::from_value(value)
-		.map_err(|_| Error::External("invalid embedding response".into()))?;
+		.map_err(|_| Error::RemoteSemantic(super::remote::Failure::ProviderContract))?;
 	if output.model != config.model || output.data.len() != 1 || output.data[0].index != 0 {
-		return Err(Error::External(
-			"embedding model or result count mismatch".into(),
+		return Err(Error::RemoteSemantic(
+			super::remote::Failure::ProviderContract,
 		));
 	}
 	let vector = output
@@ -109,8 +118,8 @@ pub async fn embed(
 		|| !magnitude.is_finite()
 		|| magnitude <= 0.0
 	{
-		return Err(Error::External(
-			"invalid embedding dimensions or values".into(),
+		return Err(Error::RemoteSemantic(
+			super::remote::Failure::ProviderContract,
 		));
 	}
 	Ok(Embedding { vector, tokens })
@@ -277,9 +286,11 @@ pub async fn query(
 	let value=response(vector_request(client, config,reqwest::Method::POST,&path)?
         .json(&json!({"query":vector,"filter":{"must":[{"has_id":allowed},{"key":"workspace_id","match":{"value":workspace.to_string()}},{"key":"tenant","match":{"value":tenant}}]},"limit":limit,"with_payload":true,"with_vector":false}))).await?;
 	let result: Vec<Point> = serde_json::from_value(value["result"]["points"].clone())
-		.map_err(|_| Error::External("invalid vector search response".into()))?;
+		.map_err(|_| Error::RemoteSemantic(super::remote::Failure::ProviderContract))?;
 	if result.len() > limit || result.iter().any(|p| !p.score.is_finite()) {
-		return Err(Error::External("invalid vector search bounds".into()));
+		return Err(Error::RemoteSemantic(
+			super::remote::Failure::ProviderContract,
+		));
 	}
 	Ok(result)
 }
@@ -306,11 +317,23 @@ pub async fn present(
 	}
 	let value: Value = crate::response::json(response, 1_048_576).await?;
 	let Some(rows) = value["result"].as_array() else {
-		return Err(Error::External("invalid indexed point response".into()));
+		return Err(Error::RemoteSemantic(
+			super::remote::Failure::ProviderContract,
+		));
 	};
-	let actual = rows
-		.iter()
-		.filter_map(|row| row["id"].as_str().and_then(|id| id.parse::<Uuid>().ok()))
-		.collect::<std::collections::BTreeSet<_>>();
+	let mut actual = std::collections::BTreeSet::new();
+	for row in rows {
+		let id = row["id"]
+			.as_str()
+			.and_then(|id| id.parse::<Uuid>().ok())
+			.ok_or(Error::RemoteSemantic(
+				super::remote::Failure::ProviderContract,
+			))?;
+		if !ids.contains(&id) || !actual.insert(id) {
+			return Err(Error::RemoteSemantic(
+				super::remote::Failure::ProviderContract,
+			));
+		}
+	}
 	Ok(actual.len() == ids.len() && ids.iter().all(|id| actual.contains(id)))
 }

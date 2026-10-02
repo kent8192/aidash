@@ -1,3 +1,4 @@
+import { ScopedMarketplace, MarketplaceAdministration } from "../marketplace";
 import { WorkingFileSettings } from "../capabilities/management";
 import { ReferenceName } from "../record-view";
 import { RecordView } from "../record-view";
@@ -17,7 +18,6 @@ import type { Selection } from "./details";
 const operatorSections = new Set<SettingsSection>([
   "authorization",
   "deployment",
-  "marketplace",
 ]);
 
 function SettingsFrame({
@@ -180,6 +180,17 @@ export function Configuration({
                   ))}
               </div>
             </>
+          )}
+          {section === "marketplace" &&
+            !operator &&
+            data.access.kind === "subject" && (
+              <ScopedMarketplace
+                key={`${data.node.id}:${data.access.tenant}:${data.access.subject}`}
+                identity={`${data.node.id}:${data.access.tenant}:${data.access.subject}`}
+              />
+            )}
+          {section === "marketplace" && operator && (
+            <MarketplaceAdministration />
           )}
           {section === "marketplace" && operator && (
             <>
