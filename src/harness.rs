@@ -814,6 +814,7 @@ impl Harness {
 			.get_for_run(&*run, &run.agent_id, &run.agent_version)
 			.await?;
 		let agent: AgentConfig = serde_json::from_value(entry.config.clone())?;
+		// Separate phase poll frames to keep typed execution within the default worker stack.
 		match run.state.clone() {
 			RunState::Ready(_) => {
 				let task = home.task().await?;
@@ -850,7 +851,7 @@ impl Harness {
 				run.state = RunState::Thinking(ThinkingState::default());
 				store.save_run(run, token, "run.started").await?;
 			}
-			RunState::Thinking(thinking) => {
+			RunState::Thinking(thinking) => Box::pin(async {
 				self.federation.reconcile_run_messages(run).await?;
 				// An accepted remote correction is durable even if its first home
 				// delivery failed. Deliver it before building any inference request.
@@ -1293,8 +1294,10 @@ impl Harness {
 				}));
 				run.error = None;
 				store.save_run(run, token, "model.completed").await?;
-			}
-			RunState::ToolCall(_) => {
+				Ok(())
+			})
+			.await?,
+			RunState::ToolCall(_) => Box::pin(async {
 				// An old home replica can still accept a correction directly from
 				// an old executor. Wait for its upgraded database gate before any
 				// model output or final completion crosses this boundary.
@@ -2073,7 +2076,9 @@ impl Harness {
 				)
 				.await?;
 				store.save_run(run, token, "run.tool_recorded").await?;
-			}
+				Ok(())
+			})
+			.await?,
 			RunState::Waiting(waiting) => {
 				let mut waiting = *waiting;
 				if let Some(id) = waiting.request_id() {

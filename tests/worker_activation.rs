@@ -64,6 +64,8 @@ impl Process {
 			.env("AIDASH_ACTIVATION_NAMESPACE", schema)
 			.env("AIDASH_ACTIVATION_BOOTSTRAP", "false")
 			.env("AIDASH_WORKER_SLOTS", "2")
+			// Match production workers even when the parent test uses a larger stack.
+			.env("RUST_MIN_STACK", "2097152")
 			.env("AIDASH_ENV", "test")
 			.env(
 				"AIDASH_ACTIVATION_TEST_AFTER_ACK_PAUSE_FILE",

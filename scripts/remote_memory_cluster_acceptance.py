@@ -241,7 +241,7 @@ class RemoteMemory(Cluster):
             assert row["phase"] != "FAILED", row
             if row["control"] != "PAUSED":
                 return False
-            assert row["pending"]["semantic_reason"] == "configuration", row
+            assert row["pending"]["recovery"]["semantic_reason"] == "configuration", row
             return True
 
         self.scale(1, "worker", 1)
@@ -344,7 +344,11 @@ class RemoteMemory(Cluster):
         record["cut"] = cut
         record["killed_home"] = self.kill(0, "server")
         self.provider({"hold_embedding": False})
-        self.until(lambda: bool(self.db(1, "runs", task, run)[0]["pending"].get("retry_count")), "durable outage retry", timeout=40)
+        def retried():
+            retry = self.db(1, "runs", task, run)[0]["pending"]["recovery"]["retry"]
+            return retry is not None and retry["count"] > 0
+
+        self.until(retried, "durable outage retry", timeout=40)
         during = self.db(1, "runs", task, run)[0]
         assert during["phase"] != "FAILED" and not self.captured("inference", task), during
         record["during_outage"] = during
