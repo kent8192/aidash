@@ -24,7 +24,9 @@ export async function expectCytoscapeFitted(canvas: Locator) {
         const host = element.getBoundingClientRect();
         const box = cy.elements().renderedBoundingBox();
         const labels = [
-          ...element.parentElement!.querySelectorAll(".mesh-node-label"),
+          ...element.parentElement!.querySelectorAll(
+            ".mesh-node-label, .mesh-region-label",
+          ),
         ].map((label) => label.getBoundingClientRect());
         const visuals = [
           {

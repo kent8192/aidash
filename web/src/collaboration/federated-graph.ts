@@ -221,6 +221,7 @@ export function mergeGraphPages(
         kind,
         name: item.name,
         nodeId: peer,
+        homeNodeId: nodes.get(item.id)?.homeNodeId,
         available: true,
         resourceId: item.resource_id ?? undefined,
         workspaceId: item.workspace_id ?? undefined,
@@ -250,7 +251,7 @@ export function mergeGraphPages(
           id: run.agent_id,
           version: run.agent_version,
         }),
-        resourceKey(localNode, "run", run.id),
+        resourceKey(peer, "run", run.id),
         "executes",
         "activity",
       );

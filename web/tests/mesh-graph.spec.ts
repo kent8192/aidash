@@ -199,7 +199,7 @@ test("connected local node opens topology and relationship controls only show ac
   const { errors } = await setup(page);
   await page.getByLabel("Graph perspective").selectOption("topology");
   await page
-    .locator(".mesh-inspector .mesh-connected-node")
+    .locator(".mesh-region-execution-label")
     .filter({ hasText: "aidash://product-lab" })
     .click();
   await expect(page.getByLabel("Graph perspective")).toHaveValue("topology");
