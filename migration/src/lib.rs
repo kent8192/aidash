@@ -56,6 +56,8 @@ mod m20260930_010000_foreign_generation;
 
 mod m20260930_010000_marketplace_authorization;
 
+mod m20261001_000000_typed_run_state;
+
 pub struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
@@ -114,6 +116,7 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260930_000000_remote_semantic_memory::Migration),
 			Box::new(m20260930_010000_foreign_generation::Migration),
 			Box::new(m20260930_010000_marketplace_authorization::Migration),
+			Box::new(m20261001_000000_typed_run_state::Migration),
 		]
 	}
 }

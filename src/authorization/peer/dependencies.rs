@@ -92,7 +92,7 @@ pub(crate) async fn verify(
 impl Access {
 	pub(crate) async fn foreign_run_base_visible(
 		&mut self,
-		run: &crate::domain::Run,
+		run: &crate::domain::RunMetadata,
 	) -> Result<bool> {
 		let record: Option<(Uuid, Vec<String>, serde_json::Value)> = sqlx::query_as(
 			&Query::select()
@@ -180,7 +180,7 @@ impl Access {
 			"COMPLETED" => &["COMPLETED"],
 			"FAILED" => &["FAILED"],
 			"CANCELLED" => &["STOPPED", "EXPIRED"],
-			_ if run.control == "CANCELLED" => &["STOPPED", "EXPIRED"],
+			_ if run.control == crate::domain::RunControl::Cancelled => &["STOPPED", "EXPIRED"],
 			_ => &[],
 		};
 		let historical: Option<crate::registry::Entry> = if !terminal_statuses.is_empty()

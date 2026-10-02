@@ -289,7 +289,7 @@ async fn hidden_task_cannot_be_claimed_or_used_as_a_dependency(
 			403
 		);
 	}
-	assert_eq!(f.store.task(task).await.unwrap().status, "OPEN");
+	assert_eq!(f.store.task(task).await.unwrap().status.as_str(), "OPEN");
 	assert_eq!(f.store.tasks(Some(workspace)).await.unwrap().len(), 1);
 	assert!(f.store.runs().await.unwrap().is_empty());
 	cleanup(f, &url, &schema).await;
@@ -463,7 +463,10 @@ async fn retained_snapshot_revocation(environment: &TestEnvironment, events_only
 		}
 	}
 	worker.worker_once().await.unwrap();
-	assert_eq!(f.store.run(run.id).await.unwrap().control, "PAUSED");
+	assert_eq!(
+		f.store.run(run.id).await.unwrap().control.as_str(),
+		"PAUSED"
+	);
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
 	server.abort();
 	cleanup(f, &url, &schema).await;
@@ -1037,7 +1040,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 		worker.worker_once().await.unwrap();
 	}
 	let run = f.store.runs().await.unwrap().remove(0);
-	assert_eq!(run.phase, "COMPLETED");
+	assert_eq!(run.phase().as_str(), "COMPLETED");
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
 	assert_eq!(
 		request(
@@ -1310,7 +1313,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 		worker.worker_once().await.unwrap();
 	}
 	let run = f.store.runs().await.unwrap().remove(0);
-	assert_eq!(run.phase, "COMPLETED");
+	assert_eq!(run.phase().as_str(), "COMPLETED");
 	let path = format!("/api/runs/{}", run.id);
 	let (status, journal) = request(&app, &token, "GET", &path, Value::Null).await;
 	assert_eq!(status, 200);

@@ -92,9 +92,7 @@ pub(crate) async fn handle(
 			if task.owner.as_deref().is_some_and(|v| v != owner) {
 				return Err(Error::Forbidden);
 			}
-			if matches!(
-				task.status.as_str(),
-				"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
+			if matches!(task.status, crate::domain::TaskStatus::Completed | crate::domain::TaskStatus::Failed | crate::domain::TaskStatus::Cancelled | crate::domain::TaskStatus::Abandoned
 			) {
 				return Err(Error::Conflict("remote task is terminal".into()));
 			}
@@ -166,7 +164,7 @@ pub(crate) async fn handle(
 			"transition" | "run_message_terminal_transition" => {
 				access.require(&task_resource, "task.execute").await?;
 				let revision = serde_json::from_value(data["revision"].clone())?;
-				let next = field(data, "status")?;
+				let next: crate::domain::TaskStatus = serde_json::from_value(data["status"].clone())?;
 				if input.operation == "run_message_terminal_transition" {
 					let through: i64 = serde_json::from_value(data["through_seq"].clone())?;
 					if through < 0 {
@@ -284,7 +282,7 @@ pub(crate) async fn handle(
 					|| child.parent_id != Some(task.id)
 					|| child.created_by != owner
 					|| child.owner.is_some()
-					|| child.status != "OPEN"
+					|| child.status != crate::domain::TaskStatus::Open
 				{
 					return Err(Error::Forbidden);
 				}

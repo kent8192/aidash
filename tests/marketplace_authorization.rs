@@ -1531,21 +1531,31 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 		.await
 		.unwrap()
 	);
-	assert_eq!(f.store.run(run.id).await.unwrap().phase, "THINKING");
+	assert_eq!(
+		f.store.run(run.id).await.unwrap().phase().as_str(),
+		"THINKING"
+	);
 	assert_eq!(
 		activate(&app, &f, "a", &original.1, 1, 2, 1, false).await.0,
 		200
 	);
-	assert!(
-		aidash::harness::Harness {
-			federation: f.clone()
+	// The newer Run is also runnable and may be selected before the old Run.
+	// Both must get a turn before checking the revoked pinned installation.
+	for _ in 0..2 {
+		assert!(
+			aidash::harness::Harness {
+				federation: f.clone()
+			}
+			.worker_once()
+			.await
+			.unwrap()
+		);
+		if f.store.run(run.id).await.unwrap().control == aidash::domain::RunControl::Paused {
+			break;
 		}
-		.worker_once()
-		.await
-		.unwrap()
-	);
+	}
 	let paused = f.store.run(run.id).await.unwrap();
-	assert_eq!(paused.control, "PAUSED");
+	assert_eq!(paused.control.as_str(), "PAUSED");
 	assert_eq!(paused.agent_id, old_ref.id);
 	common::cleanup(f, &url, &schema).await;
 }
@@ -2218,7 +2228,21 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 	let a = token(&f, "a", "user").await;
 	let b = token(&f, "b", "user").await;
 	let db = sea_orm::SqlxPostgresConnector::from_sqlx_postgres_pool(f.store.pool.clone());
-	migration::Migrator::down(&db, Some(1)).await.unwrap();
+	// Keep exercising the Marketplace downgrade when later migrations are added.
+	let rollback_steps = u32::try_from(
+		migration::Migrator::get_applied_migrations(&db)
+			.await
+			.unwrap()
+			.iter()
+			.rev()
+			.position(|migration| migration.name() == "m20260930_010000_marketplace_authorization")
+			.expect("Marketplace migration must be applied")
+			+ 1,
+	)
+	.unwrap();
+	migration::Migrator::down(&db, Some(rollback_steps))
+		.await
+		.unwrap();
 	migration::Migrator::up(&db, None).await.unwrap();
 	enable(&app, &f).await;
 	f.registry.register(tool("immutable-source")).await.unwrap();
@@ -2365,9 +2389,12 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 		"publication replay cannot recover currently denied read access"
 	);
 	assert!(
-		migration::Migrator::down(&db, Some(1)).await.is_err(),
+		migration::Migrator::down(&db, Some(rollback_steps))
+			.await
+			.is_err(),
 		"downgrade must preserve populated tenant projections"
 	);
+	migration::Migrator::up(&db, None).await.unwrap();
 	// Even trusted SQL callers cannot overwrite immutable published bytes.
 	let update = Query::update()
 		.table(Alias::new("marketplace_versions"))

@@ -209,7 +209,11 @@ impl Access {
 		}
 		Ok(true)
 	}
-	pub(crate) async fn memory_resource(&mut self, run: &crate::domain::Run) -> Result<Resource> {
+	pub(crate) async fn memory_resource(
+		&mut self,
+		run: impl Into<crate::domain::RunMetadata>,
+	) -> Result<Resource> {
+		let run = run.into();
 		let workspace = self.workspace(run.workspace_id).await?;
 		let mut attributes = workspace.attributes;
 		attributes["created_by"] = json!(crate::domain::qualified_agent(

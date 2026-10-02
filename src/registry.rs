@@ -587,10 +587,11 @@ impl Registry {
 	/// available only to existing native/legacy execution paths.
 	pub(crate) async fn get_for_run(
 		&self,
-		run: &crate::domain::Run,
+		run: impl Into<crate::domain::RunMetadata>,
 		id: &str,
 		version: &str,
 	) -> Result<Entry> {
+		let run = run.into();
 		let root = record::Entity::find_by_id((run.agent_id.clone(), run.agent_version.clone()))
 			.one(&self.db)
 			.await?

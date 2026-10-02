@@ -156,7 +156,11 @@ pub(crate) async fn require_current_run(access: &mut Access, area: &Area, run: &
 	}
 }
 /// Revalidate retained context without taking a mutation lock held across a tool's transaction.
-pub(crate) async fn context_authority(access: &mut Access, run: &Run) -> Result<()> {
+pub(crate) async fn context_authority(
+	access: &mut Access,
+	run: impl Into<crate::domain::RunMetadata>,
+) -> Result<()> {
+	let run = run.into();
 	let area: Area = sqlx::query_as(
 		&select("core_areas")
 			.and_where(

@@ -168,7 +168,10 @@ async fn verify_audio_batches(
 		);
 	}
 	assert!(worker.worker_once().await.unwrap());
-	assert_eq!(f.store.run(audio_run.id).await.unwrap().phase, "COMPLETED");
+	assert_eq!(
+		f.store.run(audio_run.id).await.unwrap().phase().as_str(),
+		"COMPLETED"
+	);
 }
 
 async fn verify_attachment_labels_count_toward_admission(
@@ -317,12 +320,9 @@ async fn verify_expired_route_retry(
 	assert!(worker.worker_once().await.unwrap());
 	assert!(worker.worker_once().await.unwrap());
 	let paused = f.store.run(run.id).await.unwrap();
-	assert_eq!(paused.control, "PAUSED");
-	assert_eq!(paused.phase, "THINKING");
-	assert_eq!(
-		paused.context["media_inferred_seq"].as_i64().unwrap_or(0),
-		0
-	);
+	assert_eq!(paused.control.as_str(), "PAUSED");
+	assert_eq!(paused.phase().as_str(), "THINKING");
+	assert_eq!(paused.context.media_inferred_seq, 0);
 	assert_eq!(f.store.run_inputs(run.id).await.unwrap().len(), 1);
 }
 
@@ -446,12 +446,15 @@ async fn verify_separate_format_routes(
 	}
 	assert_eq!(seen, vec![0, 1], "both formats must reach their own route");
 	for _ in 0..4 {
-		if f.store.run(run.id).await.unwrap().phase == "COMPLETED" {
+		if f.store.run(run.id).await.unwrap().phase().as_str() == "COMPLETED" {
 			break;
 		}
 		assert!(worker.worker_once().await.unwrap());
 	}
-	assert_eq!(f.store.run(run.id).await.unwrap().phase, "COMPLETED");
+	assert_eq!(
+		f.store.run(run.id).await.unwrap().phase().as_str(),
+		"COMPLETED"
+	);
 }
 
 #[rstest::rstest]
@@ -702,7 +705,10 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		saw_subject_media,
 		"model request did not include the accepted run media"
 	);
-	assert_eq!(f.store.run(run.id).await.unwrap().phase, "TOOL_CALL");
+	assert_eq!(
+		f.store.run(run.id).await.unwrap().phase().as_str(),
+		"TOOL_CALL"
+	);
 	let (status, correction) = request(
 		&app,
 		&token,
@@ -713,7 +719,10 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	.await;
 	assert_eq!(status, 200, "{correction}");
 	assert!(worker.worker_once().await.unwrap());
-	assert_eq!(f.store.run(run.id).await.unwrap().phase, "THINKING");
+	assert_eq!(
+		f.store.run(run.id).await.unwrap().phase().as_str(),
+		"THINKING"
+	);
 	assert!(worker.worker_once().await.unwrap());
 	let retried = received.try_recv().expect("stale media was not reinferred");
 	let retried_types: Vec<_> = retried["messages"][1]["content"]
@@ -727,12 +736,15 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		"{retried_types:?}"
 	);
 	for _ in 0..4 {
-		if f.store.run(run.id).await.unwrap().phase == "COMPLETED" {
+		if f.store.run(run.id).await.unwrap().phase().as_str() == "COMPLETED" {
 			break;
 		}
 		assert!(worker.worker_once().await.unwrap());
 	}
-	assert_eq!(f.store.run(run.id).await.unwrap().phase, "COMPLETED");
+	assert_eq!(
+		f.store.run(run.id).await.unwrap().phase().as_str(),
+		"COMPLETED"
+	);
 	let operator = f.config.api_token.clone();
 	let (status, created) = request(
 		&app,
@@ -825,10 +837,10 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	assert!(
 		media_batches.len() == 3,
 		"operator run did not retry the empty observation and infer both accepted media batches: {} {} {:?} {:?} lease={:?} until={:?} task={:?}",
-		final_operator_run.phase,
+		final_operator_run.phase().as_str(),
 		final_operator_run.control,
 		final_operator_run.error,
-		final_operator_run.pending,
+		final_operator_run.state,
 		final_operator_run.lease_owner,
 		final_operator_run.lease_until,
 		f.store
@@ -844,7 +856,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	);
 	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(
-		f.store.run(operator_run.id).await.unwrap().phase,
+		f.store.run(operator_run.id).await.unwrap().phase().as_str(),
 		"COMPLETED"
 	);
 	Box::pin(verify_audio_batches(

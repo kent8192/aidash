@@ -50,10 +50,14 @@ pub(crate) async fn message(
 ) -> Result<Json<crate::authorization::remote::execution::RemoteExecutionMessageReceipt>> {
 	let source = crate::api::peer_node(&headers)?;
 	let run = f.store.run(id).await?;
-	if run.home_node != source || run_grant(&f.store, &run).await? != Some(input.grant_id) {
+	if run.home_node != source
+		|| run_grant(&f.store, &run.metadata()).await? != Some(input.grant_id)
+	{
 		return Err(Error::Forbidden);
 	}
-	let (mut access, _) = worker_lease(&f, &run).await?.ok_or(Error::Forbidden)?;
+	let (mut access, _) = worker_lease(&f, &run.metadata())
+		.await?
+		.ok_or(Error::Forbidden)?;
 	let preflight = async {
 		access
 			.require(&access.resource("run", id, json!({})), "run.message")
@@ -83,7 +87,9 @@ pub(crate) async fn message(
 	}
 	// Reacquire receiver authority after reserving at home. A revocation
 	// between reservation and admission cannot create an executable input.
-	let (mut access, _) = worker_lease(&f, &run).await?.ok_or(Error::Forbidden)?;
+	let (mut access, _) = worker_lease(&f, &run.metadata())
+		.await?
+		.ok_or(Error::Forbidden)?;
 	let sender = access.identity.subject.clone();
 	let result = f
 		.store
@@ -125,47 +131,26 @@ pub(crate) async fn control(
 	Json(input): Json<RemoteExecutionControlInput>,
 ) -> Result<Json<crate::authorization::remote::execution::RemoteExecutionActivation>> {
 	let source = crate::api::peer_node(&headers)?;
-	let run = f.store.run(id).await?;
-	if run.home_node != source || run_grant(&f.store, &run).await? != Some(input.grant_id) {
+	let run = f.store.inspect_run(id).await?;
+	if run.home_node != source || run_grant(&f.store, &run.metadata).await? != Some(input.grant_id)
+	{
 		return Err(Error::Forbidden);
 	}
 	if matches!(
 		input.action,
 		crate::authorization::remote::execution::RemoteExecutionControl::Resume
 	) {
-		let (access, _) = worker_lease(&f, &run).await?.ok_or(Error::Forbidden)?;
+		let (access, _) = worker_lease(&f, &run.metadata)
+			.await?
+			.ok_or(Error::Forbidden)?;
 		access.finish(Ok(())).await?;
 	}
 	let run = if matches!(
 		input.action,
 		crate::authorization::remote::execution::RemoteExecutionControl::Cancel
-	) && run.control == "CANCELLED"
+	) && run.control == crate::domain::RunControl::Cancelled
 	{
 		run
-	} else if matches!(
-		input.action,
-		crate::authorization::remote::execution::RemoteExecutionControl::Resume
-	) && run.control == "PAUSED"
-	{
-		let mut tx = f.store.pool.begin().await?;
-		f.store.control_in(&mut tx, id, "resume").await?;
-		let resumed: Run = sqlx::query_as(
-			&Query::update()
-				.table(Alias::new("runs"))
-				.value(
-					Alias::new("pending"),
-					Expr::cust("pending - 'retry_count' - 'retry_at' - 'semantic_reason'"),
-				)
-				.value(Alias::new("error"), Expr::cust("NULL"))
-				.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
-				.returning_all()
-				.to_string(PostgresQueryBuilder),
-		)
-		.bind(id)
-		.fetch_one(&mut *tx)
-		.await?;
-		tx.commit().await?;
-		resumed
 	} else {
 		f.store.control(id, input.action.action()).await?
 	};
@@ -175,14 +160,12 @@ pub(crate) async fn control(
 			grant_id: input.grant_id,
 			admission_id: id,
 			run_id: id,
-			phase: run.phase,
-			control: run.control,
-			semantic_reason: run
-				.pending
-				.get("semantic_reason")
-				.and_then(|v| serde_json::from_value(v.clone()).ok()),
+			phase: run.phase().into(),
+			control: run.control.into(),
+			semantic_reason: run.recovery.as_ref().and_then(|r| r.semantic_reason),
 			error: run
 				.error
+				.clone()
 				.map(|_| "Remote execution requires attention.".into()),
 		},
 	))
@@ -227,7 +210,7 @@ pub(crate) async fn status(
 	let Some(record) = record else {
 		return Ok(Json(None));
 	};
-	let run: Option<Run> = sqlx::query_as(
+	let raw: Option<crate::domain::run_state::RawRun> = sqlx::query_as(
 		&Query::select()
 			.column(Asterisk)
 			.from(Alias::new("runs"))
@@ -238,22 +221,26 @@ pub(crate) async fn status(
 	.bind(source)
 	.fetch_optional(&f.store.pool)
 	.await?;
+	let run = raw.map(crate::domain::run_state::RawRun::inspect);
 	Ok(Json(Some(
 		crate::authorization::remote::execution::RemoteExecutionActivation {
 			grant_id: input.grant_id,
 			admission_id: record.id,
 			run_id: record.id,
-			phase: run.as_ref().map_or("ADMITTED", |r| r.phase.as_str()).into(),
-			control: run
-				.as_ref()
-				.map_or("INACTIVE", |r| r.control.as_str())
-				.into(),
+			phase: run.as_ref().map_or(
+				crate::authorization::remote::execution::RemoteExecutionPhase::Admitted,
+				|r| r.phase().into(),
+			),
+			control: run.as_ref().map_or(
+				crate::authorization::remote::execution::RemoteExecutionControlState::Inactive,
+				|r| r.control.into(),
+			),
 			semantic_reason: run
 				.as_ref()
-				.and_then(|r| r.pending.get("semantic_reason"))
-				.and_then(|v| serde_json::from_value(v.clone()).ok()),
+				.and_then(|r| r.recovery.as_ref())
+				.and_then(|r| r.semantic_reason),
 			error: run.and_then(|r| {
-				r.error.map(|_| {
+				r.error.clone().map(|_| {
 					"Remote execution requires attention. Review current authority and retry controls.".into()
 				})
 			}),
@@ -296,7 +283,7 @@ async fn lease(f: &Federation, source: &str, grant: Uuid) -> Result<(Access, Des
 	if description.source_node != source
 		|| description.target_node != f.config.node_id
 		|| description.grant_id != grant
-		|| description.task.status != "OPEN"
+		|| description.task.status != crate::domain::TaskStatus::Open
 	{
 		return Err(Error::Forbidden);
 	}
@@ -418,7 +405,7 @@ pub(crate) async fn leaf_lease(
 		let run = f.store.run(admission).await?;
 		if run.home_node != source
 			|| run.task_id != record.task_id
-			|| run.control != "ACTIVE"
+			|| run.control != crate::domain::RunControl::Active
 			|| run.agent_id != description.inspection.agent.id
 			|| run.agent_version != description.inspection.agent.version
 		{
@@ -610,7 +597,10 @@ pub(crate) async fn verify(
 }
 
 /// A scoped record is never treated as a missing legacy grant, even after expiry.
-pub(crate) async fn run_grant(store: &crate::store::Store, run: &Run) -> Result<Option<Uuid>> {
+pub(crate) async fn run_grant(
+	store: &crate::store::Store,
+	run: &crate::domain::RunMetadata,
+) -> Result<Option<Uuid>> {
 	let record: Option<Record> = sqlx::query_as(
 		&Query::select()
 			.column(Asterisk)
@@ -638,7 +628,7 @@ pub(crate) async fn run_grant(store: &crate::store::Store, run: &Run) -> Result<
 
 pub(crate) async fn worker_lease(
 	f: &Federation,
-	run: &Run,
+	run: &crate::domain::RunMetadata,
 ) -> Result<Option<(Access, AgentConfig)>> {
 	let Some(grant) = run_grant(&f.store, run).await? else {
 		return Ok(None);
@@ -790,12 +780,9 @@ pub(crate) async fn activate(
 				grant_id: input.grant_id,
 				admission_id: id,
 				run_id: id,
-				phase: run.phase,
-				control: run.control,
-				semantic_reason: run
-					.pending
-					.get("semantic_reason")
-					.and_then(|v| serde_json::from_value(v.clone()).ok()),
+				phase: run.phase().into(),
+				control: run.control.into(),
+				semantic_reason: run.recovery.semantic_reason,
 				error: run.error,
 			},
 		))

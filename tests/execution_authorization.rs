@@ -90,7 +90,9 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(run.id)
-	.bind(json!({"response":response,"cursor":0,"request_window":120000,"request_tokens":0}))
+	.bind(common::tool_pending(
+		json!({"response":response,"cursor":0,"request_window":120000,"request_tokens":0}),
+	))
 	.execute(&f.store.pool)
 	.await
 	.unwrap();
@@ -104,7 +106,7 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 	);
 	let run = f.store.run(run.id).await.unwrap();
 	assert_eq!(
-		run.context["history"][0]["result"]["error"],
+		json!(run.context)["history"][0]["result"]["error"],
 		"Skill file not found: references/missing.md"
 	);
 	assert!(
@@ -117,7 +119,7 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 	);
 	let run = f.store.run(run.id).await.unwrap();
 	assert_eq!(
-		run.context["history"][1]["result"]["text"],
+		json!(run.context)["history"][1]["result"]["text"],
 		"Approved guide"
 	);
 	cleanup(f, &url, &schema).await;
@@ -167,7 +169,7 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 	assert!(harness.worker_once().await.unwrap());
 	assert!(harness.worker_once().await.unwrap());
 	let run = f.store.runs().await.unwrap().remove(0);
-	assert_eq!(run.phase, "TOOL_CALL");
+	assert_eq!(run.phase().as_str(), "TOOL_CALL");
 	assert_eq!(effects.load(Ordering::SeqCst), 0);
 	let agent = qualified_agent(&f.config.node_id, "research", "1.0.0");
 	policy["subjects"][&agent]["enabled"] = json!(false);
@@ -186,12 +188,16 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 	assert!(harness.worker_once().await.unwrap());
 	let paused = f.store.run(run.id).await.unwrap();
 	assert_eq!(
-		paused.control, "PAUSED",
+		paused.control.as_str(),
+		"PAUSED",
 		"phase={} error={:?} pending={}",
-		paused.phase, paused.error, paused.pending
+		paused.phase().as_str(),
+		paused.error,
+		json!(paused.state)["data"]
 	);
 	assert_eq!(
-		paused.pending, run.pending,
+		json!(paused.state)["data"],
+		json!(run.state)["data"],
 		"revocation must not discard the durable tool cursor"
 	);
 	assert_eq!(effects.load(Ordering::SeqCst), 0);
@@ -223,7 +229,10 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 		200
 	);
 	assert!(harness.worker_once().await.unwrap());
-	assert_eq!(f.store.run(run.id).await.unwrap().control, "PAUSED");
+	assert_eq!(
+		f.store.run(run.id).await.unwrap().control.as_str(),
+		"PAUSED"
+	);
 	assert_eq!(
 		effects.load(Ordering::SeqCst),
 		0,
@@ -259,12 +268,18 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 	};
 	for _ in 0..8 {
 		restarted.worker_once().await.unwrap();
-		if f.store.run(run.id).await.unwrap().phase == "COMPLETED" {
+		if f.store.run(run.id).await.unwrap().phase().as_str() == "COMPLETED" {
 			break;
 		}
 	}
-	assert_eq!(f.store.run(run.id).await.unwrap().phase, "COMPLETED");
-	assert_eq!(f.store.task(task_id).await.unwrap().status, "COMPLETED");
+	assert_eq!(
+		f.store.run(run.id).await.unwrap().phase().as_str(),
+		"COMPLETED"
+	);
+	assert_eq!(
+		f.store.task(task_id).await.unwrap().status.as_str(),
+		"COMPLETED"
+	);
 	assert_eq!(effects.load(Ordering::SeqCst), 1);
 	assert_eq!(
 		f.store
@@ -376,7 +391,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		.0,
 		403
 	);
-	assert_eq!(f.store.task(task_id).await.unwrap().status, "OPEN");
+	assert_eq!(f.store.task(task_id).await.unwrap().status.as_str(), "OPEN");
 	assert!(f.store.runs().await.unwrap().is_empty());
 	assert_eq!(
 		request(
@@ -610,8 +625,14 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		403,
 		"control responses must not expose a denied run journal"
 	);
-	assert_eq!(f.store.run(run.id).await.unwrap().control, "ACTIVE");
-	f.store.control(run.id, "pause").await.unwrap();
+	assert_eq!(
+		f.store.inspect_run(run.id).await.unwrap().control.as_str(),
+		"ACTIVE"
+	);
+	f.store
+		.control(run.id, aidash::domain::RunControlAction::Pause)
+		.await
+		.unwrap();
 	let (_, second) = request(
 		&app,
 		&token,
@@ -642,7 +663,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		.find(|r| r.task_id == second_id)
 		.unwrap();
 	sqlx::query(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("runs")).value(sea_orm::sea_query::Alias::new("phase"), sea_orm::sea_query::Expr::cust("'TOOL_CALL'")).value(sea_orm::sea_query::Alias::new("pending"), sea_orm::sea_query::Expr::cust("$2")).and_where(sea_orm::sea_query::Expr::cust("id = $1")).to_string(sea_orm::sea_query::PostgresQueryBuilder))
-		.bind(observer.id).bind(json!({"response":{"text":"","tool_calls":[{"id":"observe","name":"workspace_observe","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0,"request_window":120000,"request_tokens":0}))
+		.bind(observer.id).bind(common::tool_pending(json!({"response":{"text":"","tool_calls":[{"id":"observe","name":"workspace_observe","arguments":{}}],"input_tokens":0,"output_tokens":0},"cursor":0,"request_window":120000,"request_tokens":0})))
         .execute(&f.store.pool).await.unwrap();
 	Harness {
 		federation: f.clone(),
@@ -764,7 +785,9 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(parent_run.id)
-	.bind(json!({"response":response,"cursor":0}))
+	.bind(common::tool_pending(
+		json!({"response":response,"cursor":0}),
+	))
 	.execute(&f.store.pool)
 	.await
 	.unwrap();
@@ -820,7 +843,9 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(child_run.id)
-	.bind(json!({"response":response,"cursor":0}))
+	.bind(common::tool_pending(
+		json!({"response":response,"cursor":0}),
+	))
 	.execute(&f.store.pool)
 	.await
 	.unwrap();
@@ -831,7 +856,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 	.await
 	.unwrap();
 	assert_eq!(
-		f.store.run(child_run.id).await.unwrap().control,
+		f.store.run(child_run.id).await.unwrap().control.as_str(),
 		"PAUSED",
 		"parent deny must intersect the child grant after restart"
 	);
@@ -935,8 +960,14 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 		200
 	);
 	harness.worker_once().await.unwrap();
-	assert_eq!(f.store.run(child_run.id).await.unwrap().phase, "CANCELLED");
-	assert_eq!(f.store.task(child_task).await.unwrap().status, "CANCELLED");
+	assert_eq!(
+		f.store.run(child_run.id).await.unwrap().phase().as_str(),
+		"CANCELLED"
+	);
+	assert_eq!(
+		f.store.task(child_task).await.unwrap().status.as_str(),
+		"CANCELLED"
+	);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1006,7 +1037,9 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(run.id)
-	.bind(json!({"response":response,"cursor":0}))
+	.bind(common::tool_pending(
+		json!({"response":response,"cursor":0}),
+	))
 	.execute(&f.store.pool)
 	.await
 	.unwrap();
@@ -1115,11 +1148,14 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 	.unwrap();
 	let paused = f.store.run(run.id).await.unwrap();
 	assert_eq!(
-		paused.control, "PAUSED",
+		paused.control.as_str(),
+		"PAUSED",
 		"phase={} error={:?} pending={}",
-		paused.phase, paused.error, paused.pending
+		paused.phase().as_str(),
+		paused.error,
+		json!(paused.state)["data"]
 	);
-	assert_eq!(paused.pending["cursor"], 1);
+	assert_eq!(json!(paused.state)["data"]["cursor"], 1);
 	server.abort();
 	let _ = server.await;
 	worker_federation.store.pool.close().await;
@@ -1161,7 +1197,7 @@ async fn scoped_delegation_requires_permission_before_atomic_admission(
 		.0,
 		403
 	);
-	assert_eq!(f.store.task(task).await.unwrap().status, "OPEN");
+	assert_eq!(f.store.task(task).await.unwrap().status.as_str(), "OPEN");
 	assert!(f.store.runs().await.unwrap().is_empty());
 	let count: i64 = sqlx::query_scalar(
 		&sea_orm::sea_query::Query::select()
@@ -1263,6 +1299,51 @@ async fn scoped_collections_fill_after_denied_runs_and_stream_cursor_skips_denie
 	assert_eq!(status, 200, "{state}");
 	assert_eq!(state["runs"].as_array().unwrap().len(), 1);
 	assert_eq!(state["runs"][0]["id"], visible.id.to_string());
+	// The authorized inspection and stop boundary must survive damaged Context,
+	// including when denied rows precede the visible Run in the collection.
+	{
+		use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+		sqlx::query(
+			&Query::update()
+				.table(Alias::new("runs"))
+				.value(Alias::new("context"), json!([]))
+				.and_where(Expr::col(Alias::new("id")).eq(visible.id))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	}
+	let (status, state) = request(&app, &token, "GET", "/api/state", Value::Null).await;
+	assert_eq!(status, 200, "{state}");
+	assert_eq!(state["runs"].as_array().unwrap().len(), 1);
+	assert!(state["runs"][0]["state_error"].is_string());
+	assert!(state["runs"][0]["context"].is_null());
+	let (status, details) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/runs/{}", visible.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{details}");
+	assert!(details["run"]["state_error"].is_string());
+	for (action, expected) in [("pause", 200), ("resume", 400), ("cancel", 200)] {
+		let (status, response) = request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/runs/{}/control", visible.id),
+			json!({"action":action}),
+		)
+		.await;
+		assert_eq!(status, expected, "{action}: {response}");
+	}
+	assert_eq!(
+		f.store.inspect_run(visible.id).await.unwrap().control,
+		aidash::domain::RunControl::Cancelled
+	);
 	let before: i64 = sqlx::query_scalar(
 		&sea_orm::sea_query::Query::select()
 			.expr(sea_orm::sea_query::Expr::cust("COALESCE(MAX(sequence), 0)"))
@@ -1353,16 +1434,18 @@ async fn malformed_scoped_delegation_arguments_remain_model_correctable(
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(run.id)
-	.bind(json!({"response":response,"cursor":0}))
+	.bind(common::tool_pending(
+		json!({"response":response,"cursor":0}),
+	))
 	.execute(&f.store.pool)
 	.await
 	.unwrap();
 	harness.worker_once().await.unwrap();
 	let run = f.store.run(run.id).await.unwrap();
-	assert_eq!(run.phase, "TOOL_CALL");
-	assert_eq!(run.pending["cursor"], 1);
-	assert!(run.context["history"][0]["result"]["error"].is_string());
-	assert_eq!(f.store.task(task).await.unwrap().status, "RUNNING");
+	assert_eq!(run.phase().as_str(), "TOOL_CALL");
+	assert_eq!(json!(run.state)["data"]["cursor"], 1);
+	assert!(json!(run.context)["history"][0]["result"]["error"].is_string());
+	assert_eq!(f.store.task(task).await.unwrap().status.as_str(), "RUNNING");
 	cleanup(f, &url, &schema).await;
 }
 

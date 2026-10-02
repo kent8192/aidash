@@ -1,10 +1,10 @@
 use crate::{
 	Error, Result,
 	authorization::execution::{self, Guard},
-	context::{self, Context},
+	context::{self, Context, ContextEvent, ContextUsage},
 	domain::*,
 	federation::{Federation, Home},
-	provider::{ModelResponse, provider},
+	provider::provider,
 	registry::{AgentConfig, ModelConfig},
 	tool::{PluginTool, Tool, ToolConfig, ToolContext, builtins},
 };
@@ -110,19 +110,23 @@ fn request_context_window(window: usize, minimum_request: usize) -> usize {
 	window.saturating_sub(reserve.saturating_mul(2))
 }
 
-fn message_read_range(event: &Value) -> Option<(String, usize, usize, usize)> {
-	let call = &event["call"];
-	let output = &event["result"];
-	if event["kind"] != "tool"
-		|| call["name"] != "workspace_read"
-		|| call["arguments"]["kind"] != "message"
+fn message_read_range(event: &ContextEvent) -> Option<(Uuid, usize, usize, usize)> {
+	let ContextEvent::Tool {
+		call,
+		result: output,
+	} = event
+	else {
+		return None;
+	};
+	if call.name != "workspace_read"
+		|| call.arguments["kind"] != "message"
 		|| output["kind"] != "message"
 		|| output["encoding"] != "json"
-		|| call["arguments"]["id"] != output["id"]
+		|| call.arguments["id"] != output["id"]
 	{
 		return None;
 	}
-	let id = output["id"].as_str()?.to_owned();
+	let id = output["id"].as_str()?.parse().ok()?;
 	let start = output["offset"].as_u64()? as usize;
 	let total = output["total_chars"].as_u64()? as usize;
 	let content = output["content"].as_str()?;
@@ -132,8 +136,8 @@ fn message_read_range(event: &Value) -> Option<(String, usize, usize, usize)> {
 }
 
 fn record_message_read_in(
-	coverage_by_id: &mut BTreeMap<String, context::MessageReadCoverage>,
-	event: &Value,
+	coverage_by_id: &mut BTreeMap<Uuid, context::MessageReadCoverage>,
+	event: &ContextEvent,
 ) {
 	let Some((id, start, end, total)) = message_read_range(event) else {
 		return;
@@ -158,7 +162,7 @@ fn record_message_read_in(
 	coverage.ranges = merged;
 }
 
-fn record_message_read(context: &mut Context, event: &Value) {
+fn record_message_read(context: &mut Context, event: &ContextEvent) {
 	record_message_read_in(&mut context.message_read_coverage, event);
 }
 
@@ -175,10 +179,10 @@ fn capture_message_inference_coverage(context: &mut Context) {
 }
 
 fn coverage_complete(
-	coverage_by_id: &BTreeMap<String, context::MessageReadCoverage>,
+	coverage_by_id: &BTreeMap<Uuid, context::MessageReadCoverage>,
 	id: Uuid,
 ) -> bool {
-	coverage_by_id.get(&id.to_string()).is_some_and(|coverage| {
+	coverage_by_id.get(&id).is_some_and(|coverage| {
 		coverage.total_chars > 0
 			&& coverage.ranges.len() == 1
 			&& coverage.ranges[0] == [0, coverage.total_chars]
@@ -212,7 +216,7 @@ fn is_required_message_read(
 	}
 	let next_offset = context
 		.message_read_coverage
-		.get(&id.to_string())
+		.get(&id)
 		.and_then(|coverage| {
 			coverage
 				.ranges
@@ -224,6 +228,58 @@ fn is_required_message_read(
 	call.arguments["offset"].as_u64().unwrap_or(0) as usize == next_offset
 }
 
+// Framework-owned transition fields are parsed once at the tool boundary.
+// Other result content remains arbitrary JSON inside a typed history envelope.
+enum FrameworkResult {
+	Ordinary,
+	Approval(Uuid),
+	Human(Uuid),
+	Wait(i64),
+}
+impl FrameworkResult {
+	fn decode(call: &crate::provider::ToolCall, output: &Value) -> Result<Self> {
+		#[derive(serde::Deserialize)]
+		struct ApprovalView {
+			approval_id: Uuid,
+		}
+		#[derive(serde::Deserialize)]
+		struct HumanView {
+			human_request_id: Option<Uuid>,
+		}
+		#[derive(serde::Deserialize)]
+		struct WaitView {
+			wait_seconds: Option<i64>,
+		}
+		#[derive(serde::Deserialize)]
+		#[serde(rename_all = "snake_case")]
+		enum FrameworkStatus {
+			ApprovalRequired,
+			#[serde(other)]
+			Other,
+		}
+		let status = output
+			.get("status")
+			.cloned()
+			.and_then(|value| serde_json::from_value::<FrameworkStatus>(value).ok());
+		if matches!(status, Some(FrameworkStatus::ApprovalRequired)) {
+			let view: ApprovalView = serde_json::from_value(output.clone())
+				.map_err(|_| Error::Invalid("approval result is missing a valid ID".into()))?;
+			return Ok(Self::Approval(view.approval_id));
+		}
+		match call.name.as_str() {
+			"human_request" => {
+				let view: HumanView = serde_json::from_value(output.clone())?;
+				Ok(view.human_request_id.map_or(Self::Ordinary, Self::Human))
+			}
+			"workspace_wait" => {
+				let view: WaitView = serde_json::from_value(output.clone())?;
+				Ok(view.wait_seconds.map_or(Self::Ordinary, Self::Wait))
+			}
+			_ => Ok(Self::Ordinary),
+		}
+	}
+}
+
 #[derive(Clone)]
 pub struct Harness {
 	pub federation: Federation,
@@ -231,10 +287,13 @@ pub struct Harness {
 impl Harness {
 	pub async fn worker_once(&self) -> Result<bool> {
 		let store = &self.federation.store;
+		if self.deliver_failure_once().await? {
+			return Ok(true);
+		}
 		// Terminal runs are no longer leased, but their accepted remote inputs
 		// remain in the durable outbox until home delivery is acknowledged.
 		if let Some(run) = store.pending_terminal_run_message().await? {
-			match self.federation.deliver_run_messages(&run).await {
+			match self.federation.deliver_run_message_metadata(&run).await {
 				Ok(()) => return Ok(true),
 				Err(error) => {
 					tracing::warn!(run_id=%run.id, %error, "terminal run message delivery deferred");
@@ -286,19 +345,24 @@ impl Harness {
 				Err(_) => return Ok(true),
 			};
 			let mut current = store.run(id).await?;
-			let attempts = current.pending["retry_count"].as_u64().unwrap_or(0) + 1;
+			let attempts = current.recovery.retry.as_ref().map_or(0, |r| r.count) + 1;
 			if let Error::RemoteSemantic(reason) = e {
 				use crate::semantic::remote::Failure;
 				if reason == Failure::Pending || (reason.transient() && attempts <= 5) {
 					let delay = if reason == Failure::Pending {
 						1
 					} else {
-						current.pending["retry_count"] = json!(attempts);
-						2_i64.pow(attempts as u32)
+						2_i64.pow(attempts)
 					};
-					current.pending["semantic_reason"] = json!(reason);
-					current.pending["retry_at"] =
-						json!(chrono::Utc::now() + chrono::Duration::seconds(delay));
+					current.recovery.semantic_reason = Some(reason);
+					current.recovery.retry = Some(RetryState {
+						count: if reason == Failure::Pending {
+							attempts - 1
+						} else {
+							attempts
+						},
+						at: chrono::Utc::now() + chrono::Duration::seconds(delay),
+					});
 					current.error = Some(reason.to_string());
 					store
 						.save_run(&current, token, "run.semantic_retrying")
@@ -309,14 +373,9 @@ impl Harness {
 					} else {
 						reason
 					};
-					current.pending["semantic_reason"] = json!(reason);
+					current.recovery.semantic_reason = Some(reason);
 					store
-						.pause_for_execution(
-							&current,
-							token,
-							&reason.to_string(),
-							"run.semantic_blocked",
-						)
+						.pause_for_semantic_execution(&current, token, reason)
 						.await?;
 				}
 			} else if matches!(
@@ -336,45 +395,150 @@ impl Harness {
 					.pause_for_execution(&current, token, &e.to_string(), "run.media_route_blocked")
 					.await?;
 			} else if matches!(e, Error::TransactionPending | Error::StaleInference) {
-				current.pending["retry_at"] =
-					json!(chrono::Utc::now() + chrono::Duration::seconds(1));
+				current.recovery.retry = Some(RetryState {
+					count: attempts,
+					at: chrono::Utc::now() + chrono::Duration::seconds(1),
+				});
 				store.save_run(&current, token, "run.retrying").await?;
 				metrics::counter!("aidash_worker_retries_total").increment(1);
-			} else if current.pending.get("terminal_transition").is_some() {
+			} else if current.state.failure_delivery() {
 				// Delivery is durable and unbounded; never retry the failed tool
 				// just because its home node has not acknowledged terminal state.
-				current.pending["last_delivery_error"] = json!(e.to_string());
-				current.pending["wake_at"] =
-					json!(chrono::Utc::now() + chrono::Duration::seconds(5));
+				if let RunState::Waiting(wait) = &mut current.state
+					&& let WaitingState::FailureDelivery {
+						wake_at,
+						last_delivery_error,
+						..
+					} = wait.as_mut()
+				{
+					*last_delivery_error = Some(e.to_string());
+					*wake_at = chrono::Utc::now() + chrono::Duration::seconds(5);
+				}
 				store
 					.save_run(&current, token, "run.failure_pending")
 					.await?;
 			} else if retryable_inference_error(&e)
 				&& attempts <= 5
-				&& current.control != "CANCELLED"
+				&& current.control != RunControl::Cancelled
 			{
-				current.pending["retry_count"] = json!(attempts);
-				current.pending["retry_at"] = json!(
-					chrono::Utc::now() + chrono::Duration::seconds(2_i64.pow(attempts as u32))
-				);
+				current.recovery.retry = Some(RetryState {
+					count: attempts,
+					at: chrono::Utc::now() + chrono::Duration::seconds(2_i64.pow(attempts)),
+				});
 				current.error = Some(e.to_string());
 				store.save_run(&current, token, "run.retrying").await?;
 				metrics::counter!("aidash_worker_retries_total").increment(1);
 			} else {
-				let target = if current.control == "CANCELLED" {
-					"CANCELLED"
+				let target = if current.control == RunControl::Cancelled {
+					FailureTarget::Cancelled
 				} else {
-					"FAILED"
+					FailureTarget::Failed
 				};
-				current.phase = "WAITING".into();
-				current.pending =
-					json!({"terminal_transition":target,"wake_at":chrono::Utc::now()});
+				current.state = RunState::Waiting(Box::new(WaitingState::FailureDelivery {
+					target,
+					wake_at: chrono::Utc::now(),
+					last_delivery_error: None,
+				}));
 				current.error = Some(e.to_string());
 				store
 					.save_run(&current, token, "run.failure_pending")
 					.await?;
 			}
 		}
+		Ok(true)
+	}
+	async fn deliver_failure_once(&self) -> Result<bool> {
+		let store = &self.federation.store;
+		let token = Uuid::new_v4();
+		let _visibility = crate::transactions::gate::ReadLease::begin(store).await?;
+		let Some(delivery) = store
+			.claim_failure_delivery(token, self.federation.config.lease_seconds)
+			.await?
+		else {
+			return Ok(false);
+		};
+		if delivery.metadata.control == RunControl::Cancelled
+			&& crate::authorization::peer::admission::run_grant(store, &delivery.metadata)
+				.await?
+				.is_some()
+		{
+			store
+				.finish_failure_delivery(&delivery, token, Ok(TaskStatus::Cancelled))
+				.await?;
+			return Ok(true);
+		}
+		let work = async {
+			let guard =
+				execution::DeliveryGuard::begin(&self.federation, &delivery.metadata).await?;
+			let result = async {
+				self.federation
+					.deliver_run_message_metadata(&delivery.metadata)
+					.await?;
+				let home = Home::for_delivery(self.federation.clone(), delivery.metadata.clone())
+					.with_authority(
+						guard
+							.as_ref()
+							.and_then(execution::DeliveryGuard::local_authority),
+					);
+				let task = home.task().await?;
+				if task.status.is_terminal() {
+					return Ok(task.status);
+				}
+				Ok(self
+					.federation
+					.transition_terminal_metadata(
+						&delivery.metadata,
+						delivery.target.task_status(),
+						guard
+							.as_ref()
+							.and_then(execution::DeliveryGuard::local_authority),
+					)
+					.await?
+					.status)
+			}
+			.await;
+			if let Some(guard) = guard {
+				guard.finish(result).await
+			} else {
+				result
+			}
+		};
+		let result = {
+			let mut work = Box::pin(work);
+			let mut heartbeat = tokio::time::interval(Duration::from_secs(
+				(self.federation.config.lease_seconds / 3).max(1) as u64,
+			));
+			heartbeat.tick().await;
+			loop {
+				tokio::select! {
+					result = &mut work => break result,
+					_ = heartbeat.tick() => {
+						if !renew_worker_lease(store, delivery.metadata.id, token, self.federation.config.lease_seconds).await? { return Ok(true); }
+					}
+				}
+			}
+		};
+		if let Err(
+			error @ (Error::Forbidden | Error::Unauthorized | Error::IdentityStatusUnavailable),
+		) = &result
+		{
+			store
+				.pause_for_execution(
+					&delivery.metadata,
+					token,
+					if matches!(error, Error::IdentityStatusUnavailable) {
+						"identity status unavailable"
+					} else {
+						"execution authority denied"
+					},
+					"run.authorization_blocked",
+				)
+				.await?;
+			return Ok(true);
+		}
+		store
+			.finish_failure_delivery(&delivery, token, result)
+			.await?;
 		Ok(true)
 	}
 	/// Terminal input delivery remains independent of runnable-Run activation.
@@ -384,8 +548,16 @@ impl Harness {
 	) -> Result<()> {
 		while !*stopping.borrow() && stopping.has_changed().is_ok() {
 			let delivery = async {
+				if self.deliver_failure_once().await? {
+					return Ok(true);
+				}
 				if let Some(run) = self.federation.store.pending_terminal_run_message().await? {
-					if self.federation.deliver_run_messages(&run).await.is_ok() {
+					if self
+						.federation
+						.deliver_run_message_metadata(&run)
+						.await
+						.is_ok()
+					{
 						return Ok(true);
 					}
 					self.federation
@@ -445,18 +617,14 @@ impl Harness {
 		cursor: usize,
 		message: String,
 	) -> Result<()> {
-		let mut context: Context = serde_json::from_value(run.context.clone())?;
-		let event = json!({"kind":"tool","call":call,"result":{"error":message}});
+		let mut context = run.context.clone();
+		let event = ContextEvent::tool(call.clone(), json!({"error":message}));
 		let growth = context::tool_event_growth(&context, &event);
 		context.history.push(event);
-		run.pending["request_tokens"] = json!(
-			run.pending["request_tokens"]
-				.as_u64()
-				.unwrap_or(0)
-				.saturating_add(growth as u64)
-		);
-		run.context = json!(context);
-		run.pending["cursor"] = json!(cursor + 1);
+		run.state.tool_mut()?.request_tokens =
+			run.state.tool()?.request_tokens.saturating_add(growth);
+		run.context = context.clone();
+		run.state.tool_mut()?.cursor = cursor + 1;
 		self.federation
 			.store
 			.save_run(run, token, "run.tool_recorded")
@@ -533,16 +701,8 @@ impl Harness {
 		}
 		home.response_message(
 			worker,
-			run.pending["included_input_seq"]
-				.as_i64()
-				.unwrap_or(run.observed_input_seq),
-			&format!(
-				"{}:{}:output",
-				run.id,
-				run.pending["response_epoch"]
-					.as_i64()
-					.unwrap_or(run.revision)
-			),
+			run.included_input_seq(),
+			&format!("{}:{}:output", run.id, run.state.tool()?.response_epoch),
 			text,
 		)
 		.await
@@ -580,17 +740,21 @@ impl Harness {
 		// already reached a terminal state. Drain them before terminal recovery.
 		self.federation.deliver_run_messages(run).await?;
 		let task = home.task().await?;
-		if matches!(
-			task.status.as_str(),
-			"COMPLETED" | "FAILED" | "CANCELLED" | "ABANDONED"
-		) {
-			run.phase = if task.status == "ABANDONED" {
-				"CANCELLED".into()
-			} else {
-				task.status
+		if task.status.is_terminal() {
+			run.state = match task.status {
+				TaskStatus::Completed => RunState::Completed(TerminalState {}),
+				TaskStatus::Failed => RunState::Failed(TerminalState {}),
+				TaskStatus::Cancelled | TaskStatus::Abandoned => {
+					RunState::Cancelled(TerminalState {})
+				}
+				TaskStatus::Open
+				| TaskStatus::Claimed
+				| TaskStatus::Running
+				| TaskStatus::Blocked => {
+					return Err(Error::Conflict("task is not terminal".into()));
+				}
 			};
-			run.pending = json!({});
-			let kind = if run.phase == "FAILED" {
+			let kind = if run.phase() == RunPhase::Failed {
 				"run.failed"
 			} else {
 				"run.reconciled"
@@ -598,58 +762,61 @@ impl Harness {
 			store.save_run(run, token, kind).await?;
 			return Ok(());
 		}
-		if let Some(target) = run.pending["terminal_transition"]
-			.as_str()
-			.map(str::to_owned)
+		if let RunState::Waiting(wait) = &run.state
+			&& let WaitingState::FailureDelivery { target, .. } = wait.as_ref()
 		{
+			let target = *target;
 			self.federation
-				.transition_terminal_run_messages(run, &target)
+				.transition_terminal_run_messages(run, target.task_status())
 				.await?;
-			run.phase = target;
-			run.pending = json!({});
-			let kind = if run.phase == "FAILED" {
-				"run.failed"
-			} else {
-				"run.cancelled"
-			};
-			store.save_run(run, token, kind).await?;
-			return Ok(());
-		}
-		if let Some(object) = run.pending.as_object_mut() {
-			object.remove("retry_at");
-			if object.remove("lease_recovered").is_some() {
-				let data = json!({"run_id":run.id,"task_id":run.task_id,"phase":run.phase,"cause":"expired worker lease"});
-				store
-					.emit(
-						home.local().then_some(run.workspace_id),
-						"run.recovered",
-						data.clone(),
-					)
-					.await?;
-				home.report(
-					&format!("{}:{}:recovered", run.id, run.revision),
-					"remote.run.recovered",
-					data,
+			run.state = target.into_state();
+			store
+				.save_run(
+					run,
+					token,
+					if target == FailureTarget::Failed {
+						"run.failed"
+					} else {
+						"run.cancelled"
+					},
 				)
 				.await?;
-			}
+			return Ok(());
 		}
-		if run.control == "CANCELLED" {
-			self.federation
-				.transition_terminal_run_messages(run, "CANCELLED")
+		run.recovery.retry = None;
+		if std::mem::take(&mut run.recovery.lease_recovered) {
+			let data = json!({"run_id":run.id,"task_id":run.task_id,"phase":run.phase(),"cause":"expired worker lease"});
+			store
+				.emit(
+					home.local().then_some(run.workspace_id),
+					"run.recovered",
+					data.clone(),
+				)
 				.await?;
-			run.phase = "CANCELLED".into();
+			home.report(
+				&format!("{}:{}:recovered", run.id, run.revision),
+				"remote.run.recovered",
+				data,
+			)
+			.await?;
+		}
+		if run.control == RunControl::Cancelled {
+			self.federation
+				.transition_terminal_run_messages(run, TaskStatus::Cancelled)
+				.await?;
+			run.state = RunState::Cancelled(TerminalState {});
 			store.save_run(run, token, "run.cancelled").await?;
 			return Ok(());
 		}
 		let entry = self
 			.federation
 			.registry
-			.get_for_run(run, &run.agent_id, &run.agent_version)
+			.get_for_run(&*run, &run.agent_id, &run.agent_version)
 			.await?;
 		let agent: AgentConfig = serde_json::from_value(entry.config.clone())?;
-		match run.phase.as_str() {
-			"READY" => {
+		// Separate phase poll frames to keep typed execution within the default worker stack.
+		match run.state.clone() {
+			RunState::Ready(_) => {
 				let task = home.task().await?;
 				if !task.dependencies.is_empty() {
 					let mut waiting = false;
@@ -658,35 +825,38 @@ impl Harness {
 							home.read_record("task", &id.to_string()).await?,
 						)?;
 						if matches!(
-							dependency.status.as_str(),
-							"FAILED" | "CANCELLED" | "ABANDONED"
+							dependency.status,
+							crate::domain::TaskStatus::Failed
+								| crate::domain::TaskStatus::Cancelled
+								| crate::domain::TaskStatus::Abandoned
 						) {
 							return Err(Error::Invalid(format!(
 								"dependency {} is {}",
 								dependency.id, dependency.status
 							)));
 						}
-						waiting |= dependency.status != "COMPLETED";
+						waiting |= dependency.status != crate::domain::TaskStatus::Completed;
 					}
 					if waiting {
-						run.phase = "WAITING".into();
-						run.pending = json!({"wake_at":chrono::Utc::now()+chrono::Duration::seconds(2),"resume_phase":"READY"});
+						run.state = RunState::Waiting(Box::new(WaitingState::Dependencies {
+							wake_at: chrono::Utc::now() + chrono::Duration::seconds(2),
+							resume: ReadyState {},
+						}));
 						store.save_run(run, token, "run.waiting").await?;
 						return Ok(());
 					}
 				}
 				home.claim(&task, &entry).await?;
-				home.transition("RUNNING").await?;
-				run.phase = "THINKING".into();
+				home.transition(crate::domain::TaskStatus::Running).await?;
+				run.state = RunState::Thinking(ThinkingState::default());
 				store.save_run(run, token, "run.started").await?;
 			}
-			"THINKING" => {
+			RunState::Thinking(thinking) => Box::pin(async {
 				self.federation.reconcile_run_messages(run).await?;
 				// An accepted remote correction is durable even if its first home
 				// delivery failed. Deliver it before building any inference request.
 				self.federation.deliver_run_messages(run).await?;
-				let force_read_compaction =
-					run.pending["force_workspace_read_compaction"].as_bool() == Some(true);
+				let force_read_compaction = thinking.force_workspace_read_compaction;
 				if let Some(guard) = guard {
 					guard.inference().await?;
 				}
@@ -696,7 +866,7 @@ impl Harness {
 				let model_entry = self
 					.federation
 					.registry
-					.get_for_run(run, &agent.model.id, &agent.model.version)
+					.get_for_run(&*run, &agent.model.id, &agent.model.version)
 					.await?;
 				let model_cfg: ModelConfig = serde_json::from_value(model_entry.config)?;
 				let window = model_cfg.context_window;
@@ -707,8 +877,8 @@ impl Harness {
 					guard.filter_core_tools(&mut tools).await?;
 				}
 				let task = home.task().await?;
-				if task.status == "COMPLETED" {
-					run.phase = "COMPLETED".into();
+				if task.status == crate::domain::TaskStatus::Completed {
+					run.state = RunState::Completed(TerminalState {});
 					store.save_run(run, token, "run.recovered").await?;
 					return Ok(());
 				}
@@ -717,7 +887,7 @@ impl Harness {
 					let entry = self
 						.federation
 						.registry
-						.get_for_run(run, &skill.id, &skill.version)
+						.get_for_run(&*run, &skill.id, &skill.version)
 						.await?;
 					instructions.push('\n');
 					instructions.push_str(&format!("Skill {}@{}:\n", skill.id, skill.version));
@@ -732,7 +902,7 @@ impl Harness {
 				instructions.push_str(&agent.instructions);
 				let documents =
 					crate::knowledge::load(&self.federation.registry.db, &entry).await?;
-				let mut context: Context = serde_json::from_value(run.context.clone())?;
+				let mut context = run.context.clone();
 				capture_message_read_coverage(&mut context);
 				let observation = home
 					.observation(0, context::observation::DEFAULT_LIMIT)
@@ -744,8 +914,8 @@ impl Harness {
 				let summary_seq = context.run_message_summary_seq;
 				// Previous media-intake turns are retained as durable observations.
 				// Repeating their text here can block a later media-bearing message.
-				let intake_seq = run.pending["media_intake_through_seq"]
-					.as_i64()
+				let intake_seq = thinking
+					.media_intake_through_seq
 					.unwrap_or(summary_seq)
 					.max(summary_seq);
 				let run_message_limit = self.federation.run_message_limit(run).await?;
@@ -763,9 +933,7 @@ impl Harness {
 					.last()
 					.map_or(intake_seq, |(index, _)| inputs[*index].seq);
 				let mut run_messages = Vec::with_capacity(page.entries.len());
-				let carried_reads: Vec<Uuid> =
-					serde_json::from_value(run.pending["deferred_run_message_reads"].clone())
-						.unwrap_or_default();
+				let carried_reads = thinking.deferred_run_message_reads.clone();
 				let mut page_reads = Vec::new();
 				for (index, reference_only) in &page.entries {
 					let input = &inputs[*index];
@@ -806,19 +974,17 @@ impl Harness {
 				{
 					json!({})
 				} else {
-					store.memory(run).await?
+					store.memory(&run.metadata()).await?
 				};
-				let mut pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":observation,"memory":memory,"agent_state":{"phase":run.phase,"step":run.step}});
-				if let Some(deferred_read) = run.pending.get("deferred_workspace_read") {
-					pinned["deferred_workspace_read"] = deferred_read.clone();
+				let mut pinned = json!({"identity":{"node_id":self.federation.config.node_id,"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"workspace":observation,"memory":memory,"agent_state":{"phase":run.phase(),"step":run.step}});
+				if let Some(deferred_read) = &thinking.deferred_workspace_read {
+					pinned["deferred_workspace_read"] = json!(deferred_read);
 				}
-				if let Some(deferred_read) = run.pending.get("deferred_skill_read") {
-					pinned["deferred_skill_read"] = deferred_read.clone();
+				if let Some(deferred_read) = &thinking.deferred_skill_read {
+					pinned["deferred_skill_read"] = json!(deferred_read);
 				}
-				if let Some(deferred_observation) =
-					run.pending.get("deferred_workspace_observation")
-				{
-					pinned["deferred_workspace_observation"] = deferred_observation.clone();
+				if let Some(deferred_observation) = &thinking.deferred_workspace_observation {
+					pinned["deferred_workspace_observation"] = json!(deferred_observation);
 				}
 				let mut specifications = tools
 					.iter()
@@ -826,13 +992,7 @@ impl Harness {
 					.map(|(_, tool)| tool)
 					.map(|t| t.specification())
 					.collect::<Vec<_>>();
-				let selected_media: Vec<crate::capabilities::sharing::Selection> =
-					serde_json::from_value(
-						run.pending
-							.get("selected_media")
-							.cloned()
-							.unwrap_or_else(|| json!([])),
-					)?;
+				let selected_media = thinking.selected_media.clone();
 				let media_headroom = self.federation.run_request_headroom(run).await?;
 				let mut new_messages = Vec::new();
 				for (position, (index, _)) in page.entries.iter().enumerate() {
@@ -1080,8 +1240,13 @@ impl Harness {
 				if let Some(seq) = media.through_seq {
 					context.media_inferred_seq = context.media_inferred_seq.max(seq);
 				}
-				context.usage = json!({"input_tokens":result.input_tokens,"output_tokens":result.output_tokens,"context_window":window,"compactions":context.compactions});
-				run.context = json!(context);
+				context.usage = Some(ContextUsage {
+					input_tokens: result.input_tokens,
+					output_tokens: result.output_tokens,
+					context_window: window,
+					compactions: context.compactions,
+				});
+				run.context = context.clone();
 				let references_read_at_inference = required_run_message_reads
 					.iter()
 					.all(|id| referenced_message_inferred(&context, *id));
@@ -1092,31 +1257,47 @@ impl Harness {
 						input_seq
 					};
 				}
-				run.pending = json!({
-					"response":result,
-					"response_epoch":response_epoch(run.revision, run.step),
-					"cursor":0,
-					"included_input_seq":input_seq,
-					"request_window":budget.window,
-					"request_tokens":request_tokens,
-					"media_inferred_seq_before_response":media_inferred_seq_before_response,
-					"observed_input_seq_before_response":observed_input_seq_before_response,
-					"inferred_selected_media":if run_message_catchup || media.defer_selected { json!([]) } else { json!(selected_media) },
-					"deferred_selected_media":if run_message_catchup || media.defer_selected { json!(selected_media) } else { json!([]) },
-					"deferred_human_media":media.defer_human || media.defer_selected,
-					"media_inferred_through_seq":media.through_seq,
-					"media_intake_through_seq":intake_seq,
-					"required_run_message_reads":required_run_message_reads,
-					"references_read_at_inference":references_read_at_inference,
-					"run_message_catchup":run_message_catchup,
-					"run_message_summary_end_seq":batch_end_seq,
-					"run_message_summary_limit":run_message_limit
-				});
-				run.phase = "TOOL_CALL".into();
+				run.state = RunState::ToolCall(Box::new(ToolCallState {
+					response: result,
+					response_epoch: response_epoch(run.revision, run.step),
+					cursor: 0,
+					included_input_seq: input_seq,
+					request_window: budget.window,
+					request_tokens,
+					finalizing: false,
+					media_inferred_seq_before_response,
+					observed_input_seq_before_response,
+					inferred_selected_media: if run_message_catchup || media.defer_selected {
+						vec![]
+					} else {
+						selected_media.clone()
+					},
+					deferred_selected_media: if run_message_catchup || media.defer_selected {
+						selected_media
+					} else {
+						vec![]
+					},
+					selected_media: vec![],
+					deferred_human_media: media.defer_human || media.defer_selected,
+					media_inferred_through_seq: media.through_seq,
+					media_intake_through_seq: intake_seq,
+					required_run_message_reads,
+					references_read_at_inference,
+					run_message_catchup,
+					run_message_summary_end_seq: batch_end_seq,
+					run_message_summary_limit: run_message_limit,
+					deferred_reads: ThinkingState::default(),
+					workspace_read_plan: None,
+					skill_read_plan: None,
+					workspace_observation_plan: None,
+					workbench_approval_result: None,
+				}));
 				run.error = None;
 				store.save_run(run, token, "model.completed").await?;
-			}
-			"TOOL_CALL" => {
+				Ok(())
+			})
+			.await?,
+			RunState::ToolCall(_) => Box::pin(async {
 				// An old home replica can still accept a correction directly from
 				// an old executor. Wait for its upgraded database gate before any
 				// model output or final completion crosses this boundary.
@@ -1128,9 +1309,7 @@ impl Harness {
 				// A preceding binary could have left a remote correction only on
 				// the home node while this run was already awaiting finalization.
 				self.federation.reconcile_run_messages(run).await?;
-				let included_input_seq = run.pending["included_input_seq"]
-					.as_i64()
-					.unwrap_or(run.observed_input_seq);
+				let included_input_seq = run.included_input_seq();
 				if store
 					.run_inputs(run.id)
 					.await?
@@ -1141,38 +1320,31 @@ impl Harness {
 					// text and calls before any effect crosses the tool boundary. Keep
 					// the inference allowance and let the next stored response get a
 					// fresh response_epoch for idempotency keys.
-					let mut context: Context = serde_json::from_value(run.context.clone())?;
+					let mut context = run.context.clone();
 					let next_pending = stale_media_pending(
 						&mut context,
-						&run.pending,
+						run.state.tool()?,
 						&mut run.observed_input_seq,
 					);
-					run.context = json!(context);
-					run.phase = "THINKING".into();
-					run.pending = next_pending;
+					run.context = context.clone();
+
+					run.state = RunState::Thinking(next_pending);
 					store.save_run(run, token, "run.message_received").await?;
 					return Ok(());
 				}
-				if run.pending["response_epoch"].as_i64().is_none() {
-					// Older responses use step-based idempotency keys. The first
-					// invocation persists this value atomically with its tool input;
-					// final output can safely replay the same deterministic key.
-					run.pending["response_epoch"] = json!(run.step);
-				}
-				let mut result: ModelResponse =
-					serde_json::from_value(run.pending["response"].clone())?;
-				if run.pending["deferred_human_media"] == true {
-					let mut context: Context = serde_json::from_value(run.context.clone())?;
+				let mut result = run.state.tool()?.response.clone();
+				if run.state.tool()?.deferred_human_media {
+					let mut context = run.context.clone();
 					if result.text.trim().is_empty() {
 						let next_pending = stale_media_pending(
 							&mut context,
-							&run.pending,
+							run.state.tool()?,
 							&mut run.observed_input_seq,
 						);
-						run.context = json!(context);
-						run.phase = "THINKING".into();
+						run.context = context.clone();
+
 						run.step += 1;
-						run.pending = next_pending;
+						run.state = RunState::Thinking(next_pending);
 						store
 							.save_run(run, token, "run.media_observation_required")
 							.await?;
@@ -1181,23 +1353,27 @@ impl Harness {
 					record_media_observation(
 						&mut context,
 						&result.text,
-						run.pending["media_inferred_through_seq"].as_i64(),
-						media_observation_budget(&run.pending),
+						run.state.tool()?.media_inferred_through_seq,
+						media_observation_budget(run.state.tool()?),
 					);
-					run.context = json!(context);
-					run.phase = "THINKING".into();
+					run.context = context.clone();
+
 					run.step += 1;
-					run.pending = json!({
-						"selected_media":run.pending["deferred_selected_media"],
-						"media_intake_through_seq":run.pending["media_inferred_through_seq"]
-							.as_i64()
-							.unwrap_or(run.pending["media_intake_through_seq"].as_i64().unwrap_or(0)),
-						"deferred_run_message_reads":run.pending["required_run_message_reads"]
+					let pending = run.state.tool()?;
+					run.state = RunState::Thinking(ThinkingState {
+						selected_media: pending.deferred_selected_media.clone(),
+						media_intake_through_seq: Some(
+							pending
+								.media_inferred_through_seq
+								.unwrap_or(pending.media_intake_through_seq),
+						),
+						deferred_run_message_reads: pending.required_run_message_reads.clone(),
+						..Default::default()
 					});
 					store.save_run(run, token, "run.media_deferred").await?;
 					return Ok(());
 				}
-				let run_message_catchup = run.pending["run_message_catchup"] == true;
+				let run_message_catchup = run.state.tool()?.run_message_catchup;
 				if run_message_catchup {
 					// A provider response cannot execute task tools during catch-up,
 					// even if it returns calls that were not in the advertised tool set.
@@ -1205,12 +1381,10 @@ impl Harness {
 						.tool_calls
 						.retain(|call| call.name == "workspace_read");
 				}
-				let required_reads: Vec<Uuid> =
-					serde_json::from_value(run.pending["required_run_message_reads"].clone())
-						.unwrap_or_default();
-				let mut context: Context = serde_json::from_value(run.context.clone())?;
+				let required_reads = run.state.tool()?.required_run_message_reads.clone();
+				let mut context = run.context.clone();
 				capture_message_read_coverage(&mut context);
-				run.context = json!(context);
+				run.context = context.clone();
 				let references_read = required_reads
 					.iter()
 					.all(|id| referenced_message_read(&context, *id));
@@ -1220,40 +1394,40 @@ impl Harness {
 				let informed_response = required_reads.is_empty()
 					|| (references_read
 						&& references_inferred
-						&& run.pending["references_read_at_inference"] == true);
-				let cursor = run.pending["cursor"].as_u64().unwrap_or(0) as usize;
+						&& run.state.tool()?.references_read_at_inference);
+				let cursor = run.state.tool()?.cursor;
 				if !informed_response
 					&& let Some(call) = result.tool_calls.get(cursor)
 					&& !is_required_message_read(call, &required_reads, &context)
 				{
-					context.history.push(
-						json!({"kind":"run_message_read_required","message_ids":required_reads}),
-					);
-					run.phase = "THINKING".into();
+					context.history.push(ContextEvent::RunMessageReadRequired {
+						message_ids: required_reads.clone(),
+					});
+
 					run.step += 1;
-					run.pending = stale_media_pending(
+					run.state = RunState::Thinking(stale_media_pending(
 						&mut context,
-						&run.pending,
+						run.state.tool()?,
 						&mut run.observed_input_seq,
-					);
-					run.context = json!(context);
+					));
+					run.context = context.clone();
 					store
 						.save_run(run, token, "run.message_read_required")
 						.await?;
 					return Ok(());
 				}
 				if cursor >= result.tool_calls.len() && !informed_response {
-					context.history.push(
-						json!({"kind":"run_message_read_required","message_ids":required_reads}),
-					);
-					run.phase = "THINKING".into();
+					context.history.push(ContextEvent::RunMessageReadRequired {
+						message_ids: required_reads.clone(),
+					});
+
 					run.step += 1;
-					run.pending = stale_media_pending(
+					run.state = RunState::Thinking(stale_media_pending(
 						&mut context,
-						&run.pending,
+						run.state.tool()?,
 						&mut run.observed_input_seq,
-					);
-					run.context = json!(context);
+					));
+					run.context = context.clone();
 					store
 						.save_run(run, token, "run.message_read_required")
 						.await?;
@@ -1262,70 +1436,68 @@ impl Harness {
 				if cursor >= result.tool_calls.len() && run_message_catchup {
 					let summary = result.text.trim().to_owned();
 					if summary.is_empty() {
-						context.history.push(json!({
-							"kind":"run_message_summary_required",
-							"through_seq":run.pending["run_message_summary_end_seq"]
-						}));
-						run.phase = "THINKING".into();
+						context
+							.history
+							.push(ContextEvent::RunMessageSummaryRequired {
+								through_seq: run.state.tool()?.run_message_summary_end_seq,
+								max_bytes: None,
+								reason: None,
+							});
+
 						run.step += 1;
-						run.pending = stale_media_pending(
+						run.state = RunState::Thinking(stale_media_pending(
 							&mut context,
-							&run.pending,
+							run.state.tool()?,
 							&mut run.observed_input_seq,
-						);
-						run.context = json!(context);
+						));
+						run.context = context.clone();
 						store
 							.save_run(run, token, "run.message_summary_required")
 							.await?;
 						return Ok(());
 					}
-					let summary_limit = run.pending["run_message_summary_limit"]
-						.as_u64()
-						.unwrap_or(0) as usize;
+					let summary_limit = run.state.tool()?.run_message_summary_limit;
 					if summary.len() > summary_limit {
-						context.history.push(json!({
-							"kind":"run_message_summary_required",
-							"through_seq":run.pending["run_message_summary_end_seq"],
-							"max_bytes":summary_limit,
-							"reason":"summary exceeded the complete-summary limit"
-						}));
-						run.phase = "THINKING".into();
+						context
+							.history
+							.push(ContextEvent::RunMessageSummaryRequired {
+								through_seq: run.state.tool()?.run_message_summary_end_seq,
+								max_bytes: Some(summary_limit),
+								reason: Some("summary exceeded the complete-summary limit".into()),
+							});
+
 						run.step += 1;
-						run.pending = stale_media_pending(
+						run.state = RunState::Thinking(stale_media_pending(
 							&mut context,
-							&run.pending,
+							run.state.tool()?,
 							&mut run.observed_input_seq,
-						);
-						run.context = json!(context);
+						));
+						run.context = context.clone();
 						store
 							.save_run(run, token, "run.message_summary_required")
 							.await?;
 						return Ok(());
 					}
 					context.run_message_summary = summary;
-					context.run_message_summary_seq = run.pending["run_message_summary_end_seq"]
-						.as_i64()
-						.ok_or_else(|| {
-							Error::Conflict(
-								"run message summary page is missing its sequence".into(),
-							)
-						})?;
+					context.run_message_summary_seq = run.state.tool()?.run_message_summary_end_seq;
 					let summarized_ids = required_reads
 						.iter()
-						.map(ToString::to_string)
+						.copied()
 						.collect::<std::collections::BTreeSet<_>>();
 					context.history.retain(|event| {
 						message_read_range(event)
 							.is_none_or(|(id, _, _, _)| !summarized_ids.contains(&id))
 					});
 					for id in &required_reads {
-						let id = id.to_string();
-						context.message_read_coverage.remove(&id);
-						context.message_inference_coverage.remove(&id);
+						context.message_read_coverage.remove(id);
+						context.message_inference_coverage.remove(id);
 					}
-					run.context = json!(context);
-					run.phase = "THINKING".into();
-					run.pending = json!({"selected_media":pending_selected_media(&run.pending)});
+					run.context = context.clone();
+
+					run.state = RunState::Thinking(ThinkingState {
+						selected_media: pending_selected_media(run.state.tool()?),
+						..Default::default()
+					});
 					store.save_run(run, token, "run.message_summarized").await?;
 					return Ok(());
 				}
@@ -1335,23 +1507,23 @@ impl Harness {
 				}
 				if cursor >= result.tool_calls.len() {
 					if result.tool_calls.is_empty() {
-						if let Some(deferred) = run.pending["deferred_selected_media"].as_array()
-							&& !deferred.is_empty()
-						{
+						if !run.state.tool()?.deferred_selected_media.is_empty() {
 							if !result.text.trim().is_empty() {
-								let mut context: Context =
-									serde_json::from_value(run.context.clone())?;
+								let mut context = run.context.clone();
 								record_media_observation(
 									&mut context,
 									&result.text,
 									None,
-									media_observation_budget(&run.pending),
+									media_observation_budget(run.state.tool()?),
 								);
-								run.context = json!(context);
+								run.context = context.clone();
 							}
-							run.phase = "THINKING".into();
+
 							run.step += 1;
-							run.pending = json!({"selected_media":deferred});
+							run.state = RunState::Thinking(ThinkingState {
+								selected_media: run.state.tool()?.deferred_selected_media.clone(),
+								..Default::default()
+							});
 							store.save_run(run, token, "run.media_deferred").await?;
 							return Ok(());
 						}
@@ -1364,17 +1536,20 @@ impl Harness {
 								if let Some(guard) = guard {
 									guard.action("human.request", "run", run.id).await?;
 								}
-								let response_epoch = run.pending["response_epoch"]
-									.as_i64()
-									.unwrap_or(run.revision);
+								let response_epoch = run.state.tool()?.response_epoch;
 								let h=store.human_request(run,"INFORMATION_REQUEST","A subtask needs intervention. You can explicitly abandon failed, blocked or cancelled subtasks in their task details, providing a reason. Then answer this request to continue with the remaining results, or cancel this parent.",&format!("{}:{}:subtasks",run.id,response_epoch)).await?;
-								run.pending =
-									json!({"human_request_id":h.id,"resume_phase":"THINKING"});
+								run.state = RunState::Waiting(Box::new(WaitingState::Human {
+									request_id: h.id,
+									resume: ResumeState::Thinking(ThinkingState::default()),
+								}));
 							} else {
-								run.pending = json!({"wake_at":chrono::Utc::now()+chrono::Duration::seconds(2),"resume_phase":"THINKING"});
+								run.state = RunState::Waiting(Box::new(WaitingState::Children {
+									wake_at: chrono::Utc::now() + chrono::Duration::seconds(2),
+									resume: ThinkingState::default(),
+								}));
 							}
 							run.step += 1;
-							run.phase = "WAITING".into();
+
 							store.save_run(run, token, "run.waiting").await?;
 							return Ok(());
 						}
@@ -1390,8 +1565,8 @@ impl Harness {
 							guard.action("task.complete", "task", run.task_id).await?;
 						}
 						if !store.begin_final_completion(run, token).await? {
-							run.phase = "THINKING".into();
-							run.pending = json!({});
+							run.state = RunState::Thinking(ThinkingState::default());
+
 							store.save_run(run, token, "run.message_received").await?;
 							return Ok(());
 						}
@@ -1405,43 +1580,32 @@ impl Harness {
 								&& home.child_summary(run.task_id).await?.has_pending
 							{
 								run.step += 1;
-								run.phase = "WAITING".into();
-								run.pending = json!({"wake_at":chrono::Utc::now()+chrono::Duration::seconds(2),"resume_phase":"THINKING"});
+
+								run.state = RunState::Waiting(Box::new(WaitingState::Children {
+									wake_at: chrono::Utc::now() + chrono::Duration::seconds(2),
+									resume: ThinkingState::default(),
+								}));
 								store.save_run(run, token, "run.waiting").await?;
 								return Ok(());
 							}
 							return Err(error);
 						}
-						run.phase = "COMPLETED".into();
-						run.pending = json!({});
+						run.state = RunState::Completed(TerminalState {});
+
 						store.save_run(run, token, "run.completed").await?;
 					} else {
-						run.phase = "THINKING".into();
 						run.step += 1;
-						let force_read_compaction = run.pending["force_workspace_read_compaction"]
-							.as_bool()
-							.unwrap_or(false);
-						let deferred_read = run.pending.get("deferred_workspace_read").cloned();
-						let deferred_skill_read = run.pending.get("deferred_skill_read").cloned();
-						let selected_media = pending_selected_media(&run.pending);
-						run.pending = if force_read_compaction {
-							json!({
-									"force_workspace_read_compaction":true,
-									"deferred_workspace_read":deferred_read,
-									"deferred_skill_read":deferred_skill_read,
-									"selected_media":selected_media
-							})
-						} else {
-							json!({"selected_media":selected_media})
-						};
+						let mut next = run.state.tool()?.deferred_reads.clone();
+						next.selected_media = pending_selected_media(run.state.tool()?);
+						run.state = RunState::Thinking(next);
 						store.save_run(run, token, "run.thinking").await?;
 					}
 					return Ok(());
 				}
-				let mut context: Context = serde_json::from_value(run.context.clone())?;
+				let mut context = run.context.clone();
 				capture_message_read_coverage(&mut context);
 				let mut call = result.tool_calls[cursor].clone();
-				if !pending_selected_media(&run.pending).is_empty()
+				if !pending_selected_media(run.state.tool()?).is_empty()
 					&& !read_only_after_model_media_selection(&call.name)
 				{
 					return self
@@ -1456,21 +1620,23 @@ impl Harness {
 				}
 				let mut prepared_result = None;
 				if call.name == "workspace_read" {
-					let (read_range, saved_read) =
-						match workspace_read_plan_result(&call, run.step, cursor, &run.pending) {
-							Ok(plan) => plan,
-							Err(Error::Invalid(message)) => {
-								return self.tool_error(run, token, &call, cursor, message).await;
-							}
-							Err(error) => return Err(error),
-						};
+					let (read_range, saved_read) = match workspace_read_plan_result(
+						&call,
+						run.step,
+						cursor,
+						run.state.tool()?,
+					) {
+						Ok(plan) => plan,
+						Err(Error::Invalid(message)) => {
+							return self.tool_error(run, token, &call, cursor, message).await;
+						}
+						Err(error) => return Err(error),
+					};
 					if let Some(output) = saved_read {
 						prepared_result = Some(output.clone());
 					} else {
-						let request_tokens =
-							run.pending["request_tokens"].as_u64().unwrap_or(0) as usize;
-						let request_window =
-							run.pending["request_window"].as_u64().unwrap_or(0) as usize;
+						let request_tokens = run.state.tool()?.request_tokens;
+						let request_window = run.state.tool()?.request_window;
 						match cap_workspace_read(
 							&home,
 							&context,
@@ -1487,14 +1653,15 @@ impl Harness {
 								// Start a new inference turn without appending an error event:
 								// even that envelope could exceed the smaller forced-compaction
 								// quota on the next request.
-								run.phase = "THINKING".into();
+
 								if !run_message_catchup {
 									run.step += 1;
 								}
-								run.pending = json!({
-									"force_workspace_read_compaction":true,
-									"deferred_workspace_read":deferred_workspace_read(&call),
-									"selected_media":pending_selected_media(&run.pending)
+								run.state = RunState::Thinking(ThinkingState {
+									force_workspace_read_compaction: true,
+									deferred_workspace_read: Some(deferred_workspace_read(&call)),
+									selected_media: pending_selected_media(run.state.tool()?),
+									..Default::default()
 								});
 								store.save_run(run, token, "run.read_deferred").await?;
 								return Ok(());
@@ -1505,11 +1672,12 @@ impl Harness {
 							}) => {
 								call = bounded;
 								result.tool_calls[cursor] = call.clone();
-								run.pending["response"] = json!(result);
-								run.pending["workspace_read_plan"] = json!({
-									"step":run.step,
-									"cursor":cursor,
-									"result":output
+								run.state.tool_mut()?.response = result.clone();
+								run.state.tool_mut()?.workspace_read_plan = Some(ReadPlan {
+									step: run.step,
+									cursor,
+									call: call.clone(),
+									result: output.clone(),
 								});
 								prepared_result = Some(output);
 							}
@@ -1528,12 +1696,13 @@ impl Harness {
 						}
 						Err(error) => return Err(error),
 					};
-					let saved_plan = &run.pending["skill_read_plan"];
-					let saved_output = (saved_plan["step"].as_i64() == Some(run.step as i64)
-						&& saved_plan["cursor"].as_u64() == Some(cursor as u64)
-						&& saved_plan["call"] == json!(call))
-					.then(|| saved_plan.get("result").cloned())
-					.flatten();
+					let saved_output = run
+						.state
+						.tool()?
+						.skill_read_plan
+						.as_ref()
+						.filter(|p| p.step == run.step && p.cursor == cursor && p.call == call)
+						.map(|p| p.result.clone());
 					if let Some(output) = saved_output {
 						prepared_result = Some(output);
 					} else {
@@ -1544,7 +1713,7 @@ impl Harness {
 						};
 						let output = match builtins()
 							.get("skill_read")
-							.expect("skill_read builtin")
+							.ok_or_else(|| Error::Invalid("skill_read builtin unavailable".into()))?
 							.invoke(&ctx, call.arguments.clone(), "")
 							.await
 						{
@@ -1554,10 +1723,8 @@ impl Harness {
 							}
 							Err(error) => return Err(error),
 						};
-						let request_tokens =
-							run.pending["request_tokens"].as_u64().unwrap_or(0) as usize;
-						let request_window =
-							run.pending["request_window"].as_u64().unwrap_or(0) as usize;
+						let request_tokens = run.state.tool()?.request_tokens;
+						let request_window = run.state.tool()?.request_window;
 						let budget = WorkspaceReadFitBudget {
 							requested: range.requested,
 							offset: range.offset,
@@ -1567,12 +1734,12 @@ impl Harness {
 						};
 						let Some(chars) = fit_skill_read_chars(&context, &call, &output, budget)
 						else {
-							run.phase = "THINKING".into();
 							run.step += 1;
-							run.pending = json!({
-								"force_workspace_read_compaction":true,
-								"deferred_skill_read":deferred_skill_read(&call),
-								"selected_media":pending_selected_media(&run.pending)
+							run.state = RunState::Thinking(ThinkingState {
+								force_workspace_read_compaction: true,
+								deferred_skill_read: Some(deferred_skill_read(&call)),
+								selected_media: pending_selected_media(run.state.tool()?),
+								..Default::default()
 							});
 							store
 								.save_run(run, token, "run.skill_read_deferred")
@@ -1581,21 +1748,25 @@ impl Harness {
 						};
 						call.arguments["max_chars"] = json!(chars);
 						result.tool_calls[cursor] = call.clone();
-						run.pending["response"] = json!(result);
+						run.state.tool_mut()?.response = result.clone();
 						let bounded = skill_read_result(&output, chars);
-						run.pending["skill_read_plan"] = json!({
-							"step":run.step,"cursor":cursor,"call":call,"result":bounded
+						run.state.tool_mut()?.skill_read_plan = Some(ReadPlan {
+							step: run.step,
+							cursor,
+							call: call.clone(),
+							result: bounded.clone(),
 						});
 						prepared_result = Some(bounded);
 					}
 				}
 				if call.name == "workspace_observe" {
-					let saved_plan = &run.pending["workspace_observation_plan"];
-					let saved_output = (saved_plan["step"].as_i64() == Some(run.step as i64)
-						&& saved_plan["cursor"].as_u64() == Some(cursor as u64)
-						&& saved_plan["call"] == json!(call))
-					.then(|| saved_plan.get("result").cloned())
-					.flatten();
+					let saved_output = run
+						.state
+						.tool()?
+						.workspace_observation_plan
+						.as_ref()
+						.filter(|p| p.step == run.step && p.cursor == cursor && p.call == call)
+						.map(|p| p.result.clone());
 					if let Some(output) = saved_output {
 						prepared_result = Some(output);
 					} else {
@@ -1604,10 +1775,8 @@ impl Harness {
 							.as_u64()
 							.unwrap_or(context::observation::DEFAULT_LIMIT as u64)
 							as usize;
-						let request_tokens =
-							run.pending["request_tokens"].as_u64().unwrap_or(0) as usize;
-						let request_window =
-							run.pending["request_window"].as_u64().unwrap_or(0) as usize;
+						let request_tokens = run.state.tool()?.request_tokens;
+						let request_window = run.state.tool()?.request_window;
 						let remaining_calls = result.tool_calls.len().saturating_sub(cursor + 1);
 						let fitted = home
 							.observation_fitted(offset, requested, |limit, output| {
@@ -1625,12 +1794,15 @@ impl Harness {
 						let Some((limit, output)) = fitted else {
 							// Retry after compaction without appending an observation event
 							// that cannot fit in the next request quota.
-							run.phase = "THINKING".into();
+
 							run.step += 1;
-							run.pending = json!({
-								"force_workspace_read_compaction":true,
-								"deferred_workspace_observation":deferred_workspace_observation(&call),
-								"selected_media":pending_selected_media(&run.pending)
+							run.state = RunState::Thinking(ThinkingState {
+								force_workspace_read_compaction: true,
+								deferred_workspace_observation: Some(
+									deferred_workspace_observation(&call),
+								),
+								selected_media: pending_selected_media(run.state.tool()?),
+								..Default::default()
 							});
 							store
 								.save_run(run, token, "run.observation_deferred")
@@ -1639,12 +1811,12 @@ impl Harness {
 						};
 						call.arguments["limit"] = json!(limit);
 						result.tool_calls[cursor] = call.clone();
-						run.pending["response"] = json!(result);
-						run.pending["workspace_observation_plan"] = json!({
-							"step":run.step,
-							"cursor":cursor,
-							"call":call,
-							"result":output
+						run.state.tool_mut()?.response = result.clone();
+						run.state.tool_mut()?.workspace_observation_plan = Some(ReadPlan {
+							step: run.step,
+							cursor,
+							call: call.clone(),
+							result: output.clone(),
 						});
 						prepared_result = Some(output);
 					}
@@ -1674,9 +1846,7 @@ impl Harness {
 						Err(error) => return Err(error),
 					}
 				}
-				let response_epoch = run.pending["response_epoch"]
-					.as_i64()
-					.unwrap_or(run.revision);
+				let response_epoch = run.state.tool()?.response_epoch;
 				let key = format!("{}:{}:{}", run.id, response_epoch, cursor);
 				// New workbench versions require an explicit, one-call approval for
 				// external writes. Legacy versions have no behavior flags and keep
@@ -1691,21 +1861,19 @@ impl Harness {
 					let entry = self
 						.federation
 						.registry
-						.get_for_run(run, &reference.id, &reference.version)
+						.get_for_run(&*run, &reference.id, &reference.version)
 						.await?;
 					let config: ToolConfig = serde_json::from_value(entry.config)?;
 					let writes = matches!(config, ToolConfig::Http { ref replay, .. } | ToolConfig::Mcp { ref replay, .. } if replay != "read_only");
 					if writes {
-						let decision = &run.pending["workbench_approval_result"];
-						if decision["key"] == key && decision["call"] == json!(call) {
-							if decision["approved"] != true
-								|| decision["expires_at"]
-									.as_str()
-									.and_then(|value| {
-										value.parse::<chrono::DateTime<chrono::Utc>>().ok()
-									})
-									.is_none_or(|expiry| expiry <= chrono::Utc::now())
-							{
+						if let Some(decision) = run
+							.state
+							.tool()?
+							.workbench_approval_result
+							.as_ref()
+							.filter(|d| d.key == key && d.call == *call)
+						{
+							if !decision.approved || decision.expires_at <= chrono::Utc::now() {
 								return self
 									.tool_error(
 										run,
@@ -1731,13 +1899,14 @@ impl Harness {
 									&format!("{key}:workbench-approval"),
 								)
 								.await?;
-							run.pending["workbench_approval"] =
-								json!({"key":key,"call":call,"request_id":request.id});
-							run.pending["human_request_id"] = json!(request.id);
-							run.pending["resume_phase"] = json!("TOOL_CALL");
-							run.pending["wake_at"] =
-								json!(request.created_at + chrono::Duration::minutes(15));
-							run.phase = "WAITING".into();
+							run.state =
+								RunState::Waiting(Box::new(WaitingState::ExternalApproval {
+									request_id: request.id,
+									key: key.clone(),
+									call: call.clone(),
+									expires_at: request.created_at + chrono::Duration::minutes(15),
+									resume: Box::new(run.state.tool()?.clone()),
+								}));
 							store
 								.save_run(run, token, "run.waiting_for_tool_approval")
 								.await?;
@@ -1787,14 +1956,12 @@ impl Harness {
 					&& output["status"] == "completed"
 					&& output["metadata"]["file_id"] == call.arguments["file_id"]
 				{
-					let selection = json!({"file_id":call.arguments["file_id"],"expected_digest":call.arguments["expected_digest"]});
-					let mut selected = run.pending["selected_media"]
-						.as_array()
-						.cloned()
-						.unwrap_or_default();
-					let deferred_count = run.pending["deferred_selected_media"]
-						.as_array()
-						.map_or(0, Vec::len);
+					let selection: crate::capabilities::sharing::Selection =
+						serde_json::from_value(
+							json!({"file_id":call.arguments["file_id"],"expected_digest":call.arguments["expected_digest"]}),
+						)?;
+					let mut selected = run.state.tool()?.selected_media.clone();
+					let deferred_count = run.state.tool()?.deferred_selected_media.len();
 					if selected.len() + deferred_count >= 8 {
 						return self
 							.tool_invocation_error(
@@ -1808,13 +1975,8 @@ impl Harness {
 							.await;
 					}
 					selected.push(selection);
-					let mut combined = run.pending["deferred_selected_media"]
-						.as_array()
-						.cloned()
-						.unwrap_or_default();
-					combined.extend(selected.iter().cloned());
-					let selections: Vec<crate::capabilities::sharing::Selection> =
-						serde_json::from_value(Value::Array(combined))?;
+					let mut selections = run.state.tool()?.deferred_selected_media.clone();
+					selections.extend(selected.iter().cloned());
 					let Some(guard) = guard else {
 						return self
 							.tool_invocation_error(
@@ -1833,7 +1995,7 @@ impl Harness {
 							let model_entry = self
 								.federation
 								.registry
-								.get_for_run(run, &agent.model.id, &agent.model.version)
+								.get_for_run(&*run, &agent.model.id, &agent.model.version)
 								.await?;
 							let model: ModelConfig = serde_json::from_value(model_entry.config)?;
 							match check_model_media_headroom(headroom, parts, &model) {
@@ -1867,64 +2029,45 @@ impl Harness {
 						}
 						Err(error) => return Err(error),
 					}
-					run.pending["selected_media"] = json!(selected);
+					run.state.tool_mut()?.selected_media = selected;
 				}
 				if invocation.status != "COMPLETED" {
 					store.invocation_finish(run, token, &key, &output).await?;
 				}
-				let event = json!({"kind":"tool","call":call,"result":output});
+				let event = ContextEvent::tool(call.clone(), output.clone());
 				record_message_read(&mut context, &event);
 				let growth = context::tool_event_growth(&context, &event);
 				context.history.push(event);
-				run.pending["request_tokens"] = json!(
-					run.pending["request_tokens"]
-						.as_u64()
-						.unwrap_or(0)
-						.saturating_add(growth as u64)
-				);
-				run.context = json!(context);
-				if run.pending["workspace_read_plan"]["step"].as_u64() == Some(run.step as u64)
-					&& run.pending["workspace_read_plan"]["cursor"].as_u64() == Some(cursor as u64)
-					&& let Some(object) = run.pending.as_object_mut()
-				{
-					object.remove("workspace_read_plan");
-				}
-				if run.pending["skill_read_plan"]["step"].as_i64() == Some(run.step as i64)
-					&& run.pending["skill_read_plan"]["cursor"].as_u64() == Some(cursor as u64)
-					&& let Some(object) = run.pending.as_object_mut()
-				{
-					object.remove("skill_read_plan");
-				}
-				if run.pending["workspace_observation_plan"]["step"].as_i64()
-					== Some(run.step as i64)
-					&& run.pending["workspace_observation_plan"]["cursor"].as_u64()
-						== Some(cursor as u64)
-					&& let Some(object) = run.pending.as_object_mut()
-				{
-					object.remove("workspace_observation_plan");
-				}
-				run.pending["cursor"] = json!(cursor + 1);
-				if output["status"] == "approval_required"
-					&& let Some(id) = output.get("approval_id")
-				{
-					run.pending["core_approval_id"] = id.clone();
-					run.pending["resume_phase"] = json!("THINKING");
-					run.step += 1;
-					run.phase = "WAITING".into();
-				} else if call.name == "human_request"
-					&& let Some(id) = output.get("human_request_id")
-				{
-					run.pending["human_request_id"] = id.clone();
-					run.pending["resume_phase"] = json!("THINKING");
-					run.step += 1;
-					run.phase = "WAITING".into();
-				} else if call.name == "workspace_wait"
-					&& let Some(seconds) = output["wait_seconds"].as_i64()
-				{
-					run.pending["wake_at"] =
-						json!(chrono::Utc::now() + chrono::Duration::seconds(seconds));
-					run.pending["resume_phase"] = json!("TOOL_CALL");
-					run.phase = "WAITING".into();
+				run.state.tool_mut()?.request_tokens =
+					run.state.tool()?.request_tokens.saturating_add(growth);
+				run.context = context.clone();
+				let progress = run.state.tool_mut()?;
+				progress.workspace_read_plan = None;
+				progress.skill_read_plan = None;
+				progress.workspace_observation_plan = None;
+				progress.cursor = cursor + 1;
+				match FrameworkResult::decode(call, &output)? {
+					FrameworkResult::Approval(approval_id) => {
+						run.step += 1;
+						run.state = RunState::Waiting(Box::new(WaitingState::CoreApproval {
+							approval_id,
+							resume: ThinkingState::default(),
+						}));
+					}
+					FrameworkResult::Human(request_id) => {
+						run.step += 1;
+						run.state = RunState::Waiting(Box::new(WaitingState::Human {
+							request_id,
+							resume: ResumeState::Thinking(ThinkingState::default()),
+						}));
+					}
+					FrameworkResult::Wait(seconds) => {
+						run.suspend(|resume| WaitingState::Timer {
+							wake_at: chrono::Utc::now() + chrono::Duration::seconds(seconds),
+							resume,
+						})?
+					}
+					FrameworkResult::Ordinary => {}
 				}
 				home.report(
 					&format!("{key}:tool"),
@@ -1933,20 +2076,18 @@ impl Harness {
 				)
 				.await?;
 				store.save_run(run, token, "run.tool_recorded").await?;
-			}
-			"WAITING" => {
-				if let Some(id) = run.pending["human_request_id"].as_str() {
-					let id = id
-						.parse::<Uuid>()
-						.map_err(|_| Error::Invalid("invalid pending human id".into()))?;
+				Ok(())
+			})
+			.await?,
+			RunState::Waiting(waiting) => {
+				let mut waiting = *waiting;
+				if let Some(id) = waiting.request_id() {
 					if let Some(guard) = guard {
 						guard.human_read(id).await?;
 					}
 					let h: HumanRequest = sqlx::query_as(
 						&sea_orm::sea_query::Query::select()
-							.expr(sea_orm::sea_query::SimpleExpr::from(
-								sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
-							))
+							.column(sea_orm::sea_query::Asterisk)
 							.from(sea_orm::sea_query::Alias::new("human_requests"))
 							.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
 							.to_string(sea_orm::sea_query::PostgresQueryBuilder),
@@ -1954,62 +2095,74 @@ impl Harness {
 					.bind(id)
 					.fetch_one(&store.pool)
 					.await?;
-					let response = if run.pending["workbench_approval"]["request_id"] == json!(id)
-						&& h.created_at + chrono::Duration::minutes(15) <= chrono::Utc::now()
-					{
-						store
-							.expire_workbench_approval(id)
-							.await?
-							.response
-							.ok_or_else(|| {
-								Error::Conflict("human request has not been answered".into())
-							})?
-					} else {
-						h.response.ok_or_else(|| {
-							Error::Conflict("human request has not been answered".into())
-						})?
-					};
-					if run.pending["workbench_approval"]["request_id"] == json!(id) {
-						let approval = run.pending["workbench_approval"].clone();
-						run.pending["workbench_approval_result"] = json!({
-							"key":approval["key"],"call":approval["call"],
-							"approved":response.get("approved") == Some(&json!(true)),
-							"expires_at":h.created_at + chrono::Duration::minutes(15)
+					let response = if matches!(&waiting, WaitingState::ExternalApproval {expires_at,..} if *expires_at <= chrono::Utc::now()) {store.expire_workbench_approval(id).await?.response} else {h.response}.ok_or_else(||Error::Conflict("human request has not been answered".into()))?;
+					match &mut waiting {
+						WaitingState::ExternalApproval {
+							key,
+							call,
+							expires_at,
+							resume,
+							..
+						} => {
+							#[derive(serde::Deserialize)]
+							struct ApprovalAnswer {
+								approved: bool,
+							}
+							let decision =
+								serde_json::from_value::<ApprovalAnswer>(response.clone()).ok();
+							resume.workbench_approval_result = Some(ApprovalDecision {
+								key: key.clone(),
+								call: call.clone(),
+								approved: decision.is_some_and(|d| d.approved),
+								expires_at: *expires_at,
+							})
+						}
+						WaitingState::Reconciliation { key, .. } => {
+							#[derive(serde::Deserialize)]
+							struct ReconciliationAnswer {
+								#[serde(deserialize_with = "crate::domain::required_json")]
+								result: Value,
+							}
+							let answer: ReconciliationAnswer =
+								serde_json::from_value(response.clone()).map_err(|_| {
+									Error::Invalid(
+										"reconciliation response must contain result".into(),
+									)
+								})?;
+							store
+								.invocation_finish(run, token, key, &answer.result)
+								.await?;
+						}
+						_ => {}
+					}
+					if !matches!(waiting, WaitingState::Reconciliation { .. }) {
+						run.context.history.push(ContextEvent::Human {
+							request: h.prompt,
+							request_kind: h.kind,
+							response,
 						});
-						run.pending
-							.as_object_mut()
-							.unwrap()
-							.remove("workbench_approval");
-					}
-					if let Some(key) = run.pending["uncertain_key"].as_str() {
-						let result = response.get("result").ok_or_else(|| {
-							Error::Invalid("reconciliation response must contain result".into())
-						})?;
-						store.invocation_finish(run, token, key, result).await?;
-					} else {
-						let mut context: Context = serde_json::from_value(run.context.clone())?;
-						context.history.push(
-							json!({"kind":"human","request":h.prompt,"request_kind":h.kind,"response":response}),
-						);
-						run.context = json!(context);
 					}
 				}
-				run.phase = run.pending["resume_phase"]
-					.as_str()
-					.unwrap_or("THINKING")
-					.into();
-				for key in [
-					"human_request_id",
-					"core_approval_id",
-					"uncertain_key",
-					"wake_at",
-					"resume_phase",
-				] {
-					run.pending.as_object_mut().unwrap().remove(key);
-				}
+				run.state = match waiting {
+					WaitingState::Dependencies { resume, .. } => RunState::Ready(resume),
+					WaitingState::Children { resume, .. }
+					| WaitingState::CoreApproval { resume, .. } => RunState::Thinking(resume),
+					WaitingState::Timer { resume, .. } | WaitingState::Human { resume, .. } => {
+						resume.into_state()
+					}
+					WaitingState::ExternalApproval { resume, .. }
+					| WaitingState::Reconciliation { resume, .. } => RunState::ToolCall(resume),
+					WaitingState::FailureDelivery { .. } => {
+						return Err(Error::Invalid(
+							"failure delivery requires terminal handling".into(),
+						));
+					}
+				};
 				store.save_run(run, token, "run.resumed").await?;
 			}
-			_ => return Err(Error::Conflict("run is not executable".into())),
+			RunState::Completed(_) | RunState::Failed(_) | RunState::Cancelled(_) => {
+				return Err(Error::Conflict("run is not executable".into()));
+			}
 		}
 		Ok(())
 	}
@@ -2027,13 +2180,13 @@ async fn wait_for_inference_cancellation(store: &crate::store::Store, id: Uuid) 
 		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
 		.to_string(PostgresQueryBuilder);
 	loop {
-		let control = sqlx::query_scalar::<_, String>(&query)
+		let control = sqlx::query_scalar::<_, RunControl>(&query)
 			.bind(id)
 			.fetch_one(&store.pool)
 			.await;
 		match control {
-			Ok(control) if control == "CANCELLED" => return Ok(()),
-			Ok(_) => {}
+			Ok(RunControl::Cancelled) => return Ok(()),
+			Ok(RunControl::Active | RunControl::Paused) => {}
 			Err(error) => {
 				// A failed observation is not cancellation. Keep the in-flight
 				// request alive; the existing heartbeat still fences the lease.
@@ -2140,14 +2293,14 @@ fn workspace_read_plan_result(
 	call: &crate::provider::ToolCall,
 	step: i32,
 	cursor: usize,
-	pending: &Value,
+	pending: &ToolCallState,
 ) -> Result<(WorkspaceReadRange, Option<Value>)> {
 	let range = workspace_read_range(call)?;
-	let saved_plan = &pending["workspace_read_plan"];
-	let saved_result = (saved_plan["step"].as_u64() == Some(step as u64)
-		&& saved_plan["cursor"].as_u64() == Some(cursor as u64))
-	.then(|| saved_plan.get("result").cloned())
-	.flatten();
+	let saved_result = pending
+		.workspace_read_plan
+		.as_ref()
+		.filter(|p| p.step == step && p.cursor == cursor && &p.call == call)
+		.map(|p| p.result.clone());
 	Ok((range, saved_result))
 }
 
@@ -2170,7 +2323,7 @@ fn fit_workspace_read_chars(
 		let mut bounded_call = call.clone();
 		bounded_call.arguments["max_chars"] = json!(chars);
 		let bounded_output = workspace_read_result(output, requested, offset, chars);
-		let event = json!({"kind":"tool","call":bounded_call,"result":bounded_output});
+		let event = ContextEvent::tool(bounded_call, bounded_output);
 		Ok(
 			request_tokens.saturating_add(context::tool_event_growth(context, &event))
 				<= maximum_request,
@@ -2274,8 +2427,7 @@ fn fit_skill_read_chars(
 	let fits = |bytes: usize| {
 		let mut bounded_call = call.clone();
 		bounded_call.arguments["max_chars"] = json!(bytes);
-		let event =
-			json!({"kind":"tool","call":bounded_call,"result":skill_read_result(output, bytes)});
+		let event = ContextEvent::tool(bounded_call, skill_read_result(output, bytes));
 		budget
 			.request_tokens
 			.saturating_add(context::tool_event_growth(context, &event))
@@ -2316,24 +2468,24 @@ fn force_workspace_read_compaction_window(window: usize, minimum_request: usize)
 		.max(minimum_request.min(window))
 }
 
-fn deferred_workspace_read(call: &crate::provider::ToolCall) -> Value {
-	json!({
-		"message":"Retry this workspace_read after reducing the retained context; its result envelope did not fit.",
-		"call":call
+fn deferred_workspace_read(call: &crate::provider::ToolCall) -> Box<DeferredRead> {
+	Box::new(DeferredRead {
+		message: "Retry this workspace_read after reducing the retained context; its result envelope did not fit.".into(),
+		call: call.clone(),
 	})
 }
 
-fn deferred_skill_read(call: &crate::provider::ToolCall) -> Value {
-	json!({
-		"message":"Retry this skill_read after reducing the retained context; its result envelope did not fit.",
-		"call":call
+fn deferred_skill_read(call: &crate::provider::ToolCall) -> Box<DeferredRead> {
+	Box::new(DeferredRead {
+		message: "Retry this skill_read after reducing the retained context; its result envelope did not fit.".into(),
+		call: call.clone(),
 	})
 }
 
-fn deferred_workspace_observation(call: &crate::provider::ToolCall) -> Value {
-	json!({
-		"message":"Retry this workspace_observe after reducing the retained context; its page did not fit.",
-		"call":call
+fn deferred_workspace_observation(call: &crate::provider::ToolCall) -> Box<DeferredRead> {
+	Box::new(DeferredRead {
+		message: "Retry this workspace_observe after reducing the retained context; its page did not fit.".into(),
+		call: call.clone(),
 	})
 }
 
@@ -2348,7 +2500,7 @@ fn workspace_observation_event_fits(
 ) -> bool {
 	let mut bounded_call = call.clone();
 	bounded_call.arguments["limit"] = json!(limit);
-	let event = json!({"kind":"tool","call":bounded_call,"result":output});
+	let event = ContextEvent::tool(bounded_call, output.clone());
 	let maximum_request =
 		request_window.saturating_sub(remaining_calls.saturating_mul(TOOL_EVENT_RESERVE));
 	request_tokens.saturating_add(context::tool_event_growth(context, &event)) <= maximum_request
@@ -2514,15 +2666,8 @@ fn read_only_after_model_media_selection(name: &str) -> bool {
 	)
 }
 
-fn pending_selected_media(pending: &Value) -> Vec<Value> {
-	let mut selected = pending["deferred_selected_media"]
-		.as_array()
-		.cloned()
-		.unwrap_or_default();
-	if let Some(current) = pending["selected_media"].as_array() {
-		selected.extend(current.iter().cloned());
-	}
-	selected
+fn pending_selected_media(pending: &ToolCallState) -> Vec<crate::capabilities::sharing::Selection> {
+	pending.selected_media()
 }
 
 fn check_model_media_headroom(
@@ -2547,14 +2692,8 @@ fn check_model_media_headroom(
 	crate::generation::budget::Reservation::check_request(headroom, &request)
 }
 
-fn media_observation_budget(pending: &Value) -> usize {
-	// Keep durable observations small even when each media batch produces a
-	// full-length response; the compactor preserves these non-tool events.
-	let window = pending["request_window"]
-		.as_u64()
-		.and_then(|value| usize::try_from(value).ok())
-		.unwrap_or(65_536);
-	(window / 16).clamp(256, 4096)
+fn media_observation_budget(pending: &ToolCallState) -> usize {
+	(pending.request_window / 16).clamp(256, 4096)
 }
 
 fn record_media_observation(
@@ -2569,14 +2708,12 @@ fn record_media_observation(
 		end -= 1;
 	}
 	loop {
-		let mut event = json!({"kind":"model_media_observation","text":&source[..end]});
-		if let Some(seq) = through_seq {
-			event["through_seq"] = json!(seq);
-		}
-		if end < source.len() {
-			event["truncated"] = json!(true);
-		}
-		if event.to_string().len() <= budget {
+		let event = ContextEvent::ModelMediaObservation {
+			text: source[..end].into(),
+			through_seq,
+			truncated: end < source.len(),
+		};
+		if event.encoded_len() <= budget {
 			context.history.push(event);
 			break;
 		}
@@ -2589,7 +2726,7 @@ fn record_media_observation(
 	let mut remove = Vec::new();
 	for index in (0..context.history.len()).rev() {
 		let event = &context.history[index];
-		if event["kind"] == "model_media_observation" {
+		if matches!(event, ContextEvent::ModelMediaObservation { .. }) {
 			let bytes = event.to_string().len();
 			if used.saturating_add(bytes) > budget {
 				remove.push(index);
@@ -2605,37 +2742,10 @@ fn record_media_observation(
 
 fn stale_media_pending(
 	context: &mut Context,
-	pending: &Value,
+	pending: &ToolCallState,
 	observed_input_seq: &mut i64,
-) -> Value {
-	if let Some(previous) = pending["media_inferred_seq_before_response"].as_i64() {
-		context.media_inferred_seq = previous;
-	}
-	if let Some(previous) = pending["observed_input_seq_before_response"].as_i64() {
-		*observed_input_seq = previous;
-	}
-	let mut selected = Vec::<Value>::new();
-	for name in [
-		"inferred_selected_media",
-		"deferred_selected_media",
-		"selected_media",
-	] {
-		if let Some(values) = pending[name].as_array() {
-			for value in values {
-				if !selected.contains(value) {
-					selected.push(value.clone());
-				}
-			}
-		}
-	}
-	let mut next = json!({"selected_media":selected});
-	if let Some(seq) = pending["media_intake_through_seq"].as_i64() {
-		next["media_intake_through_seq"] = json!(seq);
-	}
-	if let Some(ids) = pending["required_run_message_reads"].as_array() {
-		next["deferred_run_message_reads"] = json!(ids);
-	}
-	next
+) -> ThinkingState {
+	pending.stale(context, observed_input_seq)
 }
 
 fn response_epoch(revision: i64, step: i32) -> i64 {
@@ -2656,6 +2766,25 @@ fn retryable_inference_error(error: &Error) -> bool {
 #[cfg(test)]
 mod review_tests {
 	use crate::Error;
+	use crate::context::ContextEvent;
+	fn typed_event(value: serde_json::Value) -> ContextEvent {
+		serde_json::from_value(value).unwrap()
+	}
+	fn pending(value: serde_json::Value) -> crate::domain::ToolCallState {
+		let mut complete = serde_json::to_value(crate::domain::ToolCallState::default()).unwrap();
+		for (key, value) in value.as_object().unwrap() {
+			if key == "response" {
+				let mut response = json!(crate::provider::ModelResponse::default());
+				for (name, value) in value.as_object().unwrap() {
+					response[name] = value.clone();
+				}
+				complete[key] = response;
+			} else {
+				complete[key] = value.clone();
+			}
+		}
+		serde_json::from_value(complete).unwrap()
+	}
 	use serde_json::json;
 	use uuid::Uuid;
 
@@ -2704,29 +2833,36 @@ mod review_tests {
 		};
 		let mut observed_input_seq = 5;
 		let required = Uuid::new_v4();
-		let pending = json!({
+		let pending = pending(json!({
 			"media_inferred_seq_before_response":3,
 			"observed_input_seq_before_response":3,
 			"media_intake_through_seq":2,
 			"required_run_message_reads":[required],
 			"inferred_selected_media":[first],
 			"selected_media":[first,second]
-		});
+		}));
 		let next = super::stale_media_pending(&mut context, &pending, &mut observed_input_seq);
 		assert_eq!(context.media_inferred_seq, 3);
 		assert_eq!(observed_input_seq, 3);
-		assert_eq!(next["selected_media"], json!([first, second]));
-		assert_eq!(next["media_intake_through_seq"], 2);
-		assert_eq!(next["deferred_run_message_reads"], json!([required]));
+		assert_eq!(json!(next.selected_media), json!([first, second]));
+		assert_eq!(next.media_intake_through_seq, Some(2));
+		assert_eq!(json!(next.deferred_run_message_reads), json!([required]));
 	}
 
 	#[test]
 	fn durable_media_observations_keep_recent_text_within_the_request_budget() {
 		let mut context = crate::context::Context {
-			history: vec![json!({"kind":"tool","result":"keep"})],
+			history: vec![crate::context::ContextEvent::tool(
+				crate::provider::ToolCall {
+					id: "keep".into(),
+					name: "read".into(),
+					arguments: json!({}),
+				},
+				json!("keep"),
+			)],
 			..Default::default()
 		};
-		let budget = super::media_observation_budget(&json!({"request_window":8192}));
+		let budget = super::media_observation_budget(&pending(json!({"request_window":8192})));
 		assert_eq!(budget, 512);
 		for seq in 1..=20 {
 			super::record_media_observation(
@@ -2739,11 +2875,11 @@ mod review_tests {
 		let observations: Vec<_> = context
 			.history
 			.iter()
-			.filter(|event| event["kind"] == "model_media_observation")
+			.filter(|event| matches!(event, ContextEvent::ModelMediaObservation { .. }))
 			.collect();
 		assert!(observations.len() < 20);
-		assert_eq!(observations.last().unwrap()["through_seq"], 20);
-		assert_eq!(observations.last().unwrap()["truncated"], true);
+		assert_eq!(json!(observations.last().unwrap())["through_seq"], 20);
+		assert_eq!(json!(observations.last().unwrap())["truncated"], true);
 		assert!(
 			observations
 				.iter()
@@ -2751,7 +2887,7 @@ mod review_tests {
 				.sum::<usize>()
 				<= budget
 		);
-		assert_eq!(context.history[0]["result"], "keep");
+		assert_eq!(json!(context.history[0])["result"], "keep");
 	}
 
 	#[rstest::rstest]
@@ -2878,11 +3014,14 @@ mod review_tests {
 	fn deferred_tool_transitions_keep_selected_media() {
 		let first = json!({"file_id":Uuid::new_v4(),"expected_digest":"first"});
 		let second = json!({"file_id":Uuid::new_v4(),"expected_digest":"second"});
-		let pending = json!({
+		let pending = pending(json!({
 			"deferred_selected_media":[first],
 			"selected_media":[second]
-		});
-		assert_eq!(super::pending_selected_media(&pending), vec![first, second]);
+		}));
+		assert_eq!(
+			json!(super::pending_selected_media(&pending)),
+			json!([first, second])
+		);
 	}
 
 	#[rstest::rstest]
@@ -2909,6 +3048,7 @@ mod review_tests {
 			control_pool: pool,
 			node_id: "cancellation-poll-test".into(),
 			semantic_client: reqwest::Client::new(),
+			recovery_cursors: Default::default(),
 		};
 		let cancellation = super::wait_for_inference_cancellation(&store, uuid::Uuid::new_v4());
 		tokio::pin!(cancellation);
@@ -2974,7 +3114,7 @@ mod review_tests {
 		));
 		let mut read_context = context;
 		read_context.message_read_coverage.insert(
-			id.to_string(),
+			id,
 			crate::context::MessageReadCoverage {
 				total_chars: 10,
 				ranges: vec![[0, 4]],
@@ -3043,9 +3183,13 @@ mod review_tests {
 		};
 		let context = crate::context::Context::default();
 		let output = serde_json::json!({"path":"references/guide.md","text":"界".repeat(5000),"encoding":"utf8","offset":0,"total_chars":15000,"next_offset":null});
-		let full_event = serde_json::json!({"kind":"tool","call":call,"result":super::skill_read_result(&output, 16000)});
+		let full_event = typed_event(
+			serde_json::json!({"kind":"tool","call":call,"result":super::skill_read_result(&output, 16000)}),
+		);
 		let full_growth = crate::context::tool_event_growth(&context, &full_event);
-		let minimum_event = serde_json::json!({"kind":"tool","call":call,"result":super::skill_read_result(&output, 0)});
+		let minimum_event = typed_event(
+			serde_json::json!({"kind":"tool","call":call,"result":super::skill_read_result(&output, 0)}),
+		);
 		let minimum_growth = crate::context::tool_event_growth(&context, &minimum_event);
 		assert!(full_growth > minimum_growth);
 		let request_window = 100_000;
@@ -3066,7 +3210,8 @@ mod review_tests {
 		assert_eq!(result["budget_limited"], true);
 		let mut bounded_call = call.clone();
 		bounded_call.arguments["max_chars"] = serde_json::json!(bytes);
-		let event = serde_json::json!({"kind":"tool","call":bounded_call,"result":result});
+		let event =
+			typed_event(serde_json::json!({"kind":"tool","call":bounded_call,"result":result}));
 		assert!(
 			request_tokens + crate::context::tool_event_growth(&context, &event) <= request_window
 		);
@@ -3097,11 +3242,11 @@ mod review_tests {
 		let event_growth = |bytes| {
 			let mut bounded_call = call.clone();
 			bounded_call.arguments["max_chars"] = serde_json::json!(bytes);
-			let event = serde_json::json!({
+			let event = typed_event(serde_json::json!({
 				"kind":"tool",
 				"call":bounded_call,
 				"result":super::skill_read_result(&output, bytes)
-			});
+			}));
 			crate::context::tool_event_growth(&context, &event)
 		};
 		let deferred_growth = event_growth(0);
@@ -3173,13 +3318,15 @@ mod review_tests {
 		let mut bounded_call = call.clone();
 		bounded_call.arguments["max_chars"] = serde_json::json!(chars);
 		let result = super::workspace_read_result(&output, 16000, 0, chars);
-		let event = serde_json::json!({"kind":"tool","call":bounded_call,"result":result});
+		let event =
+			typed_event(serde_json::json!({"kind":"tool","call":bounded_call,"result":result}));
 		assert!(request_tokens + crate::context::tool_event_growth(&context, &event) <= allowed);
 		let mut old_quota_call = call.clone();
 		old_quota_call.arguments["max_chars"] = serde_json::json!(chars + 1);
 		let old_quota_result = super::workspace_read_result(&output, 16000, 0, chars + 1);
-		let old_quota_event =
-			serde_json::json!({"kind":"tool","call":old_quota_call,"result":old_quota_result});
+		let old_quota_event = typed_event(
+			serde_json::json!({"kind":"tool","call":old_quota_call,"result":old_quota_result}),
+		);
 		let old_hard_window_quota =
 			window - super::POST_TOOL_CONTEXT_RESERVE - 2 * super::TOOL_EVENT_RESERVE;
 		assert!(
@@ -3193,7 +3340,8 @@ mod review_tests {
 		let mut too_large = call;
 		too_large.arguments["max_chars"] = serde_json::json!(chars + 1);
 		let result = super::workspace_read_result(&output, 16000, 0, chars + 1);
-		let event = serde_json::json!({"kind":"tool","call":too_large,"result":result});
+		let event =
+			typed_event(serde_json::json!({"kind":"tool","call":too_large,"result":result}));
 		assert!(request_tokens + crate::context::tool_event_growth(&context, &event) > allowed);
 	}
 
@@ -3256,11 +3404,11 @@ mod review_tests {
 		let target = request_window - remaining_calls * super::TOOL_EVENT_RESERVE;
 		let growth = crate::context::tool_event_growth(
 			&context,
-			&serde_json::json!({
+			&typed_event(serde_json::json!({
 				"kind":"tool",
 				"call":{"id":"observe-1","name":"workspace_observe","arguments":{"offset":0,"limit":1}},
 				"result":output
-			}),
+			})),
 		);
 		assert!(super::workspace_observation_event_fits(
 			&context,
@@ -3310,13 +3458,14 @@ mod review_tests {
 
 	#[rstest::rstest]
 	fn cached_workspace_read_plans_still_validate_the_original_call() {
-		let pending = serde_json::json!({
+		let pending = pending(serde_json::json!({
 			"workspace_read_plan": {
 				"step": 4,
 				"cursor": 0,
+				"call":{"id":"read-1","name":"workspace_read","arguments":{}},
 				"result": {"content":"previously prepared"}
 			}
-		});
+		}));
 		let mut call = crate::provider::ToolCall {
 			id: "read-1".into(),
 			name: "workspace_read".into(),
@@ -3379,19 +3528,22 @@ mod review_tests {
 		assert_eq!(next_window, 32_000 - super::POST_TOOL_CONTEXT_RESERVE);
 		assert!(next_window < 32_000);
 		let deferred = super::deferred_workspace_read(&call);
-		assert_eq!(deferred["call"]["arguments"]["offset"], 0);
-		assert_eq!(deferred["call"]["arguments"]["id"], call.arguments["id"]);
+		assert_eq!(json!(deferred.call)["arguments"]["offset"], 0);
+		assert_eq!(
+			json!(deferred.call)["arguments"]["id"],
+			call.arguments["id"]
+		);
 	}
 
 	#[rstest::rstest]
 	fn referenced_run_message_requires_every_record_chunk() {
 		let id = uuid::Uuid::new_v4();
 		let event = |offset: usize, content: &str, next: Option<usize>| {
-			serde_json::json!({
+			typed_event(serde_json::json!({
 				"kind":"tool",
-				"call":{"name":"workspace_read","arguments":{"kind":"message","id":id}},
+				"call":{"id":"read-message","name":"workspace_read","arguments":{"kind":"message","id":id}},
 				"result":{"kind":"message","id":id,"encoding":"json","offset":offset,"total_chars":6,"content":content,"next_offset":next}
-			})
+			}))
 		};
 		let mut context = crate::context::Context::default();
 		context.history.push(event(0, "abc", Some(3)));

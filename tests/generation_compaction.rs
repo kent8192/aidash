@@ -103,6 +103,10 @@ async fn seed_history(f: &Federation, run: &aidash::domain::Run) {
 				sea_orm::sea_query::Expr::cust("'THINKING'"),
 			)
 			.value(
+				sea_orm::sea_query::Alias::new("pending"),
+				common::pending(aidash::domain::RunState::Thinking(Default::default())),
+			)
+			.value(
 				sea_orm::sea_query::Alias::new("context"),
 				sea_orm::sea_query::Expr::cust("$2"),
 			)
@@ -110,7 +114,7 @@ async fn seed_history(f: &Federation, run: &aidash::domain::Run) {
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(run.id)
-	.bind(json!({"history":history,"summary":"","usage":{},"compactions":0}))
+	.bind(common::context(json!({"history":history})))
 	.execute(&f.store.pool)
 	.await
 	.unwrap();
@@ -222,8 +226,8 @@ async fn approved_compaction_is_pinned_bounded_and_accounted_before_http(
 		worker.worker_once().await.unwrap();
 	}
 	let completed = f.store.run(run.id).await.unwrap();
-	assert_eq!(completed.phase, "COMPLETED", "{completed:?}");
-	assert_eq!(completed.context["compactions"], 1);
+	assert_eq!(completed.phase().as_str(), "COMPLETED", "{completed:?}");
+	assert_eq!(json!(completed.context)["compactions"], 1);
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
 	let (_, usage) = request(
 		&app,
@@ -339,7 +343,9 @@ async fn failed_compaction_attempts_remain_charged_and_exhaustion_prevents_http(
 				.table(sea_orm::sea_query::Alias::new("runs"))
 				.value(
 					sea_orm::sea_query::Alias::new("pending"),
-					sea_orm::sea_query::Expr::cust("pending - 'retry_at'"),
+					sea_orm::sea_query::Expr::cust(
+						"jsonb_set(pending, '{recovery,retry}', 'null'::jsonb)",
+					),
 				)
 				.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
 				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
@@ -439,7 +445,10 @@ async fn compaction_denial_and_catalog_revocation_prevent_disclosure(
 		.worker_once()
 		.await
 		.unwrap();
-		assert_eq!(f.store.run(run.id).await.unwrap().control, "PAUSED");
+		assert_eq!(
+			f.store.run(run.id).await.unwrap().control.as_str(),
+			"PAUSED"
+		);
 		let count: i64 = sqlx::query_scalar(
 			&sea_orm::sea_query::Query::select()
 				.expr(sea_orm::sea_query::Expr::cust("COUNT(*)"))
@@ -540,7 +549,7 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
 			.await
 			.unwrap()
 			.iter()
-			.map(|r| (&r.phase, &r.control, &r.error))
+			.map(|r| (r.phase(), &r.control, &r.error))
 			.collect::<Vec<_>>()
 	);
 	drop(worker); // SIGKILL: no graceful settlement or application cleanup.
@@ -587,7 +596,7 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
 	let worker = WorkerProcess::start(&f, &url, &schema);
 	tokio::time::timeout(std::time::Duration::from_secs(20), async {
 		loop {
-			if f.store.run(run.id).await.unwrap().phase == "COMPLETED" {
+			if f.store.run(run.id).await.unwrap().phase().as_str() == "COMPLETED" {
 				break;
 			}
 			tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -739,7 +748,10 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
 			loop {
 				worker.worker_once().await.unwrap();
 				let current = f.store.run(run.id).await.unwrap();
-				if matches!(current.phase.as_str(), "COMPLETED" | "FAILED" | "CANCELLED") {
+				if matches!(
+					current.phase().as_str(),
+					"COMPLETED" | "FAILED" | "CANCELLED"
+				) {
 					break current;
 				}
 				tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -748,12 +760,12 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
 		.await
 		.unwrap();
 		assert_eq!(
-			current.phase,
+			current.phase().as_str(),
 			if approved { "COMPLETED" } else { "FAILED" },
 			"phase={}, error={:?}, pending={}",
-			current.phase,
+			current.phase().as_str(),
 			current.error,
-			current.pending
+			json!(current.state)["data"]
 		);
 		assert_eq!(calls.load(Ordering::SeqCst), usize::from(approved));
 		for job in [&parent["generation"], &child["generation"]] {

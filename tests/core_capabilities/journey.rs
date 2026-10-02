@@ -261,15 +261,16 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 		harness.worker_once().await.unwrap();
 		let run = j.c.f.store.run(j.run.id).await.unwrap();
 		assert!(
-			!matches!(run.phase.as_str(), "FAILED" | "CANCELLED") && run.control != "PAUSED",
+			!matches!(run.phase().as_str(), "FAILED" | "CANCELLED")
+				&& run.control != aidash::domain::RunControl::Paused,
 			"phase={} control={} error={:?} pending={} context={}",
-			run.phase,
+			run.phase(),
 			run.control,
 			run.error,
-			run.pending,
+			json!(run.state)["data"],
 			run.context
 		);
-		for entry in run.context["history"]
+		for entry in json!(run.context)["history"]
 			.as_array()
 			.into_iter()
 			.flatten()
@@ -282,15 +283,15 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 				entry["result"]
 			);
 		}
-		if run.phase == "COMPLETED" {
+		if run.phase() == aidash::domain::RunPhase::Completed {
 			break run;
 		}
 		assert!(
 			tokio::time::Instant::now() < deadline,
 			"journey stalled: phase={} error={:?} pending={}",
-			run.phase,
+			run.phase(),
 			run.error,
-			run.pending
+			json!(run.state)["data"]
 		);
 		tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 	};
@@ -348,7 +349,8 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 	.await;
 	assert_eq!(status, 200, "{read}");
 	assert_eq!(read["content"], "42");
-	let history = finished.context["history"].as_array().unwrap();
+	let context = json!(finished.context);
+	let history = context["history"].as_array().unwrap();
 	assert!(
 		history.iter().any(|e| e["call"]["name"] == "python_poll"
 			&& e["result"]["displays"]

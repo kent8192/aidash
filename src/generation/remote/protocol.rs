@@ -282,9 +282,10 @@ pub(crate) async fn admit(
 		if let Binding::RequiredHome { home_lineage, .. } = &description.semantic {
 			super::verify_receipts(home_lineage, &receipts, &input.usage)?;
 		}
-		let (mut access, _) = crate::authorization::peer::admission::worker_lease(f, run)
-			.await?
-			.ok_or(Error::Forbidden)?;
+		let (mut access, _) =
+			crate::authorization::peer::admission::worker_lease(f, &run.metadata())
+				.await?
+				.ok_or(Error::Forbidden)?;
 		let local = super::reserve(&mut access, &f.store, &input.usage).await;
 		receipts.extend(access.finish(local).await?);
 		dispatch::admitted(&f.store, &input, &receipts).await

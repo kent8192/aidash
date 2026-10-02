@@ -58,7 +58,7 @@ pub(super) async fn apply(
 				.await?
 				.ok_or_else(|| Error::Conflict("task unavailable".into()))?;
 				if task.revision != *expected_revision
-					|| task.status != "RUNNING"
+					|| task.status != crate::domain::TaskStatus::Running
 					|| task.owner.is_none()
 				{
 					return Err(Error::Conflict(
@@ -213,17 +213,15 @@ pub(super) async fn apply(
 				.unwrap_or(false);
 				if run.task_id != *task_id
 					|| run.revision != *expected_revision
-					|| run.phase != "TOOL_CALL"
-					|| run.control == "CANCELLED"
+					|| run.phase() != crate::domain::RunPhase::ToolCall
+					|| run.control == crate::domain::RunControl::Cancelled
 					|| leased
 				{
 					return Err(Error::Conflict(
 						"run must be quiescent at its expected tool-call revision".into(),
 					));
 				}
-				let response: crate::provider::ModelResponse =
-					serde_json::from_value(run.pending["response"].clone())
-						.map_err(|_| Error::Conflict("run has no final model response".into()))?;
+				let response = &run.state.tool()?.response;
 				if !response.tool_calls.is_empty() {
 					return Err(Error::Conflict("run still has pending tools".into()));
 				}
@@ -246,7 +244,7 @@ pub(super) async fn apply(
 						)
 						.value(
 							sea_orm::sea_query::Alias::new("pending"),
-							sea_orm::sea_query::Expr::cust("CAST('{}' AS JSONB)"),
+							sea_orm::sea_query::Expr::cust("$2"),
 						)
 						.value(
 							sea_orm::sea_query::Alias::new("error"),
@@ -272,9 +270,13 @@ pub(super) async fn apply(
 						.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 				)
 				.bind(run_id)
+				.bind(crate::domain::run_state::encode(
+					&crate::domain::RunState::Completed(crate::domain::TerminalState {}),
+					&crate::domain::RecoveryState::default(),
+				)?)
 				.execute(&mut **tx)
 				.await?;
-				store.event(tx,(run.home_node==store.node_id).then_some(run.workspace_id),"run.completed",json!({"run_id":run.id,"task_id":run.task_id,"workspace_id":run.workspace_id,"agent_id":run.agent_id,"phase":"COMPLETED","step":run.step,"error":null,"context_usage":run.context.get("usage")})).await?;
+				store.event(tx,(run.home_node==store.node_id).then_some(run.workspace_id),"run.completed",json!({"run_id":run.id,"task_id":run.task_id,"workspace_id":run.workspace_id,"agent_id":run.agent_id,"phase":"COMPLETED","step":run.step,"error":null,"context_usage":run.context.usage})).await?;
 			}
 		}
 	}

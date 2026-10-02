@@ -168,7 +168,7 @@ pub(crate) async fn prepare_kind(
 		return Err(Error::Conflict("AREA_REVISION_CHANGED".into()));
 	}
 	if sessions::status(access, area).await?.active_run_id != Some(run.id)
-		|| matches!(run.phase.as_str(), "COMPLETED" | "FAILED" | "CANCELLED")
+		|| run.phase().is_terminal()
 	{
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
@@ -549,8 +549,8 @@ async fn drive(store: &Store, id: Uuid) -> Result<()> {
 		}
 		let cancelling = !store.capabilities.0.admission
 			|| operation.state == "cancelling"
-			|| run.control == "CANCELLED"
-			|| matches!(run.phase.as_str(), "COMPLETED" | "FAILED" | "CANCELLED");
+			|| run.control == crate::domain::RunControl::Cancelled
+			|| run.phase().is_terminal();
 		if !cancelling {
 			let config = service::settings(&mut access, &run).await?;
 			if !config.core_capabilities.permits(&operation.kind) {

@@ -565,7 +565,7 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
 	a.f.store.claim(task.id, 0, &owner, &agent).await.unwrap();
 	let task =
 		a.f.store
-			.transition(task.id, 1, &owner, "RUNNING")
+			.transition(task.id, 1, &owner, aidash::domain::TaskStatus::Running)
 			.await
 			.unwrap();
 	sqlx::query(
@@ -601,7 +601,7 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
 			.unwrap();
 	sqlx::query(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("runs")).value(sea_orm::sea_query::Alias::new("phase"), sea_orm::sea_query::Expr::cust("'TOOL_CALL'")).value(sea_orm::sea_query::Alias::new("pending"), sea_orm::sea_query::Expr::cust("$2")).and_where(sea_orm::sea_query::Expr::cust("id = $1")).to_string(sea_orm::sea_query::PostgresQueryBuilder))
         .bind(run.id)
-        .bind(json!({"response":{"text":"one committed result","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0}))
+        .bind(common::tool_pending(json!({"response":{"text":"one committed result","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0})))
         .execute(&b.f.store.pool)
         .await
         .unwrap();
@@ -620,7 +620,9 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
 			.table(sea_orm::sea_query::Alias::new("runs"))
 			.value(
 				sea_orm::sea_query::Alias::new("pending"),
-				sea_orm::sea_query::Expr::cust("JSONB_SET(pending, '{response,tool_calls}', $2)"),
+				sea_orm::sea_query::Expr::cust(
+					"JSONB_SET(pending, '{data,response,tool_calls}', $2)",
+				),
 			)
 			.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
@@ -635,7 +637,10 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
 		complete(&a, invalid.id).await.decision.as_deref(),
 		Some("ABORT")
 	);
-	assert_eq!(a.f.store.task(task.id).await.unwrap().status, "RUNNING");
+	assert_eq!(
+		a.f.store.task(task.id).await.unwrap().status.as_str(),
+		"RUNNING"
+	);
 	assert!(a.f.store.snapshot(wa).await.unwrap().artifacts.is_empty());
 	sqlx::query(
 		&sea_orm::sea_query::Query::update()
@@ -643,7 +648,7 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
 			.value(
 				sea_orm::sea_query::Alias::new("pending"),
 				sea_orm::sea_query::Expr::cust(
-					"JSONB_SET(pending, '{response,tool_calls}', CAST('[]' AS JSONB))",
+					"JSONB_SET(pending, '{data,response,tool_calls}', CAST('[]' AS JSONB))",
 				),
 			)
 			.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
@@ -666,8 +671,14 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
 			.await
 			.unwrap();
 	}
-	assert_eq!(a.f.store.task(task.id).await.unwrap().status, "COMPLETED");
-	assert_eq!(b.f.store.run(run.id).await.unwrap().phase, "COMPLETED");
+	assert_eq!(
+		a.f.store.task(task.id).await.unwrap().status.as_str(),
+		"COMPLETED"
+	);
+	assert_eq!(
+		b.f.store.run(run.id).await.unwrap().phase().as_str(),
+		"COMPLETED"
+	);
 	assert_eq!(
 		a.f.registry
 			.get("atomic-skill", "1.0.0")

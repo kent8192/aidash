@@ -348,14 +348,19 @@ async fn completed_dependencies_release_wait_without_expiring_timer(
 	};
 	assert!(harness.worker_once().await.unwrap());
 	let waiting = f.store.run(run.id).await.unwrap();
-	assert_eq!(waiting.phase, "WAITING");
+	assert_eq!(waiting.phase().as_str(), "WAITING");
 	// Widen the ordinary two-second timer so elapsed test time cannot mask the bug.
 	sqlx::query(
 		&Query::update()
 			.table(a("runs"))
 			.value(
 				a("pending"),
-				json!({"resume_phase":"READY","wake_at":chrono::Utc::now()+chrono::Duration::hours(1)}),
+				common::pending(aidash::domain::RunState::Waiting(Box::new(
+					aidash::domain::WaitingState::Dependencies {
+						wake_at: chrono::Utc::now() + chrono::Duration::hours(1),
+						resume: Default::default(),
+					},
+				))),
 			)
 			.and_where(Expr::col(a("id")).eq(run.id))
 			.to_string(PostgresQueryBuilder),
@@ -516,4 +521,474 @@ async fn terminal_delivery_drains_a_burst_without_per_run_sleep(
 		"healthy delivery still sleeps between Runs: {delivered}/24"
 	);
 	assert_eq!(delivered, 24);
+}
+
+#[rstest::rstest]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn notification_claim_disposes_invalid_context_without_poisoning_healthy_work(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let _serial = PROCESS_TESTS.lock().await;
+	let (mut f, url, schema) = setup(&environment).await;
+	let address = std::net::TcpListener::bind("127.0.0.1:0")
+		.unwrap()
+		.local_addr()
+		.unwrap();
+	f.config.listen = address;
+	f.config.endpoint = format!("http://{address}");
+	let directory = evidence_directory("invalid-state", &schema);
+	std::fs::create_dir_all(&directory).unwrap();
+	let calls = Arc::new(AtomicUsize::new(0));
+	let counted = calls.clone();
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let provider = tokio::spawn(async move {
+		axum::serve(listener,Router::new().route("/v1/chat/completions",post(move || {let calls=counted.clone();async move {
+		calls.fetch_add(1,Ordering::SeqCst);Json(json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+	}}))).await.unwrap();
+	});
+	let (_, token, task) = bootstrap(&f, &api::router(f.clone()), &endpoint).await;
+	let settings = Settings {
+		namespace: schema.clone(),
+		..Settings::default()
+	};
+	let broker = Broker::provision(&f.config.nats_url, &f.config.node_id, &settings)
+		.await
+		.unwrap();
+	let mut server = Process::start(&f, &url, &schema, "server", &directory, 0, true);
+	server.ready().await;
+	let mut worker = Process::start(&f, &url, &schema, "worker", &directory, 1, true);
+	worker.ready().await;
+	let pause = directory.join("pause-consumers");
+	std::fs::write(&pause, "pause").unwrap();
+	tokio::time::sleep(Duration::from_millis(300)).await;
+	let invalid = admit(&f, &token, task).await;
+	sqlx::query(
+		&Query::update()
+			.table(a("runs"))
+			.value(a("context"), json!([]))
+			.and_where(Expr::col(a("id")).eq(invalid))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	let healthy = admit(&f, &token, fresh_task(&f, &token).await).await;
+	std::fs::remove_file(pause).unwrap();
+	complete(&f, healthy).await;
+	tokio::time::timeout(Duration::from_secs(10), async {
+		while f.store.inspect_run(invalid).await.unwrap().phase != aidash::domain::RunPhase::Failed
+		{
+			tokio::time::sleep(Duration::from_millis(20)).await;
+		}
+	})
+	.await
+	.unwrap();
+	let inspected = f.store.inspect_run(invalid).await.unwrap();
+	assert!(inspected.state_error.is_some());
+	assert_eq!(
+		f.store.task(task).await.unwrap().status,
+		aidash::domain::TaskStatus::Failed
+	);
+	assert_eq!(calls.load(Ordering::SeqCst), 1);
+	assert_eq!(count(&f, "claim_source = 'recovery'").await, 0);
+	assert!(
+		count(
+			&f,
+			&format!("run_id='{healthy}' AND claim_source='notification'")
+		)
+		.await > 0
+	);
+	let events = f.store.events(0, None, 500).await.unwrap();
+	assert!(
+		events
+			.iter()
+			.any(|e| e.kind == "run.invalid_state" && e.data["run_id"] == invalid.to_string())
+	);
+	worker.stop();
+	server.stop();
+	provider.abort();
+	broker
+		.context
+		.delete_stream(&broker.stream_name)
+		.await
+		.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[case::ordering("ordering")]
+#[case::inactive_area("area")]
+#[case::remote_dependencies("remote_dependencies")]
+#[tokio::test]
+async fn notification_deferral_waits_for_its_authoritative_unblock(
+	#[case] blocker: &str,
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let _serial = PROCESS_TESTS.lock().await;
+	let (mut f, url, schema) = setup(&environment).await;
+	let address = std::net::TcpListener::bind("127.0.0.1:0")
+		.unwrap()
+		.local_addr()
+		.unwrap();
+	f.config.listen = address;
+	f.config.endpoint = format!("http://{address}");
+	let directory = evidence_directory(blocker, &schema);
+	std::fs::create_dir_all(&directory).unwrap();
+	let calls = Arc::new(AtomicUsize::new(0));
+	let counted = calls.clone();
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let provider = tokio::spawn(async move {
+		axum::serve(listener, Router::new().route("/v1/chat/completions", post(move || {
+			let calls = counted.clone(); async move {
+				calls.fetch_add(1, Ordering::SeqCst);
+				Json(json!({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Done"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
+			}
+		}))).await.unwrap();
+	});
+	let (_, token, task) = bootstrap(&f, &api::router(f.clone()), &endpoint).await;
+	let settings = Settings {
+		namespace: schema.clone(),
+		..Default::default()
+	};
+	let broker = Broker::provision(&f.config.nats_url, &f.config.node_id, &settings)
+		.await
+		.unwrap();
+	let mut server = Process::start(&f, &url, &schema, "server", &directory, 0, true);
+	server.ready().await;
+	let run = admit(&f, &token, task).await;
+	let metadata = f.store.run(run).await.unwrap();
+	let area = Uuid::new_v4();
+	let mut predecessor = None;
+	let deadline = chrono::Utc::now() + chrono::Duration::hours(1);
+	if blocker == "remote_dependencies" {
+		sqlx::query(
+			&Query::update()
+				.table(a("runs"))
+				.value(a("home_node"), "aidash://remote-home")
+				.value(a("phase"), "WAITING")
+				.value(
+					a("pending"),
+					common::pending(aidash::domain::RunState::Waiting(Box::new(
+						aidash::domain::WaitingState::Dependencies {
+							wake_at: deadline,
+							resume: Default::default(),
+						},
+					))),
+				)
+				.and_where(Expr::col(a("id")).eq(run))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	} else {
+		sqlx::query(
+			&Query::insert()
+				.into_table(a("core_areas"))
+				.columns(
+					[
+						"id",
+						"tenant",
+						"home_node",
+						"agent_id",
+						"owner",
+						"workspace_id",
+						"thread_id",
+						"state",
+					]
+					.map(a),
+				)
+				.values_panic([
+					area.into(),
+					"default".into(),
+					f.config.node_id.clone().into(),
+					"research".into(),
+					"fixture".into(),
+					metadata.workspace_id.into(),
+					Uuid::new_v4().into(),
+					if blocker == "area" {
+						"paused"
+					} else {
+						"active"
+					}
+					.into(),
+				])
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+		if blocker == "ordering" {
+			let previous = unblock::insert_run(&f, "PAUSED").await;
+			sqlx::query(
+				&Query::insert()
+					.into_table(a("core_runs"))
+					.columns(["run_id", "area_id", "sequence"].map(a))
+					.values_panic([previous.into(), area.into(), 0_i64.into()])
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&f.store.pool)
+			.await
+			.unwrap();
+			predecessor = Some(previous);
+		}
+		sqlx::query(
+			&Query::insert()
+				.into_table(a("core_runs"))
+				.columns(["run_id", "area_id", "sequence", "initialized"].map(a))
+				.values_panic([
+					run.into(),
+					area.into(),
+					1_i64.into(),
+					(blocker == "ordering").into(),
+				])
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	}
+	let mut worker = Process::start(&f, &url, &schema, "worker", &directory, 1, true);
+	worker.ready().await;
+	let due_predicate = if blocker == "remote_dependencies" {
+		"due_at > CURRENT_TIMESTAMP"
+	} else {
+		"due_at IS NULL"
+	};
+	let predicate = format!("run_id='{run}' AND state='deferred' AND {due_predicate}");
+	tokio::time::timeout(Duration::from_secs(10), async {
+		while count(&f, &predicate).await == 0 {
+			tokio::time::sleep(Duration::from_millis(20)).await;
+		}
+	})
+	.await
+	.expect("notification must defer to a deadline or release event");
+	let epoch_query = Query::select()
+		.expr(Expr::cust("MAX(publication_epoch)"))
+		.from(a("run_activations"))
+		.and_where(Expr::col(a("run_id")).eq(run))
+		.to_string(PostgresQueryBuilder);
+	let epoch: i64 = sqlx::query_scalar(&epoch_query)
+		.fetch_one(&f.store.pool)
+		.await
+		.unwrap();
+	tokio::time::sleep(Duration::from_secs(1)).await;
+	assert_eq!(
+		sqlx::query_scalar::<_, i64>(&epoch_query)
+			.fetch_one(&f.store.pool)
+			.await
+			.unwrap(),
+		epoch,
+		"blocked work must not be republished immediately"
+	);
+	assert_eq!(calls.load(Ordering::SeqCst), 0);
+	assert!(
+		f.store
+			.inspect_run(run)
+			.await
+			.unwrap()
+			.lease_owner
+			.is_none()
+	);
+	if blocker != "remote_dependencies" {
+		let (table, column, id, value) = match predecessor {
+			Some(id) => ("runs", "phase", id, "COMPLETED"),
+			None => ("core_areas", "state", area, "active"),
+		};
+		sqlx::query(
+			&Query::update()
+				.table(a(table))
+				.value(a(column), value)
+				.and_where(Expr::col(a("id")).eq(id))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+		complete(&f, run).await;
+		assert_eq!(calls.load(Ordering::SeqCst), 1);
+		let reason = if blocker == "ordering" {
+			"ordering_release"
+		} else {
+			"area_release"
+		};
+		assert!(count(&f, &format!("run_id='{run}' AND reason='{reason}'")).await > 0);
+		assert!(
+			count(
+				&f,
+				&format!("run_id='{run}' AND claim_source='notification'")
+			)
+			.await > 0
+		);
+	} else {
+		let due: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
+			&Query::select()
+				.column(a("due_at"))
+				.from(a("run_activations"))
+				.and_where(Expr::col(a("run_id")).eq(run))
+				.and_where(Expr::col(a("state")).eq("deferred"))
+				.limit(1)
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(&f.store.pool)
+		.await
+		.unwrap();
+		assert_eq!(due.timestamp_micros(), deadline.timestamp_micros());
+	}
+	worker.stop();
+	server.stop();
+	provider.abort();
+	broker
+		.context
+		.delete_stream(&broker.stream_name)
+		.await
+		.unwrap();
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_effects(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+) {
+	let (f, url, schema) = setup(&environment).await;
+	let calls = Arc::new(AtomicUsize::new(0));
+	let counted = calls.clone();
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let effects = tokio::spawn(async move {
+		axum::serve(
+			listener,
+			Router::new().fallback(move || {
+				let calls = counted.clone();
+				async move {
+					calls.fetch_add(1, Ordering::SeqCst);
+					(
+						axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+						"unexpected provider/tool replay",
+					)
+				}
+			}),
+		)
+		.await
+		.unwrap();
+	});
+	let app = axum_test::TestServer::new(api::router(f.clone())).unwrap();
+	let (_, token, task) = bootstrap_with_server(&f, &app, &endpoint).await;
+	let (status, claimed) = request_json(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{claimed}");
+	let run = f
+		.store
+		.runs()
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|r| r.task_id == task)
+		.unwrap()
+		.id;
+	sqlx::query(
+		&Query::update()
+			.table(a("runs"))
+			.value(a("context"), json!([]))
+			.and_where(Expr::col(a("id")).eq(run))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&f.store.pool)
+	.await
+	.unwrap();
+	assert!(
+		f.store
+			.lease_run(Uuid::new_v4(), 30)
+			.await
+			.unwrap()
+			.is_none()
+	);
+	assert!(
+		f.store
+			.inspect_run(run)
+			.await
+			.unwrap()
+			.state
+			.as_ref()
+			.unwrap()
+			.failure_delivery()
+	);
+	let operator = &f.config.api_token;
+	let (status, _) = request_json(
+		&app,
+		operator,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"entry":{"id":"research","version":"1.0.0"},"expected_revision":1,"enabled":false}),
+	)
+	.await;
+	assert_eq!(status, 200);
+	let harness = aidash::harness::Harness {
+		federation: f.clone(),
+	};
+	harness.worker_once().await.unwrap();
+	assert_eq!(
+		f.store.inspect_run(run).await.unwrap().control,
+		aidash::domain::RunControl::Paused
+	);
+	assert!(!f.store.task(task).await.unwrap().status.is_terminal());
+	let (status, _) = request_json(
+		&app,
+		operator,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"entry":{"id":"research","version":"1.0.0"},"expected_revision":2,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200);
+	let (status, resumed) = request_json(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/runs/{run}/control"),
+		json!({"action":"resume"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{resumed}");
+	assert_eq!(resumed["state"]["data"]["reason"], "failure_delivery");
+	assert!(resumed["context"].is_null());
+	assert!(resumed["state_error"].is_string());
+	harness.worker_once().await.unwrap();
+	assert_eq!(
+		f.store.inspect_run(run).await.unwrap().phase,
+		aidash::domain::RunPhase::Failed
+	);
+	assert_eq!(
+		f.store.task(task).await.unwrap().status,
+		aidash::domain::TaskStatus::Failed
+	);
+	assert_eq!(calls.load(Ordering::SeqCst), 0);
+	let invocations: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(a("invocations"))
+			.and_where(Expr::col(a("run_id")).eq(run))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&f.store.pool)
+	.await
+	.unwrap();
+	assert_eq!(invocations, 0);
+	effects.abort();
+	cleanup(f, &url, &schema).await;
 }

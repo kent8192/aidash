@@ -215,11 +215,19 @@ impl Access {
 		Ok(result)
 	}
 
-	pub(crate) async fn run_visible(&mut self, run: &Run) -> Result<bool> {
-		Ok(self.run_base_visible(run).await? && self.run_reads_visible(run.id).await?)
+	pub(crate) async fn run_visible(
+		&mut self,
+		run: impl Into<crate::domain::RunMetadata>,
+	) -> Result<bool> {
+		let run = run.into();
+		Ok(self.run_base_visible(&run).await? && self.run_reads_visible(run.id).await?)
 	}
 
-	pub(crate) async fn run_base_visible(&mut self, run: &Run) -> Result<bool> {
+	pub(crate) async fn run_base_visible(
+		&mut self,
+		run: impl Into<crate::domain::RunMetadata>,
+	) -> Result<bool> {
+		let run = run.into();
 		if run.home_node != self.node_id {
 			let admission: Option<Uuid> = sqlx::query_scalar(
 				&Query::select()
@@ -232,7 +240,7 @@ impl Access {
 			.fetch_optional(&mut **self.tx)
 			.await?;
 			if admission.is_some() {
-				return Ok(self.foreign_run_base_visible(run).await?
+				return Ok(self.foreign_run_base_visible(&run).await?
 					&& self.human_reads(run.workspace_id, run.id).await?);
 			}
 			// Locally authorized legacy federation keeps a real local Task and
@@ -270,7 +278,7 @@ impl Access {
 		}
 		let workspace = self.workspace(run.workspace_id).await?;
 		let resource = self.resource("run", run.id, workspace.attributes.clone());
-		let memory = self.memory_resource(run).await?;
+		let memory = self.memory_resource(&run).await?;
 		let task: Option<Task> = sqlx::query_as(
 			&Query::select()
 				.column(Asterisk)
@@ -410,7 +418,7 @@ impl Access {
 		else {
 			return Ok(false);
 		};
-		let run: Option<Run> = sqlx::query_as(
+		let run: Option<crate::domain::RunMetadata> = sqlx::query_as(
 			&Query::select()
 				.column(Asterisk)
 				.from(Alias::new("runs"))
@@ -875,7 +883,7 @@ impl Access {
 					continue;
 				}
 				visible_ids.push(row.id);
-				summary.include_status(&row.status);
+				summary.include_status(row.status);
 			}
 			self.track_task_reads(workspace_id, &visible_ids).await?;
 			if exhausted {
@@ -889,7 +897,7 @@ impl Access {
 struct ChildTaskSummaryRow {
 	id: Uuid,
 	created_by: String,
-	status: String,
+	status: crate::domain::TaskStatus,
 }
 
 impl Workspaces {
@@ -1079,7 +1087,7 @@ impl Workspaces {
 			}
 			let mut offset = 0_i64;
 			loop {
-				let batch: Vec<Run> = sqlx::query_as(
+				let batch: Vec<crate::domain::run_state::RawRun> = sqlx::query_as(
 					&Query::select()
 						.column(Asterisk)
 						.from(Alias::new("runs"))
@@ -1095,8 +1103,8 @@ impl Workspaces {
 				.await?;
 				let exhausted = batch.len() < 500;
 				for run in batch {
-					if access.run_visible(&run).await? {
-						state.runs.push(run);
+					if access.run_visible(&run.metadata).await? {
+						state.runs.push(run.inspect());
 					}
 					if state.runs.len() == 500 {
 						break;

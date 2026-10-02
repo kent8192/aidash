@@ -265,7 +265,10 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 		federation: a.for_workers().await.unwrap(),
 	};
 	restarted.worker_once().await.unwrap();
-	assert_eq!(a.store.run(run.id).await.unwrap().control, "PAUSED");
+	assert_eq!(
+		a.store.run(run.id).await.unwrap().control.as_str(),
+		"PAUSED"
+	);
 	assert_eq!(
 		calls.load(Ordering::SeqCst),
 		1,
@@ -297,11 +300,14 @@ async fn worker_remote_discovery_dependencies_survive_restart_and_hide_revoked_j
 	);
 	for _ in 0..12 {
 		restarted.worker_once().await.unwrap();
-		if a.store.run(run.id).await.unwrap().phase == "COMPLETED" {
+		if a.store.run(run.id).await.unwrap().phase().as_str() == "COMPLETED" {
 			break;
 		}
 	}
-	assert_eq!(a.store.run(run.id).await.unwrap().phase, "COMPLETED");
+	assert_eq!(
+		a.store.run(run.id).await.unwrap().phase().as_str(),
+		"COMPLETED"
+	);
 	assert_eq!(calls.load(Ordering::SeqCst), 2);
 	let (status, journal) = request(&a_app, &token, "GET", &path, Value::Null).await;
 	assert_eq!(status, 200);

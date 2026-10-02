@@ -170,7 +170,7 @@ async fn home_lease(
 		}
 		access.subjects = record.subject_chain;
 		let task = access.task_read(intent.task.id).await?;
-		if task.revision != intent.task.revision || task.status != "OPEN" {
+		if task.revision != intent.task.revision || task.status != crate::domain::TaskStatus::Open {
 			return Err(Error::Forbidden);
 		}
 		home_authority(&mut access, &task, source, &intent.policy_id).await?;
@@ -209,7 +209,7 @@ pub(crate) async fn request(
 	let result = async {
 		crate::authorization::execution::inherit_task_origin(&mut access, task_id).await?;
 		let task = access.task_read(task_id).await?;
-		if task.status != "OPEN" {
+		if task.status != crate::domain::TaskStatus::Open {
 			return Err(Error::Conflict("task is already assigned".into()));
 		}
 		home_authority(&mut access, &task, &input.node_id, &input.policy_id).await?;
@@ -856,7 +856,7 @@ pub(crate) async fn reconcile(f: &Federation) -> Result<()> {
 			"EXPIRED"
 		} else if let Some(id) = job.admission_id {
 			let run = f.store.run(id).await?;
-			match run.phase.as_str() {
+			match run.phase().as_str() {
 				"COMPLETED" => "COMPLETED",
 				"CANCELLED" => "STOPPED",
 				_ => "FAILED",

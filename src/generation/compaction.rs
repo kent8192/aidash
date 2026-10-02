@@ -32,9 +32,10 @@ impl ApprovedCompactor {
 		use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
 		let mut access = self.access.lock().await;
 		access.suspend().await?;
-		let (fresh, _) = crate::authorization::peer::admission::worker_lease(f, &self.run)
-			.await?
-			.ok_or(Error::Forbidden)?;
+		let (fresh, _) =
+			crate::authorization::peer::admission::worker_lease(f, &self.run.metadata())
+				.await?
+				.ok_or(Error::Forbidden)?;
 		*access = fresh;
 		let description: Value = sqlx::query_scalar(
 			&Query::select()
@@ -89,9 +90,10 @@ impl ApprovedCompactor {
 			super::remote::Finalization::Settled { reported: None },
 		)
 		.await?;
-		let (fresh, _) = crate::authorization::peer::admission::worker_lease(f, &self.run)
-			.await?
-			.ok_or(Error::Forbidden)?;
+		let (fresh, _) =
+			crate::authorization::peer::admission::worker_lease(f, &self.run.metadata())
+				.await?
+				.ok_or(Error::Forbidden)?;
 		*access = fresh;
 		response
 	}

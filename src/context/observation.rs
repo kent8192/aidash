@@ -107,15 +107,14 @@ pub(crate) fn chunk_record(
 
 /// Upgrade replayed legacy observations in the working context only. Human
 /// records, other tool results and the durable invocation journal stay intact.
-pub(crate) fn normalize_history(history: &mut [Value]) {
+pub(crate) fn normalize_history(history: &mut [super::ContextEvent]) {
 	for event in history {
-		if event["kind"] == "tool"
-			&& event["call"]["name"] == "workspace_observe"
-			&& event["result"]["view"] != "workspace_observation_v1"
-			&& let Ok(snapshot) =
-				serde_json::from_value::<WorkspaceSnapshot>(event["result"].clone())
+		if let super::ContextEvent::Tool { call, result } = event
+			&& call.name == "workspace_observe"
+			&& result["view"] != "workspace_observation_v1"
+			&& let Ok(snapshot) = serde_json::from_value::<WorkspaceSnapshot>(result.clone())
 		{
-			event["result"] = project(&snapshot, 0, DEFAULT_LIMIT);
+			*result = project(&snapshot, 0, DEFAULT_LIMIT);
 		}
 	}
 }
@@ -145,7 +144,7 @@ mod tests {
 					workspace_id,
 					title: "\0".repeat(256),
 					description: "\0".repeat(512),
-					status: "RUNNING".into(),
+					status: crate::domain::TaskStatus::Running,
 					requirements: json!({}),
 					owner: Some("\0".repeat(256)),
 					created_by: "subject".into(),

@@ -11,10 +11,12 @@ pub struct ToolSpec {
 	pub description: String,
 	pub parameters: Value,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ToolCall {
 	pub id: String,
 	pub name: String,
+	#[serde(deserialize_with = "crate::domain::required_json")]
 	pub arguments: Value,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -259,13 +261,13 @@ impl ModelRequest {
 		Ok(())
 	}
 }
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ModelResponse {
 	pub text: String,
 	pub tool_calls: Vec<ToolCall>,
 	pub input_tokens: u64,
 	pub output_tokens: u64,
-	#[serde(default)]
 	pub usage_complete: bool,
 }
 

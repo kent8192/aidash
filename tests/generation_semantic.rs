@@ -190,8 +190,8 @@ impl Fixture {
 					.into_iter()
 					.find(|run| run.agent_id == self.job["agent_id"].as_str().unwrap())
 					.unwrap();
-				if matches!(run.phase.as_str(), "COMPLETED" | "FAILED" | "CANCELLED")
-					|| run.control == "PAUSED"
+				if matches!(run.phase().as_str(), "COMPLETED" | "FAILED" | "CANCELLED")
+					|| run.control == aidash::domain::RunControl::Paused
 				{
 					break;
 				}
@@ -207,7 +207,7 @@ impl Fixture {
 				.await
 				.unwrap()
 				.into_iter()
-				.map(|run| (run.agent_id, run.phase, run.control))
+				.map(|run| (run.agent_id.clone(), run.phase(), run.control))
 				.collect();
 			panic!(
 				"generated execution did not settle in 20s: {states:?}; embedding calls={}, inference calls={}",
@@ -666,7 +666,7 @@ async fn nested_embeddings_intersect_pinned_providers_and_charge_each_ancestor(
 		fixture
 			.f
 			.store
-			.control(parent_run.id, "pause")
+			.control(parent_run.id, aidash::domain::RunControlAction::Pause)
 			.await
 			.unwrap();
 		if case == "unapproved" {
@@ -875,7 +875,7 @@ async fn killed_embedding_worker_retains_uncertain_usage_and_restart_reserves_a_
 	tokio::time::timeout(std::time::Duration::from_secs(20), async {
 		loop {
 			let run = fixture.f.store.runs().await.unwrap().remove(0);
-			if run.phase == "FAILED" {
+			if run.phase().as_str() == "FAILED" {
 				break;
 			}
 			tokio::time::sleep(std::time::Duration::from_millis(50)).await;

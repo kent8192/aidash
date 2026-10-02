@@ -799,7 +799,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	worker.worker_once().await.unwrap();
 	worker.worker_once().await.unwrap();
 	let run = f.store.runs().await.unwrap().remove(0);
-	assert_eq!(run.phase, "TOOL_CALL", "{:?}", run.error);
+	assert_eq!(run.phase().as_str(), "TOOL_CALL", "{:?}", run.error);
 	let context = captured.lock().unwrap()[0].clone();
 	assert_eq!(
 		context["current"]["semantic_memory"]["matches"][0]["entry_id"],
@@ -820,7 +820,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	assert_eq!(count, 1);
 	worker.worker_once().await.unwrap();
 	assert_eq!(
-		f.store.memory(&run).await.unwrap(),
+		f.store.memory(&run.metadata()).await.unwrap(),
 		json!({"note":"A car carries passengers safely."})
 	);
 	let (agent, authority): (Option<String>, Value) = sqlx::query_as(
@@ -915,7 +915,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 		200
 	);
 	assert_eq!(
-		f.store.memory(&run).await.unwrap(),
+		f.store.memory(&run.metadata()).await.unwrap(),
 		json!({}),
 		"deleted Agent memory must not survive through the legacy context slot"
 	);
@@ -948,7 +948,10 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 		403
 	);
 	worker.worker_once().await.unwrap();
-	assert_eq!(f.store.run(run.id).await.unwrap().control, "PAUSED");
+	assert_eq!(
+		f.store.run(run.id).await.unwrap().control.as_str(),
+		"PAUSED"
+	);
 	assert_eq!(captured.lock().unwrap().len(), 1);
 	worker.federation.store.pool.close().await;
 	worker.federation.store.control_pool.close().await;

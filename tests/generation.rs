@@ -251,7 +251,10 @@ async fn approval_activation_and_stop_are_atomic_and_audited(
 		federation: f.clone(),
 	};
 	worker.worker_once().await.unwrap();
-	assert_eq!(f.store.run(runs[0].id).await.unwrap().phase, "CANCELLED");
+	assert_eq!(
+		f.store.run(runs[0].id).await.unwrap().phase().as_str(),
+		"CANCELLED"
+	);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -331,9 +334,17 @@ async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_all
 	for _ in 0..8 {
 		worker.worker_once().await.unwrap();
 	}
-	assert_eq!(f.store.run(runs[0].id).await.unwrap().phase, "COMPLETED");
 	assert_eq!(
-		f.store.task(task.parse().unwrap()).await.unwrap().status,
+		f.store.run(runs[0].id).await.unwrap().phase().as_str(),
+		"COMPLETED"
+	);
+	assert_eq!(
+		f.store
+			.task(task.parse().unwrap())
+			.await
+			.unwrap()
+			.status
+			.as_str(),
 		"COMPLETED"
 	);
 	aidash::generation::provision::reconcile(&f).await.unwrap();
@@ -725,19 +736,31 @@ async fn missing_usage_keeps_reservation_and_stops_before_another_model_call(
 	};
 	// Failure delivery is scheduled by wake_at and compared with PostgreSQL's
 	// clock. Wait for that durable transition rather than counting fast polls.
-	let run = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+	// This deadline includes every worker step and the five-second delivery
+	// retry, so leave room for concurrent coverage-instrumented database work.
+	let mut last_observed = String::from("no Run observed");
+	let run = tokio::time::timeout(std::time::Duration::from_secs(30), async {
 		loop {
 			worker.worker_once().await.unwrap();
 			let run = f.store.runs().await.unwrap().remove(0);
-			if run.phase == "FAILED" {
+			last_observed = format!(
+				"state={:?} recovery={:?} error={:?}",
+				run.state, run.recovery, run.error
+			);
+			if run.phase().as_str() == "FAILED" {
 				break run;
 			}
 			tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 		}
 	})
 	.await
-	.unwrap();
-	assert_eq!(run.phase, "FAILED");
+	.unwrap_or_else(|error| {
+		panic!(
+			"failure delivery timed out: {error}; {last_observed}; model calls={}",
+			calls.load(Ordering::SeqCst)
+		)
+	});
+	assert_eq!(run.phase().as_str(), "FAILED");
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
 	aidash::generation::provision::reconcile(&f).await.unwrap();
 	let (_, policies) = request(
@@ -1046,11 +1069,14 @@ async fn expiration_cancels_generated_run_before_any_provider_call(
 	};
 	worker.worker_once().await.unwrap();
 	let run = f.store.runs().await.unwrap().remove(0);
-	assert_eq!(run.control, "PAUSED");
-	assert_eq!(run.phase, "READY");
+	assert_eq!(run.control.as_str(), "PAUSED");
+	assert_eq!(run.phase().as_str(), "READY");
 	aidash::generation::provision::reconcile(&f).await.unwrap();
 	worker.worker_once().await.unwrap();
-	assert_eq!(f.store.run(run.id).await.unwrap().phase, "CANCELLED");
+	assert_eq!(
+		f.store.run(run.id).await.unwrap().phase().as_str(),
+		"CANCELLED"
+	);
 	let (_, jobs) = request(
 		&app,
 		&token,
@@ -1164,14 +1190,14 @@ async fn stop_commits_during_inflight_inference_and_discards_its_result(
 	release.notify_one();
 	running.await.unwrap();
 	let pending = f.store.runs().await.unwrap().remove(0);
-	assert_eq!(pending.control, "CANCELLED");
-	assert!(pending.pending.get("response").is_none());
+	assert_eq!(pending.control.as_str(), "CANCELLED");
+	assert!(json!(pending.state)["data"].get("response").is_none());
 	let worker = aidash::harness::Harness {
 		federation: f.clone(),
 	};
 	worker.worker_once().await.unwrap();
 	let run = f.store.runs().await.unwrap().remove(0);
-	assert_eq!(run.phase, "CANCELLED");
+	assert_eq!(run.phase().as_str(), "CANCELLED");
 	assert!(
 		f.store
 			.snapshot(run.workspace_id)
@@ -1293,9 +1319,9 @@ async fn atomic_commit_discards_generated_output_but_settles_its_usage(
 			.unwrap()
 	);
 	let current = f.store.run(run.id).await.unwrap();
-	assert_eq!(current.phase, "THINKING");
-	assert!(current.pending.get("retry_at").is_some());
-	assert!(current.pending.get("response").is_none());
+	assert_eq!(current.phase().as_str(), "THINKING");
+	assert!(current.recovery.retry.is_some());
+	assert!(json!(current.state)["data"].get("response").is_none());
 	let (reserved, reported): (i64, Option<i64>) = sqlx::query_as(
 		&Query::select()
 			.columns(["reserved_tokens", "reported_tokens"].map(Alias::new))
@@ -1320,7 +1346,10 @@ async fn atomic_commit_discards_generated_output_but_settles_its_usage(
 	tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 	assert!(worker.worker_once().await.unwrap());
 	assert_eq!(calls.load(Ordering::SeqCst), 2);
-	assert_eq!(f.store.run(run.id).await.unwrap().phase, "TOOL_CALL");
+	assert_eq!(
+		f.store.run(run.id).await.unwrap().phase().as_str(),
+		"TOOL_CALL"
+	);
 	server.abort();
 	cleanup(f, &url, &schema).await;
 }
@@ -1634,9 +1663,9 @@ async fn generated_permission_attributes_deny_tools_without_losing_the_pending_c
 		worker.worker_once().await.unwrap();
 	}
 	let run = f.store.runs().await.unwrap().remove(0);
-	assert_eq!(run.phase, "TOOL_CALL");
-	assert_eq!(run.control, "PAUSED");
-	assert_eq!(run.pending["cursor"], 0);
+	assert_eq!(run.phase().as_str(), "TOOL_CALL");
+	assert_eq!(run.control.as_str(), "PAUSED");
+	assert_eq!(json!(run.state)["data"]["cursor"], 0);
 	assert_eq!(effects.load(Ordering::SeqCst), 0);
 	let snapshot = aidash::authorization::Authorization {
 		pool: f.store.pool.clone(),
@@ -1673,7 +1702,10 @@ async fn generated_permission_attributes_deny_tools_without_losing_the_pending_c
 	for _ in 0..8 {
 		worker.worker_once().await.unwrap();
 	}
-	assert_eq!(f.store.run(run.id).await.unwrap().phase, "COMPLETED");
+	assert_eq!(
+		f.store.run(run.id).await.unwrap().phase().as_str(),
+		"COMPLETED"
+	);
 	assert_eq!(effects.load(Ordering::SeqCst), 1);
 	server.abort();
 	cleanup(f, &url, &schema).await;

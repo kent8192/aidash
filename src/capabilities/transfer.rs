@@ -228,7 +228,7 @@ async fn authority(f: &Federation, record: &Record) -> Result<Access> {
         let run = access
             .run_for_interaction(serde_json::from_value(record.data["run_id"].clone())?)
 			.await?;
-		if run.control == "CANCELLED" {
+		if run.control == crate::domain::RunControl::Cancelled {
 			return Err(Error::Forbidden);
 		}
 		let workspace = access

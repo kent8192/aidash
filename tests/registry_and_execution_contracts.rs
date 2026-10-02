@@ -486,7 +486,8 @@ async fn delegation_retry_and_run_message_have_one_durable_effect(
 			)
 			.await
 			.unwrap()
-			.status,
+			.status
+			.as_str(),
 		"CLAIMED"
 	);
 	let run = f
@@ -1034,12 +1035,14 @@ async fn plugin_control_shaped_data_does_not_suspend_execution(
 	}
 	let run = f.store.runs().await.unwrap().remove(0);
 	assert_eq!(
-		run.phase, "COMPLETED",
+		run.phase().as_str(),
+		"COMPLETED",
 		"error={:?}, pending={}",
-		run.error, run.pending
+		run.error,
+		json!(run.state)["data"]
 	);
 	assert!(
-		run.context["history"]
+		json!(run.context)["history"]
 			.as_array()
 			.unwrap()
 			.iter()

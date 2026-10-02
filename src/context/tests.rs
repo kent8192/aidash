@@ -1,4 +1,7 @@
 use super::*;
+fn event(value: Value) -> ContextEvent {
+	serde_json::from_value(value).unwrap()
+}
 use async_trait::async_trait;
 use std::sync::Mutex;
 
@@ -31,15 +34,25 @@ impl jev::JevAsker for FakeJev {
 fn drop_all(_: &str) -> Value {
 	json!({"noul":0.0})
 }
-fn tool(id: &str, result: &str) -> Value {
-	json!({"kind":"tool","call":{"id":id,"name":"read","arguments":{"path":id}},"result":result})
+fn tool(id: &str, result: &str) -> ContextEvent {
+	event(
+		json!({"kind":"tool","call":{"id":id,"name":"read","arguments":{"path":id}},"result":result}),
+	)
 }
-fn history() -> Vec<Value> {
+fn history() -> Vec<ContextEvent> {
 	let mut history = vec![
 		tool("first", "pinned first result"),
 		tool("obsolete", &"old".repeat(3000)),
-		json!({"kind":"human","response":{"approved":false},"prompt":"Never deploy"}),
-		json!({"kind":"assistant","text":"Preserve this exact path: src/generated"}),
+		ContextEvent::Human {
+			request: "Never deploy".into(),
+			request_kind: "APPROVAL_REQUIRED".into(),
+			response: json!({"approved":false}),
+		},
+		ContextEvent::ModelMediaObservation {
+			text: "Preserve this exact path: src/generated".into(),
+			through_seq: None,
+			truncated: false,
+		},
 	];
 	for i in 0..6 {
 		history.push(tool(&format!("recent-{i}"), "recent"));
@@ -210,8 +223,14 @@ async fn legacy_observation_projection_preserves_human_records_and_failed_contex
 	});
 	let mut context = Context {
 		history: vec![
-			json!({"kind":"tool","call":{"id":"observe","name":"workspace_observe","arguments":{}},"result":snapshot}),
-			json!({"kind":"human","response":{"approved":false},"data":snapshot}),
+			event(
+				json!({"kind":"tool","call":{"id":"observe","name":"workspace_observe","arguments":{}},"result":snapshot}),
+			),
+			ContextEvent::Human {
+				request: "Reject action".into(),
+				request_kind: "APPROVAL_REQUIRED".into(),
+				response: json!({"approved":false,"data":snapshot}),
+			},
 		],
 		..Default::default()
 	};
@@ -227,16 +246,19 @@ async fn legacy_observation_projection_preserves_human_records_and_failed_contex
 		.await
 		.unwrap();
 	assert_eq!(
-		context.history[0]["result"]["view"],
+		json!(context.history[0])["result"]["view"],
 		"workspace_observation_v1"
 	);
 	assert!(
-		context.history[0]["result"]["events"][0]
+		json!(context.history[0])["result"]["events"][0]
 			.get("data")
 			.is_none()
 	);
-	assert_eq!(context.history[0]["call"], before["history"][0]["call"]);
-	assert_eq!(context.history[1], before["history"][1]);
+	assert_eq!(
+		json!(context.history[0])["call"],
+		before["history"][0]["call"]
+	);
+	assert_eq!(json!(context.history[1]), before["history"][1]);
 	assert_eq!(context.compactions, 0);
 }
 
@@ -318,13 +340,25 @@ async fn short_runs_and_pinned_only_histories_never_call_jev() {
 #[tokio::test]
 async fn decisions_keep_pairs_truncate_results_and_drop_only_obsolete_pairs() {
 	let mut events = vec![
-		json!({"kind":"human","content":"original instruction"}),
+		ContextEvent::Human {
+			request: "original instruction".into(),
+			request_kind: "INFORMATION_REQUEST".into(),
+			response: Value::Null,
+		},
 		tool("drop", &"discard".repeat(200)),
 		tool("truncate", &"日".repeat(1000)),
 		tool("keep-result", "exact retained output"),
 		tool("short", "short result"),
-		json!({"kind":"tool","call":{"id":"pending","name":"read","arguments":{}}}),
-		json!({"kind":"human","content":"rejected approval"}),
+		ContextEvent::ModelMediaObservation {
+			text: "Pending read".into(),
+			through_seq: None,
+			truncated: false,
+		},
+		ContextEvent::Human {
+			request: "rejected approval".into(),
+			request_kind: "INFORMATION_REQUEST".into(),
+			response: Value::Null,
+		},
 	];
 	events.extend((0..6).map(|i| tool(&format!("recent-{i}"), "pinned")));
 	let asker = FakeJev::new(|name| {
@@ -342,15 +376,15 @@ async fn decisions_keep_pairs_truncate_results_and_drop_only_obsolete_pairs() {
 	assert_eq!(output.results_truncated, 1);
 	assert_eq!(output.history.len(), events.len() - 1);
 	assert_eq!(output.history[0], events[0]);
-	assert_eq!(output.history[1]["call"], events[2]["call"]);
+	assert_eq!(json!(output.history[1])["call"], json!(events[2])["call"]);
 	assert!(
-		output.history[1]["result"]
+		json!(output.history[1])["result"]
 			.as_str()
 			.unwrap()
 			.starts_with(&"日".repeat(300))
 	);
 	assert!(
-		output.history[1]["result"]
+		json!(output.history[1])["result"]
 			.as_str()
 			.unwrap()
 			.contains("700 chars")
@@ -361,7 +395,11 @@ async fn decisions_keep_pairs_truncate_results_and_drop_only_obsolete_pairs() {
 #[rstest::rstest]
 #[tokio::test]
 async fn batches_resend_the_same_state_and_fit_the_request_budget() {
-	let mut events = vec![json!({"kind":"human","text":"Do the task"})];
+	let mut events = vec![ContextEvent::Human {
+		request: "Do the task".into(),
+		request_kind: "INFORMATION_REQUEST".into(),
+		response: Value::Null,
+	}];
 	events.extend((0..12).map(|i| tool(&format!("old-{i}"), "output")));
 	let asker = FakeJev::new(drop_all);
 	let mut options = compaction::Options {
@@ -408,13 +446,23 @@ async fn batches_resend_the_same_state_and_fit_the_request_budget() {
 #[rstest::rstest]
 #[tokio::test]
 async fn state_fitting_shrinks_only_the_classification_view() {
-	let mut events = vec![json!({"kind":"human","text":"first instruction"})];
+	let mut events = vec![ContextEvent::Human {
+		request: "first instruction".into(),
+		request_kind: "INFORMATION_REQUEST".into(),
+		response: Value::Null,
+	}];
 	for i in 0..40 {
 		let mut event = tool(&format!("tool-{i}"), "SECRET RESULT CONTENT");
-		event["call"]["arguments"]["content"] = json!("content ".repeat(1000));
+		if let ContextEvent::Tool { call, .. } = &mut event {
+			call.arguments["content"] = json!("content ".repeat(1000));
+		}
 		events.push(event);
 	}
-	events.push(json!({"kind":"human","text":"last instruction"}));
+	events.push(ContextEvent::Human {
+		request: "last instruction".into(),
+		request_kind: "INFORMATION_REQUEST".into(),
+		response: Value::Null,
+	});
 	let original = events.clone();
 	let asker = FakeJev::new(|_| json!({"noul":1.0}));
 	let options = compaction::Options {

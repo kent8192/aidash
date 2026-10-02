@@ -43,6 +43,7 @@ import { EntityDetails } from "../entity-details";
 import { ArtifactList } from "./channel";
 import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
+import { resumableRun } from "./workspace-model";
 import {
   runMediaAccept,
   validRunMediaAttachments,
@@ -461,7 +462,7 @@ function RunPanel({
   const mediaAccept = runMediaAccept(mediaInputRoutes);
   const canAttach = local && run.home_node === data.node.id && !!mediaAccept;
   const terminal = ["COMPLETED", "FAILED", "CANCELLED"].includes(run.phase);
-  const control = (action: string) => {
+  const control = (action: "pause" | "resume" | "cancel") => {
     if (action === "cancel" && !window.confirm(t("confirmCancel"))) return;
     void submit(() =>
       local
@@ -505,6 +506,7 @@ function RunPanel({
             <div className="button-row">
               <button
                 type="button"
+                disabled={run.control === "PAUSED" && !resumableRun(run)}
                 onClick={() =>
                   control(run.control === "PAUSED" ? "resume" : "pause")
                 }
@@ -709,6 +711,11 @@ function RunPanel({
             </form>
           </>
         )}
+      {run.state_error && (
+        <p role="alert" className="error">
+          {run.state_error}
+        </p>
+      )}
       {run.error && <p className="error">{run.error}</p>}
       <h3>{t("toolCalls")}</h3>
       {invocations.map((call) => (

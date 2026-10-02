@@ -2,7 +2,7 @@
 use crate::{
 	Error, Result,
 	authorization::{access::Access, identity::Actor},
-	domain::Run,
+	domain::{RunControl, RunControlAction, RunInspection, RunPhase},
 	federation::Federation,
 };
 use axum::{
@@ -18,20 +18,17 @@ use uuid::Uuid;
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct RunManagement {
 	pub id: Uuid,
-	pub phase: String,
-	pub control: String,
+	pub phase: RunPhase,
+	pub control: RunControl,
 	pub semantic_reason: Option<crate::semantic::remote::Failure>,
 }
-impl From<Run> for RunManagement {
-	fn from(run: Run) -> Self {
+impl From<RunInspection> for RunManagement {
+	fn from(run: RunInspection) -> Self {
 		Self {
 			id: run.id,
 			phase: run.phase,
 			control: run.control,
-			semantic_reason: run
-				.pending
-				.get("semantic_reason")
-				.and_then(|v| serde_json::from_value(v.clone()).ok()),
+			semantic_reason: run.recovery.as_ref().and_then(|r| r.semantic_reason),
 		}
 	}
 }
@@ -51,8 +48,8 @@ pub fn routes() -> OpenApiRouter<Federation> {
 	OpenApiRouter::new().routes(routes!(get, control))
 }
 
-async fn authorized(access: &mut Access, id: Uuid, node: &str) -> Result<Run> {
-	let run: Run = sqlx::query_as(
+async fn authorized(access: &mut Access, id: Uuid, node: &str) -> Result<RunInspection> {
+	let raw: crate::domain::run_state::RawRun = sqlx::query_as(
 		&Query::select()
 			.column(Asterisk)
 			.from(Alias::new("runs"))
@@ -63,6 +60,7 @@ async fn authorized(access: &mut Access, id: Uuid, node: &str) -> Result<Run> {
 	.fetch_optional(&mut **access.tx)
 	.await?
 	.ok_or(Error::Forbidden)?;
+	let run = raw.inspect();
 	let workspace = if run.home_node == node {
 		access.workspace(run.workspace_id).await?
 	} else {
@@ -104,7 +102,7 @@ async fn get(
 	Path(id): Path<Uuid>,
 ) -> Result<Json<RunManagement>> {
 	let Actor::Subject(identity) = actor else {
-		return Ok(Json(f.store.run(id).await?.into()));
+		return Ok(Json(f.store.inspect_run(id).await?.into()));
 	};
 	let mut access = Access::begin(&f.store, &identity).await?;
 	let result = authorized(&mut access, id, &f.config.node_id)
@@ -121,12 +119,12 @@ async fn control(
 	Json(input): Json<RunManagementInput>,
 ) -> Result<Json<RunManagement>> {
 	let action = match input.action {
-		ManagementAction::Pause => "pause",
-		ManagementAction::Cancel => "cancel",
+		ManagementAction::Pause => RunControlAction::Pause,
+		ManagementAction::Cancel => RunControlAction::Cancel,
 	};
 	let Actor::Subject(identity) = actor else {
-		let current = f.store.run(id).await?;
-		let run = if current.control == "CANCELLED" {
+		let current = f.store.inspect_run(id).await?;
+		let run = if current.control == RunControl::Cancelled {
 			current
 		} else {
 			f.store.control(id, action).await?
@@ -137,7 +135,7 @@ async fn control(
 	let mut access = Access::begin(&f.store, &identity).await?;
 	let result = async {
 		let run = authorized(&mut access, id, &f.config.node_id).await?;
-		let run = if run.control == "CANCELLED" {
+		let run = if run.control == RunControl::Cancelled {
 			run
 		} else {
 			f.store.control_in(&mut access.tx, id, action).await?

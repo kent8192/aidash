@@ -397,7 +397,7 @@ def main():
             return api_request(base_a, "/api/remote", {"node_id": node_b, "control": {"run_id": human_run, "action": action, **kwargs}})
         wait_for(lambda: api_request(base_b, f"/api/runs/{human_run}")["run"]["phase"] == "WAITING", label="human run waiting")
         remote_control("pause")
-        remote_control("message", content="Do not publish.")
+        remote_control("message", content="Do not publish.", idempotency_key=str(uuid.uuid4()))
         remote_control("answer", request_id=request["id"], response=False)
         paused = api_request(base_b, f"/api/runs/{human_run}")["run"]
         assert paused["control"] == "PAUSED" and paused["phase"] == "WAITING"

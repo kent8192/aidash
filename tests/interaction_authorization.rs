@@ -427,8 +427,8 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	// A journal can contain copied human prompts. Denying the source also hides
 	// that run's aggregate data instead of exposing it through its context.
 	sqlx::query(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("runs")).value(sea_orm::sea_query::Alias::new("phase"), sea_orm::sea_query::Expr::cust("'WAITING'")).value(sea_orm::sea_query::Alias::new("pending"), sea_orm::sea_query::Expr::cust("$2")).value(sea_orm::sea_query::Alias::new("context"), sea_orm::sea_query::Expr::cust("$3")).and_where(sea_orm::sea_query::Expr::cust("id = $1")).to_string(sea_orm::sea_query::PostgresQueryBuilder))
-        .bind(run.id).bind(json!({"human_request_id":human.id,"resume_phase":"THINKING"}))
-        .bind(json!({"history":[{"kind":"human","request":"private approval prompt"}],"summary":"","usage":{},"compactions":0})).execute(&f.store.pool).await.unwrap();
+        .bind(run.id).bind(common::pending(aidash::domain::RunState::Waiting(Box::new(aidash::domain::WaitingState::Human { request_id:human.id, resume:aidash::domain::ResumeState::Thinking(Default::default()) }))))
+        .bind(common::context(json!({"history":[{"kind":"human","request":"private approval prompt","request_kind":"APPROVAL","response":null}]}))).execute(&f.store.pool).await.unwrap();
 	assert_eq!(
 		request(
 			&app,
@@ -469,9 +469,12 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	.await
 	.unwrap();
 	let paused = f.store.run(run.id).await.unwrap();
-	assert_eq!(paused.control, "PAUSED");
-	assert_eq!(paused.phase, "WAITING");
-	assert_eq!(paused.pending["human_request_id"], human.id.to_string());
+	assert_eq!(paused.control.as_str(), "PAUSED");
+	assert_eq!(paused.phase().as_str(), "WAITING");
+	assert_eq!(
+		json!(paused.state)["data"]["request_id"],
+		human.id.to_string()
+	);
 	let task = f.store.task(run.task_id).await.unwrap();
 	let failed = f
 		.store
@@ -479,7 +482,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 			task.id,
 			task.revision,
 			task.owner.as_deref().unwrap(),
-			"FAILED",
+			aidash::domain::TaskStatus::Failed,
 		)
 		.await
 		.unwrap();
@@ -606,8 +609,8 @@ async fn cluster_conversations_recheck_approval_at_worker_boundaries(
 		.into_iter()
 		.find(|r| r.task_id == task)
 		.unwrap();
-	assert_eq!(run.control, "PAUSED");
-	assert_eq!(run.phase, "READY");
-	assert_eq!(f.store.task(task).await.unwrap().status, "CLAIMED");
+	assert_eq!(run.control.as_str(), "PAUSED");
+	assert_eq!(run.phase().as_str(), "READY");
+	assert_eq!(f.store.task(task).await.unwrap().status.as_str(), "CLAIMED");
 	cleanup(f, &url, &schema).await;
 }

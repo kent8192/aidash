@@ -181,7 +181,7 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 	.await
 	.unwrap();
 	let mut stale = f.store.run(run.id).await.unwrap();
-	stale.phase = "THINKING".into();
+	stale.state = aidash::domain::RunState::Thinking(Default::default());
 	let error = f
 		.store
 		.save_run(&stale, stale_worker, "run.message_received")
@@ -189,13 +189,13 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 		.unwrap_err();
 	assert!(error.to_string().contains("requires an upgraded worker"));
 	let task = f.store.task(run.task_id).await.unwrap();
-	let task = if task.status == "CLAIMED" {
+	let task = if task.status == aidash::domain::TaskStatus::Claimed {
 		f.store
 			.transition(
 				task.id,
 				task.revision,
 				task.owner.as_deref().unwrap(),
-				"RUNNING",
+				aidash::domain::TaskStatus::Running,
 			)
 			.await
 			.unwrap()
@@ -221,7 +221,10 @@ async fn old_worker_cannot_lease_after_input_ledger_admission(
 		error.to_string().contains("run messages await inference"),
 		"legacy completion must be rejected by the unobserved input fence, got: {error}"
 	);
-	assert_eq!(f.store.task(task.id).await.unwrap().status, "RUNNING");
+	assert_eq!(
+		f.store.task(task.id).await.unwrap().status.as_str(),
+		"RUNNING"
+	);
 	f.store.release_lease(run.id, stale_worker).await.unwrap();
 	cleanup(f, &url, &schema).await;
 }
@@ -282,8 +285,12 @@ async fn upgraded_control_updates_remain_available_while_a_legacy_worker_is_fenc
 	.await
 	.unwrap();
 	tx.commit().await.unwrap();
-	let paused = f.store.control(run.id, "pause").await.unwrap();
-	assert_eq!(paused.control, "PAUSED");
+	let paused = f
+		.store
+		.control(run.id, aidash::domain::RunControlAction::Pause)
+		.await
+		.unwrap();
+	assert_eq!(paused.control.as_str(), "PAUSED");
 	assert_eq!(paused.lease_owner, Some(old_worker));
 	cleanup(f, &url, &schema).await;
 }
@@ -308,11 +315,11 @@ async fn old_worker_cannot_start_tool_invocation_after_input_backfill(
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let run = f.store.runs().await.unwrap().remove(0);
-	let pending = json!({
+	let pending = common::tool_pending(json!({
 		"included_input_seq":1,
 		"response":{"text":"","tool_calls":[{"id":"stale-call","name":"unsafe","arguments":{"action":"write"}}],"input_tokens":0,"output_tokens":0},
 		"cursor":0
-	});
+	}));
 	sqlx::query(
 		&sea_orm::sea_query::Query::update()
 			.table(sea_orm::sea_query::Alias::new("runs"))
@@ -480,7 +487,7 @@ async fn upgraded_worker_reclaims_an_expired_legacy_lease_after_input_backfill(
 		.expect("the run remains available");
 	assert_eq!(reclaimed.id, run.id);
 	assert!(reclaimed.ledger_worker_ready);
-	assert_eq!(reclaimed.pending["lease_recovered"], true);
+	assert!(reclaimed.recovery.lease_recovered);
 	f.store
 		.release_lease(run.id, upgraded_worker)
 		.await
@@ -568,10 +575,16 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 	assert_eq!(status, 200, "{body}");
 	release.notify_one();
 	assert!(first.await.unwrap().unwrap());
-	assert_eq!(f.store.run(run.id).await.unwrap().phase, "THINKING");
+	assert_eq!(
+		f.store.run(run.id).await.unwrap().phase().as_str(),
+		"THINKING"
+	);
 	tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 	assert!(worker.worker_once().await.unwrap());
-	assert_eq!(f.store.run(run.id).await.unwrap().phase, "TOOL_CALL");
+	assert_eq!(
+		f.store.run(run.id).await.unwrap().phase().as_str(),
+		"TOOL_CALL"
+	);
 	let second_key = Uuid::new_v4();
 	let (status, body) = request(
 		&app,
@@ -583,7 +596,10 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 	.await;
 	assert_eq!(status, 200, "{body}");
 	assert!(worker.worker_once().await.unwrap());
-	assert_eq!(f.store.run(run.id).await.unwrap().phase, "THINKING");
+	assert_eq!(
+		f.store.run(run.id).await.unwrap().phase().as_str(),
+		"THINKING"
+	);
 	assert!(worker.worker_once().await.unwrap());
 	let lease_token = Uuid::new_v4();
 	let leased = f.store.lease_run(lease_token, 30).await.unwrap().unwrap();
@@ -605,8 +621,14 @@ async fn messages_accepted_during_and_after_inference_are_seen_before_completion
 	assert_eq!(status, 409, "{body}");
 	f.store.release_lease(run.id, lease_token).await.unwrap();
 	assert!(worker.worker_once().await.unwrap());
-	assert_eq!(f.store.run(run.id).await.unwrap().phase, "COMPLETED");
-	assert_eq!(f.store.task(run.task_id).await.unwrap().status, "COMPLETED");
+	assert_eq!(
+		f.store.run(run.id).await.unwrap().phase().as_str(),
+		"COMPLETED"
+	);
+	assert_eq!(
+		f.store.task(run.task_id).await.unwrap().status.as_str(),
+		"COMPLETED"
+	);
 	let seen = requests.lock().await;
 	assert_eq!(seen.len(), 3);
 	assert!(!seen[0].to_string().contains("first correction"));
@@ -720,12 +742,12 @@ async fn included_reference_can_reach_tool_calls_without_becoming_finalizable(
 	let worker = Uuid::new_v4();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
 	assert_eq!(leased.observed_input_seq, 0);
-	leased.phase = "TOOL_CALL".into();
-	leased.pending = json!({
+
+	leased.state = aidash::domain::RunState::ToolCall(Box::new(common::tool_call(json!({
 		"included_input_seq":input_seq,
 		"response":{"text":"","tool_calls":[],"input_tokens":1,"output_tokens":1,"usage_complete":true},
 		"cursor":0
-	});
+	}))));
 	f.store
 		.save_run(&leased, worker, "model.completed")
 		.await
@@ -772,13 +794,13 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 	let worker = Uuid::new_v4();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
 	leased.step = max_steps - 1;
-	leased.phase = "TOOL_CALL".into();
-	leased.pending = json!({
+
+	leased.state = aidash::domain::RunState::ToolCall(Box::new(common::tool_call(json!({
 		"response_epoch":leased.revision + i64::from(leased.step) + 1,
 		"included_input_seq":0,
 		"response":{"text":"stale tool output","tool_calls":[{"id":"stale-call","name":"workspace_observe","arguments":{}}],"input_tokens":1,"output_tokens":1,"usage_complete":true},
 		"cursor":0
-	});
+	}))));
 	f.store
 		.save_run(&leased, worker, "model.completed")
 		.await
@@ -794,7 +816,11 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 		.response_message(
 			publish_worker,
 			0,
-			&format!("{}:{}:output", run.id, published.pending["response_epoch"]),
+			&format!(
+				"{}:{}:output",
+				run.id,
+				json!(published.state)["data"]["response_epoch"]
+			),
 			"stale tool output",
 		)
 		.await
@@ -811,13 +837,13 @@ async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_infer
 	f.store.release_lease(run.id, publish_worker).await.unwrap();
 	assert!(harness.worker_once().await.unwrap());
 	let current = f.store.run(run.id).await.unwrap();
-	assert_eq!(current.phase, "THINKING");
+	assert_eq!(current.phase().as_str(), "THINKING");
 	assert_eq!(current.step, max_steps - 1);
 	assert!(
 		current.step < max_steps,
 		"the correction can still be inferred"
 	);
-	assert!(current.pending.get("response").is_none());
+	assert!(json!(current.state)["data"].get("response").is_none());
 	assert!(
 		f.store
 			.snapshot(run.workspace_id)
@@ -908,10 +934,10 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 		.max_steps;
 	let selected = json!({"file_id":Uuid::new_v4(),"expected_digest":"digest"});
 	leased.step = max_steps - 1;
-	leased.phase = "TOOL_CALL".into();
-	leased.context["media_inferred_seq"] = json!(7);
+
+	json!(leased.context)["media_inferred_seq"] = json!(7);
 	leased.observed_input_seq = 7;
-	leased.pending = json!({
+	leased.state = aidash::domain::RunState::ToolCall(Box::new(common::tool_call(json!({
 		"included_input_seq":0,
 		"media_inferred_seq_before_response":0,
 		"observed_input_seq_before_response":0,
@@ -923,7 +949,7 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 		"run_message_catchup":true,
 		"run_message_summary_end_seq":7,
 		"run_message_summary_limit":8
-	});
+	}))));
 	f.store
 		.save_run(&leased, worker, "model.completed")
 		.await
@@ -937,15 +963,18 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 		.unwrap()
 	);
 	let current = f.store.run(run.id).await.unwrap();
-	assert_eq!(current.phase, "THINKING");
+	assert_eq!(current.phase().as_str(), "THINKING");
 	assert_eq!(current.step, max_steps);
-	assert_eq!(current.context["run_message_summary_seq"], 0);
-	assert_eq!(current.context["run_message_summary"], "");
-	assert_eq!(current.context["media_inferred_seq"], 0);
+	assert_eq!(json!(current.context)["run_message_summary_seq"], 0);
+	assert_eq!(json!(current.context)["run_message_summary"], "");
+	assert_eq!(json!(current.context)["media_inferred_seq"], 0);
 	assert_eq!(current.observed_input_seq, 0);
-	assert_eq!(current.pending["selected_media"], json!([selected]));
+	assert_eq!(
+		json!(current.state)["data"]["selected_media"],
+		json!([selected])
+	);
 	assert!(
-		current.context["history"]
+		json!(current.context)["history"]
 			.as_array()
 			.unwrap()
 			.iter()
@@ -961,7 +990,7 @@ async fn rejected_catchup_summary_consumes_the_last_step(
 		.unwrap()
 	);
 	let bounded = f.store.run(run.id).await.unwrap();
-	assert_eq!(bounded.pending["terminal_transition"], "FAILED");
+	assert_eq!(json!(bounded.state)["data"]["target"], "FAILED");
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1000,15 +1029,15 @@ async fn empty_media_observation_consumes_the_last_available_step(
 		.unwrap()
 		.max_steps;
 	leased.step = max_steps - 1;
-	leased.phase = "TOOL_CALL".into();
-	leased.pending = json!({
+
+	leased.state = aidash::domain::RunState::ToolCall(Box::new(common::tool_call(json!({
 		"included_input_seq":0,
 		"response":{"text":"", "tool_calls":[], "input_tokens":1, "output_tokens":1, "usage_complete":true},
 		"cursor":0,
 		"deferred_human_media":true,
 		"media_inferred_seq_before_response":0,
 		"observed_input_seq_before_response":0
-	});
+	}))));
 	f.store
 		.save_run(&leased, worker, "model.completed")
 		.await
@@ -1022,7 +1051,7 @@ async fn empty_media_observation_consumes_the_last_available_step(
 		.unwrap()
 	);
 	let retried = f.store.run(run.id).await.unwrap();
-	assert_eq!(retried.phase, "THINKING");
+	assert_eq!(retried.phase().as_str(), "THINKING");
 	assert_eq!(retried.step, max_steps);
 	assert!(
 		Harness {
@@ -1033,7 +1062,7 @@ async fn empty_media_observation_consumes_the_last_available_step(
 		.unwrap()
 	);
 	let bounded = f.store.run(run.id).await.unwrap();
-	assert_eq!(bounded.pending["terminal_transition"], "FAILED");
+	assert_eq!(json!(bounded.state)["data"]["target"], "FAILED");
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1084,9 +1113,9 @@ async fn reference_only_inputs_suppress_uninformed_tool_calls(
 	tx.commit().await.unwrap();
 	let worker = Uuid::new_v4();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
-	leased.phase = "TOOL_CALL".into();
-	leased.context["media_inferred_seq"] = json!(input.seq);
-	leased.pending = json!({
+
+	json!(leased.context)["media_inferred_seq"] = json!(input.seq);
+	leased.state = aidash::domain::RunState::ToolCall(Box::new(common::tool_call(json!({
 		"included_input_seq":input.seq,
 		"media_inferred_seq_before_response":0,
 		"observed_input_seq_before_response":0,
@@ -1095,7 +1124,7 @@ async fn reference_only_inputs_suppress_uninformed_tool_calls(
 		"references_read_at_inference":false,
 		"response":{"text":"uninformed text","tool_calls":[{"id":"mutating-call","name":"workspace_message","arguments":{"content":"uninformed side effect"}}],"input_tokens":1,"output_tokens":1,"usage_complete":true},
 		"cursor":0
-	});
+	}))));
 	f.store
 		.save_run(&leased, worker, "model.completed")
 		.await
@@ -1110,11 +1139,11 @@ async fn reference_only_inputs_suppress_uninformed_tool_calls(
 		.unwrap()
 	);
 	let current = f.store.run(run.id).await.unwrap();
-	assert_eq!(current.phase, "THINKING");
-	assert!(current.pending.get("response").is_none());
-	assert_eq!(current.context["media_inferred_seq"], 0);
+	assert_eq!(current.phase().as_str(), "THINKING");
+	assert!(json!(current.state)["data"].get("response").is_none());
+	assert_eq!(json!(current.context)["media_inferred_seq"], 0);
 	assert_eq!(
-		current.pending["deferred_run_message_reads"],
+		json!(current.state)["data"]["deferred_run_message_reads"],
 		json!([input.message_id.unwrap()])
 	);
 	assert_eq!(current.step, leased.step + 1);
@@ -1174,7 +1203,9 @@ async fn effects_recheck_input_sequence_under_the_run_lock(
 		.unwrap();
 	let worker = Uuid::new_v4();
 	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
-	leased.pending = json!({"included_input_seq":previously_observed});
+	leased.state = aidash::domain::RunState::ToolCall(Box::new(common::tool_call(
+		json!({"included_input_seq":previously_observed}),
+	)));
 	assert!(matches!(
 		aidash::federation::Home::new(f.clone(), run.clone())
 			.response_message(
@@ -1364,8 +1395,8 @@ async fn scoped_run_never_infers_from_an_unreadable_message(
 	);
 	assert!(worker.worker_once().await.unwrap());
 	let paused = f.store.run(run.id).await.unwrap();
-	assert_eq!(paused.control, "PAUSED");
-	assert_eq!(paused.phase, "THINKING");
+	assert_eq!(paused.control.as_str(), "PAUSED");
+	assert_eq!(paused.phase().as_str(), "THINKING");
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1395,16 +1426,26 @@ async fn queued_terminal_transitions_reject_new_run_messages(
 			})
 			.unwrap();
 		if *terminal == "cancel" {
-			f.store.control(run.id, "cancel").await.unwrap();
+			f.store
+				.control(run.id, aidash::domain::RunControlAction::Cancel)
+				.await
+				.unwrap();
 		} else {
 			sqlx::query(
 				&sea_orm::sea_query::Query::update()
 					.table(sea_orm::sea_query::Alias::new("runs"))
+					.value(sea_orm::sea_query::Alias::new("phase"), "WAITING")
 					.value(
 						sea_orm::sea_query::Alias::new("pending"),
-						sea_orm::sea_query::Expr::cust(
-							"'{\"terminal_transition\":\"FAILED\"}'::jsonb",
-						),
+						sea_orm::sea_query::Expr::val(common::pending(
+							aidash::domain::RunState::Waiting(Box::new(
+								aidash::domain::WaitingState::FailureDelivery {
+									target: aidash::domain::FailureTarget::Failed,
+									wake_at: chrono::Utc::now(),
+									last_delivery_error: None,
+								},
+							)),
+						)),
 					)
 					.and_where(sea_orm::sea_query::Expr::cust("id = $1"))
 					.to_string(sea_orm::sea_query::PostgresQueryBuilder),
@@ -1479,7 +1520,7 @@ async fn expired_worker_lease_cannot_begin_final_completion(
 	)
 	.bind(run.id)
 	.bind(worker)
-	.bind(json!({"response":{"text":"answer","tool_calls":[],"input_tokens":1,"output_tokens":1},"cursor":0}))
+	.bind(common::tool_pending(json!({"response":{"text":"answer","tool_calls":[],"input_tokens":1,"output_tokens":1},"cursor":0})))
 	.execute(&f.store.pool)
 	.await
 	.unwrap();
@@ -1489,7 +1530,7 @@ async fn expired_worker_lease_cannot_begin_final_completion(
 		Err(aidash::Error::Conflict(_))
 	));
 	assert_ne!(
-		f.store.run(run.id).await.unwrap().pending["finalizing"],
+		json!(f.store.run(run.id).await.unwrap().state)["data"]["finalizing"],
 		true
 	);
 	cleanup(f, &url, &schema).await;

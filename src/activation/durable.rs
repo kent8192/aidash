@@ -80,7 +80,7 @@ pub(super) enum Handoff {
 pub(super) async fn claim(store: &Store, envelope: &Envelope, seconds: i32) -> Result<Handoff> {
 	let mut tx = store.pool.begin().await?;
 	// All paths lock Run before activation; publishers never lock Runs.
-	let run: Option<Run> = sqlx::query_as(
+	let run: Option<crate::domain::run_state::RawRun> = sqlx::query_as(
 		&Query::select()
 			.expr(Expr::cust("*"))
 			.from(a("runs"))
@@ -115,7 +115,7 @@ pub(super) async fn claim(store: &Store, envelope: &Envelope, seconds: i32) -> R
 		tx.commit().await?;
 		return Ok(Handoff::Recorded);
 	};
-	if ["COMPLETED", "FAILED", "CANCELLED"].contains(&run.phase.as_str()) {
+	if run.phase().is_terminal() {
 		settle(&mut tx, row.id, "terminal").await?;
 		tx.commit().await?;
 		return Ok(Handoff::Recorded);
@@ -145,7 +145,16 @@ pub(super) async fn claim(store: &Store, envelope: &Envelope, seconds: i32) -> R
 		}
 	}
 	let token = Uuid::new_v4();
-	if let Some(run) = Store::lease_run_in(&mut tx, token, seconds, Some(run.id)).await? {
+	if let Some(run) = Store::lease_run_in(
+		&mut tx,
+		token,
+		seconds,
+		Some(run.id),
+		&store.node_id,
+		&mut None,
+	)
+	.await?
+	{
 		sqlx::query(
 			&Query::update()
 				.table(a("run_activations"))
@@ -176,15 +185,23 @@ pub(super) async fn claim(store: &Store, envelope: &Envelope, seconds: i32) -> R
 	}
 	// Re-evaluate explicit blockers using DB time. NULL means a durable unblock
 	// trigger owns the next attempt (pause, area/order, human response).
-	let due: Option<DateTime<Utc>> = sqlx::query_scalar(&Query::select().expr(Expr::cust(
-        "CASE WHEN control = 'PAUSED' THEN NULL ELSE GREATEST(\
-         CASE WHEN lease_until > CURRENT_TIMESTAMP THEN lease_until END, \
-         CASE WHEN (pending->>'retry_at')::timestamptz > CURRENT_TIMESTAMP THEN (pending->>'retry_at')::timestamptz END, \
-         CASE WHEN phase = 'WAITING' THEN LEAST(\
-           CASE WHEN (pending->>'wake_at')::timestamptz > CURRENT_TIMESTAMP THEN (pending->>'wake_at')::timestamptz END,\
-           (SELECT expires_at FROM core_records WHERE id::text = runs.pending->>'core_approval_id' AND state = 'pending' AND expires_at > CURRENT_TIMESTAMP)) END) END"
-    )).from(a("runs")).and_where(Expr::col(a("id")).eq(run.id)).to_string(PostgresQueryBuilder))
-        .fetch_one(&mut *tx).await?;
+	let now: DateTime<Utc> = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("CURRENT_TIMESTAMP"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *tx)
+	.await?;
+	let refreshed: crate::domain::run_state::RawRun = sqlx::query_as(
+		&Query::select()
+			.column(sea_orm::sea_query::Asterisk)
+			.from(a("runs"))
+			.and_where(Expr::col(a("id")).eq(run.id))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *tx)
+	.await?;
+	let due = Store::state_due_in(&mut tx, &refreshed, now, &store.node_id).await?;
 	sqlx::query(
 		&Query::update()
 			.table(a("run_activations"))
@@ -345,7 +362,10 @@ pub(super) async fn published(store: &Store, row: &Obligation, token: Uuid) -> R
 pub(super) async fn recover(store: &Store, seconds: i32) -> Result<Option<(Run, Uuid)>> {
 	let mut tx = store.pool.begin().await?;
 	let token = Uuid::new_v4();
-	let Some(run) = Store::lease_run_in(&mut tx, token, seconds, None).await? else {
+	let mut cursor = store.recovery_cursors.execution.lock().await;
+	let Some(run) =
+		Store::lease_run_in(&mut tx, token, seconds, None, &store.node_id, &mut cursor).await?
+	else {
 		tx.commit().await?;
 		return Ok(None);
 	};
