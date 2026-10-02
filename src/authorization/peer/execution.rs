@@ -15,10 +15,14 @@ use std::collections::BTreeMap;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct InspectInput {
+	#[serde(default)]
+	pub task_id: Option<uuid::Uuid>,
 	pub tenant: String,
 	pub subject: String,
 	pub agent: EntityRef,
 	pub requirements: Search,
+	#[serde(default)]
+	pub compactor: Option<EntityRef>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -31,10 +35,33 @@ pub(crate) struct Definition {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Inspection {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub generation: Option<serde_json::Value>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub lineage: Vec<crate::generation::remote::Ancestor>,
 	pub node_id: String,
 	pub authority_digest: String,
 	pub agent: Entry,
 	pub definitions: Vec<Definition>,
+	#[serde(default, skip_serializing_if = "zero")]
+	pub semantic_memory: u32,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub compactor: Option<EntityRef>,
+}
+fn zero(value: &u32) -> bool {
+	*value == 0
+}
+impl Inspection {
+	pub(crate) fn satisfies(&self, pinned: &Self) -> bool {
+		self.generation == pinned.generation
+			&& self.lineage == pinned.lineage
+			&& self.node_id == pinned.node_id
+			&& self.authority_digest == pinned.authority_digest
+			&& self.agent == pinned.agent
+			&& self.definitions == pinned.definitions
+			&& self.compactor == pinned.compactor
+			&& (pinned.semantic_memory == 0 || self.semantic_memory == pinned.semantic_memory)
+	}
 }
 
 async fn definition(
@@ -95,6 +122,8 @@ pub(crate) async fn inspect_in(
 	{
 		return Err(Error::Forbidden);
 	}
+	let generation =
+		crate::generation::foreign::inspect(access, node, input.task_id, &input.agent).await?;
 	access.subjects.push(executor);
 	access.require(&resource, "federation.execute").await?;
 	let mut definitions = BTreeMap::new();
@@ -106,6 +135,10 @@ pub(crate) async fn inspect_in(
 		&mut definitions,
 	)
 	.await?;
+	if !crate::marketplace::active(access, &entry).await? {
+		return Err(Error::Forbidden);
+	}
+	crate::marketplace::check_pinned(access, &entry).await?;
 	if !input.requirements.matches(&entry) {
 		return Err(Error::Invalid(
 			"executor does not satisfy task requirements".into(),
@@ -136,12 +169,26 @@ pub(crate) async fn inspect_in(
 		)
 		.await?;
 	}
+	if let Some(compactor) = &input.compactor {
+		definition(
+			access,
+			compactor,
+			"compactor",
+			"compaction.invoke",
+			&mut definitions,
+		)
+		.await?;
+	}
 	Ok(Inspection {
+		generation,
+		lineage: crate::generation::remote::lineage(access, &f.config.node_id).await?,
 		node_id: f.config.node_id.clone(),
 		authority_digest: digest(
 			&json!({"source_node":node,"source_tenant":input.tenant,"source_subject":input.subject,"tenant":access.identity.tenant,"credential_id":access.identity.credential_id,"subjects":access.subjects}),
 		),
 		agent: entry,
 		definitions: definitions.into_values().collect(),
+		semantic_memory: crate::semantic::remote::VERSION,
+		compactor: input.compactor.clone(),
 	})
 }

@@ -2,9 +2,11 @@ pub mod api;
 pub(crate) mod budget;
 pub(crate) mod compaction;
 pub(crate) mod embedding;
+pub(crate) mod foreign;
 pub mod lifecycle;
 pub mod policy;
 pub mod provision;
+pub mod remote;
 
 use crate::{
 	Error, Result,
@@ -31,6 +33,13 @@ pub struct Request {
 	pub policy_id: String,
 	pub policy_revision: i64,
 	pub task_id: Uuid,
+	pub home_node: String,
+	#[serde(skip_serializing)]
+	#[schema(ignore)]
+	pub(crate) foreign_intent: Option<Value>,
+	pub prepared: bool,
+	pub grant_id: Option<Uuid>,
+	pub admission_id: Option<Uuid>,
 	pub workspace_id: Uuid,
 	#[serde(skip_serializing)]
 	#[schema(ignore)]
@@ -127,7 +136,9 @@ pub(crate) async fn assign_in(
 				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
 			))
 			.from(sea_orm::sea_query::Alias::new("generation_requests"))
-			.and_where(sea_orm::sea_query::Expr::cust("task_id = $1"))
+			.and_where(sea_orm::sea_query::Expr::cust(
+				"task_id = $1 AND home_node=''",
+			))
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
 	)
 	.bind(task_id)
@@ -272,6 +283,20 @@ pub(crate) async fn assign_in(
 			return Ok(Assignment::Existing { delegation });
 		}
 	}
+	create_in(f, access, &task, policy, reason, None).await
+}
+
+pub(crate) async fn create_in(
+	f: &Federation,
+	access: &mut Access,
+	task: &Task,
+	policy: policy::Policy,
+	reason: &str,
+	foreign: Option<&foreign::Intent>,
+) -> Result<Assignment> {
+	let task_id = task.id;
+	let policy_id = policy.id.as_str();
+	let search: Search = serde_json::from_value(task.requirements.clone())?;
 	if !policy.spec.enabled {
 		return Err(Error::Forbidden);
 	}
@@ -311,7 +336,9 @@ pub(crate) async fn assign_in(
 	.bind(&access.subjects)
 	.fetch_one(&mut **access.tx)
 	.await?;
-	let depth = previous_depth.unwrap_or(0) + 1;
+	let depth = previous_depth.unwrap_or(0).max(foreign.map_or(0, |intent| {
+		intent.lineage.iter().map(|a| a.depth).max().unwrap_or(0)
+	})) + 1;
 	let limits = &policy.spec.limits;
 	let active: i64 = sqlx::query_scalar(
 		&sea_orm::sea_query::Query::select()
@@ -328,25 +355,26 @@ pub(crate) async fn assign_in(
 	.await?;
 	let compaction_calls = policy
 		.spec
-		.compaction
-		.as_ref()
-		.map_or(0, |c| c.calls_per_agent);
-	let embedding_calls = policy
+		.compaction_limits()
+		.map_or(0, |(calls, _)| calls);
+	let embedding_calls = policy.spec.embedding_limits().map_or(0, |(calls, _)| calls);
+	if policy
 		.spec
-		.embedding
-		.as_ref()
-		.map_or(0, |c| c.calls_per_agent);
-	if policy.spec.compaction.as_ref().is_some_and(|c| {
-		policy
-			.allocated_compaction_calls
-			.checked_add(c.calls_per_agent)
-			.is_none_or(|n| n > c.call_budget)
-	}) || policy.spec.embedding.as_ref().is_some_and(|c| {
-		policy
-			.allocated_embedding_calls
-			.checked_add(c.calls_per_agent)
-			.is_none_or(|n| n > c.call_budget)
-	}) || policy.generated_count >= limits.max_agents
+		.compaction_limits()
+		.is_some_and(|(calls, budget)| {
+			policy
+				.allocated_compaction_calls
+				.checked_add(calls)
+				.is_none_or(|n| n > budget)
+		}) || policy
+		.spec
+		.embedding_limits()
+		.is_some_and(|(calls, budget)| {
+			policy
+				.allocated_embedding_calls
+				.checked_add(calls)
+				.is_none_or(|n| n > budget)
+		}) || policy.generated_count >= limits.max_agents
 		|| active >= limits.max_concurrent
 		|| depth > limits.max_depth
 		|| access.subjects.len() >= 32
@@ -398,6 +426,8 @@ pub(crate) async fn assign_in(
 				sea_orm::sea_query::Alias::new("depth"),
 				sea_orm::sea_query::Alias::new("token_limit"),
 				sea_orm::sea_query::Alias::new("expires_at"),
+				sea_orm::sea_query::Alias::new("home_node"),
+				sea_orm::sea_query::Alias::new("foreign_intent"),
 			])
 			.values_panic([
 				sea_orm::sea_query::Expr::cust("$1"),
@@ -417,6 +447,8 @@ pub(crate) async fn assign_in(
 				sea_orm::sea_query::Expr::cust("$15"),
 				sea_orm::sea_query::Expr::cust("$16"),
 				sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP() + MAKE_INTERVAL(secs => $17)"),
+				sea_orm::sea_query::Expr::cust("$18"),
+				sea_orm::sea_query::Expr::cust("$19"),
 			])
 			.returning_all()
 			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
@@ -437,7 +469,13 @@ pub(crate) async fn assign_in(
 	.bind(reason)
 	.bind(depth)
 	.bind(limits.tokens_per_agent)
-	.bind(limits.lifetime_seconds as f64)
+	.bind(foreign.map_or(limits.lifetime_seconds, |intent| {
+		(intent.expires_at - chrono::Utc::now())
+			.num_seconds()
+			.min(limits.lifetime_seconds)
+	}) as f64)
+	.bind(foreign.map_or("", |intent| intent.home_node.as_str()))
+	.bind(foreign.map(serde_json::to_value).transpose()?)
 	.fetch_one(&mut **access.tx)
 	.await?;
 	sqlx::query(
@@ -515,14 +553,16 @@ pub(crate) async fn assign_in(
 	.bind(reason)
 	.execute(&mut **access.tx)
 	.await?;
-	f.store
-		.event(
-			&mut access.tx,
-			Some(task.workspace_id),
-			"generation.requested",
-			json!({"id":id,"task_id":task_id,"policy_id":policy_id,"status":status}),
-		)
-		.await?;
+	if foreign.is_none() {
+		f.store
+			.event(
+				&mut access.tx,
+				Some(task.workspace_id),
+				"generation.requested",
+				json!({"id":id,"task_id":task_id,"policy_id":policy_id,"status":status}),
+			)
+			.await?;
+	}
 	if !generated.visible(access).await? {
 		return Err(Error::Forbidden);
 	}

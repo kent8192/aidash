@@ -83,8 +83,8 @@ boundary. Results carry source IDs/revisions and embedding model/version. They f
 the remaining inference budget and are supplied as data in `semantic_memory`. Scoped
 runs persist read dependencies before inference. Source deletion, revision changes, or
 permission withdrawal hide dependent run journals and pause the next execution boundary.
-Existing remote legacy execution does not acquire implicit cross-node source authority;
-scoped semantic federation remains part of the broader federation integration gate.
+Existing remote grants remain disabled for retrieval. Scoped remote execution can
+explicitly require Home retrieval as described below.
 
 Generated Agents additionally need an approved, immutable `embedding` Registry provider
 in their pinned generation policy, matching the workspace index configuration exactly.
@@ -93,6 +93,87 @@ embeddings and background memory indexing. Live authority, expiry, catalog appro
 `embedding.invoke` are rechecked before each call. Failed or interrupted attempts remain
 charged, and unapproved providers are rejected before disclosure. The bilingual Registry
 and generation forms expose this contract; see [approved embeddings](generation.md#approved-embeddings).
+
+## Scoped remote execution
+
+Home Node A owns the Task, Workspace, semantic sources, index, embedding provider
+and Qdrant configuration. Execution Node B runs the exact admitted Agent version.
+Create the Home grant with `semantic.mode: "required_home"` and the approved Home
+embedding Registry reference, then activate it through the existing scoped execution
+API. The dashboard's **Assign agent** form exposes this selection; retrieval is
+initially disabled. An explicit compactor reference is optional and belongs to B.
+
+```json
+{
+  "id": "c46f3cba-41fa-4009-b2d5-9267fdf6e48a",
+  "node_id": "aidash://execution",
+  "agent": { "id": "research", "version": "1.0.0" },
+  "ttl_seconds": 3600,
+  "semantic": {
+    "mode": "required_home",
+    "embedding": { "id": "home-embedding", "version": "1.0.0" },
+    "compactor": { "id": "approved-compactor", "version": "1.0.0" }
+  }
+}
+```
+
+The grant pins the index revision and digest, complete embedding configuration,
+execution model, optional compactor and generated ancestry at both nodes. Home
+requires `semantic.disclose` in addition to search/read authority. B requires
+`semantic.use` under its mapped subject and exact executor. Both peers must
+advertise the supported scoped semantic protocol. Provider credentials remain at
+the node that dispatches the provider request; no subject bearer is forwarded.
+
+Before each task inference, B fixes its query inputs and operation ID durably. A
+searches authorized shared sources and sources scoped to **B's node/id/version**.
+It does not search B's local store. Source-class controls, tenant/workspace scope,
+metadata, current read authority, context budget and provider contract all apply.
+A persists consumed source IDs, revisions and digests; B persists the receipt
+before supplying its text to compaction or inference. Empty, truncated and ready
+outcomes are distinct. Empty retrieval makes no query embedding request. Replaying
+an empty receipt rechecks the candidate set. Old vectors cannot provide text.
+
+Both nodes recheck current authority before disclosure, provider use, output adoption
+and subsequent content delivery. The current reader needs a direct subject mapping
+at every authority node; the producer's credential never substitutes for that reader.
+Node-qualified dependency traversal detects cycles and has a 256-edge limit and a
+20-second total transport deadline. An unavailable authority withholds content.
+Installation-operator views cannot supply this tenant identity, so content views of
+workspaces bound to required Home retrieval require a Subject credential. Minimal
+Run pause/cancel metadata remains available without exposing a journal or source.
+
+Retrieval is read-only: remote `memory_write` is neither advertised nor accepted.
+Home ingestion retains its own initiating identity and generated budget. Compaction
+uses only the explicitly selected B provider, with every generated ancestor's
+approval; there is no environment-selected fallback for this remote path.
+
+Temporary retrieval failures persist retry times: the initial attempt is followed
+by at most five retries after 2, 4, 8, 16 and 32 seconds. Exhaustion pauses the Run.
+Configuration, authority, budget and provider-contract failures pause immediately.
+Explicit Home retry starts another bounded cycle only if the original binding is
+still valid; it does not renew a grant or generation lifetime. Dispatched attempts
+are never replayed, and uncertain provider charges remain reserved. See
+[remote generation accounting](generation.md#foreign-tasks-and-origin-owned-allowances).
+
+Changing or deleting a consumed source invalidates the original Run and hides its
+derived journals, Messages, Artifacts, events and semantic re-ingestion at both nodes.
+Dependencies survive context pruning and summaries. The Home dashboard offers an
+explicit **Create follow-up task** action with fresh instructions; it creates a new
+Task and does not copy invalid context. It cannot resume the invalidated Run.
+
+Home execution summaries are under `GET /api/tasks/{task}/remote-executions`.
+Authorized provenance is under `GET /api/tasks/{task}/remote-grants/{grant}/semantic`
+and `GET /api/runs/{run}/semantic` at B. These expose bounded source references and
+the serving node's authoritative generation counters, without source text. B's
+`GET/POST /api/runs/{run}/management` supports content-free pause/cancel only.
+Japanese and English views clear denied provenance on refresh and show typed pause
+reasons, retry times, local allowance consumption and appropriate controls.
+
+This is the selected combined FR-MEM-001 / section-12 scenario; every remote Agent
+is not required to search. Other integrated release gates remain separate. The
+[accepted specification](design/2026-09-30-remote-semantic-memory-specification.md)
+and [verification ledger](design/2026-09-30-remote-semantic-memory-implementation.md)
+record the contract and observed results.
 
 ## Recovery and visibility
 

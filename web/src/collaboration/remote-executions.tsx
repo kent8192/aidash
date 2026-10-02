@@ -1,3 +1,4 @@
+import { RemoteMemoryStatus, RemoteFollowUp } from "./remote-memory";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { RemoteExecutionStatus } from "../generated/models";
@@ -49,117 +50,134 @@ export function RemoteExecutions({ task }: { task: string }) {
       <button type="button" onClick={() => void status.refetch()}>
         {ja ? "状態を再読み込み" : "Refresh status"}
       </button>
-      {status.data?.map(({ grant, execution, unavailable }) => {
-        const expired =
-          Date.parse(grant.expires_at) <=
-          (clock.data ?? Number.POSITIVE_INFINITY);
-        const live = !grant.revoked && !expired;
-        const terminal =
-          execution &&
-          ["COMPLETED", "FAILED", "CANCELLED"].includes(execution.phase);
-        return (
-          <article className="detail-section" key={grant.id}>
-            <p>{grant.node_id}</p>
-            <p>
-              {grant.agent.id}@{grant.agent.version}
-            </p>
-            <dl>
-              <dt>{ja ? "許可" : "Grant"}</dt>
-              <dd>
-                {grant.revoked
-                  ? ja
-                    ? "取り消し済み"
-                    : "Revoked"
-                  : expired
+      {(!status.isError ? status.data : undefined)?.map(
+        ({ grant, execution, unavailable, semantic }) => {
+          const expired =
+            Date.parse(grant.expires_at) <=
+            (clock.data ?? Number.POSITIVE_INFINITY);
+          const live = !grant.revoked && !expired;
+          const terminal =
+            execution &&
+            ["COMPLETED", "FAILED", "CANCELLED"].includes(execution.phase);
+          return (
+            <article className="detail-section" key={grant.id}>
+              <p>{grant.node_id}</p>
+              <p>
+                {grant.agent.id}@{grant.agent.version}
+              </p>
+              <dl>
+                <dt>{ja ? "許可" : "Grant"}</dt>
+                <dd>
+                  {grant.revoked
                     ? ja
-                      ? "期限切れ"
-                      : "Expired"
-                    : ja
-                      ? "有効"
-                      : "Valid"}
-                <code>{grant.id}</code>
-              </dd>
-              <dt>{ja ? "有効期限" : "Expires"}</dt>
-              <dd>{new Date(grant.expires_at).toLocaleString(locale)}</dd>
-              {execution && (
-                <>
-                  <dt>{ja ? "受信・実行 ID" : "Admission / run ID"}</dt>
-                  <dd>
-                    <code>{execution.admission_id}</code>
-                  </dd>
-                  <dt>{ja ? "実行状態" : "Execution state"}</dt>
-                  <dd>
-                    <Badge value={execution.phase} />
-                    <Badge value={execution.control} />
-                  </dd>
-                </>
-              )}
-            </dl>
-            {unavailable && (
-              <p role="status">
-                {ja
-                  ? "相手ノードに接続できません。再読み込みで状態を確認できます。"
-                  : "The destination is unavailable. Refresh to reconcile its durable state."}
-              </p>
-            )}
-            {execution?.error && (
-              <p role="alert">
-                {ja
-                  ? "実行の確認が必要です。現在の権限と接続を確認してから再開してください。"
-                  : execution.error}
-              </p>
-            )}
-            {!terminal && (
-              <div className="button-row">
-                {live && (!execution || execution.phase === "ADMITTED") && (
-                  <button
-                    disabled={busy === grant.id}
-                    onClick={() => void act(grant.id, "activate")}
-                  >
-                    {ja ? "起動を再試行" : "Retry activation"}
-                  </button>
-                )}
-                {execution && execution.phase !== "ADMITTED" && (
+                      ? "取り消し済み"
+                      : "Revoked"
+                    : expired
+                      ? ja
+                        ? "期限切れ"
+                        : "Expired"
+                      : ja
+                        ? "有効"
+                        : "Valid"}
+                  <code>{grant.id}</code>
+                </dd>
+                <dt>{ja ? "有効期限" : "Expires"}</dt>
+                <dd>{new Date(grant.expires_at).toLocaleString(locale)}</dd>
+                {execution && (
                   <>
-                    {live && execution.control === "PAUSED" && (
-                      <button
-                        disabled={busy === grant.id}
-                        onClick={() => void act(grant.id, "resume")}
-                      >
-                        {ja
-                          ? "権限を再確認して再開"
-                          : "Recheck authority and resume"}
-                      </button>
-                    )}
-                    {execution.control === "ACTIVE" && (
-                      <button
-                        disabled={busy === grant.id}
-                        onClick={() => void act(grant.id, "pause")}
-                      >
-                        {ja ? "一時停止" : "Pause"}
-                      </button>
-                    )}
-                    {execution.control !== "CANCELLED" && (
-                      <button
-                        disabled={busy === grant.id}
-                        onClick={() => void act(grant.id, "cancel")}
-                      >
-                        {ja ? "実行を中止" : "Cancel execution"}
-                      </button>
-                    )}
+                    <dt>{ja ? "受信・実行 ID" : "Admission / run ID"}</dt>
+                    <dd>
+                      <code>{execution.admission_id}</code>
+                    </dd>
+                    <dt>{ja ? "実行状態" : "Execution state"}</dt>
+                    <dd>
+                      <Badge value={execution.phase} />
+                      <Badge value={execution.control} />
+                    </dd>
                   </>
                 )}
-              </div>
-            )}
-            {live &&
-              !terminal &&
-              execution &&
-              execution.phase !== "ADMITTED" && (
-                <RemoteMessage task={task} grant={grant.id} />
+              </dl>
+              {semantic && (
+                <RemoteMemoryStatus
+                  status={semantic}
+                  provenanceUrl={`/api/tasks/${task}/remote-grants/${grant.id}/semantic`}
+                />
               )}
-          </article>
-        );
-      })}
+              {semantic?.reason === "invalidated" && (
+                <RemoteFollowUp
+                  task={task}
+                  grant={grant.id}
+                  onCreated={() => client.invalidateQueries()}
+                />
+              )}
+              {unavailable && (
+                <p role="status">
+                  {ja
+                    ? "相手ノードに接続できません。再読み込みで状態を確認できます。"
+                    : "The destination is unavailable. Refresh to reconcile its durable state."}
+                </p>
+              )}
+              {execution?.error && (
+                <p role="alert">
+                  {ja
+                    ? "実行の確認が必要です。現在の権限と接続を確認してから再開してください。"
+                    : execution.error}
+                </p>
+              )}
+              {!terminal && (
+                <div className="button-row">
+                  {live && (!execution || execution.phase === "ADMITTED") && (
+                    <button
+                      disabled={busy === grant.id}
+                      onClick={() => void act(grant.id, "activate")}
+                    >
+                      {ja ? "起動を再試行" : "Retry activation"}
+                    </button>
+                  )}
+                  {execution && execution.phase !== "ADMITTED" && (
+                    <>
+                      {live &&
+                        execution.control === "PAUSED" &&
+                        semantic?.reason !== "invalidated" && (
+                          <button
+                            disabled={busy === grant.id}
+                            onClick={() => void act(grant.id, "resume")}
+                          >
+                            {ja
+                              ? "権限を再確認して再開"
+                              : "Recheck authority and resume"}
+                          </button>
+                        )}
+                      {execution.control === "ACTIVE" && (
+                        <button
+                          disabled={busy === grant.id}
+                          onClick={() => void act(grant.id, "pause")}
+                        >
+                          {ja ? "一時停止" : "Pause"}
+                        </button>
+                      )}
+                      {execution.control !== "CANCELLED" && (
+                        <button
+                          disabled={busy === grant.id}
+                          onClick={() => void act(grant.id, "cancel")}
+                        >
+                          {ja ? "実行を中止" : "Cancel execution"}
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+              {live &&
+                !terminal &&
+                execution &&
+                execution.phase !== "ADMITTED" && (
+                  <RemoteMessage task={task} grant={grant.id} />
+                )}
+            </article>
+          );
+        },
+      )}
     </section>
   );
 }

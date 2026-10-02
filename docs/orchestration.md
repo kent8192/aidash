@@ -136,7 +136,21 @@ Japanese; native Kubernetes diagnostic messages retain their original text.
 An observation failure hides old successful observations and shows an error.
 The page remains available while an atomic transaction blocks ordinary reads.
 
-Atomic-manifest recovery has a separate acceptance profile: `scripts/test-cluster.sh kubernetes transactions` and `scripts/test-cluster.sh k3s transactions`. It uses independent Node databases, real Pod replacement at durable cuts, worker scaling and same-version rolling replacement, retaining case traces and durable diagnostics in `.ignore/transaction-acceptance/`. The CI matrix runs both the platform and transaction profiles. See the [transaction evidence register](operations/transaction-acceptance.md); these functional fixtures do not establish mixed-version compatibility, availability or restore targets.
+Atomic-manifest recovery has a separate acceptance profile: `scripts/test-cluster.sh kubernetes transactions` and `scripts/test-cluster.sh k3s transactions`. It uses independent Node databases, real Pod replacement at durable cuts, worker scaling and same-version rolling replacement, retaining case traces and durable diagnostics in `.ignore/transaction-acceptance/`. The CI matrix runs the platform, transaction and remote-memory profiles. See the [transaction evidence register](operations/transaction-acceptance.md); these functional fixtures do not establish mixed-version compatibility, availability or restore targets.
+
+The remote-memory profile is `scripts/test-cluster.sh kubernetes remote-memory`
+or `scripts/test-cluster.sh k3s remote-memory`. It provisions two HTTP Nodes with
+separate PostgreSQL databases, persistent Qdrant and deterministic providers. It
+kills the ordinary executor during inference, then generates a Home ancestor that
+creates a real child Task and prepares the child Agent at B. After approval it
+kills Home during a reserved embedding request, holds the outage until a durable
+retry, restarts both servers/worker and Qdrant, and verifies lineage, receipts,
+unknown charges and source-invalidation controls. Production leases expire
+naturally. Only this run's namespace and cluster are removed. `remote-memory.json`,
+provider requests, source/image identities and server logs are retained under
+`.ignore/transaction-acceptance/` and uploaded by the matching CI jobs. These are
+semantic execution recovery cases; the other section-12 acceptance gates remain
+separate.
 
 The observer has namespaced `list` access only to Deployments, Pods and Events,
 and returns resources for its configured Helm release. Only Aidash operators can

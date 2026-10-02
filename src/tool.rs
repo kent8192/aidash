@@ -341,13 +341,15 @@ impl Tool for Builtin {
 				let registry =
 					crate::registry::Registry::new(ctx.store.pool.clone(), &ctx.store.node_id);
 				let agent = registry
-					.get(&ctx.run.agent_id, &ctx.run.agent_version)
+					.get_for_run(&ctx.run, &ctx.run.agent_id, &ctx.run.agent_version)
 					.await?;
 				let config: crate::registry::AgentConfig = serde_json::from_value(agent.config)?;
 				if !config.skills.contains(&reference) {
 					return Err(Error::Forbidden);
 				}
-				let skill = registry.get(&reference.id, &reference.version).await?;
+				let skill = registry
+					.get_for_run(&ctx.run, &reference.id, &reference.version)
+					.await?;
 				let file = crate::registry::skill_files(&skill)?
 					.into_iter()
 					.find(|file| file.path == path)

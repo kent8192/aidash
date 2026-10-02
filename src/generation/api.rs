@@ -18,6 +18,8 @@ use uuid::Uuid;
 
 pub fn routes() -> OpenApiRouter<Federation> {
 	OpenApiRouter::new()
+		.routes(routes!(super::foreign::request))
+		.routes(routes!(super::foreign::cancel))
 		.routes(routes!(set_policy))
 		.routes(routes!(policies))
 		.routes(routes!(assign))
@@ -427,7 +429,7 @@ async fn usage(
 		))
 		.expr_as(
 			sea_orm::sea_query::Expr::cust(
-				"(SELECT COUNT(*) FROM generation_usage AS u WHERE u.request_id = r.id)",
+				"(SELECT COUNT(*) FROM generation_usage AS u WHERE u.request_id = r.id) + (SELECT COUNT(*) FROM generation_remote_usage AS u WHERE u.request_id = r.id AND u.purpose='inference' AND u.state<>'RELEASED')",
 			),
 			sea_orm::sea_query::Alias::new("inference_attempts"),
 		)

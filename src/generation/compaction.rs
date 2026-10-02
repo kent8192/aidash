@@ -18,11 +18,93 @@ pub(crate) struct ApprovedCompactor {
 	pub store: Store,
 	pub run: Run,
 	pub client: reqwest::Client,
+	pub remote: Option<crate::federation::Federation>,
+}
+
+impl ApprovedCompactor {
+	async fn ask_remote(
+		&self,
+		f: &crate::federation::Federation,
+		state: &Value,
+		questions: &Questions,
+	) -> Result<Value> {
+		use crate::semantic::remote::{Binding, Failure};
+		use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+		let mut access = self.access.lock().await;
+		access.suspend().await?;
+		let (fresh, _) = crate::authorization::peer::admission::worker_lease(f, &self.run)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		*access = fresh;
+		let description: Value = sqlx::query_scalar(
+			&Query::select()
+				.column(Alias::new("description"))
+				.from(Alias::new("authorization_remote_admissions"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+				.to_string(PostgresQueryBuilder),
+		)
+		.bind(self.run.id)
+		.fetch_one(&mut **access.tx)
+		.await?;
+		let description: crate::authorization::remote::Description =
+			serde_json::from_value(description)?;
+		let Binding::RequiredHome {
+			compactor: Some(approved),
+			..
+		} = description.semantic
+		else {
+			return Err(Error::RemoteSemantic(Failure::ContextBudget));
+		};
+		let entry = catalog::entry(&mut access, &approved.entry, "compaction.invoke").await?;
+		if approved.node_id != f.config.node_id
+			|| entry.kind != "compactor"
+			|| crate::registry::digest(&serde_json::to_value(&entry)?) != approved.digest
+			|| crate::registry::digest(&entry.config) != approved.configuration_digest
+		{
+			return Err(Error::RemoteSemantic(Failure::Configuration));
+		}
+		let config: CompactorConfig = serde_json::from_value(entry.config)
+			.map_err(|_| Error::RemoteSemantic(Failure::Configuration))?;
+		let reserved_tokens = (config.max_request_bytes + 1024) as i64;
+		let transport = JevClient::approved(config)
+			.map_err(|_| Error::RemoteSemantic(Failure::Configuration))?;
+		transport.check_remote_credential()?;
+		transport
+			.check_request(state, questions)
+			.map_err(|_| Error::RemoteSemantic(Failure::ContextBudget))?;
+		access.suspend().await?;
+		let reservation = super::remote::protocol::admit(
+			f,
+			&self.run,
+			Uuid::new_v4(),
+			super::remote::Purpose::Compaction,
+			crate::registry::digest(&serde_json::json!({"state":state,"questions":questions})),
+			reserved_tokens,
+		)
+		.await?;
+		let response = transport.ask_remote(state, questions).await;
+		super::remote::dispatch::finish(
+			f,
+			&reservation.input,
+			super::remote::Finalization::Settled { reported: None },
+		)
+		.await?;
+		let (fresh, _) = crate::authorization::peer::admission::worker_lease(f, &self.run)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		*access = fresh;
+		response
+	}
 }
 
 #[async_trait::async_trait]
 impl JevAsker for ApprovedCompactor {
 	async fn ask(&self, state: &Value, questions: &Questions) -> Result<Value> {
+		if let Some(f) = &self.remote {
+			return self.ask_remote(f, state, questions).await.map_err(|error| {
+				Error::RemoteSemantic(crate::authorization::remote::semantic::failure(&error))
+			});
+		}
 		let mut access = self.access.lock().await;
 		let jobs: Vec<(Uuid, Value)> = sqlx::query_as(
 			&sea_orm::sea_query::Query::select()

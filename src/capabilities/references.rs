@@ -354,6 +354,7 @@ async fn drive(store: &Store, id: Uuid) -> Result<()> {
 	.fetch_one(&store.pool)
 	.await?;
 	let identity = SubjectIdentity {
+		http_session: None,
 		credential_id: serde_json::from_value(snapshot.data["identity"]["credential_id"].clone())?,
 		tenant: snapshot.tenant.clone(),
 		subject: snapshot.owner.clone(),
