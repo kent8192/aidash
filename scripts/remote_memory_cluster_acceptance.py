@@ -250,9 +250,12 @@ class RemoteMemory(Cluster):
         assert len(self.captured("embedding_rejected")) == rejected + 1
         self.scale(1, "worker", 0)
         record["revoked"] = self.snapshot(task, run)
+        # A completed rolling update can still leave a terminating Home Pod
+        # eligible for kubectl's Service port-forward. Stop it fully before
+        # changing credentials so resume cannot reach its old configuration.
+        self.scale(0, "server", 0)
         self.kube("set", "env", "deployment/tx-0-server", "AIDASH_SECRET_TEST_REMOTE_EMBEDDING-")
-        self.rollout("tx-0-server")
-        self.ready(0)
+        self.scale(0, "server", 1)
         self.peers_ready()
         route = f"/api/tasks/{task}/remote-grants/{grant}/control"
         self.ok(self.user(0, route, {"action": "resume"}))
@@ -263,10 +266,10 @@ class RemoteMemory(Cluster):
         assert len(self.captured("embedding_rejected")) == rejected + 1
         self.scale(1, "worker", 0)
         record["missing"] = self.snapshot(task, run)
+        self.scale(0, "server", 0)
         for role in ("server", "worker"):
             self.kube("set", "env", f"deployment/tx-0-{role}", "AIDASH_SECRET_TEST_REMOTE_EMBEDDING=fixture-embedding-rotated")
-        self.rollout("tx-0-server")
-        self.ready(0)
+        self.scale(0, "server", 1)
         self.peers_ready()
         self.ok(self.user(0, route, {"action": "resume"}))
         self.scale(1, "worker", 1)
