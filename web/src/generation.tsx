@@ -1,3 +1,4 @@
+import { RemoteGenerationAssignForm } from "./remote-generation";
 import { RecordView } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
 import { useState, type FormEvent } from "react";
@@ -31,6 +32,7 @@ import type {
   GenerationPolicy,
   GenerationRequest,
   GenerationSpec,
+  GenerationRemoteApprovals,
 } from "./generated/models";
 import type { State, Task } from "./types";
 import { entityRef, type Submit } from "./forms";
@@ -461,7 +463,7 @@ function PolicyEditor({
   policy?: GenerationPolicy;
   save: (id: string, spec: GenerationSpec) => Promise<void>;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const entityLabel = useEntityLabel(entries);
   const [policyId] = useState(() => policy?.id ?? crypto.randomUUID());
   const initial = policy?.spec;
@@ -501,6 +503,9 @@ function PolicyEditor({
     }
     try {
       const attributes: unknown = JSON.parse(text("attributes"));
+      const remote: unknown = JSON.parse(text("remote_approvals"));
+      if (!remote || typeof remote !== "object" || Array.isArray(remote))
+        throw new Error(t("jsonHint"));
       if (
         !attributes ||
         typeof attributes !== "object" ||
@@ -538,6 +543,7 @@ function PolicyEditor({
         },
       };
       void save(id, {
+        remote: remote as GenerationRemoteApprovals,
         enabled: form.has("enabled"),
         approval_required: form.has("approval"),
         compaction: compactor
@@ -892,6 +898,32 @@ function PolicyEditor({
           {error}
         </p>
       )}
+      <details>
+        <summary>
+          {locale === "ja-JP"
+            ? "別 Node のプロバイダー承認"
+            : "Provider approvals at other nodes"}
+        </summary>
+        <p>
+          {locale === "ja-JP"
+            ? "所有 Node、定義のバージョンとダイジェストを固定します。embedding と compaction はそれぞれ呼び出し予算が必要です。空のオブジェクトは遠隔プロバイダーを許可しません。"
+            : "Pin each provider's owning node, version and digests. Embedding and compaction each require call allowances. An empty object grants no remote provider approval."}
+        </p>
+        <Field
+          label={
+            locale === "ja-JP"
+              ? "遠隔プロバイダー承認（JSON）"
+              : "Remote provider approvals (JSON)"
+          }
+        >
+          <textarea
+            name="remote_approvals"
+            defaultValue={JSON.stringify(initial?.remote ?? {}, null, 2)}
+            rows={10}
+            required
+          />
+        </Field>
+      </details>
       <button className="primary" disabled={!models.length && !model}>
         {t("save")}
       </button>
@@ -1030,6 +1062,16 @@ function RequestDetail({
               )}
             </dl>
             <JsonView value={pinned.data.permissions.attributes ?? {}} />
+            {pinned.data.remote && (
+              <details>
+                <summary>
+                  {locale === "ja-JP"
+                    ? "別 Node のプロバイダー承認"
+                    : "Provider approvals at other nodes"}
+                </summary>
+                <RecordView value={pinned.data.remote} />
+              </details>
+            )}
           </details>
         )
       )}
@@ -1121,44 +1163,47 @@ export function GenerationAssignForm({
     policies.isError ? [] : (policies.data ?? []),
   );
   return (
-    <form
-      onSubmit={(event) => {
-        event.preventDefault();
-        const form = new FormData(event.currentTarget);
-        void submit(() =>
-          generationAssign(encodeURIComponent(tenant), task.id, {
-            policy_id: String(form.get("policy")),
-            reason: String(form.get("reason")),
-          }),
-        );
-      }}
-    >
-      <h3>{task.title}</h3>
-      <p>{t("generationAssignHelp")}</p>
-      {policies.isError && (
-        <p role="alert" className="error">
-          {policies.error.message}
-        </p>
-      )}
-      <Field label={t("generationPolicy")}>
-        <select name="policy" required defaultValue="">
-          <option value="">{t("choose")}</option>
-          {choices.map((policy) => (
-            <option key={policy.id} value={policy.id}>
-              {policyPresentation.label(policy)}
-            </option>
-          ))}
-        </select>
-      </Field>
-      {!policies.isPending && !choices.length && (
-        <p className="notice">{t("generationNoPolicies")}</p>
-      )}
-      <Field label={t("generationRequestReason")}>
-        <textarea name="reason" required maxLength={4096} rows={3} />
-      </Field>
-      <button className="primary" disabled={!choices.length}>
-        {t("generationAssign")}
-      </button>
-    </form>
+    <>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          const form = new FormData(event.currentTarget);
+          void submit(() =>
+            generationAssign(encodeURIComponent(tenant), task.id, {
+              policy_id: String(form.get("policy")),
+              reason: String(form.get("reason")),
+            }),
+          );
+        }}
+      >
+        <h3>{task.title}</h3>
+        <p>{t("generationAssignHelp")}</p>
+        {policies.isError && (
+          <p role="alert" className="error">
+            {policies.error.message}
+          </p>
+        )}
+        <Field label={t("generationPolicy")}>
+          <select name="policy" required defaultValue="">
+            <option value="">{t("choose")}</option>
+            {choices.map((policy) => (
+              <option key={policy.id} value={policy.id}>
+                {policyPresentation.label(policy)}
+              </option>
+            ))}
+          </select>
+        </Field>
+        {!policies.isPending && !choices.length && (
+          <p className="notice">{t("generationNoPolicies")}</p>
+        )}
+        <Field label={t("generationRequestReason")}>
+          <textarea name="reason" required maxLength={4096} rows={3} />
+        </Field>
+        <button className="primary" disabled={!choices.length}>
+          {t("generationAssign")}
+        </button>
+      </form>
+      <RemoteGenerationAssignForm task={task.id} submit={submit} />
+    </>
   );
 }

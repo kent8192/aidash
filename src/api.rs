@@ -47,8 +47,10 @@ fn ordinary_routes() -> OpenApiRouter<Federation> {
 		.merge(crate::collaboration::api::routes())
 		.merge(crate::generation::api::routes())
 		.merge(crate::semantic::api::routes())
+		.merge(crate::semantic::remote::status::routes())
 		.merge(crate::workbench::routes())
 		.merge(crate::authorization::remote::routes())
+		.merge(crate::authorization::execution::management::routes())
 		.merge(crate::authorization::peer::graph::api_routes())
 		.routes(routes!(human_answer))
 		.routes(routes!(run_message))
@@ -161,12 +163,48 @@ pub fn router_with_event_streams(
 			post(crate::authorization::peer::graph::project),
 		)
 		.route(
+			"/scoped/dependencies/verify",
+			post(crate::authorization::peer::dependencies::verify),
+		)
+		.route(
 			"/scoped/registry/verify",
 			post(crate::authorization::peer::reads::verify),
 		)
 		.route(
 			"/scoped/execution/inspect",
 			post(crate::authorization::peer::execution::inspect),
+		)
+		.route(
+			"/scoped/generation/cancel",
+			post(crate::generation::foreign::cancel_at),
+		)
+		.route(
+			"/scoped/generation/describe",
+			post(crate::generation::foreign::describe),
+		)
+		.route(
+			"/scoped/generation/prepare",
+			post(crate::generation::foreign::prepare),
+		)
+		.route(
+			"/scoped/usage/reserve",
+			post(crate::generation::remote::protocol::reserve),
+		)
+		.route(
+			"/scoped/usage/verify",
+			post(crate::generation::remote::protocol::verify),
+		)
+		.route(
+			"/scoped/usage/finalize",
+			post(crate::generation::remote::protocol::finalize),
+		)
+		.route(
+			"/scoped/semantic/query",
+			post(crate::authorization::remote::semantic::search),
+		)
+		.route(
+			"/scoped/semantic/verify-operation",
+			post(crate::authorization::peer::semantic::verify_operation),
 		)
 		.route(
 			"/scoped/execution/grants/verify",
@@ -337,7 +375,7 @@ fn browser_operator_allowed(method: &Method, path: &str) -> bool {
 	let segments: Vec<&str> = path.split('/').collect();
 	if matches!(
 		segments.as_slice(),
-		["", "runs", _, "control"] | ["", "tasks", _, "abandon"]
+		["", "runs", _, "control"] | ["", "runs", _, "management"] | ["", "tasks", _, "abandon"]
 	) {
 		return true;
 	}
@@ -439,7 +477,19 @@ async fn task_list(
 	if let Some(scope) = scoped(&f, actor) {
 		return Ok(Json(scope.task_page(page.offset).await?));
 	}
-	Ok(Json(f.store.task_page(page.offset).await?))
+	let mut page = f.store.task_page(page.offset).await?;
+	let denied = crate::authorization::remote::operator::blocked(
+		&mut *f.store.pool.acquire().await?,
+		&page
+			.tasks
+			.iter()
+			.map(|task| task.workspace_id)
+			.collect::<Vec<_>>(),
+	)
+	.await?;
+	page.tasks
+		.retain(|task| !denied.contains(&task.workspace_id));
+	Ok(Json(page))
 }
 #[utoipa::path(get, path = "/state", operation_id = "state", responses((status = 200, body = StateResponse)), security(("bearer_auth" = [])))]
 async fn state(
@@ -451,61 +501,56 @@ async fn state(
 		return crate::marketplace::state_response(&scope.store, &scope.identity, state).await;
 	}
 	let records = f.registry.list(&Search::default()).await?;
-	let events: Vec<crate::domain::Event> = sqlx::query_as(
-		&sea_orm::sea_query::Query::select()
-			.expr(sea_orm::sea_query::SimpleExpr::from(
-				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("sequence")),
-			))
-			.expr(sea_orm::sea_query::SimpleExpr::from(
-				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("id")),
-			))
-			.expr(sea_orm::sea_query::SimpleExpr::from(
-				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("node_id")),
-			))
-			.expr(sea_orm::sea_query::SimpleExpr::from(
-				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("workspace_id")),
-			))
-			.expr(sea_orm::sea_query::SimpleExpr::from(
-				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("kind")),
-			))
-			.expr(sea_orm::sea_query::SimpleExpr::from(
-				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("data")),
-			))
-			.expr(sea_orm::sea_query::SimpleExpr::from(
-				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Alias::new("created_at")),
-			))
-			.from_subquery(
-				sea_orm::sea_query::Query::select()
-					.expr(sea_orm::sea_query::SimpleExpr::from(
-						sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
-					))
-					.from(sea_orm::sea_query::Alias::new("events"))
-					.order_by_expr(
-						sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
-							sea_orm::sea_query::Alias::new("sequence"),
-						)),
-						sea_orm::sea_query::Order::Desc,
-					)
-					.limit(100)
-					.to_owned(),
-				sea_orm::sea_query::Alias::new("e"),
-			)
-			.order_by_expr(
-				sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
+	// Scan newest first until 100 visible events are collected. Hidden
+	// required-Home events may occupy any number of candidate pages.
+	let mut events = Vec::new();
+	let mut before = i64::MAX;
+	loop {
+		let batch: Vec<crate::domain::Event> = sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.column(sea_orm::sea_query::Asterisk)
+				.from(sea_orm::sea_query::Alias::new("events"))
+				.and_where(sea_orm::sea_query::Expr::cust("sequence < $1"))
+				.order_by(
 					sea_orm::sea_query::Alias::new("sequence"),
-				)),
-				sea_orm::sea_query::Order::Asc,
+					sea_orm::sea_query::Order::Desc,
+				)
+				.limit(500)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(before)
+		.fetch_all(&f.store.pool)
+		.await?;
+		if batch.is_empty() {
+			break;
+		}
+		before = batch.last().expect("nonempty event batch").sequence;
+		let exhausted = batch.len() < 500;
+		events.extend(
+			crate::authorization::remote::operator::filter_events(
+				&mut *f.store.pool.acquire().await?,
+				batch,
 			)
-			.to_string(sea_orm::sea_query::PostgresQueryBuilder),
-	)
-	.fetch_all(&f.store.pool)
-	.await?;
+			.await?,
+		);
+		if events.len() >= 100 || exhausted {
+			break;
+		}
+	}
+	events.truncate(100);
+	events.reverse();
 	let human: Vec<HumanRequest> = sqlx::query_as(
 		&sea_orm::sea_query::Query::select()
 			.expr(sea_orm::sea_query::SimpleExpr::from(
 				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
 			))
-			.from(sea_orm::sea_query::Alias::new("human_requests"))
+			.from_as(
+				sea_orm::sea_query::Alias::new("human_requests"),
+				sea_orm::sea_query::Alias::new("h"),
+			)
+			.and_where(crate::authorization::remote::operator::state_visible(
+				"h.workspace_id",
+			))
 			.order_by_expr(
 				sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
 					sea_orm::sea_query::Alias::new("created_at"),
@@ -522,7 +567,13 @@ async fn state(
 			.expr(sea_orm::sea_query::SimpleExpr::from(
 				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
 			))
-			.from(sea_orm::sea_query::Alias::new("conversations"))
+			.from_as(
+				sea_orm::sea_query::Alias::new("conversations"),
+				sea_orm::sea_query::Alias::new("c"),
+			)
+			.and_where(crate::authorization::remote::operator::state_visible(
+				"c.workspace_id",
+			))
 			.order_by_expr(
 				sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
 					sea_orm::sea_query::Alias::new("created_at"),
@@ -539,7 +590,13 @@ async fn state(
 			.expr(sea_orm::sea_query::SimpleExpr::from(
 				sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk),
 			))
-			.from(sea_orm::sea_query::Alias::new("artifacts"))
+			.from_as(
+				sea_orm::sea_query::Alias::new("artifacts"),
+				sea_orm::sea_query::Alias::new("a"),
+			)
+			.and_where(crate::authorization::remote::operator::state_visible(
+				"a.workspace_id",
+			))
 			.order_by_expr(
 				sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(
 					sea_orm::sea_query::Alias::new("created_at"),
@@ -567,21 +624,66 @@ async fn state(
 	)
 	.fetch_all(&f.store.pool)
 	.await?;
-	Ok(Json(StateResponse {
+	let mut state = StateResponse {
 		access: AccessProfile::Operator,
 		node: f.config.identity(vec![]),
 		registry: records,
 		workspaces: f.store.workspaces().await?,
-		tasks: f.store.task_page(0).await?.tasks,
-		runs: f.store.runs().await?,
+		tasks: sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.column(sea_orm::sea_query::Asterisk)
+				.from_as(
+					sea_orm::sea_query::Alias::new("tasks"),
+					sea_orm::sea_query::Alias::new("t"),
+				)
+				.and_where(crate::authorization::remote::operator::state_visible(
+					"t.workspace_id",
+				))
+				.order_by(
+					sea_orm::sea_query::Alias::new("created_at"),
+					sea_orm::sea_query::Order::Desc,
+				)
+				.order_by(
+					sea_orm::sea_query::Alias::new("id"),
+					sea_orm::sea_query::Order::Desc,
+				)
+				.limit(500)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.fetch_all(&f.store.pool)
+		.await?,
+		runs: sqlx::query_as(
+			&sea_orm::sea_query::Query::select()
+				.column(sea_orm::sea_query::Asterisk)
+				.from_as(
+					sea_orm::sea_query::Alias::new("runs"),
+					sea_orm::sea_query::Alias::new("r"),
+				)
+				.and_where(crate::authorization::remote::operator::state_visible(
+					"r.workspace_id",
+				))
+				.order_by(
+					sea_orm::sea_query::Alias::new("updated_at"),
+					sea_orm::sea_query::Order::Desc,
+				)
+				.limit(500)
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.fetch_all(&f.store.pool)
+		.await?,
 		human_requests: human,
 		conversations,
 		peers: f.peers().await?,
 		events,
 		artifacts,
 		installations,
-	})
-	.into_response())
+	};
+	crate::authorization::remote::operator::filter_state(
+		&mut *f.store.pool.acquire().await?,
+		&mut state,
+	)
+	.await?;
+	Ok(Json(state).into_response())
 }
 #[utoipa::path(get, path = "/registry", operation_id = "registry_list", params(Search), responses((status = 200, body = [Entry])), security(("bearer_auth" = [])))]
 async fn registry_list(
@@ -683,6 +785,8 @@ async fn workspace_get(
 	if let Some(scope) = scoped(&f, actor) {
 		return Ok(Json(scope.snapshot(id).await?));
 	}
+	crate::authorization::remote::operator::require(&mut *f.store.pool.acquire().await?, id)
+		.await?;
 	Ok(Json(f.store.snapshot(id).await?))
 }
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
@@ -701,6 +805,8 @@ async fn workspace_update(
 	if let Some(scope) = scoped(&f, actor) {
 		return Ok(Json(scope.update(id, input.revision, input.state).await?));
 	}
+	crate::authorization::remote::operator::require(&mut *f.store.pool.acquire().await?, id)
+		.await?;
 	Ok(Json(
 		f.store
 			.update_state(id, input.revision, input.state)
@@ -836,6 +942,12 @@ async fn task_abandon(
 			interaction::abandon(&f, &identity, id, input.revision, &input.reason).await?,
 		));
 	}
+	let existing = f.store.task(id).await?;
+	crate::authorization::remote::operator::require(
+		&mut *f.store.pool.acquire().await?,
+		existing.workspace_id,
+	)
+	.await?;
 	let task = f
 		.store
 		.abandon_task(id, input.revision, &input.reason)
@@ -991,6 +1103,11 @@ async fn run_get(
 		));
 	}
 	let run = f.store.run(id).await?;
+	crate::authorization::remote::operator::require(
+		&mut *f.store.pool.acquire().await?,
+		run.workspace_id,
+	)
+	.await?;
 	let invocations: Vec<Invocation> = sqlx::query_as(
 		&crate::store::invocation_summary(None)
 			.from(sea_orm::sea_query::Alias::new("invocations"))
@@ -1039,6 +1156,12 @@ async fn run_control(
 			execution::control(&f, &identity, id, &input.action).await?,
 		));
 	}
+	let existing = f.store.run(id).await?;
+	crate::authorization::remote::operator::require(
+		&mut *f.store.pool.acquire().await?,
+		existing.workspace_id,
+	)
+	.await?;
 	let r = f.store.control(id, &input.action).await?;
 	f.notify.notify_waiters();
 	Ok(Json(r))
@@ -1349,9 +1472,36 @@ async fn events(
 			.insert("x-aidash-event-cursor", cursor.into());
 		return Ok(response);
 	}
-	let events = f.store.events(q.after, q.workspace_id, 500).await?;
-	let cursor = events.last().map_or(q.after.max(0), |event| event.sequence);
-	let mut response = Json(events).into_response();
+	let mut cursor = q.after.max(0);
+	let mut visible = Vec::new();
+	let mut connection = f.store.pool.acquire().await?;
+	if let Some(workspace) = q.workspace_id
+		&& !crate::authorization::remote::operator::visible(&mut connection, workspace).await?
+	{
+		let mut response = Json(visible).into_response();
+		response
+			.headers_mut()
+			.insert("x-aidash-event-cursor", cursor.into());
+		return Ok(response);
+	}
+	loop {
+		let page = f.store.events(cursor, q.workspace_id, 500).await?;
+		let exhausted = page.len() < 500;
+		if let Some(last) = page.last() {
+			cursor = last.sequence;
+		}
+		visible.extend(
+			crate::authorization::remote::operator::filter_events(&mut connection, page).await?,
+		);
+		if visible.len() >= 500 || exhausted {
+			if visible.len() >= 500 {
+				visible.truncate(500);
+				cursor = visible.last().expect("full event page").sequence;
+			}
+			break;
+		}
+	}
+	let mut response = Json(visible).into_response();
 	response
 		.headers_mut()
 		.insert("x-aidash-event-cursor", cursor.into());

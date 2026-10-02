@@ -51,6 +51,8 @@ mod m20260929_020000_pending_authority_indexes;
 mod m20260929_030000_graph_operator_grants;
 mod m20260929_030000_media_route_constraints;
 mod m20260929_040000_graph_grant_revocation;
+mod m20260930_000000_remote_semantic_memory;
+mod m20260930_010000_foreign_generation;
 
 mod m20260930_010000_marketplace_authorization;
 
@@ -109,6 +111,8 @@ impl MigratorTrait for Migrator {
 			Box::new(m20260929_030000_media_route_constraints::Migration),
 			Box::new(m20260929_030000_graph_operator_grants::Migration),
 			Box::new(m20260929_040000_graph_grant_revocation::Migration),
+			Box::new(m20260930_000000_remote_semantic_memory::Migration),
+			Box::new(m20260930_010000_foreign_generation::Migration),
 			Box::new(m20260930_010000_marketplace_authorization::Migration),
 		]
 	}

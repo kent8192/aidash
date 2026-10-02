@@ -1,3 +1,4 @@
+import { RemoteMemoryProvenance, RemoteRunManagement } from "./remote-memory";
 import { RemoteExecutions } from "./remote-executions";
 import { ReferenceName } from "../record-view";
 import { RecordView } from "../record-view";
@@ -447,9 +448,14 @@ function RunPanel({
   } | null>(null);
   if (!run)
     return (
-      <p role="status">
-        {local && query.isPending ? copy.processing : copy.unavailable}
-      </p>
+      <>
+        <p role="status">
+          {local && query.isPending ? copy.processing : copy.unavailable}
+        </p>
+        {local && data.access.kind === "subject" && (
+          <RemoteRunManagement id={id} />
+        )}
+      </>
     );
   const mediaInputRoutes = query.data?.pages[0].media_input_routes ?? [];
   const mediaAccept = runMediaAccept(mediaInputRoutes);
@@ -476,215 +482,233 @@ function RunPanel({
       </p>
       <Badge value={run.phase} />
       <Badge value={run.control} />
+      {local &&
+        run.home_node !== data.node.id &&
+        data.access.kind === "subject" && (
+          <RemoteMemoryProvenance url={`/api/runs/${id}/semantic`} />
+        )}
       {run.home_node === data.node.id && (
         <button type="button" onClick={() => visitChannel(run.workspace_id)}>
           {copy.channelLink}
         </button>
       )}
-      {!terminal && (
-        <>
-          <div className="button-row">
-            <button
-              type="button"
-              onClick={() =>
-                control(run.control === "PAUSED" ? "resume" : "pause")
-              }
-            >
-              {t(run.control === "PAUSED" ? "resume" : "pause")}
-            </button>
-            <button
-              type="button"
-              className="danger"
-              onClick={() => control("cancel")}
-            >
-              {t("cancel")}
-            </button>
-          </div>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              const content = draft.trim();
-              if ((!content && files.length === 0) || sending.current) return;
-              if (
-                files.length > 0 &&
-                (!canAttach ||
-                  !validRunMediaRoute(
-                    files.map((entry) => entry.file),
-                    mediaInputRoutes,
-                  ))
-              ) {
-                setFileError(fileCopy.invalidAttachment);
-                return;
-              }
-              sending.current = true;
-              setSendingMessage(true);
-              setFileError("");
-              void (async () => {
-                try {
-                  const attachments: string[] = [];
-                  if (files.length > 0) {
-                    const current = await runGet(id, { offset: 0 });
-                    if (
-                      !validRunMediaRoute(
-                        files.map((entry) => entry.file),
-                        current.media_input_routes,
-                      )
-                    ) {
-                      setFileError(fileCopy.invalidAttachment);
-                      return;
-                    }
-                  }
-                  for (const entry of files) {
-                    let uploaded = entry.uploaded;
-                    if (!uploaded) {
-                      setUploading(true);
-                      uploaded = (
-                        await channelAttachmentUpload(
-                          run.workspace_id,
-                          entry.file,
-                          {
-                            filename: entry.file.name,
-                            media_type:
-                              entry.file.type || "application/octet-stream",
-                            idempotency_key: entry.key,
-                          },
+      {local &&
+        run.home_node !== data.node.id &&
+        data.access.kind === "subject" && <RemoteRunManagement id={id} />}
+      {!terminal &&
+        !(
+          local &&
+          run.home_node !== data.node.id &&
+          data.access.kind === "subject"
+        ) && (
+          <>
+            <div className="button-row">
+              <button
+                type="button"
+                onClick={() =>
+                  control(run.control === "PAUSED" ? "resume" : "pause")
+                }
+              >
+                {t(run.control === "PAUSED" ? "resume" : "pause")}
+              </button>
+              <button
+                type="button"
+                className="danger"
+                onClick={() => control("cancel")}
+              >
+                {t("cancel")}
+              </button>
+            </div>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                const content = draft.trim();
+                if ((!content && files.length === 0) || sending.current) return;
+                if (
+                  files.length > 0 &&
+                  (!canAttach ||
+                    !validRunMediaRoute(
+                      files.map((entry) => entry.file),
+                      mediaInputRoutes,
+                    ))
+                ) {
+                  setFileError(fileCopy.invalidAttachment);
+                  return;
+                }
+                sending.current = true;
+                setSendingMessage(true);
+                setFileError("");
+                void (async () => {
+                  try {
+                    const attachments: string[] = [];
+                    if (files.length > 0) {
+                      const current = await runGet(id, { offset: 0 });
+                      if (
+                        !validRunMediaRoute(
+                          files.map((entry) => entry.file),
+                          current.media_input_routes,
                         )
-                      ).id;
-                      setFiles((current) =>
-                        current.map((file) =>
-                          file.key === entry.key ? { ...file, uploaded } : file,
-                        ),
-                      );
+                      ) {
+                        setFileError(fileCopy.invalidAttachment);
+                        return;
+                      }
                     }
-                    attachments.push(uploaded);
-                  }
-                  if (
-                    request.current?.content !== content ||
-                    JSON.stringify(request.current.attachments) !==
-                      JSON.stringify(attachments)
-                  ) {
-                    request.current = {
-                      content,
-                      attachments,
-                      key: crypto.randomUUID(),
-                    };
-                  }
-                  const idempotency_key = request.current.key;
-                  const ok = await submit(() =>
-                    local
-                      ? runMessage(id, {
-                          content,
-                          idempotency_key,
-                          attachment_ids: attachments,
-                        })
-                      : remoteAction({
-                          node_id: node,
-                          control: {
-                            run_id: id,
-                            action: "message",
+                    for (const entry of files) {
+                      let uploaded = entry.uploaded;
+                      if (!uploaded) {
+                        setUploading(true);
+                        uploaded = (
+                          await channelAttachmentUpload(
+                            run.workspace_id,
+                            entry.file,
+                            {
+                              filename: entry.file.name,
+                              media_type:
+                                entry.file.type || "application/octet-stream",
+                              idempotency_key: entry.key,
+                            },
+                          )
+                        ).id;
+                        setFiles((current) =>
+                          current.map((file) =>
+                            file.key === entry.key
+                              ? { ...file, uploaded }
+                              : file,
+                          ),
+                        );
+                      }
+                      attachments.push(uploaded);
+                    }
+                    if (
+                      request.current?.content !== content ||
+                      JSON.stringify(request.current.attachments) !==
+                        JSON.stringify(attachments)
+                    ) {
+                      request.current = {
+                        content,
+                        attachments,
+                        key: crypto.randomUUID(),
+                      };
+                    }
+                    const idempotency_key = request.current.key;
+                    const ok = await submit(() =>
+                      local
+                        ? runMessage(id, {
                             content,
                             idempotency_key,
-                          },
-                        }),
-                  );
-                  if (ok) {
-                    setDraft("");
-                    setFiles([]);
-                    request.current = null;
-                  }
-                } catch (reason) {
-                  setFileError(
-                    `${fileCopy.attachmentError} ${reason instanceof Error ? reason.message : String(reason)}`,
-                  );
-                } finally {
-                  setUploading(false);
-                  sending.current = false;
-                  setSendingMessage(false);
-                }
-              })();
-            }}
-          >
-            <Field label={copy.message}>
-              <textarea
-                value={draft}
-                onChange={(event) => {
-                  if (!sending.current) setDraft(event.target.value);
-                }}
-                disabled={sendingMessage}
-                required={files.length === 0}
-                rows={3}
-              />
-            </Field>
-            {canAttach && (
-              <>
-                <input
-                  type="file"
-                  accept={mediaAccept}
-                  multiple
-                  aria-label={fileCopy.attach}
-                  disabled={sendingMessage}
-                  onChange={(event) => {
-                    if (sending.current) return;
-                    const selected = [
-                      ...files,
-                      ...Array.from(event.target.files ?? []).map((file) => ({
-                        key: crypto.randomUUID(),
-                        file,
-                      })),
-                    ];
-                    if (
-                      validRunMediaAttachments(
-                        selected.map((item) => item.file),
-                      ) &&
-                      validRunMediaRoute(
-                        selected.map((item) => item.file),
-                        mediaInputRoutes,
-                      )
-                    ) {
-                      setFiles(selected);
+                            attachment_ids: attachments,
+                          })
+                        : remoteAction({
+                            node_id: node,
+                            control: {
+                              run_id: id,
+                              action: "message",
+                              content,
+                              idempotency_key,
+                            },
+                          }),
+                    );
+                    if (ok) {
+                      setDraft("");
+                      setFiles([]);
                       request.current = null;
-                      setFileError("");
-                    } else setFileError(fileCopy.invalidAttachment);
-                    event.target.value = "";
+                    }
+                  } catch (reason) {
+                    setFileError(
+                      `${fileCopy.attachmentError} ${reason instanceof Error ? reason.message : String(reason)}`,
+                    );
+                  } finally {
+                    setUploading(false);
+                    sending.current = false;
+                    setSendingMessage(false);
+                  }
+                })();
+              }}
+            >
+              <Field label={copy.message}>
+                <textarea
+                  value={draft}
+                  onChange={(event) => {
+                    if (!sending.current) setDraft(event.target.value);
                   }}
+                  disabled={sendingMessage}
+                  required={files.length === 0}
+                  rows={3}
                 />
-                <p>{fileCopy.attachmentLimit}</p>
-              </>
-            )}
-            {files.length > 0 && (
-              <ul className="workspace-draft-files">
-                {files.map((entry) => (
-                  <li key={entry.key}>
-                    {entry.file.name}
-                    <button
-                      type="button"
-                      aria-label={`${fileCopy.removeAttachment}: ${entry.file.name}`}
-                      disabled={sendingMessage}
-                      onClick={() => {
-                        if (sending.current) return;
-                        setFiles((current) =>
-                          current.filter((file) => file.key !== entry.key),
-                        );
+              </Field>
+              {canAttach && (
+                <>
+                  <input
+                    type="file"
+                    accept={mediaAccept}
+                    multiple
+                    aria-label={fileCopy.attach}
+                    disabled={sendingMessage}
+                    onChange={(event) => {
+                      if (sending.current) return;
+                      const selected = [
+                        ...files,
+                        ...Array.from(event.target.files ?? []).map((file) => ({
+                          key: crypto.randomUUID(),
+                          file,
+                        })),
+                      ];
+                      if (
+                        validRunMediaAttachments(
+                          selected.map((item) => item.file),
+                        ) &&
+                        validRunMediaRoute(
+                          selected.map((item) => item.file),
+                          mediaInputRoutes,
+                        )
+                      ) {
+                        setFiles(selected);
                         request.current = null;
-                      }}
-                    >
-                      ×
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {fileError && (
-              <p role="alert" className="error">
-                {fileError}
-              </p>
-            )}
-            <button className="primary" disabled={sendingMessage || uploading}>
-              {uploading ? fileCopy.uploading : copy.send}
-            </button>
-          </form>
-        </>
-      )}
+                        setFileError("");
+                      } else setFileError(fileCopy.invalidAttachment);
+                      event.target.value = "";
+                    }}
+                  />
+                  <p>{fileCopy.attachmentLimit}</p>
+                </>
+              )}
+              {files.length > 0 && (
+                <ul className="workspace-draft-files">
+                  {files.map((entry) => (
+                    <li key={entry.key}>
+                      {entry.file.name}
+                      <button
+                        type="button"
+                        aria-label={`${fileCopy.removeAttachment}: ${entry.file.name}`}
+                        disabled={sendingMessage}
+                        onClick={() => {
+                          if (sending.current) return;
+                          setFiles((current) =>
+                            current.filter((file) => file.key !== entry.key),
+                          );
+                          request.current = null;
+                        }}
+                      >
+                        ×
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {fileError && (
+                <p role="alert" className="error">
+                  {fileError}
+                </p>
+              )}
+              <button
+                className="primary"
+                disabled={sendingMessage || uploading}
+              >
+                {uploading ? fileCopy.uploading : copy.send}
+              </button>
+            </form>
+          </>
+        )}
       {run.error && <p className="error">{run.error}</p>}
       <h3>{t("toolCalls")}</h3>
       {invocations.map((call) => (

@@ -61,6 +61,7 @@ impl Lease {
 			}
 			Actor::Operator => {
 				let mut tx = store.pool.begin().await?;
+				crate::authorization::remote::operator::require(&mut tx, workspace).await?;
 				let exists: Option<Uuid> = sqlx::query_scalar(
 					&Query::select()
 						.column(Alias::new("id"))

@@ -1,10 +1,12 @@
 //! Explicit inbound identity mappings. Peer authentication alone grants no
 //! tenant authority, and local subject bearer tokens never cross this boundary.
 pub(crate) mod admission;
+pub(crate) mod dependencies;
 pub(crate) mod discovery;
 pub(crate) mod execution;
 pub(crate) mod graph;
 pub(crate) mod reads;
+pub(crate) mod semantic;
 
 use super::{
 	Authorization, access::Access, catalog, identity::SubjectIdentity, policy::identifier,
@@ -299,6 +301,15 @@ pub(crate) async fn access(
 	tenant: &str,
 	subject: &str,
 ) -> Result<Access> {
+	access_mode(f, node, tenant, subject, false).await
+}
+pub(crate) async fn access_mode(
+	f: &Federation,
+	node: &str,
+	tenant: &str,
+	subject: &str,
+	exclusive: bool,
+) -> Result<Access> {
 	identifier(tenant)?;
 	identifier(subject)?;
 	let mapping: PeerMapping = sqlx::query_as(
@@ -334,16 +345,17 @@ pub(crate) async fn access(
 	.fetch_optional(&f.store.pool)
 	.await?
 	.ok_or(Error::Forbidden)?;
-	let mut access = Access::begin(
-		&f.store,
-		&SubjectIdentity {
-			http_session: None,
-			credential_id: mapping.credential_id,
-			tenant: mapping.tenant.clone(),
-			subject: local_subject,
-		},
-	)
-	.await
+	let identity = SubjectIdentity {
+		http_session: None,
+		credential_id: mapping.credential_id,
+		tenant: mapping.tenant.clone(),
+		subject: local_subject,
+	};
+	let mut access = if exclusive {
+		Access::begin_exclusive(&f.store, &identity).await
+	} else {
+		Access::begin(&f.store, &identity).await
+	}
 	.map_err(mapping_authority_error)?;
 	// Lock in the same order as management: policy, credential, then mapping.
 	// A binding changed between resolution and this lease cannot select a new
@@ -436,6 +448,15 @@ pub(crate) async fn authority_request<T: serde::de::DeserializeOwned>(
 			Error::External("remote execution authority unavailable".into())
 		})?;
 	let status = response.status().as_u16();
+	if !response.status().is_success()
+		&& let Some(reason) = response
+			.headers()
+			.get("x-aidash-semantic-reason")
+			.and_then(|value| value.to_str().ok())
+			.and_then(|value| serde_json::from_value(serde_json::json!(value)).ok())
+	{
+		return Err(Error::RemoteSemantic(reason));
+	}
 	match status {
 		200..=299 => crate::response::json(response, 4_194_304)
 			.await

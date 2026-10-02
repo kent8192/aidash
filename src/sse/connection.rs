@@ -207,7 +207,22 @@ impl Context {
 							.await
 							.map_err(|_| Closed::Authority)?
 							.then(|| event.cloud_event().to_string()),
-						None => Some(event.cloud_event().to_string()),
+						None => {
+							let mut connection = self
+								.f
+								.store
+								.pool
+								.acquire()
+								.await
+								.map_err(|_| Closed::Database)?;
+							crate::authorization::remote::operator::event_visible(
+								&mut connection,
+								event,
+							)
+							.await
+							.map_err(|_| Closed::Authority)?
+							.then(|| event.cloud_event().to_string())
+						}
 					};
 					drop(visibility);
 					return Ok(payload.map(|payload| {

@@ -220,7 +220,48 @@ impl Access {
 	}
 
 	pub(crate) async fn run_base_visible(&mut self, run: &Run) -> Result<bool> {
-		if let Some(allowed) = self.cached_runs.get(&(run.workspace_id, run.id)) {
+		if run.home_node != self.node_id {
+			let admission: Option<Uuid> = sqlx::query_scalar(
+				&Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("authorization_remote_admissions"))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+					.to_string(PostgresQueryBuilder),
+			)
+			.bind(run.id)
+			.fetch_optional(&mut **self.tx)
+			.await?;
+			if admission.is_some() {
+				return Ok(self.foreign_run_base_visible(run).await?
+					&& self.human_reads(run.workspace_id, run.id).await?);
+			}
+			// Locally authorized legacy federation keeps a real local Task and
+			// execution record. Preserve its existing reader path, but never
+			// treat a missing scoped admission as a legacy authorization grant.
+			let local: Option<Uuid> = sqlx::query_scalar(
+				&Query::select()
+					.column(Alias::new("run_id"))
+					.from(Alias::new("authorization_execution"))
+					.and_where(Expr::cust(
+						"run_id=$1 AND task_id=$2 AND workspace_id=$3 AND tenant=$4",
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.bind(run.id)
+			.bind(run.task_id)
+			.bind(run.workspace_id)
+			.bind(&self.identity.tenant)
+			.fetch_optional(&mut **self.tx)
+			.await?;
+			if local.is_none() {
+				return Ok(false);
+			}
+		}
+		// Task provenance may queue foreign checks in a leaf evaluation. Only
+		// cache a base decision when those checks have actually completed.
+		if self.dependency_frontier.is_none()
+			&& let Some(allowed) = self.cached_runs.get(&(run.workspace_id, run.id))
+		{
 			return if *allowed {
 				self.human_reads(run.workspace_id, run.id).await
 			} else {
@@ -252,7 +293,9 @@ impl Access {
 		let allowed = task_visible
 			&& self.decide(&resource, "run.read").await?
 			&& self.decide(&memory, "memory.read").await?;
-		self.cached_runs.insert((run.workspace_id, run.id), allowed);
+		if self.dependency_frontier.is_none() {
+			self.cached_runs.insert((run.workspace_id, run.id), allowed);
+		}
 		Ok(allowed && self.human_reads(run.workspace_id, run.id).await?)
 	}
 

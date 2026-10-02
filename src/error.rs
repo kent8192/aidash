@@ -31,6 +31,8 @@ pub enum Error {
 	StaleInference,
 	#[error("semantic backend unavailable or invalid; inspect index status and retry")]
 	SemanticUnavailable,
+	#[error("{0}")]
+	RemoteSemantic(crate::semantic::remote::Failure),
 	#[error("Kubernetes observations unavailable; check service account and API connectivity")]
 	OrchestrationUnavailable,
 	#[error("{0}")]
@@ -66,6 +68,14 @@ impl IntoResponse for Error {
 			| Self::SemanticUnavailable
 			| Self::OrchestrationUnavailable => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
 			Self::StaleInference => (StatusCode::CONFLICT, self.to_string()),
+			Self::RemoteSemantic(reason) => (
+				if reason.transient() || *reason == crate::semantic::remote::Failure::Pending {
+					StatusCode::SERVICE_UNAVAILABLE
+				} else {
+					StatusCode::CONFLICT
+				},
+				self.to_string(),
+			),
 			Self::ProviderRejected { status, .. } => (
 				StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY),
 				self.to_string(),
@@ -96,6 +106,16 @@ impl IntoResponse for Error {
 			}
 		};
 		let mut response = (status, Json(json!({"error": message}))).into_response();
+		if let Self::RemoteSemantic(reason) = self
+			&& let Some(code) = serde_json::to_value(reason)
+				.ok()
+				.and_then(|v| v.as_str().map(str::to_owned))
+			&& let Ok(value) = axum::http::HeaderValue::from_str(&code)
+		{
+			response
+				.headers_mut()
+				.insert("x-aidash-semantic-reason", value);
+		}
 		if transaction_pending {
 			response.headers_mut().insert(
 				"x-aidash-transaction-pending",
