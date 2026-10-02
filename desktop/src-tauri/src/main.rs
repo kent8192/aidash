@@ -316,9 +316,9 @@ fn main() {
 	}
 	let builder = tauri::Builder::default();
 	#[cfg(feature = "e2e")]
-	let builder = builder
-		.plugin(tauri_plugin_wdio::init())
-		.plugin(tauri_plugin_wdio_webdriver::init());
+	let builder = builder.plugin(tauri_plugin_wdio::init());
+	#[cfg(all(feature = "e2e", not(target_os = "windows")))]
+	let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
 	builder
 		.plugin(tauri_plugin_single_instance::init(|app, _, _| {
 			if let Some(window) = app.get_webview_window("main") {

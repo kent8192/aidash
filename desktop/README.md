@@ -133,10 +133,21 @@ results; CI definitions are not evidence that hosted checks have passed.
 ## Cross-platform native CI
 
 The Desktop workflow runs the same WebdriverIO + `@wdio/tauri-service` acceptance
-suite on standard `ubuntu-24.04`, `windows-2022` and `macos-15` runners. It uses the
-[embedded WebDriver provider](https://v2.tauri.app/develop/tests/webdriver/),
-including real WebKitGTK, WebView2 or WKWebView, IPC, HTTP/SSE and OS credential
-storage. No paid driver subscription or external WebDriver installation is needed.
+suite on standard `ubuntu-24.04`, `windows-2022` and `macos-15` runners. Linux and
+macOS use the [embedded WebDriver provider](https://v2.tauri.app/develop/tests/webdriver/);
+Windows uses the service's external `tauri-driver` provider with a matching Edge
+WebDriver. All exercise real WebKitGTK, WebView2 or WKWebView, IPC, HTTP/SSE and OS
+credential storage. No paid driver subscription is needed. The service can install
+the Windows drivers automatically; CI installs a pinned `tauri-driver` first.
+
+The Windows provider is a compatibility workaround: `tauri-plugin-wdio-webdriver`
+1.4.0 uses WebView2 bindings 0.38 / windows-core 0.61, while this Tauri lockfile
+uses WebView2 bindings 0.39 / windows-core 0.62. Their incompatible COM types
+prevent the embedded plugin from compiling on Windows
+([failure evidence](https://github.com/kent8192/aidash/actions/runs/37002409795/job/110824143894)).
+Remove the target-specific dependency and provider selection once an embedded
+driver release supports Tauri's current bindings and passes this same Windows
+suite. Production Tauri dependencies remain unchanged.
 
 ```sh
 npm ci --prefix web

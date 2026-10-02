@@ -85,6 +85,9 @@ jobs:
           path: web/dist
       - run: npm ci --prefix desktop
       - run: rustup show active-toolchain
+      - name: Install Windows native driver
+        if: runner.os == 'Windows'
+        run: cargo install tauri-driver --version 2.1.0 --locked
       - name: Check normal build and native unit tests
         run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml
       - name: Build instrumented debug app with shared production assets

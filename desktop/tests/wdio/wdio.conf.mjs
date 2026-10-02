@@ -1,5 +1,10 @@
 import { resolve } from "node:path";
 
+// The embedded driver's WebView2 bindings currently conflict with Tauri's.
+// Both providers run the same native acceptance suite.
+const external = process.platform === "win32";
+const driverProvider = external ? "external" : "embedded";
+
 export const config = {
   runner: "local",
   specs: ["./native.spec.mjs"],
@@ -22,7 +27,7 @@ export const config = {
       browserName: "tauri",
       "wdio:tauriServiceOptions": {
         appBinaryPath: process.env.AIDASH_E2E_BINARY,
-        driverProvider: "embedded",
+        driverProvider,
       },
     },
   ],
@@ -30,12 +35,13 @@ export const config = {
     [
       "@wdio/tauri-service",
       {
-        driverProvider: "embedded",
+        driverProvider,
         appBinaryPath: process.env.AIDASH_E2E_BINARY,
         embeddedPort: Number(process.env.TAURI_WEBDRIVER_PORT),
+        tauriDriverPort: Number(process.env.TAURI_WEBDRIVER_PORT),
         startTimeout: 60000,
-        autoInstallTauriDriver: false,
-        autoDownloadEdgeDriver: false,
+        autoInstallTauriDriver: external,
+        autoDownloadEdgeDriver: external,
         captureBackendLogs: false,
         captureFrontendLogs: false,
       },
