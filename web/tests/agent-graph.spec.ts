@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { expectSvgFitted } from "./graph-fit-assertions";
 import { installBearerDashboard } from "./auth-fixture";
 
 function entity(
@@ -276,3 +277,95 @@ test("removes graph and stale entity metadata after an authorized snapshot revok
   ).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+
+for (const locale of ["en-US", "ja-JP"]) {
+  test(`SVG agent graph fits labels in the current viewport using the keyboard in ${locale}`, async ({
+    page,
+  }) => {
+    if (locale === "ja-JP")
+      await page.setViewportSize({ width: 390, height: 844 });
+    const { errors, requests } = await setup(page, locale);
+    const graph = page.locator(".agent-graph");
+    const canvas = graph.locator(".agent-graph-canvas > svg");
+    const fit = graph.getByRole("button", {
+      name: locale === "ja-JP" ? "全体表示" : "Fit entire graph",
+      exact: true,
+    });
+    await canvas.scrollIntoViewIfNeeded();
+    await expect(fit).toBeEnabled();
+    await page.evaluate(() => document.fonts.ready);
+    const zoomOut = graph.getByRole("button", {
+      name: locale === "ja-JP" ? "縮小" : "Zoom out",
+      exact: true,
+    });
+    for (let i = 0; i < 4; i++) await zoomOut.click();
+    const positions = await graph
+      .locator("[data-graph-node]")
+      .evaluateAll((nodes) =>
+        nodes.map((node) => ({
+          id: node.getAttribute("data-graph-node"),
+          position: node.getAttribute("transform"),
+        })),
+      );
+    const selected = await graph.locator(".agent-graph-selection").innerText();
+    const right = graph.getByRole("button", {
+      name: locale === "ja-JP" ? "右へ移動" : "Pan right",
+      exact: true,
+    });
+    for (let i = 0; i < 15; i++) await right.click();
+    // Dashboard polling continues independently of camera input.
+    const backgroundPaths = new Set([
+      "/api/state",
+      "/api/session",
+      "/api/mesh",
+      "/api/discover",
+      "/api/events/stream",
+    ]);
+    const resourceRequests = () =>
+      requests.filter((path) => !backgroundPaths.has(path));
+    const requestCount = resourceRequests().length;
+    await fit.focus();
+    await fit.press("Space");
+    await expectSvgFitted(canvas);
+    const after = await graph.locator("[data-camera]").evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      return {
+        left: box.left,
+        top: box.top,
+        right: box.right,
+        bottom: box.bottom,
+      };
+    });
+    await fit.press("Enter");
+    await expectSvgFitted(canvas);
+    const repeated = await graph
+      .locator("[data-camera]")
+      .evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        return {
+          left: box.left,
+          top: box.top,
+          right: box.right,
+          bottom: box.bottom,
+        };
+      });
+    for (const key of ["left", "top", "right", "bottom"] as const)
+      expect(Math.abs(repeated[key] - after[key])).toBeLessThanOrEqual(1);
+    expect(
+      await graph.locator("[data-graph-node]").evaluateAll((nodes) =>
+        nodes.map((node) => ({
+          id: node.getAttribute("data-graph-node"),
+          position: node.getAttribute("transform"),
+        })),
+      ),
+    ).toEqual(positions);
+    expect(await graph.locator(".agent-graph-selection").innerText()).toEqual(
+      selected,
+    );
+    expect(resourceRequests()).toHaveLength(requestCount);
+    await page.screenshot({
+      path: `test-results/whole-graph-fit-svg-${locale}.png`,
+    });
+    expect(errors).toEqual([]);
+  });
+}

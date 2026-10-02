@@ -25,6 +25,7 @@ type Copy = {
   zoomIn: string;
   zoomOut: string;
   fit: string;
+  fitUnavailable: string;
   left: string;
   right: string;
   up: string;
@@ -60,7 +61,8 @@ export const graphCopy: Record<"en-US" | "ja-JP", Copy> = {
     actions: "Actions",
     zoomIn: "Zoom in",
     zoomOut: "Zoom out",
-    fit: "Fit graph",
+    fit: "Fit entire graph",
+    fitUnavailable: "Fit unavailable: no measurable graph or usable viewport.",
     left: "Pan left",
     right: "Pan right",
     up: "Pan up",
@@ -113,7 +115,9 @@ export const graphCopy: Record<"en-US" | "ja-JP", Copy> = {
     actions: "操作",
     zoomIn: "拡大",
     zoomOut: "縮小",
-    fit: "全体を表示",
+    fit: "全体表示",
+    fitUnavailable:
+      "描画可能なグラフまたは表示領域がないため、全体表示できません。",
     left: "左へ移動",
     right: "右へ移動",
     up: "上へ移動",

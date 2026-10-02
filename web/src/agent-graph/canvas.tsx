@@ -6,8 +6,10 @@ import {
   type AgentGraph,
   type GraphNode,
   type Point,
-  type Positions,
 } from "./model";
+import { Scan } from "lucide-react";
+import { fitGraph, fitPadding, zoomFloor } from "../graph-fit";
+import { graphViewport, svgBounds, useGraphFit } from "../graph-fit-view";
 import type { GraphCopy } from "./copy";
 
 type Camera = Point & { zoom: number };
@@ -25,23 +27,13 @@ function localPoint(
 }
 const width = 800;
 const height = 460;
-function fit(graph: AgentGraph, positions: Positions): Camera {
-  const points = graph.nodes.map((node) => positions[node.id]);
-  const minX = Math.min(...points.map((p) => p.x)) - 105;
-  const maxX = Math.max(...points.map((p) => p.x)) + 105;
-  const minY = Math.min(...points.map((p) => p.y)) - 70;
-  const maxY = Math.max(...points.map((p) => p.y)) + 70;
-  const zoom = clampZoom(
-    Math.min(1, (width - 40) / (maxX - minX), (height - 40) / (maxY - minY)),
-  );
-  return {
-    x: width / 2 - ((minX + maxX) / 2) * zoom,
-    y: height / 2 - ((minY + maxY) / 2) * zoom,
-    zoom,
-  };
-}
-function zoomAt(camera: Camera, scale: number, point: Point): Camera {
-  const zoom = clampZoom(scale);
+function zoomAt(
+  camera: Camera,
+  scale: number,
+  point: Point,
+  minimum: number,
+): Camera {
+  const zoom = clampZoom(scale, minimum);
   const ratio = zoom / camera.zoom;
   return {
     zoom,
@@ -74,7 +66,10 @@ export function GraphCanvas({
     positions = layoutGraph(graph.nodes, graph.rootId, layout.positions);
     setLayout({ signature, positions });
   }
-  const [camera, setCamera] = useState<Camera>(() => fit(graph, positions));
+  const [camera, setCamera] = useState<Camera>({ x: 0, y: 0, zoom: 1 });
+  const needsFraming = useRef(true);
+  const minimum = useRef(0.2);
+  const fitDescription = useId();
   const svg = useRef<SVGSVGElement>(null);
   const drag = useRef<{
     pointer: number;
@@ -83,6 +78,46 @@ export function GraphCanvas({
     node?: string;
     position?: Point;
   } | null>(null);
+  const fit = useGraphFit(
+    svg,
+    () => {
+      const element = svg.current;
+      if (!element || !graph.nodes.length) return null;
+      const viewport = graphViewport(element);
+      const screen = element.getScreenCTM();
+      if (!viewport || !screen) return null;
+      const inverse = screen.inverse();
+      const start = new DOMPoint(viewport.x1, viewport.y1).matrixTransform(
+        inverse,
+      );
+      const end = new DOMPoint(viewport.x2, viewport.y2).matrixTransform(
+        inverse,
+      );
+      const padding = fitPadding(viewport);
+      const result = fitGraph(
+        svgBounds(element),
+        { x1: start.x, y1: start.y, x2: end.x, y2: end.y },
+        {
+          x: padding * Math.hypot(inverse.a, inverse.c),
+          y: padding * Math.hypot(inverse.b, inverse.d),
+        },
+      );
+      minimum.current = zoomFloor(0.2, result?.zoom, camera.zoom);
+      return result;
+    },
+    (next) => {
+      needsFraming.current = false;
+      setCamera(next);
+    },
+    graph.rootId,
+  );
+  useEffect(() => {
+    needsFraming.current = true;
+  }, [graph.rootId]);
+  useEffect(() => {
+    if (needsFraming.current && fit.available && graph.nodes.length)
+      fit.request();
+  });
   const marker = useId().replace(/:/g, "");
   const neighbors = new Set([selectedId]);
   for (const edge of graph.edges) {
@@ -96,28 +131,41 @@ export function GraphCanvas({
       const point = localPoint(element, event.clientX, event.clientY);
       if (!point) return;
       event.preventDefault();
+      needsFraming.current = false;
       setCamera((current) =>
         zoomAt(
           current,
           current.zoom *
             Math.exp(-Math.max(-200, Math.min(200, event.deltaY)) * 0.004),
           point,
+          minimum.current,
         ),
       );
     };
     element.addEventListener("wheel", wheel, { passive: false });
     return () => element.removeEventListener("wheel", wheel);
   }, []);
-  const zoom = (factor: number) =>
+  const zoom = (factor: number) => {
+    fit.cancel();
+    needsFraming.current = false;
     setCamera((current) =>
-      zoomAt(current, current.zoom * factor, { x: width / 2, y: height / 2 }),
+      zoomAt(
+        current,
+        current.zoom * factor,
+        { x: width / 2, y: height / 2 },
+        minimum.current,
+      ),
     );
-  const pan = (x: number, y: number) =>
+  };
+  const pan = (x: number, y: number) => {
+    fit.cancel();
+    needsFraming.current = false;
     setCamera((current) => ({
       ...current,
       x: current.x + x,
       y: current.y + y,
     }));
+  };
   return (
     <div className="agent-graph-canvas">
       <div
@@ -159,12 +207,25 @@ export function GraphCanvas({
         >
           ↓
         </button>
-        <button type="button" onClick={() => setCamera(fit(graph, positions))}>
-          {copy.fit}
+        <button
+          type="button"
+          className="graph-fit-button"
+          aria-label={copy.fit}
+          title={
+            fit.available ? copy.fit : `${copy.fit}: ${copy.fitUnavailable}`
+          }
+          aria-describedby={fitDescription}
+          disabled={!fit.available}
+          onClick={fit.request}
+        >
+          <Scan size={16} aria-hidden="true" />
+          <span>{copy.fit}</span>
         </button>
         <button
           type="button"
           onClick={() => {
+            fit.cancel();
+            needsFraming.current = false;
             const point = positions[selectedId] ?? positions[graph.rootId];
             setCamera((current) => ({
               ...current,
@@ -176,6 +237,9 @@ export function GraphCanvas({
           {copy.focus}
         </button>
       </div>
+      <span id={fitDescription} className="graph-fit-status" role="status">
+        {fit.available ? "" : copy.fitUnavailable}
+      </span>
       <p className="muted">{copy.canvasHelp}</p>
       {/* The equivalent native-button relationship list is the keyboard/screen-reader interface. */}
       <svg
@@ -185,6 +249,7 @@ export function GraphCanvas({
         focusable="false"
         onPointerDown={(event) => {
           if (event.button !== 0 || drag.current) return;
+          needsFraming.current = false;
           const start = localPoint(
             event.currentTarget,
             event.clientX,

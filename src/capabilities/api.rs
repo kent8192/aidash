@@ -951,6 +951,9 @@ async fn restore_new_thread(
 		crate::collaboration::access::Lease::begin_message_create(&f.store, actor, workspace)
 			.await?;
 	let result = async {
+		// Restore takes the sharing lock before publishing events. Acquire it
+		// before the new message does too, so concurrent restores cannot deadlock.
+		super::sharing::serialize(lease.access_mut().ok_or(Error::Forbidden)?).await?;
 		let message = crate::collaboration::threads::post(
 			&f.store,
 			&mut lease,

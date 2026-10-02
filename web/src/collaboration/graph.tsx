@@ -915,7 +915,7 @@ export function Graph({
                   </fieldset>
                 </details>
               </aside>
-              {graph.nodes.length === 0 ? (
+              {graph.nodes.length === 0 && (
                 <div className="mesh-empty" role="status">
                   <Network size={36} />
                   <h2>{copy.noResults}</h2>
@@ -924,7 +924,8 @@ export function Graph({
                     {copy.clear}
                   </button>
                 </div>
-              ) : list ? (
+              )}
+              {list ? (
                 <div className="mesh-list">
                   <table aria-label={copy.list}>
                     <thead>

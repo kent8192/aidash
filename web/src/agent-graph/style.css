@@ -59,8 +59,10 @@ dialog:has(.agent-graph) {
 .agent-graph-selection strong {
   overflow-wrap: anywhere;
 }
-.agent-graph-canvas svg {
+.agent-graph-canvas > svg {
   display: block;
+  /* Keep measured text bounds stable when the camera changes scale. */
+  text-rendering: geometricPrecision;
   width: 100%;
   max-height: 65vh;
   min-height: 260px;
@@ -71,7 +73,7 @@ dialog:has(.agent-graph) {
   cursor: grab;
   user-select: none;
 }
-.agent-graph-canvas svg:active {
+.agent-graph-canvas > svg:active {
   cursor: grabbing;
 }
 .agent-graph-edge path {
