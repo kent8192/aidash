@@ -235,6 +235,7 @@ pub(crate) async fn reap(store: &Store, cursor: &mut Uuid) -> Result<()> {
 		.fetch_one(&store.pool)
 		.await?;
 		let identity = crate::authorization::identity::SubjectIdentity {
+			http_session: None,
 			credential_id: operation.credential_id,
 			tenant: operation.tenant.clone(),
 			subject: operation.principal.clone(),

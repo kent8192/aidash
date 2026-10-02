@@ -12,6 +12,7 @@ use crate::{
 };
 use sea_orm::sea_query::{
 	Alias, Asterisk, Condition, Expr, ExprTrait, LockType, Order, PostgresQueryBuilder, Query,
+	extension::postgres::PgBinOper,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -20,6 +21,44 @@ use uuid::Uuid;
 pub struct Workspaces {
 	pub store: Store,
 	pub identity: SubjectIdentity,
+}
+
+// Keep the disjunction structured so every caller's cursor bounds both arms.
+const EVENT_SCAN_LIMIT: usize = 4096;
+
+fn event_scope(include_marketplace: bool, tenant: &str) -> Condition {
+	let scope = Condition::any().add(Expr::cust("workspace_id=ANY($1)"));
+	if include_marketplace {
+		scope.add(
+			Condition::all()
+				.add(Expr::col(Alias::new("workspace_id")).is_null())
+				.add(Expr::col(Alias::new("kind")).like("marketplace.%"))
+				.add(Expr::col(Alias::new("kind")).ne("marketplace.audit"))
+				.add(
+					Condition::any()
+						.add(Expr::cust("data->>'tenant'").eq(tenant))
+						.add(
+							Expr::cust("data->>'key'").in_subquery(
+								Query::select()
+									.column(Alias::new("key"))
+									.from_as(
+										Alias::new("marketplace_audiences"),
+										Alias::new("audience"),
+									)
+									.and_where(
+										Expr::cust("audience.document->'tenants'").binary(
+											PgBinOper::Contains,
+											Expr::val(json!([tenant])),
+										),
+									)
+									.to_owned(),
+							),
+						),
+				),
+		)
+	} else {
+		scope
+	}
 }
 
 impl Access {
@@ -189,7 +228,48 @@ impl Access {
 		run: impl Into<crate::domain::RunMetadata>,
 	) -> Result<bool> {
 		let run = run.into();
-		if let Some(allowed) = self.cached_runs.get(&(run.workspace_id, run.id)) {
+		if run.home_node != self.node_id {
+			let admission: Option<Uuid> = sqlx::query_scalar(
+				&Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("authorization_remote_admissions"))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+					.to_string(PostgresQueryBuilder),
+			)
+			.bind(run.id)
+			.fetch_optional(&mut **self.tx)
+			.await?;
+			if admission.is_some() {
+				return Ok(self.foreign_run_base_visible(&run).await?
+					&& self.human_reads(run.workspace_id, run.id).await?);
+			}
+			// Locally authorized legacy federation keeps a real local Task and
+			// execution record. Preserve its existing reader path, but never
+			// treat a missing scoped admission as a legacy authorization grant.
+			let local: Option<Uuid> = sqlx::query_scalar(
+				&Query::select()
+					.column(Alias::new("run_id"))
+					.from(Alias::new("authorization_execution"))
+					.and_where(Expr::cust(
+						"run_id=$1 AND task_id=$2 AND workspace_id=$3 AND tenant=$4",
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.bind(run.id)
+			.bind(run.task_id)
+			.bind(run.workspace_id)
+			.bind(&self.identity.tenant)
+			.fetch_optional(&mut **self.tx)
+			.await?;
+			if local.is_none() {
+				return Ok(false);
+			}
+		}
+		// Task provenance may queue foreign checks in a leaf evaluation. Only
+		// cache a base decision when those checks have actually completed.
+		if self.dependency_frontier.is_none()
+			&& let Some(allowed) = self.cached_runs.get(&(run.workspace_id, run.id))
+		{
 			return if *allowed {
 				self.human_reads(run.workspace_id, run.id).await
 			} else {
@@ -221,11 +301,16 @@ impl Access {
 		let allowed = task_visible
 			&& self.decide(&resource, "run.read").await?
 			&& self.decide(&memory, "memory.read").await?;
-		self.cached_runs.insert((run.workspace_id, run.id), allowed);
+		if self.dependency_frontier.is_none() {
+			self.cached_runs.insert((run.workspace_id, run.id), allowed);
+		}
 		Ok(allowed && self.human_reads(run.workspace_id, run.id).await?)
 	}
 
 	pub(crate) async fn event_visible(&mut self, event: &Event) -> Result<bool> {
+		if event.kind.starts_with("marketplace.") {
+			return crate::marketplace::events::visible(self, event, &self.node_id.clone()).await;
+		}
 		if let Some(visible) = self.resource_event_visible(event).await? {
 			return Ok(visible);
 		}
@@ -398,25 +483,32 @@ impl Access {
 		}
 	}
 
-	async fn latest_visible_events(&mut self, workspaces: &[Uuid]) -> Result<Vec<Event>> {
+	async fn latest_visible_events(
+		&mut self,
+		workspaces: &[Uuid],
+		include_marketplace: bool,
+	) -> Result<Vec<Event>> {
 		let mut cursor = i64::MAX;
 		let mut result = vec![];
-		loop {
+		let mut scanned = 0;
+		while scanned < EVENT_SCAN_LIMIT {
+			let page_size = (EVENT_SCAN_LIMIT - scanned).min(100);
 			let rows: Vec<Event> = sqlx::query_as(
 				&Query::select()
 					.column(Asterisk)
 					.from(Alias::new("events"))
-					.and_where(Expr::cust("workspace_id=ANY($1)"))
+					.cond_where(event_scope(include_marketplace, &self.identity.tenant))
 					.and_where(Expr::col(Alias::new("sequence")).lt(Expr::cust("$2")))
 					.order_by(Alias::new("sequence"), Order::Desc)
-					.limit(100)
+					.limit(page_size as u64)
 					.to_string(PostgresQueryBuilder),
 			)
 			.bind(workspaces)
 			.bind(cursor)
 			.fetch_all(&mut **self.tx)
 			.await?;
-			let exhausted = rows.len() < 100;
+			let exhausted = rows.len() < page_size;
+			scanned += rows.len();
 			for event in rows {
 				cursor = event.sequence;
 				if self.event_visible(&event).await? {
@@ -480,7 +572,7 @@ impl Access {
 		let workspace = self.workspace(id).await?;
 		self.require(&workspace, "workspace.read").await?;
 		let events = if self.decide(&workspace, "workspace.events").await? {
-			self.latest_visible_events(&[id]).await?
+			self.latest_visible_events(&[id], false).await?
 		} else {
 			vec![]
 		};
@@ -959,7 +1051,9 @@ impl Workspaces {
 				runs: vec![],
 				human_requests: vec![],
 				conversations: vec![],
-				events: access.latest_visible_events(&event_workspaces).await?,
+				events: access
+					.latest_visible_events(&event_workspaces, true)
+					.await?,
 			};
 			let mut offset = 0_u64;
 			loop {
@@ -1100,6 +1194,15 @@ impl Workspaces {
 		self.read_events(after, workspace, limit, true)
 			.await
 			.map(|(events, _)| events)
+	}
+
+	pub(crate) async fn events_with_cursor(
+		&self,
+		after: i64,
+		workspace: Option<Uuid>,
+		limit: i64,
+	) -> Result<(Vec<Event>, i64)> {
+		self.read_events(after, workspace, limit, true).await
 	}
 
 	/// Polling itself does not append decision audits. Every delivered frame is
@@ -1243,7 +1346,7 @@ impl Workspaces {
 					.from(Alias::new("events"))
 					.cond_where(
 						Condition::all()
-							.add(Expr::cust("workspace_id=ANY($1)"))
+							.add(event_scope(workspace.is_none(), &access.identity.tenant))
 							.add(Expr::col(Alias::new("sequence")).gt(Expr::cust("$2"))),
 					)
 					.order_by(Alias::new("sequence"), Order::Asc)
@@ -1294,27 +1397,30 @@ impl Workspaces {
 			let limit = limit.clamp(1, 1000) as usize;
 			let mut cursor = after.max(0);
 			let mut result = vec![];
+			let mut scanned = 0;
 			// Continue past rejected events so they cannot starve later
 			// permitted events or trap Last-Event-ID replay on an empty page.
-			loop {
+			while scanned < EVENT_SCAN_LIMIT {
+				let page_size = (EVENT_SCAN_LIMIT - scanned).min(500);
 				let batch: Vec<Event> = sqlx::query_as(
 					&Query::select()
 						.column(Asterisk)
 						.from(Alias::new("events"))
 						.cond_where(
 							Condition::all()
-								.add(Expr::cust("workspace_id=ANY($1)"))
+								.add(event_scope(workspace.is_none(), &access.identity.tenant))
 								.add(Expr::col(Alias::new("sequence")).gt(Expr::cust("$2"))),
 						)
 						.order_by(Alias::new("sequence"), Order::Asc)
-						.limit(500)
+						.limit(page_size as u64)
 						.to_string(PostgresQueryBuilder),
 				)
 				.bind(&visible)
 				.bind(cursor)
 				.fetch_all(&mut **access.tx)
 				.await?;
-				let exhausted = batch.len() < 500;
+				let exhausted = batch.len() < page_size;
+				scanned += batch.len();
 				for event in batch {
 					cursor = event.sequence;
 					if access.event_visible(&event).await? {

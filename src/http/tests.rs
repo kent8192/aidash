@@ -323,6 +323,7 @@ async fn actor_limits_share_routes_but_separate_tenants() {
 		let mut request = request(path);
 		request.extensions_mut().insert(Actor::Subject(
 			crate::authorization::identity::SubjectIdentity {
+				http_session: None,
 				credential_id: uuid::Uuid::new_v4(),
 				tenant: tenant.into(),
 				subject: "alice".into(),

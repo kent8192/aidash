@@ -346,7 +346,39 @@ impl Harness {
 			};
 			let mut current = store.run(id).await?;
 			let attempts = current.recovery.retry.as_ref().map_or(0, |r| r.count) + 1;
-			if matches!(
+			if let Error::RemoteSemantic(reason) = e {
+				use crate::semantic::remote::Failure;
+				if reason == Failure::Pending || (reason.transient() && attempts <= 5) {
+					let delay = if reason == Failure::Pending {
+						1
+					} else {
+						2_i64.pow(attempts)
+					};
+					current.recovery.semantic_reason = Some(reason);
+					current.recovery.retry = Some(RetryState {
+						count: if reason == Failure::Pending {
+							attempts - 1
+						} else {
+							attempts
+						},
+						at: chrono::Utc::now() + chrono::Duration::seconds(delay),
+					});
+					current.error = Some(reason.to_string());
+					store
+						.save_run(&current, token, "run.semantic_retrying")
+						.await?;
+				} else {
+					let reason = if reason.transient() {
+						Failure::RetriesExhausted
+					} else {
+						reason
+					};
+					current.recovery.semantic_reason = Some(reason);
+					store
+						.pause_for_semantic_execution(&current, token, reason)
+						.await?;
+				}
+			} else if matches!(
 				e,
 				Error::Forbidden | Error::Unauthorized | Error::IdentityStatusUnavailable
 			) {
@@ -618,7 +650,11 @@ impl Harness {
 		self.tool_error(run, token, call, cursor, message).await
 	}
 
-	async fn tools(&self, config: &AgentConfig) -> Result<BTreeMap<String, Arc<dyn Tool>>> {
+	async fn tools(
+		&self,
+		run: &Run,
+		config: &AgentConfig,
+	) -> Result<BTreeMap<String, Arc<dyn Tool>>> {
 		let mut tools = builtins();
 		crate::capabilities::tools::add(&mut tools, &config.core_capabilities);
 		tools.retain(|name, _| config.permits_builtin(name));
@@ -626,7 +662,7 @@ impl Harness {
 			let entry = self
 				.federation
 				.registry
-				.get(&reference.id, &reference.version)
+				.get_for_run(run, &reference.id, &reference.version)
 				.await?;
 			let cfg: ToolConfig = serde_json::from_value(entry.config.clone())?;
 			if matches!(cfg, ToolConfig::Agent { .. })
@@ -775,7 +811,7 @@ impl Harness {
 		let entry = self
 			.federation
 			.registry
-			.get(&run.agent_id, &run.agent_version)
+			.get_for_run(&*run, &run.agent_id, &run.agent_version)
 			.await?;
 		let agent: AgentConfig = serde_json::from_value(entry.config.clone())?;
 		match run.state.clone() {
@@ -829,13 +865,13 @@ impl Harness {
 				let model_entry = self
 					.federation
 					.registry
-					.get(&agent.model.id, &agent.model.version)
+					.get_for_run(&*run, &agent.model.id, &agent.model.version)
 					.await?;
 				let model_cfg: ModelConfig = serde_json::from_value(model_entry.config)?;
 				let window = model_cfg.context_window;
 				let output_limit = model_cfg.output_token_limit();
 				let model = provider(self.federation.client.clone(), model_cfg.clone())?;
-				let mut tools = self.tools(&agent).await?;
+				let mut tools = self.tools(run, &agent).await?;
 				if let Some(guard) = guard {
 					guard.filter_core_tools(&mut tools).await?;
 				}
@@ -850,7 +886,7 @@ impl Harness {
 					let entry = self
 						.federation
 						.registry
-						.get(&skill.id, &skill.version)
+						.get_for_run(&*run, &skill.id, &skill.version)
 						.await?;
 					instructions.push('\n');
 					instructions.push_str(&format!("Skill {}@{}:\n", skill.id, skill.version));
@@ -1087,13 +1123,24 @@ impl Harness {
 					return Err(error);
 				}
 				let semantic_budget = budget.remaining(&Context::default(), &pinned) / 2;
+				let semantic_inputs = inputs
+					.iter()
+					.filter_map(|input| {
+						let message = run_messages.iter().find(|m| m["seq"] == input.seq)?;
+						let text = message["content"].as_str()?;
+						Some((
+							crate::semantic::remote::InputRead {
+								id: input.message_id?,
+								sequence: input.seq,
+								digest: crate::semantic::service::content_digest(text),
+							},
+							text.to_owned(),
+						))
+					})
+					.collect::<Vec<_>>();
 				if let Some(guard) = guard {
 					if let Some(semantic) = guard
-						.semantic_context(
-							store,
-							&format!("{}\n{}", task.title, task.description),
-							semantic_budget,
-						)
+						.semantic_context(store, &task, &semantic_inputs, semantic_budget)
 						.await?
 					{
 						pinned["semantic_memory"] = json!(semantic);
@@ -1125,19 +1172,37 @@ impl Harness {
 						self.federation.client.clone(),
 					)?)
 				};
-				context::compact(&mut context, compactor.as_ref(), &budget, &pinned).await?;
+				context::compact(&mut context, compactor.as_ref(), &budget, &pinned)
+					.await
+					.map_err(|error| {
+						if guard.is_some_and(|guard| guard.is_remote())
+							&& matches!(error, Error::Invalid(_))
+						{
+							Error::RemoteSemantic(crate::semantic::remote::Failure::ContextBudget)
+						} else {
+							error
+						}
+					})?;
 				if let Some(guard) = guard {
 					guard.inference().await?;
 				}
 				let mut request = budget.request(&context, &pinned);
 				request.content_parts = media.parts;
-				crate::generation::budget::Reservation::check_request(window, &request)?;
+				crate::generation::budget::Reservation::check_request(window, &request).map_err(
+					|error| {
+						if guard.is_some_and(|guard| guard.is_remote()) {
+							Error::RemoteSemantic(crate::semantic::remote::Failure::ContextBudget)
+						} else {
+							error
+						}
+					},
+				)?;
 				let request_tokens = request.estimated_total_tokens();
 				let media_inferred_seq_before_response = context.media_inferred_seq;
 				let observed_input_seq_before_response = run.observed_input_seq;
 				let reservation = if let Some(guard) = guard {
 					guard
-						.reserve_inference(store, token, window, output)
+						.reserve_inference(store, token, window, output, &request)
 						.await?
 				} else {
 					None
@@ -1754,7 +1819,7 @@ impl Harness {
 					}
 				}
 				let call = &call;
-				let mut tools = self.tools(&agent).await?;
+				let mut tools = self.tools(run, &agent).await?;
 				if let Some(guard) = guard {
 					guard.filter_core_tools(&mut tools).await?;
 				}
@@ -1793,7 +1858,7 @@ impl Harness {
 					let entry = self
 						.federation
 						.registry
-						.get(&reference.id, &reference.version)
+						.get_for_run(&*run, &reference.id, &reference.version)
 						.await?;
 					let config: ToolConfig = serde_json::from_value(entry.config)?;
 					let writes = matches!(config, ToolConfig::Http { ref replay, .. } | ToolConfig::Mcp { ref replay, .. } if replay != "read_only");
@@ -1927,7 +1992,7 @@ impl Harness {
 							let model_entry = self
 								.federation
 								.registry
-								.get(&agent.model.id, &agent.model.version)
+								.get_for_run(&*run, &agent.model.id, &agent.model.version)
 								.await?;
 							let model: ModelConfig = serde_json::from_value(model_entry.config)?;
 							match check_model_media_headroom(headroom, parts, &model) {

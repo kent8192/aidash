@@ -126,3 +126,26 @@ fn required_content_distinguishes_missing_fields_from_explicit_null() {
 	plan.as_object_mut().unwrap().remove("result");
 	assert!(serde_json::from_value::<ReadPlan>(plan).is_err());
 }
+
+#[rstest::rstest]
+#[case("configuration")]
+#[case("authority")]
+#[case("invalidated")]
+#[case("provider_contract")]
+#[case("context_budget")]
+#[case("allowance")]
+#[case("unavailable")]
+#[case("retries_exhausted")]
+#[case("pending")]
+fn semantic_recovery_retains_its_reason_and_retry_deadline(#[case] reason: &str) {
+	let input = json!({"state_version":1,"data":thinking_data(),"recovery":{
+		"retry":{"count":2,"at":"2030-01-01T00:00:00Z"},
+		"lease_recovered":false,"semantic_reason":reason
+	}});
+	let (state, recovery) = decode(RunPhase::Thinking, input.clone()).unwrap();
+	assert_eq!(recovery.retry.as_ref().unwrap().count, 2);
+	assert_eq!(encode(&state, &recovery).unwrap(), input);
+	let mut unknown = input;
+	unknown["recovery"]["semantic_reason"] = json!("future_failure");
+	assert!(decode(RunPhase::Thinking, unknown).is_err());
+}

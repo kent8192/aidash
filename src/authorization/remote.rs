@@ -2,6 +2,9 @@
 //! a task revision and exact receiver definitions; possession never bypasses
 //! current policy, credential, task, peer or receiver checks.
 pub(crate) mod execution;
+pub(crate) mod operator;
+pub(crate) mod reads;
+pub(crate) mod semantic;
 
 use super::{
 	access::Access,
@@ -36,6 +39,8 @@ pub struct PrepareInput {
 	node_id: String,
 	agent: EntityRef,
 	ttl_seconds: i64,
+	#[serde(default)]
+	semantic: crate::semantic::remote::Request,
 }
 #[derive(Clone, sqlx::FromRow)]
 struct Grant {
@@ -51,6 +56,7 @@ struct Grant {
 	inspection: Value,
 	expires_at: DateTime<Utc>,
 	revoked: bool,
+	semantic: Value,
 }
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct Prepared {
@@ -60,10 +66,12 @@ pub struct Prepared {
 	agent: EntityRef,
 	expires_at: DateTime<Utc>,
 	revoked: bool,
+	semantic: crate::semantic::remote::Binding,
 }
 impl Grant {
 	fn identity(&self) -> SubjectIdentity {
 		SubjectIdentity {
+			http_session: None,
 			credential_id: self.credential_id,
 			tenant: self.tenant.clone(),
 			subject: self.root_subject.clone(),
@@ -81,6 +89,7 @@ impl Grant {
 			},
 			expires_at: self.expires_at,
 			revoked: self.revoked,
+			semantic: serde_json::from_value(self.semantic.clone())?,
 		})
 	}
 }
@@ -92,6 +101,8 @@ pub fn routes() -> OpenApiRouter<Federation> {
 		.routes(routes!(execution::list))
 		.routes(routes!(execution::control))
 		.routes(routes!(execution::message))
+		.routes(routes!(execution::follow_up))
+		.routes(routes!(execution::provenance))
 }
 
 // A receiver may describe only the requested Agent's exact direct dependencies.
@@ -125,6 +136,7 @@ fn validate(
 		.chain(config.tools.iter().map(|r| (r, "tool")))
 		.chain(config.skills.iter().map(|r| (r, "skill")))
 		.chain(config.cluster.iter().map(|r| (r, "cluster")))
+		.chain(inspection.compactor.iter().map(|r| (r, "compactor")))
 	{
 		if let Some(previous) = expected.insert((&reference.id, &reference.version), kind)
 			&& previous != kind
@@ -177,6 +189,8 @@ async fn source_authority(
 	node: &str,
 	inspection: &Inspection,
 ) -> Result<()> {
+	crate::generation::foreign::check_home(access, task, node, inspection.generation.as_ref())
+		.await?;
 	let executor = qualified_agent(node, &inspection.agent.id, &inspection.agent.version);
 	if access.subjects.last() != Some(&executor)
 		|| access
@@ -213,6 +227,7 @@ async fn source_authority(
 			"tool" => "tool.invoke",
 			"skill" => "skill.use",
 			"cluster" => "cluster.execute",
+			"compactor" => "compaction.invoke",
 			_ => return Err(Error::Forbidden),
 		};
 		access.require(&resource, action).await?;
@@ -260,12 +275,17 @@ async fn inspect(
 	node: &str,
 	agent: &EntityRef,
 	requirements: &Search,
+	task_id: Uuid,
+	compactor: Option<&EntityRef>,
 ) -> Result<Inspection> {
 	let resource = access.resource("node", node, json!({"remote_node":node}));
 	access.require(&resource, "federation.execute").await?;
 	peer(access, node).await?;
-	let inspection: Inspection = super::peer::authority_request(f, node, "/scoped/execution/inspect", &json!({"tenant":access.identity.tenant,"subject":access.identity.subject,"agent":agent,"requirements":requirements})).await?;
+	let inspection: Inspection = super::peer::authority_request(f, node, "/scoped/execution/inspect", &json!({"tenant":access.identity.tenant,"subject":access.identity.subject,"task_id":task_id,"agent":agent,"requirements":requirements,"compactor":compactor})).await?;
 	validate(&inspection, node, agent, requirements)?;
+	if inspection.compactor.as_ref() != compactor {
+		return Err(Error::Forbidden);
+	}
 	Ok(inspection)
 }
 #[utoipa::path(post,path="/tasks/{id}/remote-grants",operation_id="remote_grant_prepare",params(("id"=Uuid,Path)),request_body=PrepareInput,responses((status=200,body=Prepared)),security(("bearer_auth"=[])))]
@@ -278,7 +298,10 @@ async fn prepare(
 	let Actor::Subject(identity) = actor else {
 		return Err(Error::Forbidden);
 	};
-	if input.node_id == f.config.node_id || !(1..=3600).contains(&input.ttl_seconds) {
+	if input.id.is_nil()
+		|| input.node_id == f.config.node_id
+		|| !(1..=3600).contains(&input.ttl_seconds)
+	{
 		return Err(Error::Invalid(
 			"invalid remote grant destination or lifetime".into(),
 		));
@@ -299,7 +322,9 @@ async fn prepare(
         access.require(&resource,"task.delegate").await?;
         access.require(&resource,"task.execute").await?;
         let requirements: Search = serde_json::from_value(task.requirements.clone())?;
-        let inspection=inspect(&f,&mut access,&input.node_id,&input.agent,&requirements).await?;
+        let inspection=inspect(&f,&mut access,&input.node_id,&input.agent,&requirements,task.id,input.semantic.compactor()).await?;
+        crate::generation::foreign::check_preparation(&task,inspection.generation.as_ref())?;
+        let semantic=serde_json::to_value(semantic::binding(&f,&mut access,&task,&input.node_id,&inspection,&input.semantic).await?)?;
         source_authority(&mut access,&task,&input.node_id,&inspection).await?;
         let metadata=serde_json::to_value(&inspection)?;
         // Retain the task revision through persistence, after read authorization.
@@ -307,6 +332,12 @@ async fn prepare(
         if current.revision!=task.revision || current.status!=crate::domain::TaskStatus::Open {return Err(Error::Conflict("task changed during grant preparation".into()));}
         let inserted=sqlx::query(&sea_orm::sea_query::Query::insert().into_table(sea_orm::sea_query::Alias::new("authorization_remote_grants")).columns([sea_orm::sea_query::Alias::new("id"), sea_orm::sea_query::Alias::new("task_id"), sea_orm::sea_query::Alias::new("task_revision"), sea_orm::sea_query::Alias::new("workspace_id"), sea_orm::sea_query::Alias::new("node_id"), sea_orm::sea_query::Alias::new("tenant"), sea_orm::sea_query::Alias::new("credential_id"), sea_orm::sea_query::Alias::new("root_subject"), sea_orm::sea_query::Alias::new("subject_chain"), sea_orm::sea_query::Alias::new("inspection"), sea_orm::sea_query::Alias::new("expires_at")]).values_panic([sea_orm::sea_query::Expr::cust("$1"), sea_orm::sea_query::Expr::cust("$2"), sea_orm::sea_query::Expr::cust("$3"), sea_orm::sea_query::Expr::cust("$4"), sea_orm::sea_query::Expr::cust("$5"), sea_orm::sea_query::Expr::cust("$6"), sea_orm::sea_query::Expr::cust("$7"), sea_orm::sea_query::Expr::cust("$8"), sea_orm::sea_query::Expr::cust("$9"), sea_orm::sea_query::Expr::cust("$10"), sea_orm::sea_query::Expr::cust("CLOCK_TIMESTAMP() + MAKE_INTERVAL(secs => $11)")]).on_conflict(sea_orm::sea_query::OnConflict::new().do_nothing().to_owned()).to_string(sea_orm::sea_query::PostgresQueryBuilder))
             .bind(input.id).bind(task.id).bind(task.revision).bind(task.workspace_id).bind(&input.node_id).bind(&identity.tenant).bind(identity.credential_id).bind(&identity.subject).bind(&access.subjects).bind(&metadata).bind(input.ttl_seconds as f64).execute(&mut **access.tx).await?.rows_affected();
+        if inserted==1 {
+            sqlx::query(&sea_orm::sea_query::Query::update().table(sea_orm::sea_query::Alias::new("authorization_remote_grants"))
+                .value(sea_orm::sea_query::Alias::new("semantic"), sea_orm::sea_query::Expr::cust("$2"))
+                .and_where(sea_orm::sea_query::Expr::cust("id=$1")).to_string(sea_orm::sea_query::PostgresQueryBuilder))
+                .bind(input.id).bind(&semantic).execute(&mut **access.tx).await?;
+        }
         let grant: Grant=sqlx::query_as(&sea_orm::sea_query::Query::select().expr(sea_orm::sea_query::SimpleExpr::from(sea_orm::sea_query::Expr::col(sea_orm::sea_query::Asterisk))).from(sea_orm::sea_query::Alias::new("authorization_remote_grants")).and_where(sea_orm::sea_query::Expr::cust("id = $1")).lock(sea_orm::sea_query::LockType::Share).to_string(sea_orm::sea_query::PostgresQueryBuilder)).bind(input.id).fetch_one(&mut **access.tx).await?;
         if grant.task_id != task_id
             || grant.task_revision != task.revision
@@ -317,6 +348,7 @@ async fn prepare(
             || grant.root_subject != identity.subject
             || grant.subject_chain != access.subjects
             || grant.inspection != metadata
+            || grant.semantic != semantic
             || !live(&mut access, grant.id).await?
         {
             return Err(Error::Conflict("grant id already binds different or expired authority".into()));
@@ -409,6 +441,11 @@ pub(crate) struct Description {
 	pub task: Task,
 	pub inspection: Inspection,
 	pub expires_at: DateTime<Utc>,
+	#[serde(
+		default,
+		skip_serializing_if = "crate::semantic::remote::Binding::disabled"
+	)]
+	pub semantic: crate::semantic::remote::Binding,
 }
 // Only the destination peer may obtain the source-authorized task. Both this
 // description and boolean verification share the exact live authority checks.
@@ -450,7 +487,11 @@ pub(crate) async fn snapshot(
 	.await;
 	access.finish(result).await
 }
-async fn description_lease(f: &Federation, node: &str, id: Uuid) -> Result<(Access, Description)> {
+pub(crate) async fn description_lease(
+	f: &Federation,
+	node: &str,
+	id: Uuid,
+) -> Result<(Access, Description)> {
 	// A scoped worker may commit a task revision between task_read and the
 	// shared row lock in a read-only description. Revalidate from a new
 	// authority snapshot rather than treating that transient race as a denial.
@@ -580,6 +621,7 @@ async fn description_lease_mode(
 		};
 		let inspection: Inspection = serde_json::from_value(current.inspection)?;
 		source_authority(&mut access, &task, node, &inspection).await?;
+		access.remote_semantic_sources(current.id).await?;
 		if !access.grant_reads_visible(current.id).await? {
 			return Err(Error::Forbidden);
 		}
@@ -589,12 +631,28 @@ async fn description_lease_mode(
 			version: inspection.agent.version.clone(),
 		};
 		let requirements = serde_json::from_value(task.requirements.clone())?;
-		let fresh = inspect(f, &mut access, node, &agent, &requirements).await?;
-		if fresh != inspection {
+		let semantic: crate::semantic::remote::Binding = serde_json::from_value(current.semantic)?;
+		let request = semantic.request();
+		let fresh = inspect(
+			f,
+			&mut access,
+			node,
+			&agent,
+			&requirements,
+			task.id,
+			request.compactor(),
+		)
+		.await?;
+		if !fresh.satisfies(&inspection) {
 			return Err(Error::Forbidden);
 		}
 		if !live(&mut access, current.id).await? {
 			return Err(Error::Forbidden);
+		}
+		if semantic::binding(f, &mut access, &task, node, &fresh, &request).await? != semantic {
+			return Err(Error::RemoteSemantic(
+				crate::semantic::remote::Failure::Configuration,
+			));
 		}
 		Ok(Description {
 			grant_id: current.id,
@@ -605,6 +663,7 @@ async fn description_lease_mode(
 			task: admitted_task,
 			inspection,
 			expires_at: current.expires_at,
+			semantic,
 		})
 	}
 	.await;

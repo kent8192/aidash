@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-distribution="${1:?Usage: scripts/test-cluster.sh kubernetes|k3s [platform|transactions]}"
+distribution="${1:?Usage: scripts/test-cluster.sh kubernetes|k3s [platform|transactions|remote-memory]}"
 case "$distribution" in kubernetes|k3s) ;; *) exit 2 ;; esac
 profile="${2:-platform}"
-case "$profile" in platform|transactions) ;; *) exit 2 ;; esac
+case "$profile" in platform|transactions|remote-memory) ;; *) exit 2 ;; esac
 tools_dir="$PWD/.ignore/platform/cluster-tools"
 mkdir -p "$tools_dir"
 export PATH="$tools_dir:$PATH"
@@ -72,7 +72,7 @@ manifest['source_digest']=hashlib.sha256(json.dumps(files,sort_keys=True).encode
 pathlib.Path(os.environ['AIDASH_CLUSTER_SOURCE_MANIFEST']).write_text(json.dumps(manifest,indent=2)+'\n')
 SOURCE_MANIFEST
 images=(aidash:cluster-acceptance)
-if [[ "$profile" == transactions ]]; then
+if [[ "$profile" == transactions || "$profile" == remote-memory ]]; then
   docker build --build-arg CARGO_PROFILE=dev --target dev-backend -t aidash:cluster-acceptance .
 else
   docker build --build-arg CARGO_PROFILE=dev -t aidash:cluster-acceptance .
@@ -88,7 +88,10 @@ else
   k3d image import "${images[@]}" --cluster "$cluster"
   k3d image import "$postgres_image" --cluster "$cluster"
 fi
-if [[ "$profile" == transactions ]]; then
+if [[ "$profile" == remote-memory ]]; then
+  RUSTC_WRAPPER= cargo run --locked --quiet --example remote_memory_queries > "$tools_dir/remote-memory-queries.json"
+  python3 scripts/remote_memory_cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --postgres-image "$postgres_image" --queries "$tools_dir/remote-memory-queries.json"
+elif [[ "$profile" == transactions ]]; then
   RUSTC_WRAPPER= cargo run --locked --quiet --example acceptance_queries > "$tools_dir/transaction-queries.json"
   python3 scripts/transaction_cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --postgres-image "$postgres_image" --queries "$tools_dir/transaction-queries.json"
 else

@@ -332,6 +332,8 @@ impl RunState {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryState {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub semantic_reason: Option<crate::semantic::remote::Failure>,
 	pub retry: Option<RetryState>,
 	pub lease_recovered: bool,
 }

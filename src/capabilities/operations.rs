@@ -526,6 +526,7 @@ async fn drive(store: &Store, id: Uuid) -> Result<()> {
 	.fetch_one(&store.pool)
 	.await?;
 	let identity = SubjectIdentity {
+		http_session: None,
 		credential_id: snapshot.credential_id,
 		tenant: snapshot.tenant.clone(),
 		subject: snapshot.principal.clone(),

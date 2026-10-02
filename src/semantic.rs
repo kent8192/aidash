@@ -1,6 +1,7 @@
 //! Persistent semantic sources with PostgreSQL authority and Qdrant indexes.
 pub mod api;
 pub mod backend;
+pub mod remote;
 pub mod service;
 pub mod worker;
 

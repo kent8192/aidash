@@ -167,9 +167,13 @@ impl Access {
 		.fetch_all(&mut **self.tx)
 		.await?;
 		for grant in grants {
-			let key = (grant, format!("remote:{}", self.authority_context()));
+			let key = (
+				self.node_id.clone(),
+				grant,
+				format!("remote:{}", self.authority_context()),
+			);
 			if self.checking_reads.insert(key.clone()) {
-				let allowed = Box::pin(self.grant_reads_visible(grant)).await;
+				let allowed = Box::pin(self.grant_output_visible(grant)).await;
 				self.checking_reads.remove(&key);
 				if !allowed? {
 					return Ok(false);
@@ -534,11 +538,21 @@ impl Access {
 	/// Walk recorded run dependencies iteratively; cycles between observation
 	/// journals must terminate without skipping any resource's current policy.
 	pub(crate) async fn run_reads_visible(&mut self, run: Uuid) -> Result<bool> {
-		let key = (run, self.authority_context());
+		let key = (self.node_id.clone(), run, self.authority_context());
 		if !self.checking_reads.insert(key.clone()) {
 			return Ok(true);
 		}
-		let result = self.run_reads_visible_in(run).await;
+		let coordinator = self.dependency_frontier.is_none();
+		if coordinator {
+			self.dependency_frontier = Some(vec![]);
+		}
+		let mut result = self.run_reads_visible_in(run).await;
+		if coordinator {
+			let pending = self.dependency_frontier.take().unwrap_or_default();
+			if matches!(result, Ok(true)) {
+				result = self.verify_dependencies(pending).await;
+			}
+		}
 		self.checking_reads.remove(&key);
 		result
 	}
@@ -552,6 +566,7 @@ impl Access {
 			if !self.registry_reads_visible(run).await?
 				|| !self.remote_reads_visible(run).await?
 				|| !self.semantic_reads_visible(run).await?
+				|| !self.received_semantic_visible(run).await?
 			{
 				return Ok(false);
 			}
@@ -581,6 +596,14 @@ impl Access {
 		Ok(true)
 	}
 	pub(crate) async fn grant_reads_visible(&mut self, grant: Uuid) -> Result<bool> {
+		match self.remote_semantic_sources(grant).await {
+			Ok(()) => {}
+			Err(
+				Error::Forbidden
+				| Error::RemoteSemantic(crate::semantic::remote::Failure::Invalidated),
+			) => return Ok(false),
+			Err(error) => return Err(error),
+		}
 		let sources: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
 			&sea_orm::sea_query::Query::select()
 				.expr(sea_orm::sea_query::SimpleExpr::from(

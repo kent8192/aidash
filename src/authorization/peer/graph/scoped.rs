@@ -103,7 +103,7 @@ pub(super) async fn visible(
 		return Ok(false);
 	}
 	let GraphAuthority::Subject(access) = authority else {
-		return Ok(true);
+		return Ok(description.semantic.disabled());
 	};
 	let workspace = workspace_resource(access, &run.home_node, run.workspace_id);
 	let task = access.resource(
@@ -121,7 +121,8 @@ pub(super) async fn visible(
 		}),
 	);
 	// Admission identifies the data; only the current mapped viewer authorizes it.
-	if !access.decide(&workspace, "workspace.read").await?
+	if !access.foreign_run_base_visible(run).await?
+		|| !access.decide(&workspace, "workspace.read").await?
 		|| !access.decide(&task, "task.read").await?
 		|| !access.decide(&resource, "run.read").await?
 		|| !access.decide(&memory, "memory.read").await?

@@ -3380,6 +3380,27 @@ impl Store {
 
 impl Store {
 	pub(crate) async fn require_legacy_agent(&self, id: &str, version: &str) -> Result<()> {
+		let scoped: bool = sqlx::query_scalar(
+			&sea_orm::sea_query::Query::select()
+				.expr(sea_orm::sea_query::Expr::exists(
+					sea_orm::sea_query::Query::select()
+						.expr(sea_orm::sea_query::Expr::cust("1"))
+						.from(sea_orm::sea_query::Alias::new("registry"))
+						.and_where(sea_orm::sea_query::Expr::cust(
+							"id=$1 AND version=$2 AND metadata ? 'installation'",
+						))
+						.to_owned(),
+				))
+				.to_string(sea_orm::sea_query::PostgresQueryBuilder),
+		)
+		.bind(id)
+		.bind(version)
+		.fetch_one(&self.pool)
+		.await?;
+		if scoped {
+			return Err(Error::Forbidden);
+		}
+
 		let generated: bool = sqlx::query_scalar(
 			&sea_orm::sea_query::Query::select()
 				.expr(sea_orm::sea_query::Expr::cust(
@@ -3709,7 +3730,10 @@ impl Store {
 	}
 	pub async fn save_run(&self, run: &Run, worker: Uuid, kind: &str) -> Result<Run> {
 		let mut recovery = run.recovery.clone();
-		let retrying = matches!(kind, "run.retrying" | "run.failure_pending");
+		let retrying = matches!(
+			kind,
+			"run.retrying" | "run.semantic_retrying" | "run.failure_pending"
+		);
 		if !retrying {
 			recovery.retry = None;
 		}
@@ -3849,11 +3873,38 @@ impl Store {
 		reason: &str,
 		event_kind: &str,
 	) -> Result<()> {
+		self.pause_for_execution_reason(run, worker, reason, event_kind, None)
+			.await
+	}
+	pub(crate) async fn pause_for_semantic_execution(
+		&self,
+		run: &Run,
+		worker: Uuid,
+		reason: crate::semantic::remote::Failure,
+	) -> Result<()> {
+		self.pause_for_execution_reason(
+			run,
+			worker,
+			&reason.to_string(),
+			"run.semantic_blocked",
+			Some(reason),
+		)
+		.await
+	}
+	async fn pause_for_execution_reason(
+		&self,
+		run: impl Into<RunMetadata>,
+		worker: Uuid,
+		reason: &str,
+		event_kind: &str,
+		semantic_reason: Option<crate::semantic::remote::Failure>,
+	) -> Result<()> {
 		let run = run.into();
 		let mut tx = self.pool.begin().await?;
 		let changed = sqlx::query(
 			&sea_orm::sea_query::Query::update()
 				.table(sea_orm::sea_query::Alias::new("runs"))
+                .value(sea_orm::sea_query::Alias::new("pending"), sea_orm::sea_query::Expr::cust("CASE WHEN $4='run.semantic_blocked' AND control='ACTIVE' THEN jsonb_set(pending, '{recovery,semantic_reason}', $5::jsonb, true) ELSE pending END"))
 				.value(
 					sea_orm::sea_query::Alias::new("control"),
 					sea_orm::sea_query::Expr::cust(
@@ -3888,6 +3939,8 @@ impl Store {
 		.bind(run.id)
 		.bind(worker)
 		.bind(reason)
+        .bind(event_kind)
+        .bind(serde_json::to_value(semantic_reason)?)
 		.execute(&mut *tx)
 		.await?
 		.rows_affected();
@@ -4046,6 +4099,7 @@ impl Store {
 		action: RunControlAction,
 	) -> Result<RunInspection> {
 		let control = action.control();
+		let mut resumed_pending = None;
 		if action == RunControlAction::Resume {
 			let raw: RawRun = sqlx::query_as(
 				&sea_orm::sea_query::Query::select()
@@ -4058,9 +4112,15 @@ impl Store {
 			.bind(id)
 			.fetch_one(&mut **tx)
 			.await?;
-			let (state, _) = crate::domain::run_state::decode(raw.phase, raw.pending.clone())?;
+			let (state, mut recovery) =
+				crate::domain::run_state::decode(raw.phase, raw.pending.clone())?;
 			if !state.failure_delivery() {
 				raw.decode()?;
+			}
+			if raw.control == RunControl::Paused && recovery.semantic_reason.is_some() {
+				recovery.retry = None;
+				recovery.semantic_reason = None;
+				resumed_pending = Some(crate::domain::run_state::encode(&state, &recovery)?);
 			}
 		}
 		// Control-plane updates are emitted by upgraded code and must remain
@@ -4077,6 +4137,7 @@ impl Store {
 		let r: RawRun = sqlx::query_as(
 			&sea_orm::sea_query::Query::update()
 				.table(sea_orm::sea_query::Alias::new("runs"))
+				.value(sea_orm::sea_query::Alias::new("pending"), sea_orm::sea_query::Expr::cust("COALESCE($3::jsonb, pending)"))
 				.value(
 					sea_orm::sea_query::Alias::new("control"),
 					sea_orm::sea_query::Expr::cust("$2"),
@@ -4084,7 +4145,7 @@ impl Store {
 				.value(
 					sea_orm::sea_query::Alias::new("error"),
 					sea_orm::sea_query::Expr::cust(
-						"CASE WHEN $2 = 'PAUSED' AND error = 'identity status unavailable' THEN NULL ELSE error END",
+						"CASE WHEN $3::jsonb IS NOT NULL OR ($2 = 'PAUSED' AND error = 'identity status unavailable') THEN NULL ELSE error END",
 					),
 				)
 				.value(
@@ -4103,6 +4164,7 @@ impl Store {
 		)
 		.bind(id)
 		.bind(control)
+		.bind(resumed_pending)
 		.fetch_optional(&mut **tx)
 		.await?
 		.ok_or_else(|| {

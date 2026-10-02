@@ -47,6 +47,7 @@ impl Lease<'_> {
 				let mut access = Access::begin(
 					store,
 					&SubjectIdentity {
+						http_session: None,
 						credential_id,
 						tenant: authority.tenant,
 						subject: authority.subject,
@@ -72,7 +73,7 @@ impl Lease<'_> {
 			Self::Inherited(a) => &mut a.tx,
 		}
 	}
-	fn access(&mut self) -> Option<&mut Access> {
+	pub(crate) fn access(&mut self) -> Option<&mut Access> {
 		match self {
 			Self::Operator(_) => None,
 			Self::Scoped(a) => Some(a),
@@ -116,6 +117,9 @@ impl Lease<'_> {
 		}
 	}
 	pub(crate) async fn workspace(&mut self, workspace: Uuid, action: &str) -> Result<()> {
+		if self.access().is_none() && action != "semantic.index.manage" {
+			crate::authorization::remote::operator::require(self.tx(), workspace).await?;
+		}
 		if let Some(a) = self.access() {
 			let resource = a.workspace(workspace).await?;
 			a.require(&resource, "workspace.read").await?;
@@ -125,6 +129,12 @@ impl Lease<'_> {
 	}
 	pub(crate) async fn permits(&mut self, entry: &Entry, action: &str) -> Result<bool> {
 		let scoped = self.access().is_some();
+		if !scoped
+			&& !crate::authorization::remote::operator::visible(self.tx(), entry.workspace_id)
+				.await?
+		{
+			return Ok(false);
+		}
 		if let Some(a) = self.access() {
 			let workspace = a.workspace(entry.workspace_id).await?;
 			let mut attributes = workspace.attributes;
@@ -188,6 +198,11 @@ impl Lease<'_> {
 		workspace: Uuid,
 		source: &Source,
 	) -> Result<Option<String>> {
+		if self.access().is_none()
+			&& !crate::authorization::remote::operator::visible(self.tx(), workspace).await?
+		{
+			return Ok(None);
+		}
 		match source {
 			Source::Memory { text } => Ok(Some(text.clone())),
 			Source::Artifact { id } => {
@@ -978,14 +993,50 @@ pub async fn search(
 	let result = search_in(store, &mut lease, workspace, input, None, None).await;
 	lease.finish(result).await
 }
-pub(crate) async fn search_in(
-	store: &Store,
+pub(crate) struct PreparedSearch {
+	pub index: Index,
+	pub spec: IndexSpec,
+	pub allowed: BTreeMap<Uuid, (Entry, String)>,
+	pub result: SearchResult,
+	limit: usize,
+	max_tokens: usize,
+}
+impl PreparedSearch {
+	pub(crate) fn candidate_digest(&self) -> String {
+		crate::registry::digest(&json!(self.allowed.iter().map(|(point,(entry,text))|
+            json!({"point":point,"entry":entry.id,"revision":entry.revision,"digest":content_digest(text),"agent":entry.agent}))
+            .collect::<Vec<_>>()))
+	}
+	pub(crate) async fn check_points(&self, store: &Store) -> Result<()> {
+		if self.allowed.is_empty() {
+			return Ok(());
+		}
+		let Self {
+			allowed,
+			spec,
+			index,
+			..
+		} = self;
+		if !backend::present(
+			&store.semantic_client,
+			&spec.vector,
+			&index.collection,
+			&allowed.keys().copied().collect::<Vec<_>>(),
+		)
+		.await
+		.map_err(|_| Error::SemanticUnavailable)?
+		{
+			return Err(Error::SemanticUnavailable);
+		}
+		Ok(())
+	}
+}
+pub(crate) async fn prepare_search(
 	lease: &mut Lease<'_>,
 	workspace: Uuid,
-	input: Search,
-	run: Option<Uuid>,
+	input: &Search,
 	agent_controls: Option<&crate::registry::AgentConfig>,
-) -> Result<SearchResult> {
+) -> Result<PreparedSearch> {
 	lease.workspace(workspace, "semantic.search").await?;
 	let index = index(lease.tx(), workspace, false).await?;
 	let spec = index.configuration()?;
@@ -1102,46 +1153,86 @@ pub(crate) async fn search_in(
 			"semantic token budget cannot hold provenance".into(),
 		));
 	}
-	if allowed.is_empty() {
-		return Ok(result);
+	Ok(PreparedSearch {
+		index,
+		spec,
+		allowed,
+		result,
+		limit: input.limit,
+		max_tokens: input.max_tokens,
+	})
+}
+pub(crate) async fn search_in(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	workspace: Uuid,
+	input: Search,
+	run: Option<Uuid>,
+	agent_controls: Option<&crate::registry::AgentConfig>,
+) -> Result<SearchResult> {
+	let prepared = prepare_search(lease, workspace, &input, agent_controls).await?;
+	if prepared.allowed.is_empty() {
+		return Ok(prepared.result);
 	}
-	if !backend::present(
-		&store.semantic_client,
-		&spec.vector,
-		&index.collection,
-		&allowed.keys().copied().collect::<Vec<_>>(),
-	)
-	.await
-	.map_err(|_| Error::SemanticUnavailable)?
-	{
-		return Err(Error::SemanticUnavailable);
-	}
+	prepared.check_points(store).await?;
 	let vector = embed(
 		store,
 		lease,
 		workspace,
-		&spec.embedding,
+		&prepared.spec.embedding,
 		&input.query,
 		crate::generation::embedding::Origin::Query(run),
 	)
 	.await?;
+	finish_search(store, lease, prepared, &vector, false).await
+}
+pub(crate) async fn finish_search(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	prepared: PreparedSearch,
+	vector: &[f32],
+	strict: bool,
+) -> Result<SearchResult> {
+	let PreparedSearch {
+		index,
+		spec,
+		allowed,
+		mut result,
+		limit,
+		max_tokens,
+	} = prepared;
+	let workspace = index.workspace_id;
 	let points = backend::query(
 		&store.semantic_client,
 		&spec.vector,
 		&index.collection,
-		&vector,
+		vector,
 		backend::Filter {
 			allowed: &allowed.keys().copied().collect::<Vec<_>>(),
 			workspace,
 			tenant: &index.tenant,
 		},
-		input.limit,
+		limit,
 	)
 	.await
-	.map_err(|_| Error::SemanticUnavailable)?;
+	.map_err(|error| {
+		if strict && matches!(error, Error::RemoteSemantic(_)) {
+			error
+		} else {
+			Error::SemanticUnavailable
+		}
+	})?;
+	if strict && !allowed.is_empty() && points.is_empty() {
+		return Err(Error::SemanticUnavailable);
+	}
 	let mut seen = std::collections::BTreeSet::new();
 	for point in points {
 		let Some((entry, text)) = allowed.get(&point.id) else {
+			if strict {
+				return Err(Error::RemoteSemantic(
+					super::remote::Failure::ProviderContract,
+				));
+			}
 			continue;
 		};
 		if !seen.insert(point.id)
@@ -1151,6 +1242,11 @@ pub(crate) async fn search_in(
 			|| point.payload["tenant"] != index.tenant
 			|| point.payload["workspace_id"] != workspace.to_string()
 		{
+			if strict {
+				return Err(Error::RemoteSemantic(
+					super::remote::Failure::ProviderContract,
+				));
+			}
 			continue;
 		}
 		// Check again at delivery while the authority and source row leases are
@@ -1161,6 +1257,9 @@ pub(crate) async fn search_in(
 				.await?
 				.as_ref() != Some(text)
 		{
+			if strict {
+				return Err(Error::RemoteSemantic(super::remote::Failure::Invalidated));
+			}
 			continue;
 		}
 		let matched = Match {
@@ -1174,7 +1273,7 @@ pub(crate) async fn search_in(
 		};
 		result.matches.push(matched);
 		let tokens = result_tokens(&result)?;
-		if tokens > input.max_tokens {
+		if tokens > max_tokens {
 			result.matches.pop();
 			result.truncated = true;
 		} else {
@@ -1183,7 +1282,7 @@ pub(crate) async fn search_in(
 	}
 	Ok(result)
 }
-fn result_tokens(result: &SearchResult) -> Result<usize> {
+pub(crate) fn result_tokens(result: &SearchResult) -> Result<usize> {
 	// Allow for growth of the counter's own JSON representation.
 	Ok(crate::context::estimated_tokens(&serde_json::to_string(result)?) + 16)
 }

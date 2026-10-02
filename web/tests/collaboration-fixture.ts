@@ -240,6 +240,9 @@ export async function setup(
     runMediaRoutes?: string[][];
     invalidRun?: boolean;
     failureDeliveryRun?: boolean;
+    openTask?: boolean;
+    foreignRun?: boolean;
+    remoteAssignment?: boolean;
   } = {},
 ) {
   let data = fixture(options.referenceLayout);
@@ -261,6 +264,14 @@ export async function setup(
       };
     }
   }
+  if (options.openTask) data.tasks[0].status = "OPEN";
+  if (options.foreignRun) data.runs[0].home_node = "aidash://remote-home";
+  if (options.remoteAssignment)
+    data.registry.push({
+      ...data.registry[1],
+      id: "home-embedding",
+      kind: "embedding",
+    });
   let runMediaRoutes = options.runMediaRoutes ?? [["image/png", "audio/wav"]];
   if (options.coreCapabilities) {
     data.registry[0].config = {
@@ -451,7 +462,12 @@ export async function setup(
         json: {
           agents: data.registry
             .filter((entity) => entity.kind === "agent")
-            .map((entity) => ({ node_id: data.node.id, entity })),
+            .map((entity) => ({
+              node_id: options.remoteAssignment
+                ? "aidash://remote"
+                : data.node.id,
+              entity,
+            })),
           errors: [],
         },
       });

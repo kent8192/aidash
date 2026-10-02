@@ -127,6 +127,12 @@ impl Access {
 	}
 
 	pub(crate) async fn remote_reads_visible(&mut self, run: Uuid) -> Result<bool> {
+		// A leaf's local success only queues foreign authority checks. Never
+		// cache it as a final grant or omit those edges for another resource
+		// in the same state/event response after the coordinator denied them.
+		if self.dependency_frontier.is_some() {
+			return self.remote_reads_visible_in(run).await;
+		}
 		let key = (run, self.authority_context());
 		if let Some(allowed) = self.remote_read_cache.get(&key) {
 			return Ok(*allowed);
@@ -208,6 +214,19 @@ impl Access {
 				entry: EntityRef { id, version },
 				digest: hash,
 			});
+		}
+		if let Some(pending) = &mut self.dependency_frontier {
+			for (node, references) in nodes {
+				pending.extend(references.into_iter().map(|reference| {
+					super::dependencies::Reference::Registry {
+						node_id: node.clone(),
+						id: reference.entry.id,
+						version: reference.entry.version,
+						digest: reference.digest,
+					}
+				}));
+			}
+			return Ok(pending.len() <= 256);
 		}
 		for (node, references) in nodes {
 			if self.unavailable_peers.contains(&node) {

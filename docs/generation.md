@@ -99,6 +99,77 @@ One call and an input-token reservation of UTF-8 input bytes plus 1,024 framing 
 
 `generation_embedding_usage` retains the attempt ID, request, workspace, optional run/source, provider version, input byte count, reservation and reported usage. It stores neither source text nor credentials. The dashboard displays pinned approval and charged embedding calls in each request and total allocated calls in its policy. Ordinary callers outside a generated chain keep the operator-configured workspace index behavior.
 
+## Foreign Tasks and origin-owned allowances
+
+A Home Task can request a generated executor at another Node without creating a
+substitute Task there. Submit `POST /api/tasks/{task}/remote-generation` at Home
+with a stable `id`, `node_id`, target `policy_id` and `policy_revision`, `reason`
+and `ttl_seconds` (1–3600). B durably reserves one definition and its quota against
+that exact foreign Task and the mapped Home identity. Identical intent retries,
+including after a process restart, return the same Agent reference and request ID.
+
+Human approval, when required, occurs at B's generation request control endpoint.
+Preparation/approval alone creates no Run. Home must subsequently issue a grant
+for that exact prepared Agent and activate it. Cancellation uses
+`POST /api/tasks/{task}/remote-generation/{intent}/cancel`; denial, cancellation and
+expiry release unused allocation once. Neither a different grant nor a fake B Task
+can substitute for the approved foreign binding. The bilingual **Assign with policy**
+form supports preparation, approval recheck, cancellation and exact activation retry.
+
+Each policy can additionally approve providers owned by another Node through `remote`:
+
+```json
+{
+  "remote": {
+    "inference": [
+      {
+        "node_id": "aidash://execution",
+        "entry": { "id": "model", "version": "1.0.0" },
+        "digest": "sha256:<canonical-definition-digest>",
+        "configuration_digest": "sha256:<canonical-config-digest>"
+      }
+    ],
+    "embedding": {
+      "provider": {
+        "node_id": "aidash://home",
+        "entry": { "id": "home-embedding", "version": "1.0.0" },
+        "digest": "sha256:<canonical-definition-digest>",
+        "configuration_digest": "sha256:<canonical-config-digest>"
+      },
+      "calls_per_agent": 10,
+      "call_budget": 100
+    }
+  }
+}
+```
+
+Digests are `sha256:` plus the SHA-256 of the recursively key-sorted, compact UTF-8
+JSON of the complete stored Registry definition and its `config`, respectively.
+Read the stored definition, including default fields. `remote.compaction` uses the
+same provider/call-limit shape as `remote.embedding`. Local provider approvals
+continue to use `embedding`, `compaction` and the policy's model references. For a
+generated A ancestor with a generated B executor, A approves B's inference and any
+B compactor, while B approves A's embedding. The generation policy editor exposes
+these complete descriptors and preserves them on subsequent edits.
+
+Every owner validates and durably reserves its own shared token balance and separate
+call allowance before any HTTP provider dispatch. Embedding and remote compaction
+reserve exact request bytes plus 1,024; inference reserves the approved model window
+plus its maximum output. All local and remote ancestors must agree with the pinned
+provider, live policy, catalog, authority and lifetime. Compaction has no trustworthy
+token usage report and remains charged in full. Missing/malformed embedding usage
+also remains charged; valid bounded usage settles once at each owner.
+
+`generation_remote_usage` records owner debits. A dispatcher commits its
+`generation_remote_dispatches` admission before HTTP and retains an outbox for
+idempotent remote settlement. Only a proven pre-dispatch abort can release an
+attempt. A crash after dispatch retains the full unknown charge; recovery uses a
+new attempt and cannot resend the old attempt. Operation fences prevent old Home
+workers from publishing a late receipt. Receipt replay and repeated settlement do
+not duplicate provider calls or token refunds. Local generation lifecycle and quota
+records remain authoritative; UI provenance reports only counters owned by the
+serving node, never cached foreign balances.
+
 ## Acceptance evidence
 
 The fixtures use local HTTP providers and real PostgreSQL; no paid provider quality is inferred.
