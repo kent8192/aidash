@@ -16,6 +16,52 @@ use uuid::Uuid;
 
 const COOKIE: &str = "aidash-session=desktop-browser-fixture; aidash-csrf=desktop-csrf";
 const ORIGIN: &str = "http://127.0.0.1:8080";
+
+struct BrowserServer(tokio::task::JoinHandle<()>);
+impl Drop for BrowserServer {
+	fn drop(&mut self) {
+		self.0.abort();
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[ignore = "requires web npm dependencies and Chromium; run scripts/test-desktop-browser.sh"]
+async fn desktop_consent_in_chromium(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: std::sync::Arc<TestEnvironment>,
+) {
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let origin = format!("http://{}", listener.local_addr().unwrap());
+	let (f, app, url, schema) = setup(&environment, &origin).await;
+	let server = BrowserServer(tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	}));
+	let output = tokio::time::timeout(
+		std::time::Duration::from_secs(90),
+		tokio::process::Command::new("node")
+			.arg(
+				std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+					.join("web/desktop-tests/consent-browser.mjs"),
+			)
+			.arg(origin)
+			.kill_on_drop(true)
+			.output(),
+	)
+	.await
+	.expect("Chromium consent regression must finish")
+	.expect("Node must be installed");
+	drop(server);
+	common::cleanup(f, &url, &schema).await;
+	assert!(
+		output.status.success(),
+		"{}\n{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+}
+
 async fn request(
 	app: &Router,
 	method: &str,
@@ -48,13 +94,16 @@ async fn post(app: &Router, path: &str, body: Value) -> Response {
 	)
 	.await
 }
-async fn setup(environment: &TestEnvironment) -> (Federation, Router, String, String) {
+async fn setup(
+	environment: &TestEnvironment,
+	origin: &str,
+) -> (Federation, Router, String, String) {
 	let (mut f, url, schema) = common::setup(environment).await;
 	f.config.oidc = Some(OidcConfig {
 		issuer: "https://accounts.google.com".into(),
 		client_id: "fixture".into(),
 		client_secret: "server-only-fixture".into(),
-		public_origin: ORIGIN.into(),
+		public_origin: origin.into(),
 		keycloak_admin_url: String::new(),
 		status_client_id: String::new(),
 		status_client_secret: String::new(),
@@ -142,21 +191,27 @@ async fn login(app: &Router) -> Value {
 	let consent = request(app, "GET", authorize, &[("cookie", COOKIE)], String::new()).await;
 	assert_eq!(consent.status(), StatusCode::OK);
 	assert_eq!(consent.headers()["cache-control"], "no-store");
+	assert_eq!(
+		consent.headers()["content-security-policy"],
+		"default-src 'none'; form-action 'self' http://127.0.0.1:43217; frame-ancestors 'none'; base-uri 'none'"
+	);
 	let id = authorize.split("request=").nth(1).unwrap();
 	let body = format!("request={id}&csrf=desktop-csrf");
-	let denied = request(
-		app,
-		"POST",
-		"/auth/desktop/authorize",
-		&[
-			("cookie", COOKIE),
-			("content-type", "application/x-www-form-urlencoded"),
-			("origin", "https://evil.example"),
-		],
-		body.clone(),
-	)
-	.await;
-	assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+	for origin in ["https://evil.example", "null"] {
+		let denied = request(
+			app,
+			"POST",
+			"/auth/desktop/authorize",
+			&[
+				("cookie", COOKIE),
+				("content-type", "application/x-www-form-urlencoded"),
+				("origin", origin),
+			],
+			body.clone(),
+		)
+		.await;
+		assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+	}
 	let approved = request(
 		app,
 		"POST",
@@ -216,7 +271,7 @@ async fn desktop_handoff_rotation_recovery_and_revocation_preserve_web_sessions(
 	#[from(test_environment)]
 	environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, app, url, schema) = setup(&environment).await;
+	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
 	let tokens = login(&app).await;
 	let session = json_response(
 		bearer(&app, "GET", "/auth/session", &tokens["access_token"]).await,
@@ -401,7 +456,7 @@ async fn desktop_expiry_and_cors_boundaries(
 	#[from(test_environment)]
 	environment: std::sync::Arc<TestEnvironment>,
 ) {
-	let (f, app, url, schema) = setup(&environment).await;
+	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
 	for origin in [
 		"tauri://localhost",
 		"http://tauri.localhost",

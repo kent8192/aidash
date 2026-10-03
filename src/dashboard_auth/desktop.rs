@@ -255,6 +255,9 @@ async fn authorize(
 	{
 		return Err(Error::Unauthorized);
 	}
+	let callback_origin = callback_url(&handoff.redirect_uri)?
+		.origin()
+		.ascii_serialization();
 	let session = match session_from_jar(&f, &jar).await {
 		Ok(session) => session,
 		Err(Error::Unauthorized) => {
@@ -288,9 +291,10 @@ async fn authorize(
 	{
 		return Err(Error::Unauthorized);
 	}
+	// Preserve Origin on the same-origin form POST; no-referrer makes it null.
 	// Only server-generated UUID/CSRF and an HTML-escaped origin are interpolated.
 	let html = format!(
-		"<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>Aidash Desktop sign-in</title><h1>Sign in to Aidash Desktop</h1><p>Allow the desktop app on this computer to access {} using your current Aidash identity?</p><form method=\"post\" action=\"/auth/desktop/authorize\"><input type=\"hidden\" name=\"request\" value=\"{}\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><button type=\"submit\">Continue to Aidash Desktop</button></form><p>Close this page to cancel.</p></html>",
+		"<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"referrer\" content=\"same-origin\"><title>Aidash Desktop sign-in</title><h1>Sign in to Aidash Desktop</h1><p>Allow the desktop app on this computer to access {} using your current Aidash identity?</p><form method=\"post\" action=\"/auth/desktop/authorize\"><input type=\"hidden\" name=\"request\" value=\"{}\"><input type=\"hidden\" name=\"csrf\" value=\"{}\"><button type=\"submit\">Continue to Aidash Desktop</button></form><p>Close this page to cancel.</p></html>",
 		escape(&config.public_origin),
 		handoff.id,
 		escape(csrf)
@@ -298,7 +302,10 @@ async fn authorize(
 	Ok((
 		[(
 			header::CONTENT_SECURITY_POLICY,
-			"default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+			// Chromium checks the form's redirect destination as well as its POST.
+			format!(
+				"default-src 'none'; form-action 'self' {callback_origin}; frame-ancestors 'none'; base-uri 'none'"
+			),
 		)],
 		Html(html),
 	)
