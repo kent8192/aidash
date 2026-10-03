@@ -27,9 +27,13 @@ build is not a signed production release. Automatic updates are not installed.
 
 Add a named connection using the server's `AIDASH_OIDC_PUBLIC_ORIGIN`, including
 its port. Only origin URLs are accepted: no path, credentials, query or fragment.
-Remote servers require HTTPS; HTTP is permitted for `localhost`, `127.0.0.1` and
-`[::1]`. The client validates TLS certificates and rejects redirects on API/auth
-requests. Reverse proxies must serve the API and `/auth` at that same origin.
+Remote servers require HTTPS; HTTP is permitted for `localhost` and `127.0.0.1`.
+HTTP IPv6 literals such as `http://[::1]:8080` are rejected because WebView CSP
+host-sources cannot allow them. For an IPv6-only local server, use
+`http://localhost:<port>` or an HTTPS origin with a valid certificate; alternatively
+configure the server to listen on `127.0.0.1`. The client validates TLS
+certificates and rejects redirects on API/auth requests. Reverse proxies must
+serve the API and `/auth` at that same origin.
 Multiple profiles retain separate logins; only one profile is active.
 
 ## Authentication and persistence
@@ -107,6 +111,8 @@ npm run test:graph --prefix web
 npm run test:collaboration --prefix web
 npm run test:ui --prefix web
 npm run test:desktop --prefix web
+# Real Chromium submits the production consent page to the exact callback port:
+bash scripts/test-desktop-browser.sh
 RUSTC_WRAPPER= cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked
 # Uses the existing disposable Testcontainers PostgreSQL/NATS/Qdrant fixture:
 RUSTC_WRAPPER= RUST_MIN_STACK=8388608 \
@@ -116,9 +122,19 @@ RUSTC_WRAPPER= RUST_MIN_STACK=8388608 \
 bash desktop/tests/linux.sh
 ```
 
-`web/desktop-tests` checks stale JSON/headers, authority transitions, CSRF,
-credential destinations, 401 refresh, uncertain mutation outcomes and SSE cursor
-reconnection. The Linux native smoke uses actual IPC, HTTP, WebKitGTK, OS secret
+`web/desktop-tests` checks the configured desktop CSP with actual HTTP requests
+through the shared transport for both accepted HTTP loopback hosts, as well as
+stale JSON/headers, authority transitions, CSRF, credential destinations,
+401 refresh, uncertain mutation outcomes and SSE cursor
+reconnection. The consent regression starts the production Axum router with a
+disposable PostgreSQL/NATS/Qdrant fixture and an existing browser session. Real
+Chromium renders and submits the consent page, follows its redirect to each of
+two ephemeral callback ports, and confirms that other loopback ports are blocked.
+The form policy permits only the current handoff's validated callback origin,
+including its exact port, alongside `'self'`. Both browser regressions run in
+the Desktop workflow. The consent document uses a `same-origin` referrer policy
+so the form POST retains its Origin for CSRF validation; no referrer is sent to
+the callback. The Linux native smoke uses actual IPC, HTTP, WebKitGTK, OS secret
 storage and process restarts. It exercises browser handoff against a deterministic
 broker fixture, not Google's live service. `desktop/artifacts/` contains its JSON
 report and a Graph screenshot. The fixture reuses the Web Graph test scene.

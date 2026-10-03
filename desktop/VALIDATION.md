@@ -4,6 +4,35 @@ Implementation checkout: `feat/tauri-desktop`, based on
 `d1201622a4110a5d4fb908a15025752f9cae10d2` (`develop/0.1.0`, including PR #100).
 These are local results for the working tree, not hosted CI or release evidence.
 
+## Browser policy review fixes — 2026-10-03
+
+The production consent page now permits only its validated callback origin and
+port in `form-action`. Its document referrer policy retains Origin on the
+same-origin consent POST while withholding referrers from the callback. HTTP
+IPv6 literal connection profiles are rejected with supported alternatives, and
+the invalid IPv6 CSP host-source has been removed.
+
+Local regression results on macOS arm64 with Chromium 153.0.8010.12:
+
+- The production Axum consent page was rendered and submitted in Chromium for
+  two different ephemeral callback ports, then both PKCE exchanges succeeded.
+  Another loopback port remained blocked, and callbacks received no referrer.
+  Run `bash scripts/test-desktop-browser.sh`; the Desktop CI workflow runs this
+  explicitly rather than relying on the Node broker acceptance fixture.
+- All 8 desktop renderer/transport tests passed with the configured production
+  CSP. Actual `/auth/config` requests succeeded through `127.0.0.1` and through
+  `localhost` backed separately by IPv4 and IPv6-only listeners.
+- All 17 native unit tests passed, including HTTP IPv6 rejection and guidance.
+- Both desktop broker integration tests and all 4 existing OIDC integration
+  tests passed against disposable PostgreSQL/NATS/Qdrant services.
+- Backend/native Clippy passed with warnings denied. Rust formatting, ESLint,
+  Prettier, shell syntax and whitespace checks passed for the changed sources.
+
+These checks do not establish live Google login, a new packaged application run,
+or hosted CI results for the review-fix commits.
+
+## Original client validation — 2026-10-02
+
 The cross-platform CI follow-up also passed the WebdriverIO suite locally on
 macOS arm64: six checks across three distinct native processes, including real
 Keychain persistence, connection switching, SSE cursor recovery, Graph rendering,

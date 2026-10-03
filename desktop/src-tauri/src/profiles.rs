@@ -20,7 +20,12 @@ pub struct Profiles {
 
 pub fn origin(value: &str) -> Result<String, String> {
 	let url = Url::parse(value).map_err(|_| "Enter a valid Aidash origin URL")?;
-	let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+	// CSP host-sources cannot represent IPv6 literals; the renderer must be able
+	// to contact every accepted HTTP origin without granting all HTTP traffic.
+	if url.scheme() == "http" && url.host_str().is_some_and(|host| host.starts_with('[')) {
+		return Err("HTTP IPv6 origins are unsupported by the desktop WebView. Use http://localhost, http://127.0.0.1, or an HTTPS origin with a valid certificate".into());
+	}
+	let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1"));
 	if !(url.scheme() == "https" || url.scheme() == "http" && loopback)
 		|| !url.username().is_empty()
 		|| url.password().is_some()
@@ -29,7 +34,7 @@ pub fn origin(value: &str) -> Result<String, String> {
 		|| url.fragment().is_some()
 		|| url.host_str().is_none()
 	{
-		return Err("Use an HTTPS origin (HTTP is allowed only for localhost, 127.0.0.1 or [::1]), without a path or credentials".into());
+		return Err("Use an HTTPS origin (HTTP is allowed only for localhost or 127.0.0.1), without a path or credentials".into());
 	}
 	Ok(url.origin().ascii_serialization())
 }
@@ -98,8 +103,26 @@ mod tests {
 	#[case("https://example.com/?secret=x")]
 	#[case("file:///tmp/index.html")]
 	#[case("http://localhost.evil.test")]
+	#[case("http://[::1]:8080")]
+	#[case("http://[::ffff:127.0.0.1]:8080")]
 	fn refuses_unsafe_destinations(#[case] value: &str) {
 		assert!(origin(value).is_err());
+	}
+	#[rstest::rstest]
+	#[case("http://localhost:8080/", "http://localhost:8080")]
+	#[case("http://127.0.0.1:8080/", "http://127.0.0.1:8080")]
+	#[case("https://aidash.example/", "https://aidash.example")]
+	#[case("https://[::1]:8080/", "https://[::1]:8080")]
+	fn accepts_supported_origins(#[case] value: &str, #[case] expected: &str) {
+		assert_eq!(origin(value).unwrap(), expected);
+	}
+	#[test]
+	fn unsupported_http_ipv6_has_actionable_guidance() {
+		let error = origin("http://[::1]:8080").unwrap_err();
+		assert!(error.contains("HTTP IPv6 origins are unsupported"));
+		assert!(error.contains("http://localhost"));
+		assert!(error.contains("http://127.0.0.1"));
+		assert!(error.contains("HTTPS"));
 	}
 	#[test]
 	fn persists_metadata_without_changing_destination() {
