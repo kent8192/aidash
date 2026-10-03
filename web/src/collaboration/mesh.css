@@ -1408,3 +1408,17 @@
   position: static;
   padding: 0 17px 8px;
 }
+
+/* WebKitGTK's native light menu face can hide the graph's light text. */
+.graph-shell select {
+  color-scheme: dark;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0h8L4 5z' fill='%23c5d9d0'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 3px center;
+  background-size: 8px 5px;
+}
+.graph-shell .mesh-select select,
+.graph-shell .graph-workspace-picker select {
+  padding-right: 16px;
+}

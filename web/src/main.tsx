@@ -52,10 +52,13 @@ import {
 import { subscribe } from "./event-stream";
 import {
   AUTHENTICATION_EXPIRED,
-  csrfToken,
+  sessionFetch,
+  signIn,
+  signOut,
   dashboardContext,
   selectDashboardContext,
 } from "./transport";
+import { ConnectionGate } from "./connection-gate";
 import { LocaleContext, useI18n, type Locale } from "./ui";
 import { Channel } from "./collaboration/channel";
 import { Graph } from "./collaboration/graph";
@@ -120,7 +123,7 @@ const authCopy = {
     rejected: "登録申請は却下されました。24 時間後に再申請できます。",
     expired: "登録申請の期限が切れました。再申請できます。",
     allDevices: "全端末からログアウト",
-    currentDevice: "このブラウザからログアウト",
+    currentDevice: "この端末からログアウト",
   },
   "en-US": {
     signIn: "Sign in with Google",
@@ -133,7 +136,7 @@ const authCopy = {
     rejected: "Your request was rejected. You can try again after 24 hours.",
     expired: "Your request expired. You can submit another.",
     allDevices: "Log out on all devices",
-    currentDevice: "Log out of this browser",
+    currentDevice: "Log out on this device",
   },
 } as const;
 function App() {
@@ -146,7 +149,9 @@ function App() {
   }, [locale]);
   return (
     <LocaleContext value={locale}>
-      <Dashboard locale={locale} setLocale={setLocale} />
+      <ConnectionGate english={locale === "en-US"}>
+        <Dashboard locale={locale} setLocale={setLocale} />
+      </ConnectionGate>
     </LocaleContext>
   );
 }
@@ -203,7 +208,9 @@ function Dashboard({
   const registration = useQuery({
     queryKey: ["registration", browserSession?.id],
     queryFn: async (): Promise<Registration> => {
-      const response = await fetch("/auth/registration", { cache: "no-store" });
+      const response = await sessionFetch("/auth/registration", {
+        cache: "no-store",
+      });
       if (!response.ok) throw new Error("Unable to read registration status");
       return response.json() as Promise<Registration>;
     },
@@ -273,7 +280,7 @@ function Dashboard({
     sessionStorage.removeItem("aidash-token");
     const restore = async () => {
       try {
-        const configResponse = await fetch("/auth/config", {
+        const configResponse = await sessionFetch("/auth/config", {
           cache: "no-store",
         });
         if (!configResponse.ok)
@@ -286,7 +293,9 @@ function Dashboard({
         setOidcEnabled(config.enabled);
         setOidcProvider(config.provider ?? "google");
         if (!config.enabled) return;
-        const response = await fetch("/auth/session", { cache: "no-store" });
+        const response = await sessionFetch("/auth/session", {
+          cache: "no-store",
+        });
         if (response.status === 401) return;
         if (!response.ok) throw new Error("Unable to read browser session");
         const session = (await response.json()) as BrowserSession;
@@ -333,21 +342,8 @@ function Dashboard({
     setSelection(null);
   };
   const logOut = async (allDevices: boolean) => {
-    const csrf = csrfToken();
-    if (!csrf) {
-      setError("Missing CSRF token");
-      return;
-    }
     try {
-      const response = await fetch(
-        allDevices ? "/auth/logout-all" : "/auth/logout",
-        {
-          method: "POST",
-          headers: { "x-aidash-csrf": csrf },
-          credentials: "same-origin",
-        },
-      );
-      if (!response.ok) throw new Error("Logout failed");
+      await signOut(allDevices);
       clearBrowser();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -375,13 +371,12 @@ function Dashboard({
     let lastSent = 0;
     const onActivity = () => {
       if (Date.now() - lastSent < 15_000) return;
-      const csrf = csrfToken();
-      if (!csrf) return;
       lastSent = Date.now();
-      void fetch("/auth/activity", {
+      void sessionFetch("/auth/activity", {
         method: "POST",
         credentials: "same-origin",
-        headers: { "x-aidash-csrf": csrf },
+      }).catch(() => {
+        /* Session polling reports connectivity and revocation. */
       });
     };
     window.addEventListener("pointerdown", onActivity);
@@ -396,7 +391,9 @@ function Dashboard({
     let cancelled = false;
     const refresh = async () => {
       try {
-        const response = await fetch("/auth/session", { cache: "no-store" });
+        const response = await sessionFetch("/auth/session", {
+          cache: "no-store",
+        });
         if (cancelled) return;
         if (response.status === 401 || response.status === 403) {
           selectDashboardContext(null);
@@ -556,9 +553,20 @@ function Dashboard({
               onClick={() => {
                 const returnTo =
                   window.location.pathname + window.location.search;
-                window.location.assign(
-                  `/auth/login?return_to=${encodeURIComponent(returnTo)}`,
-                );
+                setAuthLoading(true);
+                void signIn(returnTo)
+                  .then(async () => {
+                    const response = await sessionFetch("/auth/session", {
+                      cache: "no-store",
+                    });
+                    if (!response.ok) throw new Error("Sign-in failed");
+                    const current = (await response.json()) as BrowserSession;
+                    selectDashboardContext(null);
+                    sessionStorage.setItem("aidash-session-id", current.id);
+                    setBrowserSession(current);
+                  })
+                  .catch((reason) => setError(String(reason)))
+                  .finally(() => setAuthLoading(false));
               }}
             >
               {oidcProvider === "keycloak"
@@ -597,15 +605,9 @@ function Dashboard({
                       <button
                         type="button"
                         onClick={() => {
-                          const csrf = csrfToken();
-                          if (!csrf) {
-                            setError("Missing CSRF token");
-                            return;
-                          }
-                          void fetch("/auth/registration", {
+                          void sessionFetch("/auth/registration", {
                             method: "POST",
                             credentials: "same-origin",
-                            headers: { "x-aidash-csrf": csrf },
                           })
                             .then(async (response) => {
                               if (!response.ok)

@@ -226,3 +226,7 @@ Third-party attribution for the adapted context compaction code is in [LICENSE](
 
 HTTP request logging, admission limits, SSE capacity, and the optional Prometheus
 listener are documented in [HTTP protection and observability](docs/operations/http-observability.md).
+
+## Desktop client
+
+The [Tauri 2 desktop client](desktop/README.md) bundles the shared dashboard and connects to an existing local or remote Aidash server. It supports external-browser Google sign-in and persistent OS-protected credentials.
