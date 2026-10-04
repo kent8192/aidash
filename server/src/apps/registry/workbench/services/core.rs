@@ -15,9 +15,10 @@ use crate::{
 		policy::{Evaluation, Resource},
 	},
 	federation::Federation,
-	knowledge::{ReferenceDocument, digest, validate as validate_documents},
+	knowledge::{ReferenceDocument, digest},
 	registry::{AgentConfig, Entry},
 };
+use aidash_domain::registry::workbench::{check_content, new_draft_defaults};
 use reinhardt::db::backends::{TransactionExecutor, dialect::postgres::PgTransactionExecutor};
 use reinhardt::injectable;
 
@@ -116,50 +117,6 @@ async fn authorize(
 	} else {
 		Err(Error::Forbidden)
 	}
-}
-
-fn check_content(
-	entry: &Entry,
-	documents: &[ReferenceDocument],
-	release_notes: &str,
-) -> Result<()> {
-	if entry.kind != "agent" || entry.id.is_empty() || entry.id.len() > 100 {
-		return Err(Error::Invalid(
-			"draft must contain a managed agent identity".into(),
-		));
-	}
-	if !documents.is_empty() {
-		validate_documents(documents)?;
-	}
-	if release_notes.len() > 8192 {
-		return Err(Error::Invalid("release notes exceed 8 KiB".into()));
-	}
-	let _: AgentConfig =
-		serde_json::from_value(entry.config.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
-	Ok(())
-}
-
-fn new_draft_defaults(entry: &mut Entry) -> Result<()> {
-	let config = entry
-		.config
-		.as_object_mut()
-		.ok_or_else(|| Error::Invalid("agent config must be an object".into()))?;
-	for key in [
-		"allow_task_creation",
-		"allow_task_delegation",
-		"allow_memory_write",
-		"allow_workspace_retrieval",
-		"allow_cross_conversation_memory",
-	] {
-		match config.get(key) {
-			Some(Value::Bool(_)) => {}
-			None => {
-				config.insert(key.into(), json!(false));
-			}
-			Some(_) => return Err(Error::Invalid(format!("{key} must be a boolean"))),
-		}
-	}
-	Ok(())
 }
 
 async fn validate_content(
