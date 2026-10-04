@@ -75,3 +75,5 @@ pub(crate) mod configuration;
 pub(crate) mod patch;
 
 pub(crate) mod skills;
+
+pub(crate) mod thread_lifecycle;
