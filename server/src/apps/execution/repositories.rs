@@ -56,3 +56,5 @@ pub(crate) mod outbound;
 
 pub(crate) mod capability_records;
 pub(crate) mod references;
+
+pub(crate) mod approvals;
