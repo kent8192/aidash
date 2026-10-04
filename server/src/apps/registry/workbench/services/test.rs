@@ -137,14 +137,7 @@ async fn complete(f: Federation, session_id: Uuid, job: TestJob) -> Result<()> {
 type SimulationResult = (&'static str, Value, Value, Value, Option<String>);
 
 fn has_unknown_call(calls: &Option<Value>) -> bool {
-	calls
-		.as_ref()
-		.and_then(Value::as_array)
-		.is_some_and(|items| {
-			items
-				.iter()
-				.any(|item| item["outcome"] == "outcome_unknown")
-		})
+	aidash_domain::registry::workbench::sandbox::has_unknown_call(calls)
 }
 
 async fn prepare_real_dispatch(

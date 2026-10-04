@@ -1,61 +1,11 @@
-use serde::{Deserialize, Serialize};
-// Serializable contracts for workbench.
-
+//! Native field validation and ORM conversion for portable sandbox contracts.
 use crate::apps::registry::workbench::models::AgentTestSession;
-use chrono::DateTime;
-use chrono::Utc;
+pub use aidash_domain::registry::workbench::sandbox::{
+	Fixture, FixtureStatus, TestInput, TestSession,
+};
 use reinhardt::Validate;
 use schemars::JsonSchema;
-use serde_json::Value;
-use std::collections::BTreeMap;
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum FixtureStatus {
-	Success,
-	Failure,
-	Denied,
-	Timeout,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Fixture {
-	pub status: FixtureStatus,
-	pub response: Value,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct TestInput {
-	pub expected_revision: i64,
-	pub message: String,
-	#[serde(default = "simulated_mode")]
-	pub mode: String,
-	pub profile_id: Option<String>,
-	pub continue_from: Option<Uuid>,
-	#[serde(default)]
-	pub fixtures: BTreeMap<String, Fixture>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, JsonSchema)]
-pub struct TestSession {
-	pub id: Uuid,
-	pub draft_id: Uuid,
-	pub tenant: String,
-	pub revision: i64,
-	pub status: String,
-	pub scenario: Value,
-	pub conversation: Option<Value>,
-	pub tool_calls: Option<Value>,
-	pub usage: Value,
-	pub error: Option<String>,
-	pub created_at: DateTime<Utc>,
-	pub updated_at: DateTime<Utc>,
-	pub expires_at: DateTime<Utc>,
-	pub expired_at: Option<DateTime<Utc>>,
-}
-
+use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize, Serialize, sqlx::FromRow, JsonSchema, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct TestLimits {
@@ -77,11 +27,6 @@ pub struct TestLimits {
 	#[validate(range(min = 1, max = 3650))]
 	pub incident_evidence_days: i32,
 }
-
-pub(crate) fn simulated_mode() -> String {
-	"simulated".into()
-}
-
 impl From<AgentTestSession> for TestSession {
 	fn from(record: AgentTestSession) -> Self {
 		Self {
@@ -103,4 +48,34 @@ impl From<AgentTestSession> for TestSession {
 	}
 }
 
-use uuid::Uuid;
+impl From<TestLimits> for aidash_domain::registry::workbench::sandbox::TestLimits {
+	fn from(value: TestLimits) -> Self {
+		Self {
+			tenant: value.tenant,
+			max_input_bytes: value.max_input_bytes,
+			max_output_tokens: value.max_output_tokens,
+			max_total_tokens: value.max_total_tokens,
+			max_steps: value.max_steps,
+			max_duration_secs: value.max_duration_secs,
+			max_concurrent: value.max_concurrent,
+			payload_days: value.payload_days,
+			incident_evidence_days: value.incident_evidence_days,
+		}
+	}
+}
+
+impl From<aidash_domain::registry::workbench::sandbox::TestLimits> for TestLimits {
+	fn from(value: aidash_domain::registry::workbench::sandbox::TestLimits) -> Self {
+		Self {
+			tenant: value.tenant,
+			max_input_bytes: value.max_input_bytes,
+			max_output_tokens: value.max_output_tokens,
+			max_total_tokens: value.max_total_tokens,
+			max_steps: value.max_steps,
+			max_duration_secs: value.max_duration_secs,
+			max_concurrent: value.max_concurrent,
+			payload_days: value.payload_days,
+			incident_evidence_days: value.incident_evidence_days,
+		}
+	}
+}
