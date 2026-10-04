@@ -1352,3 +1352,10 @@ pub(crate) fn reclamation_repository(
 ) -> crate::apps::execution::repositories::reclamation::Repository<'_> {
 	crate::apps::execution::repositories::reclamation::Repository::new(store)
 }
+
+pub(crate) fn session_scope<'a>(
+	store: Option<&'a Store>,
+	access: &'a mut crate::authorization::access::Access,
+) -> crate::apps::execution::repositories::sessions::Scope<'a> {
+	crate::apps::execution::repositories::sessions::Scope { store, access }
+}
