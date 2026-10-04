@@ -1527,3 +1527,14 @@ pub(crate) fn authority_peer_client(
 		Arc::new(peer_transport(runtime)),
 	)
 }
+
+/// Home commands and native worker delegation share current source authority and persistence.
+pub(crate) fn home_execution_repository(
+	runtime: &Federation,
+	actor: crate::authorization::identity::Actor,
+) -> crate::apps::identity::repositories::home_execution::Repository {
+	crate::apps::identity::repositories::home_execution::Repository {
+		runtime: runtime.clone(),
+		actor,
+	}
+}
