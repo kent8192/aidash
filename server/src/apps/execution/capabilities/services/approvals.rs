@@ -26,24 +26,11 @@ fn resource(access: &Access, origin: &str, run: Uuid) -> Resource {
 	)
 }
 pub(crate) fn permitted_origin(store: &Store, url: &str) -> Result<(reqwest::Url, String)> {
-	let parsed =
-		reqwest::Url::parse(url).map_err(|_| Error::Invalid("INVALID_OUTBOUND_URL".into()))?;
-	if url.len() > 4096
-		|| parsed.scheme() != "https"
-		|| !parsed.username().is_empty()
-		|| parsed.password().is_some()
-		|| parsed.fragment().is_some()
-		|| parsed.port_or_known_default() != Some(443)
-	{
-		return Err(Error::Invalid(
-			"outbound access requires an HTTPS URL without credentials on port 443".into(),
-		));
-	}
-	let origin = parsed.origin().ascii_serialization();
-	if !store.capabilities.0.outbound_origins.contains(&origin) {
-		return Err(Error::Conflict("OUTBOUND_OPERATOR_DENIED".into()));
-	}
-	Ok((parsed, origin))
+	aidash_domain::capabilities::outbound::permitted_origin(
+		url,
+		&store.capabilities.0.outbound_origins,
+	)
+	.map_err(Into::into)
 }
 /// Returns true for current ordinary authority; false for an approvable absence
 /// of an allow. Explicit denies, unknown identities, and delegated denials fail.

@@ -151,6 +151,7 @@ dependencies = [
  "aidash-application",
  "aidash-domain",
  "async-trait",
+ "futures-util",
  "rstest",
  "serde_json",
  "tokio",

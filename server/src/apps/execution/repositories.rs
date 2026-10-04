@@ -51,3 +51,5 @@ pub(crate) mod capabilities;
 pub(crate) mod withdrawal;
 
 pub(crate) mod operations;
+
+pub(crate) mod outbound;

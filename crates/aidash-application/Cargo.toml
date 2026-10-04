@@ -30,3 +30,5 @@ base64 = "0.22"
 
 [dev-dependencies]
 rstest.workspace = true
+
+tokio = { workspace = true, features = ["test-util"] }

@@ -94,3 +94,5 @@ pub mod generation;
 pub mod semantic;
 
 pub mod capabilities;
+
+pub mod outbound;

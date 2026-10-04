@@ -54,3 +54,6 @@ pub mod references;
 pub mod skills;
 
 pub mod operations;
+
+pub mod outbound;
+pub mod records;

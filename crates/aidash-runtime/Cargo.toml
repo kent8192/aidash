@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 aidash-application.workspace = true
+futures-util.workspace = true
 tokio.workspace = true
 tracing = "0.1"
 

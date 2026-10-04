@@ -1305,3 +1305,12 @@ impl aidash_application::ports::capabilities::processing::CapabilityBackgroundJo
 		.map_err(Into::into)
 	}
 }
+
+pub(crate) fn outbound_repository(
+	store: &Store,
+) -> crate::apps::execution::repositories::outbound::Repository<'_> {
+	crate::apps::execution::repositories::outbound::Repository { store }
+}
+pub(crate) fn outbound_transport() -> aidash_integrations::outbound::OutboundHttp {
+	aidash_integrations::outbound::OutboundHttp
+}
