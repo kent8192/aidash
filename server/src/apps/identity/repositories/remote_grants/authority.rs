@@ -48,3 +48,12 @@ impl SourceAuthorityScope for Scope<'_> {
 			.map_err(Into::into)
 	}
 }
+
+#[async_trait]
+impl aidash_application::ports::authorization::source::SourcePeerScope for Scope<'_> {
+	async fn peer(&mut self, node: &str) -> Result<Option<aidash_domain::federation::Peer>> {
+		super::persistence::peer(self.access, node)
+			.await
+			.map_err(Into::into)
+	}
+}

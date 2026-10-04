@@ -23,3 +23,10 @@ pub trait SourceAuthorityScope: Send {
 	async fn source_task_resource(&mut self, task: &Task) -> Result<Resource>;
 	async fn source_require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 }
+
+pub mod grants;
+
+#[async_trait]
+pub trait SourcePeerScope: Send {
+	async fn peer(&mut self, node: &str) -> Result<Option<aidash_domain::federation::Peer>>;
+}

@@ -592,3 +592,5 @@ async fn operator_cannot_create_subject_remote_work() {
 	));
 	assert_eq!(repository.calls(), Vec::<String>::new());
 }
+
+mod source_grants;

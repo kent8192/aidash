@@ -4,32 +4,15 @@
 #[path = "remote/execution.rs"]
 pub(crate) mod execution;
 
-use super::{
-	access::Access,
-	execution::inherit_task_origin,
-	identity::{Actor, SubjectIdentity},
-	peer::execution::Inspection,
-	policy::SubjectKind,
-};
+use super::{access::Access, identity::Actor, peer::execution::Inspection};
 use crate::apps::identity::repositories::remote_grants::Grant;
-use crate::{
-	Error, Result,
-	domain::{Task, qualified_agent},
-	federation::{Federation, Peer},
-	registry::{EntityRef, Search},
-};
+#[cfg(test)]
+use crate::registry::Search;
+use crate::{Error, Result, domain::Task, federation::Federation, registry::EntityRef};
 use reinhardt::injectable;
-use reinhardt::query::Alias;
-use reinhardt::query::ColumnRef;
-use reinhardt::query::Expr;
-use reinhardt::query::LockType;
-use reinhardt::query::PostgresQueryBuilder;
-use reinhardt::query::Query;
-use reinhardt::query::SimpleExpr;
-
-use chrono::{DateTime, Utc};
-use reinhardt::query::QueryStatementBuilder as _;
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 
 use uuid::Uuid;
 
@@ -52,62 +35,7 @@ async fn source_authority(
 	.map_err(Into::into)
 }
 pub(crate) async fn live(access: &mut Access, id: Uuid) -> Result<bool> {
-	Ok({
-		let query_bind_1 = id;
-		sqlx::query_scalar(
-			&Query::select()
-				.expr(Expr::cust("NOT revoked AND expires_at > CLOCK_TIMESTAMP()"))
-				.from(Alias::new("authorization_remote_grants"))
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(id = ?)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_one(&mut **access.tx)
-		.await?
-	})
-}
-async fn peer(access: &mut Access, node: &str) -> Result<()> {
-	let peer: Option<Peer> = {
-		let query_bind_1 = node;
-		crate::database::query_as(
-			&Query::select()
-				.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
-				.from(Alias::new("peers"))
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(node_id = ? AND enabled)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.lock(LockType::Share)
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_optional(&mut **access.tx)
-		.await?
-	};
-	if peer.is_none_or(|p| p.protocol_version != crate::config::PROTOCOL_VERSION) {
-		return Err(Error::Forbidden);
-	}
-	Ok(())
-}
-async fn inspect(
-	f: &Federation,
-	access: &mut Access,
-	node: &str,
-	agent: &EntityRef,
-	requirements: &Search,
-	task_id: Uuid,
-	compactor: Option<&EntityRef>,
-) -> Result<Inspection> {
-	let resource = access.resource("node", node, json!({"remote_node":node}));
-	access.require(&resource, "federation.execute").await?;
-	peer(access, node).await?;
-	let inspection: Inspection = super::peer::authority_request(f, node, "/scoped/execution/inspect", &json!({"tenant":access.identity.tenant,"subject":access.identity.subject,"task_id":task_id,"agent":agent,"requirements":requirements,"compactor":compactor})).await?;
-	validate(&inspection, node, agent, requirements)?;
-	if inspection.compactor.as_ref() != compactor {
-		return Err(Error::Forbidden);
-	}
-	Ok(inspection)
+	crate::apps::identity::repositories::remote_grants::persistence::live(access, id).await
 }
 
 // Only the destination peer may obtain the source-authorized task. Both this
@@ -118,20 +46,14 @@ pub(crate) async fn description_lease(
 	node: &str,
 	id: Uuid,
 ) -> Result<(Access, Description)> {
-	// A scoped worker may commit a task revision between task_read and the
-	// shared row lock in a read-only description. Revalidate from a new
-	// authority snapshot rather than treating that transient race as a denial.
-	// A revoked grant or changed policy fails without a retry.
-	for attempt in 0..3 {
-		let mut revision_race = false;
-		match description_lease_mode(f, node, id, false, &mut revision_race).await {
-			Err(Error::Forbidden) if revision_race && attempt < 2 => {
-				tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-			}
-			result => return result,
-		}
-	}
-	unreachable!("the last verification attempt returns")
+	aidash_application::authorization::source::grants::description(
+		&crate::bootstrap::home_execution_repository(f, Actor::Operator),
+		node,
+		id,
+	)
+	.await
+	.map(|(scope, description)| (scope.into_access(), description))
+	.map_err(Into::into)
 }
 async fn description_lease_mode(
 	f: &Federation,
@@ -140,159 +62,16 @@ async fn description_lease_mode(
 	command: bool,
 	revision_race: &mut bool,
 ) -> Result<(Access, Description)> {
-	let grant: Grant = {
-		let query_bind_1 = id;
-		let query_bind_2 = node;
-		sqlx::query_as(
-			&reinhardt::query::Query::select()
-				.expr(reinhardt::query::SimpleExpr::from(
-					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
-				))
-				.from(reinhardt::query::Alias::new("authorization_remote_grants"))
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(id = ? AND node_id = ?)".to_owned(),
-					vec![
-						Expr::value(query_bind_1.to_owned()).into(),
-						Expr::value(query_bind_2.to_owned()).into(),
-					],
-				))
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.fetch_optional(&f.store.pool)
-		.await?
-	}
-	.ok_or(Error::Forbidden)?;
-	let mut access = Access::begin(&f.store, &grant.identity())
-		.await
-		.map_err(|e| {
-			if matches!(e, Error::Unauthorized) {
-				Error::Forbidden
-			} else {
-				e
-			}
-		})?;
-	let result = async {
-		// Serialize command journals before acquiring task row locks. This also
-		// prevents two shared leases upgrading to conflicting task writers.
-		if command {
-			{
-				let query_bind_1 = id.to_string();
-				sqlx::query(
-					&reinhardt::query::Query::select()
-						.expr(SimpleExpr::CustomWithExpr(
-							"(PG_ADVISORY_XACT_LOCK(HASHTEXTEXTENDED(?, 71003801)))".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.to_string(reinhardt::query::PostgresQueryBuilder),
-				)
-				.execute(&mut **access.tx)
-				.await?
-			};
-		}
-
-		let current: Grant = {
-			let query_bind_1 = grant.id;
-			sqlx::query_as(
-				&reinhardt::query::Query::select()
-					.expr(reinhardt::query::SimpleExpr::from(
-						reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
-					))
-					.from(reinhardt::query::Alias::new("authorization_remote_grants"))
-					.and_where(SimpleExpr::CustomWithExpr(
-						"(id = ?)".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					))
-					.lock(reinhardt::query::LockType::Share)
-					.to_string(reinhardt::query::PostgresQueryBuilder),
-			)
-			.fetch_one(&mut **access.tx)
-			.await?
-		};
-		if !live(&mut access, current.id).await? {
-			return Err(Error::Forbidden);
-		}
-		access.subjects = current.subject_chain.clone();
-		let task = access.task_read(current.task_id).await?;
-		let locked: Task = {
-			let query_bind_1 = task.id;
-			aidash_server::database::query_as(
-				&reinhardt::query::Query::select()
-					.expr(reinhardt::query::SimpleExpr::from(
-						reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
-					))
-					.from(reinhardt::query::Alias::new("tasks"))
-					.and_where(SimpleExpr::CustomWithExpr(
-						"(id = ?)".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					))
-					.lock(reinhardt::query::LockType::Share)
-					.to_string(reinhardt::query::PostgresQueryBuilder),
-			)
-			.fetch_one(&mut **access.tx)
-			.await?
-		};
-		if locked.revision != task.revision {
-			*revision_race = true;
-			return Err(Error::Forbidden);
-		}
-		let execution = execution::binding(&mut access, current.id).await?;
-		let source = aidash_domain::federation::execution::home::Grant::from(current.clone());
-		let binding = execution.map(aidash_domain::federation::execution::home::HomeBinding::from);
-		let admitted_task = source
-			.admitted_task(&task, binding.as_ref())?
-			.ok_or(Error::Forbidden)?;
-		let inspection: Inspection = serde_json::from_value(current.inspection)?;
-		source_authority(&mut access, &task, node, &inspection).await?;
-		access.remote_semantic_sources(current.id).await?;
-		if !access.grant_reads_visible(current.id).await? {
-			return Err(Error::Forbidden);
-		}
-
-		let agent = EntityRef {
-			id: inspection.agent.id.clone(),
-			version: inspection.agent.version.clone(),
-		};
-		let requirements = serde_json::from_value(task.requirements.clone())?;
-		let semantic: crate::semantic::remote::Binding = serde_json::from_value(current.semantic)?;
-		let request = semantic.request();
-		let fresh = inspect(
-			f,
-			&mut access,
-			node,
-			&agent,
-			&requirements,
-			task.id,
-			request.compactor(),
-		)
-		.await?;
-		if !fresh.satisfies(&inspection) {
-			return Err(Error::Forbidden);
-		}
-		if !live(&mut access, current.id).await? {
-			return Err(Error::Forbidden);
-		}
-		if semantic::binding(f, &mut access, &task, node, &fresh, &request).await? != semantic {
-			return Err(Error::RemoteSemantic(
-				crate::semantic::remote::Failure::Configuration,
-			));
-		}
-		Ok(Description {
-			grant_id: current.id,
-			source_node: f.config.node_id.clone(),
-			target_node: current.node_id,
-			source_tenant: current.tenant,
-			source_subject: current.root_subject,
-			task: admitted_task,
-			inspection,
-			expires_at: current.expires_at,
-			semantic,
-		})
-	}
-	.await;
-	match result {
-		Ok(description) => Ok((access, description)),
-		Err(error) => access.finish(Err(error)).await,
-	}
+	aidash_application::authorization::source::grants::description_mode(
+		&crate::bootstrap::home_execution_repository(f, Actor::Operator),
+		node,
+		id,
+		command,
+		revision_race,
+	)
+	.await
+	.map(|(scope, description)| (scope.into_access(), description))
+	.map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -321,130 +100,26 @@ impl RemoteGrants {
 		task_id: Uuid,
 		input: PrepareInput,
 	) -> Result<Prepared> {
-		let f = self.runtime.clone();
-		let Actor::Subject(identity) = actor else {
-			return Err(Error::Forbidden);
-		};
-		if input.id.is_nil()
-			|| input.node_id == f.config.node_id
-			|| !(1..=3600).contains(&input.ttl_seconds)
-		{
-			return Err(Error::Invalid(
-				"invalid remote grant destination or lifetime".into(),
-			));
-		}
-		crate::config::validate_node_id(&input.node_id)?;
-		let mut access = Access::begin(&f.store, &identity).await?;
-		let result = async {
-        inherit_task_origin(&mut access,task_id).await?;
-        let task = access.task_read(task_id).await?;
-        if task.status!=crate::domain::TaskStatus::Open {return Err(Error::Conflict("task is already assigned".into()));}
-        if access.subjects.len()>=32 {return Err(Error::Invalid("execution delegation depth exceeds 32".into()));}
-        let executor = qualified_agent(&input.node_id,&input.agent.id,&input.agent.version);
-        if access.snapshot.bundle.subjects.get(&executor).is_none_or(|s| s.kind!=SubjectKind::Agent) {return Err(Error::Forbidden);}
-        access.subjects.push(executor);
-        let workspace = access.workspace(task.workspace_id).await?;
-        access.context=workspace.attributes.clone();
-        let resource=access.task_resource(&task).await?;
-        access.require(&resource,"task.delegate").await?;
-        access.require(&resource,"task.execute").await?;
-        let requirements: Search = serde_json::from_value(task.requirements.clone())?;
-        let inspection=inspect(&f,&mut access,&input.node_id,&input.agent,&requirements,task.id,input.semantic.compactor()).await?;
-        crate::generation::foreign::check_preparation(&task,inspection.generation.as_ref())?;
-        let semantic=serde_json::to_value(semantic::binding(&f,&mut access,&task,&input.node_id,&inspection,&input.semantic).await?)?;
-        source_authority(&mut access,&task,&input.node_id,&inspection).await?;
-        let metadata=serde_json::to_value(&inspection)?;
-        // Retain the task revision through persistence, after read authorization.
-        let current: Task={ let query_bind_1 = task_id; aidash_server::database::query_as(&reinhardt::query::Query::select().expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk))).from(reinhardt::query::Alias::new("tasks")).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).lock(reinhardt::query::LockType::Share).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(&mut **access.tx).await? };
-        if current.revision!=task.revision || current.status!=crate::domain::TaskStatus::Open {return Err(Error::Conflict("task changed during grant preparation".into()));}
-        let inserted={ let query_bind_1 = input.id; let query_bind_2 = task.id; let query_bind_3 = task.revision; let query_bind_4 = task.workspace_id; let query_bind_5 = &input.node_id; let query_bind_6 = &identity.tenant; let query_bind_7 = identity.credential_id; let query_bind_8 = &identity.subject; let query_bind_9 = &access.subjects; let query_bind_10 = &metadata; let query_bind_11 = input.ttl_seconds as f64; sqlx::query(&format!("{} ON CONFLICT DO NOTHING", reinhardt::query::Query::insert().into_table(reinhardt::query::Alias::new("authorization_remote_grants")).columns([reinhardt::query::Alias::new("id"), reinhardt::query::Alias::new("task_id"), reinhardt::query::Alias::new("task_revision"), reinhardt::query::Alias::new("workspace_id"), reinhardt::query::Alias::new("node_id"), reinhardt::query::Alias::new("tenant"), reinhardt::query::Alias::new("credential_id"), reinhardt::query::Alias::new("root_subject"), reinhardt::query::Alias::new("subject_chain"), reinhardt::query::Alias::new("inspection"), reinhardt::query::Alias::new("expires_at")]).from_subquery(reinhardt::query::Query::select().expr(SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).expr(SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()])).expr(SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).expr(SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_4.to_owned()).into()])).expr(SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).expr(SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).expr(SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_7.to_owned()).into()])).expr(SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_8.to_owned()).into()])).expr(SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![crate::database::text_array(query_bind_9.to_owned())])).expr(SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_10.to_owned()).into()])).expr(SimpleExpr::CustomWithExpr("(CLOCK_TIMESTAMP() + MAKE_INTERVAL(secs => ?))".to_owned(), vec![Expr::value(query_bind_11.to_owned()).into()])).to_owned()).to_owned().to_string(reinhardt::query::PostgresQueryBuilder))).execute(&mut **access.tx).await? }.rows_affected();
-        if inserted==1 {
-            { let query_bind_1 = input.id; let query_bind_2 = &semantic; sqlx::query(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("authorization_remote_grants")).value_expr(reinhardt::query::Alias::new("semantic"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()]))
-                .and_where(SimpleExpr::CustomWithExpr("(id=?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).execute(&mut **access.tx).await? };
-        }
-        let grant: Grant={ let query_bind_1 = input.id; sqlx::query_as(&reinhardt::query::Query::select().expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk))).from(reinhardt::query::Alias::new("authorization_remote_grants")).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).lock(reinhardt::query::LockType::Share).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(&mut **access.tx).await? };
-        let principal=aidash_domain::identity::execution::ExecutionPrincipal {tenant:identity.tenant.clone(),subject:identity.subject.clone(),credential_id:identity.credential_id};
-        let expected=aidash_domain::federation::execution::home::PreparationAuthority {task_id,task:&task,input:&input,identity:&principal,subjects:&access.subjects,inspection:&metadata,semantic:&semantic};
-        if !aidash_domain::federation::execution::home::Grant::from(grant.clone()).matches_authority(&expected)
-            || !live(&mut access,grant.id).await?
-        {
-            return Err(Error::Conflict("grant id already binds different or expired authority".into()));
-        }
-        if inserted==1 { f.store.event(&mut access.tx,Some(task.workspace_id),"task.remote_grant_prepared",json!({"grant_id":grant.id,"task_id":task_id,"node_id":grant.node_id,"expires_at":grant.expires_at})).await?; }
-        grant.prepared()
-    }.await;
-		access.finish(result).await
+		aidash_application::authorization::source::grants::prepare(
+			&crate::bootstrap::home_execution_repository(&self.runtime, actor),
+			task_id,
+			input,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	pub(crate) async fn revoke(
 		&self,
 		actor: Actor,
 		(task_id, id): (Uuid, Uuid),
 	) -> Result<Prepared> {
-		let f = self.runtime.clone();
-		let Actor::Subject(identity) = actor else {
-			return Err(Error::Forbidden);
-		};
-		let mut access = Access::begin(&f.store, &identity).await?;
-		let result = async {
-			let task = access.task_read(task_id).await?;
-			let resource = access.task_resource(&task).await?;
-			access.require(&resource, "task.delegate").await?;
-			let mut grant: Grant = {
-				let query_bind_1 = id;
-				let query_bind_2 = task_id;
-				let query_bind_3 = &identity.tenant;
-				let query_bind_4 = &identity.subject;
-				sqlx::query_as(
-					&Query::select()
-						.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
-						.from(Alias::new("authorization_remote_grants"))
-						.and_where(SimpleExpr::CustomWithExpr(
-							"(id = ? AND task_id = ? AND tenant = ? AND root_subject = ?)"
-								.to_owned(),
-							vec![
-								Expr::value(query_bind_1.to_owned()).into(),
-								Expr::value(query_bind_2.to_owned()).into(),
-								Expr::value(query_bind_3.to_owned()).into(),
-								Expr::value(query_bind_4.to_owned()).into(),
-							],
-						))
-						.lock(LockType::Update)
-						.to_string(PostgresQueryBuilder),
-				)
-				.fetch_optional(&mut **access.tx)
-				.await?
-			}
-			.ok_or(Error::Forbidden)?;
-			if !grant.revoked {
-				{
-					let query_bind_1 = id;
-					sqlx::query(
-						&Query::update()
-							.table(Alias::new("authorization_remote_grants"))
-							.value_expr(Alias::new("revoked"), Expr::cust("TRUE"))
-							.and_where(SimpleExpr::CustomWithExpr(
-								"(id = ?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							))
-							.to_string(PostgresQueryBuilder),
-					)
-					.execute(&mut **access.tx)
-					.await?
-				};
-				f.store
-					.event(
-						&mut access.tx,
-						Some(task.workspace_id),
-						"task.remote_grant_revoked",
-						json!({"grant_id":id,"task_id":task_id}),
-					)
-					.await?;
-				grant.revoked = true;
-			}
-			grant.prepared()
-		}
-		.await;
-		access.finish(result).await
+		aidash_application::authorization::source::grants::revoke(
+			&crate::bootstrap::home_execution_repository(&self.runtime, actor),
+			task_id,
+			id,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	pub(crate) async fn describe(
 		&self,
@@ -506,6 +181,7 @@ pub(crate) mod reads;
 #[path = "remote/semantic.rs"]
 pub(crate) mod semantic;
 
+#[cfg(test)]
 fn validate(
 	inspection: &Inspection,
 	node: &str,
@@ -519,5 +195,15 @@ fn validate(
 		agent,
 		requirements,
 	)
+	.map_err(Into::into)
+}
+
+async fn peer(access: &mut Access, node: &str) -> Result<()> {
+	aidash_application::authorization::source::grants::require_peer(
+		&mut crate::bootstrap::source_authority_scope(access),
+		node,
+		crate::config::PROTOCOL_VERSION,
+	)
+	.await
 	.map_err(Into::into)
 }

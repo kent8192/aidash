@@ -39,8 +39,8 @@ pub(crate) struct Repository {
 	pub(crate) actor: Actor,
 }
 pub(crate) struct Scope {
-	runtime: Federation,
-	access: Box<Access>,
+	pub(crate) runtime: Federation,
+	pub(crate) access: Box<Access>,
 }
 pub(crate) async fn binding(access: &mut Access, grant: Uuid) -> NativeResult<Option<BindingRow>> {
 	Ok({
@@ -534,5 +534,11 @@ impl HomeRepository for Repository {
 		crate::semantic::remote::status::load(&self.runtime.store, grant, binding, reason)
 			.await
 			.map_err(Into::into)
+	}
+}
+
+impl Scope {
+	pub(crate) fn into_access(self) -> Access {
+		*self.access
 	}
 }
