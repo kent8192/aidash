@@ -297,3 +297,5 @@ mod tests;
 pub mod personal;
 
 pub mod skill_import;
+
+pub mod workbench;

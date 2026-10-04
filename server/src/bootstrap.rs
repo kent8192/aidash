@@ -1491,3 +1491,16 @@ pub(crate) fn peer_mapping_repository(
 ) -> crate::apps::identity::repositories::peer_mappings::Repository<'_> {
 	crate::apps::identity::repositories::peer_mappings::Repository { runtime }
 }
+
+/// Borrow the current draft authority transaction for HTTP and contained workers.
+pub(crate) fn draft_authority_scope<'a>(
+	tx: &'a mut dyn reinhardt::db::backends::TransactionExecutor,
+	actor: &'a crate::authorization::identity::Actor,
+) -> crate::apps::registry::workbench::repositories::authority::Scope<'a> {
+	crate::apps::registry::workbench::repositories::authority::Scope { tx, actor }
+}
+pub(crate) fn draft_principal(
+	actor: &crate::authorization::identity::Actor,
+) -> aidash_domain::identity::Principal {
+	crate::apps::registry::workbench::repositories::authority::principal(actor)
+}

@@ -1,7 +1,6 @@
 //! Tenant-scoped Creator drafts and immutable Registry admission. Workbench
 //! permissions are separate from installation-wide Registry administration.
 use crate::apps::execution::models::event_records;
-use crate::apps::identity::models::AuthorizationBundle;
 use crate::apps::registry::models::transaction_records;
 use crate::apps::registry::services::admission;
 use crate::apps::registry::workbench::models::{
@@ -45,25 +44,11 @@ fn author_identity(
 	tenant: Option<&str>,
 	owner: Option<&str>,
 ) -> Result<(String, String)> {
-	match actor {
-		Actor::Operator => {
-			let tenant = tenant
-				.filter(|s| !s.trim().is_empty())
-				.ok_or_else(|| Error::Invalid("tenant is required".into()))?;
-			let owner = owner
-				.filter(|s| !s.trim().is_empty())
-				.ok_or_else(|| Error::Invalid("owner is required".into()))?;
-			Ok((tenant.into(), owner.into()))
-		}
-		Actor::Subject(identity) => {
-			if tenant.is_some_and(|value| value != identity.tenant)
-				|| owner.is_some_and(|value| value != identity.subject)
-			{
-				return Err(Error::Forbidden);
-			}
-			Ok((identity.tenant.clone(), identity.subject.clone()))
-		}
-	}
+	Ok(aidash_application::registry::workbench::author_identity(
+		&crate::bootstrap::draft_principal(actor),
+		tenant,
+		owner,
+	)?)
 }
 
 async fn authorize(
@@ -73,50 +58,13 @@ async fn authorize(
 	action: &str,
 	shares: bool,
 ) -> Result<()> {
-	let Actor::Subject(identity) = actor else {
-		return Ok(());
-	};
-	if identity.tenant != draft.tenant {
-		return Err(Error::Forbidden);
-	}
-	identity.lock_native(tx, false).await?;
-	let shared = if shares {
-		AgentDraftShare::current(tx, draft.id, &identity.subject)
-			.await?
-			.map(|row| (row.can_edit, row.documents_digest))
-	} else {
-		None
-	};
-	let current_share =
-		shared.filter(|(_, documents_digest)| documents_digest == &digest(&draft.documents));
-	if identity.subject != draft.owner
-		&& match action {
-			"agent_draft.read" => current_share.is_none(),
-			_ => current_share.as_ref().is_none_or(|(can_edit, _)| !can_edit),
-		} {
-		return Err(Error::Forbidden);
-	}
-	let decision = Authorization::evaluate_native(
-		tx,
-		&draft.tenant,
-		&Evaluation {
-			subject: identity.subject.clone(),
-			action: action.into(),
-			resource: Resource {
-				tenant: draft.tenant.clone(),
-				kind: "agent_draft".into(),
-				id: draft.id.to_string(),
-				attributes: json!({"owner":draft.owner,"agent_id":draft.entry["id"],"archived":draft.archived}),
-			},
-			environment: json!({}),
-		},
+	Ok(aidash_application::registry::workbench::authorize(
+		&mut crate::bootstrap::draft_authority_scope(tx, actor),
+		&draft.clone().into(),
+		action,
+		shares,
 	)
-	.await?;
-	if decision.allowed {
-		Ok(())
-	} else {
-		Err(Error::Forbidden)
-	}
+	.await?)
 }
 
 async fn validate_content(
@@ -125,64 +73,17 @@ async fn validate_content(
 	actor: &Actor,
 	tx: &mut dyn TransactionExecutor,
 ) -> Result<Entry> {
-	let mut entry: Entry = serde_json::from_value(draft.entry.clone())?;
-	let documents: Vec<ReferenceDocument> = serde_json::from_value(draft.documents.clone())?;
-	check_content(&entry, &documents, &draft.release_notes)?;
-	if !documents.is_empty() {
-		entry.config["knowledge_digest"] = json!(digest(&draft.documents));
-	} else if let Some(config) = entry.config.as_object_mut() {
-		config.remove("knowledge_digest");
-	}
-	if let Actor::Subject(identity) = actor {
-		let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
-		for reference in std::iter::once(&config.model)
-			.chain(config.tools.iter())
-			.chain(config.skills.iter())
-			.chain(config.cluster.iter())
-		{
-			let decision = Authorization::evaluate_native(
-				tx,
-				&draft.tenant,
-				&Evaluation {
-					subject: identity.subject.clone(),
-					action: "agent_dependency.read".into(),
-					resource: Resource {
-						tenant: draft.tenant.clone(),
-						kind: "registry_entry".into(),
-						id: ref_key(reference),
-						attributes: json!({"id":reference.id,"version":reference.version}),
-					},
-					environment: json!({}),
-				},
-			)
-			.await?;
-			if !decision.allowed {
-				return Err(Error::Forbidden);
-			}
-		}
-	}
-	admission::validate_references(tx, &entry, &f.config.node_id).await?;
-	if !documents.is_empty() {
-		let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
-		let mut references = Vec::new();
-		for reference in std::iter::once(&config.model)
-			.chain(config.tools.iter())
-			.chain(config.skills.iter())
-			.chain(config.cluster.iter())
-		{
-			references.push(admission::effective(tx, &reference.id, &reference.version).await?);
-		}
-		crate::registry::validate_agent_prompt(
-			&config,
-			&references,
-			&json!({"reference_documents":draft.documents}),
-		)?;
-	}
-	Ok(entry)
+	Ok(aidash_application::registry::workbench::validate_content(
+		&mut crate::bootstrap::draft_authority_scope(tx, actor),
+		&crate::bootstrap::registry_validation(),
+		&draft.clone().into(),
+		&f.config.node_id,
+	)
+	.await?)
 }
 
 fn ref_key(reference: &crate::registry::EntityRef) -> String {
-	format!("{}@{}", reference.id, reference.version)
+	aidash_application::registry::workbench::ref_key(reference)
 }
 
 async fn target_enabled(
@@ -190,26 +91,19 @@ async fn target_enabled(
 	tenant: &str,
 	subject: &str,
 ) -> Result<()> {
-	let snapshot = AuthorizationBundle::lock_snapshot(tx, tenant, false).await?;
-	if crate::authorization::identity::enabled(&snapshot, subject) {
-		Ok(())
-	} else {
-		Err(Error::Invalid(
-			"target subject must exist and be enabled in the same tenant".into(),
-		))
-	}
+	Ok(aidash_application::registry::workbench::target_enabled(
+		&mut crate::bootstrap::draft_authority_scope(tx, &Actor::Operator),
+		tenant,
+		subject,
+	)
+	.await?)
 }
 
 fn owner_only(actor: &Actor, draft: &Draft) -> Result<()> {
-	match actor {
-		Actor::Operator => Ok(()),
-		Actor::Subject(identity)
-			if identity.tenant == draft.tenant && identity.subject == draft.owner =>
-		{
-			Ok(())
-		}
-		_ => Err(Error::Forbidden),
-	}
+	Ok(aidash_application::registry::workbench::owner_only(
+		&crate::bootstrap::draft_principal(actor),
+		&draft.clone().into(),
+	)?)
 }
 
 pub(crate) use crate::apps::registry::workbench::serializers::contracts::DraftPage;

@@ -97,3 +97,5 @@ pub trait SkillSource: Send + Sync {
 		request: aidash_domain::registry::skill_import::ImportRequest,
 	) -> crate::Result<aidash_domain::registry::skill_import::ImportResult>;
 }
+
+pub mod workbench;
