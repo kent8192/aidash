@@ -23,17 +23,6 @@ pub(crate) struct CallbackQuery {
 	pub(crate) code: String,
 }
 
-#[derive(Deserialize, JsonSchema)]
-pub(crate) struct ServiceToken {
-	pub(crate) access_token: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
-pub(crate) struct KeycloakUser {
-	pub(crate) id: Option<String>,
-	pub(crate) enabled: Option<bool>,
-}
-
 #[derive(Serialize, JsonSchema)]
 pub struct MappingView {
 	pub(crate) id: Uuid,
@@ -136,16 +125,3 @@ pub(crate) struct BackchannelLogout {
 }
 
 use uuid::Uuid;
-
-#[derive(Deserialize)]
-pub(crate) struct GoogleTokenResponse {
-	pub(crate) id_token: String,
-}
-#[derive(Deserialize)]
-pub(crate) struct GoogleClaims {
-	pub(crate) sub: String,
-	pub(crate) nonce: String,
-	#[serde(rename = "iat")]
-	pub(crate) _issued_at: i64,
-	pub(crate) sid: Option<String>,
-}

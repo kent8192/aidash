@@ -1,8 +1,7 @@
 //! Backend-owned OIDC login and opaque dashboard sessions.
-use crate::apps::execution::models::Run;
 use crate::apps::identity::models::{
-	DashboardExecutionOrigin, DashboardIdentity, DashboardLoginTransaction, DashboardLogoutToken,
-	DashboardMapping, DashboardOperatorGrant, DashboardRegistrationRequest, DashboardSession,
+	DashboardIdentity, DashboardLoginTransaction, DashboardMapping, DashboardOperatorGrant,
+	DashboardRegistrationRequest, DashboardSession,
 };
 use crate::http::validate;
 use http::header;
@@ -22,33 +21,18 @@ use crate::{
 	federation::Federation,
 };
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Duration, Utc};
-use futures_util::{StreamExt, stream};
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
 use openidconnect::{
-	AuthType, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce,
-	PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, TokenResponse,
+	ClientId, ClientSecret, CsrfToken, Nonce, PkceCodeChallenge, RedirectUrl,
 	core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, sync::OnceLock, time::Instant};
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
 const SESSION_COOKIE: &str = "__Host-aidash-session";
 const LOGIN_COOKIE: &str = "__Host-aidash-login";
 const CSRF_COOKIE: &str = "aidash-csrf";
-const STATUS_FRESH_SECONDS: i64 = 300;
-const STATUS_LIMIT_SECONDS: i64 = 900;
-const DISCOVERY_CACHE_SECONDS: u64 = 300;
-const JWKS_CACHE_SECONDS: u64 = 300;
-const UNKNOWN_KID_REFRESH_SECONDS: u64 = 30;
-type DiscoveryCache = Mutex<HashMap<String, (Instant, CoreProviderMetadata)>>;
-static DISCOVERY_CACHE: OnceLock<DiscoveryCache> = OnceLock::new();
-type JwksCache = Mutex<HashMap<String, (Instant, JwkSet)>>;
-static JWKS_CACHE: OnceLock<JwksCache> = OnceLock::new();
 static BACKCHANNEL_CAPACITY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
 fn digest(value: &str) -> Vec<u8> {
@@ -138,93 +122,10 @@ fn no_store(response: &mut Response) {
 	);
 }
 
-fn oidc_http_client() -> Result<openidconnect::reqwest::Client> {
-	openidconnect::reqwest::Client::builder()
-		.redirect(openidconnect::reqwest::redirect::Policy::none())
-		.timeout(std::time::Duration::from_secs(10))
-		.build()
-		.map_err(|_| Error::External("OIDC client unavailable".into()))
-}
-
 async fn provider_metadata(config: &OidcConfig) -> Result<CoreProviderMetadata> {
-	let cache = DISCOVERY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-	let mut entries = cache.lock().await;
-	if let Some((fetched_at, metadata)) = entries.get(&config.issuer)
-		&& fetched_at.elapsed().as_secs() < DISCOVERY_CACHE_SECONDS
-	{
-		return Ok(metadata.clone());
-	}
-	let issuer = IssuerUrl::new(config.issuer.clone())
-		.map_err(|_| Error::Invalid("invalid OIDC issuer".into()))?;
-	let metadata = CoreProviderMetadata::discover_async(issuer, &oidc_http_client()?)
+	aidash_integrations::oidc::provider_metadata(&config.issuer)
 		.await
-		.map_err(|_| Error::External("OIDC discovery unavailable".into()))?;
-	entries.insert(config.issuer.clone(), (Instant::now(), metadata.clone()));
-	Ok(metadata)
-}
-
-async fn logout_decoding_key(
-	f: &Federation,
-	config: &OidcConfig,
-	kid: &str,
-) -> Result<DecodingKey> {
-	let cache = JWKS_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-	let mut entries = cache.lock().await;
-	if let Some((fetched_at, keys)) = entries.get(&config.issuer) {
-		let age = fetched_at.elapsed().as_secs();
-		if age < JWKS_CACHE_SECONDS && keys.find(kid).is_some() {
-			return decoding_key(keys, kid);
-		}
-		// An arbitrary kid must not force a provider request on every attempt.
-		if age < UNKNOWN_KID_REFRESH_SECONDS {
-			return Err(Error::Invalid("unknown logout signing key".into()));
-		}
-	}
-	let metadata = provider_metadata(config).await?;
-	let response = f
-		.client
-		.get(metadata.jwks_uri().url().as_str())
-		.timeout(std::time::Duration::from_secs(10))
-		.send()
-		.await
-		.map_err(|_| Error::External("OIDC key set unavailable".into()))?;
-	if !response.status().is_success() {
-		return Err(Error::External("OIDC key set unavailable".into()));
-	}
-	let mut response = response;
-	let mut body = Vec::new();
-	while let Some(chunk) = response
-		.chunk()
-		.await
-		.map_err(|_| Error::External("OIDC key set unavailable".into()))?
-	{
-		if body.len() + chunk.len() > 1_048_576 {
-			return Err(Error::External("OIDC key set unavailable".into()));
-		}
-		body.extend_from_slice(&chunk);
-	}
-	let keys: JwkSet = serde_json::from_slice(&body)
-		.map_err(|_| Error::External("OIDC key set unavailable".into()))?;
-	let result = decoding_key(&keys, kid);
-	entries.insert(config.issuer.clone(), (Instant::now(), keys));
-	result
-}
-
-fn decoding_key(keys: &JwkSet, kid: &str) -> Result<DecodingKey> {
-	let key = keys
-		.find(kid)
-		.ok_or(Error::Invalid("unknown logout signing key".into()))?;
-	if key
-		.common
-		.key_algorithm
-		.as_ref()
-		.is_some_and(|algorithm| algorithm.to_string() != "RS256")
-	{
-		return Err(Error::Invalid(
-			"logout signing key algorithm mismatch".into(),
-		));
-	}
-	DecodingKey::from_jwk(key).map_err(|_| Error::Invalid("invalid logout signing key".into()))
+		.map_err(Into::into)
 }
 
 fn return_path(value: Option<&str>) -> Result<&str> {
@@ -241,60 +142,6 @@ fn return_path(value: Option<&str>) -> Result<&str> {
 	Ok(value)
 }
 
-async fn keycloak_enabled(f: &Federation, config: &OidcConfig, subject: &str) -> Result<bool> {
-	let token_url = format!(
-		"{}/protocol/openid-connect/token",
-		config.issuer.trim_end_matches('/')
-	);
-	let response = f
-		.client
-		.post(token_url)
-		.form(&[
-			("grant_type", "client_credentials"),
-			("client_id", config.status_client_id.as_str()),
-			("client_secret", config.status_client_secret.as_str()),
-		])
-		.timeout(std::time::Duration::from_secs(10))
-		.send()
-		.await
-		.map_err(|_| Error::External("Keycloak status unavailable".into()))?;
-	if !response.status().is_success() {
-		return Err(Error::External("Keycloak status unavailable".into()));
-	}
-	let token: ServiceToken = response
-		.json()
-		.await
-		.map_err(|_| Error::External("Keycloak status unavailable".into()))?;
-	let mut url = reqwest::Url::parse(&config.keycloak_admin_url)
-		.map_err(|_| Error::Invalid("invalid Keycloak admin URL".into()))?;
-	url.path_segments_mut()
-		.map_err(|_| Error::Invalid("invalid Keycloak admin URL".into()))?
-		.push("users")
-		.push(subject);
-	let response = f
-		.client
-		.get(url)
-		.bearer_auth(token.access_token)
-		.timeout(std::time::Duration::from_secs(10))
-		.send()
-		.await
-		.map_err(|_| Error::External("Keycloak status unavailable".into()))?;
-	if response.status() == reqwest::StatusCode::NOT_FOUND {
-		return Ok(false);
-	}
-	if !response.status().is_success() {
-		return Err(Error::External("Keycloak status unavailable".into()));
-	}
-	let user: KeycloakUser = response
-		.json()
-		.await
-		.map_err(|_| Error::External("Keycloak status unavailable".into()))?;
-	if user.id.as_deref() != Some(subject) {
-		return Err(Error::External("Keycloak status unavailable".into()));
-	}
-	Ok(user.enabled == Some(true))
-}
-
 async fn account_valid(
 	f: &Federation,
 	id: Uuid,
@@ -303,168 +150,29 @@ async fn account_valid(
 	last_valid_at: Option<DateTime<Utc>>,
 	disabled_at: Option<DateTime<Utc>>,
 ) -> Result<()> {
-	if disabled_at.is_some() {
-		return Err(Error::Forbidden);
-	}
-	let config = required_config(f)?;
-	if issuer != config.issuer {
-		return Err(Error::Forbidden);
-	}
-	if config.is_google() {
-		return Ok(());
-	}
-	let now = Utc::now();
-	if last_valid_at.is_some_and(|time| time > now - Duration::seconds(STATUS_FRESH_SECONDS)) {
-		return Ok(());
-	}
-	// The validity deadline starts when the lookup begins, not when a slow
-	// upstream response finally arrives.
-	let check_started_at = now;
-	match keycloak_enabled(f, config, subject).await {
-		Ok(true) => {
-			let lease = f.store.orm_connection()?;
-			DashboardIdentity::record_valid(lease.handle(), id, check_started_at).await
-		}
-		Ok(false) => {
-			disable_identity(f, id, Some(check_started_at)).await?;
-			Err(Error::Forbidden)
-		}
-		Err(_)
-			if last_valid_at
-				.is_some_and(|time| time > now - Duration::seconds(STATUS_LIMIT_SECONDS)) =>
-		{
-			Ok(())
-		}
-		Err(_) => Err(Error::IdentityStatusUnavailable),
-	}
+	crate::bootstrap::dashboard_authority(f)
+		.account_valid(&aidash_domain::identity::dashboard::Account {
+			id,
+			issuer: issuer.to_owned(),
+			subject: subject.to_owned(),
+			last_valid_at,
+			disabled_at,
+		})
+		.await
+		.map_err(Into::into)
 }
 
-async fn disable_identity(
-	f: &Federation,
-	id: Uuid,
-	check_started_at: Option<DateTime<Utc>>,
-) -> Result<()> {
-	let lease = f.store.orm_connection()?;
-	if DashboardIdentity::disable_if_current(lease.handle(), id, check_started_at).await? {
-		mark_explicit_disable(f, id).await?;
-	}
-	Ok(())
-}
-
-async fn mark_explicit_disable(f: &Federation, identity_id: Uuid) -> Result<()> {
-	let lease = f.store.orm_connection()?;
-	let mut connection = lease.handle();
-	let ids = DashboardExecutionOrigin::status_waiting(&mut connection, identity_id).await?;
-	Run::mark_identity_disabled(&mut connection, ids).await
-}
-
-async fn resume_status_waiting(f: &Federation, identity_id: Uuid) -> Result<()> {
-	let lease = f.store.orm_connection()?;
-	let mut connection = lease.handle();
-	let identity = DashboardIdentity::find(&mut connection, identity_id).await?;
-	if identity.disabled_at.is_some()
-		|| identity
-			.last_valid_at
-			.is_none_or(|last| last <= Utc::now() - Duration::seconds(STATUS_FRESH_SECONDS))
-	{
-		return Ok(());
-	}
-	for run in DashboardExecutionOrigin::status_waiting(&mut connection, identity_id).await? {
-		let Some(subject) =
-			DashboardExecutionOrigin::original_subject(&mut connection, identity_id, run).await?
-		else {
-			continue;
-		};
-		let Ok(access) = Access::begin(&f.store, &subject).await else {
-			continue;
-		};
-		let changed = Run::resume_identity_pause(connection, run).await;
-		if access.finish(changed).await? {
-			f.notify.notify_waiters();
-		}
-	}
-	Ok(())
-}
-
-/// Refresh identities independently of their browser sessions so ongoing work
-/// retains the same hard account-validity deadline after logout.
+/// Browser sessions and ongoing runs use the same application account authority.
 pub async fn refresh_active(
 	f: Federation,
-	mut stopping: tokio::sync::watch::Receiver<bool>,
+	stopping: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
-	if f.config.oidc.is_none() {
-		return Ok(());
-	}
-	loop {
-		let identities = async {
-			let lease = f.store.orm_connection()?;
-			DashboardIdentity::active(
-				lease.handle(),
-				f.config
-					.oidc
-					.as_ref()
-					.expect("OIDC configured")
-					.session_idle_seconds,
-			)
-			.await
-		}
-		.await;
-		match identities {
-			Ok(identities) => {
-				stream::iter(
-					identities
-						.into_iter()
-						.map(|identity| refresh_identity(f.clone(), identity)),
-				)
-				.buffer_unordered(8)
-				.for_each(|_| async {})
-				.await;
-			}
-			Err(error) => {
-				tracing::warn!(%error, "OIDC refresh pass failed; retrying after interval")
-			}
-		}
-		tokio::select! {
-			_ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {},
-			_ = stopping.changed() => if *stopping.borrow() { return Ok(()); },
-		}
-	}
-}
-
-async fn refresh_identity(f: Federation, identity: DashboardIdentity) {
-	if f.config.oidc.as_ref().is_some_and(OidcConfig::is_google) {
-		return;
-	}
-	if f.config
-		.oidc
-		.as_ref()
-		.is_some_and(|config| identity.issuer != config.issuer)
-	{
-		if let Err(error) = disable_identity(&f, identity.id, None).await {
-			tracing::warn!(identity_id=%identity.id, %error, "old-issuer identity could not be disabled");
-		}
-		return;
-	}
-	match account_valid(
-		&f,
-		identity.id,
-		&identity.issuer,
-		&identity.subject,
-		identity.last_valid_at,
-		identity.disabled_at,
+	aidash_runtime::dashboard::refresh_active(
+		std::sync::Arc::new(crate::bootstrap::dashboard_authority(&f)),
+		stopping,
 	)
 	.await
-	{
-		Ok(()) => {
-			if let Err(error) = resume_status_waiting(&f, identity.id).await {
-				tracing::warn!(identity_id=%identity.id, %error, "status recovery check failed");
-			}
-		}
-		Err(error) if !matches!(error, Error::Forbidden | Error::IdentityStatusUnavailable) => {
-			tracing::warn!(identity_id=%identity.id, "Keycloak status refresh did not establish validity");
-		}
-		Err(_) => {}
-	}
+	.map_err(Into::into)
 }
 
 pub type BrowserSession = DashboardSession;
@@ -612,8 +320,8 @@ impl Registration {
 pub use crate::apps::identity::serializers::oidc::MappingView;
 pub(crate) use crate::apps::identity::serializers::oidc::{
 	AdminIdentityPage, AdminMapping, AdminMappingPage, AdminOperatorGrant, Approval,
-	ApprovedMapping, BackchannelLogout, CallbackQuery, Configuration, IdentityView, KeycloakUser,
-	LoginQuery, MappingRevision, OperatorGrantInput, Registration, ServiceToken, SessionView,
+	ApprovedMapping, BackchannelLogout, CallbackQuery, Configuration, IdentityView, LoginQuery,
+	MappingRevision, OperatorGrantInput, Registration, SessionView,
 };
 
 use http::{HeaderMap, Method};
@@ -720,14 +428,12 @@ impl DashboardSessions {
 		let metadata = provider_metadata(config).await?;
 		let (subject, provider_sid) =
 			exchange_identity(config, metadata, &transaction, query.code).await?;
-		if !config.is_google() && !keycloak_enabled(&f, config, &subject).await? {
-			return Err(Error::Forbidden);
-		}
-		let identity =
-			DashboardIdentity::register(lease.handle(), &config.issuer, &subject).await?;
-		if identity.disabled_at.is_some() {
-			return Err(Error::Forbidden);
-		}
+		let identity = crate::bootstrap::dashboard_authority(&f)
+			.admit_login(
+				&mut crate::bootstrap::dashboard_login(lease.handle()),
+				&subject,
+			)
+			.await?;
 		let secret = random_secret();
 		let csrf = random_secret();
 		let previous = cookie_value(&headers, &cookie_name(SESSION_COOKIE, config)).map(digest);
@@ -822,21 +528,9 @@ impl DashboardSessions {
 			.contract())
 	}
 	pub(crate) async fn admin_restore_identity(&self, id: Uuid) -> Result<http::StatusCode> {
-		let f = &self.runtime;
-		let config = required_config(f)?;
-		let lease = f.store.orm_connection()?;
-		let mut connection = lease.handle();
-		let identity = DashboardIdentity::find(&mut connection, id).await?;
-		if identity.issuer != config.issuer || identity.disabled_at.is_none() {
-			return Err(Error::Conflict(
-				"identity is not disabled for the configured issuer".into(),
-			));
-		}
-		let check_started_at = Utc::now();
-		if !keycloak_enabled(f, config, &identity.subject).await? {
-			return Err(Error::Forbidden);
-		}
-		DashboardIdentity::restore(&mut connection, id, check_started_at).await?;
+		crate::bootstrap::dashboard_authority(&self.runtime)
+			.restore(id)
+			.await?;
 		Ok(http::StatusCode::NO_CONTENT)
 	}
 	pub(crate) async fn admin_identities(
@@ -950,89 +644,13 @@ impl DashboardSessions {
 		body: BackchannelLogout,
 	) -> Result<http::StatusCode> {
 		let f = self.runtime.clone();
-		let config = required_config(&f)?;
+		required_config(&f)?;
 		let _admission = BACKCHANNEL_CAPACITY
 			.try_acquire()
 			.map_err(|_| Error::RateLimited)?;
-		if body.logout_token.len() > 16_384 {
-			return Err(Error::Invalid("invalid logout token".into()));
-		}
-		let header = decode_header(&body.logout_token)
-			.map_err(|_| Error::Invalid("invalid logout token".into()))?;
-		if header.alg != Algorithm::RS256 {
-			return Err(Error::Invalid(
-				"unsupported logout signing algorithm".into(),
-			));
-		}
-		let kid = header
-			.kid
-			.ok_or(Error::Invalid("logout token is missing a key ID".into()))?;
-		if kid.is_empty() || kid.len() > 256 {
-			return Err(Error::Invalid("invalid logout key ID".into()));
-		}
-		let decoding_key = logout_decoding_key(&f, config, &kid).await?;
-		let mut validation = Validation::new(Algorithm::RS256);
-		validation.set_issuer(&[&config.issuer]);
-		validation.set_audience(&[&config.client_id]);
-		validation.set_required_spec_claims(&["iss", "aud", "iat", "exp"]);
-		validation.leeway = 30;
-		let claims = decode::<Value>(&body.logout_token, &decoding_key, &validation)
-			.map_err(|_| Error::Invalid("invalid logout token".into()))?
-			.claims;
-		let object = claims
-			.as_object()
-			.ok_or(Error::Invalid("invalid logout token claims".into()))?;
-		let event = object
-			.get("events")
-			.and_then(Value::as_object)
-			.and_then(|events| events.get("http://schemas.openid.net/event/backchannel-logout"));
-		if !event.is_some_and(Value::is_object) || object.contains_key("nonce") {
-			return Err(Error::Invalid("invalid logout token claims".into()));
-		}
-		let sub = object
-			.get("sub")
-			.and_then(Value::as_str)
-			.filter(|value| !value.is_empty());
-		let sid = object
-			.get("sid")
-			.and_then(Value::as_str)
-			.filter(|value| !value.is_empty());
-		if sub.is_none() && sid.is_none() {
-			return Err(Error::Invalid(
-				"logout token needs a subject or session ID".into(),
-			));
-		}
-		let jti = object
-			.get("jti")
-			.and_then(Value::as_str)
-			.filter(|value| !value.is_empty() && value.len() <= 512)
-			.ok_or(Error::Invalid("logout token needs a JTI".into()))?;
-		let iat = object
-			.get("iat")
-			.and_then(Value::as_i64)
-			.ok_or(Error::Invalid("invalid logout issued time".into()))?;
-		let exp = object
-			.get("exp")
-			.and_then(Value::as_i64)
-			.ok_or(Error::Invalid("invalid logout expiration".into()))?;
-		let now = Utc::now().timestamp();
-		if iat > now + 30
-			|| iat < now - 86_400
-			|| exp <= now - 30
-			|| exp > now + 86_400
-			|| exp <= iat
-		{
-			return Err(Error::Invalid("invalid logout token lifetime".into()));
-		}
-		let lease = f.store.orm_connection()?;
-		DashboardLogoutToken::revoke_sessions(
-			lease.handle(),
-			&config.issuer,
-			sub,
-			sid,
-			digest(&format!("{}:{jti}", config.issuer)),
-			DateTime::<Utc>::from_timestamp(exp, 0)
-				.ok_or(Error::Invalid("invalid logout expiration".into()))?,
+		aidash_application::authorization::dashboard::backchannel_logout(
+			&crate::bootstrap::dashboard_logout(&f),
+			&body.logout_token,
 		)
 		.await?;
 		Ok(http::StatusCode::OK)
@@ -1054,107 +672,19 @@ async fn exchange_identity(
 	transaction: &DashboardLoginTransaction,
 	code: String,
 ) -> Result<(String, Option<String>)> {
-	if config.is_google() {
-		return exchange_google_identity(config, &metadata, transaction, &code).await;
-	}
-	let http_client = oidc_http_client()?;
-	let client = CoreClient::from_provider_metadata(
+	aidash_integrations::oidc::exchange_identity(
+		&crate::bootstrap::oidc_settings(config),
 		metadata,
-		ClientId::new(config.client_id.clone()),
-		Some(ClientSecret::new(config.client_secret.clone())),
+		&aidash_integrations::oidc::PendingLogin {
+			callback_uri: &transaction.callback_uri,
+			pkce_verifier: &transaction.pkce_verifier,
+			nonce: &transaction.nonce,
+		},
+		code,
 	)
-	.set_redirect_uri(
-		RedirectUrl::new(transaction.callback_uri.clone()).map_err(|_| Error::Unauthorized)?,
-	);
-	let client = client.set_auth_type(AuthType::BasicAuth);
-	let token_response = client
-		.exchange_code(AuthorizationCode::new(code))
-		.map_err(|_| Error::Unauthorized)?
-		.set_pkce_verifier(PkceCodeVerifier::new(transaction.pkce_verifier.clone()))
-		.request_async(&http_client)
-		.await
-		.map_err(|_| Error::Unauthorized)?;
-	let id_token = token_response.id_token().ok_or(Error::Unauthorized)?;
-	let claims = id_token
-		.claims(
-			&client.id_token_verifier(),
-			&Nonce::new(transaction.nonce.clone()),
-		)
-		.map_err(|_| Error::Unauthorized)?;
-	let subject = claims.subject().as_str().to_owned();
-	// The ID token has already passed the library's signature, issuer, audience,
-	// time and nonce checks. Its optional provider sid is used only for scoped
-	// back-channel session revocation, never for identity or authority.
-	let id_token_text = id_token.to_string();
-	let payload = id_token_text.split('.').nth(1).ok_or(Error::Unauthorized)?;
-	let payload = URL_SAFE_NO_PAD
-		.decode(payload)
-		.map_err(|_| Error::Unauthorized)?;
-	let payload: Value = serde_json::from_slice(&payload).map_err(|_| Error::Unauthorized)?;
-	let provider_sid = payload
-		.get("sid")
-		.and_then(Value::as_str)
-		.map(str::to_owned);
-	Ok((subject, provider_sid))
+	.await
+	.map_err(Into::into)
 }
-
-async fn exchange_google_identity(
-	config: &OidcConfig,
-	metadata: &CoreProviderMetadata,
-	transaction: &DashboardLoginTransaction,
-	code: &str,
-) -> Result<(String, Option<String>)> {
-	// Google also issues `iss=accounts.google.com`, which the OIDC library's
-	// URL-typed issuer cannot deserialize. Verify the original JWT with the
-	// existing JWT library; never rewrite its signed payload.
-	let response = oidc_http_client()?
-		.post(
-			metadata
-				.token_endpoint()
-				.as_ref()
-				.ok_or(Error::Unauthorized)?
-				.url()
-				.clone(),
-		)
-		.form(&[
-			("grant_type", "authorization_code"),
-			("code", code),
-			("client_id", config.client_id.as_str()),
-			("client_secret", config.client_secret.as_str()),
-			("redirect_uri", transaction.callback_uri.as_str()),
-			("code_verifier", transaction.pkce_verifier.as_str()),
-		])
-		.send()
-		.await
-		.map_err(|_| Error::Unauthorized)?
-		.error_for_status()
-		.map_err(|_| Error::Unauthorized)?
-		.bytes()
-		.await
-		.map_err(|_| Error::Unauthorized)?;
-	let tokens: GoogleTokenResponse =
-		serde_json::from_slice(&response).map_err(|_| Error::Unauthorized)?;
-	let header = decode_header(&tokens.id_token).map_err(|_| Error::Unauthorized)?;
-	let keys: JwkSet = serde_json::from_value(serde_json::to_value(metadata.jwks())?)?;
-	let key = keys
-		.find(header.kid.as_deref().ok_or(Error::Unauthorized)?)
-		.ok_or(Error::Unauthorized)?;
-	let key = DecodingKey::from_jwk(key).map_err(|_| Error::Unauthorized)?;
-	let mut validation = Validation::new(Algorithm::RS256);
-	validation.set_issuer(&["https://accounts.google.com", "accounts.google.com"]);
-	validation.set_audience(&[&config.client_id]);
-	validation.set_required_spec_claims(&["iss", "aud", "exp", "sub"]);
-	validation.leeway = 0;
-	let claims = decode::<GoogleClaims>(&tokens.id_token, &key, &validation)
-		.map_err(|_| Error::Unauthorized)?
-		.claims;
-	if !crate::config::same_secret(&claims.nonce, &transaction.nonce) {
-		return Err(Error::Unauthorized);
-	}
-	Ok((claims.sub, claims.sid))
-}
-
-use crate::apps::identity::serializers::oidc::{GoogleClaims, GoogleTokenResponse};
 
 impl BrowserOrigin {
 	pub(crate) async fn require_operator(

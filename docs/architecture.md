@@ -86,6 +86,15 @@ rules bind delivered records to the original node, task, workspace and content;
 typed native RPC adapters retain the preceding Federation 0.1 peer fallback and
 its bounded history/snapshot behavior.
 
+Dashboard account validity and status recovery are application use cases shared
+by browser sessions and ongoing runs. Runtime drives bounded refresh passes;
+integration adapters own OIDC discovery, JWKS caches and account lookups. Native
+repositories retain conditional status writes, atomic session revocation and the
+original Subject authority through resumed-run commits. Provider latency does
+not extend validity: successful checks record their start time. Backchannel
+logout verifies its signed envelope before applying domain lifetime and replay
+identity rules and atomically consuming the logout identity with revocation.
+
 Scoped commands authorize effects, track disclosed outputs, journal mutation
 results, and recheck the source lease through the application use case. A claim
 binds the complete inspected agent definition. Operation reconciliation owns one

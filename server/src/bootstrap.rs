@@ -1917,3 +1917,42 @@ pub(crate) fn execution_headroom(
 ) -> crate::apps::federation::remote::repositories::headroom::Context<'_> {
 	crate::apps::federation::remote::repositories::headroom::Context(federation)
 }
+
+pub(crate) fn oidc_settings(
+	config: &crate::config::OidcConfig,
+) -> aidash_integrations::oidc::Settings {
+	aidash_integrations::oidc::Settings {
+		issuer: config.issuer.clone(),
+		client_id: config.client_id.clone(),
+		client_secret: config.client_secret.clone(),
+		keycloak_admin_url: config.keycloak_admin_url.clone(),
+		status_client_id: config.status_client_id.clone(),
+		status_client_secret: config.status_client_secret.clone(),
+	}
+}
+
+pub(crate) fn dashboard_authority(
+	federation: &Federation,
+) -> aidash_application::authorization::dashboard::DashboardAuthority {
+	aidash_application::authorization::dashboard::DashboardAuthority {
+		accounts: Arc::new(crate::apps::identity::repositories::dashboard::Repository(
+			federation.clone(),
+		)),
+		status: Arc::new(aidash_integrations::oidc::AccountLookup {
+			client: federation.client.clone(),
+			settings: federation.config.oidc.as_ref().map(oidc_settings),
+		}),
+	}
+}
+
+pub(crate) fn dashboard_logout(
+	federation: &Federation,
+) -> crate::apps::identity::repositories::dashboard::Logout<'_> {
+	crate::apps::identity::repositories::dashboard::Logout(federation)
+}
+
+pub(crate) fn dashboard_login(
+	connection: reinhardt::db::orm::DatabaseConnection,
+) -> crate::apps::identity::repositories::dashboard::Login {
+	crate::apps::identity::repositories::dashboard::Login(connection)
+}
