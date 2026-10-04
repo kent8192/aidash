@@ -91,10 +91,11 @@ fn a_retrieval_with_candidates_cannot_become_an_empty_success(
 	let mut value = receipt(matches);
 	value.result.truncated = truncated;
 	let mut empty = receipt(0);
-	empty.result.truncated = true;
 	empty.fit_budget(32768).unwrap();
+	// A genuine empty receipt establishes the wire budget without discarding candidates.
+	let empty_budget = empty.estimated_tokens + 16;
 	assert!(matches!(
-		value.fit_budget(empty.estimated_tokens),
+		value.fit_budget(empty_budget),
 		Err(ContractError::Semantic(Failure::ContextBudget))
 	));
 }
