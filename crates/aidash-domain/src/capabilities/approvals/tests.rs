@@ -4,7 +4,7 @@ use rstest::{fixture, rstest};
 
 #[fixture]
 fn bundle() -> PolicyBundle {
-	serde_json::from_value(json!({"tenant":"tenant","subjects":{"user":{"kind":"user"},"operator":{"kind":"user","attributes":{"capability_approver":true}},"agent":{"kind":"agent","attributes":{"capability_approver":true}}},"policies":[{"id":"approve","effect":"allow","subjects":{"any":true},"actions":["capability.approve"],"resources":{"kinds":["outbound"]},"condition":{"op":"eq","left":{"source":"environment","path":"transport"},"right":{"source":"literal","value":"api"}}}]})).unwrap()
+	serde_json::from_value(json!({"tenant":"tenant","subjects":{"user":{"kind":"user"},"operator":{"kind":"user","attributes":{"capability_approver":true}},"agent":{"kind":"agent","attributes":{"capability_approver":true}}},"policies":[{"id":"approve","effect":"allow","subjects":{"any":true},"actions":["capability.approve"],"resources":{"kinds":["outbound"]},"condition":{"op":"eq","left":{"source":"environment","path":"/transport"},"right":{"source":"literal","value":"api"}}}]})).unwrap()
 }
 fn evaluation(subject: &str) -> Evaluation {
 	Evaluation {
