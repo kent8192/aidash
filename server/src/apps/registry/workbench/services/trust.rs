@@ -13,31 +13,12 @@ pub(super) async fn require_inspection(
 	actor: &Actor,
 	reference: &EntityRef,
 ) -> Result<()> {
-	let Actor::Subject(identity) = actor else {
-		return Ok(());
-	};
-	identity.lock_native(tx, false).await?;
-	let decision = Authorization::evaluate_native(
-		tx,
-		&identity.tenant,
-		&Evaluation {
-			subject: identity.subject.clone(),
-			action: "agent_version.inspect".into(),
-			resource: Resource {
-				tenant: identity.tenant.clone(),
-				kind: "agent_version".into(),
-				id: ref_key(reference),
-				attributes: json!({"agent_id":reference.id,"version":reference.version}),
-			},
-			environment: json!({}),
-		},
+	aidash_application::registry::workbench::inspection::require(
+		&mut crate::bootstrap::draft_authority_scope(tx, actor),
+		reference,
 	)
-	.await?;
-	if decision.allowed {
-		Ok(())
-	} else {
-		Err(Error::Forbidden)
-	}
+	.await
+	.map_err(Into::into)
 }
 
 // Inspection and contained resource checks share one audit allocation lease.

@@ -1594,3 +1594,11 @@ pub(crate) fn source_snapshot_scope(
 ) -> crate::apps::identity::repositories::remote_grants::snapshot::Scope<'_> {
 	crate::apps::identity::repositories::remote_grants::snapshot::Scope { access }
 }
+
+/// Workbench factual history shares current draft authority and native ORM transactions.
+pub(crate) fn workbench_audit_repository(
+	runtime: &Federation,
+	actor: crate::authorization::identity::Actor,
+) -> crate::apps::registry::workbench::repositories::audit::Repository<'_> {
+	crate::apps::registry::workbench::repositories::audit::Repository { runtime, actor }
+}

@@ -75,7 +75,7 @@ async fn require_incident(
 }
 
 /// Read event history while holding current incident and authorization leases.
-pub(super) async fn read_events(
+pub(crate) async fn read_events(
 	f: &Federation,
 	actor: &Actor,
 	id: Uuid,

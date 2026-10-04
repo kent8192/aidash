@@ -80,3 +80,5 @@ pub trait PublicationScope: DraftScope + DefinitionWriter {
 		behavioral_tested: bool,
 	) -> Result<()>;
 }
+
+pub mod audit;

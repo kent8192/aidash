@@ -2,3 +2,5 @@
 pub mod authority;
 
 pub mod drafts;
+
+pub(crate) mod audit;

@@ -169,3 +169,6 @@ mod tests;
 pub mod drafts;
 
 pub mod publication;
+
+pub mod audit;
+pub mod inspection;

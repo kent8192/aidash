@@ -193,3 +193,5 @@ pub struct RegistrationRecord {
 	pub source_version: Option<String>,
 	pub behavioral_tested: bool,
 }
+
+pub mod audit;
