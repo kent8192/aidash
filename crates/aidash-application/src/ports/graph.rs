@@ -34,3 +34,22 @@ pub trait GraphProjectionScope: Send {
 		window_end: i64,
 	) -> Result<Vec<GraphActivity>>;
 }
+
+/// Candidate routing uses the current viewer's caller-owned authority scope.
+#[async_trait]
+pub trait GraphVisibility: Send {
+	fn operator(&self) -> bool;
+	async fn operator_workspace(&mut self, id: Uuid) -> Result<bool>;
+	async fn registry(
+		&mut self,
+		entry: &aidash_domain::registry::Entry,
+		action: &str,
+	) -> Result<bool>;
+	async fn workspace(&mut self, id: Uuid, action: &str) -> Result<bool>;
+	async fn record(&mut self, candidate: &Candidate) -> Result<bool>;
+	async fn conversation(
+		&mut self,
+		conversation: &aidash_domain::Conversation,
+		action: &str,
+	) -> Result<bool>;
+}
