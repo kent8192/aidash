@@ -2496,10 +2496,17 @@ impl Store {
 			.collect())
 	}
 	pub async fn lease_run(&self, worker: Uuid, seconds: i32) -> Result<Option<Run>> {
-		let mut tx = self.pool.begin().await?;
+		let mut tx = self.database().begin().await?;
 		let mut cursor = self.recovery_cursors.execution.lock().await;
-		let run =
-			Self::lease_run_in(&mut tx, worker, seconds, None, &self.node_id, &mut cursor).await?;
+		let run = Self::lease_run_in(
+			tx.as_mut(),
+			worker,
+			seconds,
+			None,
+			&self.node_id,
+			&mut cursor,
+		)
+		.await?;
 		tx.commit().await?;
 		Ok(run)
 	}
@@ -3961,178 +3968,25 @@ impl Store {
 		};
 		Ok(id.is_some())
 	}
-	/// Shared eligibility/fencing path for targeted notification claims and recovery.
+	/// Borrow the caller's native transaction for both targeted and recovery claims.
 	pub(crate) async fn lease_run_in(
-		tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+		tx: &mut dyn TransactionExecutor,
 		worker: Uuid,
 		seconds: i32,
 		run_id: Option<Uuid>,
 		node_id: &str,
 		cursor: &mut run_state::RecoveryCursor,
 	) -> Result<Option<Run>> {
-		use reinhardt::query::{
-			Alias, Condition, Expr, LockBehavior, LockType, Order, PostgresQueryBuilder, Query,
-		};
-		let now: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
-			&Query::select()
-				.expr(Expr::cust("CURRENT_TIMESTAMP"))
-				.to_string(PostgresQueryBuilder),
+		aidash_application::activation::lease(
+			&mut crate::bootstrap::activation_scheduling_scope(tx),
+			worker,
+			seconds,
+			run_id,
+			node_id,
+			cursor,
 		)
-		.fetch_one(&mut **tx)
-		.await?;
-		{
-			let mut ready = Query::select()
-				.column(reinhardt::query::ColumnRef::Asterisk)
-				.from(Alias::new("runs"))
-				.and_where(Expr::col(Alias::new("phase")).is_not_in([
-					"COMPLETED",
-					"FAILED",
-					"CANCELLED",
-				]))
-				.and_where(
-					Expr::col(Alias::new("control")).ne(reinhardt::query::Expr::value("PAUSED")),
-				)
-				.and_where(
-					Expr::col(Alias::new("revision"))
-						.lt(reinhardt::query::Expr::value(i64::MAX - 2)),
-				)
-				.cond_where(
-					Condition::any()
-						.add(Expr::col(Alias::new("lease_until")).is_null())
-						.add(
-							SimpleExpr::from(Expr::col(Alias::new("lease_until")))
-								.lte(Expr::current_timestamp()),
-						),
-				)
-				.and_where(run_state::run_unblocked())
-				.order_by(Alias::new("updated_at"), Order::Asc)
-				.order_by(Alias::new("id"), Order::Asc)
-				.limit(128)
-				.lock(LockType::Update)
-				.lock_behavior(LockBehavior::SkipLocked)
-				.to_owned();
-			if let Some(id) = run_id {
-				ready.and_where(Expr::col(Alias::new("id")).eq(reinhardt::query::Expr::value(id)));
-			}
-			if let Some((at, id)) = *cursor {
-				ready.cond_where(
-					Condition::any()
-						.add(
-							Expr::col(Alias::new("updated_at"))
-								.gt(reinhardt::query::Expr::value(at)),
-						)
-						.add(
-							Condition::all()
-								.add(
-									Expr::col(Alias::new("updated_at"))
-										.eq(reinhardt::query::Expr::value(at)),
-								)
-								.add(
-									Expr::col(Alias::new("id"))
-										.gt(reinhardt::query::Expr::value(id)),
-								),
-						),
-				);
-			}
-			let rows: Vec<RawRun> =
-				aidash_server::database::query_as(&ready.to_string(PostgresQueryBuilder))
-					.fetch_all(&mut **tx)
-					.await?;
-			if rows.is_empty() {
-				*cursor = None;
-				return Ok(None);
-			}
-			let more = rows.len() == 128 && run_id.is_none();
-			for raw in rows {
-				let m = &raw.metadata;
-				*cursor = Some((m.updated_at, m.id));
-				if Self::state_due_in(tx, &raw, now, node_id)
-					.await?
-					.is_none_or(|due| due > now)
-				{
-					continue;
-				}
-				// Failure-only delivery is claimed separately and never needs Context.
-				if crate::domain::run_state::decode(m.phase, raw.pending.clone())
-					.is_ok_and(|(s, _)| s.failure_delivery())
-				{
-					continue;
-				}
-				let mut run = match raw.decode() {
-					Ok(run) => run,
-					Err(error) => {
-						Self::fail_invalid_in(
-							tx,
-							&raw,
-							worker,
-							seconds,
-							&error.to_string(),
-							node_id,
-						)
-						.await?;
-						continue;
-					}
-				};
-				run.recovery.lease_recovered |= m.lease_owner.is_some();
-				let claimed: Option<Run> = {
-					let query_bind_1 = worker;
-					let query_bind_2 = seconds as f64;
-					let query_bind_3 = run.stored_pending()?;
-					aidash_server::database::query_as(
-						&Query::update()
-							.table(Alias::new("runs"))
-							.value_expr(
-								Alias::new("pending"),
-								SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_3.to_owned()).into()],
-								),
-							)
-							.value_expr(
-								Alias::new("lease_owner"),
-								SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								),
-							)
-							.value_expr(
-								Alias::new("lease_until"),
-								SimpleExpr::CustomWithExpr(
-									"(CURRENT_TIMESTAMP + MAKE_INTERVAL(secs => ?))".to_owned(),
-									vec![Expr::value(query_bind_2.to_owned()).into()],
-								),
-							)
-							.value_expr(
-								Alias::new("revision"),
-								Expr::col(Alias::new("revision"))
-									.add(reinhardt::query::Expr::value(1)),
-							)
-							.value(Alias::new("ledger_worker_ready"), true)
-							.and_where(
-								Expr::col(Alias::new("id")).eq(reinhardt::query::Expr::value(m.id)),
-							)
-							.and_where(
-								Expr::col(Alias::new("revision"))
-									.eq(reinhardt::query::Expr::value(m.revision)),
-							)
-							.and_where(Expr::cust(
-								"set_config('aidash.input_ledger_worker','true',true)='true'",
-							))
-							.returning_all()
-							.to_string(PostgresQueryBuilder),
-					)
-					.fetch_optional(&mut **tx)
-					.await?
-				};
-				if claimed.is_some() {
-					return Ok(claimed);
-				}
-			}
-			if !more {
-				*cursor = None;
-			}
-			Ok(None)
-		}
+		.await
+		.map_err(Into::into)
 	}
 }
 
@@ -4195,7 +4049,7 @@ impl Store {
 	}
 }
 #[path = "store/run_state.rs"]
-mod run_state;
+pub(crate) mod run_state;
 
 impl Store {
 	async fn ensure_run_response_current_in(

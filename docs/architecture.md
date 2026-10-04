@@ -60,6 +60,16 @@ limit. Native adapters keep votes/audit on the same connection and retain trust
 registration through the post-commit pending scan; HTTP services only compose
 authentication metadata and unchanged response contracts.
 
+Durable worker activation uses application scheduling and handoff ports. Targeted
+notifications and recovery share database-clock eligibility, malformed-state
+repair and revision/lease fencing. Native repositories retain Run-before-obligation
+lock ordering and commit execution responsibility before any acknowledgement.
+An ACK failure still advances the committed lease; invalid references enter
+durable quarantine before TERM. Runtime owns reconnect backoff, bounded publication,
+finite single-message pulls, recovery cadence and drain. Integrations owns JetStream
+stream/consumer validation, credential decoding and transport acknowledgements;
+bootstrap supplies the same ports to server and listener-free worker modes.
+
 Scoped commands authorize effects, track disclosed outputs, journal mutation
 results, and recheck the source lease through the application use case. A claim
 binds the complete inspected agent definition. Operation reconciliation owns one

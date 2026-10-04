@@ -59,10 +59,10 @@ async fn targeted_claim_never_acquires_an_older_neighbor(
 		.await
 		.unwrap();
 	let worker = Uuid::new_v4();
-	let mut tx = store.pool.begin().await.unwrap();
+	let mut tx = store.database().begin().await.unwrap();
 	// Act: notification claims are scoped to exactly one committed Run.
 	let claimed = Store::lease_run_in(
-		&mut tx,
+		tx.as_mut(),
 		worker,
 		30,
 		Some(target.id),

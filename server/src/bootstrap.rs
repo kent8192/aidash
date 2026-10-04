@@ -1806,3 +1806,55 @@ pub(crate) fn workbench_sandbox_models(runtime: &Federation) -> WorkbenchSandbox
 		client: runtime.client.clone(),
 	}
 }
+
+/// Notification and database recovery borrow the caller's same native transaction.
+pub(crate) fn activation_scheduling_scope(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+) -> crate::apps::execution::activation::repositories::scheduling::Scope<
+	&mut dyn reinhardt::db::backends::TransactionExecutor,
+> {
+	crate::apps::execution::activation::repositories::scheduling::Scope { tx }
+}
+
+pub(crate) fn activation_repository(
+	harness: Harness,
+) -> crate::apps::execution::activation::repositories::Repository {
+	crate::apps::execution::activation::repositories::Repository { harness }
+}
+
+pub(crate) fn activation_broker_configuration(
+	settings: &crate::activation::Settings,
+) -> aidash_integrations::activation::Configuration {
+	aidash_integrations::activation::Configuration {
+		namespace: settings.namespace.clone(),
+		bootstrap: settings.bootstrap,
+		max_age: settings.max_age,
+		max_bytes: settings.max_bytes,
+		replicas: settings.replicas,
+	}
+}
+
+/// Server and listener-free worker modes use identical persistence and transport ports.
+pub(crate) fn activation_driver(
+	federation: Federation,
+	settings: crate::activation::Settings,
+	worker: bool,
+) -> Arc<aidash_runtime::activation::Runtime> {
+	let connector = aidash_integrations::activation::Connector::new(
+		federation.config.nats_url.clone(),
+		federation.config.node_id.clone(),
+		activation_broker_configuration(&settings),
+		worker,
+	);
+	aidash_runtime::activation::Runtime::new(
+		Arc::new(activation_repository(Harness { federation })),
+		Arc::new(connector),
+		aidash_runtime::activation::Settings {
+			recovery: settings.recovery,
+			fallback: settings.fallback,
+			test_pause_file: settings.test_pause_file,
+			test_after_ack_pause_file: settings.test_after_ack_pause_file,
+		},
+		worker,
+	)
+}

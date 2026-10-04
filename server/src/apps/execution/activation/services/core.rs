@@ -2,14 +2,13 @@
 //! JetStream carries references, and never authorizes or determines Run behavior.
 #[path = "broker.rs"]
 pub(crate) mod broker;
-#[path = "durable.rs"]
-pub(crate) mod durable;
 #[path = "runtime.rs"]
 pub(crate) mod runtime;
 #[path = "settings.rs"]
 pub(crate) mod settings;
 
+pub use crate::apps::execution::activation::repositories::durable::request_in;
+pub use aidash_domain::activation::Envelope;
 pub use broker::Broker;
-pub use durable::{Envelope, request_in};
 pub use runtime::Runtime;
 pub use settings::Settings;
