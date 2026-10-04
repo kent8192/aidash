@@ -47,6 +47,10 @@ Domain rules check task and Run preconditions before execution-state decoding.
 Native mutation ports retain row locks, database-clock lease checks, selective
 updates and event persistence inside the participant's existing transaction;
 speculative preparation runs this same workflow under its rollback-only savepoint.
+Transaction HTTP replies are decoded in integrations. Current peer lookup,
+response headers and the complete body share the original ten-second deadline;
+the four-MiB limit, rotating credentials and recovery error classification remain
+unchanged for coordinator and authority RPCs.
 
 Scoped commands authorize effects, track disclosed outputs, journal mutation
 results, and recheck the source lease through the application use case. A claim

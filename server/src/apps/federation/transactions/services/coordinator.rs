@@ -5,9 +5,6 @@ use crate::apps::federation::transactions::models::{
 pub(crate) use crate::apps::federation::transactions::repositories::coordination::connection as coordinator_connection;
 use crate::apps::federation::transactions::services::decisions::CoordinatorTransition;
 use crate::{Error, Result, federation::Federation};
-use reqwest::Method;
-use serde::{Serialize, de::DeserializeOwned};
-use std::time::Duration;
 use uuid::Uuid;
 
 pub async fn status(f: &Federation, id: Uuid) -> Result<Status> {
@@ -61,50 +58,6 @@ pub(crate) async fn submit_in(
 	.map_err(Into::into)
 }
 
-pub(crate) async fn remote<T: DeserializeOwned>(
-	f: &Federation,
-	node: &str,
-	method: Method,
-	path: &str,
-	body: Option<&impl Serialize>,
-) -> Result<T> {
-	let value = body.map(serde_json::to_value).transpose()?;
-	tokio::time::timeout(Duration::from_secs(10), async {
-		let response = f.peer_response(node, method, path, value.as_ref()).await?;
-		let status = response.status();
-		if !status.is_success() {
-			return Err(match status {
-				reqwest::StatusCode::BAD_REQUEST
-				| reqwest::StatusCode::UNPROCESSABLE_ENTITY
-				| reqwest::StatusCode::NOT_FOUND
-				| reqwest::StatusCode::METHOD_NOT_ALLOWED => Error::Invalid(format!(
-					"transaction participant rejected request: {status}"
-				)),
-				reqwest::StatusCode::UNAUTHORIZED => Error::Unauthorized,
-				reqwest::StatusCode::FORBIDDEN => Error::Forbidden,
-				reqwest::StatusCode::CONFLICT => Error::Conflict(
-					"transaction participant rejected its state precondition".into(),
-				),
-				reqwest::StatusCode::SERVICE_UNAVAILABLE
-					if response
-						.headers()
-						.get("x-aidash-transaction-pending")
-						.is_some_and(|v| v == "1") =>
-				{
-					Error::TransactionPending
-				}
-				_ => Error::External(format!("transaction participant returned {status}")),
-			});
-		}
-		crate::response::json(response, 4_194_304).await
-	})
-	.await
-	.map_err(|_| {
-		Error::External(
-			"transaction participant response timed out; outcome retained for recovery".into(),
-		)
-	})?
-}
 pub(crate) async fn decision(f: &Federation, manifest: &Manifest) -> Result<Status> {
 	crate::bootstrap::transaction_coordinator(f)
 		.decision(manifest)

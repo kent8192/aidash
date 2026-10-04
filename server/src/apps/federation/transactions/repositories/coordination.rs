@@ -1,8 +1,9 @@
 //! Native coordinator storage preserves row locks, audits and recovery ownership.
+use super::transport;
 use crate::apps::federation::transactions::{
 	models::{coordinator_records, states::AtomicVotePhase},
 	serializers::contracts as native,
-	services::{authority, coordinator, fault, participant},
+	services::{authority, fault, participant},
 };
 use crate::{Error, Result, federation::Federation};
 use aidash_application::{
@@ -24,7 +25,6 @@ use reinhardt::db::{
 	},
 	orm::{DatabaseConnection, DatabaseConnectionLease},
 };
-use reqwest::Method;
 use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -199,16 +199,15 @@ pub(crate) struct Transport {
 #[async_trait]
 impl ParticipantTransport for Transport {
 	async fn decision(&self, manifest: &Manifest) -> ApplicationResult<Status> {
-		coordinator::remote::<native::Status>(
+		transport::remote::<native::Status>(
 			&self.runtime,
 			&manifest.coordinator,
-			Method::GET,
+			"GET",
 			&format!("/transactions/{}/decision", manifest.id),
 			None::<&()>,
 		)
 		.await
 		.map(Into::into)
-		.map_err(Into::into)
 	}
 
 	async fn send(
@@ -217,28 +216,30 @@ impl ParticipantTransport for Transport {
 		node: &str,
 		operation: ParticipantOperation,
 	) -> ApplicationResult<LocalStatus> {
-		let response: Result<native::LocalStatus> = if node == self.runtime.config.node_id {
-			match operation {
-				ParticipantOperation::Reserve => {
-					participant::reserve(&self.runtime, &manifest.coordinator, manifest).await
+		let response: ApplicationResult<native::LocalStatus> =
+			if node == self.runtime.config.node_id {
+				match operation {
+					ParticipantOperation::Reserve => {
+						participant::reserve(&self.runtime, &manifest.coordinator, manifest).await
+					}
+					ParticipantOperation::Prepare => {
+						participant::prepare(&self.runtime, &manifest.coordinator, manifest).await
+					}
+					ParticipantOperation::Finish => {
+						participant::finish(&self.runtime, &manifest.coordinator, manifest).await
+					}
 				}
-				ParticipantOperation::Prepare => {
-					participant::prepare(&self.runtime, &manifest.coordinator, manifest).await
-				}
-				ParticipantOperation::Finish => {
-					participant::finish(&self.runtime, &manifest.coordinator, manifest).await
-				}
-			}
-		} else {
-			coordinator::remote(
-				&self.runtime,
-				node,
-				Method::POST,
-				&format!("/transactions/{}", operation.as_str()),
-				Some(manifest),
-			)
-			.await
-		};
-		response.map(Into::into).map_err(Into::into)
+				.map_err(Into::into)
+			} else {
+				transport::remote(
+					&self.runtime,
+					node,
+					"POST",
+					&format!("/transactions/{}", operation.as_str()),
+					Some(manifest),
+				)
+				.await
+			};
+		response.map(Into::into)
 	}
 }

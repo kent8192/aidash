@@ -1,4 +1,5 @@
 //! Native authority scopes retain the physical transaction across application calls.
+use super::super::transport;
 use super::{Scope, persistence};
 use crate::apps::federation::transactions::{
 	serializers::authority as dto,
@@ -80,10 +81,10 @@ impl AuthorityRepository for Repository {
 		Ok(self.scope(persistence::mapped(&self.runtime, &input).await?))
 	}
 	async fn remote_preflight(&self, node: &str, input: &Preflight) -> Result<()> {
-		let _: Value = coordinator::remote(
+		let _: Value = transport::remote(
 			&self.runtime,
 			node,
-			reqwest::Method::POST,
+			"POST",
 			"/transactions/preflight",
 			Some(&dto::Preflight::from(input.clone())),
 		)
@@ -91,10 +92,10 @@ impl AuthorityRepository for Repository {
 		Ok(())
 	}
 	async fn remote_access(&self, node: &str, input: &Preflight) -> Result<()> {
-		let _: Value = coordinator::remote(
+		let _: Value = transport::remote(
 			&self.runtime,
 			node,
-			reqwest::Method::POST,
+			"POST",
 			"/transactions/access",
 			Some(&dto::Preflight::from(input.clone())),
 		)
@@ -102,10 +103,10 @@ impl AuthorityRepository for Repository {
 		Ok(())
 	}
 	async fn remote_ticket(&self, node: &str, id: Uuid) -> Result<Preflight> {
-		let input: dto::Preflight = coordinator::remote(
+		let input: dto::Preflight = transport::remote(
 			&self.runtime,
 			node,
-			reqwest::Method::GET,
+			"GET",
 			&format!("/transactions/{id}/authority"),
 			None::<&()>,
 		)
