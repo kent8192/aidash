@@ -51,6 +51,7 @@ pub trait DraftScope: DraftAuthority + Sized {
 	) -> Result<()>;
 	async fn remove_share(&mut self, draft: Uuid, subject: &str) -> Result<()>;
 	async fn transfer(&mut self, id: Uuid, owner: &str) -> Result<()>;
+	async fn archive(&mut self, id: Uuid, archived: bool) -> Result<()>;
 	async fn commit(self) -> Result<()>;
 }
 #[async_trait]

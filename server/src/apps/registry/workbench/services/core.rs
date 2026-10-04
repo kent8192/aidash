@@ -96,13 +96,6 @@ async fn target_enabled(
 	.await?)
 }
 
-fn owner_only(actor: &Actor, draft: &Draft) -> Result<()> {
-	Ok(aidash_application::registry::workbench::owner_only(
-		&crate::bootstrap::draft_principal(actor),
-		&draft.clone().into(),
-	)?)
-}
-
 pub(crate) use crate::apps::registry::workbench::serializers::contracts::DraftPage;
 pub use crate::apps::registry::workbench::serializers::contracts::{
 	AdoptInput, ArchiveInput, CreateDraft, Draft, DraftShare, RegisteredVersion, Registration,
@@ -219,26 +212,13 @@ impl Drafts {
 		id: Uuid,
 		input: ArchiveInput,
 	) -> Result<Draft> {
-		let f = self.runtime.clone();
-		let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-		let draft = AgentDraft::read(&mut tx, id, true).await?;
-		owner_only(&actor, &draft)?;
-		authorize(&mut tx, &actor, &draft, "agent_draft.archive", false).await?;
-		if draft.revision != input.expected_revision {
-			return Err(Error::Conflict("draft revision changed".into()));
-		}
-		AgentDraft::archive(&mut tx, id, input.archived).await?;
-		event_records::append(
-			&mut tx,
-			&f.config.node_id,
-			None,
-			"agent_draft.archived_changed",
-			json!({"draft_id":id,"tenant":draft.tenant,"archived":input.archived}),
+		Ok(aidash_application::registry::workbench::drafts::archive(
+			&crate::bootstrap::draft_repository(&self.runtime, actor),
+			id,
+			input,
 		)
-		.await?;
-		let result = AgentDraft::read(&mut tx, id, false).await?;
-		Box::new(tx).commit().await?;
-		Ok(result)
+		.await?
+		.into())
 	}
 	pub(crate) async fn validate(
 		&self,

@@ -193,6 +193,11 @@ impl DraftScope for Scope {
 			.await
 			.map_err(Into::into)
 	}
+	async fn archive(&mut self, id: Uuid, archived: bool) -> Result<()> {
+		AgentDraft::archive(&mut self.tx, id, archived)
+			.await
+			.map_err(Into::into)
+	}
 	async fn commit(self) -> Result<()> {
 		Box::new(self.tx)
 			.commit()

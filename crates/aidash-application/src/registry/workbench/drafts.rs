@@ -312,5 +312,31 @@ pub async fn transfer<R: DraftRepository>(
 	Ok(result)
 }
 
+use aidash_domain::registry::workbench::ArchiveInput;
+pub async fn archive<R: DraftRepository>(
+	repository: &R,
+	id: Uuid,
+	input: ArchiveInput,
+) -> Result<Draft> {
+	let actor = repository.principal();
+	let mut scope = repository.begin().await?;
+	let draft = scope.read(id, true).await?;
+	owner_only(&actor, &draft)?;
+	authorize(&mut scope, &draft, "agent_draft.archive", false).await?;
+	if draft.revision != input.expected_revision {
+		return Err(Error::Conflict("draft revision changed".into()));
+	}
+	scope.archive(id, input.archived).await?;
+	scope
+		.append_event(
+			"agent_draft.archived_changed",
+			json!({"draft_id":id,"tenant":draft.tenant,"archived":input.archived}),
+		)
+		.await?;
+	let result = scope.read(id, false).await?;
+	scope.commit().await?;
+	Ok(result)
+}
+
 #[cfg(test)]
 mod tests;

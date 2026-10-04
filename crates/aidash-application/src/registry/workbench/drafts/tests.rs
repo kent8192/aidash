@@ -241,6 +241,13 @@ impl DraftScope for Scope {
 		self.draft.revision += 1;
 		Ok(())
 	}
+	async fn archive(&mut self, id: Uuid, archived: bool) -> Result<()> {
+		assert_eq!(id, self.draft.id);
+		self.record(format!("archive:{archived}"));
+		self.draft.archived = archived;
+		self.draft.revision += 1;
+		Ok(())
+	}
 	async fn commit(self) -> Result<()> {
 		self.record("commit");
 		Ok(())
@@ -817,5 +824,56 @@ async fn disabled_transfer_target_does_not_mutate_draft(draft: Draft) {
 			.any(|step| step.starts_with("transfer:")
 				|| step.starts_with("share-remove:")
 				|| step == "commit")
+	);
+}
+
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn archive_and_restore_retain_revision_fence(draft: Draft, #[case] archived: bool) {
+	let repository = Repository::new(draft.clone());
+	let saved = archive(
+		&repository,
+		draft.id,
+		ArchiveInput {
+			expected_revision: 3,
+			archived,
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(saved.archived, archived);
+	assert_eq!(saved.revision, 4);
+	let logs = repository.logs();
+	assert_eq!(
+		&logs[..4],
+		["begin", "read:true", "identity", "agent_draft.archive"]
+	);
+	assert_eq!(logs[4], format!("archive:{archived}"));
+	assert!(logs[5].starts_with("event:agent_draft.archived_changed:"));
+	assert_eq!(&logs[6..], ["read:false", "commit"]);
+}
+#[rstest]
+#[tokio::test]
+async fn stale_archive_does_not_write_or_commit(draft: Draft) {
+	let repository = Repository::new(draft.clone());
+	assert_eq!(
+		archive(
+			&repository,
+			draft.id,
+			ArchiveInput {
+				expected_revision: 2,
+				archived: true
+			}
+		)
+		.await
+		.unwrap_err()
+		.to_string(),
+		"draft revision changed"
+	);
+	assert_eq!(
+		repository.logs(),
+		["begin", "read:true", "identity", "agent_draft.archive"]
 	);
 }
