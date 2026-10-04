@@ -105,11 +105,14 @@ impl RuntimeTasks {
 		}
 		// Acquire pools before detaching tasks. A startup error drops both JoinSets.
 		let coordinator_runtime = federation.for_recovery().await?;
+		let (active_recovery, aborted_recovery) =
+			transaction_recovery_coordinators(&coordinator_runtime).await?;
 		let participant_runtime = federation.for_recovery().await?;
 		let worker_runtime = federation.for_runtime_workers().await?;
-		tasks.spawn_service(runtime_task(crate::transactions::coordinator::run(
-			coordinator_runtime,
-		)));
+		tasks.spawn_service(aidash_runtime::transactions::run_coordinator(
+			active_recovery,
+			aborted_recovery,
+		));
 		tasks.spawn_service(runtime_task(crate::transactions::participant::run(
 			participant_runtime,
 		)));
@@ -1222,6 +1225,20 @@ pub(crate) fn transaction_coordinator(
 			runtime: runtime.clone(),
 		}),
 	)
+}
+
+/// Unreachable aborted history cannot consume active recovery's connection capacity.
+pub(crate) async fn transaction_recovery_coordinators(
+	runtime: &Federation,
+) -> Result<(
+	aidash_application::transactions::coordination::Coordinator,
+	aidash_application::transactions::coordination::Coordinator,
+)> {
+	let aborted = runtime.for_recovery().await?;
+	Ok((
+		transaction_coordinator(runtime),
+		transaction_coordinator(&aborted),
+	))
 }
 
 pub(crate) fn operation_withdrawal_repository(

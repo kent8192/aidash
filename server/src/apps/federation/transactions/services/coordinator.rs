@@ -170,26 +170,11 @@ pub async fn recover_once(f: &Federation) -> Result<()> {
 		.await
 		.map_err(Into::into)
 }
-async fn recover_kind(f: &Federation, aborted: bool) -> Result<()> {
-	crate::bootstrap::transaction_coordinator(f)
-		.recover_kind(aborted)
+pub async fn run(f: Federation) -> Result<()> {
+	let (active, aborted) = crate::bootstrap::transaction_recovery_coordinators(&f).await?;
+	aidash_runtime::transactions::run_coordinator(active, aborted)
 		.await
 		.map_err(Into::into)
-}
-pub async fn run(f: Federation) -> Result<()> {
-	// Aborted history may have unreachable peers indefinitely. Its network
-	// waits must not occupy the loop or connection capacity for active work.
-	let aborted = f.for_recovery().await?;
-	async fn recover(f: Federation, aborted: bool) -> Result<()> {
-		loop {
-			if let Err(error) = recover_kind(&f, aborted).await {
-				tracing::warn!(%error,aborted,"coordinator recovery failed; decisions retained");
-			}
-			tokio::time::sleep(Duration::from_millis(if aborted { 1000 } else { 100 })).await;
-		}
-	}
-	tokio::try_join!(recover(f, false), recover(aborted, true))?;
-	Ok(())
 }
 
 pub(crate) async fn abort_in(

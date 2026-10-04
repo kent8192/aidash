@@ -27,6 +27,8 @@ retain the recovery advisory lease across participant I/O, update each vote and
 clear its error atomically, and commit immutable decisions with their audit
 history under the same row lock. Operator abort competes for that decision
 without waiting for the recovery lease.
+Runtime schedules active and aborted recovery independently; bootstrap supplies
+their separate connection capacity before the supervisor starts the loops.
 
 Scoped commands authorize effects, track disclosed outputs, journal mutation
 results, and recheck the source lease through the application use case. A claim
