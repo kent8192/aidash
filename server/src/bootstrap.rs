@@ -1359,3 +1359,15 @@ pub(crate) fn session_scope<'a>(
 ) -> crate::apps::execution::repositories::sessions::Scope<'a> {
 	crate::apps::execution::repositories::sessions::Scope { store, access }
 }
+
+pub(crate) fn cleanup_scope<'a>(
+	store: Option<&'a Store>,
+	access: &'a mut crate::authorization::access::Access,
+) -> crate::apps::execution::repositories::cleanup::Scope<'a> {
+	crate::apps::execution::repositories::cleanup::Scope { store, access }
+}
+pub(crate) fn cleanup_repository(
+	store: &Store,
+) -> crate::apps::execution::repositories::cleanup::Repository<'_> {
+	crate::apps::execution::repositories::cleanup::Repository { store }
+}
