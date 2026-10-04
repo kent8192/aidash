@@ -15,3 +15,5 @@ pub mod authority;
 pub mod commands;
 
 pub mod peer_mapping;
+
+pub mod dashboard;
