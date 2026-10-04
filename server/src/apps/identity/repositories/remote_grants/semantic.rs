@@ -38,9 +38,9 @@ impl SourceAuthorityScope for Scope<'_> {
 		node: &str,
 		generation: Option<&Value>,
 	) -> Result<()> {
-		crate::generation::foreign::check_home(self.access, task, node, generation)
+		crate::bootstrap::source_authority_scope(self.access)
+			.generation_home(task, node, generation)
 			.await
-			.map_err(Into::into)
 	}
 	async fn source_workspace(&mut self, id: Uuid) -> Result<Resource> {
 		self.access.workspace(id).await.map_err(Into::into)

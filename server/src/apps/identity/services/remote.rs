@@ -5,7 +5,6 @@
 pub(crate) mod execution;
 
 use super::{access::Access, identity::Actor, peer::execution::Inspection};
-use crate::apps::identity::repositories::remote_grants::Grant;
 #[cfg(test)]
 use crate::registry::Search;
 use crate::{Error, Result, domain::Task, federation::Federation, registry::EntityRef};
@@ -19,21 +18,6 @@ use uuid::Uuid;
 // A receiver may describe only the requested Agent's exact direct dependencies.
 // Never use peer-provided node IDs or arbitrary resource lists as authority.
 
-async fn source_authority(
-	access: &mut Access,
-	task: &Task,
-	node: &str,
-	inspection: &Inspection,
-) -> Result<()> {
-	aidash_application::authorization::source::authorize(
-		&mut crate::bootstrap::source_authority_scope(access),
-		task,
-		node,
-		inspection,
-	)
-	.await
-	.map_err(Into::into)
-}
 pub(crate) async fn live(access: &mut Access, id: Uuid) -> Result<bool> {
 	crate::apps::identity::repositories::remote_grants::persistence::live(access, id).await
 }
@@ -195,15 +179,5 @@ fn validate(
 		agent,
 		requirements,
 	)
-	.map_err(Into::into)
-}
-
-async fn peer(access: &mut Access, node: &str) -> Result<()> {
-	aidash_application::authorization::source::grants::require_peer(
-		&mut crate::bootstrap::source_authority_scope(access),
-		node,
-		crate::config::PROTOCOL_VERSION,
-	)
-	.await
 	.map_err(Into::into)
 }

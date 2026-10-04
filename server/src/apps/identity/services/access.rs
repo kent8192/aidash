@@ -519,3 +519,18 @@ impl Access {
 		self.environment["node_id"].as_str()
 	}
 }
+
+impl Access {
+	/// Owned recursion leases retain the current native credential and policy context key.
+	pub(crate) fn authority_read_visit(
+		&self,
+		kind: &str,
+		id: Uuid,
+	) -> Option<aidash_application::authorization::visits::ReadVisit> {
+		self.checking_reads.enter((
+			self.node_id.clone(),
+			id,
+			format!("{kind}:{}", self.authority_context()),
+		))
+	}
+}

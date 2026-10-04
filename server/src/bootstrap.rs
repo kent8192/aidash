@@ -1553,3 +1553,13 @@ pub(crate) fn source_semantic_binding_scope<'a>(
 ) -> crate::apps::identity::repositories::remote_grants::semantic::Scope<'a> {
 	crate::apps::identity::repositories::remote_grants::semantic::Scope { runtime, access }
 }
+
+/// Current source readers retain their native transaction and own temporary dependency collections.
+pub(crate) fn source_read_scope(
+	access: &mut crate::authorization::access::Access,
+) -> crate::apps::identity::repositories::remote_grants::reads::Scope<'_> {
+	crate::apps::identity::repositories::remote_grants::reads::Scope {
+		access,
+		owned_frontier: false,
+	}
+}
