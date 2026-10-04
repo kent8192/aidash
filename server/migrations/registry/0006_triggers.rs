@@ -1,112 +1,14 @@
 // reinhardt-migration-source: 1
 // Frozen PostgreSQL baseline from develop/0.1.0 d120162 (54 legacy migrations).
-// SQL preserves generated columns, composite keys, CHECKs and procedural guards.
+// Schema operations use Reinhardt; unsupported migration operations live in sql/.
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-    Migration::new("0006_triggers", "registry")
-        .add_dependency("marketplace", "0006_triggers")
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.agent_draft_registrations FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.agent_draft_shares FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.agent_drafts FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.agent_incident_events FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.agent_incidents FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.agent_knowledge FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.agent_test_limits FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.agent_test_profiles FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.agent_test_sessions FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.installations FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.packages FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.registry FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.registry_requests FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER installations_config_guard BEFORE INSERT OR UPDATE OF id, version, config ON public.installations FOR EACH ROW EXECUTE FUNCTION public.guard_installation_config();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER installations_registry_writes_lock BEFORE INSERT OR DELETE OR UPDATE ON public.installations FOR EACH STATEMENT EXECUTE FUNCTION public.lock_registry_installation_writes();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER marketplace_overlay_fence BEFORE INSERT OR UPDATE ON public.installations FOR EACH ROW EXECUTE FUNCTION public.marketplace_overlay_fence();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER marketplace_registry_fence BEFORE INSERT OR UPDATE ON public.registry FOR EACH ROW EXECUTE FUNCTION public.marketplace_registry_fence();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER registry_agent_model_refs_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.registry_agent_model_refs FOR EACH STATEMENT EXECUTE FUNCTION public.guard_registry_agent_model_refs();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER registry_agent_model_refs_sync AFTER INSERT OR UPDATE OF id, version, kind, metadata ON public.registry FOR EACH ROW EXECUTE FUNCTION public.sync_registry_agent_model_refs();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER registry_agent_resource_refs_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.registry_agent_resource_refs FOR EACH STATEMENT EXECUTE FUNCTION public.guard_registry_agent_resource_refs();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER registry_agent_resource_refs_sync AFTER INSERT OR UPDATE OF id, version, kind, metadata ON public.registry FOR EACH ROW EXECUTE FUNCTION public.sync_registry_agent_resource_refs();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER registry_installation_writes_lock BEFORE INSERT OR DELETE OR UPDATE ON public.registry FOR EACH STATEMENT EXECUTE FUNCTION public.lock_registry_installation_writes();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER registry_installations_config_guard AFTER UPDATE OF id, version, kind, metadata ON public.registry FOR EACH ROW EXECUTE FUNCTION public.validate_registry_installations();"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TRIGGER registry_installations_model_override_guard AFTER DELETE ON public.registry FOR EACH ROW EXECUTE FUNCTION public.validate_registry_installations();"#.to_string(),
-            // Refuse irreversible baseline rollback before the native ledger changes.
-            reverse_sql: Some(r#"DO $aidash_baseline$
-BEGIN
-    RAISE EXCEPTION 'Aidash frozen baseline is forward-only; restore a backup to roll back';
-END
-$aidash_baseline$;"#.to_string()),
-        })
-        .atomic(true)
-        .database_only(true)
+	Migration::new("0006_triggers", "registry")
+		.database_only(true)
+		.add_dependency("marketplace", "0006_triggers")
+		.add_operation(Operation::RunSQL {
+			sql: include_str!("sql/forward/0006_triggers.sql").to_owned(),
+			reverse_sql: Some(include_str!("sql/backward/0006_triggers.sql").to_owned()),
+		})
 }

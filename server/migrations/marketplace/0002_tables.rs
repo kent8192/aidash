@@ -1,86 +1,120 @@
 // reinhardt-migration-source: 1
 // Frozen PostgreSQL baseline from develop/0.1.0 d120162 (54 legacy migrations).
-// SQL preserves generated columns, composite keys, CHECKs and procedural guards.
+// Schema operations use Reinhardt; unsupported migration operations live in sql/.
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-    Migration::new("0002_tables", "marketplace")
-        .add_dependency("knowledge", "0002_tables")
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.marketplace_audiences (
-    key text NOT NULL,
-    document jsonb NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.marketplace_consents (
-    key text NOT NULL,
-    document jsonb NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.marketplace_gate (
-    key text NOT NULL,
-    document jsonb NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.marketplace_installations (
-    key text NOT NULL,
-    document jsonb NOT NULL,
-    tenant text NOT NULL,
-    package_key text NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.marketplace_provenance (
-    key text NOT NULL,
-    document jsonb NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.marketplace_requests (
-    key text NOT NULL,
-    document jsonb NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.marketplace_revisions (
-    key text NOT NULL,
-    document jsonb NOT NULL,
-    installation text NOT NULL,
-    revision bigint NOT NULL,
-    entry_id text NOT NULL,
-    entry_version text NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.marketplace_versions (
-    key text NOT NULL,
-    document jsonb NOT NULL,
-    repository text NOT NULL,
-    owner text NOT NULL,
-    package_id text NOT NULL,
-    version text NOT NULL,
-    kind text NOT NULL,
-    source_id text NOT NULL,
-    source_version text NOT NULL,
-    source_content text NOT NULL
-);"#.to_string(),
-            // Refuse irreversible baseline rollback before the native ledger changes.
-            reverse_sql: Some(r#"DO $aidash_baseline$
-BEGIN
-    RAISE EXCEPTION 'Aidash frozen baseline is forward-only; restore a backup to roll back';
-END
-$aidash_baseline$;"#.to_string()),
-        })
-        .atomic(true)
-        .database_only(true)
+	Migration::new("0002_tables", "marketplace")
+		.database_only(true)
+		.add_dependency("knowledge", "0002_tables")
+		.add_operation(Operation::RunSQL {
+			sql: include_str!("sql/forward/baseline_search_path.sql").to_owned(),
+			reverse_sql: Some(include_str!("sql/backward/baseline_search_path.sql").to_owned()),
+		})
+		.add_operation(Operation::CreateTable {
+			name: "marketplace_audiences".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("key", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("document", FieldType::Jsonb).with_not_null(true),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "marketplace_consents".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("key", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("document", FieldType::Jsonb).with_not_null(true),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "marketplace_gate".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("key", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("document", FieldType::Jsonb).with_not_null(true),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "marketplace_installations".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("key", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("document", FieldType::Jsonb).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("package_key", FieldType::Text).with_not_null(true),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "marketplace_provenance".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("key", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("document", FieldType::Jsonb).with_not_null(true),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "marketplace_requests".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("key", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("document", FieldType::Jsonb).with_not_null(true),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "marketplace_revisions".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("key", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("document", FieldType::Jsonb).with_not_null(true),
+				ColumnDefinition::new("installation", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
+				ColumnDefinition::new("entry_id", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("entry_version", FieldType::Text).with_not_null(true),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "marketplace_versions".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("key", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("document", FieldType::Jsonb).with_not_null(true),
+				ColumnDefinition::new("repository", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("owner", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("package_id", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("version", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("kind", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("source_id", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("source_version", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("source_content", FieldType::Text).with_not_null(true),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::RunSQL {
+			sql: include_str!("sql/forward/baseline_reverse_context.sql").to_owned(),
+			reverse_sql: Some(include_str!("sql/backward/baseline_reverse_context.sql").to_owned()),
+		})
 }

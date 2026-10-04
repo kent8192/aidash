@@ -21,6 +21,96 @@ use std::{
 use tempfile::TempDir;
 use uuid::Uuid;
 
+#[rstest]
+#[tokio::test]
+async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
+	// Arrange: the manifest is the frozen physical-history identity map.
+	let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations");
+	let manifest: serde_json::Value =
+		serde_json::from_str(&std::fs::read_to_string(root.join("baseline.json")).unwrap())
+			.unwrap();
+	// Act: load every external SQL asset through the native filesystem source.
+	let migrations = FilesystemSource::new(&root).all_migrations().await.unwrap();
+	// Assert: retain the physical graph, model snapshots, and all supported tables.
+	assert_eq!(migrations.len(), 44);
+	assert_eq!(
+		migrations
+			.iter()
+			.filter(|migration| migration.state_only)
+			.count(),
+		8
+	);
+	let tables = migrations
+		.iter()
+		.filter(|migration| !migration.state_only)
+		.flat_map(|migration| &migration.operations)
+		.filter(|operation| {
+			matches!(
+				operation,
+				reinhardt::db::migrations::Operation::CreateTable { .. }
+			)
+		})
+		.count();
+	assert_eq!(tables, 115);
+	for expected in manifest["migrations"].as_array().unwrap() {
+		let migration = migrations
+			.iter()
+			.find(|migration| {
+				migration.app_label == expected["app"].as_str().unwrap()
+					&& migration.name == expected["name"].as_str().unwrap()
+			})
+			.unwrap();
+		assert_eq!(
+			migration.operations.len(),
+			expected["operations"].as_u64().unwrap() as usize
+		);
+		assert!(migration.database_only);
+		for operation in &migration.operations {
+			if let reinhardt::db::migrations::Operation::RunSQL { sql, reverse_sql } = operation {
+				assert!(
+					reverse_sql.is_some(),
+					"{}.{}",
+					migration.app_label,
+					migration.name
+				);
+				assert!(
+					!sql.starts_with("CREATE TABLE")
+						&& !sql.starts_with("CREATE INDEX")
+						&& !sql.starts_with("CREATE UNIQUE INDEX"),
+					"{}: {sql}",
+					migration.name
+				);
+				if sql.starts_with("ALTER TABLE") {
+					assert!(
+						sql.contains("ADD GENERATED ALWAYS AS IDENTITY"),
+						"{}: {sql}",
+						migration.name
+					);
+				}
+			}
+		}
+	}
+	let mut directories = vec![root];
+	while let Some(directory) = directories.pop() {
+		for entry in std::fs::read_dir(directory).unwrap() {
+			let path = entry.unwrap().path();
+			if path.is_dir() {
+				directories.push(path);
+			} else {
+				let content = std::fs::read_to_string(&path).unwrap();
+				assert!(
+					!content.chars().any(|c| matches!(
+						c,
+						'\r' | '\u{b}' | '\u{c}' | '\u{85}' | '\u{2028}' | '\u{2029}'
+					)),
+					"{}",
+					path.display()
+				);
+			}
+		}
+	}
+}
+
 struct MigrationFixture {
 	connection: BackendConnection,
 	url: String,
@@ -103,6 +193,54 @@ async fn makemigrations_writes_only_to_the_requested_directory(
 	);
 }
 
+#[rstest]
+#[tokio::test]
+async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
+	#[future] fresh_database: MigrationFixture,
+) {
+	// Arrange: generate against the deployed baseline without modifying its files.
+	let fixture = fresh_database.await;
+	let mut command = deployment_command(&fixture.url, fixture.directory.path());
+	let history = fixture
+		.directory
+		.path()
+		.join("migrations/execution/0002_tables.rs");
+	let original = std::fs::read(&history).unwrap();
+	let bin = fixture.directory.path().join("src/bin");
+	std::fs::create_dir_all(&bin).unwrap();
+	std::fs::copy(
+		PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/bin/manage.rs"),
+		bin.join("manage.rs"),
+	)
+	.unwrap();
+	command.args([
+		"makemigrations",
+		"execution",
+		"--empty",
+		"--name",
+		"policy_probe",
+	]);
+	// Act
+	let output = command.output().await.unwrap();
+	// Assert
+	assert!(
+		output.status.success(),
+		"{}\n{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	assert_eq!(std::fs::read(history).unwrap(), original);
+	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
+		.get_migration("execution", "0008_policy_probe")
+		.await
+		.unwrap();
+	assert_eq!(
+		generated.dependencies,
+		vec![("execution".to_owned(), "0007_model_state".to_owned())]
+	);
+	assert!(generated.operations.is_empty());
+}
+
 impl MigrationFixture {
 	async fn migrate(&self) {
 		let recorder = DatabaseMigrationRecorder::new(self.connection.clone());
@@ -157,7 +295,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 	#[future] fresh_database: MigrationFixture,
 	#[case] apply_schema: bool,
 ) {
-	// Arrange: the SQL baseline and its ORM state share one native ledger.
+	// Arrange: the physical baseline and its ORM state share one native ledger.
 	let fixture = fresh_database.await;
 	if apply_schema {
 		fixture.migrate().await;
@@ -439,6 +577,37 @@ async fn direct_physical_baseline_reversal_keeps_the_native_ledger(
 		"{error}"
 	);
 	assert_eq!(recorded_keys(&fixture.connection).await, before);
+}
+
+#[rstest]
+#[case::nel("\u{85}")]
+#[case::ls("\u{2028}")]
+#[case::ps("\u{2029}")]
+#[case::vertical_tab("\u{b}")]
+#[case::form_feed("\u{c}")]
+#[tokio::test]
+async fn escaped_whitespace_checks_still_reject_blank_content(
+	#[future] fresh_database: MigrationFixture,
+	#[case] whitespace: &str,
+) {
+	// Arrange: SQL source uses escapes, while the row contains the actual character.
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let workspace = Workspace::build()
+		.id(Uuid::new_v4())
+		.title(whitespace)
+		.goal("Valid goal")
+		.state(json!({}).into())
+		.revision(0)
+		.finish();
+	// Act
+	let error = Workspace::objects()
+		.create_with_conn(&mut lease.handle(), &workspace)
+		.await
+		.unwrap_err();
+	// Assert: retain PostgreSQL's frozen nonblank constraint, not only model validation.
+	assert!(error.to_string().contains("workspaces_content"), "{error}");
 }
 
 #[rstest]

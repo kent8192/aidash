@@ -1,91 +1,198 @@
 // reinhardt-migration-source: 1
 // Frozen PostgreSQL baseline from develop/0.1.0 d120162 (54 legacy migrations).
-// SQL preserves generated columns, composite keys, CHECKs and procedural guards.
+// Schema operations use Reinhardt; unsupported migration operations live in sql/.
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-    Migration::new("0004_references", "workspaces")
-        .add_dependency("registry", "0004_references")
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.artifacts
-    ADD CONSTRAINT artifacts_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.artifacts
-    ADD CONSTRAINT artifacts_task_workspace FOREIGN KEY (task_id, workspace_id) REFERENCES public.tasks(id, workspace_id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.artifacts
-    ADD CONSTRAINT artifacts_workspace_id_fkey FOREIGN KEY (workspace_id) REFERENCES public.workspaces(id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.channel_attachments
-    ADD CONSTRAINT channel_attachments_workspace_id_fkey FOREIGN KEY (workspace_id) REFERENCES public.workspaces(id) ON DELETE CASCADE;"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.channel_attachments
-    ADD CONSTRAINT channel_attachments_workspace_id_message_id_fkey FOREIGN KEY (workspace_id, message_id) REFERENCES public.messages(workspace_id, id) ON DELETE CASCADE;"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.channel_message_context
-    ADD CONSTRAINT channel_message_context_workspace_id_message_id_fkey FOREIGN KEY (workspace_id, message_id) REFERENCES public.messages(workspace_id, id) ON DELETE CASCADE;"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.channel_message_context
-    ADD CONSTRAINT channel_message_context_workspace_id_thread_id_fkey FOREIGN KEY (workspace_id, thread_id) REFERENCES public.channel_threads(workspace_id, id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.channel_threads
-    ADD CONSTRAINT channel_threads_workspace_id_root_message_id_fkey FOREIGN KEY (workspace_id, root_message_id) REFERENCES public.messages(workspace_id, id) ON DELETE CASCADE;"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.conversations
-    ADD CONSTRAINT conversations_workspace_id_fkey FOREIGN KEY (workspace_id) REFERENCES public.workspaces(id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.messages
-    ADD CONSTRAINT messages_workspace_id_fkey FOREIGN KEY (workspace_id) REFERENCES public.workspaces(id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.task_dependencies
-    ADD CONSTRAINT tasks_dependencies_source_workspace FOREIGN KEY (task_id, workspace_id) REFERENCES public.tasks(id, workspace_id) ON DELETE CASCADE;"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.task_dependencies
-    ADD CONSTRAINT tasks_dependencies_target_workspace FOREIGN KEY (dependency_id, workspace_id) REFERENCES public.tasks(id, workspace_id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.tasks
-    ADD CONSTRAINT tasks_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES public.tasks(id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.tasks
-    ADD CONSTRAINT tasks_parent_workspace FOREIGN KEY (parent_id, workspace_id) REFERENCES public.tasks(id, workspace_id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.tasks
-    ADD CONSTRAINT tasks_workspace_id_fkey FOREIGN KEY (workspace_id) REFERENCES public.workspaces(id);"#.to_string(),
-            // Refuse irreversible baseline rollback before the native ledger changes.
-            reverse_sql: Some(r#"DO $aidash_baseline$
-BEGIN
-    RAISE EXCEPTION 'Aidash frozen baseline is forward-only; restore a backup to roll back';
-END
-$aidash_baseline$;"#.to_string()),
-        })
-        .atomic(true)
-        .database_only(true)
+	Migration::new("0004_references", "workspaces")
+		.database_only(true)
+		.add_dependency("registry", "0004_references")
+		.add_operation(Operation::RunSQL {
+			sql: include_str!("sql/forward/baseline_search_path.sql").to_owned(),
+			reverse_sql: Some(include_str!("sql/backward/baseline_search_path.sql").to_owned()),
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "artifacts".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "artifacts_task_id_fkey".to_owned(),
+				columns: vec!["task_id".to_owned()],
+				referenced_table: "tasks".to_owned(),
+				referenced_columns: vec!["id".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "artifacts".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "artifacts_task_workspace".to_owned(),
+				columns: vec!["task_id".to_owned(), "workspace_id".to_owned()],
+				referenced_table: "tasks".to_owned(),
+				referenced_columns: vec!["id".to_owned(), "workspace_id".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "artifacts".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "artifacts_workspace_id_fkey".to_owned(),
+				columns: vec!["workspace_id".to_owned()],
+				referenced_table: "workspaces".to_owned(),
+				referenced_columns: vec!["id".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "channel_attachments".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "channel_attachments_workspace_id_fkey".to_owned(),
+				columns: vec!["workspace_id".to_owned()],
+				referenced_table: "workspaces".to_owned(),
+				referenced_columns: vec!["id".to_owned()],
+				on_delete: ForeignKeyAction::Cascade,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "channel_attachments".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "channel_attachments_workspace_id_message_id_fkey".to_owned(),
+				columns: vec!["workspace_id".to_owned(), "message_id".to_owned()],
+				referenced_table: "messages".to_owned(),
+				referenced_columns: vec!["workspace_id".to_owned(), "id".to_owned()],
+				on_delete: ForeignKeyAction::Cascade,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "channel_message_context".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "channel_message_context_workspace_id_message_id_fkey".to_owned(),
+				columns: vec!["workspace_id".to_owned(), "message_id".to_owned()],
+				referenced_table: "messages".to_owned(),
+				referenced_columns: vec!["workspace_id".to_owned(), "id".to_owned()],
+				on_delete: ForeignKeyAction::Cascade,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "channel_message_context".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "channel_message_context_workspace_id_thread_id_fkey".to_owned(),
+				columns: vec!["workspace_id".to_owned(), "thread_id".to_owned()],
+				referenced_table: "channel_threads".to_owned(),
+				referenced_columns: vec!["workspace_id".to_owned(), "id".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "channel_threads".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "channel_threads_workspace_id_root_message_id_fkey".to_owned(),
+				columns: vec!["workspace_id".to_owned(), "root_message_id".to_owned()],
+				referenced_table: "messages".to_owned(),
+				referenced_columns: vec!["workspace_id".to_owned(), "id".to_owned()],
+				on_delete: ForeignKeyAction::Cascade,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "conversations".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "conversations_workspace_id_fkey".to_owned(),
+				columns: vec!["workspace_id".to_owned()],
+				referenced_table: "workspaces".to_owned(),
+				referenced_columns: vec!["id".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "messages".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "messages_workspace_id_fkey".to_owned(),
+				columns: vec!["workspace_id".to_owned()],
+				referenced_table: "workspaces".to_owned(),
+				referenced_columns: vec!["id".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "task_dependencies".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "tasks_dependencies_source_workspace".to_owned(),
+				columns: vec!["task_id".to_owned(), "workspace_id".to_owned()],
+				referenced_table: "tasks".to_owned(),
+				referenced_columns: vec!["id".to_owned(), "workspace_id".to_owned()],
+				on_delete: ForeignKeyAction::Cascade,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "task_dependencies".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "tasks_dependencies_target_workspace".to_owned(),
+				columns: vec!["dependency_id".to_owned(), "workspace_id".to_owned()],
+				referenced_table: "tasks".to_owned(),
+				referenced_columns: vec!["id".to_owned(), "workspace_id".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "tasks".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "tasks_parent_id_fkey".to_owned(),
+				columns: vec!["parent_id".to_owned()],
+				referenced_table: "tasks".to_owned(),
+				referenced_columns: vec!["id".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "tasks".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "tasks_parent_workspace".to_owned(),
+				columns: vec!["parent_id".to_owned(), "workspace_id".to_owned()],
+				referenced_table: "tasks".to_owned(),
+				referenced_columns: vec!["id".to_owned(), "workspace_id".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "tasks".to_owned(),
+			constraint: Constraint::ForeignKey {
+				name: "tasks_workspace_id_fkey".to_owned(),
+				columns: vec!["workspace_id".to_owned()],
+				referenced_table: "workspaces".to_owned(),
+				referenced_columns: vec!["id".to_owned()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::RunSQL {
+			sql: include_str!("sql/forward/baseline_reverse_context.sql").to_owned(),
+			reverse_sql: Some(include_str!("sql/backward/baseline_reverse_context.sql").to_owned()),
+		})
 }

@@ -60,47 +60,47 @@
     {
       "app": "operations",
       "name": "0000_environment",
-      "operations": 2
+      "operations": 3
     },
     {
       "app": "execution",
       "name": "0001_functions",
-      "operations": 13
+      "operations": 1
     },
     {
       "app": "federation",
       "name": "0001_functions",
-      "operations": 4
+      "operations": 1
     },
     {
       "app": "knowledge",
       "name": "0001_functions",
-      "operations": 3
+      "operations": 1
     },
     {
       "app": "registry",
       "name": "0001_functions",
-      "operations": 13
+      "operations": 1
     },
     {
       "app": "workspaces",
       "name": "0001_functions",
-      "operations": 6
+      "operations": 1
     },
     {
       "app": "execution",
       "name": "0002_tables",
-      "operations": 37
+      "operations": 32
     },
     {
       "app": "federation",
       "name": "0002_tables",
-      "operations": 24
+      "operations": 21
     },
     {
       "app": "identity",
       "name": "0002_tables",
-      "operations": 26
+      "operations": 28
     },
     {
       "app": "knowledge",
@@ -110,7 +110,7 @@
     {
       "app": "marketplace",
       "name": "0002_tables",
-      "operations": 8
+      "operations": 10
     },
     {
       "app": "registry",
@@ -120,77 +120,77 @@
     {
       "app": "workspaces",
       "name": "0002_tables",
-      "operations": 9
+      "operations": 11
     },
     {
       "app": "execution",
       "name": "0003_keys_indexes",
-      "operations": 58
+      "operations": 60
     },
     {
       "app": "federation",
+      "name": "0003_keys_indexes",
+      "operations": 27
+    },
+    {
+      "app": "identity",
+      "name": "0003_keys_indexes",
+      "operations": 47
+    },
+    {
+      "app": "knowledge",
+      "name": "0003_keys_indexes",
+      "operations": 17
+    },
+    {
+      "app": "marketplace",
+      "name": "0003_keys_indexes",
+      "operations": 16
+    },
+    {
+      "app": "registry",
       "name": "0003_keys_indexes",
       "operations": 25
     },
     {
-      "app": "identity",
-      "name": "0003_keys_indexes",
-      "operations": 45
-    },
-    {
-      "app": "knowledge",
-      "name": "0003_keys_indexes",
-      "operations": 15
-    },
-    {
-      "app": "marketplace",
-      "name": "0003_keys_indexes",
-      "operations": 14
-    },
-    {
-      "app": "registry",
-      "name": "0003_keys_indexes",
-      "operations": 23
-    },
-    {
       "app": "workspaces",
       "name": "0003_keys_indexes",
-      "operations": 24
+      "operations": 26
     },
     {
       "app": "execution",
-      "name": "0004_references",
-      "operations": 28
-    },
-    {
-      "app": "federation",
-      "name": "0004_references",
-      "operations": 11
-    },
-    {
-      "app": "identity",
       "name": "0004_references",
       "operations": 30
     },
     {
+      "app": "federation",
+      "name": "0004_references",
+      "operations": 13
+    },
+    {
+      "app": "identity",
+      "name": "0004_references",
+      "operations": 32
+    },
+    {
       "app": "knowledge",
-      "name": "0004_references",
-      "operations": 8
-    },
-    {
-      "app": "marketplace",
-      "name": "0004_references",
-      "operations": 2
-    },
-    {
-      "app": "registry",
       "name": "0004_references",
       "operations": 10
     },
     {
+      "app": "marketplace",
+      "name": "0004_references",
+      "operations": 4
+    },
+    {
+      "app": "registry",
+      "name": "0004_references",
+      "operations": 12
+    },
+    {
       "app": "workspaces",
       "name": "0004_references",
-      "operations": 15
+      "operations": 17
     },
     {
       "app": "federation",
@@ -205,37 +205,37 @@
     {
       "app": "execution",
       "name": "0006_triggers",
-      "operations": 34
+      "operations": 1
     },
     {
       "app": "federation",
       "name": "0006_triggers",
-      "operations": 10
+      "operations": 1
     },
     {
       "app": "identity",
       "name": "0006_triggers",
-      "operations": 18
+      "operations": 1
     },
     {
       "app": "knowledge",
       "name": "0006_triggers",
-      "operations": 13
+      "operations": 1
     },
     {
       "app": "marketplace",
       "name": "0006_triggers",
-      "operations": 10
+      "operations": 1
     },
     {
       "app": "registry",
       "name": "0006_triggers",
-      "operations": 24
+      "operations": 1
     },
     {
       "app": "workspaces",
       "name": "0006_triggers",
-      "operations": 19
+      "operations": 1
     }
   ],
   "objects": [

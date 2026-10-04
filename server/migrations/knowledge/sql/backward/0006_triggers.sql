@@ -1,0 +1,13 @@
+DROP TRIGGER semantic_memory_entry_bytes_guard ON public.semantic_entries;
+DROP TRIGGER semantic_index_input_limit_guard ON public.semantic_indexes;
+DROP TRIGGER atomic_write_guard ON public.semantic_run_reads;
+DROP TRIGGER atomic_write_guard ON public.semantic_remote_receipts;
+DROP TRIGGER atomic_write_guard ON public.semantic_remote_reads;
+DROP TRIGGER atomic_write_guard ON public.semantic_remote_operations;
+DROP TRIGGER atomic_write_guard ON public.semantic_remote_attempts;
+DROP TRIGGER atomic_write_guard ON public.semantic_points;
+DROP TRIGGER atomic_write_guard ON public.semantic_indexes;
+DROP TRIGGER atomic_write_guard ON public.semantic_history;
+DROP TRIGGER atomic_write_guard ON public.semantic_entries;
+DROP TRIGGER atomic_write_guard ON public.semantic_collections;
+DROP TRIGGER atomic_write_guard ON public.semantic_agent_memory;

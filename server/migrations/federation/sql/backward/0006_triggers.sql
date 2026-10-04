@@ -1,0 +1,10 @@
+DROP TRIGGER atomic_write_guard ON public.remote_run_message_fences;
+DROP TRIGGER atomic_write_guard ON public.peers;
+DROP TRIGGER atomic_write_guard ON public.peer_events;
+DROP TRIGGER atomic_write_guard ON public.delegations;
+DROP TRIGGER atomic_write_guard ON public.authorization_remote_grants;
+DROP TRIGGER atomic_write_guard ON public.authorization_remote_grant_reads;
+DROP TRIGGER atomic_write_guard ON public.authorization_remote_admissions;
+DROP TRIGGER atomic_write_guard ON public.authorization_peer_mappings;
+DROP TRIGGER atomic_write_guard ON public.authorization_peer_mapping_history;
+DROP TRIGGER atomic_immutable_decision ON public.atomic_coordinators;

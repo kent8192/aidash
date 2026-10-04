@@ -1,287 +1,579 @@
 // reinhardt-migration-source: 1
 // Frozen PostgreSQL baseline from develop/0.1.0 d120162 (54 legacy migrations).
-// SQL preserves generated columns, composite keys, CHECKs and procedural guards.
+// Schema operations use Reinhardt; unsupported migration operations live in sql/.
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-    Migration::new("0003_keys_indexes", "execution")
-        .add_dependency("workspaces", "0002_tables")
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.activation_quarantine
-    ADD CONSTRAINT activation_quarantine_pkey PRIMARY KEY (digest);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.core_areas
-    ADD CONSTRAINT core_areas_pkey PRIMARY KEY (id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.core_objects
-    ADD CONSTRAINT core_objects_pkey PRIMARY KEY (id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.core_operations
-    ADD CONSTRAINT core_operation_key UNIQUE (tenant, principal, request_key);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.core_operations
-    ADD CONSTRAINT core_operations_pkey PRIMARY KEY (id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.core_quotas
-    ADD CONSTRAINT core_quotas_pkey PRIMARY KEY (tenant);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.core_records
-    ADD CONSTRAINT core_records_pkey PRIMARY KEY (id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.core_requests
-    ADD CONSTRAINT core_requests_pkey PRIMARY KEY (tenant, principal, key);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.core_runs
-    ADD CONSTRAINT core_run_order UNIQUE (area_id, sequence);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.core_runs
-    ADD CONSTRAINT core_runs_pkey PRIMARY KEY (run_id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.core_areas
-    ADD CONSTRAINT core_session_identity UNIQUE (tenant, home_node, workspace_id, thread_id, agent_id, owner);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.core_task_sessions
-    ADD CONSTRAINT core_task_sessions_pkey PRIMARY KEY (task_id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.events
-    ADD CONSTRAINT events_id_key UNIQUE (id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.events
-    ADD CONSTRAINT events_pkey PRIMARY KEY (sequence);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.generation_budgets
-    ADD CONSTRAINT generation_budgets_pkey PRIMARY KEY (request_id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.generation_compaction_usage
-    ADD CONSTRAINT generation_compaction_usage_pkey PRIMARY KEY (request_id, attempt_id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.generation_embedding_usage
-    ADD CONSTRAINT generation_embedding_usage_pkey PRIMARY KEY (request_id, attempt_id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.generation_history
-    ADD CONSTRAINT generation_history_pkey PRIMARY KEY (sequence);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.generation_policies
-    ADD CONSTRAINT generation_policies_pkey PRIMARY KEY (tenant, id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.generation_policy_history
-    ADD CONSTRAINT generation_policy_history_pkey PRIMARY KEY (tenant, policy_id, revision);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.generation_remote_dispatches
-    ADD CONSTRAINT generation_remote_dispatches_pkey PRIMARY KEY (attempt_id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.generation_remote_finalizations
-    ADD CONSTRAINT generation_remote_finalizations_pkey PRIMARY KEY (attempt_id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.generation_remote_intents
-    ADD CONSTRAINT generation_remote_intents_pkey PRIMARY KEY (id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.generation_remote_usage
-    ADD CONSTRAINT generation_remote_usage_pkey PRIMARY KEY (request_id, attempt_id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.generation_requests
-    ADD CONSTRAINT generation_requests_agent_id_key UNIQUE (agent_id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.generation_requests
-    ADD CONSTRAINT generation_requests_pkey PRIMARY KEY (id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.generation_usage
-    ADD CONSTRAINT generation_usage_pkey PRIMARY KEY (request_id, attempt_id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.human_requests
-    ADD CONSTRAINT human_requests_id_run_id_key UNIQUE (id, run_id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.human_requests
-    ADD CONSTRAINT human_requests_pkey PRIMARY KEY (id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.human_requests
-    ADD CONSTRAINT human_requests_request_key_key UNIQUE (request_key);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.inbox
-    ADD CONSTRAINT inbox_pkey PRIMARY KEY (event_id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.invocations
-    ADD CONSTRAINT invocations_pkey PRIMARY KEY (idempotency_key);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.memory
-    ADD CONSTRAINT memory_next_pkey PRIMARY KEY (agent_id, agent_version, workspace_id, home_node);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.run_activations
-    ADD CONSTRAINT run_activations_id_key UNIQUE (id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.run_activations
-    ADD CONSTRAINT run_activations_pkey PRIMARY KEY (generation);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.run_inputs
-    ADD CONSTRAINT run_inputs_pkey PRIMARY KEY (seq);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.run_inputs
-    ADD CONSTRAINT run_inputs_run_key UNIQUE (run_id, idempotency_key);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.runs
-    ADD CONSTRAINT runs_home_node_task_id_key UNIQUE (home_node, task_id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE ONLY public.runs
-    ADD CONSTRAINT runs_pkey PRIMARY KEY (id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE INDEX activation_dependency_runs ON public.runs USING btree (task_id) WHERE (phase <> ALL (ARRAY['COMPLETED'::text, 'FAILED'::text, 'CANCELLED'::text]));"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE INDEX activation_due ON public.run_activations USING btree (due_at, generation) WHERE (state <> 'settled'::text);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE INDEX activation_run_generation ON public.run_activations USING btree (run_id, generation);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE INDEX core_operation_pending_queue ON public.core_operations USING btree (updated_at) WHERE (state = ANY (ARRAY['prepared'::text, 'submitted'::text, 'running'::text, 'cancelling'::text]));"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE INDEX dashboard_status_waiting_runs ON public.runs USING btree (id) WHERE ((control = 'PAUSED'::text) AND (error = 'identity status unavailable'::text));"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE INDEX events_marketplace_package_sequence ON public.events USING btree (((data ->> 'key'::text)), sequence) WHERE ((workspace_id IS NULL) AND (kind ~~ 'marketplace.%'::text) AND (kind <> 'marketplace.audit'::text));"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE INDEX events_marketplace_tenant_sequence ON public.events USING btree (((data ->> 'tenant'::text)), sequence) WHERE ((workspace_id IS NULL) AND (kind ~~ 'marketplace.%'::text) AND (kind <> 'marketplace.audit'::text));"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE INDEX events_outbox ON public.events USING btree (sequence) WHERE (published_at IS NULL);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE INDEX events_retry ON public.events USING btree (next_attempt_at, sequence) WHERE (published_at IS NULL);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE INDEX events_workspace ON public.events USING btree (workspace_id, sequence);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE INDEX generation_remote_dispatches_pending_finalization ON public.generation_remote_dispatches USING btree (created_at) WHERE ((state = ANY (ARRAY['ABORTED'::text, 'SETTLED'::text])) AND (peer_finalized = false));"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE INDEX generation_remote_dispatches_preparing ON public.generation_remote_dispatches USING btree (created_at) WHERE (state = 'PREPARING'::text);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE INDEX generation_remote_intents_cancel_retry ON public.generation_remote_intents USING btree (cancelled, cancel_delivered, cancel_retry_at);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE INDEX generation_remote_usage_attempt_digest ON public.generation_remote_usage USING btree (attempt_id, digest);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE UNIQUE INDEX generation_requests_home_task ON public.generation_requests USING btree (home_node, task_id) WHERE ((home_node <> ''::text) AND (status = ANY (ARRAY['PENDING_APPROVAL'::text, 'QUEUED'::text, 'ACTIVE'::text])));"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE UNIQUE INDEX generation_requests_local_task ON public.generation_requests USING btree (task_id) WHERE (home_node = ''::text);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE INDEX generation_requests_policy ON public.generation_requests USING btree (tenant, policy_id, status);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE UNIQUE INDEX runs_id_workspace_unique ON public.runs USING btree (id, workspace_id);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE INDEX runs_ready ON public.runs USING btree (updated_at) WHERE (phase <> ALL (ARRAY['COMPLETED'::text, 'FAILED'::text, 'CANCELLED'::text]));"#.to_string(),
-            // Refuse irreversible baseline rollback before the native ledger changes.
-            reverse_sql: Some(r#"DO $aidash_baseline$
-BEGIN
-    RAISE EXCEPTION 'Aidash frozen baseline is forward-only; restore a backup to roll back';
-END
-$aidash_baseline$;"#.to_string()),
-        })
-        .atomic(true)
-        .database_only(true)
+	Migration::new("0003_keys_indexes", "execution")
+		.database_only(true)
+		.add_dependency("workspaces", "0002_tables")
+		.add_operation(Operation::RunSQL {
+			sql: include_str!("sql/forward/baseline_search_path.sql").to_owned(),
+			reverse_sql: Some(include_str!("sql/backward/baseline_search_path.sql").to_owned()),
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "activation_quarantine".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "activation_quarantine_pkey".to_owned(),
+				columns: vec!["digest".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "core_areas".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "core_areas_pkey".to_owned(),
+				columns: vec!["id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "core_objects".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "core_objects_pkey".to_owned(),
+				columns: vec!["id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "core_operations".to_owned(),
+			constraint: Constraint::Unique {
+				name: "core_operation_key".to_owned(),
+				columns: vec![
+					"tenant".to_owned(),
+					"principal".to_owned(),
+					"request_key".to_owned(),
+				],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "core_operations".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "core_operations_pkey".to_owned(),
+				columns: vec!["id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "core_quotas".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "core_quotas_pkey".to_owned(),
+				columns: vec!["tenant".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "core_records".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "core_records_pkey".to_owned(),
+				columns: vec!["id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "core_requests".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "core_requests_pkey".to_owned(),
+				columns: vec![
+					"tenant".to_owned(),
+					"principal".to_owned(),
+					"key".to_owned(),
+				],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "core_runs".to_owned(),
+			constraint: Constraint::Unique {
+				name: "core_run_order".to_owned(),
+				columns: vec!["area_id".to_owned(), "sequence".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "core_runs".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "core_runs_pkey".to_owned(),
+				columns: vec!["run_id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "core_areas".to_owned(),
+			constraint: Constraint::Unique {
+				name: "core_session_identity".to_owned(),
+				columns: vec![
+					"tenant".to_owned(),
+					"home_node".to_owned(),
+					"workspace_id".to_owned(),
+					"thread_id".to_owned(),
+					"agent_id".to_owned(),
+					"owner".to_owned(),
+				],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "core_task_sessions".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "core_task_sessions_pkey".to_owned(),
+				columns: vec!["task_id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "events".to_owned(),
+			constraint: Constraint::Unique {
+				name: "events_id_key".to_owned(),
+				columns: vec!["id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "events".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "events_pkey".to_owned(),
+				columns: vec!["sequence".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "generation_budgets".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "generation_budgets_pkey".to_owned(),
+				columns: vec!["request_id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "generation_compaction_usage".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "generation_compaction_usage_pkey".to_owned(),
+				columns: vec!["request_id".to_owned(), "attempt_id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "generation_embedding_usage".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "generation_embedding_usage_pkey".to_owned(),
+				columns: vec!["request_id".to_owned(), "attempt_id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "generation_history".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "generation_history_pkey".to_owned(),
+				columns: vec!["sequence".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "generation_policies".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "generation_policies_pkey".to_owned(),
+				columns: vec!["tenant".to_owned(), "id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "generation_policy_history".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "generation_policy_history_pkey".to_owned(),
+				columns: vec![
+					"tenant".to_owned(),
+					"policy_id".to_owned(),
+					"revision".to_owned(),
+				],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "generation_remote_dispatches".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "generation_remote_dispatches_pkey".to_owned(),
+				columns: vec!["attempt_id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "generation_remote_finalizations".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "generation_remote_finalizations_pkey".to_owned(),
+				columns: vec!["attempt_id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "generation_remote_intents".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "generation_remote_intents_pkey".to_owned(),
+				columns: vec!["id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "generation_remote_usage".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "generation_remote_usage_pkey".to_owned(),
+				columns: vec!["request_id".to_owned(), "attempt_id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "generation_requests".to_owned(),
+			constraint: Constraint::Unique {
+				name: "generation_requests_agent_id_key".to_owned(),
+				columns: vec!["agent_id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "generation_requests".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "generation_requests_pkey".to_owned(),
+				columns: vec!["id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "generation_usage".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "generation_usage_pkey".to_owned(),
+				columns: vec!["request_id".to_owned(), "attempt_id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "human_requests".to_owned(),
+			constraint: Constraint::Unique {
+				name: "human_requests_id_run_id_key".to_owned(),
+				columns: vec!["id".to_owned(), "run_id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "human_requests".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "human_requests_pkey".to_owned(),
+				columns: vec!["id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "human_requests".to_owned(),
+			constraint: Constraint::Unique {
+				name: "human_requests_request_key_key".to_owned(),
+				columns: vec!["request_key".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "inbox".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "inbox_pkey".to_owned(),
+				columns: vec!["event_id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "invocations".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "invocations_pkey".to_owned(),
+				columns: vec!["idempotency_key".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "memory".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "memory_next_pkey".to_owned(),
+				columns: vec![
+					"agent_id".to_owned(),
+					"agent_version".to_owned(),
+					"workspace_id".to_owned(),
+					"home_node".to_owned(),
+				],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "run_activations".to_owned(),
+			constraint: Constraint::Unique {
+				name: "run_activations_id_key".to_owned(),
+				columns: vec!["id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "run_activations".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "run_activations_pkey".to_owned(),
+				columns: vec!["generation".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "run_inputs".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "run_inputs_pkey".to_owned(),
+				columns: vec!["seq".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "run_inputs".to_owned(),
+			constraint: Constraint::Unique {
+				name: "run_inputs_run_key".to_owned(),
+				columns: vec!["run_id".to_owned(), "idempotency_key".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "runs".to_owned(),
+			constraint: Constraint::Unique {
+				name: "runs_home_node_task_id_key".to_owned(),
+				columns: vec!["home_node".to_owned(), "task_id".to_owned()],
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "runs".to_owned(),
+			constraint: Constraint::PrimaryKey {
+				name: "runs_pkey".to_owned(),
+				columns: vec!["id".to_owned()],
+			},
+		})
+		.add_operation(Operation::CreateNamedIndex {
+			table: "runs".to_owned(),
+			name: "activation_dependency_runs".to_owned(),
+			columns: vec!["task_id".to_owned()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: Some(
+				r#"(phase <> ALL (ARRAY['COMPLETED'::text, 'FAILED'::text, 'CANCELLED'::text]))"#
+					.to_owned(),
+			),
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		.add_operation(Operation::CreateNamedIndex {
+			table: "run_activations".to_owned(),
+			name: "activation_due".to_owned(),
+			columns: vec!["due_at".to_owned(), "generation".to_owned()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: Some(r#"(state <> 'settled'::text)"#.to_owned()),
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		.add_operation(Operation::CreateNamedIndex {
+			table: "run_activations".to_owned(),
+			name: "activation_run_generation".to_owned(),
+			columns: vec!["run_id".to_owned(), "generation".to_owned()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: None,
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		.add_operation(Operation::CreateNamedIndex {
+				            table: "core_operations".to_owned(),
+				            name: "core_operation_pending_queue".to_owned(),
+				            columns: vec!["updated_at".to_owned()],
+				            unique: false,
+				            index_type: Some(IndexType::BTree),
+				            where_clause: Some(
+				                r#"(state = ANY (ARRAY['prepared'::text, 'submitted'::text, 'running'::text, 'cancelling'::text]))"#
+				                    .to_owned(),
+				            ),
+				            concurrently: false,
+				            expressions: None,
+				            mysql_options: None,
+				            operator_class: None,
+				        })
+		.add_operation(Operation::CreateNamedIndex {
+			table: "runs".to_owned(),
+			name: "dashboard_status_waiting_runs".to_owned(),
+			columns: vec!["id".to_owned()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: Some(
+				r#"((control = 'PAUSED'::text) AND (error = 'identity status unavailable'::text))"#
+					.to_owned(),
+			),
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		.add_operation(Operation::CreateNamedIndex {
+				            table: "events".to_owned(),
+				            name: "events_marketplace_package_sequence".to_owned(),
+				            columns: vec![],
+				            unique: false,
+				            index_type: Some(IndexType::BTree),
+				            where_clause: Some(
+				                r#"((workspace_id IS NULL) AND (kind ~~ 'marketplace.%'::text) AND (kind <> 'marketplace.audit'::text))"#
+				                    .to_owned(),
+				            ),
+				            concurrently: false,
+				            expressions: Some(
+				                vec![r#"((data ->> 'key'::text))"#.to_owned(), "sequence".to_owned()],
+				            ),
+				            mysql_options: None,
+				            operator_class: None,
+				        })
+		.add_operation(Operation::CreateNamedIndex {
+				            table: "events".to_owned(),
+				            name: "events_marketplace_tenant_sequence".to_owned(),
+				            columns: vec![],
+				            unique: false,
+				            index_type: Some(IndexType::BTree),
+				            where_clause: Some(
+				                r#"((workspace_id IS NULL) AND (kind ~~ 'marketplace.%'::text) AND (kind <> 'marketplace.audit'::text))"#
+				                    .to_owned(),
+				            ),
+				            concurrently: false,
+				            expressions: Some(
+				                vec![r#"((data ->> 'tenant'::text))"#.to_owned(), "sequence".to_owned()],
+				            ),
+				            mysql_options: None,
+				            operator_class: None,
+				        })
+		.add_operation(Operation::CreateNamedIndex {
+			table: "events".to_owned(),
+			name: "events_outbox".to_owned(),
+			columns: vec!["sequence".to_owned()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: Some(r#"(published_at IS NULL)"#.to_owned()),
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		.add_operation(Operation::CreateNamedIndex {
+			table: "events".to_owned(),
+			name: "events_retry".to_owned(),
+			columns: vec!["next_attempt_at".to_owned(), "sequence".to_owned()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: Some(r#"(published_at IS NULL)"#.to_owned()),
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		.add_operation(Operation::CreateNamedIndex {
+			table: "events".to_owned(),
+			name: "events_workspace".to_owned(),
+			columns: vec!["workspace_id".to_owned(), "sequence".to_owned()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: None,
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		.add_operation(Operation::CreateNamedIndex {
+				            table: "generation_remote_dispatches".to_owned(),
+				            name: "generation_remote_dispatches_pending_finalization".to_owned(),
+				            columns: vec!["created_at".to_owned()],
+				            unique: false,
+				            index_type: Some(IndexType::BTree),
+				            where_clause: Some(
+				                r#"((state = ANY (ARRAY['ABORTED'::text, 'SETTLED'::text])) AND (peer_finalized = false))"#
+				                    .to_owned(),
+				            ),
+				            concurrently: false,
+				            expressions: None,
+				            mysql_options: None,
+				            operator_class: None,
+				        })
+		.add_operation(Operation::CreateNamedIndex {
+			table: "generation_remote_dispatches".to_owned(),
+			name: "generation_remote_dispatches_preparing".to_owned(),
+			columns: vec!["created_at".to_owned()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: Some(r#"(state = 'PREPARING'::text)"#.to_owned()),
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		.add_operation(Operation::CreateNamedIndex {
+			table: "generation_remote_intents".to_owned(),
+			name: "generation_remote_intents_cancel_retry".to_owned(),
+			columns: vec![
+				"cancelled".to_owned(),
+				"cancel_delivered".to_owned(),
+				"cancel_retry_at".to_owned(),
+			],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: None,
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		.add_operation(Operation::CreateNamedIndex {
+			table: "generation_remote_usage".to_owned(),
+			name: "generation_remote_usage_attempt_digest".to_owned(),
+			columns: vec!["attempt_id".to_owned(), "digest".to_owned()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: None,
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		.add_operation(Operation::CreateNamedIndex {
+				            table: "generation_requests".to_owned(),
+				            name: "generation_requests_home_task".to_owned(),
+				            columns: vec!["home_node".to_owned(), "task_id".to_owned()],
+				            unique: true,
+				            index_type: Some(IndexType::BTree),
+				            where_clause: Some(
+				                r#"((home_node <> ''::text) AND (status = ANY (ARRAY['PENDING_APPROVAL'::text, 'QUEUED'::text, 'ACTIVE'::text])))"#
+				                    .to_owned(),
+				            ),
+				            concurrently: false,
+				            expressions: None,
+				            mysql_options: None,
+				            operator_class: None,
+				        })
+		.add_operation(Operation::CreateNamedIndex {
+			table: "generation_requests".to_owned(),
+			name: "generation_requests_local_task".to_owned(),
+			columns: vec!["task_id".to_owned()],
+			unique: true,
+			index_type: Some(IndexType::BTree),
+			where_clause: Some(r#"(home_node = ''::text)"#.to_owned()),
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		.add_operation(Operation::CreateNamedIndex {
+			table: "generation_requests".to_owned(),
+			name: "generation_requests_policy".to_owned(),
+			columns: vec![
+				"tenant".to_owned(),
+				"policy_id".to_owned(),
+				"status".to_owned(),
+			],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: None,
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		.add_operation(Operation::CreateNamedIndex {
+			table: "runs".to_owned(),
+			name: "runs_id_workspace_unique".to_owned(),
+			columns: vec!["id".to_owned(), "workspace_id".to_owned()],
+			unique: true,
+			index_type: Some(IndexType::BTree),
+			where_clause: None,
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		.add_operation(Operation::CreateNamedIndex {
+			table: "runs".to_owned(),
+			name: "runs_ready".to_owned(),
+			columns: vec!["updated_at".to_owned()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: Some(
+				r#"(phase <> ALL (ARRAY['COMPLETED'::text, 'FAILED'::text, 'CANCELLED'::text]))"#
+					.to_owned(),
+			),
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
+		.add_operation(Operation::RunSQL {
+			sql: include_str!("sql/forward/baseline_reverse_context.sql").to_owned(),
+			reverse_sql: Some(include_str!("sql/backward/baseline_reverse_context.sql").to_owned()),
+		})
 }

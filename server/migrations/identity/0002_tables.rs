@@ -1,296 +1,445 @@
 // reinhardt-migration-source: 1
 // Frozen PostgreSQL baseline from develop/0.1.0 d120162 (54 legacy migrations).
-// SQL preserves generated columns, composite keys, CHECKs and procedural guards.
+// Schema operations use Reinhardt; unsupported migration operations live in sql/.
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-    Migration::new("0002_tables", "identity")
-        .add_dependency("federation", "0002_tables")
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.authorization_bundles (
-    tenant text NOT NULL,
-    revision bigint NOT NULL,
-    document jsonb NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT authorization_bundles_revision_check CHECK ((revision > 0))
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.authorization_catalog (
-    tenant text NOT NULL,
-    entry_id text NOT NULL,
-    entry_version text NOT NULL,
-    enabled boolean NOT NULL,
-    revision bigint NOT NULL,
-    CONSTRAINT authorization_catalog_revision_check CHECK ((revision > 0))
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.authorization_catalog_history (
-    tenant text NOT NULL,
-    entry_id text NOT NULL,
-    entry_version text NOT NULL,
-    revision bigint NOT NULL,
-    enabled boolean NOT NULL,
-    actor text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.authorization_credentials (
-    id uuid NOT NULL,
-    tenant text NOT NULL,
-    subject text NOT NULL,
-    token_hash bytea NOT NULL,
-    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    expires_at timestamp with time zone NOT NULL,
-    revoked_at timestamp with time zone,
-    issued_by text NOT NULL,
-    CONSTRAINT authorization_credentials_check CHECK ((expires_at > created_at)),
-    CONSTRAINT authorization_credentials_token_hash_check CHECK ((octet_length(token_hash) = 32))
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.authorization_decisions (
-    sequence bigint NOT NULL,
-    tenant text NOT NULL,
-    revision bigint NOT NULL,
-    subject text NOT NULL,
-    action text NOT NULL,
-    resource_kind text NOT NULL,
-    resource_id text NOT NULL,
-    decision jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"ALTER TABLE public.authorization_decisions ALTER COLUMN sequence ADD GENERATED ALWAYS AS IDENTITY (
-    SEQUENCE NAME public.authorization_decisions_sequence_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.authorization_execution (
-    run_id uuid NOT NULL,
-    task_id uuid NOT NULL,
-    workspace_id uuid NOT NULL,
-    tenant text NOT NULL,
-    credential_id uuid NOT NULL,
-    root_subject text NOT NULL,
-    subject_chain text[] NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT authorization_execution_subject_chain_check CHECK (((cardinality(subject_chain) >= 2) AND (cardinality(subject_chain) <= 32)))
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.authorization_graph_operator_grants (
-    source_node text NOT NULL,
-    source_operator uuid NOT NULL,
-    tenant text NOT NULL,
-    enabled boolean NOT NULL,
-    revision bigint NOT NULL,
-    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    CONSTRAINT authorization_graph_operator_grants_revision_check CHECK ((revision > 0))
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.authorization_remote_commands (
-    grant_id uuid NOT NULL,
-    request_key text NOT NULL,
-    digest text NOT NULL,
-    result jsonb NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.authorization_remote_execution (
-    grant_id uuid NOT NULL,
-    admission_id uuid NOT NULL,
-    task_id uuid NOT NULL,
-    task_revision bigint NOT NULL,
-    initial_task jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.authorization_remote_outputs (
-    grant_id uuid NOT NULL,
-    workspace_id uuid NOT NULL,
-    resource_kind text NOT NULL,
-    resource_id uuid NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.authorization_revisions (
-    tenant text NOT NULL,
-    revision bigint NOT NULL,
-    document jsonb NOT NULL,
-    actor text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT authorization_revisions_positive CHECK (COALESCE((revision > 0), false))
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.authorization_run_outputs (
-    run_id uuid NOT NULL,
-    workspace_id uuid NOT NULL,
-    resource_kind text NOT NULL,
-    resource_id uuid NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.authorization_run_reads (
-    run_id uuid NOT NULL,
-    workspace_id uuid NOT NULL,
-    resource_kind text NOT NULL,
-    resource_id uuid NOT NULL,
-    CONSTRAINT authorization_run_reads_resource_kind_check CHECK ((resource_kind = ANY (ARRAY['task'::text, 'artifact'::text, 'message'::text, 'run'::text, 'conversation'::text, 'generation'::text, 'workspace_events'::text])))
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.authorization_run_registry_reads (
-    run_id uuid NOT NULL,
-    entry_id text NOT NULL,
-    entry_version text NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.authorization_run_remote_reads (
-    run_id uuid NOT NULL,
-    node_id text NOT NULL,
-    entry_id text NOT NULL,
-    entry_version text NOT NULL,
-    digest text NOT NULL,
-    metadata jsonb NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.authorization_task_origins (
-    task_id uuid NOT NULL,
-    source_run_id uuid NOT NULL,
-    tenant text NOT NULL,
-    root_subject text NOT NULL,
-    subject_chain text[] NOT NULL,
-    CONSTRAINT authorization_task_origins_subject_chain_check CHECK (((cardinality(subject_chain) >= 2) AND (cardinality(subject_chain) <= 32)))
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.authorization_workspaces (
-    workspace_id uuid NOT NULL,
-    tenant text NOT NULL,
-    owner_subject text NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.dashboard_execution_origins (
-    run_id uuid NOT NULL,
-    identity_id uuid NOT NULL,
-    mapping_id uuid NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.dashboard_identities (
-    id uuid NOT NULL,
-    issuer text NOT NULL,
-    subject text NOT NULL,
-    last_valid_at timestamp with time zone,
-    disabled_at timestamp with time zone
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.dashboard_login_transactions (
-    state_hash bytea NOT NULL,
-    browser_hash bytea NOT NULL,
-    nonce text NOT NULL,
-    pkce_verifier text NOT NULL,
-    return_to text NOT NULL,
-    callback_uri text NOT NULL,
-    expires_at timestamp with time zone NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.dashboard_logout_tokens (
-    jti_hash bytea NOT NULL,
-    expires_at timestamp with time zone NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.dashboard_mappings (
-    id uuid NOT NULL,
-    identity_id uuid NOT NULL,
-    tenant text NOT NULL,
-    subject text NOT NULL,
-    credential_id uuid NOT NULL,
-    enabled boolean DEFAULT true NOT NULL,
-    revision bigint DEFAULT 1 NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.dashboard_operator_grants (
-    identity_id uuid NOT NULL,
-    enabled boolean DEFAULT true NOT NULL,
-    revision bigint DEFAULT 1 NOT NULL
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.dashboard_registration_requests (
-    id uuid NOT NULL,
-    identity_id uuid NOT NULL,
-    status text NOT NULL,
-    created_at timestamp with time zone NOT NULL,
-    expires_at timestamp with time zone NOT NULL,
-    decided_at timestamp with time zone,
-    decided_by uuid,
-    decision_actor text
-);"#.to_string(),
-            reverse_sql: None,
-        })
-        .add_operation(Operation::RunSQL {
-            sql: r#"CREATE TABLE public.dashboard_sessions (
-    id uuid NOT NULL,
-    token_hash bytea NOT NULL,
-    csrf_hash bytea NOT NULL,
-    identity_id uuid NOT NULL,
-    provider_sid text,
-    created_at timestamp with time zone NOT NULL,
-    last_activity_at timestamp with time zone NOT NULL,
-    expires_at timestamp with time zone NOT NULL,
-    revoked_at timestamp with time zone
-);"#.to_string(),
-            // Refuse irreversible baseline rollback before the native ledger changes.
-            reverse_sql: Some(r#"DO $aidash_baseline$
-BEGIN
-    RAISE EXCEPTION 'Aidash frozen baseline is forward-only; restore a backup to roll back';
-END
-$aidash_baseline$;"#.to_string()),
-        })
-        .atomic(true)
-        .database_only(true)
+	Migration::new("0002_tables", "identity")
+		.database_only(true)
+		.add_dependency("federation", "0002_tables")
+		.add_operation(Operation::RunSQL {
+			sql: include_str!("sql/forward/baseline_search_path.sql").to_owned(),
+			reverse_sql: Some(include_str!("sql/backward/baseline_search_path.sql").to_owned()),
+		})
+		.add_operation(Operation::CreateTable {
+			name: "authorization_bundles".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
+				ColumnDefinition::new("document", FieldType::Jsonb).with_not_null(true),
+				ColumnDefinition::new("updated_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_default(Some(r#"now()"#.to_owned())),
+			],
+			constraints: vec![Constraint::Check {
+				name: "authorization_bundles_revision_check".to_owned(),
+				expression: r#"(revision > 0)"#.to_owned(),
+			}],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "authorization_catalog".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("entry_id", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("entry_version", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("enabled", FieldType::Boolean).with_not_null(true),
+				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
+			],
+			constraints: vec![Constraint::Check {
+				name: "authorization_catalog_revision_check".to_owned(),
+				expression: r#"(revision > 0)"#.to_owned(),
+			}],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "authorization_catalog_history".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("entry_id", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("entry_version", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
+				ColumnDefinition::new("enabled", FieldType::Boolean).with_not_null(true),
+				ColumnDefinition::new("actor", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("created_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_default(Some(r#"now()"#.to_owned())),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "authorization_credentials".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("subject", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("token_hash", FieldType::Bytea).with_not_null(true),
+				ColumnDefinition::new("created_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_default(Some(r#"clock_timestamp()"#.to_owned())),
+				ColumnDefinition::new("expires_at", FieldType::TimestampTz).with_not_null(true),
+				ColumnDefinition::new("revoked_at", FieldType::TimestampTz),
+				ColumnDefinition::new("issued_by", FieldType::Text).with_not_null(true),
+			],
+			constraints: vec![
+				Constraint::Check {
+					name: "authorization_credentials_check".to_owned(),
+					expression: r#"(expires_at > created_at)"#.to_owned(),
+				},
+				Constraint::Check {
+					name: "authorization_credentials_token_hash_check".to_owned(),
+					expression: r#"(octet_length(token_hash) = 32)"#.to_owned(),
+				},
+			],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "authorization_decisions".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("sequence", FieldType::BigInteger).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
+				ColumnDefinition::new("subject", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("action", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("resource_kind", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("resource_id", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("decision", FieldType::Jsonb).with_not_null(true),
+				ColumnDefinition::new("created_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_default(Some(r#"now()"#.to_owned())),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "authorization_execution".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("task_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("workspace_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("credential_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("root_subject", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("subject_chain", FieldType::Array(Box::new(FieldType::Text)))
+					.with_not_null(true),
+				ColumnDefinition::new("created_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_default(Some(r#"now()"#.to_owned())),
+			],
+			constraints: vec![Constraint::Check {
+				name: "authorization_execution_subject_chain_check".to_owned(),
+				expression:
+					r#"((cardinality(subject_chain) >= 2) AND (cardinality(subject_chain) <= 32))"#
+						.to_owned(),
+			}],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "authorization_graph_operator_grants".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("source_node", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("source_operator", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("enabled", FieldType::Boolean).with_not_null(true),
+				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
+				ColumnDefinition::new("updated_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_default(Some(r#"clock_timestamp()"#.to_owned())),
+			],
+			constraints: vec![Constraint::Check {
+				name: "authorization_graph_operator_grants_revision_check".to_owned(),
+				expression: r#"(revision > 0)"#.to_owned(),
+			}],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "authorization_remote_commands".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("grant_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("request_key", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("digest", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("result", FieldType::Jsonb).with_not_null(true),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "authorization_remote_execution".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("grant_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("admission_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("task_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("task_revision", FieldType::BigInteger).with_not_null(true),
+				ColumnDefinition::new("initial_task", FieldType::Jsonb).with_not_null(true),
+				ColumnDefinition::new("created_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_default(Some("CURRENT_TIMESTAMP".to_owned())),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "authorization_remote_outputs".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("grant_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("workspace_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("resource_kind", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("resource_id", FieldType::Uuid).with_not_null(true),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "authorization_revisions".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true),
+				ColumnDefinition::new("document", FieldType::Jsonb).with_not_null(true),
+				ColumnDefinition::new("actor", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("created_at", FieldType::TimestampTz)
+					.with_not_null(true)
+					.with_default(Some(r#"now()"#.to_owned())),
+			],
+			constraints: vec![Constraint::Check {
+				name: "authorization_revisions_positive".to_owned(),
+				expression: r#"COALESCE((revision > 0), false)"#.to_owned(),
+			}],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "authorization_run_outputs".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("workspace_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("resource_kind", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("resource_id", FieldType::Uuid).with_not_null(true),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+				            name: "authorization_run_reads".to_owned(),
+				            columns: vec![
+				                ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
+				                ColumnDefinition::new("workspace_id", FieldType::Uuid)
+				                .with_not_null(true), ColumnDefinition::new("resource_kind",
+				                FieldType::Text).with_not_null(true),
+				                ColumnDefinition::new("resource_id", FieldType::Uuid).with_not_null(true)
+				            ],
+				            constraints: vec![
+				                Constraint::Check { name : "authorization_run_reads_resource_kind_check"
+				                .to_owned(), expression :
+				                r#"(resource_kind = ANY (ARRAY['task'::text, 'artifact'::text, 'message'::text, 'run'::text, 'conversation'::text, 'generation'::text, 'workspace_events'::text]))"#
+				                .to_owned() }
+				            ],
+				            without_rowid: None,
+				            interleave_in_parent: None,
+				            partition: None,
+				        })
+		.add_operation(Operation::CreateTable {
+			name: "authorization_run_registry_reads".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("entry_id", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("entry_version", FieldType::Text).with_not_null(true),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "authorization_run_remote_reads".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("node_id", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("entry_id", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("entry_version", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("digest", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("metadata", FieldType::Jsonb).with_not_null(true),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "authorization_task_origins".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("task_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("source_run_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("root_subject", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("subject_chain", FieldType::Array(Box::new(FieldType::Text)))
+					.with_not_null(true),
+			],
+			constraints: vec![Constraint::Check {
+				name: "authorization_task_origins_subject_chain_check".to_owned(),
+				expression:
+					r#"((cardinality(subject_chain) >= 2) AND (cardinality(subject_chain) <= 32))"#
+						.to_owned(),
+			}],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "authorization_workspaces".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("workspace_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("owner_subject", FieldType::Text).with_not_null(true),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "dashboard_execution_origins".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("run_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("identity_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("mapping_id", FieldType::Uuid).with_not_null(true),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "dashboard_identities".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("issuer", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("subject", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("last_valid_at", FieldType::TimestampTz),
+				ColumnDefinition::new("disabled_at", FieldType::TimestampTz),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "dashboard_login_transactions".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("state_hash", FieldType::Bytea).with_not_null(true),
+				ColumnDefinition::new("browser_hash", FieldType::Bytea).with_not_null(true),
+				ColumnDefinition::new("nonce", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("pkce_verifier", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("return_to", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("callback_uri", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("expires_at", FieldType::TimestampTz).with_not_null(true),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "dashboard_logout_tokens".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("jti_hash", FieldType::Bytea).with_not_null(true),
+				ColumnDefinition::new("expires_at", FieldType::TimestampTz).with_not_null(true),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "dashboard_mappings".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("identity_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("subject", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("credential_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("enabled", FieldType::Boolean)
+					.with_not_null(true)
+					.with_default(Some("true".to_owned())),
+				ColumnDefinition::new("revision", FieldType::BigInteger)
+					.with_not_null(true)
+					.with_default(Some("1".to_owned())),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "dashboard_operator_grants".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("identity_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("enabled", FieldType::Boolean)
+					.with_not_null(true)
+					.with_default(Some("true".to_owned())),
+				ColumnDefinition::new("revision", FieldType::BigInteger)
+					.with_not_null(true)
+					.with_default(Some("1".to_owned())),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "dashboard_registration_requests".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("identity_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("status", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true),
+				ColumnDefinition::new("expires_at", FieldType::TimestampTz).with_not_null(true),
+				ColumnDefinition::new("decided_at", FieldType::TimestampTz),
+				ColumnDefinition::new("decided_by", FieldType::Uuid),
+				ColumnDefinition::new("decision_actor", FieldType::Text),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::CreateTable {
+			name: "dashboard_sessions".to_owned(),
+			columns: vec![
+				ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("token_hash", FieldType::Bytea).with_not_null(true),
+				ColumnDefinition::new("csrf_hash", FieldType::Bytea).with_not_null(true),
+				ColumnDefinition::new("identity_id", FieldType::Uuid).with_not_null(true),
+				ColumnDefinition::new("provider_sid", FieldType::Text),
+				ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true),
+				ColumnDefinition::new("last_activity_at", FieldType::TimestampTz).with_not_null(true),
+				ColumnDefinition::new("expires_at", FieldType::TimestampTz).with_not_null(true),
+				ColumnDefinition::new("revoked_at", FieldType::TimestampTz),
+			],
+			constraints: vec![],
+			without_rowid: None,
+			interleave_in_parent: None,
+			partition: None,
+		})
+		.add_operation(Operation::RunSQL {
+			sql: include_str!("sql/forward/0002_configuration.sql").to_owned(),
+			reverse_sql: Some(include_str!("sql/backward/0002_configuration.sql").to_owned()),
+		})
+		.add_operation(Operation::RunSQL {
+			sql: include_str!("sql/forward/baseline_reverse_context.sql").to_owned(),
+			reverse_sql: Some(include_str!("sql/backward/baseline_reverse_context.sql").to_owned()),
+		})
 }

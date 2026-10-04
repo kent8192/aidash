@@ -29,6 +29,9 @@ pub fn deployment_command(database_url: &str, directory: &Path) -> Command {
 			let migration = migration.unwrap();
 			if migration.path().extension().is_some_and(|ext| ext == "rs") {
 				fs::copy(migration.path(), target.join(migration.file_name())).unwrap();
+			} else if migration.file_name() == "sql" && migration.path().is_dir() {
+				let sql_target = target.join("sql");
+				copy_assets(&migration.path(), &sql_target);
 			}
 		}
 	}
@@ -54,4 +57,17 @@ pub fn deployment_command(database_url: &str, directory: &Path) -> Command {
 		.current_dir(directory)
 		.kill_on_drop(true);
 	command
+}
+
+fn copy_assets(source: &Path, target: &Path) {
+	fs::create_dir_all(target).unwrap();
+	for asset in fs::read_dir(source).unwrap() {
+		let asset = asset.unwrap();
+		let destination = target.join(asset.file_name());
+		if asset.path().is_dir() {
+			copy_assets(&asset.path(), &destination);
+		} else {
+			fs::copy(asset.path(), destination).unwrap();
+		}
+	}
 }
