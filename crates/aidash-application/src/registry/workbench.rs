@@ -167,3 +167,5 @@ pub async fn validate_content(
 mod tests;
 
 pub mod drafts;
+
+pub mod publication;

@@ -4,7 +4,7 @@ use crate::{
 	apps::registry::{
 		repositories::NativeScope,
 		workbench::{
-			models::{AgentDraft, AgentDraftShare},
+			models::{AgentDraft, AgentDraftRegistration, AgentDraftShare},
 			serializers::contracts::Draft as NativeDraft,
 		},
 	},
@@ -14,8 +14,8 @@ use crate::{
 use aidash_application::{
 	Result,
 	ports::registry::{
-		DefinitionLookup,
-		workbench::{DraftAuthority, DraftRepository, DraftScope},
+		DefinitionLookup, DefinitionWriter,
+		workbench::{DraftAuthority, DraftRepository, DraftScope, PublicationScope},
 	},
 };
 use aidash_domain::{
@@ -23,7 +23,7 @@ use aidash_domain::{
 	policy::{Decision, Evaluation, PolicyBundle},
 	registry::{
 		Entry,
-		workbench::{Draft, ShareRecord},
+		workbench::{Draft, RegistrationEvidence, RegistrationRecord, ShareRecord},
 	},
 };
 use async_trait::async_trait;
@@ -53,6 +53,9 @@ impl DraftRepository for Repository {
 	type Scope = Scope;
 	fn principal(&self) -> Principal {
 		authority::principal(&self.actor)
+	}
+	fn node_id(&self) -> &str {
+		&self.runtime.config.node_id
 	}
 	async fn original_entry(&self, id: &str, version: &str) -> Result<Entry> {
 		self.runtime
@@ -204,5 +207,73 @@ impl DraftScope for Scope {
 			.await
 			.map_err(crate::Error::from)
 			.map_err(Into::into)
+	}
+}
+
+#[async_trait]
+impl DefinitionWriter for Scope {
+	async fn insert_definition(&mut self, entry: &Entry) -> Result<bool> {
+		NativeScope(&mut self.tx).insert_definition(entry).await
+	}
+}
+#[async_trait]
+impl PublicationScope for Scope {
+	async fn registrations(&mut self, draft: Uuid, agent: &str) -> Result<Vec<RegistrationRecord>> {
+		Ok(AgentDraftRegistration::page(&mut self.tx, draft, agent)
+			.await?
+			.into_iter()
+			.map(|row| RegistrationRecord {
+				version: row.version,
+				revision: row.revision,
+				actor: row.actor,
+				registered_at: row.registered_at,
+				release_notes: row.release_notes,
+				source_id: row.source_id,
+				source_version: row.source_version,
+				behavioral_tested: row.behavioral_tested,
+			})
+			.collect())
+	}
+	async fn registered_evidence(&mut self, entry: &Entry) -> Result<Option<RegistrationEvidence>> {
+		Ok(
+			AgentDraftRegistration::previous_registration(&mut self.tx, entry)
+				.await?
+				.map(|row| RegistrationEvidence {
+					draft_id: row.draft_id(),
+					revision: row.revision,
+					behavioral_tested: row.behavioral_tested,
+				}),
+		)
+	}
+	async fn completed_test(&mut self, draft: &Draft) -> Result<bool> {
+		AgentDraftRegistration::completed_evidence(&mut self.tx, &NativeDraft::from(draft.clone()))
+			.await
+			.map_err(Into::into)
+	}
+	async fn insert_documents(&mut self, entry: &Entry, documents: Value) -> Result<()> {
+		crate::apps::registry::models::transaction_records::insert_documents(
+			&mut self.tx,
+			entry,
+			documents,
+		)
+		.await
+		.map_err(Into::into)
+	}
+	async fn record_registration(
+		&mut self,
+		draft: &Draft,
+		entry: &Entry,
+		actor: &str,
+		behavioral_tested: bool,
+	) -> Result<()> {
+		AgentDraftRegistration::record(
+			&mut self.tx,
+			&NativeDraft::from(draft.clone()),
+			entry,
+			actor,
+			behavioral_tested,
+		)
+		.await
+		.map_err(Into::into)
 	}
 }

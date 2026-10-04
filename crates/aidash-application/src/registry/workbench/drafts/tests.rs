@@ -1,6 +1,7 @@
 use super::*;
 use crate::ports::registry::{DefinitionLookup, workbench::DraftAuthority};
-use aidash_domain::registry::workbench::ShareRecord;
+use crate::ports::registry::{DefinitionWriter, workbench::PublicationScope};
+use aidash_domain::registry::workbench::{RegistrationEvidence, RegistrationRecord, ShareRecord};
 use aidash_domain::{
 	identity::Principal,
 	policy::{Decision, Evaluation, PolicyBundle},
@@ -38,6 +39,10 @@ struct Repository {
 	pages: Vec<Vec<Draft>>,
 	operator: bool,
 	managed: bool,
+	previous: Option<RegistrationEvidence>,
+	completed: bool,
+	inserted: bool,
+	fail_documents: bool,
 }
 impl Repository {
 	fn new(draft: Draft) -> Self {
@@ -48,6 +53,10 @@ impl Repository {
 			pages: Vec::new(),
 			operator: false,
 			managed: false,
+			previous: None,
+			completed: false,
+			inserted: true,
+			fail_documents: false,
 		}
 	}
 	fn logs(&self) -> Vec<String> {
@@ -61,6 +70,10 @@ struct Scope {
 	pages: Vec<Vec<Draft>>,
 	operator: bool,
 	managed: bool,
+	previous: Option<RegistrationEvidence>,
+	completed: bool,
+	inserted: bool,
+	fail_documents: bool,
 }
 impl Scope {
 	fn record(&self, value: impl Into<String>) {
@@ -78,6 +91,9 @@ impl DraftRepository for Repository {
 			tenant: "tenant".into(),
 			subject: "owner".into(),
 		}
+	}
+	fn node_id(&self) -> &str {
+		"aidash://node"
 	}
 	async fn original_entry(&self, id: &str, version: &str) -> Result<Entry> {
 		self.log.lock().unwrap().push("original".into());
@@ -98,16 +114,28 @@ impl DraftRepository for Repository {
 			pages: self.pages.clone(),
 			operator: self.operator,
 			managed: self.managed,
+			previous: self.previous,
+			completed: self.completed,
+			inserted: self.inserted,
+			fail_documents: self.fail_documents,
 		})
 	}
 }
 #[async_trait]
 impl DefinitionLookup for Scope {
-	async fn definition(&mut self, _: &str, _: &str) -> Result<Entry> {
-		panic!("draft edits do not resolve definitions")
+	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry> {
+		self.record(format!("definition:{id}@{version}"));
+		if id == "model" {
+			return Ok(serde_json::from_value(
+				json!({"id":id,"version":version,"kind":"model","name":{},"description":{},"config":{"provider":"openrouter","model_id":"model","endpoint":"https://openrouter.ai/api/v1","credential_env":null,"context_window":32768,"max_output_tokens":1024,"modalities":["text"],"cost":{}}}),
+			)?);
+		}
+		let mut entry: Entry = serde_json::from_value(self.draft.entry.clone())?;
+		entry.version = version.into();
+		Ok(entry)
 	}
 	async fn overrides(&mut self, _: &str, _: &str) -> Result<Option<Value>> {
-		panic!("draft edits do not apply overlays")
+		Ok(None)
 	}
 }
 #[async_trait]
@@ -876,4 +904,231 @@ async fn stale_archive_does_not_write_or_commit(draft: Draft) {
 		repository.logs(),
 		["begin", "read:true", "identity", "agent_draft.archive"]
 	);
+}
+
+#[async_trait]
+impl DefinitionWriter for Scope {
+	async fn insert_definition(&mut self, entry: &Entry) -> Result<bool> {
+		self.record(format!("definition-insert:{}@{}", entry.id, entry.version));
+		Ok(self.inserted)
+	}
+}
+#[async_trait]
+impl PublicationScope for Scope {
+	async fn registrations(&mut self, _: Uuid, _: &str) -> Result<Vec<RegistrationRecord>> {
+		self.record("registrations");
+		Ok(Vec::new())
+	}
+	async fn registered_evidence(&mut self, _: &Entry) -> Result<Option<RegistrationEvidence>> {
+		self.record("prior-evidence");
+		Ok(self.previous)
+	}
+	async fn completed_test(&mut self, _: &Draft) -> Result<bool> {
+		self.record("completed-test");
+		Ok(self.completed)
+	}
+	async fn insert_documents(&mut self, _: &Entry, _: Value) -> Result<()> {
+		self.record("documents-insert");
+		if self.fail_documents {
+			Err(Error::Conflict("private documents changed".into()))
+		} else {
+			Ok(())
+		}
+	}
+	async fn record_registration(
+		&mut self,
+		_: &Draft,
+		_: &Entry,
+		actor: &str,
+		tested: bool,
+	) -> Result<()> {
+		self.record(format!("registration:{actor}:{tested}"));
+		Ok(())
+	}
+}
+struct Secrets;
+impl crate::ports::Credentials for Secrets {
+	fn resolve(&self, _: &str) -> Result<String> {
+		panic!("publication fixture has no credential references")
+	}
+}
+struct CoreCatalog;
+impl crate::ports::registry::CoreToolCatalog for CoreCatalog {
+	fn specifications(
+		&self,
+		_: &aidash_domain::capabilities::CoreCapabilities,
+	) -> std::collections::BTreeMap<String, aidash_domain::provider::ToolSpec> {
+		Default::default()
+	}
+}
+fn validation() -> crate::registry::DefinitionValidation {
+	crate::registry::DefinitionValidation::new(Arc::new(Secrets), Arc::new(CoreCatalog))
+}
+use crate::registry::workbench::publication;
+#[rstest]
+#[tokio::test]
+async fn publication_checks_evidence_before_definition_and_event(mut draft: Draft, entry: Entry) {
+	draft.entry = serde_json::to_value(entry).unwrap();
+	let mut repository = Repository::new(draft.clone());
+	repository.completed = true;
+	let registered = publication::register(
+		&repository,
+		&validation(),
+		draft.id,
+		RevisionInput {
+			expected_revision: 3,
+		},
+	)
+	.await
+	.unwrap();
+	assert!(registered.behavioral_tested);
+	assert_eq!(registered.revision, 3);
+	let logs = repository.logs();
+	let prior = logs
+		.iter()
+		.position(|step| step == "prior-evidence")
+		.unwrap();
+	let insert = logs
+		.iter()
+		.position(|step| step.starts_with("definition-insert:"))
+		.unwrap();
+	assert!(prior < insert);
+	assert!(logs.iter().any(|step| step == "registration:owner:true"));
+	assert!(
+		logs.iter()
+			.any(|step| step.starts_with("event:registry.registered:"))
+	);
+	assert_eq!(logs.last().map(String::as_str), Some("commit"));
+}
+#[rstest]
+#[case::other_draft(2, 3)]
+#[case::other_revision(1, 2)]
+#[tokio::test]
+async fn existing_version_cannot_be_rebound(
+	mut draft: Draft,
+	entry: Entry,
+	#[case] draft_id: u128,
+	#[case] revision: i64,
+) {
+	draft.entry = serde_json::to_value(entry).unwrap();
+	let mut repository = Repository::new(draft.clone());
+	repository.previous = Some(RegistrationEvidence {
+		draft_id: Uuid::from_u128(draft_id),
+		revision,
+		behavioral_tested: true,
+	});
+	assert_eq!(
+		publication::register(
+			&repository,
+			&validation(),
+			draft.id,
+			RevisionInput {
+				expected_revision: 3
+			}
+		)
+		.await
+		.unwrap_err()
+		.to_string(),
+		"version is already registered from another draft revision; choose a new semantic version"
+	);
+	assert!(
+		!repository
+			.logs()
+			.iter()
+			.any(|step| step.starts_with("definition-insert:")
+				|| step == "completed-test"
+				|| step == "commit")
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn repeat_registration_preserves_original_test_evidence(mut draft: Draft, entry: Entry) {
+	draft.entry = serde_json::to_value(entry).unwrap();
+	let mut repository = Repository::new(draft.clone());
+	repository.previous = Some(RegistrationEvidence {
+		draft_id: draft.id,
+		revision: 3,
+		behavioral_tested: false,
+	});
+	repository.completed = true;
+	repository.inserted = false;
+	let registered = publication::register(
+		&repository,
+		&validation(),
+		draft.id,
+		RevisionInput {
+			expected_revision: 3,
+		},
+	)
+	.await
+	.unwrap();
+	assert!(!registered.behavioral_tested);
+	assert!(
+		!repository
+			.logs()
+			.iter()
+			.any(|step| step == "completed-test" || step.starts_with("event:registry.registered:"))
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn private_document_failure_prevents_registration_and_commit(mut draft: Draft, entry: Entry) {
+	draft.entry = serde_json::to_value(entry).unwrap();
+	draft.documents = json!([{"name":"note","media_type":"text/plain","text":"private"}]);
+	let mut repository = Repository::new(draft.clone());
+	repository.fail_documents = true;
+	assert_eq!(
+		publication::register(
+			&repository,
+			&validation(),
+			draft.id,
+			RevisionInput {
+				expected_revision: 3
+			}
+		)
+		.await
+		.unwrap_err()
+		.to_string(),
+		"private documents changed"
+	);
+	assert!(
+		!repository
+			.logs()
+			.iter()
+			.any(|step| step.starts_with("registration:")
+				|| step.starts_with("event:")
+				|| step == "commit")
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn advisory_validation_reports_content_failure_after_read_commit(draft: Draft) {
+	let repository = Repository::new(draft.clone());
+	let checked = publication::validate(
+		&repository,
+		&validation(),
+		draft.id,
+		RevisionInput {
+			expected_revision: 3,
+		},
+	)
+	.await
+	.unwrap();
+	assert!(!checked.valid);
+	assert_eq!(checked.revision, 3);
+	assert_eq!(repository.logs().last().map(String::as_str), Some("commit"));
+}
+#[rstest]
+#[tokio::test]
+async fn version_history_includes_unregistered_adopted_source(mut draft: Draft, entry: Entry) {
+	draft.entry = serde_json::to_value(entry).unwrap();
+	draft.source_id = Some("managed".into());
+	draft.source_version = Some("0.9.0".into());
+	let repository = Repository::new(draft.clone());
+	let versions = publication::versions(&repository, draft.id).await.unwrap();
+	assert_eq!(versions.len(), 1);
+	assert_eq!(versions[0].entry.version, "0.9.0");
+	assert_eq!(versions[0].draft_revision, None);
+	assert_eq!(versions[0].behavioral_tested, None);
+	assert_eq!(repository.logs().last().map(String::as_str), Some("commit"));
 }

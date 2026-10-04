@@ -174,3 +174,22 @@ pub struct ShareRecord {
 	pub can_edit: bool,
 	pub documents_digest: String,
 }
+
+/// Registration evidence is immutable for one authored draft revision.
+#[derive(Debug, Clone, Copy)]
+pub struct RegistrationEvidence {
+	pub draft_id: Uuid,
+	pub revision: i64,
+	pub behavioral_tested: bool,
+}
+#[derive(Debug, Clone)]
+pub struct RegistrationRecord {
+	pub version: String,
+	pub revision: i64,
+	pub actor: String,
+	pub registered_at: DateTime<Utc>,
+	pub release_notes: String,
+	pub source_id: Option<String>,
+	pub source_version: Option<String>,
+	pub behavioral_tested: bool,
+}

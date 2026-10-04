@@ -1,8 +1,8 @@
 //! Immutable draft revision provenance and completed behavioral evidence.
 use super::{AgentDraftRegistration, AgentTestSession};
+use crate::Result;
 use crate::apps::registry::serializers::contracts::Entry;
 use crate::apps::registry::workbench::serializers::contracts::Draft;
-use crate::{Error, Result};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::Model;
@@ -42,25 +42,23 @@ impl AgentDraftRegistration {
 			.map_err(FrameworkError::from)?)
 	}
 
-	pub(crate) async fn behavioral_evidence(
+	pub(crate) async fn previous_registration(
 		tx: &mut dyn TransactionExecutor,
-		draft: &Draft,
 		entry: &Entry,
-	) -> Result<bool> {
-		let previous = Self::objects()
+	) -> Result<Option<Self>> {
+		Ok(Self::objects()
 			.filter(Self::field_agent_id().eq(&entry.id))
 			.filter(Self::field_version().eq(&entry.version))
 			.all_with_executor(tx)
 			.await
 			.map_err(FrameworkError::from)?
 			.into_iter()
-			.next();
-		if let Some(previous) = previous {
-			if previous.draft_id() != draft.id || previous.revision != draft.revision {
-				return Err(Error::Conflict("version is already registered from another draft revision; choose a new semantic version".into()));
-			}
-			return Ok(previous.behavioral_tested);
-		}
+			.next())
+	}
+	pub(crate) async fn completed_evidence(
+		tx: &mut dyn TransactionExecutor,
+		draft: &Draft,
+	) -> Result<bool> {
 		Ok(!AgentTestSession::objects()
 			.filter(AgentTestSession::field_draft_id().eq(draft.id))
 			.filter(AgentTestSession::field_revision().eq(draft.revision))

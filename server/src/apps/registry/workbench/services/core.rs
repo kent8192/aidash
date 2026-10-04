@@ -1,7 +1,6 @@
 //! Tenant-scoped Creator drafts and immutable Registry admission. Workbench
 //! permissions are separate from installation-wide Registry administration.
 use crate::apps::execution::models::event_records;
-use crate::apps::registry::models::transaction_records;
 use crate::apps::registry::services::admission;
 use crate::apps::registry::workbench::models::{AgentDraft, AgentDraftRegistration};
 use crate::{
@@ -12,7 +11,6 @@ use crate::{
 		policy::{Evaluation, Resource},
 	},
 	federation::Federation,
-	knowledge::{ReferenceDocument, digest},
 	registry::{AgentConfig, Entry},
 };
 use reinhardt::db::backends::{TransactionExecutor, dialect::postgres::PgTransactionExecutor};
@@ -226,74 +224,24 @@ impl Drafts {
 		id: Uuid,
 		input: RevisionInput,
 	) -> Result<Validation> {
-		let f = self.runtime.clone();
-		let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-		let draft = AgentDraft::read(&mut tx, id, false).await?;
-		authorize(&mut tx, &actor, &draft, "agent_draft.write", true).await?;
-		if input.expected_revision != draft.revision {
-			return Err(Error::Conflict("draft revision changed".into()));
-		}
-		// Validation is advisory; Register repeats all checks on the locked revision.
-		let result = validate_content(&f, &draft, &actor, &mut tx).await;
-		Box::new(tx).commit().await?;
-		Ok(Validation {
-			draft_id: id,
-			revision: draft.revision,
-			valid: result.is_ok(),
-			message: result
-				.err()
-				.map_or_else(|| "Technical validation passed".into(), |e| e.to_string()),
-		})
+		Ok(
+			aidash_application::registry::workbench::publication::validate(
+				&crate::bootstrap::draft_repository(&self.runtime, actor),
+				&crate::bootstrap::registry_validation(),
+				id,
+				input,
+			)
+			.await?,
+		)
 	}
 	pub(crate) async fn versions(&self, actor: Actor, id: Uuid) -> Result<Vec<RegisteredVersion>> {
-		let f = self.runtime.clone();
-		let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-		let draft = AgentDraft::read(&mut tx, id, false).await?;
-		authorize(&mut tx, &actor, &draft, "agent_draft.read", true).await?;
-		let managed_id = draft.entry["id"]
-			.as_str()
-			.ok_or_else(|| Error::Invalid("draft has no managed identity".into()))?;
-		let mut native = tx;
-		let rows = AgentDraftRegistration::page(&mut native, id, managed_id).await?;
-		let draft_knowledge_digest = draft
-			.documents
-			.as_array()
-			.filter(|docs| !docs.is_empty())
-			.map(|_| digest(&draft.documents));
-		let mut versions = Vec::new();
-		for row in rows {
-			versions.push(RegisteredVersion {
-				draft_knowledge_digest: draft_knowledge_digest.clone(),
-				entry: admission::effective(&mut native, managed_id, &row.version).await?,
-				draft_revision: Some(row.revision),
-				registered_by: Some(row.actor),
-				registered_at: Some(row.registered_at),
-				release_notes: row.release_notes,
-				source_id: row.source_id,
-				source_version: row.source_version,
-				behavioral_tested: Some(row.behavioral_tested),
-			});
-		}
-		if draft.source_id.as_deref() == Some(managed_id)
-			&& let Some(source_version) = &draft.source_version
-			&& !versions
-				.iter()
-				.any(|item| &item.entry.version == source_version)
-		{
-			versions.push(RegisteredVersion {
-				draft_knowledge_digest: draft_knowledge_digest.clone(),
-				entry: admission::effective(&mut native, managed_id, source_version).await?,
-				draft_revision: None,
-				registered_by: None,
-				registered_at: None,
-				release_notes: String::new(),
-				source_id: None,
-				source_version: None,
-				behavioral_tested: None,
-			});
-		}
-		Box::new(native).commit().await?;
-		Ok(versions)
+		Ok(
+			aidash_application::registry::workbench::publication::versions(
+				&crate::bootstrap::draft_repository(&self.runtime, actor),
+				id,
+			)
+			.await?,
+		)
 	}
 	pub(crate) async fn register(
 		&self,
@@ -301,46 +249,14 @@ impl Drafts {
 		id: Uuid,
 		input: RevisionInput,
 	) -> Result<Registration> {
-		let f = self.runtime.clone();
-		let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-		let draft = AgentDraft::read(&mut tx, id, true).await?;
-		authorize(&mut tx, &actor, &draft, "agent_draft.register", true).await?;
-		if draft.archived || input.expected_revision != draft.revision {
-			return Err(Error::Conflict(
-				"draft revision changed or is archived".into(),
-			));
-		}
-		let entry = validate_content(&f, &draft, &actor, &mut tx).await?;
-		let mut native = tx;
-		let behavioral_tested =
-			AgentDraftRegistration::behavioral_evidence(&mut native, &draft, &entry).await?;
-		let inserted = admission::register(&mut native, &entry, &f.config.node_id).await?;
-		let documents: Vec<ReferenceDocument> = serde_json::from_value(draft.documents.clone())?;
-		if !documents.is_empty() {
-			transaction_records::insert_documents(&mut native, &entry, draft.documents.clone())
-				.await?;
-		}
-		let registered_by = match &actor {
-			Actor::Operator => "operator",
-			Actor::Subject(identity) => &identity.subject,
-		};
-		AgentDraftRegistration::record(
-			&mut native,
-			&draft,
-			&entry,
-			registered_by,
-			behavioral_tested,
+		Ok(
+			aidash_application::registry::workbench::publication::register(
+				&crate::bootstrap::draft_repository(&self.runtime, actor),
+				&crate::bootstrap::registry_validation(),
+				id,
+				input,
+			)
+			.await?,
 		)
-		.await?;
-		if inserted {
-			event_records::append(&mut native, &f.config.node_id, None, "registry.registered", json!({"id":entry.id,"version":entry.version,"kind":"agent","draft_id":id,"draft_revision":draft.revision})).await?;
-		}
-		Box::new(native).commit().await?;
-		Ok(Registration {
-			draft_id: id,
-			revision: draft.revision,
-			entry,
-			behavioral_tested,
-		})
 	}
 }

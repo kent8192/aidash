@@ -1,5 +1,5 @@
 //! Draft authority ports borrow the caller's transaction and current credential.
-use super::DefinitionLookup;
+use super::{DefinitionLookup, DefinitionWriter};
 use crate::Result;
 use aidash_domain::{
 	identity::Principal,
@@ -58,7 +58,25 @@ pub trait DraftScope: DraftAuthority + Sized {
 pub trait DraftRepository: Send + Sync {
 	type Scope: DraftScope;
 	fn principal(&self) -> Principal;
+	fn node_id(&self) -> &str;
 	async fn original_entry(&self, id: &str, version: &str) -> Result<Entry>;
 	async fn original_documents(&self, entry: &Entry) -> Result<Value>;
 	async fn begin(&self) -> Result<Self::Scope>;
+}
+
+use aidash_domain::registry::workbench::{RegistrationEvidence, RegistrationRecord};
+/// Publication holds the authored revision through evidence, immutable content and outbox writes.
+#[async_trait]
+pub trait PublicationScope: DraftScope + DefinitionWriter {
+	async fn registrations(&mut self, draft: Uuid, agent: &str) -> Result<Vec<RegistrationRecord>>;
+	async fn registered_evidence(&mut self, entry: &Entry) -> Result<Option<RegistrationEvidence>>;
+	async fn completed_test(&mut self, draft: &Draft) -> Result<bool>;
+	async fn insert_documents(&mut self, entry: &Entry, documents: Value) -> Result<()>;
+	async fn record_registration(
+		&mut self,
+		draft: &Draft,
+		entry: &Entry,
+		actor: &str,
+		behavioral_tested: bool,
+	) -> Result<()>;
 }
