@@ -2,15 +2,6 @@
 use super::*;
 use reinhardt::injectable;
 
-pub(super) fn validate_real_rule(rule: &RealToolRule, tool: &crate::registry::Entry) -> Result<()> {
-	aidash_application::registry::workbench::profile::validate_real_rule(
-		&crate::bootstrap::workbench_profile_configuration(),
-		rule,
-		tool,
-	)
-	.map_err(Into::into)
-}
-
 pub use crate::apps::registry::workbench::serializers::profile::{
 	ProfileInput, ProfileQuery, ProfileSummary, RealToolRule, TestProfile,
 };

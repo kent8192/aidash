@@ -1686,3 +1686,27 @@ pub(crate) fn workbench_sandbox_execution(
 		transport: Arc::new(workbench_sandbox_real_tools()),
 	}
 }
+
+/// Sandbox model construction uses the same live credential resolver as worker inference.
+pub(crate) struct WorkbenchSandboxModels {
+	client: reqwest::Client,
+}
+impl aidash_application::ports::registry::workbench::sandbox::admission::SandboxModels
+	for WorkbenchSandboxModels
+{
+	fn provider(
+		&self,
+		model: aidash_domain::model::ModelConfig,
+	) -> aidash_application::Result<Arc<dyn aidash_application::ports::ModelProvider>> {
+		aidash_integrations::inference::provider(
+			self.client.clone(),
+			model,
+			workbench_sandbox_credentials(),
+		)
+	}
+}
+pub(crate) fn workbench_sandbox_models(runtime: &Federation) -> WorkbenchSandboxModels {
+	WorkbenchSandboxModels {
+		client: runtime.client.clone(),
+	}
+}

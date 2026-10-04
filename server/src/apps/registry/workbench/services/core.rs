@@ -1,24 +1,7 @@
 //! Tenant-scoped Creator drafts and immutable Registry admission. Workbench
 //! permissions are separate from installation-wide Registry administration.
-use crate::apps::execution::models::event_records;
-use crate::apps::registry::services::admission;
-use crate::apps::registry::workbench::models::{AgentDraft, AgentDraftRegistration};
-use crate::{
-	Error, Result,
-	authorization::{
-		Authorization,
-		identity::Actor,
-		policy::{Evaluation, Resource},
-	},
-	federation::Federation,
-	registry::{AgentConfig, Entry},
-};
-use reinhardt::db::backends::{TransactionExecutor, dialect::postgres::PgTransactionExecutor};
+use crate::{Result, authorization::identity::Actor, federation::Federation};
 use reinhardt::injectable;
-
-use chrono::{DateTime, Utc};
-use serde_json::{Value, json};
-
 use uuid::Uuid;
 
 #[path = "audit.rs"]
@@ -33,66 +16,6 @@ pub mod test;
 pub mod trust;
 pub use incident::purge_expired as purge_incident_evidence;
 pub use test::purge_expired;
-
-fn author_identity(
-	actor: &Actor,
-	tenant: Option<&str>,
-	owner: Option<&str>,
-) -> Result<(String, String)> {
-	Ok(aidash_application::registry::workbench::author_identity(
-		&crate::bootstrap::draft_principal(actor),
-		tenant,
-		owner,
-	)?)
-}
-
-async fn authorize(
-	tx: &mut dyn TransactionExecutor,
-	actor: &Actor,
-	draft: &Draft,
-	action: &str,
-	shares: bool,
-) -> Result<()> {
-	Ok(aidash_application::registry::workbench::authorize(
-		&mut crate::bootstrap::draft_authority_scope(tx, actor),
-		&draft.clone().into(),
-		action,
-		shares,
-	)
-	.await?)
-}
-
-async fn validate_content(
-	f: &Federation,
-	draft: &Draft,
-	actor: &Actor,
-	tx: &mut dyn TransactionExecutor,
-) -> Result<Entry> {
-	Ok(aidash_application::registry::workbench::validate_content(
-		&mut crate::bootstrap::draft_authority_scope(tx, actor),
-		&crate::bootstrap::registry_validation(),
-		&draft.clone().into(),
-		&f.config.node_id,
-	)
-	.await?)
-}
-
-fn ref_key(reference: &crate::registry::EntityRef) -> String {
-	aidash_application::registry::workbench::ref_key(reference)
-}
-
-async fn target_enabled(
-	tx: &mut dyn TransactionExecutor,
-	tenant: &str,
-	subject: &str,
-) -> Result<()> {
-	Ok(aidash_application::registry::workbench::target_enabled(
-		&mut crate::bootstrap::draft_authority_scope(tx, &Actor::Operator),
-		tenant,
-		subject,
-	)
-	.await?)
-}
 
 pub(crate) use crate::apps::registry::workbench::serializers::contracts::DraftPage;
 pub use crate::apps::registry::workbench::serializers::contracts::{
