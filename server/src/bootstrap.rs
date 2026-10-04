@@ -1417,3 +1417,19 @@ pub(crate) fn skill_headroom(
 ) -> crate::apps::execution::repositories::skills::Headroom<'_> {
 	crate::apps::execution::repositories::skills::Headroom { store }
 }
+
+pub(crate) fn transfer_repository(
+	federation: &crate::federation::Federation,
+) -> crate::apps::execution::repositories::transfer::Repository<'_> {
+	crate::apps::execution::repositories::transfer::Repository { federation }
+}
+pub(crate) fn transfer_scope<'a>(
+	store: Option<&'a Store>,
+	access: &'a mut crate::authorization::access::Access,
+) -> crate::apps::execution::repositories::transfer::Scope<'a> {
+	crate::apps::execution::repositories::transfer::Scope {
+		store,
+		authority: crate::apps::execution::repositories::transfer::Authority::Borrowed(access),
+		pending: None,
+	}
+}
