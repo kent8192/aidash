@@ -135,6 +135,13 @@ def binding(request, state, **fields):
     return value
 
 
+def filesystem_capacity(size, page_size):
+    """The physical tmpfs ceiling for the manifest's logical byte budget."""
+    if type(size) is not int or size <= 0 or type(page_size) is not int or page_size <= 0:
+        raise ValueError('positive filesystem byte budget and page size required')
+    return ((size + page_size - 1) // page_size) * page_size
+
+
 def handle(request):
     # Serialize validation with the watchdog. Its exact-bound pidfd tombstone
     # proves termination even when runsc has already removed its state. Only
@@ -194,7 +201,11 @@ def handle(request):
                 disk[name] = fs.f_blocks * fs.f_frsize
             result = {'cpu':min(cpus), 'memory_bytes':min(memory), 'processes':min(processes),
                       'working_bytes':disk['work'], 'temporary_bytes':disk['temp']}
-            if any(result[k] != request[k] for k in result):
+            expected = {k: request[k] for k in result}
+            page_size = os.sysconf('SC_PAGE_SIZE')
+            for key in ('working_bytes', 'temporary_bytes'):
+                expected[key] = filesystem_capacity(expected[key], page_size)
+            if result != expected:
                 raise ValueError('observed cgroup/filesystem limits differ from execution profile: ' + str(result))
             save(path, binding(request, state, frozen=False, deadline=None))
             result['swap_bytes'] = 0
