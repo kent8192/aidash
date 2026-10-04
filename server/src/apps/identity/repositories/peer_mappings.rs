@@ -191,6 +191,7 @@ impl MappingWrite for WriteScope {
 		identity
 			.lock_with_mode(&mut self.tx, false)
 			.await
+			.map(|_| ())
 			.map_err(Into::into)
 	}
 	async fn insert(&mut self, tenant: &str, input: &PeerMappingInput) -> Result<Option<Mapping>> {

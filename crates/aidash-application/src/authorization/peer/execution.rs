@@ -4,7 +4,7 @@ use aidash_domain::{
 	federation::execution::{Definition, Inspection, admission::InspectInput},
 	policy::SubjectKind,
 	qualified_agent,
-	registry::{AgentConfig, EntityRef, Entry, digest},
+	registry::{AgentConfig, EntityRef, Entry, rules::digest},
 };
 use serde_json::json;
 use std::collections::BTreeMap;

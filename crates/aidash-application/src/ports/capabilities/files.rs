@@ -65,7 +65,7 @@ pub trait FileScopePort: Send {
 	async fn write_pending(&mut self, bytes: &[u8]) -> Result<()>;
 	async fn finish_pending(&mut self, expected: &str) -> Result<(Uuid, String)>;
 	async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<Value>;
-	async fn documents(&mut self, entry: &Entry) -> Result<Vec<Value>>;
+	async fn documents(&mut self, entry: &Entry) -> Result<Value>;
 	async fn text_file(
 		&mut self,
 		area: Uuid,

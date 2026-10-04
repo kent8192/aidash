@@ -12,6 +12,7 @@ workspace = true
 aidash-application.workspace = true
 futures-util.workspace = true
 tokio.workspace = true
+uuid.workspace = true
 tracing = "0.1"
 
 [dev-dependencies]
@@ -21,4 +22,3 @@ rstest.workspace = true
 aidash-domain.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
-uuid.workspace = true

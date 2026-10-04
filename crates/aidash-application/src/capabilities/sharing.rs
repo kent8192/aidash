@@ -75,8 +75,8 @@ pub async fn share(
 		return Err(Error::Conflict("AREA_REVISION_CHANGED".into()));
 	}
 	scope.authorize(area, "file.share").await?;
-	let available: Vec<FileEntry> = serde_json::from_value(area.manifest.clone())?;
-	let (chosen, size) = select_files(&available, &input.files, &scope.sharing_limits()?)?;
+	let mounted: Vec<FileEntry> = serde_json::from_value(area.manifest.clone())?;
+	let (chosen, size) = select_files(&mounted, &input.files, &scope.sharing_limits()?)?;
 	let mut recipient: Area = scope
 		.recipient(area, &input.recipient)
 		.await?

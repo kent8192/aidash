@@ -187,6 +187,7 @@ impl OutboundScope for Scope<'_> {
 				json!({"operation_id":id,"run_id":run.id,"http_status":status}),
 			)
 			.await
+			.map(|_| ())
 			.map_err(Into::into)
 	}
 	async fn finish(self: Box<Self>, result: Result<Option<Record>>) -> Result<Option<Record>> {

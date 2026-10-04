@@ -93,6 +93,7 @@ impl GrantScope for Scope {
 	async fn inherit_task_origin(&mut self, id: Uuid) -> Result<()> {
 		crate::authorization::execution::inherit_task_origin(&mut self.access, id)
 			.await
+			.map(|_| ())
 			.map_err(Into::into)
 	}
 	async fn live(&mut self, id: Uuid) -> Result<bool> {

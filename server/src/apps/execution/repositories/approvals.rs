@@ -290,6 +290,7 @@ impl ApprovalScope for Scope<'_> {
 			.ok_or_else(missing)?
 			.event(&mut self.access.tx, Some(workspace), kind, data)
 			.await
+			.map(|_| ())
 			.map_err(Into::into)
 	}
 	async fn read(&mut self, file: &MountedFile) -> Result<Vec<u8>> {

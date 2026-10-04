@@ -4,7 +4,7 @@
 use crate::{Error, Result};
 use uuid::Uuid;
 
-pub(super) async fn cut(id: Uuid, point: &str) -> Result<()> {
+pub(crate) async fn cut(id: Uuid, point: &str) -> Result<()> {
 	let Ok(selected) = std::env::var("AIDASH_TRANSACTION_FAULT") else {
 		return Ok(());
 	};

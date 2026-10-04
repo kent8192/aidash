@@ -93,7 +93,7 @@ impl FileScopePort for Scope {
 	async fn message(&mut self, _workspace: Uuid, _id: Uuid) -> Result<Value> {
 		panic!("unexpected message effect")
 	}
-	async fn documents(&mut self, _entry: &Entry) -> Result<Vec<Value>> {
+	async fn documents(&mut self, _entry: &Entry) -> Result<Value> {
 		panic!("unexpected documents effect")
 	}
 	async fn text_file(

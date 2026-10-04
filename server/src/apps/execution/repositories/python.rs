@@ -26,8 +26,8 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use reinhardt::query::{
-	Alias, Expr, ExprTrait as _, LockType, Order, PostgresQueryBuilder, QueryStatementBuilder as _,
-	SimpleExpr,
+	Alias, Expr, ExprTrait as _, LockType, Order, PostgresQueryBuilder, Query,
+	QueryStatementBuilder as _, SimpleExpr,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;

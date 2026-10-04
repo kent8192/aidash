@@ -11,8 +11,9 @@ use aidash_domain::{
 		operations::{FileScope, MountedFile as FileEntry, available},
 		sessions::Area,
 	},
+	model::ModelConfig,
 	provider::ContentPart,
-	registry::{AgentConfig, EntityRef, ModelConfig},
+	registry::{AgentConfig, EntityRef},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
@@ -68,7 +69,7 @@ pub async fn invoke(
 	}
 	scope
 		.require(
-			&scope.resource("tool", format!("builtin:{name}"), json!({})),
+			&scope.resource("tool", &format!("builtin:{name}"), json!({})),
 			"tool.invoke",
 		)
 		.await?;

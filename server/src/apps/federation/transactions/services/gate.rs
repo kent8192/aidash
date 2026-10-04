@@ -68,7 +68,7 @@ pub(crate) fn lock_error(error: sqlx::Error) -> Error {
 }
 
 /// Retain the visibility lock in an existing authority transaction.
-pub(super) async fn read_in(tx: &mut Transaction<'_, Postgres>) -> Result<i64> {
+pub(crate) async fn read_in(tx: &mut Transaction<'_, Postgres>) -> Result<i64> {
 	let (pending, commit_epoch): (Option<Uuid>, i64) = sqlx::query_as(
 		&reinhardt::query::Query::select()
 			.columns([

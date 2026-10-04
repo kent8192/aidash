@@ -40,7 +40,7 @@ pub(super) async fn submit_bound(
 	f.notify.notify_waiters();
 	Ok(stored)
 }
-pub(super) async fn submit_in(
+pub(crate) async fn submit_in(
 	f: &Federation,
 	manifest: &Manifest,
 	origin: Option<&super::authority::Origin>,
@@ -405,7 +405,7 @@ pub async fn run(f: Federation) -> Result<()> {
 	Ok(())
 }
 
-pub(super) async fn abort_in(
+pub(crate) async fn abort_in(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 	id: Uuid,
 ) -> Result<()> {

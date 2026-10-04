@@ -830,29 +830,3 @@ impl From<aidash_domain::federation::execution::admission::Admission>
 		}
 	}
 }
-impl From<aidash_domain::federation::execution::admission::Activation>
-	for crate::apps::identity::serializers::remote_execution::RemoteExecutionActivation
-{
-	fn from(v: aidash_domain::federation::execution::admission::Activation) -> Self {
-		Self {
-			grant_id: v.grant_id,
-			admission_id: v.admission_id,
-			run_id: v.run_id,
-			phase: v.phase,
-			control: v.control,
-			error: v.error,
-			semantic_reason: v.semantic_reason,
-		}
-	}
-}
-impl From<aidash_domain::federation::execution::admission::MessageReceipt>
-	for crate::apps::identity::serializers::remote_execution::RemoteExecutionMessageReceipt
-{
-	fn from(v: aidash_domain::federation::execution::admission::MessageReceipt) -> Self {
-		Self {
-			id: v.id,
-			run_id: v.run_id,
-			accepted: v.accepted,
-		}
-	}
-}

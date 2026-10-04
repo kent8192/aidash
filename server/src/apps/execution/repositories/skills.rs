@@ -69,6 +69,7 @@ impl SkillScope for Scope<'_> {
 	async fn insert_skills(&mut self, run: Uuid, area: Uuid, data: Value) -> Result<()> {
 		records::insert(self.access, run, Some(area), "skills", "pinned", data, None)
 			.await
+			.map(|_| ())
 			.map_err(Into::into)
 	}
 	async fn update_skills(&mut self, record: &mut Record) -> Result<()> {

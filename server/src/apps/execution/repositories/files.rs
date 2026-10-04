@@ -480,7 +480,7 @@ impl FileScopePort for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
-	async fn documents(&mut self, entry: &Entry) -> Result<Vec<Value>> {
+	async fn documents(&mut self, entry: &Entry) -> Result<Value> {
 		let store = self.store.ok_or_else(missing)?;
 		let registry = crate::registry::Registry::new(store.pool.clone(), &store.node_id)?;
 		crate::knowledge::load(&registry.db, entry)
