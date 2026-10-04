@@ -144,10 +144,10 @@ async fn failed_private_read_precedes_capability_profile_resolution(
 	run: RunMetadata,
 ) {
 	scope.document_error = true;
-	assert_eq!(
-		request(&scope, &run).await.unwrap_err(),
-		Error::External("private contents unavailable".into())
-	);
+	match request(&scope, &run).await {
+		Err(Error::External(message)) => assert_eq!(message, "private contents unavailable"),
+		other => panic!("unexpected private read outcome: {other:?}"),
+	}
 	assert_eq!(
 		*scope.trace.lock().unwrap(),
 		["definition:agent", "definition:model", "documents"]
