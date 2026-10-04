@@ -12,3 +12,5 @@ pub(crate) mod inspection;
 pub(crate) mod incidents;
 
 pub(crate) mod report;
+
+pub(crate) mod profile;

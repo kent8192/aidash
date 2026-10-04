@@ -1640,3 +1640,16 @@ pub(crate) fn workbench_report_sources(
 ) -> crate::apps::registry::workbench::repositories::report::Sources<'_> {
 	crate::apps::registry::workbench::repositories::report::Sources { runtime, actor }
 }
+
+/// Profile workflows use the existing draft and profile transaction boundaries.
+pub(crate) fn workbench_profile_repository(
+	runtime: &Federation,
+	actor: crate::authorization::identity::Actor,
+) -> crate::apps::registry::workbench::repositories::profile::Repository<'_> {
+	crate::apps::registry::workbench::repositories::profile::Repository { runtime, actor }
+}
+/// Presence checks use the same configured secret references as native sandbox execution.
+pub(crate) fn workbench_profile_configuration()
+-> crate::apps::registry::workbench::repositories::profile::Configuration {
+	crate::apps::registry::workbench::repositories::profile::Configuration
+}

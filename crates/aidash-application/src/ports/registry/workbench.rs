@@ -90,3 +90,5 @@ pub mod inspection;
 pub mod incidents;
 
 pub mod report;
+
+pub mod profile;

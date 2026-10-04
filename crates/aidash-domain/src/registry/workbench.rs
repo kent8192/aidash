@@ -203,3 +203,5 @@ pub mod inspection;
 pub mod incident;
 
 pub mod report;
+
+pub mod profile;
