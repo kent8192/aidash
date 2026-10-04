@@ -3,17 +3,11 @@
 #[path = "execution/commands.rs"]
 pub(crate) mod commands;
 use super::*;
+pub(crate) use crate::apps::identity::repositories::remote_grants::HomeBinding;
+pub use aidash_domain::federation::execution::home::FollowUpInput;
 use futures_util::{StreamExt, stream};
 use reinhardt::query::{Alias, ColumnRef, Expr, LockType, PostgresQueryBuilder, Query};
 
-#[derive(Clone, sqlx::FromRow)]
-pub(crate) struct HomeBinding {
-	pub grant_id: Uuid,
-	pub admission_id: Uuid,
-	pub task_id: Uuid,
-	pub task_revision: i64,
-	pub initial_task: Value,
-}
 pub(crate) async fn binding(access: &mut Access, grant: Uuid) -> Result<Option<HomeBinding>> {
 	Ok({
 		let query_bind_1 = grant;
@@ -648,15 +642,6 @@ async fn managed_task(access: &mut Access, id: Uuid, read: bool) -> Result<Task>
 	Ok(task)
 }
 
-#[derive(Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct FollowUpInput {
-	pub id: Uuid,
-	pub title: String,
-	pub description: String,
-	pub requirements: crate::registry::Search,
-}
-
 pub(crate) async fn follow_up(
 	f: Federation,
 	actor: Actor,
@@ -706,11 +691,7 @@ pub(crate) async fn follow_up(
 	access.finish(result).await
 }
 
-use serde::Deserialize;
-
 use reinhardt::query::ColumnRef::Asterisk;
-
-use serde::Serialize;
 
 pub(crate) async fn provenance(
 	f: Federation,

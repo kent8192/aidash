@@ -50,3 +50,52 @@ use uuid::Uuid;
 use crate::authorization::remote::execution::RemoteExecutionPhase;
 
 use crate::authorization::remote::execution::RemoteExecutionControlState;
+
+impl From<aidash_domain::federation::execution::admission::Activation>
+	for RemoteExecutionActivation
+{
+	fn from(row: aidash_domain::federation::execution::admission::Activation) -> Self {
+		Self {
+			grant_id: row.grant_id,
+			admission_id: row.admission_id,
+			run_id: row.run_id,
+			phase: row.phase,
+			control: row.control,
+			error: row.error,
+			semantic_reason: row.semantic_reason,
+		}
+	}
+}
+
+impl From<aidash_domain::federation::execution::admission::MessageReceipt>
+	for RemoteExecutionMessageReceipt
+{
+	fn from(row: aidash_domain::federation::execution::admission::MessageReceipt) -> Self {
+		Self {
+			id: row.id,
+			run_id: row.run_id,
+			accepted: row.accepted,
+		}
+	}
+}
+
+impl From<RemoteExecutionMessageInput>
+	for aidash_domain::federation::execution::admission::Message
+{
+	fn from(row: RemoteExecutionMessageInput) -> Self {
+		Self {
+			id: row.id,
+			content: row.content,
+		}
+	}
+}
+impl From<aidash_domain::federation::execution::home::Status> for RemoteExecutionStatus {
+	fn from(row: aidash_domain::federation::execution::home::Status) -> Self {
+		Self {
+			grant: row.grant,
+			execution: row.execution.map(Into::into),
+			unavailable: row.unavailable,
+			semantic: row.semantic,
+		}
+	}
+}

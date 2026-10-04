@@ -11,6 +11,7 @@ use super::{
 	peer::execution::Inspection,
 	policy::SubjectKind,
 };
+use crate::apps::identity::repositories::remote_grants::Grant;
 use crate::{
 	Error, Result,
 	domain::{Task, qualified_agent},
@@ -31,49 +32,6 @@ use reinhardt::query::QueryStatementBuilder as _;
 use serde_json::{Value, json};
 
 use uuid::Uuid;
-
-#[derive(Clone, sqlx::FromRow)]
-struct Grant {
-	id: Uuid,
-	task_id: Uuid,
-	task_revision: i64,
-	workspace_id: Uuid,
-	node_id: String,
-	tenant: String,
-	credential_id: Uuid,
-	root_subject: String,
-	subject_chain: Vec<String>,
-	inspection: Value,
-	expires_at: DateTime<Utc>,
-	revoked: bool,
-	semantic: Value,
-}
-
-impl Grant {
-	fn identity(&self) -> SubjectIdentity {
-		SubjectIdentity {
-			http_session: None,
-			credential_id: self.credential_id,
-			tenant: self.tenant.clone(),
-			subject: self.root_subject.clone(),
-		}
-	}
-	fn prepared(&self) -> Result<Prepared> {
-		let inspection: Inspection = serde_json::from_value(self.inspection.clone())?;
-		Ok(Prepared {
-			id: self.id,
-			task_id: self.task_id,
-			node_id: self.node_id.clone(),
-			agent: EntityRef {
-				id: inspection.agent.id,
-				version: inspection.agent.version,
-			},
-			expires_at: self.expires_at,
-			revoked: self.revoked,
-			semantic: serde_json::from_value(self.semantic.clone())?,
-		})
-	}
-}
 
 // A receiver may describe only the requested Agent's exact direct dependencies.
 // Never use peer-provided node IDs or arbitrary resource lists as authority.

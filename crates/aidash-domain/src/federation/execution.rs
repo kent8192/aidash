@@ -96,3 +96,5 @@ impl Inspection {
 mod tests;
 
 pub mod admission;
+
+pub mod home;
