@@ -1,0 +1,28 @@
+meta {
+  name: Logged out cookies cannot authenticate
+  type: http
+  seq: 33
+}
+
+get {
+  url: {{base_url}}/auth/session
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Cookie: {{session_cookie}}
+}
+
+tests {
+  test("HTTP 401", function () {
+    expect(res.getStatus()).to.equal(401);
+  });
+  test("JSON response contract", function () {
+    expect(res.getHeader("content-type")).to.include("application/json");
+    expect(res.getBody()).to.have.all.keys("error");
+    expect(res.getBody().error).to.be.a("string");
+
+  });
+}

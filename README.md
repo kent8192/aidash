@@ -250,6 +250,8 @@ CI runs Trunk, Rust unit/integration tests, the PostgreSQL/NATS/Chromium accepta
 
 Run `scripts/test-rust.sh --coverage` to produce `coverage/rust.lcov` locally (requires `cargo-llvm-cov` 0.8.7 and `llvm-tools-preview`). `scripts/check.sh` runs the full local suite. Cargo and npm lockfiles remain tracked for reproducible dependency resolution.
 
+Run `npm exec --yes --package=@usebruno/cli@3.1.3 -- scripts/test-bruno-api.sh` with the test PostgreSQL and NATS services running to verify the real HTTP API. The [Bruno collection](server/tests/bruno/README.md) covers scoped authorization, atomic update conflicts, browser login, cookies, CSRF and logout against a disposable database and the compiled server. Sanitized reports include the source revision and executable hash.
+
 Package installation overlays the supplied node-local configuration onto the entity configuration, validates it, and publishes the effective immutable Registry version atomically with the installation record. Changing an installed configuration requires a new version.
 
 Third-party attribution for the adapted context compaction code is in [LICENSE](LICENSE).

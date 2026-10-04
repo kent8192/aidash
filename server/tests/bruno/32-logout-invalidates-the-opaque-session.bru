@@ -1,0 +1,24 @@
+meta {
+  name: Logout invalidates the opaque session
+  type: http
+  seq: 32
+}
+
+post {
+  url: {{base_url}}/auth/logout
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Cookie: {{session_cookie}}
+  Origin: {{base_url}}
+  X-Aidash-CSRF: {{csrf}}
+}
+
+tests {
+  test("HTTP 204", function () {
+    expect(res.getStatus()).to.equal(204);
+  });
+}

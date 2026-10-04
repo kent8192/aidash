@@ -1,0 +1,35 @@
+meta {
+  name: Approve the browser mapping as operator
+  type: http
+  seq: 25
+}
+
+post {
+  url: {{base_url}}/api/dashboard/registrations/{{registration_id}}/approve
+  body: json
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Content-Type: application/json
+  Authorization: Bearer {{operator_token}}
+}
+
+body:json {
+  {
+    "tenant": "{{tenant}}",
+    "subject": "alice"
+  }
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("JSON response contract", function () {
+    expect(res.getHeader("content-type")).to.include("application/json");
+    expect(res.getBody().tenant).to.equal(bru.getEnvVar("tenant"));
+    expect(res.getBody().subject).to.equal("alice");
+  });
+}

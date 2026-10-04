@@ -1,0 +1,32 @@
+meta {
+  name: Create the browser registration
+  type: http
+  seq: 24
+}
+
+post {
+  url: {{base_url}}/auth/registration
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Cookie: {{session_cookie}}
+  Origin: {{base_url}}
+  X-Aidash-CSRF: {{csrf}}
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("JSON response contract", function () {
+    expect(res.getHeader("content-type")).to.include("application/json");
+    expect(res.getBody().status).to.equal("pending");
+  });
+
+  if (res.getStatus() === 200) {
+    bru.setVar("registration_id",res.getBody().id);
+  }
+}

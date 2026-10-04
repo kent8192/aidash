@@ -1,0 +1,27 @@
+meta {
+  name: Cookie reads use the approved authority
+  type: http
+  seq: 30
+}
+
+get {
+  url: {{base_url}}/api/workspaces/{{browser_workspace_id}}
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Cookie: {{session_cookie}}
+  X-Aidash-Context: {{browser_context}}
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("JSON response contract", function () {
+    expect(res.getHeader("content-type")).to.include("application/json");
+    expect(res.getBody().workspace.id).to.equal(bru.getVar("browser_workspace_id"));
+  });
+}

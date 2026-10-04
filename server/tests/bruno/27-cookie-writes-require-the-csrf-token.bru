@@ -1,0 +1,38 @@
+meta {
+  name: Cookie writes require the CSRF token
+  type: http
+  seq: 27
+}
+
+post {
+  url: {{base_url}}/api/workspaces
+  body: json
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Content-Type: application/json
+  Cookie: {{session_cookie}}
+  X-Aidash-Context: {{browser_context}}
+  Origin: {{base_url}}
+}
+
+body:json {
+  {
+    "title": "Missing CSRF",
+    "goal": "Must not persist"
+  }
+}
+
+tests {
+  test("HTTP 403", function () {
+    expect(res.getStatus()).to.equal(403);
+  });
+  test("JSON response contract", function () {
+    expect(res.getHeader("content-type")).to.include("application/json");
+    expect(res.getBody()).to.have.all.keys("error");
+    expect(res.getBody().error).to.be.a("string");
+
+  });
+}

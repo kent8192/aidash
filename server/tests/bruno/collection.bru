@@ -1,0 +1,8 @@
+meta {
+  name: Aidash real API contracts
+}
+
+script:pre-request {
+  req.setMaxRedirects(0);
+  req.setTimeout(30000);
+}

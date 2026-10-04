@@ -1,0 +1,28 @@
+meta {
+  name: Authorize against the local OIDC fixture
+  type: http
+  seq: 21
+}
+
+get {
+  url: {{authorization_url}}
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+}
+
+tests {
+  test("HTTP 307", function () {
+    expect(res.getStatus()).to.equal(307);
+  });
+  test("Callback stays on the configured origin", function () {
+    expect(res.getHeader("location").startsWith(bru.getEnvVar("base_url")+"/auth/callback?")).to.equal(true);
+  });
+
+  if (res.getStatus() === 307) {
+    bru.setVar("callback_url",res.getHeader("location"));
+  }
+}

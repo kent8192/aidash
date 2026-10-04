@@ -1,0 +1,25 @@
+meta {
+  name: OIDC configuration remains public
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{base_url}}/auth/config
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("JSON response contract", function () {
+    expect(res.getHeader("content-type")).to.include("application/json");
+    expect(res.getBody()).to.eql({enabled:true,provider:"keycloak",login_url:"/auth/login"});
+  });
+}
