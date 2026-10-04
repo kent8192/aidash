@@ -345,8 +345,17 @@ test("creates task dependencies and a parent through the dashboard", async ({
   await dialog.getByRole("button", { name: "作成", exact: true }).click();
   const created = await response;
   expect(created.status()).toBe(200);
-  expect(await created.json()).toMatchObject({
-    parent_id: tasks[0].id,
-    dependencies: [tasks[1].id],
+  await expect(dialog).not.toBeVisible();
+  // Verify persisted relationships without Chromium's page-response body cache.
+  const snapshot = await page.request.get(`/api/workspaces/${workspace.id}`, {
+    headers,
   });
+  expect(snapshot.status()).toBe(200);
+  expect((await snapshot.json()).tasks).toContainEqual(
+    expect.objectContaining({
+      title: "Child with prerequisite",
+      parent_id: tasks[0].id,
+      dependencies: [tasks[1].id],
+    }),
+  );
 });
