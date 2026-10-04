@@ -50,7 +50,8 @@ reinhardt = { workspace = true, features = [
   "api",
   "commands-contract",
 ] }
-# Enable UUID path extraction through the facade (not forwarded by its uuid feature).
+# Enable UUID path extraction until the facade forwards reinhardt-di/uuid.
+# Remove this direct dependency after reinhardt-web#6495 is fixed and verified.
 reinhardt-di = { git = "https://github.com/kent8192/reinhardt-web", rev = "ab21faf668cec073798fa2c3a09f6d6bf70687d8", default-features = false, features = [
   "uuid",
 ] }
