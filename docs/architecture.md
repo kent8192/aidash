@@ -70,6 +70,14 @@ finite single-message pulls, recovery cadence and drain. Integrations owns JetSt
 stream/consumer validation, credential decoding and transport acknowledgements;
 bootstrap supplies the same ports to server and listener-free worker modes.
 
+Worker admission and terminal delivery use application scopes that retain fresh
+authority through their effects. Runtime owns lease heartbeats, transient renewal
+backoff, cancellation observations and terminal-outbox polling. A lost lease
+cancels the current operation without recovery or settlement; a completed step
+resumes ordinary visibility before recovery reads its committed state. Native
+adapters project only the committed run identifier or control for observations
+and preserve the existing failure-delivery transaction and lease fence.
+
 Scoped commands authorize effects, track disclosed outputs, journal mutation
 results, and recheck the source lease through the application use case. A claim
 binds the complete inspected agent definition. Operation reconciliation owns one

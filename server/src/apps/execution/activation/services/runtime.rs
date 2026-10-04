@@ -7,10 +7,7 @@ pub struct Runtime {
 	driver: Arc<aidash_runtime::activation::Runtime>,
 }
 impl Runtime {
-	pub fn new(mut federation: Federation, settings: Settings, worker: bool) -> Arc<Self> {
-		if let Ok(url) = std::env::var("AIDASH_ACTIVATION_NATS_URL") {
-			federation.config.nats_url = url;
-		}
+	pub fn new(federation: Federation, settings: Settings, worker: bool) -> Arc<Self> {
 		Arc::new(Self {
 			driver: crate::bootstrap::activation_driver(federation, settings, worker),
 		})

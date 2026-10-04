@@ -11,7 +11,14 @@ pub struct RecoveryRepository {
 impl ExecutionRecoveryStore for RecoveryRepository {
 	async fn leased_run(&self, token: Uuid) -> Result<Option<Run>> {
 		// Losing the lease while a step fails belongs to its new owner.
-		let id = match super::services::runtime::run_id(&self.store, token).await {
+		let id = match aidash_application::ports::execution::worker::WorkerLeases::current_id(
+			&worker::Leases {
+				store: self.store.clone(),
+			},
+			token,
+		)
+		.await
+		{
 			Ok(id) => id,
 			Err(_) => return Ok(None),
 		};
@@ -87,3 +94,5 @@ pub(crate) mod transfer_receiver;
 pub mod capability_objects;
 pub(crate) mod capability_projection;
 pub(crate) mod core_records;
+
+pub(crate) mod worker;

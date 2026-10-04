@@ -1836,10 +1836,13 @@ pub(crate) fn activation_broker_configuration(
 
 /// Server and listener-free worker modes use identical persistence and transport ports.
 pub(crate) fn activation_driver(
-	federation: Federation,
+	mut federation: Federation,
 	settings: crate::activation::Settings,
 	worker: bool,
 ) -> Arc<aidash_runtime::activation::Runtime> {
+	if let Ok(url) = std::env::var("AIDASH_ACTIVATION_NATS_URL") {
+		federation.config.nats_url = url;
+	}
 	let connector = aidash_integrations::activation::Connector::new(
 		federation.config.nats_url.clone(),
 		federation.config.node_id.clone(),
@@ -1857,4 +1860,34 @@ pub(crate) fn activation_driver(
 		},
 		worker,
 	)
+}
+
+/// Native worker ports share the same store as HTTP without starting a listener.
+pub(crate) fn worker_leases(store: &Store) -> crate::apps::execution::repositories::worker::Leases {
+	crate::apps::execution::repositories::worker::Leases {
+		store: store.clone(),
+	}
+}
+
+pub(crate) fn terminal_repository(
+	federation: &Federation,
+) -> crate::apps::execution::repositories::worker::Terminal {
+	crate::apps::execution::repositories::worker::Terminal {
+		federation: federation.clone(),
+	}
+}
+
+pub(crate) fn worker_step(
+	federation: &Federation,
+	run: aidash_domain::Run,
+	visibility: crate::transactions::gate::ReadLease,
+) -> Box<dyn aidash_application::ports::execution::worker::WorkerStep> {
+	Box::new(crate::apps::execution::repositories::worker::Step {
+		guard: None,
+		run,
+		federation: federation.clone(),
+		recovery: recovery_store(&federation.store),
+		_active: crate::http::ActiveExecution::begin(),
+		visibility,
+	})
 }

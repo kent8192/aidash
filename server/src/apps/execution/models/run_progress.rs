@@ -3,7 +3,7 @@ use super::{Run, RunInput};
 use crate::{Error, Result};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::backends::TransactionExecutor;
-use reinhardt::db::orm::{Model, execution::convert_values};
+use reinhardt::db::orm::{Model, OrmExecutor, execution::convert_values};
 use reinhardt::query::{
 	Alias, Condition, Expr, ExprTrait, IntoIden, LockType, PostgresQueryBuilder, Query,
 	QueryStatementBuilder, SimpleExpr,
@@ -44,6 +44,40 @@ impl RunInput {
 }
 
 impl Run {
+	/// Heartbeats identify the committed owner without copying the execution context.
+	pub(crate) async fn leased_id<E: OrmExecutor>(
+		db: &mut E,
+		worker: Uuid,
+	) -> Result<Option<Uuid>> {
+		let (sql, values) = Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new(Self::table_name()))
+			.and_where(Expr::col("lease_owner").eq(Expr::value(worker)))
+			.build(PostgresQueryBuilder);
+		db.fetch_optional(&sql, convert_values(values))
+			.await?
+			.map(|row| {
+				row.get("id")
+					.map_err(|error| Error::from(FrameworkError::from(error)))
+			})
+			.transpose()
+	}
+
+	/// Read committed control outside the worker's retained authority transaction.
+	pub(crate) async fn committed_control<E: OrmExecutor>(
+		db: &mut E,
+		id: Uuid,
+	) -> Result<aidash_domain::RunControl> {
+		let (sql, values) = Query::select()
+			.column(Alias::new("control"))
+			.from(Alias::new(Self::table_name()))
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.build(PostgresQueryBuilder);
+		let row = db.fetch_one(&sql, convert_values(values)).await?;
+		let control: String = row.get("control").map_err(FrameworkError::from)?;
+		Ok(serde_json::from_value(serde_json::Value::String(control))?)
+	}
+
 	pub(crate) async fn hold_worker(
 		tx: &mut dyn TransactionExecutor,
 		id: Uuid,
