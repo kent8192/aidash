@@ -1485,3 +1485,9 @@ pub(crate) fn semantic_status_repository(
 ) -> crate::apps::knowledge::repositories::remote_status::Repository<'_> {
 	crate::apps::knowledge::repositories::remote_status::Repository { store }
 }
+
+pub(crate) fn peer_mapping_repository(
+	runtime: &crate::federation::Federation,
+) -> crate::apps::identity::repositories::peer_mappings::Repository<'_> {
+	crate::apps::identity::repositories::peer_mappings::Repository { runtime }
+}

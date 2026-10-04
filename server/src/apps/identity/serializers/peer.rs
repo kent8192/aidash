@@ -22,16 +22,7 @@ pub struct PeerMapping {
 	pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct PeerMappingInput {
-	pub source_node: String,
-	pub source_tenant: String,
-	pub source_subject: String,
-	pub credential_id: Uuid,
-	pub enabled: bool,
-	pub expected_revision: i64,
-}
+pub use aidash_domain::identity::peer_mapping::PeerMappingInput;
 
 #[derive(Deserialize, JsonSchema, Validate)]
 #[serde(deny_unknown_fields)]
@@ -115,3 +106,34 @@ impl From<AuthorizationPeerMappingHistory> for MappingRevision {
 }
 
 use uuid::Uuid;
+
+impl From<PeerMapping> for aidash_domain::identity::peer_mapping::Mapping {
+	fn from(row: PeerMapping) -> Self {
+		Self {
+			source_node: row.source_node,
+			source_tenant: row.source_tenant,
+			source_subject: row.source_subject,
+			tenant: row.tenant,
+			credential_id: row.credential_id,
+			enabled: row.enabled,
+			revision: row.revision,
+			actor: row.actor,
+			updated_at: row.updated_at,
+		}
+	}
+}
+impl From<aidash_domain::identity::peer_mapping::Mapping> for PeerMapping {
+	fn from(row: aidash_domain::identity::peer_mapping::Mapping) -> Self {
+		Self {
+			source_node: row.source_node,
+			source_tenant: row.source_tenant,
+			source_subject: row.source_subject,
+			tenant: row.tenant,
+			credential_id: row.credential_id,
+			enabled: row.enabled,
+			revision: row.revision,
+			actor: row.actor,
+			updated_at: row.updated_at,
+		}
+	}
+}

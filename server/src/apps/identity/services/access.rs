@@ -82,6 +82,11 @@ pub(crate) struct Access {
 }
 
 impl Access {
+	/// Native ports may update transport facts only after completing current authority checks.
+	pub(crate) fn environment_mut(&mut self) -> &mut Value {
+		&mut self.environment
+	}
+
 	/// Read membership uses a durable commit separate from the live authority lease.
 	pub(crate) fn journal_pool(&self) -> &PgPool {
 		&self.pool

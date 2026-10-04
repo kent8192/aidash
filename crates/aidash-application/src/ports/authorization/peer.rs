@@ -107,3 +107,5 @@ pub trait PeerAdmissionRepository: PeerAdmissionRecords {
 	async fn deliver(&self, run: &Run) -> Result<()>;
 	fn notify(&self);
 }
+
+pub mod mappings;
