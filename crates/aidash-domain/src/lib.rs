@@ -48,3 +48,5 @@ pub mod generation;
 pub mod invocation;
 
 pub mod transactions;
+
+pub mod activation;
