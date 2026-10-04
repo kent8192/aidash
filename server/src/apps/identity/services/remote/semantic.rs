@@ -10,7 +10,6 @@ use crate::{
 	semantic::remote::{Binding, Failure, Request},
 };
 
-use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
 use serde_json::{json, to_value};
 use uuid::Uuid;
 
@@ -300,82 +299,12 @@ fn fit_receipt(receipt: &mut Receipt, budget: usize) -> Result<()> {
 
 impl Access {
 	pub(crate) async fn remote_semantic_sources(&mut self, grant: Uuid) -> Result<()> {
-		let key = (
-			self.node_id.clone(),
+		aidash_application::authorization::source::provenance::verify(
+			&mut crate::bootstrap::source_semantic_provenance_scope(self),
 			grant,
-			format!("semantic:{}", self.authority_context()),
-		);
-		let Some(_visit) = self.checking_reads.enter(key) else {
-			return Ok(());
-		};
-		self.remote_semantic_sources_in(grant).await
-	}
-	async fn remote_semantic_sources_in(&mut self, grant: Uuid) -> Result<()> {
-		let sources: Vec<(Uuid, i64, String)> = {
-			let query_bind_1 = grant;
-			sqlx::query_as(
-				&Query::select()
-					.columns(["entry_id", "revision", "content_digest"].map(Alias::new))
-					.from(Alias::new("semantic_remote_reads"))
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("grant_id"))).eq(
-							SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							),
-						),
-					)
-					.order_by(Alias::new("entry_id"), reinhardt::query::Order::Asc)
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_all(&mut **self.tx)
-			.await?
-		};
-		let mut lease = crate::semantic::service::Lease::Inherited(self);
-		for (id, revision, digest) in sources {
-			let entry: crate::semantic::Entry = {
-				let query_bind_1 = id;
-				sqlx::query_as(
-					&Query::select()
-						.column(Asterisk)
-						.from(Alias::new("semantic_entries"))
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-								SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								),
-							),
-						)
-						.lock(LockType::Share)
-						.to_string(PostgresQueryBuilder),
-				)
-				.fetch_optional(&mut **lease.tx())
-				.await?
-			}
-			.ok_or(Error::RemoteSemantic(Failure::Invalidated))?;
-			if entry.deleted || entry.revision != revision {
-				return Err(Error::RemoteSemantic(Failure::Invalidated));
-			}
-			if !lease.permits(&entry, "semantic.read").await? {
-				return Err(Error::Forbidden);
-			}
-			let text = lease
-				.source(entry.workspace_id, &serde_json::from_value(entry.source)?)
-				.await?
-				.ok_or(Error::Forbidden)?;
-			if crate::semantic::service::content_digest(&text) != digest {
-				return Err(Error::RemoteSemantic(Failure::Invalidated));
-			}
-		}
-		Ok(())
+		)
+		.await
+		.map_err(Into::into)
 	}
 }
-
-use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
-
 use http::HeaderMap;
-
-use reinhardt::query::ColumnRef::Asterisk;
-
-use reinhardt::query::SimpleExpr;

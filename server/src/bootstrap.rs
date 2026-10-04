@@ -1563,3 +1563,10 @@ pub(crate) fn source_read_scope(
 		owned_frontier: false,
 	}
 }
+
+/// Verify disclosed sources within the caller's current native authority transaction.
+pub(crate) fn source_semantic_provenance_scope(
+	access: &mut crate::authorization::access::Access,
+) -> crate::apps::identity::repositories::remote_grants::provenance::Scope<'_> {
+	crate::apps::identity::repositories::remote_grants::provenance::Scope { access }
+}
