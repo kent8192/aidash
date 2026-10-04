@@ -1664,3 +1664,12 @@ pub(crate) fn workbench_sandbox_repository(
 		actor,
 	}
 }
+
+/// Sandbox credentials resolve the same live configured references as model and Tool adapters.
+pub(crate) fn workbench_sandbox_credentials() -> Arc<dyn aidash_application::ports::Credentials> {
+	Arc::new(EnvironmentCredentials)
+}
+/// Isolated test HTTP requests retain their original timeout, redirect and response limits.
+pub(crate) fn workbench_sandbox_real_tools() -> aidash_integrations::sandbox::RealTools {
+	aidash_integrations::sandbox::RealTools::new(workbench_sandbox_credentials())
+}

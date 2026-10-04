@@ -140,3 +140,13 @@ pub fn continued_conversation(
 }
 #[cfg(test)]
 mod tests;
+
+/// A real-tool session pins configuration and credential fingerprints, not secret values.
+#[derive(Clone)]
+pub struct ProfilePin {
+	pub id: String,
+	pub revision: i64,
+	pub tenant: String,
+	pub rules: Vec<super::profile::RealToolRule>,
+	pub credential_fingerprints: BTreeMap<String, Vec<u8>>,
+}
