@@ -87,3 +87,5 @@ pub mod memory;
 pub mod visibility;
 
 pub mod run_context;
+
+pub mod remote_journal;

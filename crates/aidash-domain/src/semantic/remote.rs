@@ -246,3 +246,5 @@ pub use super::InputRead;
 
 #[cfg(test)]
 mod operation_tests;
+
+pub mod journal;

@@ -214,3 +214,5 @@ pub mod embedding;
 pub mod memory;
 
 pub mod visibility;
+
+pub mod remote_journal;

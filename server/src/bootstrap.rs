@@ -1433,3 +1433,20 @@ pub(crate) fn transfer_scope<'a>(
 		pending: None,
 	}
 }
+
+pub(crate) fn semantic_journal_repository(
+	store: &Store,
+) -> crate::apps::knowledge::repositories::remote_journal::Repository<'_> {
+	crate::apps::knowledge::repositories::remote_journal::Repository { store }
+}
+pub(crate) fn semantic_journal_scope<'a, 'tx>(
+	store: &'a Store,
+	tx: &'a mut sqlx::Transaction<'tx, sqlx::Postgres>,
+) -> crate::apps::knowledge::repositories::remote_journal::Scope<'a, 'tx> {
+	crate::apps::knowledge::repositories::remote_journal::Scope {
+		store,
+		transaction: crate::apps::knowledge::repositories::remote_journal::Transaction::Borrowed(
+			tx,
+		),
+	}
+}

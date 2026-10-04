@@ -13,3 +13,5 @@ pub(crate) mod memory;
 pub(crate) mod disclosure;
 
 pub(crate) mod run_context;
+
+pub(crate) mod remote_journal;
