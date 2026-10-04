@@ -92,16 +92,7 @@ pub fn peer_secret(name: &str) -> Result<String> {
 	Ok(value)
 }
 pub fn validate_peer_credential(value: &str) -> Result<()> {
-	if value.len() < 32
-		|| !value.bytes().all(|b| b.is_ascii_graphic())
-		|| value
-			.bytes()
-			.collect::<std::collections::HashSet<_>>()
-			.len() < 8
-	{
-		return Err(Error::Invalid("peer credentials require at least 32 ASCII characters and 8 distinct characters; use a randomly generated token".into()));
-	}
-	Ok(())
+	aidash_domain::configuration::validate_peer_credential(value).map_err(Into::into)
 }
 
 pub(crate) use aidash_domain::configuration::same_secret;

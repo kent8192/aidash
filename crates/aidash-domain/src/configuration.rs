@@ -52,3 +52,16 @@ pub fn same_secret(a: &str, b: &str) -> bool {
 	let b = Sha256::digest(b.as_bytes());
 	a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
+
+pub fn validate_peer_credential(value: &str) -> Result<()> {
+	if value.len() < 32
+		|| !value.bytes().all(|b| b.is_ascii_graphic())
+		|| value
+			.bytes()
+			.collect::<std::collections::HashSet<_>>()
+			.len() < 8
+	{
+		return Err(Error::Invalid("peer credentials require at least 32 ASCII characters and 8 distinct characters; use a randomly generated token".into()));
+	}
+	Ok(())
+}
