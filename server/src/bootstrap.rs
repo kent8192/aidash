@@ -1210,6 +1210,22 @@ pub(crate) fn transaction_authority_repository(
 	}
 }
 
+pub(crate) fn transaction_admission_repository(
+	runtime: &Federation,
+) -> crate::apps::federation::transactions::repositories::admission::Repository {
+	crate::apps::federation::transactions::repositories::admission::Repository {
+		runtime: runtime.clone(),
+	}
+}
+
+/// Borrow the caller's physical transaction without reacquiring authority locks.
+pub(crate) fn transaction_admission_scope<'a>(
+	runtime: &'a Federation,
+	tx: &'a mut dyn reinhardt::db::backends::TransactionExecutor,
+) -> crate::apps::federation::transactions::repositories::admission::Scope<'a> {
+	crate::apps::federation::transactions::repositories::admission::Scope { runtime, tx }
+}
+
 /// CLI, HTTP and recovery share the same storage, authority and participant adapters.
 pub(crate) fn transaction_coordinator(
 	runtime: &Federation,

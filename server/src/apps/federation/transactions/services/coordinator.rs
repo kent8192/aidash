@@ -5,12 +5,8 @@ use crate::apps::federation::transactions::models::{
 pub(crate) use crate::apps::federation::transactions::repositories::coordination::connection as coordinator_connection;
 use crate::apps::federation::transactions::services::decisions::CoordinatorTransition;
 use crate::{Error, Result, federation::Federation};
-use chrono::Utc;
-use reinhardt::db::backends::{DatabaseConnection as BackendConnection, dialect::PostgresBackend};
 use reqwest::Method;
 use serde::{Serialize, de::DeserializeOwned};
-use serde_json::json;
-use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -36,14 +32,16 @@ pub(super) async fn submit_bound(
 	manifest: &Manifest,
 	origin: Option<&super::authority::Origin>,
 ) -> Result<Status> {
-	let db = BackendConnection::new(Arc::new(PostgresBackend::new(f.store.control_pool.clone())));
-	let mut tx = db.begin().await?;
-	let stored = submit_in(f, manifest, origin, tx.as_mut()).await?;
-	super::fault::cut(manifest.id, "coordinator.submit.before").await?;
-	tx.commit().await?;
-	super::fault::cut(manifest.id, "coordinator.submit.after").await?;
-	f.notify.notify_waiters();
-	Ok(stored)
+	let origin = origin.map(Into::into);
+	aidash_application::transactions::admission::submit(
+		&crate::bootstrap::transaction_admission_repository(f),
+		&crate::bootstrap::registry_validation(),
+		manifest,
+		origin.as_ref(),
+	)
+	.await
+	.map(Into::into)
+	.map_err(Into::into)
 }
 pub(crate) async fn submit_in(
 	f: &Federation,
@@ -51,51 +49,16 @@ pub(crate) async fn submit_in(
 	origin: Option<&super::authority::Origin>,
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 ) -> Result<Status> {
-	super::validate(manifest)?;
-	if manifest.coordinator != f.config.node_id {
-		return Err(Error::Invalid("submit to the named coordinator".into()));
-	}
-	match coordinator_records::status_in(tx, manifest.id).await {
-		Ok(existing) => {
-			super::authority::match_origin_native(tx, manifest.id, origin).await?;
-			if existing.digest != manifest.digest()? || existing.manifest != json!(manifest) {
-				return Err(Error::Conflict(
-					"transaction ID already has another immutable manifest".into(),
-				));
-			}
-			return Ok(existing);
-		}
-		Err(Error::NotFound(_)) => {}
-		Err(error) => return Err(error),
-	}
-	let remaining = manifest
-		.deadline
-		.signed_duration_since(Utc::now())
-		.num_seconds();
-	if !(1..=3600).contains(&remaining) {
-		return Err(Error::Invalid(
-			"new transaction deadline must be within the next hour".into(),
-		));
-	}
-	for node in &manifest.participants {
-		if node.node_id != f.config.node_id {
-			f.peer(&node.node_id).await?;
-			if !crate::apps::federation::transactions::models::AtomicPeerTrust::permits(
-				tx,
-				&node.node_id,
-			)
-			.await?
-			{
-				return Err(Error::Forbidden);
-			}
-		}
-	}
-	let stored = coordinator_records::admit_in(tx, manifest).await?;
-	if let Some(origin) = origin {
-		super::authority::bind_native(tx, "atomic_subjects", manifest.id, &json!(origin)).await?;
-	}
-	super::authority::match_origin_native(tx, manifest.id, origin).await?;
-	Ok(stored)
+	let origin = origin.map(Into::into);
+	aidash_application::transactions::admission::submit_in(
+		&mut crate::bootstrap::transaction_admission_scope(f, tx),
+		&crate::bootstrap::registry_validation(),
+		manifest,
+		origin.as_ref(),
+	)
+	.await
+	.map(Into::into)
+	.map_err(Into::into)
 }
 
 pub(crate) async fn remote<T: DeserializeOwned>(

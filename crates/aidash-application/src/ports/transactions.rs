@@ -30,5 +30,6 @@ pub trait TransactionAuthorityScope: Send {
 	async fn artifact_creation_resource(&mut self, task: Uuid, owner: &str) -> Result<Resource>;
 }
 
+pub mod admission;
 pub mod authority;
 pub mod coordination;

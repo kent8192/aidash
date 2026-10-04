@@ -148,6 +148,5 @@ pub(in crate::apps::federation::transactions) async fn read_access(
 use crate::apps::federation::transactions::repositories::authority::persistence;
 pub(crate) use crate::apps::federation::transactions::serializers::authority::{Origin, Preflight};
 pub(in crate::apps::federation::transactions) use persistence::pending_peer;
-pub(super) use persistence::{bind, bind_native, match_origin_native};
 pub(crate) use persistence::{control, pending};
 pub(in crate::apps::federation::transactions) use persistence::{scoped, settle};

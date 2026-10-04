@@ -5,5 +5,6 @@ pub fn validate(registry: &DefinitionValidation, manifest: &Manifest) -> Result<
 	manifest.validate_with(|entry| registry.validate_in(entry, false))
 }
 
+pub mod admission;
 pub mod authority;
 pub mod coordination;
