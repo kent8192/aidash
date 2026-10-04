@@ -85,6 +85,7 @@ impl DashboardIdentity {
 				.into_table(Alias::new(Self::table_name()))
 				.columns(["id", "issuer", "subject", "last_valid_at"].map(Alias::new))
 				.values_panic([
+					IntoValue::into_value(Uuid::new_v4()),
 					IntoValue::into_value(issuer),
 					IntoValue::into_value(subject),
 					IntoValue::into_value(now),
