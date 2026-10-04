@@ -2,18 +2,18 @@
 FROM rust:1.96-bookworm AS rust
 WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY migration ./migration
-COPY src ./src
+COPY crates ./crates
+COPY server ./server
 ARG CARGO_PROFILE=release
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
-    cargo build --locked --profile "$CARGO_PROFILE" --bin aidash --bin local-dev-db && \
+    cargo build --locked --profile "$CARGO_PROFILE" -p aidash-server --bin aidash --bin manage --bin local-dev-db && \
     mkdir -p /out && \
     if [ "$CARGO_PROFILE" = dev ]; then \
-      cp target/debug/aidash /out/aidash && cp target/debug/local-dev-db /out/local-dev-db; \
+      cp target/debug/aidash target/debug/manage target/debug/local-dev-db /out/; \
     else \
-      cp "target/$CARGO_PROFILE/aidash" /out/aidash && cp "target/$CARGO_PROFILE/local-dev-db" /out/local-dev-db; \
+      cp "target/$CARGO_PROFILE/aidash" "target/$CARGO_PROFILE/manage" "target/$CARGO_PROFILE/local-dev-db" /out/; \
     fi && \
     /out/aidash openapi > /out/aidash.json
 
@@ -41,9 +41,14 @@ FROM debian:bookworm-slim AS dev-backend
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=rust /out/aidash /usr/local/bin/aidash
+COPY --from=rust /out/manage /usr/local/bin/manage
 COPY --from=rust /out/local-dev-db /usr/local/bin/local-dev-db
+COPY server/migrations /app/server/migrations
+COPY server/settings/base.example.toml /app/server/settings/base.toml
+RUN sed -i '/^\[core\]$/a base_dir = "/app/server"' /app/server/settings/base.toml
+WORKDIR /app/server
 USER 10001:10001
-ENV AIDASH_LISTEN=0.0.0.0:8080
+ENV AIDASH_LISTEN=0.0.0.0:8080 REINHARDT_SETTINGS_DIR=/app/server/settings
 EXPOSE 8080
 ENTRYPOINT ["aidash"]
 CMD ["serve"]
@@ -52,9 +57,14 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=rust /out/aidash /usr/local/bin/aidash
+COPY --from=rust /out/manage /usr/local/bin/manage
+COPY server/migrations /app/server/migrations
+COPY server/settings/base.example.toml /app/server/settings/base.toml
+RUN sed -i '/^\[core\]$/a base_dir = "/app/server"' /app/server/settings/base.toml
 COPY --from=web /build/web/dist /app/web
+WORKDIR /app/server
 USER 10001:10001
-ENV AIDASH_LISTEN=0.0.0.0:8080 AIDASH_WEB_DIR=/app/web
+ENV AIDASH_LISTEN=0.0.0.0:8080 AIDASH_WEB_DIR=/app/web REINHARDT_SETTINGS_DIR=/app/server/settings
 EXPOSE 8080 8081
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["aidash"]
