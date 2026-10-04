@@ -24,6 +24,7 @@ impl RealDispatchRepository for Repository {
 					.map_err(crate::Error::from)?,
 			),
 			actor: self.actor.clone(),
+			node_id: self.runtime.config.node_id.clone(),
 		}))
 	}
 }

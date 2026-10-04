@@ -6,7 +6,7 @@ use crate::apps::registry::workbench::models::{
 };
 use crate::{
 	provider::{ModelRequest, provider},
-	registry::{EntityRef, ModelConfig},
+	registry::ModelConfig,
 };
 use aidash_domain::registry::workbench::sandbox::ProfilePin;
 use reinhardt::db::backends::{
@@ -18,20 +18,7 @@ use reinhardt::injectable;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-struct TestJob {
-	input: TestInput,
-	actor: Actor,
-	profile: Option<ProfilePin>,
-	tool_references: Vec<EntityRef>,
-	limits: TestLimits,
-	context_window: usize,
-	agent_max_steps: i32,
-	model_provider: std::sync::Arc<dyn crate::provider::ModelProvider>,
-	request: ModelRequest,
-	initial_conversation: Vec<Value>,
-	pinned_draft: Draft,
-	model_credential: Option<(String, Vec<u8>)>,
-}
+use aidash_application::registry::workbench::sandbox::execution::Job as TestJob;
 
 fn credential_fingerprint(name: &str) -> Result<Vec<u8>> {
 	aidash_application::registry::workbench::sandbox::dispatch::credential_fingerprint(
@@ -66,289 +53,14 @@ pub async fn purge_expired(pool: &sqlx::PgPool) -> Result<u64> {
 		.await
 }
 
-async fn complete(f: Federation, session_id: Uuid, job: TestJob) -> Result<()> {
-	let outcome = tokio::time::timeout(
-		std::time::Duration::from_secs(job.limits.max_duration_secs as u64),
-		simulate(&f, session_id, &job),
-	)
-	.await;
-	let (status, conversation, calls, usage, error) = match outcome {
-		Ok(Ok(result)) => result,
-		Ok(Err(error)) => {
-			let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-			let prior = load_session(&mut tx, session_id).await?;
-			Box::new(tx).commit().await?;
-			(
-				if has_unknown_call(&prior.tool_calls) {
-					"outcome_unknown"
-				} else {
-					"failed"
-				},
-				prior
-					.conversation
-					.unwrap_or_else(|| json!([{"role":"user","content":job.input.message}])),
-				prior.tool_calls.unwrap_or_else(|| json!([])),
-				prior.usage,
-				Some(error.to_string()),
-			)
-		}
-		Err(_) => {
-			let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-			let prior = load_session(&mut tx, session_id).await?;
-			Box::new(tx).commit().await?;
-			let dispatched = has_unknown_call(&prior.tool_calls);
-			(
-				if dispatched {
-					"outcome_unknown"
-				} else {
-					"timed_out"
-				},
-				prior
-					.conversation
-					.unwrap_or_else(|| json!([{"role":"user","content":job.input.message}])),
-				prior.tool_calls.unwrap_or_else(|| json!([])),
-				prior.usage,
-				Some(if dispatched {
-					"test timed out while an external call was in flight; its outcome is unknown"
-						.into()
-				} else {
-					"model request timed out; provider outcome is unknown".into()
-				}),
-			)
-		}
-	};
-	let lease = f.store.orm_connection()?;
-	lease
-		.handle()
-		.atomic(async |tx| {
-			AgentTestSession::finish(tx, session_id, status, conversation, calls, usage, error)
-				.await
-		})
-		.await?;
-	Ok(())
-}
-
-type SimulationResult = (&'static str, Value, Value, Value, Option<String>);
-
-fn has_unknown_call(calls: &Option<Value>) -> bool {
-	aidash_domain::registry::workbench::sandbox::has_unknown_call(calls)
-}
-
-async fn invoke_real(
-	f: &Federation,
-	session_id: Uuid,
-	actor: &Actor,
-	pin: &ProfilePin,
-	rule: &profile::RealToolRule,
-	call: &crate::provider::ToolCall,
-) -> Result<(Value, &'static str)> {
-	let repository = crate::bootstrap::workbench_sandbox_repository(f, actor.clone());
-	let credentials = crate::bootstrap::workbench_sandbox_credentials();
-	let configuration = crate::bootstrap::workbench_profile_configuration();
-	let transport = crate::bootstrap::workbench_sandbox_real_tools();
-	aidash_application::registry::workbench::sandbox::dispatch::invoke(
-		&aidash_application::registry::workbench::sandbox::dispatch::Dispatch {
-			repository: &repository,
-			credentials: credentials.as_ref(),
-			configuration: &configuration,
-			transport: &transport,
-		},
+async fn complete(f: Federation, session_id: Uuid, actor: Actor, job: TestJob) -> Result<()> {
+	aidash_runtime::sandbox::complete(
+		crate::bootstrap::workbench_sandbox_execution(&f, actor),
 		session_id,
-		pin,
-		rule,
-		call,
+		job,
 	)
 	.await
 	.map_err(Into::into)
-}
-
-async fn simulate(f: &Federation, session_id: Uuid, job: &TestJob) -> Result<SimulationResult> {
-	let TestJob {
-		input,
-		actor,
-		profile,
-		tool_references,
-		limits,
-		context_window,
-		agent_max_steps,
-		model_provider,
-		..
-	} = job;
-	let mut request = job.request.clone();
-	let mut conversation = job.initial_conversation.clone();
-	let mut calls = Vec::new();
-	let mut input_tokens = 0_u64;
-	let mut output_tokens = 0_u64;
-	let mut usage_complete = true;
-	let mut status = "blocked";
-	let mut error = None;
-	for _ in 0..limits.max_steps.min(*agent_max_steps) {
-		let lease = f.store.orm_connection()?;
-		let still_running = lease
-			.handle()
-			.atomic(async |tx| {
-				Ok::<_, Error>(
-					AgentTestSession::read(tx, session_id, false).await?.status == "running",
-				)
-			})
-			.await?;
-		if !still_running {
-			status = "stopped";
-			break;
-		}
-		if let Some((name, fingerprint)) = &job.model_credential
-			&& credential_fingerprint(name)? != *fingerprint
-		{
-			return Err(Error::Conflict(
-				"model credential changed during test".into(),
-			));
-		}
-		let mut authority = PgTransactionExecutor::new(f.store.pool.begin().await?);
-		if let Actor::Subject(identity) = actor {
-			identity.lock_native(&mut authority, false).await?;
-		}
-		let current_draft = AgentDraft::read(&mut authority, job.pinned_draft.id, false).await?;
-		authorize(
-			&mut authority,
-			actor,
-			&current_draft,
-			"agent_draft.test",
-			true,
-		)
-		.await?;
-		validate_content(f, &job.pinned_draft, actor, &mut authority).await?;
-		if let Some(pin) = profile {
-			let current = AgentTestProfile::locked(&mut authority, &pin.tenant, &pin.id).await?;
-			if !current.enabled
-				|| current.revision != pin.revision
-				|| current.rules != serde_json::to_value(&pin.rules)?
-			{
-				return Err(Error::Conflict(
-					"test profile changed during session".into(),
-				));
-			}
-		}
-		Box::new(authority).commit().await?;
-		if request.input_body().to_string().len() > limits.max_input_bytes as usize
-			|| request.estimated_total_tokens() > *context_window
-			|| input_tokens
-				.saturating_add(output_tokens)
-				.saturating_add(request.estimated_total_tokens() as u64)
-				> limits.max_total_tokens as u64
-		{
-			error = Some("test context exceeds configured input or model window limit".into());
-			break;
-		}
-		let response = model_provider.infer(request.clone()).await?;
-		input_tokens = input_tokens.saturating_add(response.input_tokens);
-		output_tokens = output_tokens.saturating_add(response.output_tokens);
-		usage_complete &= response.usage_complete;
-		if !response.usage_complete {
-			error =
-				Some("provider usage is incomplete; test token limits cannot be verified".into());
-			break;
-		}
-		if output_tokens > limits.max_output_tokens as u64 {
-			error = Some("test output token limit exceeded by model response".into());
-			break;
-		}
-		if input_tokens.saturating_add(output_tokens) > limits.max_total_tokens as u64 {
-			error = Some("test total token limit exceeded by model response".into());
-			break;
-		}
-		conversation.push(
-			json!({"role":"assistant","content":response.text,"tool_calls":response.tool_calls}),
-		);
-		if response.tool_calls.is_empty() {
-			status = "completed";
-			break;
-		}
-		let mut missing = false;
-		for call in response.tool_calls {
-			if calls.len() >= limits.max_steps as usize {
-				error = Some("test step limit reached".into());
-				missing = true;
-				break;
-			}
-			let real_rule = profile.as_ref().and_then(|pin| {
-				call.name
-					.strip_prefix("plugin_")
-					.and_then(|index| index.parse::<usize>().ok())
-					.and_then(|index| {
-						request
-							.tools
-							.iter()
-							.find(|tool| tool.name == call.name)
-							.map(|_| index)
-					})
-					.and_then(|index| tool_references.get(index))
-					.and_then(|selected| pin.rules.iter().find(|rule| selected == &rule.tool))
-			});
-			let fixture = input.fixtures.get(&call.name);
-			let result = if let Some(rule) = real_rule {
-				match invoke_real(
-					f,
-					session_id,
-					actor,
-					profile.as_ref().expect("real rule requires profile"),
-					rule,
-					&call,
-				)
-				.await
-				{
-					Ok((output, outcome)) => {
-						json!({"id":call.id,"name":call.name,"arguments":call.arguments,"result":output,"outcome":outcome})
-					}
-					Err(reason) => {
-						missing = true;
-						let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-						let pending = load_session(&mut tx, session_id).await?.tool_calls;
-						Box::new(tx).commit().await?;
-						let dispatched = has_unknown_call(&pending);
-						status = if dispatched {
-							"outcome_unknown"
-						} else {
-							"blocked"
-						};
-						error = Some(reason.to_string());
-						json!({"id":call.id,"name":call.name,"arguments":call.arguments,"outcome":if dispatched { "outcome_unknown" } else { "denied" },"error":reason.to_string()})
-					}
-				}
-			} else {
-				if fixture.is_none() {
-					missing = true;
-				}
-				json!({"id":call.id,"name":call.name,"arguments":call.arguments,"fixture":fixture,"outcome":if fixture.is_none() { "missing_fixture" } else { "simulated" }})
-			};
-			conversation.push(json!({"role":"tool","content":result}));
-			calls.push(result);
-			let lease = f.store.orm_connection()?;
-			lease.handle().atomic(async |tx| AgentTestSession::progress(tx, session_id, json!(conversation), json!(calls), json!({"input_tokens":input_tokens,"output_tokens":output_tokens,"usage_complete":usage_complete})).await).await?;
-		}
-		if missing {
-			if error.is_none() {
-				error = Some("a tool call has no explicit simulated fixture".into());
-			}
-			break;
-		}
-		if output_tokens >= limits.max_output_tokens as u64 {
-			error = Some("test output token limit reached".into());
-			break;
-		}
-		request.max_output_tokens =
-			(limits.max_output_tokens as u64 - output_tokens).min(u32::MAX as u64) as u32;
-		request.context["conversation"] = json!(conversation);
-	}
-	if status == "blocked" && error.is_none() {
-		error = Some("test step limit reached".into());
-	}
-	Ok((
-		status,
-		json!(conversation),
-		json!(calls),
-		json!({"input_tokens":input_tokens,"output_tokens":output_tokens,"usage_complete":usage_complete}),
-		error,
-	))
 }
 
 pub use crate::apps::registry::workbench::serializers::test::{TestInput, TestLimits, TestSession};
@@ -573,18 +285,18 @@ impl BehavioralTests {
 			if let Err(error) = complete(
 				f,
 				session_id,
+				actor,
 				TestJob {
 					input,
-					actor,
 					profile,
 					tool_references,
-					limits,
+					limits: limits.into(),
 					context_window,
 					agent_max_steps: config.max_steps,
 					model_provider,
 					request,
 					initial_conversation: conversation,
-					pinned_draft: draft,
+					pinned_draft: draft.into(),
 					model_credential,
 				},
 			)

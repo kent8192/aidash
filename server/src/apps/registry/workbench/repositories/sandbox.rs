@@ -20,6 +20,7 @@ pub(crate) struct Repository {
 	pub(crate) actor: Actor,
 }
 struct Scope {
+	node_id: String,
 	tx: PgTransactionExecutor,
 	actor: Actor,
 }
@@ -44,6 +45,7 @@ impl SandboxRepository for Repository {
 					.map_err(crate::Error::from)?,
 			),
 			actor: self.actor.clone(),
+			node_id: self.runtime.config.node_id.clone(),
 		}))
 	}
 	async fn purge(&self) -> Result<u64> {
@@ -102,3 +104,5 @@ impl SandboxScope for Scope {
 }
 
 mod dispatch;
+
+mod execution;

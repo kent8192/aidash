@@ -150,3 +150,13 @@ pub struct ProfilePin {
 	pub rules: Vec<super::profile::RealToolRule>,
 	pub credential_fingerprints: BTreeMap<String, Vec<u8>>,
 }
+
+/// A sandbox completion preserves the exact conversation, call evidence and observed usage.
+#[derive(Debug, Clone)]
+pub struct TestOutcome {
+	pub status: String,
+	pub conversation: Value,
+	pub tool_calls: Value,
+	pub usage: Value,
+	pub error: Option<String>,
+}

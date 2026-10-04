@@ -1673,3 +1673,16 @@ pub(crate) fn workbench_sandbox_credentials() -> Arc<dyn aidash_application::por
 pub(crate) fn workbench_sandbox_real_tools() -> aidash_integrations::sandbox::RealTools {
 	aidash_integrations::sandbox::RealTools::new(workbench_sandbox_credentials())
 }
+
+/// Assemble owned adapters for a background sandbox session with the admitted actor's identity.
+pub(crate) fn workbench_sandbox_execution(
+	runtime: &Federation,
+	actor: crate::authorization::identity::Actor,
+) -> aidash_application::registry::workbench::sandbox::execution::Execution {
+	aidash_application::registry::workbench::sandbox::execution::Execution {
+		repository: Arc::new(workbench_sandbox_repository(runtime, actor)),
+		credentials: workbench_sandbox_credentials(),
+		configuration: Arc::new(workbench_profile_configuration()),
+		transport: Arc::new(workbench_sandbox_real_tools()),
+	}
+}
