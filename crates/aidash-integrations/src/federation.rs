@@ -17,6 +17,13 @@ pub struct PeerHttp {
 	pub protocol_version: String,
 	pub credentials: Arc<dyn Credentials>,
 }
+
+#[async_trait]
+impl aidash_application::ports::federation::peers::PeerIdentity for PeerHttp {
+	async fn identity(&self, peer: &Peer) -> Result<Value> {
+		PeerHttp::identity(self, peer).await
+	}
+}
 impl PeerHttp {
 	/// Outer HTTP adapters can inspect response headers before decoding their
 	/// own protocol. Credentials are resolved at every send, including rotation.
