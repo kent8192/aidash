@@ -220,5 +220,67 @@ pub async fn adopt<R: DraftRepository>(
 	Ok(draft)
 }
 
+use super::owner_only;
+use aidash_domain::registry::{
+	knowledge::digest,
+	workbench::{DraftShare, ShareInput},
+};
+pub async fn share<R: DraftRepository>(
+	repository: &R,
+	id: Uuid,
+	input: ShareInput,
+) -> Result<Draft> {
+	let actor = repository.principal();
+	let mut scope = repository.begin().await?;
+	let draft = scope.read(id, true).await?;
+	owner_only(&actor, &draft)?;
+	authorize(&mut scope, &draft, "agent_draft.share", false).await?;
+	if draft.owner == input.subject {
+		return Err(Error::Invalid("owner does not need a share".into()));
+	}
+	if input.enabled && draft.documents != json!([]) && !input.include_documents {
+		return Err(Error::Invalid(
+			"sharing this draft also shares its private documents; acknowledge include_documents"
+				.into(),
+		));
+	}
+	if input.enabled {
+		target_enabled(&mut scope, &draft.tenant, &input.subject).await?;
+	}
+	if input.enabled {
+		scope
+			.save_share(
+				id,
+				&input.subject,
+				input.can_edit,
+				&digest(&draft.documents),
+			)
+			.await?;
+	} else {
+		scope.remove_share(id, &input.subject).await?;
+	}
+	scope.append_event("agent_draft.share_changed", json!({"draft_id":id,"tenant":draft.tenant,"subject":input.subject,"enabled":input.enabled,"can_edit":input.can_edit})).await?;
+	scope.commit().await?;
+	Ok(draft)
+}
+pub async fn shares<R: DraftRepository>(repository: &R, id: Uuid) -> Result<Vec<DraftShare>> {
+	let actor = repository.principal();
+	let mut scope = repository.begin().await?;
+	let draft = scope.read(id, false).await?;
+	owner_only(&actor, &draft)?;
+	authorize(&mut scope, &draft, "agent_draft.share", false).await?;
+	let rows = scope.shares(id).await?;
+	scope.commit().await?;
+	let current_digest = digest(&draft.documents);
+	Ok(rows
+		.into_iter()
+		.map(|row| DraftShare {
+			subject: row.subject,
+			can_edit: row.can_edit,
+			documents_current: row.documents_digest == current_digest,
+		})
+		.collect())
+}
+
 #[cfg(test)]
 mod tests;

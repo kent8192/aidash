@@ -3,7 +3,10 @@ use super::authority;
 use crate::{
 	apps::registry::{
 		repositories::NativeScope,
-		workbench::{models::AgentDraft, serializers::contracts::Draft as NativeDraft},
+		workbench::{
+			models::{AgentDraft, AgentDraftShare},
+			serializers::contracts::Draft as NativeDraft,
+		},
 	},
 	authorization::identity::Actor,
 	federation::Federation,
@@ -18,7 +21,10 @@ use aidash_application::{
 use aidash_domain::{
 	identity::Principal,
 	policy::{Decision, Evaluation, PolicyBundle},
-	registry::{Entry, workbench::Draft},
+	registry::{
+		Entry,
+		workbench::{Draft, ShareRecord},
+	},
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -154,6 +160,33 @@ impl DraftScope for Scope {
 		.await
 		.map(|_| ())
 		.map_err(Into::into)
+	}
+	async fn shares(&mut self, draft: Uuid) -> Result<Vec<ShareRecord>> {
+		Ok(AgentDraftShare::page(&mut self.tx, draft)
+			.await?
+			.into_iter()
+			.map(|row| ShareRecord {
+				subject: row.subject,
+				can_edit: row.can_edit,
+				documents_digest: row.documents_digest,
+			})
+			.collect())
+	}
+	async fn save_share(
+		&mut self,
+		draft: Uuid,
+		subject: &str,
+		can_edit: bool,
+		digest: &str,
+	) -> Result<()> {
+		AgentDraftShare::save(&mut self.tx, draft, subject, can_edit, digest)
+			.await
+			.map_err(Into::into)
+	}
+	async fn remove_share(&mut self, draft: Uuid, subject: &str) -> Result<()> {
+		AgentDraftShare::remove(&mut self.tx, draft, subject)
+			.await
+			.map_err(Into::into)
 	}
 	async fn commit(self) -> Result<()> {
 		Box::new(self.tx)

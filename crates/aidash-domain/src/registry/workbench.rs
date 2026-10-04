@@ -166,3 +166,11 @@ pub fn current_share(documents: &Value, share: Option<(bool, String)>) -> Option
 }
 #[cfg(test)]
 mod tests;
+
+/// Sharing provenance is compared with the current draft documents at disclosure time.
+#[derive(Debug, Clone)]
+pub struct ShareRecord {
+	pub subject: String,
+	pub can_edit: bool,
+	pub documents_digest: String,
+}

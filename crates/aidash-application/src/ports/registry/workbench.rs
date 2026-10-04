@@ -16,7 +16,10 @@ pub trait DraftAuthority: DefinitionLookup {
 	async fn bundle(&mut self, tenant: &str) -> Result<PolicyBundle>;
 }
 
-use aidash_domain::registry::{Entry, workbench::Draft};
+use aidash_domain::registry::{
+	Entry,
+	workbench::{Draft, ShareRecord},
+};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 /// The scope retains draft row locks, current identity and atomic writes until commit or drop.
@@ -38,6 +41,15 @@ pub trait DraftScope: DraftAuthority + Sized {
 	) -> Result<Vec<Draft>>;
 	async fn managed(&mut self, agent: &str) -> Result<bool>;
 	async fn append_event(&mut self, kind: &str, payload: Value) -> Result<()>;
+	async fn shares(&mut self, draft: Uuid) -> Result<Vec<ShareRecord>>;
+	async fn save_share(
+		&mut self,
+		draft: Uuid,
+		subject: &str,
+		can_edit: bool,
+		digest: &str,
+	) -> Result<()>;
+	async fn remove_share(&mut self, draft: Uuid, subject: &str) -> Result<()>;
 	async fn commit(self) -> Result<()>;
 }
 #[async_trait]

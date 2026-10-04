@@ -1,5 +1,6 @@
 use super::*;
 use crate::ports::registry::{DefinitionLookup, workbench::DraftAuthority};
+use aidash_domain::registry::workbench::ShareRecord;
 use aidash_domain::{
 	identity::Principal,
 	policy::{Decision, Evaluation, PolicyBundle},
@@ -145,7 +146,7 @@ impl DraftAuthority for Scope {
 	async fn bundle(&mut self, _: &str) -> Result<PolicyBundle> {
 		self.record("target");
 		Ok(serde_json::from_value(
-			json!({"tenant":"tenant","subjects":{"owner":{"kind":"user","delegated_by":null}}}),
+			json!({"tenant":"tenant","subjects":{"owner":{"kind":"user","delegated_by":null},"guest":{"kind":"user","delegated_by":null}}}),
 		)
 		.unwrap())
 	}
@@ -199,6 +200,38 @@ impl DraftScope for Scope {
 	}
 	async fn append_event(&mut self, kind: &str, payload: Value) -> Result<()> {
 		self.record(format!("event:{kind}:{payload}"));
+		Ok(())
+	}
+	async fn shares(&mut self, _: Uuid) -> Result<Vec<ShareRecord>> {
+		self.record("shares");
+		Ok(vec![
+			ShareRecord {
+				subject: "current".into(),
+				can_edit: true,
+				documents_digest: digest(&self.draft.documents),
+			},
+			ShareRecord {
+				subject: "stale".into(),
+				can_edit: false,
+				documents_digest: "old".into(),
+			},
+		])
+	}
+	async fn save_share(
+		&mut self,
+		id: Uuid,
+		subject: &str,
+		can_edit: bool,
+		documents_digest: &str,
+	) -> Result<()> {
+		assert_eq!(id, self.draft.id);
+		assert_eq!(documents_digest, digest(&self.draft.documents));
+		self.record(format!("share-save:{subject}:{can_edit}"));
+		Ok(())
+	}
+	async fn remove_share(&mut self, id: Uuid, subject: &str) -> Result<()> {
+		assert_eq!(id, self.draft.id);
+		self.record(format!("share-remove:{subject}"));
 		Ok(())
 	}
 	async fn commit(self) -> Result<()> {
@@ -571,4 +604,128 @@ async fn adopted_agent_keeps_original_version(mut draft: Draft, entry: Entry) {
 	assert_eq!(adopted.entry["id"], "managed");
 	assert_eq!(adopted.source_version, Some("1.0.0".into()));
 	assert_eq!(repository.logs().last().map(String::as_str), Some("commit"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn sharing_private_documents_requires_explicit_consent(mut draft: Draft) {
+	draft.documents = json!([{"private":"text"}]);
+	let repository = Repository::new(draft.clone());
+	assert_eq!(
+		share(
+			&repository,
+			draft.id,
+			ShareInput {
+				subject: "guest".into(),
+				can_edit: true,
+				enabled: true,
+				include_documents: false
+			}
+		)
+		.await
+		.unwrap_err()
+		.to_string(),
+		"sharing this draft also shares its private documents; acknowledge include_documents"
+	);
+	assert!(
+		!repository
+			.logs()
+			.iter()
+			.any(|step| step.starts_with("share-save") || step == "commit")
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn owner_sharing_uses_live_authority_and_current_digest(draft: Draft) {
+	let repository = Repository::new(draft.clone());
+	share(
+		&repository,
+		draft.id,
+		ShareInput {
+			subject: "guest".into(),
+			can_edit: true,
+			enabled: true,
+			include_documents: true,
+		},
+	)
+	.await
+	.unwrap();
+	let logs = repository.logs();
+	assert_eq!(
+		&logs[..6],
+		[
+			"begin",
+			"read:true",
+			"identity",
+			"agent_draft.share",
+			"target",
+			"share-save:guest:true"
+		]
+	);
+	assert!(logs[6].starts_with("event:agent_draft.share_changed:"));
+	assert_eq!(logs[7], "commit");
+}
+#[rstest]
+#[tokio::test]
+async fn revocation_does_not_require_the_old_target_to_remain_enabled(draft: Draft) {
+	let repository = Repository::new(draft.clone());
+	share(
+		&repository,
+		draft.id,
+		ShareInput {
+			subject: "disabled".into(),
+			can_edit: false,
+			enabled: false,
+			include_documents: false,
+		},
+	)
+	.await
+	.unwrap();
+	assert!(repository.logs().contains(&"share-remove:disabled".into()));
+	assert!(!repository.logs().contains(&"target".into()));
+}
+#[rstest]
+#[tokio::test]
+async fn share_listing_labels_current_private_document_consent(draft: Draft) {
+	let repository = Repository::new(draft.clone());
+	let grants = shares(&repository, draft.id).await.unwrap();
+	assert_eq!(
+		grants
+			.iter()
+			.map(|row| (row.subject.as_str(), row.documents_current))
+			.collect::<Vec<_>>(),
+		[("current", true), ("stale", false)]
+	);
+	assert_eq!(
+		repository.logs(),
+		[
+			"begin",
+			"read:false",
+			"identity",
+			"agent_draft.share",
+			"shares",
+			"commit"
+		]
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn nonowners_cannot_share_before_policy_checks(mut draft: Draft) {
+	draft.owner = "other".into();
+	let repository = Repository::new(draft.clone());
+	assert!(matches!(
+		share(
+			&repository,
+			draft.id,
+			ShareInput {
+				subject: "guest".into(),
+				can_edit: false,
+				enabled: true,
+				include_documents: true
+			}
+		)
+		.await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(repository.logs(), ["begin", "read:true"]);
 }

@@ -3,9 +3,7 @@
 use crate::apps::execution::models::event_records;
 use crate::apps::registry::models::transaction_records;
 use crate::apps::registry::services::admission;
-use crate::apps::registry::workbench::models::{
-	AgentDraft, AgentDraftRegistration, AgentDraftShare,
-};
+use crate::apps::registry::workbench::models::{AgentDraft, AgentDraftRegistration};
 use crate::{
 	Error, Result,
 	authorization::{
@@ -186,56 +184,20 @@ impl Drafts {
 		.into())
 	}
 	pub(crate) async fn share(&self, actor: Actor, id: Uuid, input: ShareInput) -> Result<Draft> {
-		let f = self.runtime.clone();
-		let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-		let draft = AgentDraft::read(&mut tx, id, true).await?;
-		owner_only(&actor, &draft)?;
-		authorize(&mut tx, &actor, &draft, "agent_draft.share", false).await?;
-		if draft.owner == input.subject {
-			return Err(Error::Invalid("owner does not need a share".into()));
-		}
-		if input.enabled && draft.documents != json!([]) && !input.include_documents {
-			return Err(Error::Invalid(
-			"sharing this draft also shares its private documents; acknowledge include_documents"
-				.into(),
-		));
-		}
-		if input.enabled {
-			target_enabled(&mut tx, &draft.tenant, &input.subject).await?;
-		}
-		if input.enabled {
-			AgentDraftShare::save(
-				&mut tx,
-				id,
-				&input.subject,
-				input.can_edit,
-				&digest(&draft.documents),
-			)
-			.await?;
-		} else {
-			AgentDraftShare::remove(&mut tx, id, &input.subject).await?;
-		}
-		event_records::append(&mut tx, &f.config.node_id, None, "agent_draft.share_changed", json!({"draft_id":id,"tenant":draft.tenant,"subject":input.subject,"enabled":input.enabled,"can_edit":input.can_edit})).await?;
-		Box::new(tx).commit().await?;
-		Ok(draft)
+		Ok(aidash_application::registry::workbench::drafts::share(
+			&crate::bootstrap::draft_repository(&self.runtime, actor),
+			id,
+			input,
+		)
+		.await?
+		.into())
 	}
 	pub(crate) async fn shares(&self, actor: Actor, id: Uuid) -> Result<Vec<DraftShare>> {
-		let f = self.runtime.clone();
-		let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-		let draft = AgentDraft::read(&mut tx, id, false).await?;
-		owner_only(&actor, &draft)?;
-		authorize(&mut tx, &actor, &draft, "agent_draft.share", false).await?;
-		let rows = AgentDraftShare::page(&mut tx, id).await?;
-		Box::new(tx).commit().await?;
-		let current_digest = digest(&draft.documents);
-		Ok(rows
-			.into_iter()
-			.map(|row| DraftShare {
-				subject: row.subject,
-				can_edit: row.can_edit,
-				documents_current: row.documents_digest == current_digest,
-			})
-			.collect())
+		Ok(aidash_application::registry::workbench::drafts::shares(
+			&crate::bootstrap::draft_repository(&self.runtime, actor),
+			id,
+		)
+		.await?)
 	}
 	pub(crate) async fn transfer(
 		&self,
