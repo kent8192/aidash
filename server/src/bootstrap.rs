@@ -1610,3 +1610,11 @@ pub(crate) fn workbench_permission_repository(
 ) -> crate::apps::registry::workbench::repositories::permissions::Repository<'_> {
 	crate::apps::registry::workbench::repositories::permissions::Repository { runtime, actor }
 }
+
+/// Inspection reuses the native audit lease across all contained usage and evidence reads.
+pub(crate) fn workbench_inspection_repository(
+	runtime: &Federation,
+	actor: crate::authorization::identity::Actor,
+) -> crate::apps::registry::workbench::repositories::inspection::Repository<'_> {
+	crate::apps::registry::workbench::repositories::inspection::Repository { runtime, actor }
+}

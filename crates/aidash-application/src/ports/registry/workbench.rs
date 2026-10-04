@@ -84,3 +84,5 @@ pub trait PublicationScope: DraftScope + DefinitionWriter {
 pub mod audit;
 
 pub mod permissions;
+
+pub mod inspection;

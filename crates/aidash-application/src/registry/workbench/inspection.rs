@@ -36,3 +36,5 @@ pub async fn require(scope: &mut dyn DraftAuthority, reference: &EntityRef) -> R
 
 #[cfg(test)]
 mod tests;
+
+pub mod usage;
