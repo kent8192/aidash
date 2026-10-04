@@ -179,7 +179,12 @@ async fn provider_failure_retains_exact_freshness_and_hard_deadlines(
 	} else {
 		result.unwrap();
 	}
-	assert_eq!(scope.state.lock().unwrap().trace.len(), 0);
+	let expected = if checked {
+		vec!["lookup:subject"]
+	} else {
+		vec![]
+	};
+	assert_eq!(scope.state.lock().unwrap().trace, expected);
 }
 
 #[rstest]
