@@ -58,3 +58,5 @@ pub(crate) mod capability_records;
 pub(crate) mod references;
 
 pub(crate) mod approvals;
+
+pub(crate) mod reclamation;

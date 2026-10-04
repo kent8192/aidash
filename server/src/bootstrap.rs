@@ -1346,3 +1346,9 @@ pub(crate) fn approval_scope<'a>(
 		run: None,
 	}
 }
+
+pub(crate) fn reclamation_repository(
+	store: &Store,
+) -> crate::apps::execution::repositories::reclamation::Repository<'_> {
+	crate::apps::execution::repositories::reclamation::Repository::new(store)
+}
