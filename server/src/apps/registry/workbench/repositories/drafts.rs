@@ -32,6 +32,7 @@ pub(crate) struct Repository {
 pub(crate) struct Scope {
 	pub tx: PgTransactionExecutor,
 	pub actor: Actor,
+	node: String,
 }
 impl Scope {
 	fn authority(&mut self) -> authority::Scope<'_> {
@@ -47,11 +48,24 @@ impl DraftRepository for Repository {
 	fn principal(&self) -> Principal {
 		authority::principal(&self.actor)
 	}
+	async fn original_entry(&self, id: &str, version: &str) -> Result<Entry> {
+		self.runtime
+			.registry
+			.get(id, version)
+			.await
+			.map_err(Into::into)
+	}
+	async fn original_documents(&self, entry: &Entry) -> Result<Value> {
+		crate::knowledge::load(&self.runtime.registry.db, entry)
+			.await
+			.map_err(Into::into)
+	}
 	async fn begin(&self) -> Result<Scope> {
 		let result: crate::Result<Scope> = async {
 			Ok(Scope {
 				tx: PgTransactionExecutor::new(self.runtime.store.pool.begin().await?),
 				actor: self.actor.clone(),
+				node: self.runtime.config.node_id.clone(),
 			})
 		}
 		.await;
@@ -123,6 +137,23 @@ impl DraftScope for Scope {
 			.into_iter()
 			.map(Into::into)
 			.collect())
+	}
+	async fn managed(&mut self, agent: &str) -> Result<bool> {
+		AgentDraft::managed(&mut self.tx, agent)
+			.await
+			.map_err(Into::into)
+	}
+	async fn append_event(&mut self, kind: &str, payload: Value) -> Result<()> {
+		crate::apps::execution::models::event_records::append(
+			&mut self.tx,
+			&self.node,
+			None,
+			kind,
+			payload,
+		)
+		.await
+		.map(|_| ())
+		.map_err(Into::into)
 	}
 	async fn commit(self) -> Result<()> {
 		Box::new(self.tx)

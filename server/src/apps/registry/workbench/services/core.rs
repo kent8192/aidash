@@ -17,7 +17,6 @@ use crate::{
 	knowledge::{ReferenceDocument, digest},
 	registry::{AgentConfig, Entry},
 };
-use aidash_domain::registry::workbench::new_draft_defaults;
 use reinhardt::db::backends::{TransactionExecutor, dialect::postgres::PgTransactionExecutor};
 use reinhardt::injectable;
 
@@ -164,92 +163,27 @@ impl Drafts {
 		id: Uuid,
 		input: RevisionInput,
 	) -> Result<Draft> {
-		let f = self.runtime.clone();
-		let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-		let original = AgentDraft::read(&mut tx, id, true).await?;
-		authorize(&mut tx, &actor, &original, "agent_draft.read", true).await?;
-		if original.revision != input.expected_revision {
-			return Err(Error::Conflict("draft revision changed".into()));
-		}
-		let id = Uuid::now_v7();
-		let mut entry: Entry = serde_json::from_value(original.entry.clone())?;
-		let source_id = entry.id.clone();
-		let source_version = entry.version.clone();
-		entry.id = id.to_string();
-		entry.version = "1.0.0".into();
-		new_draft_defaults(&mut entry)?;
-		let prospective = Draft {
+		Ok(aidash_application::registry::workbench::drafts::duplicate(
+			&crate::bootstrap::draft_repository(&self.runtime, actor),
 			id,
-			tenant: original.tenant.clone(),
-			owner: match &actor {
-				Actor::Operator => original.owner.clone(),
-				Actor::Subject(identity) => identity.subject.clone(),
-			},
-			revision: 1,
-			entry: serde_json::to_value(&entry)?,
-			documents: original.documents.clone(),
-			release_notes: String::new(),
-			source_id: Some(source_id),
-			source_version: Some(source_version),
-			archived: false,
-			updated_at: Utc::now(),
-		};
-		authorize(&mut tx, &actor, &prospective, "agent_draft.create", false).await?;
-		let copied = AgentDraft::insert(&mut tx, &prospective, &entry.id).await?;
-		event_records::append(&mut tx, &f.config.node_id, None, "agent_draft.duplicated", json!({"draft_id":id,"source_id":prospective.source_id,"source_version":prospective.source_version,"tenant":prospective.tenant})).await?;
-		Box::new(tx).commit().await?;
-		Ok(copied)
+			input,
+		)
+		.await?
+		.into())
 	}
 	pub(crate) async fn adopt(
 		&self,
 		actor: Actor,
-		(id, version): (String, String),
+		reference: (String, String),
 		input: AdoptInput,
 	) -> Result<Draft> {
-		let f = self.runtime.clone();
-		if !matches!(actor, Actor::Operator) {
-			return Err(Error::Forbidden);
-		}
-		let (tenant, owner) = author_identity(&actor, Some(&input.tenant), Some(&input.owner))?;
-		let mut entry = f.registry.get(&id, &version).await?;
-		if entry.kind != "agent" {
-			return Err(Error::Invalid(
-				"only agents can be assigned to Creator".into(),
-			));
-		}
-		let documents = crate::knowledge::load(&f.registry.db, &entry).await?;
-		new_draft_defaults(&mut entry)?;
-		let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-		target_enabled(&mut tx, &tenant, &owner).await?;
-		let existing = AgentDraft::managed(&mut tx, &id).await?;
-		if existing {
-			return Err(Error::Conflict("agent identity is already managed".into()));
-		}
-		let draft_id = Uuid::now_v7();
-		let prospective = Draft {
-			id: draft_id,
-			tenant: tenant.clone(),
-			owner: owner.clone(),
-			revision: 1,
-			entry: serde_json::to_value(&entry)?,
-			documents,
-			release_notes: String::new(),
-			source_id: Some(id.clone()),
-			source_version: Some(version.clone()),
-			archived: false,
-			updated_at: Utc::now(),
-		};
-		let draft = AgentDraft::insert(&mut tx, &prospective, &id).await?;
-		event_records::append(
-			&mut tx,
-			&f.config.node_id,
-			None,
-			"agent_draft.adopted",
-			json!({"draft_id":draft_id,"agent_id":id,"version":version,"tenant":tenant,"owner":owner}),
+		Ok(aidash_application::registry::workbench::drafts::adopt(
+			&crate::bootstrap::draft_repository(&self.runtime, actor),
+			reference,
+			input,
 		)
-		.await?;
-		Box::new(tx).commit().await?;
-		Ok(draft)
+		.await?
+		.into())
 	}
 	pub(crate) async fn share(&self, actor: Actor, id: Uuid, input: ShareInput) -> Result<Draft> {
 		let f = self.runtime.clone();

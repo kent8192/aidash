@@ -35,6 +35,8 @@ struct Repository {
 	log: Arc<Mutex<Vec<String>>>,
 	deny: bool,
 	pages: Vec<Vec<Draft>>,
+	operator: bool,
+	managed: bool,
 }
 impl Repository {
 	fn new(draft: Draft) -> Self {
@@ -43,6 +45,8 @@ impl Repository {
 			log: Arc::new(Mutex::new(Vec::new())),
 			deny: false,
 			pages: Vec::new(),
+			operator: false,
+			managed: false,
 		}
 	}
 	fn logs(&self) -> Vec<String> {
@@ -54,6 +58,8 @@ struct Scope {
 	log: Arc<Mutex<Vec<String>>>,
 	deny: bool,
 	pages: Vec<Vec<Draft>>,
+	operator: bool,
+	managed: bool,
 }
 impl Scope {
 	fn record(&self, value: impl Into<String>) {
@@ -64,10 +70,23 @@ impl Scope {
 impl DraftRepository for Repository {
 	type Scope = Scope;
 	fn principal(&self) -> Principal {
+		if self.operator {
+			return Principal::Operator;
+		}
 		Principal::Subject {
 			tenant: "tenant".into(),
 			subject: "owner".into(),
 		}
+	}
+	async fn original_entry(&self, id: &str, version: &str) -> Result<Entry> {
+		self.log.lock().unwrap().push("original".into());
+		let entry: Entry = serde_json::from_value(self.draft.entry.clone())?;
+		assert_eq!((entry.id.as_str(), entry.version.as_str()), (id, version));
+		Ok(entry)
+	}
+	async fn original_documents(&self, _: &Entry) -> Result<Value> {
+		self.log.lock().unwrap().push("documents".into());
+		Ok(self.draft.documents.clone())
 	}
 	async fn begin(&self) -> Result<Scope> {
 		self.log.lock().unwrap().push("begin".into());
@@ -76,6 +95,8 @@ impl DraftRepository for Repository {
 			log: self.log.clone(),
 			deny: self.deny,
 			pages: self.pages.clone(),
+			operator: self.operator,
+			managed: self.managed,
 		})
 	}
 }
@@ -91,6 +112,9 @@ impl DefinitionLookup for Scope {
 #[async_trait]
 impl DraftAuthority for Scope {
 	fn principal(&self) -> Principal {
+		if self.operator {
+			return Principal::Operator;
+		}
 		Principal::Subject {
 			tenant: "tenant".into(),
 			subject: "owner".into(),
@@ -168,6 +192,14 @@ impl DraftScope for Scope {
 			return Ok(Vec::new());
 		}
 		Ok(self.pages.remove(0))
+	}
+	async fn managed(&mut self, _: &str) -> Result<bool> {
+		self.record("managed");
+		Ok(self.managed)
+	}
+	async fn append_event(&mut self, kind: &str, payload: Value) -> Result<()> {
+		self.record(format!("event:{kind}:{payload}"));
+		Ok(())
 	}
 	async fn commit(self) -> Result<()> {
 		self.record("commit");
@@ -416,4 +448,127 @@ async fn revoked_credential_drafts_are_not_disclosed(draft: Draft) {
 		repository.logs(),
 		["begin", "page:none", "identity", "commit"]
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn duplicate_binds_new_identity_and_records_original_provenance(
+	mut draft: Draft,
+	mut entry: Entry,
+) {
+	entry.version = "2.0.0".into();
+	draft.entry = serde_json::to_value(&entry).unwrap();
+	let repository = Repository::new(draft.clone());
+	let copied = duplicate(
+		&repository,
+		draft.id,
+		RevisionInput {
+			expected_revision: 3,
+		},
+	)
+	.await
+	.unwrap();
+	assert_ne!(copied.id, draft.id);
+	assert_eq!(copied.entry["id"], copied.id.to_string());
+	assert_eq!(copied.entry["version"], "1.0.0");
+	assert_eq!(copied.source_id, Some("managed".into()));
+	assert_eq!(copied.source_version, Some("2.0.0".into()));
+	assert_eq!(copied.owner, "owner");
+	let logs = repository.logs();
+	assert!(
+		logs.iter()
+			.any(|step| step.starts_with("event:agent_draft.duplicated:"))
+	);
+	assert_eq!(logs.last().map(String::as_str), Some("commit"));
+}
+#[rstest]
+#[tokio::test]
+async fn duplicate_checks_revision_before_allocating_or_writing(draft: Draft) {
+	let repository = Repository::new(draft.clone());
+	assert_eq!(
+		duplicate(
+			&repository,
+			draft.id,
+			RevisionInput {
+				expected_revision: 2
+			}
+		)
+		.await
+		.unwrap_err()
+		.to_string(),
+		"draft revision changed"
+	);
+	assert!(
+		!repository
+			.logs()
+			.iter()
+			.any(|step| step == "insert" || step == "commit")
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn only_operator_can_adopt_existing_agents(draft: Draft) {
+	let repository = Repository::new(draft);
+	assert!(matches!(
+		adopt(
+			&repository,
+			("managed".into(), "1.0.0".into()),
+			AdoptInput {
+				tenant: "tenant".into(),
+				owner: "owner".into()
+			}
+		)
+		.await,
+		Err(Error::Forbidden)
+	));
+	assert!(repository.logs().is_empty());
+}
+#[rstest]
+#[tokio::test]
+async fn adoption_preserves_registry_identity_and_checks_managed_conflict(
+	mut draft: Draft,
+	entry: Entry,
+) {
+	draft.entry = serde_json::to_value(entry).unwrap();
+	let mut repository = Repository::new(draft);
+	repository.operator = true;
+	repository.managed = true;
+	assert_eq!(
+		adopt(
+			&repository,
+			("managed".into(), "1.0.0".into()),
+			AdoptInput {
+				tenant: "tenant".into(),
+				owner: "owner".into()
+			}
+		)
+		.await
+		.unwrap_err()
+		.to_string(),
+		"agent identity is already managed"
+	);
+	assert_eq!(
+		repository.logs(),
+		["original", "documents", "begin", "target", "managed"]
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn adopted_agent_keeps_original_version(mut draft: Draft, entry: Entry) {
+	draft.entry = serde_json::to_value(entry).unwrap();
+	let mut repository = Repository::new(draft);
+	repository.operator = true;
+	let adopted = adopt(
+		&repository,
+		("managed".into(), "1.0.0".into()),
+		AdoptInput {
+			tenant: "tenant".into(),
+			owner: "owner".into(),
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(adopted.entry["id"], "managed");
+	assert_eq!(adopted.source_version, Some("1.0.0".into()));
+	assert_eq!(repository.logs().last().map(String::as_str), Some("commit"));
 }
