@@ -85,4 +85,5 @@ pub(crate) mod transfer;
 pub(crate) mod transfer_receiver;
 
 pub mod capability_objects;
+pub(crate) mod capability_projection;
 pub(crate) mod core_records;
