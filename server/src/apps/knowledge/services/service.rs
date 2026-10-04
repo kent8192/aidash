@@ -112,9 +112,6 @@ pub(crate) async fn search_in(
 	.map_err(Into::into)
 }
 
-pub(crate) fn result_tokens(result: &SearchResult) -> Result<usize> {
-	aidash_domain::semantic::retrieval::result_tokens(result).map_err(Into::into)
-}
 pub(crate) use aidash_domain::semantic::indexing::content_digest;
 
 pub async fn history_list(store: &Store, actor: &Actor, workspace: Uuid) -> Result<Vec<History>> {
@@ -191,57 +188,6 @@ pub(crate) async fn embed(
 		config,
 		text,
 		origin,
-	)
-	.await
-	.map_err(Into::into)
-}
-
-pub(crate) use aidash_application::semantic::retrieval::PreparedSearch;
-
-#[async_trait::async_trait]
-pub(crate) trait PreparedSearchExt {
-	async fn check_points(&self, store: &Store) -> Result<()>;
-}
-#[async_trait::async_trait]
-impl PreparedSearchExt for PreparedSearch {
-	async fn check_points(&self, store: &Store) -> Result<()> {
-		aidash_application::semantic::retrieval::PreparedSearch::check_points(
-			self,
-			&crate::bootstrap::semantic_transport(store.semantic_client.clone()),
-		)
-		.await
-		.map_err(Into::into)
-	}
-}
-pub(crate) async fn prepare_search(
-	store: &Store,
-	lease: &mut Lease<'_>,
-	workspace: Uuid,
-	input: &Search,
-	agent_controls: Option<&crate::registry::AgentConfig>,
-) -> Result<PreparedSearch> {
-	aidash_application::semantic::retrieval::prepare(
-		&mut crate::bootstrap::semantic_retrieval_scope(store, lease),
-		workspace,
-		&input.into(),
-		agent_controls,
-	)
-	.await
-	.map_err(Into::into)
-}
-pub(crate) async fn finish_search(
-	store: &Store,
-	lease: &mut Lease<'_>,
-	prepared: PreparedSearch,
-	vector: &[f32],
-	strict: bool,
-) -> Result<SearchResult> {
-	aidash_application::semantic::retrieval::finish(
-		&crate::bootstrap::semantic_transport(store.semantic_client.clone()),
-		&mut crate::bootstrap::semantic_retrieval_scope(store, lease),
-		prepared,
-		vector,
-		strict,
 	)
 	.await
 	.map_err(Into::into)

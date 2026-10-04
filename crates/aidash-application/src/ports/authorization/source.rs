@@ -36,3 +36,5 @@ pub mod semantic;
 pub mod reads;
 
 pub mod provenance;
+
+pub mod search;

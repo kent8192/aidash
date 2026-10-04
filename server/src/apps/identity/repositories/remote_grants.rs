@@ -83,3 +83,5 @@ pub(crate) mod semantic;
 pub(crate) mod reads;
 
 pub(crate) mod provenance;
+
+pub(crate) mod search;
