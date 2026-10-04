@@ -1602,3 +1602,11 @@ pub(crate) fn workbench_audit_repository(
 ) -> crate::apps::registry::workbench::repositories::audit::Repository<'_> {
 	crate::apps::registry::workbench::repositories::audit::Repository { runtime, actor }
 }
+
+/// Component permission context shares native effective definitions and current policy locks.
+pub(crate) fn workbench_permission_repository(
+	runtime: &Federation,
+	actor: crate::authorization::identity::Actor,
+) -> crate::apps::registry::workbench::repositories::permissions::Repository<'_> {
+	crate::apps::registry::workbench::repositories::permissions::Repository { runtime, actor }
+}

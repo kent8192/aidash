@@ -172,3 +172,5 @@ pub mod publication;
 
 pub mod audit;
 pub mod inspection;
+
+pub mod permissions;

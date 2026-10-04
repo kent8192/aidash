@@ -4,7 +4,6 @@ use crate::{authorization::access::NativeAccess, registry::EntityRef};
 use reinhardt::injectable;
 
 use crate::apps::execution::models::Run as RunRecord;
-use crate::apps::identity::models::{AuthorizationCatalog, AuthorizationWorkspace};
 use crate::apps::registry::workbench::models::AgentTestSession;
 use crate::apps::workspaces::models::Workspace;
 
@@ -231,121 +230,15 @@ impl TrustInspection {
 		(id, version): (String, String),
 		input: PermissionInput,
 	) -> Result<PermissionContext> {
-		let f = self.runtime.clone();
-		if let Actor::Subject(identity) = &actor
-			&& (input.tenant != identity.tenant || input.subject != identity.subject)
-		{
-			return Err(Error::Forbidden);
-		}
-		let mut tx: Box<dyn TransactionExecutor> =
-			Box::new(PgTransactionExecutor::new(f.store.pool.begin().await?));
-		require_inspection(
-			tx.as_mut(),
-			&actor,
-			&EntityRef {
-				id: id.clone(),
-				version: version.clone(),
-			},
+		aidash_application::registry::workbench::permissions::inspect(
+			&crate::bootstrap::workbench_permission_repository(&self.runtime, actor),
+			EntityRef { id, version },
+			input,
 		)
-		.await?;
-		let entry = admission::effective(tx.as_mut(), &id, &version).await?;
-		if entry.kind != "agent" {
-			return Err(Error::NotFound("agent version".into()));
-		}
-		let config: AgentConfig = serde_json::from_value(entry.config.clone())?;
-		let mut components = vec![(EntityRef { id, version }, "agent.execute")];
-		components.push((config.model, "model.infer"));
-		components.extend(
-			config
-				.skills
-				.into_iter()
-				.map(|reference| (reference, "skill.use")),
-		);
-		components.extend(
-			config
-				.tools
-				.into_iter()
-				.map(|reference| (reference, "tool.invoke")),
-		);
-		if let Some(cluster) = config.cluster {
-			components.push((cluster, "cluster.execute"));
-		}
-		let mut rows = Vec::new();
-		let mut policy_revision = 0;
-		for (reference, action) in components {
-			let dependency =
-				admission::effective(tx.as_mut(), &reference.id, &reference.version).await?;
-			let catalog_enabled =
-				AuthorizationCatalog::enabled_in(tx.as_mut(), &input.tenant, &reference, true)
-					.await?;
-			let mut evaluation = Evaluation {
-				subject: input.subject.clone(),
-				action: action.into(),
-				resource: Resource {
-					tenant: input.tenant.clone(),
-					kind: dependency.kind.clone(),
-					id: reference.id.clone(),
-					attributes: json!({"version":reference.version,"capabilities":dependency.capabilities,"tags":dependency.tags,"languages":dependency.languages,"config":dependency.config}),
-				},
-				environment: json!({"workspace_id":input.workspace_id,"node_id":f.config.node_id,"transport":"worker"}),
-			};
-			let decision =
-				Authorization::evaluate_native(tx.as_mut(), &input.tenant, &evaluation).await?;
-			let registry_read_allowed = if action == "agent.execute" {
-				None
-			} else {
-				evaluation.action = "registry.read".into();
-				Some(
-					Authorization::evaluate_native(tx.as_mut(), &input.tenant, &evaluation)
-						.await?
-						.allowed,
-				)
-			};
-			policy_revision = decision.revision;
-			rows.push(PermissionRow {
-				reference,
-				kind: dependency.kind,
-				action: action.into(),
-				catalog_enabled: catalog_enabled == Some(true),
-				policy_allowed: decision.allowed,
-				registry_read_allowed,
-				effective_for_component: catalog_enabled == Some(true)
-					&& decision.allowed
-					&& registry_read_allowed.unwrap_or(true),
-			});
-		}
-		let workspace_read = if let Some(workspace_id) = input.workspace_id {
-			let owner =
-				AuthorizationWorkspace::owner_in(tx.as_mut(), workspace_id, &input.tenant, true)
-					.await?;
-			if let Some(owner) = owner {
-				let decision = Authorization::evaluate_native(
-				tx.as_mut(),
-				&input.tenant,
-				&Evaluation {
-					subject: input.subject.clone(),
-					action: "workspace.read".into(),
-					resource: Resource {
-						tenant: input.tenant.clone(),
-						kind: "workspace".into(),
-						id: workspace_id.to_string(),
-						attributes: json!({"owner":owner,"workspace_id":workspace_id}),
-					},
-					environment: json!({"workspace_id":workspace_id,"node_id":f.config.node_id,"transport":"worker"}),
-				},
-			)
-			.await?;
-				policy_revision = decision.revision;
-				Some(decision.allowed)
-			} else {
-				Some(false)
-			}
-		} else {
-			None
-		};
-		tx.commit().await?;
-		Ok(PermissionContext { tenant: input.tenant, subject: input.subject, workspace_id: input.workspace_id, policy_revision, observed_at: Utc::now(), requested_capabilities: entry.capabilities, rows, workspace_read, note: "Component-level decisions use the worker execution context and include required Registry reads; task and execution admission require further checks. No universal permission or Trust assessment is implied.".into() })
+		.await
+		.map_err(Into::into)
 	}
+
 	pub(crate) async fn report(
 		&self,
 		actor: Actor,
