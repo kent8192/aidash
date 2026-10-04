@@ -33,10 +33,10 @@ the extension use `reinhardt::db::migrations::Operation`. SQL expressions in CHE
 defaults, index predicates, and generated-column metadata are expression bodies;
 whole supported CREATE/ALTER statements must not be passed to `RunSQL`.
 
-Operations absent from the pinned migration API are stored in each app's `sql/forward/`
-directory and loaded with `include_str!` into `Operation::RunSQL`: procedural
-functions/triggers/DO blocks, explicit sequences and ALWAYS identity options,
-transaction-local session settings, and the two baseline seed inserts. Every
+Historical DDL assets live in each app's `sql/forward/` directory and are loaded
+with `include_str!` into `Operation::RunSQL`: procedural functions/triggers/DO
+blocks, the frozen sequence and ALWAYS identity definitions, transaction-local
+session settings, and the two baseline seed inserts. Every
 physical migration sets `search_path` to `public, pg_catalog` locally because the
 pinned typed operations accept unqualified names; this preserves the frozen
 public schema even with a custom connection search path.
@@ -69,11 +69,14 @@ confined sibling SQL assets. Execution, inspection, and `makemigrations` use the
 original app history directly, without a project-specific expansion or child
 command adapter.
 
-Upstream SQL asset support [#6505](https://github.com/kent8192/reinhardt-web/issues/6505)
-is included in the pinned revision `e43a0194d40155c9e18afac39c68ce92f3b9d3c7`.
-PostgreSQL sequence/identity migration operations and Query-backed procedural,
-session, and seed operations remain tracked in
-[#6506](https://github.com/kent8192/reinhardt-web/issues/6506) and
+The pinned revision `726a112e56d2f343161299509cd177b5781985d8` includes SQL asset
+loading [#6505](https://github.com/kent8192/reinhardt-web/issues/6505) and native
+PostgreSQL sequence/identity operations
+[#6506](https://github.com/kent8192/reinhardt-web/issues/6506). The existing physical
+baseline remains frozen so previously recorded migrations retain their original
+forward and reverse behavior. New sequence/identity changes should use the native
+operations and declare their model metadata; they must not rewrite applied SQL
+assets. Query-backed procedural, session, and seed operations remain tracked in
 [#6507](https://github.com/kent8192/reinhardt-web/issues/6507).
 Cross-app reverse planning and missing default/extension inverses are tracked in
 [#6515](https://github.com/kent8192/reinhardt-web/issues/6515) and
