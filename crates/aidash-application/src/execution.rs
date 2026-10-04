@@ -709,3 +709,6 @@ pub mod semantic_context;
 pub mod cancellation;
 
 pub mod admission;
+
+pub mod terminal;
+pub mod worker;
