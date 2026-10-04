@@ -248,3 +248,5 @@ pub use super::InputRead;
 mod operation_tests;
 
 pub mod journal;
+
+pub mod status;

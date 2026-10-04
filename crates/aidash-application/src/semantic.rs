@@ -216,3 +216,5 @@ pub mod memory;
 pub mod visibility;
 
 pub mod remote_journal;
+
+pub mod remote_status;

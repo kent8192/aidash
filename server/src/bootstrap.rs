@@ -1468,3 +1468,20 @@ pub(crate) fn peer_inspection_scope<'a>(
 ) -> crate::apps::identity::repositories::peer_admission::Borrowed<'a> {
 	crate::apps::identity::repositories::peer_admission::Scope { runtime: f, access }
 }
+
+pub(crate) fn semantic_status_scope<'a>(
+	store: Option<&'a Store>,
+	access: &'a mut crate::authorization::access::Access,
+	node_id: &'a str,
+) -> crate::apps::knowledge::repositories::remote_status::Scope<'a> {
+	crate::apps::knowledge::repositories::remote_status::Scope {
+		store,
+		access,
+		node_id,
+	}
+}
+pub(crate) fn semantic_status_repository(
+	store: &Store,
+) -> crate::apps::knowledge::repositories::remote_status::Repository<'_> {
+	crate::apps::knowledge::repositories::remote_status::Repository { store }
+}
