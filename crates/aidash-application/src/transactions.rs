@@ -8,5 +8,6 @@ pub fn validate(registry: &DefinitionValidation, manifest: &Manifest) -> Result<
 pub mod admission;
 pub mod authority;
 pub mod coordination;
+pub mod management;
 pub mod mutation;
 pub mod participation;

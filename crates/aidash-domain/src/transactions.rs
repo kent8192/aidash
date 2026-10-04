@@ -227,4 +227,5 @@ mod tests;
 
 pub mod authority;
 pub mod coordination;
+pub mod management;
 pub mod mutation;

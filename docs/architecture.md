@@ -54,6 +54,11 @@ unchanged for coordinator and authority RPCs.
 Authorized subject aborts also arbitrate and inspect the immutable decision
 through application ports inside the retained authority transaction. A concurrent
 commit remains irrevocable, and fault cuts retain their before/after commit order.
+Transaction management uses application disclosure and trust workflows. Ordered
+keyset pages retain eight concurrent live-authority checks and the 200-visible-row
+limit. Native adapters keep votes/audit on the same connection and retain trust
+registration through the post-commit pending scan; HTTP services only compose
+authentication metadata and unchanged response contracts.
 
 Scoped commands authorize effects, track disclosed outputs, journal mutation
 results, and recheck the source lease through the application use case. A claim

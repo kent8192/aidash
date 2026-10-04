@@ -2,6 +2,7 @@
 pub(crate) mod admission;
 pub(crate) mod authority;
 pub(crate) mod coordination;
+pub(crate) mod management;
 pub(crate) mod mutation;
 pub(crate) mod participation;
 pub(crate) mod transport;

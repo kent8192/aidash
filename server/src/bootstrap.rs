@@ -1243,6 +1243,15 @@ pub(crate) fn transaction_coordinator(
 	)
 }
 
+/// Management adapters share the existing authority, coordinator and control pools.
+pub(crate) fn transaction_management_repository(
+	runtime: &Federation,
+) -> crate::apps::federation::transactions::repositories::management::Repository {
+	crate::apps::federation::transactions::repositories::management::Repository {
+		runtime: runtime.clone(),
+	}
+}
+
 /// Mutation ports borrow the same serializable transaction and visibility gate.
 pub(crate) fn transaction_mutation_scope(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,

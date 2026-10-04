@@ -1,21 +1,8 @@
 //! Native adapters delegate authority decisions and durable orchestration to application.
-use super::{Manifest, Status};
-use crate::{
-	Error, Result,
-	authorization::{access::Access, identity::SubjectIdentity},
-	federation::Federation,
-};
+use super::Manifest;
+use crate::{Error, Result, authorization::access::Access, federation::Federation};
 use aidash_application::transactions::authority::control as application;
-use aidash_domain::identity::execution::ExecutionPrincipal;
 use uuid::Uuid;
-
-fn principal(identity: &SubjectIdentity) -> ExecutionPrincipal {
-	ExecutionPrincipal {
-		credential_id: identity.credential_id,
-		tenant: identity.tenant.clone(),
-		subject: identity.subject.clone(),
-	}
-}
 
 pub(in crate::apps::federation::transactions) async fn preflight(
 	f: &Federation,
@@ -28,21 +15,6 @@ pub(in crate::apps::federation::transactions) async fn preflight(
 		&input.into(),
 	)
 	.await
-	.map_err(Into::into)
-}
-
-pub(in crate::apps::federation::transactions) async fn submit(
-	f: &Federation,
-	identity: &SubjectIdentity,
-	manifest: &Manifest,
-) -> Result<Status> {
-	application::submit(
-		&crate::bootstrap::transaction_authority_repository(f),
-		&principal(identity),
-		manifest,
-	)
-	.await
-	.map(Into::into)
 	.map_err(Into::into)
 }
 
@@ -100,37 +72,6 @@ pub(in crate::apps::federation::transactions) async fn admission(
 	Ok(Some(access))
 }
 
-pub(in crate::apps::federation::transactions) async fn require_owner(
-	f: &Federation,
-	identity: &SubjectIdentity,
-	id: Uuid,
-) -> Result<Origin> {
-	application::require_owner(
-		&crate::bootstrap::transaction_authority_repository(f),
-		&principal(identity),
-		id,
-	)
-	.await
-	.map(Into::into)
-	.map_err(Into::into)
-}
-
-pub(in crate::apps::federation::transactions) async fn manage(
-	f: &Federation,
-	identity: &SubjectIdentity,
-	state: &Status,
-	action: &str,
-) -> Result<()> {
-	application::manage(
-		&crate::bootstrap::transaction_authority_repository(f),
-		&principal(identity),
-		&state.into(),
-		action,
-	)
-	.await
-	.map_err(Into::into)
-}
-
 pub(in crate::apps::federation::transactions) async fn read_access(
 	f: &Federation,
 	caller: &str,
@@ -147,6 +88,5 @@ pub(in crate::apps::federation::transactions) async fn read_access(
 
 use crate::apps::federation::transactions::repositories::authority::persistence;
 pub(crate) use crate::apps::federation::transactions::serializers::authority::{Origin, Preflight};
-pub(in crate::apps::federation::transactions) use persistence::pending_peer;
 pub(crate) use persistence::{control, pending};
 pub(in crate::apps::federation::transactions) use persistence::{scoped, settle};

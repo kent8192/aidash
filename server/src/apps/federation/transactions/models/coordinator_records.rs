@@ -332,7 +332,7 @@ pub(crate) async fn status_in(tx: &mut dyn TransactionExecutor, id: Uuid) -> Res
 /// Stable keyset pages preserve capacity after live authority filtering.
 pub(crate) async fn visible_candidates<E: OrmExecutor>(
 	db: &mut E,
-	identity: Option<&crate::authorization::identity::SubjectIdentity>,
+	identity: Option<&aidash_domain::identity::execution::ExecutionPrincipal>,
 	cursor: Option<(chrono::DateTime<Utc>, Uuid)>,
 ) -> Result<Vec<Status>> {
 	use reinhardt::query::{Cond, ExprTrait, Order};
