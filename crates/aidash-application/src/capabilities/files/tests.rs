@@ -65,7 +65,7 @@ impl FileScopePort for Scope {
 	async fn output(&mut self, _area: &Area, _id: Uuid) -> Result<Option<(String, i64, String)>> {
 		panic!("unexpected output effect")
 	}
-	async fn open(&mut self, _file: &MountedFile) -> Result<Box<dyn VerifiedFile>> {
+	async fn open(&mut self, _file: &FileEntry) -> Result<Box<dyn VerifiedFile>> {
 		self.opens += 1;
 		Ok(Box::new(MemoryReader {
 			bytes: self.bytes.clone(),
@@ -81,7 +81,7 @@ impl FileScopePort for Scope {
 	async fn begin_pending(&mut self, _area: Uuid, _size: u64) -> Result<()> {
 		panic!("unexpected begin_pending effect")
 	}
-	async fn read_chunk(&mut self, _file: &MountedFile, _offset: u64) -> Result<Vec<u8>> {
+	async fn read_chunk(&mut self, _file: &FileEntry, _offset: u64) -> Result<Vec<u8>> {
 		panic!("unexpected read_chunk effect")
 	}
 	async fn write_pending(&mut self, _bytes: &[u8]) -> Result<()> {
@@ -103,7 +103,7 @@ impl FileScopePort for Scope {
 		_text: &str,
 		_scope: FileScope,
 		_provenance: Value,
-	) -> Result<MountedFile> {
+	) -> Result<FileEntry> {
 		panic!("unexpected text_file effect")
 	}
 	async fn previous_manifest(&mut self, _area: &Area) -> Result<Value> {

@@ -93,7 +93,7 @@ struct Wire {
 #[async_trait]
 impl Transport for Wire {
 	async fn request(&self, peer: &Peer, path: &str, body: &Value) -> Result<Reply> {
-		assert_eq!(body, json!({"grant_id":"grant"}));
+		assert_eq!(body, &json!({"grant_id":"grant"}));
 		self.log
 			.lock()
 			.unwrap()

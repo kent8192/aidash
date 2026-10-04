@@ -167,8 +167,8 @@ async fn record_failure_rolls_back_deletion_and_area_transition() {
 	let state = repository.0.lock().unwrap();
 	assert_eq!(state.record.state, "deleting");
 	assert_eq!(state.area.state, "cleaning");
-	assert_eq!(state.erased, vec![]);
-	assert_eq!(state.events, vec![]);
+	assert!(state.erased.is_empty());
+	assert!(state.events.is_empty());
 	assert_eq!(state.commits, 0);
 	assert_eq!(state.rollbacks, 1);
 	assert_eq!(state.open, 0);
@@ -180,7 +180,7 @@ async fn kept_snapshot_cannot_be_erased_by_a_previously_selected_job() {
 	erase_job(&repository, snapshot).await.unwrap();
 	let state = repository.0.lock().unwrap();
 	assert_eq!(state.record.state, "kept");
-	assert_eq!(state.erased, vec![]);
+	assert!(state.erased.is_empty());
 	assert_eq!(state.commits, 0);
 	assert_eq!(state.rollbacks, 1);
 	assert_eq!(state.open, 0);
@@ -220,7 +220,7 @@ async fn an_expired_job_cannot_delete_a_new_generation() {
 	assert_eq!(error.to_string(), "CLEANUP_GENERATION_CHANGED");
 	let state = repository.0.lock().unwrap();
 	assert_eq!(state.record.state, "recoverable");
-	assert_eq!(state.erased, vec![]);
+	assert!(state.erased.is_empty());
 	assert_eq!(state.commits, 0);
 	assert_eq!(state.rollbacks, 1);
 	assert_eq!(state.open, 0);

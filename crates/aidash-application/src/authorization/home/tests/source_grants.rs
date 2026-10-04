@@ -10,7 +10,6 @@ use crate::{
 use aidash_domain::{
 	federation::Peer,
 	policy::{PolicyBundle, SubjectKind},
-	registry::DefinitionValidation,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 struct SourceRepository {

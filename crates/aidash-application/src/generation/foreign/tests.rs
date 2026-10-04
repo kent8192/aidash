@@ -376,7 +376,7 @@ async fn foreign_binding_fences_precede_every_mutation(mut scope: Scope, #[case]
 		Err(Error::Forbidden)
 	));
 	assert_eq!(scope.events, ["prepared"]);
-	assert_eq!(scope.bound, vec![]);
+	assert!(scope.bound.is_empty());
 	assert_eq!(scope.activations, Vec::<Uuid>::new());
 }
 #[rstest]
@@ -606,6 +606,6 @@ async fn cancellation_before_binding_has_no_provisional_mutation(mut scope: Scop
 		.is_err()
 	);
 	assert_eq!(scope.events, ["prepared"]);
-	assert_eq!(scope.bound, vec![]);
+	assert!(scope.bound.is_empty());
 	assert_eq!(scope.activations, Vec::<Uuid>::new());
 }

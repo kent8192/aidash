@@ -546,7 +546,7 @@ async fn trust_listing_checks_pending_obligations_only_for_disabled_peers(reposi
 		enabled: false,
 	});
 	let result = trust_list(&repository).await.unwrap();
-	assert_eq!(result[0].pending_transactions, vec![]);
+	assert!(result[0].pending_transactions.is_empty());
 	assert_eq!(result[1].pending_transactions, [Uuid::from_u128(1)]);
 	assert_eq!(repository.calls(), ["trusts", "pending"]);
 }
