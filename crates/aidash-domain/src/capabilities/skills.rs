@@ -114,3 +114,53 @@ pub fn validate_config(config: &AgentConfig) -> Result<()> {
 	}
 	Ok(())
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Pinned {
+	#[serde(default)]
+	pub loaded: bool,
+	pub metadata: SkillMetadata,
+	pub files: Vec<super::operations::MountedFile>,
+	/// Escaped SKILL.md length when embedded in a JSON system message.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub instruction_json_len: Option<usize>,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillList {
+	pub cursor: Option<usize>,
+	pub limit: Option<usize>,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillLoad {
+	pub skill_id: Uuid,
+	pub expected_digest: String,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillRead {
+	pub skill_id: Uuid,
+	pub digest: String,
+	pub path: String,
+	pub offset: Option<usize>,
+	pub max_bytes: Option<usize>,
+}
+/// Import assigns a fresh immutable identity and canonicalizes file order before validation.
+pub fn imported(
+	origin: String,
+	instructions: String,
+	files: Vec<crate::registry::SkillFile>,
+) -> Result<SkillAttachment> {
+	let mut attachment = SkillAttachment {
+		skill_id: Uuid::new_v4(),
+		origin,
+		digest: String::new(),
+		instructions,
+		files,
+	};
+	attachment.files.sort_by(|a, b| a.path.cmp(&b.path));
+	attachment.digest = content_digest(&attachment);
+	validate(&attachment)?;
+	Ok(attachment)
+}

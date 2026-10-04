@@ -129,3 +129,5 @@ pub mod files;
 
 pub mod configuration;
 pub mod patch;
+
+pub mod skills;

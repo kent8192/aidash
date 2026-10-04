@@ -1411,3 +1411,9 @@ pub(crate) fn capability_configuration_scope<'a>(
 ) -> crate::apps::execution::repositories::configuration::Scope<'a> {
 	crate::apps::execution::repositories::configuration::Scope { store, access }
 }
+
+pub(crate) fn skill_headroom(
+	store: &Store,
+) -> crate::apps::execution::repositories::skills::Headroom<'_> {
+	crate::apps::execution::repositories::skills::Headroom { store }
+}
