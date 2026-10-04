@@ -130,3 +130,5 @@ pub mod peer;
 pub mod home;
 
 pub mod source;
+
+pub mod dashboard;
