@@ -35,112 +35,22 @@ impl Federation {
 		key: &str,
 		limit: usize,
 	) -> Result<()> {
-		let home = Home::new(self.clone(), run.clone());
-		let existing = self
-			.store
-			.run_inputs(run.id)
-			.await?
-			.into_iter()
-			.find(|input| input.idempotency_key == key);
-		if let Some(input) = existing {
-			if input.content != content {
-				return Err(Error::Conflict("run message idempotency key reused".into()));
-			}
-			if input.message_id.is_some()
-				&& self
-					.store
-					.run_message_has_media(&[input.message_id.expect("checked")])
-					.await?
-			{
-				return Err(Error::Conflict(
-					"run message idempotency key reused with media".into(),
-				));
-			}
-			if !home.local() && !home.recover_run_message(key, content).await? {
-				return Err(Error::Conflict(
-					"remote home cannot persist run message admission".into(),
-				));
-			}
-			return Ok(());
-		}
-		let history = if !home.local() {
-			self.historical_run_message_batch(run).await?
-		} else {
-			Vec::new()
-		};
-		let reserved_at_home = if home.local() {
-			false
-		} else if home.reserve_run_message(key, content).await? {
-			// Keep the reservation leased until the executor input is durable.
-			// A failed admission or stopped executor must not strand the home task.
-			true
-		} else {
-			return Err(Error::Conflict(
-				"remote home cannot atomically reserve run messages".into(),
-			));
-		};
-		let admission = if reserved_at_home {
-			self.store
-				.import_remote_run_messages_and_accept(
-					run.id, &history, sender, content, key, limit,
-				)
-				.await
-		} else {
-			self.store
-				.accept_run_message(run.id, sender, content, key, limit)
-				.await
-		};
-		if let Err(error) = admission {
-			if matches!(error, Error::Conflict(_))
-				&& self
-					.recover_historical_run_message(run, key, content)
-					.await?
-			{
-				// Keep the fence: the recovered historical input is now in the
-				// durable ledger and must reach inference before task termination.
-				if reserved_at_home {
-					home.commit_run_message(key, content).await?;
-				}
-				return Ok(());
-			}
-			if !home.local() {
-				match self.store.run_input_sequence(run.id, key, content).await {
-					Ok(_) => {
-						// The transaction may have committed even if the client saw a
-						// late connection error. Preserve its fence and bind the sequence.
-						home.commit_run_message(key, content).await?;
-						return Ok(());
-					}
-					Err(Error::Conflict(_)) => {
-						home.release_run_messages(&[key.to_owned()]).await?;
-					}
-					Err(check_error) => return Err(check_error),
-				}
-			}
-			return Err(error);
-		}
-		if reserved_at_home {
-			home.commit_run_message(key, content).await?;
-		}
-		Ok(())
+		aidash_application::federation::run_messages::admit(
+			&crate::bootstrap::execution_message_scope(self, run),
+			sender,
+			content,
+			key,
+			limit,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	pub async fn acknowledge_run_messages(&self, run: &Run) -> Result<()> {
-		if run.home_node == self.config.node_id || run.observed_input_seq == 0 {
-			return Ok(());
-		}
-		let keys: Vec<String> = self
-			.store
-			.run_inputs(run.id)
-			.await?
-			.into_iter()
-			.filter(|input| input.seq <= run.observed_input_seq)
-			.map(|input| input.idempotency_key)
-			.collect();
-		let home = Home::new(self.clone(), run.clone());
-		for chunk in keys.chunks(100) {
-			home.acknowledge_run_messages(chunk).await?;
-		}
-		Ok(())
+		aidash_application::federation::run_messages::acknowledge_observed(
+			&crate::bootstrap::run_message_scope(self, &run.metadata()),
+		)
+		.await
+		.map_err(Into::into)
 	}
 	/// Explicit cancellation or failure supersedes any still-unobserved
 	/// correction. Consume the home fences in the same task-row transaction as
@@ -154,19 +64,11 @@ impl Federation {
 			.await
 	}
 	pub async fn require_terminal_safe_delivery(&self, run: &Run) -> Result<()> {
-		if run.home_node == self.config.node_id {
-			return Ok(());
-		}
-		let home = Home::new(self.clone(), run.clone());
-		match home
-			.optional_command::<Value>("run_message_delivery_capability", json!({}))
-			.await?
-		{
-			Some(capability) if capability["protocol"].as_u64() == Some(2) => Ok(()),
-			_ => Err(Error::Conflict(
-				"remote home does not support fenced run-message publication and completion".into(),
-			)),
-		}
+		aidash_application::federation::run_messages::require_terminal_safe_delivery(
+			&crate::bootstrap::run_message_scope(self, &run.metadata()),
+		)
+		.await
+		.map_err(Into::into)
 	}
 	pub async fn run_message_limit(&self, run: &Run) -> Result<usize> {
 		let available = self.run_request_headroom(run).await?;
@@ -235,38 +137,22 @@ impl Federation {
 	}
 
 	pub async fn reconcile_run_messages(&self, run: &Run) -> Result<()> {
-		if run.home_node == self.config.node_id {
-			return Ok(());
-		}
-		let limit = self.run_message_limit(run).await?;
-		let batch = self.historical_run_message_batch(run).await?;
-		self.store
-			.import_remote_run_messages(run.id, &batch, limit)
-			.await
+		aidash_application::federation::run_messages::reconcile(
+			&crate::bootstrap::execution_message_scope(self, run),
+		)
+		.await
+		.map_err(Into::into)
 	}
 
 	pub(crate) async fn historical_run_message_batch(
 		&self,
 		run: &Run,
 	) -> Result<Vec<(String, Message)>> {
-		let home = Home::new(self.clone(), run.clone());
-		let prefix = format!("{}:{}:", self.config.node_id, run.task_id);
-		let mut batch = Vec::new();
-		for message in home.historical_run_messages().await? {
-			let key = message
-				.idempotency_key
-				.as_deref()
-				.and_then(|key| key.strip_prefix(&prefix))
-				.ok_or_else(|| Error::Conflict("historical run message key changed".into()))?;
-			if message.workspace_id != run.workspace_id {
-				return Err(Error::Conflict(
-					"historical run message workspace changed".into(),
-				));
-			}
-			batch.push((key.to_owned(), message));
-		}
-		batch.sort_by_key(|(_, message)| (message.created_at, message.id));
-		Ok(batch)
+		aidash_application::federation::run_messages::historical_batch(
+			&crate::bootstrap::run_message_scope(self, &run.metadata()),
+		)
+		.await
+		.map_err(Into::into)
 	}
 	pub async fn recover_historical_run_message(
 		&self,
@@ -274,16 +160,13 @@ impl Federation {
 		key: &str,
 		content: &str,
 	) -> Result<bool> {
-		if run.home_node == self.config.node_id {
-			return Ok(false);
-		}
-		self.reconcile_run_messages(run).await?;
-		Ok(self
-			.store
-			.run_inputs(run.id)
-			.await?
-			.iter()
-			.any(|input| input.idempotency_key == key && input.content == content))
+		aidash_application::federation::run_messages::recover_historical(
+			&crate::bootstrap::execution_message_scope(self, run),
+			key,
+			content,
+		)
+		.await
+		.map_err(Into::into)
 	}
 
 	/// Workers need reserved database capacity to finish an effect while API
@@ -497,7 +380,7 @@ impl Home {
 	pub fn local(&self) -> bool {
 		self.run.home_node == self.federation.config.node_id
 	}
-	async fn command<T: DeserializeOwned>(&self, op: &str, data: Value) -> Result<T> {
+	pub(crate) async fn command<T: DeserializeOwned>(&self, op: &str, data: Value) -> Result<T> {
 		if let Some(grant) =
 			crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
 				.await?
@@ -512,7 +395,7 @@ impl Home {
 		}
 		self.federation.request(&self.run.home_node,Method::POST,"/workspace",Some(&json!({"task_id":self.run.task_id,"agent":{"id":self.run.agent_id,"version":self.run.agent_version},"operation":op,"data":data}))).await
 	}
-	async fn optional_command<T: DeserializeOwned>(
+	pub(crate) async fn optional_command<T: DeserializeOwned>(
 		&self,
 		op: &str,
 		data: Value,
@@ -977,161 +860,55 @@ impl Home {
 		}
 	}
 	pub async fn reserve_run_message(&self, key: &str, content: &str) -> Result<bool> {
-		if self.local() {
-			return Ok(true);
-		}
-		Ok(self
-			.optional_command::<Value>(
-				"run_message_reserve",
-				json!({"run_id":self.run.id,"key":key,"content":content}),
-			)
-			.await?
-			.is_some())
-	}
-	async fn promote_run_message(&self, key: &str, content: &str) -> Result<bool> {
-		if self.local() {
-			return Ok(true);
-		}
-		let seq = self
-			.federation
-			.store
-			.run_input_sequence(self.run.id, key, content)
-			.await?;
-		Ok(self
-			.optional_command::<Value>(
-				"run_message_commit",
-				json!({"run_id":self.run.id,"key":key,"content":content,"input_seq":seq}),
-			)
-			.await?
-			.is_some())
+		aidash_application::federation::run_messages::reserve(
+			&crate::bootstrap::run_message_scope(&self.federation, &self.run),
+			key,
+			content,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	pub async fn commit_run_message(&self, key: &str, content: &str) -> Result<()> {
-		if !self.promote_run_message(key, content).await? {
-			return Err(Error::Conflict(
-				"remote home cannot persist run message admission".into(),
-			));
-		}
-		Ok(())
-	}
-	async fn recover_run_message(&self, key: &str, content: &str) -> Result<bool> {
-		match self.promote_run_message(key, content).await {
-			Ok(supported) => Ok(supported),
-			Err(Error::Conflict(_)) => {
-				// Imported pre-ledger history may not have a fence on an older home.
-				// Reserve only after trying the durable acknowledgement, otherwise
-				// expired admissions would be rejected forever on terminal tasks.
-				if !self.reserve_run_message(key, content).await? {
-					return Ok(false);
-				}
-				self.commit_run_message(key, content).await?;
-				Ok(true)
-			}
-			Err(error) => Err(error),
-		}
+		aidash_application::federation::run_messages::commit(
+			&crate::bootstrap::run_message_scope(&self.federation, &self.run),
+			key,
+			content,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	pub async fn release_run_messages(&self, keys: &[String]) -> Result<()> {
-		if self.local() || keys.is_empty() {
-			return Ok(());
-		}
-		self.optional_command::<Value>(
-			"run_message_release",
-			json!({"run_id":self.run.id,"keys":keys}),
+		aidash_application::federation::run_messages::release(
+			&crate::bootstrap::run_message_scope(&self.federation, &self.run),
+			keys,
 		)
-		.await?;
-		Ok(())
+		.await
+		.map_err(Into::into)
 	}
 	pub async fn acknowledge_run_messages(&self, keys: &[String]) -> Result<()> {
-		if self.local() || keys.is_empty() {
-			return Ok(());
-		}
-		self.optional_command::<Value>(
-			"run_message_ack",
-			json!({"run_id":self.run.id,"keys":keys}),
+		aidash_application::federation::run_messages::acknowledge(
+			&crate::bootstrap::run_message_scope(&self.federation, &self.run),
+			keys,
 		)
-		.await?;
-		Ok(())
+		.await
+		.map_err(Into::into)
 	}
 	pub async fn human_message_record(&self, key: &str, content: &str) -> Result<Message> {
-		if self.local() {
-			self.federation
-				.store
-				.message_record(self.run.workspace_id, "human", content, Some(key))
-				.await
-		} else {
-			if let Some(message) = self
-				.optional_command(
-					"run_message_delivery",
-					json!({"run_id":self.run.id,"key":key,"content":content}),
-				)
-				.await?
-			{
-				return Ok(message);
-			}
-			// Protocol 0.1 peers from before the delivery extension return only
-			// {"sent":true}. Read the newly published record from their snapshot.
-			self.command::<Value>("human_message", json!({"key":key,"content":content}))
-				.await?;
-			let full_key = format!(
-				"{}:{}:{key}",
-				self.federation.config.node_id, self.run.task_id
-			);
-			self.snapshot_collection::<Message>("messages")
-				.await?
-				.into_iter()
-				.find(|message| message.idempotency_key.as_deref() == Some(&full_key))
-				.ok_or_else(|| {
-					Error::External("legacy peer did not expose delivered message".into())
-				})
-		}
+		aidash_application::federation::run_messages::record(
+			&crate::bootstrap::run_message_scope(&self.federation, &self.run),
+			key,
+			content,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	pub async fn historical_run_messages(&self) -> Result<Vec<Message>> {
-		if self.local() {
-			return Ok(Vec::new());
-		}
-		let mut messages = Vec::new();
-		loop {
-			let Some(page): Option<Vec<Message>> = self
-				.optional_command(
-					"run_message_history",
-					json!({
-						"run_id":self.run.id,"offset":messages.len()
-					}),
-				)
-				.await?
-			else {
-				// Older 0.1 peers expose only their latest 100 messages through
-				// snapshot_page. Fail closed if that window is full: earlier run
-				// corrections might otherwise be missed during finalization.
-				let mut legacy = self.snapshot_collection::<Message>("messages").await?;
-				if legacy.len() == 100 {
-					return Err(Error::External(
-						"legacy peer message snapshot may omit run history".into(),
-					));
-				}
-				let prefix = format!("{}:{}:", self.federation.config.node_id, self.run.task_id);
-				let run_id = self.run.id.to_string();
-				legacy.retain(|message| {
-					message
-						.idempotency_key
-						.as_deref()
-						.and_then(|key| key.strip_prefix(&prefix))
-						.is_some_and(|key| {
-							key.starts_with(&format!("human:{run_id}:"))
-								|| (key.starts_with("subject-human:")
-									&& key.rsplit(':').nth(1) == Some(run_id.as_str()))
-						})
-				});
-				legacy.sort_by_key(|message| (message.created_at, message.id));
-				messages.extend(legacy);
-				return Ok(messages);
-			};
-			let count = page.len();
-			messages.extend(page);
-			if count < 4 {
-				break;
-			}
-		}
-		Ok(messages)
+		aidash_application::federation::run_messages::history(&crate::bootstrap::run_message_scope(
+			&self.federation,
+			&self.run,
+		))
+		.await
+		.map_err(Into::into)
 	}
 	pub async fn report(&self, key: &str, kind: &str, data: Value) -> Result<()> {
 		if self.local() {
@@ -1185,40 +962,11 @@ impl Federation {
 
 impl Federation {
 	pub(crate) async fn deliver_run_message_metadata(&self, run: &RunMetadata) -> Result<()> {
-		if run.home_node == self.config.node_id {
-			return Ok(());
-		}
-		let home = Home::for_delivery(self.clone(), run.clone());
-		for input in self.store.run_inputs(run.id).await? {
-			if input.message_id.is_some() && input.seq <= run.observed_input_seq {
-				continue;
-			}
-			if !home
-				.recover_run_message(&input.idempotency_key, &input.content)
-				.await?
-			{
-				tracing::debug!(run_id=%run.id, "older home does not support remote message reservations");
-			}
-			let message = home
-				.human_message_record(&input.idempotency_key, &input.content)
-				.await?;
-			let expected_key = format!(
-				"{}:{}:{}",
-				self.config.node_id, run.task_id, input.idempotency_key
-			);
-			if message.workspace_id != run.workspace_id
-				|| message.content != input.content
-				|| message.idempotency_key.as_deref() != Some(expected_key.as_str())
-			{
-				return Err(Error::Conflict(
-					"remote run message delivery changed".into(),
-				));
-			}
-			self.store
-				.bind_run_input_message(run.id, &input.idempotency_key, message.id)
-				.await?;
-		}
-		Ok(())
+		aidash_application::federation::run_messages::deliver(&crate::bootstrap::run_message_scope(
+			self, run,
+		))
+		.await
+		.map_err(Into::into)
 	}
 }
 

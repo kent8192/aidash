@@ -78,6 +78,14 @@ resumes ordinary visibility before recovery reads its committed state. Native
 adapters project only the committed run identifier or control for observations
 and preserve the existing failure-delivery transaction and lease fence.
 
+Remote run-message admission, reconciliation, Home reservation recovery and
+observed-input acknowledgements share an application ledger scope. History import
+and new-input acceptance remain one native transaction. A late connection error
+checks the committed input before promoting or releasing its Home fence. Domain
+rules bind delivered records to the original node, task, workspace and content;
+typed native RPC adapters retain the preceding Federation 0.1 peer fallback and
+its bounded history/snapshot behavior.
+
 Scoped commands authorize effects, track disclosed outputs, journal mutation
 results, and recheck the source lease through the application use case. A claim
 binds the complete inspected agent definition. Operation reconciliation owns one

@@ -1891,3 +1891,23 @@ pub(crate) fn worker_step(
 		visibility,
 	})
 }
+
+pub(crate) fn run_message_scope<'a>(
+	federation: &'a Federation,
+	run: &aidash_domain::RunMetadata,
+) -> crate::apps::federation::remote::repositories::run_messages::Messages<'a> {
+	crate::apps::federation::remote::repositories::run_messages::Messages {
+		federation,
+		run: run.clone(),
+		execution: None,
+	}
+}
+
+pub(crate) fn execution_message_scope<'a>(
+	federation: &'a Federation,
+	run: &'a aidash_domain::Run,
+) -> crate::apps::federation::remote::repositories::run_messages::Messages<'a> {
+	let mut scope = run_message_scope(federation, &run.metadata());
+	scope.execution = Some(run);
+	scope
+}
