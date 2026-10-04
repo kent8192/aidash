@@ -1,16 +1,13 @@
 //! Home-side authority for explicitly disclosed remote semantic context.
-use super::{Inspection, source_authority};
+use super::Inspection;
 use crate::semantic::remote::{Operation, Receipt, SourceRead, bounded_query, journal};
 use crate::{
 	Error, Result,
-	authorization::{access::Access, catalog},
+	authorization::access::Access,
 	domain::Task,
 	federation::Federation,
-	registry::{AgentConfig, digest},
-	semantic::{
-		EmbeddingConfig,
-		remote::{Binding, Failure, Provider, Request, VERSION},
-	},
+	registry::AgentConfig,
+	semantic::remote::{Binding, Failure, Request},
 };
 
 use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
@@ -25,83 +22,15 @@ pub(crate) async fn binding(
 	inspection: &Inspection,
 	request: &Request,
 ) -> Result<Binding> {
-	let Request::RequiredHome {
-		embedding,
-		compactor,
-	} = request
-	else {
-		return Ok(Binding::Disabled {});
-	};
-	if inspection.semantic_memory != VERSION || inspection.compactor.as_ref() != compactor.as_ref()
-	{
-		return Err(Error::RemoteSemantic(Failure::Configuration));
-	}
-	let agent: AgentConfig = serde_json::from_value(inspection.agent.config.clone())?;
-	if agent.allow_cross_conversation_memory == Some(false)
-		&& agent.allow_workspace_retrieval == Some(false)
-	{
-		return Err(Error::RemoteSemantic(Failure::Configuration));
-	}
-	source_authority(access, task, node, inspection).await?;
-	let mut workspace = access.workspace(task.workspace_id).await?;
-	workspace.attributes["remote_node"] = json!(node);
-	workspace.attributes["inference_model"] = json!(agent.model);
-	workspace.attributes["compactor"] = json!(compactor);
-	access.require(&workspace, "semantic.search").await?;
-	// Disclosure is independently selectable in policy; local read/search is
-	// not permission to send text to the execution node and its providers.
-	access.require(&workspace, "semantic.disclose").await?;
-	let index = crate::semantic::service::index(&mut access.tx, task.workspace_id, false)
-		.await
-		.map_err(|e| {
-			if matches!(e, Error::NotFound(_)) {
-				Error::RemoteSemantic(Failure::Configuration)
-			} else {
-				e
-			}
-		})?;
-	let spec = index.configuration()?;
-	if index.tenant != access.identity.tenant || !spec.enabled || !spec.auto_context {
-		return Err(Error::RemoteSemantic(Failure::Configuration));
-	}
-	let entry = catalog::entry(access, embedding, "embedding.invoke").await?;
-	access
-		.require(&catalog::resource(access, &entry), "registry.read")
-		.await?;
-	if entry.kind != "embedding"
-		|| serde_json::from_value::<EmbeddingConfig>(entry.config.clone())? != spec.embedding
-	{
-		return Err(Error::RemoteSemantic(Failure::Configuration));
-	}
-	let compactor = if let Some(reference) = compactor {
-		let definition = inspection
-			.definitions
-			.iter()
-			.find(|d| d.kind == "compactor" && &d.entry == reference)
-			.ok_or(Error::RemoteSemantic(Failure::Configuration))?;
-		Some(Provider {
-			node_id: node.to_owned(),
-			entry: reference.clone(),
-			digest: definition.digest.clone(),
-			configuration_digest: digest(&definition.metadata.config),
-		})
-	} else {
-		None
-	};
-	Ok(Binding::RequiredHome {
-		home_lineage: crate::generation::remote::lineage(access, &f.config.node_id).await?,
-		execution_lineage: inspection.lineage.clone(),
-		version: VERSION,
-		index_revision: index.revision,
-		index_digest: digest(&index.spec),
-		embedding: Box::new(Provider {
-			node_id: f.config.node_id.clone(),
-			entry: embedding.clone(),
-			digest: digest(&to_value(&entry)?),
-			configuration_digest: digest(&entry.config),
-		}),
-		compactor: compactor.map(Box::new),
-	})
+	aidash_application::authorization::source::semantic::binding(
+		&mut crate::bootstrap::source_semantic_binding_scope(f, access),
+		task,
+		node,
+		inspection,
+		request,
+	)
+	.await
+	.map_err(Into::into)
 }
 
 pub(crate) fn failure(error: &Error) -> Failure {

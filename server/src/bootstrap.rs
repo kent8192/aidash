@@ -1545,3 +1545,11 @@ pub(crate) fn source_authority_scope(
 ) -> crate::apps::identity::repositories::remote_grants::authority::Scope<'_> {
 	crate::apps::identity::repositories::remote_grants::authority::Scope { access }
 }
+
+/// Required Home disclosure shares the grant's current policy, credential and index lease.
+pub(crate) fn source_semantic_binding_scope<'a>(
+	runtime: &'a Federation,
+	access: &'a mut crate::authorization::access::Access,
+) -> crate::apps::identity::repositories::remote_grants::semantic::Scope<'a> {
+	crate::apps::identity::repositories::remote_grants::semantic::Scope { runtime, access }
+}

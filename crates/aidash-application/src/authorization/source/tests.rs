@@ -214,3 +214,5 @@ async fn unsupported_receiver_kind_cannot_gain_execution_authority() {
 	));
 	assert_eq!(scope.calls.last().unwrap().0, "registry.read");
 }
+
+mod semantic;

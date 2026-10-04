@@ -30,3 +30,5 @@ pub mod grants;
 pub trait SourcePeerScope: Send {
 	async fn peer(&mut self, node: &str) -> Result<Option<aidash_domain::federation::Peer>>;
 }
+
+pub mod semantic;

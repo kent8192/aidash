@@ -65,3 +65,5 @@ pub async fn authorize<S: SourceAuthorityScope + ?Sized>(
 mod tests;
 
 pub mod grants;
+
+pub mod semantic;
