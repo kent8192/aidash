@@ -125,3 +125,10 @@ impl FederationRepository for Repository {
 		}))
 	}
 }
+
+#[async_trait]
+impl aidash_application::ports::federation::authority::Peers for Repository {
+	async fn peer(&self, node: &str) -> Result<Peer> {
+		self.federation.peer(node).await.map_err(Into::into)
+	}
+}

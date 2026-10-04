@@ -1515,3 +1515,15 @@ pub(crate) fn draft_repository(
 		actor,
 	}
 }
+
+/// Source and receiver authority RPCs share fresh peer trust and bounded integration transport.
+pub(crate) fn authority_peer_client(
+	runtime: &crate::federation::Federation,
+) -> aidash_application::federation::authority::Client {
+	aidash_application::federation::authority::Client::new(
+		Arc::new(crate::apps::federation::remote::repositories::Repository {
+			federation: runtime.clone(),
+		}),
+		Arc::new(peer_transport(runtime)),
+	)
+}

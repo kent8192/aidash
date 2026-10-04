@@ -65,3 +65,5 @@ pub mod dependencies;
 pub mod foreign_reads;
 
 pub mod registry_reads;
+
+pub mod authority;

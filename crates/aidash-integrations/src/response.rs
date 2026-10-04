@@ -3,9 +3,14 @@ use crate::{Error, Result};
 use serde::de::DeserializeOwned;
 
 pub(crate) async fn json<T: DeserializeOwned>(
-	mut response: reqwest::Response,
+	response: reqwest::Response,
 	limit: usize,
 ) -> Result<T> {
+	serde_json::from_slice(&bytes(response, limit).await?)
+		.map_err(|error| Error::External(format!("invalid response JSON: {error}")))
+}
+
+pub(crate) async fn bytes(mut response: reqwest::Response, limit: usize) -> Result<Vec<u8>> {
 	if response
 		.content_length()
 		.is_some_and(|length| length > limit as u64)
@@ -19,6 +24,5 @@ pub(crate) async fn json<T: DeserializeOwned>(
 		}
 		bytes.extend_from_slice(&chunk);
 	}
-	serde_json::from_slice(&bytes)
-		.map_err(|error| Error::External(format!("invalid response JSON: {error}")))
+	Ok(bytes)
 }

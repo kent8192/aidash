@@ -46,43 +46,10 @@ pub(crate) async fn authority_request<T: serde::de::DeserializeOwned>(
 	path: &str,
 	body: &serde_json::Value,
 ) -> Result<T> {
-	let response = f
-		.peer_response(node, reqwest::Method::POST, path, Some(body))
+	crate::bootstrap::authority_peer_client(f)
+		.request(node, path, body)
 		.await
-		.map_err(|error| {
-			tracing::warn!(%node,%path,error=%error,"authority request failed");
-			Error::External("remote execution authority unavailable".into())
-		})?;
-	let status = response.status().as_u16();
-	if !response.status().is_success()
-		&& let Some(reason) = response
-			.headers()
-			.get("x-aidash-semantic-reason")
-			.and_then(|value| value.to_str().ok())
-			.and_then(|value| serde_json::from_value(serde_json::json!(value)).ok())
-	{
-		return Err(Error::RemoteSemantic(reason));
-	}
-	match status {
-		200..=299 => crate::response::json(response, 4_194_304)
-			.await
-			.map_err(|_| Error::External("invalid remote authority response".into())),
-		401 | 403 | 404 => Err(Error::Forbidden),
-		409 => Err(Error::Conflict("remote execution authority changed".into())),
-		503 if response
-			.headers()
-			.get("x-aidash-transaction-pending")
-			.is_some_and(|value| value == "1") =>
-		{
-			Err(Error::TransactionPending)
-		}
-		_ => {
-			tracing::warn!(%node,%path,status,"authority request rejected");
-			Err(Error::External(
-				"remote execution authority unavailable".into(),
-			))
-		}
-	}
+		.map_err(Into::into)
 }
 
 pub(crate) use crate::apps::identity::serializers::peer::{

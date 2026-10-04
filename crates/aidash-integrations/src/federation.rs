@@ -106,3 +106,5 @@ mod tests;
 mod dependencies;
 
 mod registry_reads;
+
+mod authority;

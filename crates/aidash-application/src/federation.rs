@@ -254,3 +254,5 @@ pub mod foreign_reads;
 pub mod graph;
 
 pub mod registry_reads;
+
+pub mod authority;
