@@ -67,3 +67,58 @@ impl HomeBinding {
 }
 #[cfg(test)]
 mod tests;
+
+impl Grant {
+	/// Reusing a preparation key requires every pinned authority and authored definition to match.
+	pub fn matches_authority(&self, expected: &PreparationAuthority<'_>) -> bool {
+		self.task_id == expected.task_id
+			&& self.task_revision == expected.task.revision
+			&& self.workspace_id == expected.task.workspace_id
+			&& self.node_id == expected.input.node_id
+			&& self.credential_id == expected.identity.credential_id
+			&& self.tenant == expected.identity.tenant
+			&& self.root_subject == expected.identity.subject
+			&& self.subject_chain == expected.subjects
+			&& &self.inspection == expected.inspection
+			&& &self.semantic == expected.semantic
+	}
+	/// Current commands may advance the revision journal while receiver input retains its original image.
+	pub fn admitted_task(
+		&self,
+		task: &crate::Task,
+		binding: Option<&HomeBinding>,
+	) -> serde_json::Result<Option<crate::Task>> {
+		let expected = binding.map_or(self.task_revision, |bound| bound.task_revision);
+		if task.revision != expected
+			|| task.workspace_id != self.workspace_id
+			|| (binding.is_none() && task.status != crate::TaskStatus::Open)
+		{
+			return Ok(None);
+		}
+		if let Some(bound) = binding {
+			let original: crate::Task = serde_json::from_value(bound.initial_task.clone())?;
+			if bound.grant_id != self.id
+				|| bound.task_id != task.id
+				|| original.id != task.id
+				|| original.workspace_id != task.workspace_id
+				|| original.revision != self.task_revision
+			{
+				return Ok(None);
+			}
+			Ok(Some(original))
+		} else {
+			Ok(Some(task.clone()))
+		}
+	}
+}
+
+/// Complete current authority required to reuse an immutable preparation key.
+pub struct PreparationAuthority<'a> {
+	pub task_id: Uuid,
+	pub task: &'a crate::Task,
+	pub input: &'a super::PrepareInput,
+	pub identity: &'a crate::identity::execution::ExecutionPrincipal,
+	pub subjects: &'a [String],
+	pub inspection: &'a Value,
+	pub semantic: &'a Value,
+}

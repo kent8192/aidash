@@ -272,32 +272,11 @@ async fn description_lease_mode(
 			return Err(Error::Forbidden);
 		}
 		let execution = execution::binding(&mut access, current.id).await?;
-		let expected_revision = execution
-			.as_ref()
-			.map_or(current.task_revision, |bound| bound.task_revision);
-		if task.revision != expected_revision
-			|| task.workspace_id != current.workspace_id
-			|| (execution.is_none() && task.status != crate::domain::TaskStatus::Open)
-		{
-			return Err(Error::Forbidden);
-		}
-		// Commands may advance only this revision journal. The admission keeps
-		// its original task image, so an unrelated source edit cannot substitute
-		// input or silently change the exact receiver binding.
-		let admitted_task = if let Some(bound) = &execution {
-			let original: Task = serde_json::from_value(bound.initial_task.clone())?;
-			if bound.grant_id != current.id
-				|| bound.task_id != task.id
-				|| original.id != task.id
-				|| original.workspace_id != task.workspace_id
-				|| original.revision != current.task_revision
-			{
-				return Err(Error::Forbidden);
-			}
-			original
-		} else {
-			task.clone()
-		};
+		let source = aidash_domain::federation::execution::home::Grant::from(current.clone());
+		let binding = execution.map(aidash_domain::federation::execution::home::HomeBinding::from);
+		let admitted_task = source
+			.admitted_task(&task, binding.as_ref())?
+			.ok_or(Error::Forbidden)?;
 		let inspection: Inspection = serde_json::from_value(current.inspection)?;
 		source_authority(&mut access, &task, node, &inspection).await?;
 		access.remote_semantic_sources(current.id).await?;
@@ -420,17 +399,10 @@ impl RemoteGrants {
                 .and_where(SimpleExpr::CustomWithExpr("(id=?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).execute(&mut **access.tx).await? };
         }
         let grant: Grant={ let query_bind_1 = input.id; sqlx::query_as(&reinhardt::query::Query::select().expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk))).from(reinhardt::query::Alias::new("authorization_remote_grants")).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).lock(reinhardt::query::LockType::Share).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(&mut **access.tx).await? };
-        if grant.task_id != task_id
-            || grant.task_revision != task.revision
-            || grant.workspace_id != task.workspace_id
-            || grant.node_id != input.node_id
-            || grant.credential_id != identity.credential_id
-            || grant.tenant != identity.tenant
-            || grant.root_subject != identity.subject
-            || grant.subject_chain != access.subjects
-            || grant.inspection != metadata
-            || grant.semantic != semantic
-            || !live(&mut access, grant.id).await?
+        let principal=aidash_domain::identity::execution::ExecutionPrincipal {tenant:identity.tenant.clone(),subject:identity.subject.clone(),credential_id:identity.credential_id};
+        let expected=aidash_domain::federation::execution::home::PreparationAuthority {task_id,task:&task,input:&input,identity:&principal,subjects:&access.subjects,inspection:&metadata,semantic:&semantic};
+        if !aidash_domain::federation::execution::home::Grant::from(grant.clone()).matches_authority(&expected)
+            || !live(&mut access,grant.id).await?
         {
             return Err(Error::Conflict("grant id already binds different or expired authority".into()));
         }
