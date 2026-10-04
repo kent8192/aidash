@@ -1911,3 +1911,9 @@ pub(crate) fn execution_message_scope<'a>(
 	scope.execution = Some(run);
 	scope
 }
+
+pub(crate) fn execution_headroom(
+	federation: &Federation,
+) -> crate::apps::federation::remote::repositories::headroom::Context<'_> {
+	crate::apps::federation::remote::repositories::headroom::Context(federation)
+}

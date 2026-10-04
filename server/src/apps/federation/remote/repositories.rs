@@ -134,3 +134,5 @@ impl aidash_application::ports::federation::authority::Peers for Repository {
 }
 
 pub(crate) mod run_messages;
+
+pub(crate) mod headroom;

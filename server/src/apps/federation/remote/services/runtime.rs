@@ -4,7 +4,7 @@ use crate::{
 	Error, Result,
 	config::{Config, PROTOCOL_VERSION, peer_secret, validate_endpoint, validate_node_id},
 	domain::*,
-	registry::{AgentConfig, EntityRef, Entry, ModelConfig, Registry, Search},
+	registry::{EntityRef, Entry, Registry, Search},
 	store::{RunResponseMessage, Store},
 };
 use reinhardt::DiError;
@@ -71,65 +71,33 @@ impl Federation {
 		.map_err(Into::into)
 	}
 	pub async fn run_message_limit(&self, run: &Run) -> Result<usize> {
-		let available = self.run_request_headroom(run).await?;
-		// Keep most of the registered model's remaining window for the task,
-		// workspace observation and tool history.
-		Ok((available / 4).min(16_384))
+		aidash_application::execution::headroom::message_limit(
+			&crate::bootstrap::execution_headroom(self),
+			&run.metadata(),
+		)
+		.await
+		.map_err(Into::into)
 	}
 
 	pub(crate) async fn run_media_input_routes(
 		&self,
 		run: &RunMetadata,
 	) -> Result<Vec<Vec<String>>> {
-		if run.home_node != self.config.node_id {
-			return Ok(Vec::new());
-		}
-		let agent = self
-			.registry
-			.get_for_run(run, &run.agent_id, &run.agent_version)
-			.await?;
-		let agent: AgentConfig = serde_json::from_value(agent.config)?;
-		let model = self
-			.registry
-			.get_for_run(run, &agent.model.id, &agent.model.version)
-			.await?;
-		let model: ModelConfig = serde_json::from_value(model.config)?;
-		Ok(model.current_media_input_routes())
+		aidash_application::execution::headroom::media_routes(
+			&crate::bootstrap::execution_headroom(self),
+			run,
+		)
+		.await
+		.map_err(Into::into)
 	}
 
 	pub(crate) async fn run_request_headroom(&self, run: &Run) -> Result<usize> {
-		let agent_entry = self
-			.registry
-			.get_for_run(run, &run.agent_id, &run.agent_version)
-			.await?;
-		let agent: AgentConfig = serde_json::from_value(agent_entry.config.clone())?;
-		let mut references = Vec::with_capacity(1 + agent.skills.len() + agent.tools.len());
-		references.push(
-			self.registry
-				.get_for_run(run, &agent.model.id, &agent.model.version)
-				.await?,
-		);
-		for reference in agent.skills.iter().chain(&agent.tools) {
-			references.push(
-				self.registry
-					.get_for_run(run, &reference.id, &reference.version)
-					.await?,
-			);
-		}
-		let private_context = if agent.knowledge_digest.is_some() {
-			json!({"reference_documents":crate::knowledge::load(&self.registry.db, &agent_entry).await?})
-		} else {
-			Value::Null
-		};
-		let available =
-			crate::registry::agent_prompt_headroom(&agent, &references, &private_context)?
-				.saturating_sub(crate::context::MIN_CONTEXT_RESERVE);
-		if !agent.core_capabilities.skills {
-			return Ok(available);
-		}
-		let pinned =
-			crate::capabilities::skills::context_headroom_reserve(&self.store, run).await?;
-		Ok(available.saturating_sub(pinned))
+		aidash_application::execution::headroom::request(
+			&crate::bootstrap::execution_headroom(self),
+			&run.metadata(),
+		)
+		.await
+		.map_err(Into::into)
 	}
 
 	pub async fn deliver_run_messages(&self, run: &Run) -> Result<()> {
