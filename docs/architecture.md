@@ -4,7 +4,50 @@ This document describes the current implementation and its boundaries. Scoped re
 
 ## Current implementation
 
-The implementation is a Rust node executable, with independent control server and worker modes, and a React/TypeScript dashboard. Authoritative state lives in PostgreSQL; Qdrant stores derived semantic vectors. SeaORM owns schema migrations and registry CRUD, and SeaQuery constructs application and test queries, including transactional task transitions, execution journals, and the event outbox. SQLx executes those constructed statements. PostgreSQL trigger functions, triggers and ALTER CHECK operations that SeaQuery cannot represent remain explicit SeaORM migration DDL. They share the application data pool; transaction control and visibility leases use separate connection capacity. Runtime queries are exercised against real PostgreSQL so builds do not require a live database.
+The implementation is a Rust 2024 Cargo workspace, with independent control server
+and worker modes and a React/TypeScript dashboard. Domain models and pure rules
+live in `aidash-domain`; application use cases and external ports live in
+`aidash-application`; `aidash-runtime` supervises background work; and
+`aidash-integrations` implements external connections. `aidash-server` owns
+Reinhardt HTTP, ORM repositories, settings, migrations, and dependency assembly.
+HTTP requests and workers use the same bootstrap and persistence implementations.
+
+Worker entry, inference admission, scoped command replay and capability operation
+admission use application ports. Transaction manifests and monotonic coordinator
+decisions are domain rules; transaction authority completes inherited subject
+chains before checking mutations and recipient disclosure. Native scopes retain
+the caller's transaction and lock order. Authority withdrawal reloads the Area
+before the operation under row locks, keeps cancellation possible after
+revocation, and retains possible effects for dispatched writers.
+
+Scoped commands authorize effects, track disclosed outputs, journal mutation
+results, and recheck the source lease through the application use case. A claim
+binds the complete inspected agent definition. Operation reconciliation owns one
+authority scope through commit or rollback, records attempted dispatch before
+contacting the runner, and publishes outputs atomically before advancing its
+revision. Runner HTTP lives in integrations; its transport restrictions,
+credential rotation, timeout and verified deployment ceilings retain the existing
+execution contract.
+
+Capability sessions, explicit retention and restoration, reference extraction,
+approval decisions, Python lifecycle, file operations and Skill loading use
+application ports over the same native authority transaction. Patch publication
+checks every preimage before exposing the new manifest. Reference and cleanup
+workers require a confirmed writer stop before reclaiming bytes; runtime owns
+their scheduling and drain loops. Outbound HTTP records an attempt before the
+integration transport contacts the remote service. Current subject chains and
+source constraints apply to both HTTP and worker entry points.
+
+Authoritative state lives in PostgreSQL; Qdrant stores derived semantic vectors.
+Reinhardt owns the single migration graph under `server/migrations/`. Its frozen
+baseline retains PostgreSQL functions, triggers, generated columns, constraints,
+indexes, and lock/lease semantics from the 54-step development schema. State-only
+ORM snapshots support future autodetection without replacing these physical
+guarantees. Native repository operations retain the caller's transaction and
+visibility/authority scope; transaction control uses separate connection capacity.
+The [migration runbook](../server/migrations/README.md) describes the supported
+empty-database boundary and maintenance cutover. Runtime queries are tested with
+real PostgreSQL; builds do not require a live database.
 
 The workspace's home node owns its task revisions, messages and artifacts. Remote agents claim and mutate these resources through the versioned HTTP federation protocol. They never connect to the home database. Each executing node persists its own run journal. Peer trust is explicitly configured on both nodes with environment-based credential references. Public identity contains no secrets. Registry versions are immutable and model selection is explicit.
 
