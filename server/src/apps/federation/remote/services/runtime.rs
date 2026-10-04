@@ -2,7 +2,7 @@ use crate::apps::federation::peer::services::records::PeerRecords;
 use crate::apps::federation::remote::models::Delegation as DelegationRecord;
 use crate::{
 	Error, Result,
-	config::{Config, PROTOCOL_VERSION, peer_secret, validate_endpoint, validate_node_id},
+	config::Config,
 	domain::*,
 	registry::{EntityRef, Entry, Registry, Search},
 	store::{RunResponseMessage, Store},
@@ -179,49 +179,16 @@ impl Federation {
 	}
 
 	pub async fn register_peer(&self, peer: Peer) -> Result<Peer> {
-		validate_node_id(&peer.node_id)?;
-		validate_endpoint(&peer.endpoint)?;
-		if peer.node_id == self.config.node_id || peer.protocol_version != PROTOCOL_VERSION {
-			return Err(Error::Invalid(
-				"peer must be another node with protocol_version 0.1".into(),
-			));
-		}
-		let lease = self.store.orm_connection()?;
-		let records = PeerRecords::new(lease.handle(), &self.config.node_id);
-		if !peer.enabled {
-			return records.disable(&peer.node_id).await;
-		}
-
-		let credential = peer_secret(&peer.credential_env)?;
-		let identity = crate::bootstrap::peer_transport(self)
-			.identity(&peer)
-			.await?;
-		if identity["id"] != peer.node_id || identity["protocol_version"] != PROTOCOL_VERSION {
-			return Err(Error::Invalid(
-				"peer identity or protocol does not match".into(),
-			));
-		}
-		records.register(peer, &credential).await
+		crate::bootstrap::peer_authority(self)
+			.register(peer)
+			.await
+			.map_err(Into::into)
 	}
-
 	pub async fn authenticate_peer(&self, node: &str, supplied: &str) -> Result<()> {
-		let peer = self.peer(node).await?;
-		let credential = peer_secret(&peer.credential_env)?;
-		if !crate::config::same_secret(supplied, &credential) {
-			return Err(Error::Unauthorized);
-		}
-		// Also reject ambiguous existing configurations and environment rotation.
-		for other in self
-			.peers()
-			.await?
-			.into_iter()
-			.filter(|p| p.enabled && p.node_id != node)
-		{
-			if peer_secret(&other.credential_env).is_ok_and(|key| key == credential) {
-				return Err(Error::Unauthorized);
-			}
-		}
-		Ok(())
+		crate::bootstrap::peer_authority(self)
+			.authenticate(node, supplied)
+			.await
+			.map_err(Into::into)
 	}
 	pub async fn request<T: DeserializeOwned>(
 		&self,
@@ -287,14 +254,11 @@ impl Federation {
 			.await
 			.map_err(Into::into)
 	}
-	pub async fn authorize_task(&self, node: &str, task_id: Uuid, agent: &EntityRef) -> Result<()> {
-		let lease = self.store.orm_connection()?;
-		let allowed =
-			DelegationRecord::authorized(&mut lease.handle(), task_id, node, agent).await?;
-		if !allowed {
-			return Err(Error::Unauthorized);
-		}
-		Ok(())
+	pub async fn authorize_task(&self, node: &str, task: Uuid, agent: &EntityRef) -> Result<()> {
+		crate::bootstrap::peer_authority(self)
+			.authorize_task(node, task, agent)
+			.await
+			.map_err(Into::into)
 	}
 }
 

@@ -1964,3 +1964,21 @@ pub(crate) fn graph_visibility<'a, 'scope>(
 ) -> crate::apps::identity::repositories::graph::Visibility<'a, 'scope> {
 	crate::apps::identity::repositories::graph::Visibility(authority)
 }
+
+pub(crate) fn peer_authority(
+	federation: &Federation,
+) -> aidash_application::federation::peers::PeerAuthority {
+	aidash_application::federation::peers::PeerAuthority {
+		node: federation.config.node_id.clone(),
+		protocol: crate::config::PROTOCOL_VERSION.into(),
+		configuration: Arc::new(crate::apps::federation::peer::repositories::Configuration(
+			federation.clone(),
+		)),
+		credentials: Arc::new(PeerCredentials),
+		identity: Arc::new(peer_transport(federation)),
+	}
+}
+
+pub(crate) fn peer_credentials() -> impl aidash_application::ports::Credentials {
+	PeerCredentials
+}

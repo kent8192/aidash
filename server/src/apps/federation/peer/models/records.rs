@@ -89,17 +89,12 @@ pub(crate) async fn restore_authentication(
 	db.atomic(async |tx| {
 		crate::apps::identity::models::authority_control(tx).await?;
 		lock_registration(tx).await?;
-		for other in list(tx)
-			.await?
-			.into_iter()
-			.filter(|other| other.enabled && other.node_id != node)
-		{
-			if crate::config::peer_secret(&other.credential_env)? == credential {
-				return Err(Error::Invalid(
-					"enabled peers must use distinct credentials for each node identity".into(),
-				));
-			}
-		}
+		aidash_application::federation::peers::require_distinct_credentials(
+			list(tx).await?,
+			node,
+			credential,
+			&crate::bootstrap::peer_credentials(),
+		)?;
 		let mut peer = Peer::objects()
 			.filter(Peer::field_node_id().eq(node))
 			.select_for_update()

@@ -95,6 +95,12 @@ not extend validity: successful checks record their start time. Backchannel
 logout verifies its signed envelope before applying domain lifetime and replay
 identity rules and atomically consuming the logout identity with revocation.
 
+Peer identity registration, bearer rotation checks and delegation authorization
+use shared application rules. Native registration and trust restoration recheck
+distinct credentials while retaining the same advisory lock, row locks and audit
+transaction. Graph repositories retain projection queries and current viewer
+leases; application checks workspace permission before record disclosure.
+
 Scoped commands authorize effects, track disclosed outputs, journal mutation
 results, and recheck the source lease through the application use case. A claim
 binds the complete inspected agent definition. Operation reconciliation owns one
