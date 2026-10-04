@@ -1,0 +1,122 @@
+//! Owned native draft transaction implementing portable editing ports.
+use super::authority;
+use crate::{
+	apps::registry::{
+		repositories::NativeScope,
+		workbench::{models::AgentDraft, serializers::contracts::Draft as NativeDraft},
+	},
+	authorization::identity::Actor,
+	federation::Federation,
+};
+use aidash_application::{
+	Result,
+	ports::registry::{
+		DefinitionLookup,
+		workbench::{DraftAuthority, DraftRepository, DraftScope},
+	},
+};
+use aidash_domain::{
+	identity::Principal,
+	policy::{Decision, Evaluation, PolicyBundle},
+	registry::{Entry, workbench::Draft},
+};
+use async_trait::async_trait;
+use reinhardt::db::backends::{TransactionExecutor, dialect::postgres::PgTransactionExecutor};
+use serde_json::Value;
+use uuid::Uuid;
+pub(crate) struct Repository {
+	pub runtime: Federation,
+	pub actor: Actor,
+}
+pub(crate) struct Scope {
+	pub tx: PgTransactionExecutor,
+	pub actor: Actor,
+}
+impl Scope {
+	fn authority(&mut self) -> authority::Scope<'_> {
+		authority::Scope {
+			tx: &mut self.tx,
+			actor: &self.actor,
+		}
+	}
+}
+#[async_trait]
+impl DraftRepository for Repository {
+	type Scope = Scope;
+	fn principal(&self) -> Principal {
+		authority::principal(&self.actor)
+	}
+	async fn begin(&self) -> Result<Scope> {
+		let result: crate::Result<Scope> = async {
+			Ok(Scope {
+				tx: PgTransactionExecutor::new(self.runtime.store.pool.begin().await?),
+				actor: self.actor.clone(),
+			})
+		}
+		.await;
+		result.map_err(Into::into)
+	}
+}
+#[async_trait]
+impl DefinitionLookup for Scope {
+	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry> {
+		NativeScope(&mut self.tx).definition(id, version).await
+	}
+	async fn overrides(&mut self, id: &str, version: &str) -> Result<Option<Value>> {
+		NativeScope(&mut self.tx).overrides(id, version).await
+	}
+	async fn executor_kind(&mut self, id: &str, version: &str) -> Result<Option<String>> {
+		NativeScope(&mut self.tx).executor_kind(id, version).await
+	}
+}
+#[async_trait]
+impl DraftAuthority for Scope {
+	fn principal(&self) -> Principal {
+		authority::principal(&self.actor)
+	}
+	async fn lock_identity(&mut self) -> Result<()> {
+		self.authority().lock_identity().await
+	}
+	async fn share(&mut self, draft: Uuid, subject: &str) -> Result<Option<(bool, String)>> {
+		self.authority().share(draft, subject).await
+	}
+	async fn evaluate(&mut self, tenant: &str, evaluation: &Evaluation) -> Result<Decision> {
+		self.authority().evaluate(tenant, evaluation).await
+	}
+	async fn bundle(&mut self, tenant: &str) -> Result<PolicyBundle> {
+		self.authority().bundle(tenant).await
+	}
+}
+#[async_trait]
+impl DraftScope for Scope {
+	async fn read(&mut self, id: Uuid, lock: bool) -> Result<Draft> {
+		Ok(AgentDraft::read(&mut self.tx, id, lock).await?.into())
+	}
+	async fn insert(&mut self, draft: &Draft, managed_id: &str) -> Result<Draft> {
+		Ok(
+			AgentDraft::insert(&mut self.tx, &NativeDraft::from(draft.clone()), managed_id)
+				.await?
+				.into(),
+		)
+	}
+	async fn save_content(
+		&mut self,
+		id: Uuid,
+		entry: Value,
+		documents: Value,
+		notes: &str,
+	) -> Result<Draft> {
+		Ok(
+			AgentDraft::save_content(&mut self.tx, id, entry, documents, notes)
+				.await?
+				.into(),
+		)
+	}
+	async fn commit(self) -> Result<()> {
+		Box::new(self.tx)
+			.commit()
+			.await
+			.map_err(crate::Error::from)
+			.map_err(Into::into)
+	}
+}

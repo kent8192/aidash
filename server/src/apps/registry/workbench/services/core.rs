@@ -17,7 +17,7 @@ use crate::{
 	knowledge::{ReferenceDocument, digest},
 	registry::{AgentConfig, Entry},
 };
-use aidash_domain::registry::workbench::{check_content, new_draft_defaults};
+use aidash_domain::registry::workbench::new_draft_defaults;
 use reinhardt::db::backends::{TransactionExecutor, dialect::postgres::PgTransactionExecutor};
 use reinhardt::injectable;
 
@@ -123,38 +123,13 @@ pub async fn provide_drafts(#[inject] runtime: Federation) -> Drafts {
 }
 
 impl Drafts {
-	pub(crate) async fn create(&self, actor: Actor, mut input: CreateDraft) -> Result<Draft> {
-		let f = self.runtime.clone();
-		let (tenant, owner) =
-			author_identity(&actor, input.tenant.as_deref(), input.owner.as_deref())?;
-		let id = Uuid::now_v7();
-		if !input.entry.id.is_empty() {
-			return Err(Error::Invalid("new draft must leave entry.id empty; use an authorized version flow for existing identities".into()));
-		}
-		input.entry.id = id.to_string();
-		new_draft_defaults(&mut input.entry)?;
-		check_content(&input.entry, &input.documents, &input.release_notes)?;
-		let entry = serde_json::to_value(&input.entry)?;
-		let documents = serde_json::to_value(&input.documents)?;
-		let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-		target_enabled(&mut tx, &tenant, &owner).await?;
-		let prospective = Draft {
-			id,
-			tenant,
-			owner,
-			revision: 1,
-			entry: entry.clone(),
-			documents: documents.clone(),
-			release_notes: input.release_notes.clone(),
-			source_id: None,
-			source_version: None,
-			archived: false,
-			updated_at: Utc::now(),
-		};
-		authorize(&mut tx, &actor, &prospective, "agent_draft.create", false).await?;
-		let saved = AgentDraft::insert(&mut tx, &prospective, &input.entry.id).await?;
-		Box::new(tx).commit().await?;
-		Ok(saved)
+	pub(crate) async fn create(&self, actor: Actor, input: CreateDraft) -> Result<Draft> {
+		Ok(aidash_application::registry::workbench::drafts::create(
+			&crate::bootstrap::draft_repository(&self.runtime, actor),
+			input,
+		)
+		.await?
+		.into())
 	}
 	pub(crate) async fn list(&self, actor: Actor, page: DraftPage) -> Result<Vec<Draft>> {
 		let f = self.runtime.clone();
@@ -202,34 +177,14 @@ impl Drafts {
 		Box::new(tx).commit().await?;
 		Ok(draft)
 	}
-	pub(crate) async fn save(&self, actor: Actor, id: Uuid, mut input: SaveDraft) -> Result<Draft> {
-		let f = self.runtime.clone();
-		let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-		let draft = AgentDraft::read(&mut tx, id, true).await?;
-		authorize(&mut tx, &actor, &draft, "agent_draft.write", true).await?;
-		if draft.revision != input.expected_revision {
-			return Err(Error::Conflict(
-				"draft revision changed; local edits were not saved".into(),
-			));
-		}
-		if draft.archived {
-			return Err(Error::Conflict(
-				"restore the archived draft before editing".into(),
-			));
-		}
-		if input.entry.id != draft.entry["id"].as_str().unwrap_or_default() {
-			return Err(Error::Invalid(
-				"managed agent identity cannot change".into(),
-			));
-		}
-		new_draft_defaults(&mut input.entry)?;
-		check_content(&input.entry, &input.documents, &input.release_notes)?;
-		let entry = serde_json::to_value(&input.entry)?;
-		let documents = serde_json::to_value(&input.documents)?;
-		let saved =
-			AgentDraft::save_content(&mut tx, id, entry, documents, &input.release_notes).await?;
-		Box::new(tx).commit().await?;
-		Ok(saved)
+	pub(crate) async fn save(&self, actor: Actor, id: Uuid, input: SaveDraft) -> Result<Draft> {
+		Ok(aidash_application::registry::workbench::drafts::save(
+			&crate::bootstrap::draft_repository(&self.runtime, actor),
+			id,
+			input,
+		)
+		.await?
+		.into())
 	}
 	pub(crate) async fn duplicate(
 		&self,

@@ -165,3 +165,5 @@ pub async fn validate_content(
 }
 #[cfg(test)]
 mod tests;
+
+pub mod drafts;

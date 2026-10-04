@@ -15,3 +15,26 @@ pub trait DraftAuthority: DefinitionLookup {
 	async fn evaluate(&mut self, tenant: &str, evaluation: &Evaluation) -> Result<Decision>;
 	async fn bundle(&mut self, tenant: &str) -> Result<PolicyBundle>;
 }
+
+use aidash_domain::registry::workbench::Draft;
+use serde_json::Value;
+/// The scope retains draft row locks, current identity and atomic writes until commit or drop.
+#[async_trait]
+pub trait DraftScope: DraftAuthority + Sized {
+	async fn read(&mut self, id: Uuid, lock: bool) -> Result<Draft>;
+	async fn insert(&mut self, draft: &Draft, managed_id: &str) -> Result<Draft>;
+	async fn save_content(
+		&mut self,
+		id: Uuid,
+		entry: Value,
+		documents: Value,
+		notes: &str,
+	) -> Result<Draft>;
+	async fn commit(self) -> Result<()>;
+}
+#[async_trait]
+pub trait DraftRepository: Send + Sync {
+	type Scope: DraftScope;
+	fn principal(&self) -> Principal;
+	async fn begin(&self) -> Result<Self::Scope>;
+}

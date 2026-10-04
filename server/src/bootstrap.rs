@@ -1504,3 +1504,14 @@ pub(crate) fn draft_principal(
 ) -> aidash_domain::identity::Principal {
 	crate::apps::registry::workbench::repositories::authority::principal(actor)
 }
+
+/// HTTP edits assemble the same repository used by application draft workflows.
+pub(crate) fn draft_repository(
+	runtime: &crate::federation::Federation,
+	actor: crate::authorization::identity::Actor,
+) -> crate::apps::registry::workbench::repositories::drafts::Repository {
+	crate::apps::registry::workbench::repositories::drafts::Repository {
+		runtime: runtime.clone(),
+		actor,
+	}
+}
