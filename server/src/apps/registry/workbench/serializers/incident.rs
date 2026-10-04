@@ -1,56 +1,8 @@
-use serde::{Deserialize, Serialize};
-// Serializable contracts for workbench.
-
+//! Native ORM records are converted into portable incident values here.
 use crate::apps::registry::workbench::models::{AgentIncident, AgentIncidentEvent};
-use chrono::DateTime;
-use chrono::Utc;
-use schemars::JsonSchema;
-use serde_json::Value;
-
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct EvidenceInput {
-	pub title: String,
-	pub content: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct EvidenceCopy {
-	pub title: String,
-	pub content: Option<String>,
-	pub sha256: String,
-	pub recorded_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, JsonSchema)]
-pub struct Incident {
-	pub id: Uuid,
-	pub tenant: String,
-	pub agent_id: String,
-	pub version: String,
-	pub revision: i64,
-	pub severity: String,
-	pub status: String,
-	pub archived: bool,
-	pub owner: String,
-	pub notes: String,
-	pub evidence: Value,
-	pub created_at: DateTime<Utc>,
-	pub updated_at: DateTime<Utc>,
-	pub resolved_at: Option<DateTime<Utc>>,
-	pub evidence_expires_at: Option<DateTime<Utc>>,
-	pub evidence_expired_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Serialize, sqlx::FromRow, JsonSchema)]
-pub struct IncidentEvent {
-	pub id: i64,
-	pub incident_id: Uuid,
-	pub actor: String,
-	pub change: Value,
-	pub created_at: DateTime<Utc>,
-}
-
+pub use aidash_domain::registry::workbench::incident::{
+	CreateIncident, EvidenceCopy, EvidenceInput, Incident, IncidentEvent, UpdateIncident,
+};
 impl From<AgentIncident> for Incident {
 	fn from(row: AgentIncident) -> Self {
 		Self {
@@ -85,29 +37,3 @@ impl From<AgentIncidentEvent> for IncidentEvent {
 		}
 	}
 }
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CreateIncident {
-	pub tenant: Option<String>,
-	pub severity: String,
-	pub owner: String,
-	pub notes: String,
-	#[serde(default)]
-	pub evidence: Vec<EvidenceInput>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct UpdateIncident {
-	pub expected_revision: i64,
-	pub severity: String,
-	pub status: String,
-	pub archived: Option<bool>,
-	pub owner: String,
-	pub notes: String,
-	#[serde(default)]
-	pub add_evidence: Vec<EvidenceInput>,
-}
-
-use uuid::Uuid;

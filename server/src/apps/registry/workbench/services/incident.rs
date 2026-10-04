@@ -6,39 +6,18 @@ use crate::registry::EntityRef;
 use reinhardt::db::backends::{DatabaseConnection as BackendConnection, PostgresBackend};
 use reinhardt::db::orm::DatabaseConnectionLease;
 use reinhardt::injectable;
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 fn validate(severity: &str, status: &str, notes: &str, evidence: &[EvidenceInput]) -> Result<()> {
-	if !matches!(severity, "low" | "medium" | "high" | "critical")
-		|| !matches!(status, "open" | "resolved")
-		|| notes.trim().is_empty()
-		|| notes.len() > 16_384
-		|| evidence.len() > 8
-		|| evidence
-			.iter()
-			.map(|item| item.content.len())
-			.sum::<usize>()
-			> 65_536
-		|| evidence.iter().any(|item| {
-			item.title.trim().is_empty() || item.title.len() > 255 || item.content.trim().is_empty()
-		}) {
-		return Err(Error::Invalid(
-			"invalid incident severity, status, notes or evidence".into(),
-		));
-	}
-	Ok(())
+	Ok(aidash_domain::registry::workbench::incident::validate(
+		severity, status, notes, evidence,
+	)?)
 }
 
 fn fixed_copies(evidence: Vec<EvidenceInput>) -> Vec<EvidenceCopy> {
 	evidence
 		.into_iter()
-		.map(|item| EvidenceCopy {
-			sha256: format!("{:x}", Sha256::digest(item.content.as_bytes())),
-			title: item.title,
-			content: Some(item.content),
-			recorded_at: Utc::now(),
-		})
+		.map(|item| aidash_domain::registry::workbench::incident::fixed_copy(item, Utc::now()))
 		.collect()
 }
 
