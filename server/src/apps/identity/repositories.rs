@@ -128,3 +128,5 @@ pub(crate) mod worker_tasks;
 pub(crate) mod tools;
 
 pub(crate) mod remote_commands;
+
+pub(crate) mod peer_admission;

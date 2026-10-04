@@ -37,16 +37,6 @@ pub(crate) async fn binding(access: &mut Access, grant: Uuid) -> Result<Option<H
 	})
 }
 
-impl RemoteExecutionControl {
-	pub(crate) fn action(&self) -> crate::domain::RunControlAction {
-		match self {
-			Self::Pause => crate::domain::RunControlAction::Pause,
-			Self::Resume => crate::domain::RunControlAction::Resume,
-			Self::Cancel => crate::domain::RunControlAction::Cancel,
-		}
-	}
-}
-
 pub(crate) async fn message(
 	f: Federation,
 	actor: Actor,
@@ -631,53 +621,6 @@ pub use crate::apps::identity::serializers::remote_execution::{
 
 use reinhardt::query::SimpleExpr;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum RemoteExecutionPhase {
-	Admitted,
-	Ready,
-	Thinking,
-	ToolCall,
-	Waiting,
-	Completed,
-	Failed,
-	Cancelled,
-}
-
-impl From<crate::domain::RunPhase> for RemoteExecutionPhase {
-	fn from(p: crate::domain::RunPhase) -> Self {
-		use crate::domain::RunPhase as P;
-		match p {
-			P::Ready => Self::Ready,
-			P::Thinking => Self::Thinking,
-			P::ToolCall => Self::ToolCall,
-			P::Waiting => Self::Waiting,
-			P::Completed => Self::Completed,
-			P::Failed => Self::Failed,
-			P::Cancelled => Self::Cancelled,
-		}
-	}
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum RemoteExecutionControlState {
-	Inactive,
-	Active,
-	Paused,
-	Cancelled,
-}
-
-impl From<crate::domain::RunControl> for RemoteExecutionControlState {
-	fn from(c: crate::domain::RunControl) -> Self {
-		match c {
-			crate::domain::RunControl::Active => Self::Active,
-			crate::domain::RunControl::Paused => Self::Paused,
-			crate::domain::RunControl::Cancelled => Self::Cancelled,
-		}
-	}
-}
-
 /// Management uses only the task's control attributes. Returning its text or
 /// journal still requires the ordinary dependency-aware read path.
 async fn managed_task(access: &mut Access, id: Uuid, read: bool) -> Result<Task> {
@@ -806,3 +749,7 @@ pub(crate) async fn provenance(
 	.await;
 	access.finish(result).await
 }
+
+pub use aidash_domain::federation::execution::admission::{
+	RemoteExecutionControlState, RemoteExecutionPhase,
+};

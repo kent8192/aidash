@@ -1450,3 +1450,21 @@ pub(crate) fn semantic_journal_scope<'a, 'tx>(
 		),
 	}
 }
+
+/// Receiver HTTP, Home callbacks and worker refresh share current authority and persistence.
+pub(crate) fn peer_admission_repository(
+	f: &crate::federation::Federation,
+) -> crate::apps::identity::repositories::peer_admission::Repository<'_> {
+	crate::apps::identity::repositories::peer_admission::Repository { runtime: f }
+}
+pub(crate) fn peer_admission_records(
+	store: &crate::store::Store,
+) -> crate::apps::identity::repositories::peer_admission::Records<'_> {
+	crate::apps::identity::repositories::peer_admission::Records { store }
+}
+pub(crate) fn peer_inspection_scope<'a>(
+	f: &'a crate::federation::Federation,
+	access: &'a mut crate::authorization::access::Access,
+) -> crate::apps::identity::repositories::peer_admission::Borrowed<'a> {
+	crate::apps::identity::repositories::peer_admission::Scope { runtime: f, access }
+}

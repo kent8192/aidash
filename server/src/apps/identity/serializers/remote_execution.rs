@@ -22,13 +22,7 @@ pub struct RemoteExecutionStatus {
 	pub semantic: crate::semantic::remote::status::Status,
 }
 
-#[derive(Clone, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RemoteExecutionControl {
-	Pause,
-	Resume,
-	Cancel,
-}
+pub use aidash_domain::federation::execution::admission::RemoteExecutionControl;
 
 #[derive(Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]

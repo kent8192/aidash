@@ -94,3 +94,5 @@ impl Inspection {
 
 #[cfg(test)]
 mod tests;
+
+pub mod admission;

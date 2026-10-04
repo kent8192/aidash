@@ -69,3 +69,5 @@ pub mod resume;
 pub mod worker_entry;
 
 pub mod commands;
+
+pub mod peer;
