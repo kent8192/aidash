@@ -1,0 +1,43 @@
+//! Views module for federation app (RESTful)
+// Add your view submodules here. Each `pub mod` declaration
+// corresponds to a file under the `views/` directory.
+//
+// For multi-file views that need re-exports for discovery, use:
+// flatten_imports! {
+//     pub mod example;
+// }
+//
+// Example of an authenticated endpoint using `CurrentUser<U>`:
+// `CurrentUser<U>` resolves the authenticated user via DI — JWT verification
+// is handled automatically by the auth middleware.
+// `#[get]` auto-enables DI when `#[inject]` parameters are present.
+//
+// use crate::models::User; // replace with your user model
+// use reinhardt::{get, CurrentUser, Response, StatusCode};
+// use reinhardt::http::ViewResult;
+//
+// #[get("/me/", name = "federation_me")]
+// pub async fn me(
+//     #[inject] CurrentUser(user): CurrentUser<User>,
+// ) -> ViewResult<Response> {
+//     Ok(Response::new(StatusCode::OK).with_body(user.email().to_string()))
+// }
+//
+// Generic DI for app services uses `Depends<T>` (rc.16+) — the replacement
+// for the deprecated `Arc<T>` / `Injected<T>` parameter form:
+//
+// use reinhardt::extract::Depends;
+//
+// #[get("/health/", name = "federation_health")]
+// pub async fn health(
+//     #[inject] svc: Depends<MyService>,
+// ) -> ViewResult<Response> {
+//     Ok(Response::new(StatusCode::OK).with_body(svc.status()))
+// }
+//
+// For declarative endpoint-level authorization, use `guard!()` (rc.16+):
+//
+// use reinhardt::guard;
+//
+// #[get("/admin/", name = "federation_admin", guards = guard!(IsStaff))]
+// pub async fn admin_only() -> ViewResult<Response> { /* ... */ }

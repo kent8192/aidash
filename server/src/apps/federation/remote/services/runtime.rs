@@ -1,0 +1,1242 @@
+use crate::apps::federation::peer::services::records::PeerRecords;
+use crate::apps::federation::remote::models::Delegation as DelegationRecord;
+use crate::{
+	Error, Result,
+	config::{Config, PROTOCOL_VERSION, peer_secret, validate_endpoint, validate_node_id},
+	domain::*,
+	registry::{AgentConfig, EntityRef, Entry, ModelConfig, Registry, Search},
+	store::{RunResponseMessage, Store},
+};
+use reinhardt::DiError;
+use reinhardt::DiResult;
+use reinhardt::Injectable;
+use reinhardt::InjectionContext;
+use reinhardt::db::backends::TransactionExecutor;
+use reqwest::Method;
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+use uuid::Uuid;
+
+#[derive(Clone)]
+pub struct Federation {
+	pub store: Store,
+	pub registry: Registry,
+	pub config: Config,
+	pub client: reqwest::Client,
+	pub notify: std::sync::Arc<tokio::sync::Notify>,
+}
+impl Federation {
+	pub async fn admit_run_message(
+		&self,
+		run: &Run,
+		sender: &str,
+		content: &str,
+		key: &str,
+		limit: usize,
+	) -> Result<()> {
+		let home = Home::new(self.clone(), run.clone());
+		let existing = self
+			.store
+			.run_inputs(run.id)
+			.await?
+			.into_iter()
+			.find(|input| input.idempotency_key == key);
+		if let Some(input) = existing {
+			if input.content != content {
+				return Err(Error::Conflict("run message idempotency key reused".into()));
+			}
+			if input.message_id.is_some()
+				&& self
+					.store
+					.run_message_has_media(&[input.message_id.expect("checked")])
+					.await?
+			{
+				return Err(Error::Conflict(
+					"run message idempotency key reused with media".into(),
+				));
+			}
+			if !home.local() && !home.recover_run_message(key, content).await? {
+				return Err(Error::Conflict(
+					"remote home cannot persist run message admission".into(),
+				));
+			}
+			return Ok(());
+		}
+		let history = if !home.local() {
+			self.historical_run_message_batch(run).await?
+		} else {
+			Vec::new()
+		};
+		let reserved_at_home = if home.local() {
+			false
+		} else if home.reserve_run_message(key, content).await? {
+			// Keep the reservation leased until the executor input is durable.
+			// A failed admission or stopped executor must not strand the home task.
+			true
+		} else {
+			return Err(Error::Conflict(
+				"remote home cannot atomically reserve run messages".into(),
+			));
+		};
+		let admission = if reserved_at_home {
+			self.store
+				.import_remote_run_messages_and_accept(
+					run.id, &history, sender, content, key, limit,
+				)
+				.await
+		} else {
+			self.store
+				.accept_run_message(run.id, sender, content, key, limit)
+				.await
+		};
+		if let Err(error) = admission {
+			if matches!(error, Error::Conflict(_))
+				&& self
+					.recover_historical_run_message(run, key, content)
+					.await?
+			{
+				// Keep the fence: the recovered historical input is now in the
+				// durable ledger and must reach inference before task termination.
+				if reserved_at_home {
+					home.commit_run_message(key, content).await?;
+				}
+				return Ok(());
+			}
+			if !home.local() {
+				match self.store.run_input_sequence(run.id, key, content).await {
+					Ok(_) => {
+						// The transaction may have committed even if the client saw a
+						// late connection error. Preserve its fence and bind the sequence.
+						home.commit_run_message(key, content).await?;
+						return Ok(());
+					}
+					Err(Error::Conflict(_)) => {
+						home.release_run_messages(&[key.to_owned()]).await?;
+					}
+					Err(check_error) => return Err(check_error),
+				}
+			}
+			return Err(error);
+		}
+		if reserved_at_home {
+			home.commit_run_message(key, content).await?;
+		}
+		Ok(())
+	}
+	pub async fn acknowledge_run_messages(&self, run: &Run) -> Result<()> {
+		if run.home_node == self.config.node_id || run.observed_input_seq == 0 {
+			return Ok(());
+		}
+		let keys: Vec<String> = self
+			.store
+			.run_inputs(run.id)
+			.await?
+			.into_iter()
+			.filter(|input| input.seq <= run.observed_input_seq)
+			.map(|input| input.idempotency_key)
+			.collect();
+		let home = Home::new(self.clone(), run.clone());
+		for chunk in keys.chunks(100) {
+			home.acknowledge_run_messages(chunk).await?;
+		}
+		Ok(())
+	}
+	/// Explicit cancellation or failure supersedes any still-unobserved
+	/// correction. Consume the home fences in the same task-row transaction as
+	/// the terminal transition so a legacy completion cannot enter between them.
+	pub async fn transition_terminal_run_messages(
+		&self,
+		run: &Run,
+		target: TaskStatus,
+	) -> Result<Task> {
+		self.transition_terminal_metadata(&run.metadata(), target, None)
+			.await
+	}
+	pub async fn require_terminal_safe_delivery(&self, run: &Run) -> Result<()> {
+		if run.home_node == self.config.node_id {
+			return Ok(());
+		}
+		let home = Home::new(self.clone(), run.clone());
+		match home
+			.optional_command::<Value>("run_message_delivery_capability", json!({}))
+			.await?
+		{
+			Some(capability) if capability["protocol"].as_u64() == Some(2) => Ok(()),
+			_ => Err(Error::Conflict(
+				"remote home does not support fenced run-message publication and completion".into(),
+			)),
+		}
+	}
+	pub async fn run_message_limit(&self, run: &Run) -> Result<usize> {
+		let available = self.run_request_headroom(run).await?;
+		// Keep most of the registered model's remaining window for the task,
+		// workspace observation and tool history.
+		Ok((available / 4).min(16_384))
+	}
+
+	pub(crate) async fn run_media_input_routes(
+		&self,
+		run: &RunMetadata,
+	) -> Result<Vec<Vec<String>>> {
+		if run.home_node != self.config.node_id {
+			return Ok(Vec::new());
+		}
+		let agent = self
+			.registry
+			.get_for_run(run, &run.agent_id, &run.agent_version)
+			.await?;
+		let agent: AgentConfig = serde_json::from_value(agent.config)?;
+		let model = self
+			.registry
+			.get_for_run(run, &agent.model.id, &agent.model.version)
+			.await?;
+		let model: ModelConfig = serde_json::from_value(model.config)?;
+		Ok(model.current_media_input_routes())
+	}
+
+	pub(crate) async fn run_request_headroom(&self, run: &Run) -> Result<usize> {
+		let agent_entry = self
+			.registry
+			.get_for_run(run, &run.agent_id, &run.agent_version)
+			.await?;
+		let agent: AgentConfig = serde_json::from_value(agent_entry.config.clone())?;
+		let mut references = Vec::with_capacity(1 + agent.skills.len() + agent.tools.len());
+		references.push(
+			self.registry
+				.get_for_run(run, &agent.model.id, &agent.model.version)
+				.await?,
+		);
+		for reference in agent.skills.iter().chain(&agent.tools) {
+			references.push(
+				self.registry
+					.get_for_run(run, &reference.id, &reference.version)
+					.await?,
+			);
+		}
+		let private_context = if agent.knowledge_digest.is_some() {
+			json!({"reference_documents":crate::knowledge::load(&self.registry.db, &agent_entry).await?})
+		} else {
+			Value::Null
+		};
+		let available =
+			crate::registry::agent_prompt_headroom(&agent, &references, &private_context)?
+				.saturating_sub(crate::context::MIN_CONTEXT_RESERVE);
+		if !agent.core_capabilities.skills {
+			return Ok(available);
+		}
+		let pinned =
+			crate::capabilities::skills::context_headroom_reserve(&self.store, run).await?;
+		Ok(available.saturating_sub(pinned))
+	}
+
+	pub async fn deliver_run_messages(&self, run: &Run) -> Result<()> {
+		self.deliver_run_message_metadata(&run.metadata()).await
+	}
+
+	pub async fn reconcile_run_messages(&self, run: &Run) -> Result<()> {
+		if run.home_node == self.config.node_id {
+			return Ok(());
+		}
+		let limit = self.run_message_limit(run).await?;
+		let batch = self.historical_run_message_batch(run).await?;
+		self.store
+			.import_remote_run_messages(run.id, &batch, limit)
+			.await
+	}
+
+	pub(crate) async fn historical_run_message_batch(
+		&self,
+		run: &Run,
+	) -> Result<Vec<(String, Message)>> {
+		let home = Home::new(self.clone(), run.clone());
+		let prefix = format!("{}:{}:", self.config.node_id, run.task_id);
+		let mut batch = Vec::new();
+		for message in home.historical_run_messages().await? {
+			let key = message
+				.idempotency_key
+				.as_deref()
+				.and_then(|key| key.strip_prefix(&prefix))
+				.ok_or_else(|| Error::Conflict("historical run message key changed".into()))?;
+			if message.workspace_id != run.workspace_id {
+				return Err(Error::Conflict(
+					"historical run message workspace changed".into(),
+				));
+			}
+			batch.push((key.to_owned(), message));
+		}
+		batch.sort_by_key(|(_, message)| (message.created_at, message.id));
+		Ok(batch)
+	}
+	pub async fn recover_historical_run_message(
+		&self,
+		run: &Run,
+		key: &str,
+		content: &str,
+	) -> Result<bool> {
+		if run.home_node == self.config.node_id {
+			return Ok(false);
+		}
+		self.reconcile_run_messages(run).await?;
+		Ok(self
+			.store
+			.run_inputs(run.id)
+			.await?
+			.iter()
+			.any(|input| input.idempotency_key == key && input.content == content))
+	}
+
+	/// Workers need reserved database capacity to finish an effect while API
+	/// revocations wait for its authority lease. Embedded runners must use this
+	/// separate pool too; otherwise waiting API requests can exhaust the pool.
+	pub async fn for_workers(&self) -> Result<Self> {
+		let store = self.store.isolated_pool().await?;
+		Ok(Self {
+			registry: Registry::new(store.pool.clone(), &store.node_id)?,
+			store,
+			..self.clone()
+		})
+	}
+	pub async fn for_recovery(&self) -> Result<Self> {
+		let store = self.store.recovery_pool().await?;
+		Ok(Self {
+			registry: Registry::new(store.pool.clone(), &store.node_id)?,
+			store,
+			..self.clone()
+		})
+	}
+	pub async fn for_runtime_workers(&self) -> Result<Self> {
+		let store = self.store.worker_pool().await?;
+		Ok(Self {
+			registry: Registry::new(store.pool.clone(), &store.node_id)?,
+			store,
+			..self.clone()
+		})
+	}
+
+	pub async fn peers(&self) -> Result<Vec<Peer>> {
+		let lease = self.store.orm_connection()?;
+		PeerRecords::new(lease.handle(), &self.config.node_id)
+			.list()
+			.await
+	}
+	pub async fn peer(&self, node: &str) -> Result<Peer> {
+		let lease = self.store.orm_connection()?;
+		PeerRecords::new(lease.handle(), &self.config.node_id)
+			.enabled(node)
+			.await
+	}
+
+	pub async fn register_peer(&self, peer: Peer) -> Result<Peer> {
+		validate_node_id(&peer.node_id)?;
+		validate_endpoint(&peer.endpoint)?;
+		if peer.node_id == self.config.node_id || peer.protocol_version != PROTOCOL_VERSION {
+			return Err(Error::Invalid(
+				"peer must be another node with protocol_version 0.1".into(),
+			));
+		}
+		let lease = self.store.orm_connection()?;
+		let records = PeerRecords::new(lease.handle(), &self.config.node_id);
+		if !peer.enabled {
+			return records.disable(&peer.node_id).await;
+		}
+
+		let credential = peer_secret(&peer.credential_env)?;
+		let identity = crate::bootstrap::peer_transport(self)
+			.identity(&peer)
+			.await?;
+		if identity["id"] != peer.node_id || identity["protocol_version"] != PROTOCOL_VERSION {
+			return Err(Error::Invalid(
+				"peer identity or protocol does not match".into(),
+			));
+		}
+		records.register(peer, &credential).await
+	}
+
+	pub async fn authenticate_peer(&self, node: &str, supplied: &str) -> Result<()> {
+		let peer = self.peer(node).await?;
+		let credential = peer_secret(&peer.credential_env)?;
+		if !crate::config::same_secret(supplied, &credential) {
+			return Err(Error::Unauthorized);
+		}
+		// Also reject ambiguous existing configurations and environment rotation.
+		for other in self
+			.peers()
+			.await?
+			.into_iter()
+			.filter(|p| p.enabled && p.node_id != node)
+		{
+			if peer_secret(&other.credential_env).is_ok_and(|key| key == credential) {
+				return Err(Error::Unauthorized);
+			}
+		}
+		Ok(())
+	}
+	pub async fn request<T: DeserializeOwned>(
+		&self,
+		node: &str,
+		method: Method,
+		path: &str,
+		body: Option<&Value>,
+	) -> Result<T> {
+		crate::bootstrap::federation(self)
+			.request(node, method.as_str(), path, body)
+			.await
+			.map_err(Into::into)
+	}
+	pub(crate) async fn peer_response(
+		&self,
+		node: &str,
+		method: Method,
+		path: &str,
+		body: Option<&Value>,
+	) -> Result<reqwest::Response> {
+		let peer = self.peer(node).await?;
+		crate::bootstrap::peer_transport(self)
+			.send(&peer, method.as_str(), path, body)
+			.await
+			.map_err(Into::into)
+	}
+
+	pub async fn discover(&self, search: &Search) -> Result<Discovery> {
+		crate::bootstrap::federation(self)
+			.discover(search)
+			.await
+			.map_err(Into::into)
+	}
+	pub async fn delegate(
+		&self,
+		task_id: Uuid,
+		node: &str,
+		agent: &EntityRef,
+	) -> Result<Delegation> {
+		crate::bootstrap::federation(self)
+			.delegate(task_id, node, agent)
+			.await
+			.map_err(Into::into)
+	}
+	pub(crate) async fn delegate_in(
+		&self,
+		tx: &mut dyn TransactionExecutor,
+		task: &Task,
+		node: &str,
+		agent: &EntityRef,
+	) -> Result<(Task, Delegation)> {
+		DelegationRecord::reserve(tx, &self.config.node_id, task, node, agent).await
+	}
+	pub async fn deliver(&self, delegation: &Delegation) -> Result<()> {
+		crate::bootstrap::federation(self)
+			.deliver(delegation)
+			.await
+			.map_err(Into::into)
+	}
+	pub async fn retry_deliveries(&self) -> Result<()> {
+		crate::bootstrap::federation(self)
+			.retry_deliveries()
+			.await
+			.map_err(Into::into)
+	}
+	pub async fn authorize_task(&self, node: &str, task_id: Uuid, agent: &EntityRef) -> Result<()> {
+		let lease = self.store.orm_connection()?;
+		let allowed =
+			DelegationRecord::authorized(&mut lease.handle(), task_id, node, agent).await?;
+		if !allowed {
+			return Err(Error::Unauthorized);
+		}
+		Ok(())
+	}
+}
+
+// All worker operations use this single home-node boundary.
+#[derive(Clone)]
+pub struct Home {
+	pub federation: Federation,
+	pub run: RunMetadata,
+	included_input_seq: i64,
+	execution: Option<Run>,
+	pub(crate) authority: Option<crate::authorization::execution::WorkerAuthority>,
+}
+
+impl Home {
+	pub fn new(federation: Federation, run: Run) -> Self {
+		Self {
+			federation,
+			included_input_seq: run.included_input_seq(),
+			run: run.metadata(),
+			execution: Some(run),
+			authority: None,
+		}
+	}
+	pub(crate) fn with_authority(
+		mut self,
+		authority: Option<crate::authorization::execution::WorkerAuthority>,
+	) -> Self {
+		self.authority = authority;
+		self
+	}
+	pub async fn discover(&self, search: &Search) -> Result<Discovery> {
+		if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
+			.await?
+			.is_some()
+		{
+			return Err(Error::Forbidden);
+		}
+		if let Some(authority) = &self.authority {
+			authority.discover(&self.federation, search).await
+		} else {
+			self.federation.discover(search).await
+		}
+	}
+	pub fn owner(&self) -> String {
+		qualified_agent(
+			&self.federation.config.node_id,
+			&self.run.agent_id,
+			&self.run.agent_version,
+		)
+	}
+	pub fn local(&self) -> bool {
+		self.run.home_node == self.federation.config.node_id
+	}
+	async fn command<T: DeserializeOwned>(&self, op: &str, data: Value) -> Result<T> {
+		if let Some(grant) =
+			crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
+				.await?
+		{
+			return crate::authorization::peer::authority_request(
+				&self.federation,
+				&self.run.home_node,
+				"/scoped/execution/commands",
+				&json!({"grant_id":grant,"admission_id":self.run.id,"operation":op,"data":data}),
+			)
+			.await;
+		}
+		self.federation.request(&self.run.home_node,Method::POST,"/workspace",Some(&json!({"task_id":self.run.task_id,"agent":{"id":self.run.agent_id,"version":self.run.agent_version},"operation":op,"data":data}))).await
+	}
+	async fn optional_command<T: DeserializeOwned>(
+		&self,
+		op: &str,
+		data: Value,
+	) -> Result<Option<T>> {
+		if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
+			.await?
+			.is_some()
+		{
+			return self.command(op, data).await.map(Some);
+		}
+		let command = json!({"task_id":self.run.task_id,"agent":{"id":self.run.agent_id,"version":self.run.agent_version},"operation":op,"data":data});
+		let response = self
+			.federation
+			.peer_response(
+				&self.run.home_node,
+				Method::POST,
+				"/workspace",
+				Some(&command),
+			)
+			.await?;
+		if response.status() == reqwest::StatusCode::BAD_REQUEST {
+			let body: Value = crate::response::json(response, 4096).await?;
+			if body["error"] == "unknown federation operation" {
+				return Ok(None);
+			}
+			return Err(Error::External(format!(
+				"peer {} rejected {op}: {}",
+				self.run.home_node, body["error"]
+			)));
+		}
+		if response.status() == reqwest::StatusCode::CONFLICT {
+			return Err(Error::Conflict("remote task state changed".into()));
+		}
+		let response = response.error_for_status()?;
+		Ok(Some(crate::response::json(response, 4_194_304).await?))
+	}
+	pub async fn snapshot(&self) -> Result<WorkspaceSnapshot> {
+		if crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
+			.await?
+			.is_some()
+		{
+			return self.command("snapshot", json!({})).await;
+		}
+		if let Some(authority) = &self.authority {
+			authority.snapshot(self.run.workspace_id).await
+		} else if self.local() {
+			self.federation.store.snapshot(self.run.workspace_id).await
+		} else {
+			let mut snapshot = WorkspaceSnapshot {
+				workspace: self.command("snapshot_workspace", json!({})).await?,
+				tasks: self.snapshot_collection("tasks").await?,
+				artifacts: self.snapshot_collection("artifacts").await?,
+				events: self.snapshot_collection("events").await?,
+				messages: self.snapshot_collection("messages").await?,
+			};
+			snapshot
+				.tasks
+				.sort_by_key(|item| (item.created_at, item.id));
+			snapshot
+				.artifacts
+				.sort_by_key(|item| (item.created_at, item.id));
+			snapshot.events.sort_by_key(|item| item.sequence);
+			snapshot
+				.messages
+				.sort_by_key(|item| (item.created_at, item.id));
+			Ok(snapshot)
+		}
+	}
+	pub async fn observation(&self, offset: usize, limit: usize) -> Result<Value> {
+		if let Some(authority) = &self.authority {
+			return authority
+				.workspace_observation(self.run.workspace_id, offset, limit)
+				.await;
+		}
+		let snapshot = self.snapshot().await?;
+		Ok(crate::context::observation::project(
+			&snapshot, offset, limit,
+		))
+	}
+	pub async fn observation_fitted<F>(
+		&self,
+		offset: usize,
+		limit: usize,
+		fits: F,
+	) -> Result<Option<(usize, Value)>>
+	where
+		F: FnMut(usize, &Value) -> Result<bool>,
+	{
+		if let Some(authority) = &self.authority {
+			return authority
+				.workspace_observation_fitted(self.run.workspace_id, offset, limit, fits)
+				.await;
+		}
+		let snapshot = self.snapshot().await?;
+		crate::context::observation::fit_projection(&snapshot, offset, limit, fits)
+	}
+	pub async fn read_record(&self, kind: &str, id: &str) -> Result<Value> {
+		if let Some(authority) = &self.authority {
+			let id = id
+				.parse::<Uuid>()
+				.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
+			return authority
+				.workspace_record(self.run.workspace_id, kind, id)
+				.await;
+		}
+		if self.local() {
+			let id = id
+				.parse::<Uuid>()
+				.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
+			return self
+				.federation
+				.store
+				.workspace_record(self.run.workspace_id, kind, id)
+				.await;
+		}
+		self.command("workspace_record", json!({"kind":kind,"id":id}))
+			.await
+	}
+	pub async fn read_record_chunk(
+		&self,
+		kind: &str,
+		id: &str,
+		offset: usize,
+		max_chars: usize,
+	) -> Result<Value> {
+		if let Some(authority) = &self.authority {
+			let id = id
+				.parse::<Uuid>()
+				.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
+			let record = authority
+				.workspace_record(self.run.workspace_id, kind, id)
+				.await?;
+			return crate::context::observation::chunk_record(
+				record,
+				kind,
+				&id.to_string(),
+				offset,
+				max_chars,
+			);
+		}
+		if self.local() {
+			let id = id
+				.parse::<Uuid>()
+				.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
+			let record = self
+				.federation
+				.store
+				.workspace_record(self.run.workspace_id, kind, id)
+				.await?;
+			return crate::context::observation::chunk_record(
+				record,
+				kind,
+				&id.to_string(),
+				offset,
+				max_chars,
+			);
+		}
+		let id = id
+			.parse::<Uuid>()
+			.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
+		self.command(
+			"workspace_record_chunk",
+			json!({"kind":kind,"id":id,"offset":offset,"max_chars":max_chars.min(16000)}),
+		)
+		.await
+	}
+	pub(crate) async fn child_summary(&self, parent: Uuid) -> Result<ChildTaskSummary> {
+		if let Some(authority) = &self.authority {
+			return authority
+				.workspace_child_summary(self.run.workspace_id, parent)
+				.await;
+		}
+		if self.local() {
+			return self
+				.federation
+				.store
+				.child_task_summary(self.run.workspace_id, parent)
+				.await;
+		}
+		self.command("workspace_children", json!({"parent_id":parent}))
+			.await
+	}
+	async fn snapshot_collection<T: DeserializeOwned>(&self, collection: &str) -> Result<Vec<T>> {
+		let mut items = vec![];
+		let mut after: Option<Uuid> = None;
+		loop {
+			let page: SnapshotPage = self
+				.command(
+					"snapshot_page",
+					json!({"collection":collection,"after":after}),
+				)
+				.await?;
+			items.extend(
+				page.items
+					.into_iter()
+					.map(serde_json::from_value)
+					.collect::<std::result::Result<Vec<T>, _>>()?,
+			);
+			let Some(next) = page.next else {
+				return Ok(items);
+			};
+			if after.is_some_and(|previous| next <= previous) {
+				return Err(Error::External(
+					"peer snapshot cursor did not advance".into(),
+				));
+			}
+			after = Some(next);
+		}
+	}
+	pub async fn task(&self) -> Result<Task> {
+		if self.authority.is_some() {
+			return serde_json::from_value(
+				self.read_record("task", &self.run.task_id.to_string())
+					.await?,
+			)
+			.map_err(Into::into);
+		}
+		if self.local() {
+			self.federation.store.task(self.run.task_id).await
+		} else {
+			self.command("task", json!({})).await
+		}
+	}
+	pub async fn claim(&self, task: &Task, agent: &Entry) -> Result<Task> {
+		if task.owner.as_deref() == Some(&self.owner())
+			&& task.status != crate::domain::TaskStatus::Open
+		{
+			return Ok(task.clone());
+		}
+		if self.local() {
+			self.federation
+				.store
+				.claim(task.id, task.revision, &self.owner(), agent)
+				.await
+		} else {
+			self.command("claim", json!({"revision":task.revision,"entry":agent}))
+				.await
+		}
+	}
+	pub async fn transition(&self, next: TaskStatus) -> Result<Task> {
+		let t = self.task().await?;
+		if t.status == next {
+			return Ok(t);
+		}
+		if self.local() {
+			self.federation
+				.store
+				.transition(t.id, t.revision, &self.owner(), next)
+				.await
+		} else {
+			self.command("transition", json!({"revision":t.revision,"status":next}))
+				.await
+		}
+	}
+	pub async fn transition_terminal(&self, next: TaskStatus, through_seq: i64) -> Result<Task> {
+		let task = self.task().await?;
+		if self.local() {
+			return self
+				.federation
+				.store
+				.transition(task.id, task.revision, &self.owner(), next)
+				.await;
+		}
+		if let Some(task) = self
+			.optional_command(
+				"run_message_terminal_transition",
+				json!({
+					"revision":task.revision,
+					"status":next,
+					"run_id":self.run.id,
+					"keys":[],
+					"through_seq":through_seq
+				}),
+			)
+			.await?
+		{
+			return Ok(task);
+		}
+		// A preceding home version has no durable fence table, so there is no
+		// split fence-consumption operation to race on that peer.
+		self.transition(next).await
+	}
+	pub async fn complete(&self, key: &str, artifact: &ArtifactInput) -> Result<Task> {
+		if self.local() {
+			self.federation
+				.store
+				.complete_from_run(
+					self.run.task_id,
+					&self.owner(),
+					key,
+					artifact,
+					self.authority.as_ref().map(|_| self.run.id),
+					None,
+				)
+				.await
+		} else {
+			let through_seq = self.included_input_seq;
+			self.command(
+				"run_message_complete",
+				json!({"run_id":self.run.id,"through_seq":through_seq,"key":key,"artifact":artifact}),
+			)
+			.await
+		}
+	}
+	pub async fn artifact(&self, key: &str, artifact: &ArtifactInput) -> Result<Artifact> {
+		if self.local() {
+			self.federation
+				.store
+				.publish_artifact_from_run(
+					self.run.task_id,
+					&self.owner(),
+					key,
+					artifact,
+					self.authority.as_ref().map(|_| self.run.id),
+				)
+				.await
+		} else {
+			self.command("artifact", json!({"key":key,"artifact":artifact}))
+				.await
+		}
+	}
+	pub async fn assign(
+		&self,
+		task: Uuid,
+		policy: &str,
+		reason: &str,
+	) -> Result<crate::generation::Assignment> {
+		let authority = self.authority.as_ref().ok_or(Error::Forbidden)?;
+		authority
+			.assign(
+				&self.federation,
+				self.execution_run()?,
+				task,
+				policy,
+				reason,
+			)
+			.await
+	}
+	pub async fn create_task(&self, key: &str, input: &NewTask) -> Result<Task> {
+		if let Some(authority) = &self.authority {
+			return authority
+				.create_task(&self.federation, self.execution_run()?, key, input)
+				.await;
+		}
+		if self.local() {
+			self.federation
+				.store
+				.create_task(self.run.workspace_id, input, &self.owner(), Some(key))
+				.await
+		} else {
+			self.command("create_task", json!({"key":key,"task":input}))
+				.await
+		}
+	}
+	pub async fn delegate(
+		&self,
+		task_id: Uuid,
+		node: &str,
+		agent: &EntityRef,
+	) -> Result<Delegation> {
+		let key = format!(
+			"run:{}:task:{}:node:{}:agent:{}@{}",
+			self.run.id, task_id, node, agent.id, agent.version
+		);
+		self.delegate_with_key(&key, task_id, node, agent).await
+	}
+	pub async fn delegate_with_key(
+		&self,
+		key: &str,
+		task_id: Uuid,
+		node: &str,
+		agent: &EntityRef,
+	) -> Result<Delegation> {
+		if let Some(authority) = &self.authority {
+			return authority
+				.delegate(
+					&self.federation,
+					self.execution_run()?,
+					task_id,
+					node,
+					agent,
+				)
+				.await;
+		}
+		if self.local() {
+			let t = self.federation.store.task(task_id).await?;
+			if t.workspace_id != self.run.workspace_id {
+				return Err(Error::Unauthorized);
+			}
+			self.federation.delegate(task_id, node, agent).await
+		} else {
+			self.command(
+				"delegate",
+				json!({"key":key,"task_id":task_id,"node_id":node,"agent":agent}),
+			)
+			.await
+		}
+	}
+	pub async fn message(&self, key: &str, content: &str) -> Result<()> {
+		if self.authority.is_some() {
+			self.federation
+				.store
+				.message_from_run(self.execution_run()?, &self.owner(), content, key)
+				.await
+		} else if self.local() {
+			self.federation
+				.store
+				.message(self.run.workspace_id, &self.owner(), content, Some(key))
+				.await
+		} else {
+			self.command::<Value>("message", json!({"key":key,"content":content}))
+				.await?;
+			Ok(())
+		}
+	}
+	pub async fn response_message(
+		&self,
+		worker: Uuid,
+		included_input_seq: i64,
+		key: &str,
+		content: &str,
+	) -> Result<()> {
+		if self.authority.is_some() || self.local() {
+			self.federation
+				.store
+				.response_message_in_run(RunResponseMessage {
+					run: self.execution_run()?,
+					worker,
+					included_input_seq,
+					sender: &self.owner(),
+					content,
+					key,
+					track_output: self.authority.is_some(),
+				})
+				.await
+		} else {
+			self.federation
+				.store
+				.with_run_response_fence(
+					self.run.id,
+					worker,
+					included_input_seq,
+					self.command::<Value>(
+						"run_message_output",
+						json!({"run_id":self.run.id,"included_input_seq":included_input_seq,"key":key,"content":content}),
+					),
+				)
+				.await?;
+			Ok(())
+		}
+	}
+	pub async fn human_message(&self, key: &str, content: &str) -> Result<()> {
+		if self.local() {
+			self.federation
+				.store
+				.message(self.run.workspace_id, "human", content, Some(key))
+				.await
+		} else {
+			self.command::<Value>("human_message", json!({"key":key,"content":content}))
+				.await?;
+			Ok(())
+		}
+	}
+	pub async fn reserve_run_message(&self, key: &str, content: &str) -> Result<bool> {
+		if self.local() {
+			return Ok(true);
+		}
+		Ok(self
+			.optional_command::<Value>(
+				"run_message_reserve",
+				json!({"run_id":self.run.id,"key":key,"content":content}),
+			)
+			.await?
+			.is_some())
+	}
+	async fn promote_run_message(&self, key: &str, content: &str) -> Result<bool> {
+		if self.local() {
+			return Ok(true);
+		}
+		let seq = self
+			.federation
+			.store
+			.run_input_sequence(self.run.id, key, content)
+			.await?;
+		Ok(self
+			.optional_command::<Value>(
+				"run_message_commit",
+				json!({"run_id":self.run.id,"key":key,"content":content,"input_seq":seq}),
+			)
+			.await?
+			.is_some())
+	}
+	pub async fn commit_run_message(&self, key: &str, content: &str) -> Result<()> {
+		if !self.promote_run_message(key, content).await? {
+			return Err(Error::Conflict(
+				"remote home cannot persist run message admission".into(),
+			));
+		}
+		Ok(())
+	}
+	async fn recover_run_message(&self, key: &str, content: &str) -> Result<bool> {
+		match self.promote_run_message(key, content).await {
+			Ok(supported) => Ok(supported),
+			Err(Error::Conflict(_)) => {
+				// Imported pre-ledger history may not have a fence on an older home.
+				// Reserve only after trying the durable acknowledgement, otherwise
+				// expired admissions would be rejected forever on terminal tasks.
+				if !self.reserve_run_message(key, content).await? {
+					return Ok(false);
+				}
+				self.commit_run_message(key, content).await?;
+				Ok(true)
+			}
+			Err(error) => Err(error),
+		}
+	}
+	pub async fn release_run_messages(&self, keys: &[String]) -> Result<()> {
+		if self.local() || keys.is_empty() {
+			return Ok(());
+		}
+		self.optional_command::<Value>(
+			"run_message_release",
+			json!({"run_id":self.run.id,"keys":keys}),
+		)
+		.await?;
+		Ok(())
+	}
+	pub async fn acknowledge_run_messages(&self, keys: &[String]) -> Result<()> {
+		if self.local() || keys.is_empty() {
+			return Ok(());
+		}
+		self.optional_command::<Value>(
+			"run_message_ack",
+			json!({"run_id":self.run.id,"keys":keys}),
+		)
+		.await?;
+		Ok(())
+	}
+	pub async fn human_message_record(&self, key: &str, content: &str) -> Result<Message> {
+		if self.local() {
+			self.federation
+				.store
+				.message_record(self.run.workspace_id, "human", content, Some(key))
+				.await
+		} else {
+			if let Some(message) = self
+				.optional_command(
+					"run_message_delivery",
+					json!({"run_id":self.run.id,"key":key,"content":content}),
+				)
+				.await?
+			{
+				return Ok(message);
+			}
+			// Protocol 0.1 peers from before the delivery extension return only
+			// {"sent":true}. Read the newly published record from their snapshot.
+			self.command::<Value>("human_message", json!({"key":key,"content":content}))
+				.await?;
+			let full_key = format!(
+				"{}:{}:{key}",
+				self.federation.config.node_id, self.run.task_id
+			);
+			self.snapshot_collection::<Message>("messages")
+				.await?
+				.into_iter()
+				.find(|message| message.idempotency_key.as_deref() == Some(&full_key))
+				.ok_or_else(|| {
+					Error::External("legacy peer did not expose delivered message".into())
+				})
+		}
+	}
+	pub async fn historical_run_messages(&self) -> Result<Vec<Message>> {
+		if self.local() {
+			return Ok(Vec::new());
+		}
+		let mut messages = Vec::new();
+		loop {
+			let Some(page): Option<Vec<Message>> = self
+				.optional_command(
+					"run_message_history",
+					json!({
+						"run_id":self.run.id,"offset":messages.len()
+					}),
+				)
+				.await?
+			else {
+				// Older 0.1 peers expose only their latest 100 messages through
+				// snapshot_page. Fail closed if that window is full: earlier run
+				// corrections might otherwise be missed during finalization.
+				let mut legacy = self.snapshot_collection::<Message>("messages").await?;
+				if legacy.len() == 100 {
+					return Err(Error::External(
+						"legacy peer message snapshot may omit run history".into(),
+					));
+				}
+				let prefix = format!("{}:{}:", self.federation.config.node_id, self.run.task_id);
+				let run_id = self.run.id.to_string();
+				legacy.retain(|message| {
+					message
+						.idempotency_key
+						.as_deref()
+						.and_then(|key| key.strip_prefix(&prefix))
+						.is_some_and(|key| {
+							key.starts_with(&format!("human:{run_id}:"))
+								|| (key.starts_with("subject-human:")
+									&& key.rsplit(':').nth(1) == Some(run_id.as_str()))
+						})
+				});
+				legacy.sort_by_key(|message| (message.created_at, message.id));
+				messages.extend(legacy);
+				return Ok(messages);
+			};
+			let count = page.len();
+			messages.extend(page);
+			if count < 4 {
+				break;
+			}
+		}
+		Ok(messages)
+	}
+	pub async fn report(&self, key: &str, kind: &str, data: Value) -> Result<()> {
+		if self.local() {
+			return Ok(());
+		}
+		self.command::<Value>("event", json!({"key":key,"kind":kind,"data":data}))
+			.await?;
+		Ok(())
+	}
+}
+
+#[cfg(test)]
+fn map_workspace_chunk_bad_request(
+	path: &str,
+	request: Option<&Value>,
+	error: &Value,
+) -> Option<Error> {
+	aidash_application::federation::map_workspace_chunk_bad_request(path, request, error)
+		.map(Into::into)
+}
+
+#[cfg(test)]
+#[path = "../tests/services_runtime_review_tests.rs"]
+mod review_tests;
+
+#[async_trait::async_trait]
+impl Injectable for Federation {
+	async fn inject(ctx: &InjectionContext) -> DiResult<Self> {
+		ctx.get_singleton::<Self>()
+			.map(|value| (*value).clone())
+			.ok_or_else(|| DiError::NotFound("Aidash runtime".into()))
+	}
+}
+
+pub use crate::apps::federation::remote::serializers::runtime::{
+	Delegation, DiscoveredAgent, Discovery, Offer, Peer,
+};
+
+impl Federation {
+	pub(crate) async fn transition_terminal_metadata(
+		&self,
+		run: &RunMetadata,
+		target: TaskStatus,
+		authority: Option<crate::authorization::execution::WorkerAuthority>,
+	) -> Result<Task> {
+		let through_seq = self.store.run_input_high_watermark(run.id).await?;
+		let home = Home::for_delivery(self.clone(), run.clone()).with_authority(authority);
+		home.transition_terminal(target, through_seq).await
+	}
+}
+
+impl Federation {
+	pub(crate) async fn deliver_run_message_metadata(&self, run: &RunMetadata) -> Result<()> {
+		if run.home_node == self.config.node_id {
+			return Ok(());
+		}
+		let home = Home::for_delivery(self.clone(), run.clone());
+		for input in self.store.run_inputs(run.id).await? {
+			if input.message_id.is_some() && input.seq <= run.observed_input_seq {
+				continue;
+			}
+			if !home
+				.recover_run_message(&input.idempotency_key, &input.content)
+				.await?
+			{
+				tracing::debug!(run_id=%run.id, "older home does not support remote message reservations");
+			}
+			let message = home
+				.human_message_record(&input.idempotency_key, &input.content)
+				.await?;
+			let expected_key = format!(
+				"{}:{}:{}",
+				self.config.node_id, run.task_id, input.idempotency_key
+			);
+			if message.workspace_id != run.workspace_id
+				|| message.content != input.content
+				|| message.idempotency_key.as_deref() != Some(expected_key.as_str())
+			{
+				return Err(Error::Conflict(
+					"remote run message delivery changed".into(),
+				));
+			}
+			self.store
+				.bind_run_input_message(run.id, &input.idempotency_key, message.id)
+				.await?;
+		}
+		Ok(())
+	}
+}
+
+impl Home {
+	pub(crate) fn for_delivery(federation: Federation, run: RunMetadata) -> Self {
+		Self {
+			included_input_seq: run.observed_input_seq,
+			federation,
+			run,
+			execution: None,
+			authority: None,
+		}
+	}
+}
+
+impl Home {
+	fn execution_run(&self) -> Result<&Run> {
+		self.execution
+			.as_ref()
+			.ok_or_else(|| Error::Invalid("delivery has no executable continuation".into()))
+	}
+}

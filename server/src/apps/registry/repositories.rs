@@ -1,0 +1,423 @@
+//! Native adapters for Registry scopes; business admission lives in application.
+use super::models::{records, transaction_records};
+use crate::apps::execution::models::event_records;
+use crate::{
+	Result,
+	registry::{AgentPage, Entry, Package, PackageRecord, Search},
+};
+use aidash_application::ports::registry::{
+	DefinitionDocument, DefinitionLookup, DefinitionWriter, PackageScope, PackageSnapshot,
+	RegistrationScope, RegistryRead,
+};
+use async_trait::async_trait;
+use reinhardt::db::backends::{
+	DatabaseConnection as BackendConnection, PostgresBackend, TransactionExecutor,
+};
+use reinhardt::db::orm::{
+	AtomicTransaction, DatabaseConnection, DatabaseConnectionLease, OrmExecutor,
+};
+use serde_json::Value;
+use std::sync::Arc;
+use uuid::Uuid;
+mod sql;
+
+#[derive(Clone)]
+pub struct Registry {
+	pub db: DatabaseConnection,
+	_lease: DatabaseConnectionLease,
+	node_id: String,
+}
+impl Registry {
+	pub fn new(pool: sqlx::PgPool, node_id: &str) -> Result<Self> {
+		let lease = DatabaseConnectionLease::register(BackendConnection::new(Arc::new(
+			PostgresBackend::new(pool),
+		)))?;
+		Ok(Self {
+			db: lease.handle(),
+			_lease: lease,
+			node_id: node_id.into(),
+		})
+	}
+	pub async fn get(&self, id: &str, version: &str) -> Result<Entry> {
+		let mut db = self.db;
+		Ok(aidash_application::registry::effective(
+			&mut OrmScope {
+				db: &mut db,
+				node: &self.node_id,
+			},
+			id,
+			version,
+		)
+		.await?)
+	}
+	pub(crate) async fn get_for_run(
+		&self,
+		run: impl Into<aidash_domain::RunMetadata>,
+		id: &str,
+		version: &str,
+	) -> Result<Entry> {
+		let mut db = self.db;
+		Ok(aidash_application::registry::get_for_run(
+			&mut OrmScope {
+				db: &mut db,
+				node: &self.node_id,
+			},
+			run,
+			id,
+			version,
+		)
+		.await?)
+	}
+	pub async fn list(&self, search: &Search) -> Result<Vec<Entry>> {
+		let mut db = self.db;
+		Ok(aidash_application::registry::list(
+			&mut OrmScope {
+				db: &mut db,
+				node: &self.node_id,
+			},
+			search,
+		)
+		.await?)
+	}
+	pub async fn legacy_agents(&self, search: &Search, offset: u64) -> Result<AgentPage> {
+		let mut db = self.db;
+		Ok(aidash_application::registry::legacy_agents(
+			&mut OrmScope {
+				db: &mut db,
+				node: &self.node_id,
+			},
+			search,
+			offset,
+		)
+		.await?)
+	}
+	pub async fn register(&self, entry: Entry) -> Result<Entry> {
+		self.db
+			.atomic(async |tx| {
+				Ok(aidash_application::registry::register(
+					&mut OrmScope {
+						db: tx,
+						node: &self.node_id,
+					},
+					&crate::bootstrap::registry_validation(),
+					entry,
+					None,
+					false,
+					&self.node_id,
+				)
+				.await?)
+			})
+			.await
+	}
+	pub(crate) async fn register_with_event(
+		&self,
+		entry: Entry,
+		key: Option<Uuid>,
+	) -> Result<Entry> {
+		self.db
+			.atomic(async |tx| {
+				Ok(aidash_application::registry::register(
+					&mut OrmScope {
+						db: tx,
+						node: &self.node_id,
+					},
+					&crate::bootstrap::registry_validation(),
+					entry,
+					key,
+					true,
+					&self.node_id,
+				)
+				.await?)
+			})
+			.await
+	}
+	pub async fn validate_references(&self, entry: &Entry) -> Result<()> {
+		let mut db = self.db;
+		validate_references_with(&mut db, entry, &self.node_id).await
+	}
+	pub async fn publish(&self, package: Package) -> Result<PackageRecord> {
+		self.db
+			.atomic(async |tx| {
+				Ok(aidash_application::registry::publish(
+					&mut OrmScope {
+						db: tx,
+						node: &self.node_id,
+					},
+					&crate::bootstrap::registry_validation(),
+					package,
+				)
+				.await?)
+			})
+			.await
+	}
+	pub async fn install(
+		&self,
+		id: &str,
+		version: &str,
+		expected_digest: &str,
+		config: Value,
+	) -> Result<Entry> {
+		let mut db = self.db;
+		let record = records::package(&mut db, id, version).await?;
+		let plan = aidash_application::registry::prepare_install(
+			PackageSnapshot {
+				manifest: record.manifest.0,
+				source: record.manifest_source,
+				digest: record.digest,
+			},
+			expected_digest,
+			config,
+		)?;
+		self.db
+			.atomic(async |tx| {
+				Ok(aidash_application::registry::install(
+					&mut OrmScope {
+						db: tx,
+						node: &self.node_id,
+					},
+					&crate::bootstrap::registry_validation(),
+					plan,
+					&self.node_id,
+					id,
+					version,
+				)
+				.await?)
+			})
+			.await
+	}
+}
+
+pub(crate) struct OrmScope<'a, E: OrmExecutor> {
+	db: &'a mut E,
+	node: &'a str,
+}
+#[async_trait]
+impl<E: OrmExecutor> DefinitionLookup for OrmScope<'_, E> {
+	async fn definition(&mut self, id: &str, version: &str) -> aidash_application::Result<Entry> {
+		Ok(serde_json::from_value(
+			records::definition(self.db, id, version).await?.metadata.0,
+		)?)
+	}
+	async fn overrides(
+		&mut self,
+		id: &str,
+		version: &str,
+	) -> aidash_application::Result<Option<Value>> {
+		Ok(records::installation(self.db, id, version)
+			.await?
+			.map(|record| record.config.0))
+	}
+}
+#[async_trait]
+impl<E: OrmExecutor> DefinitionWriter for OrmScope<'_, E> {
+	async fn insert_definition(&mut self, entry: &Entry) -> aidash_application::Result<bool> {
+		records::insert_definition(self.db, entry)
+			.await
+			.map_err(Into::into)
+	}
+}
+#[async_trait]
+impl<E: OrmExecutor + TransactionExecutor> RegistrationScope for OrmScope<'_, E> {
+	async fn assign_id(
+		&mut self,
+		entry: &mut Entry,
+		key: Option<Uuid>,
+	) -> aidash_application::Result<()> {
+		records::assign_id(self.db, entry, key)
+			.await
+			.map_err(Into::into)
+	}
+	async fn append_event(&mut self, kind: &str, payload: Value) -> aidash_application::Result<()> {
+		event_records::append(self.db, self.node, None, kind, payload)
+			.await
+			.map(|_| ())
+			.map_err(Into::into)
+	}
+}
+#[async_trait]
+impl RegistryRead for OrmScope<'_, DatabaseConnection> {
+	async fn definitions(
+		&mut self,
+		kind: Option<&str>,
+		offset: usize,
+		limit: Option<usize>,
+	) -> aidash_application::Result<Vec<DefinitionDocument>> {
+		Ok(records::definitions(*self.db, kind, offset, limit)
+			.await?
+			.into_iter()
+			.map(|row| DefinitionDocument {
+				id: row.id,
+				version: row.version,
+				metadata: row.metadata.0,
+			})
+			.collect())
+	}
+	async fn generated(&mut self, id: &str, version: &str) -> aidash_application::Result<bool> {
+		crate::apps::execution::generation::models::is_generated_agent(*self.db, id, version)
+			.await
+			.map_err(Into::into)
+	}
+}
+#[async_trait]
+impl PackageScope for OrmScope<'_, AtomicTransaction> {
+	async fn publish(
+		&mut self,
+		id: &str,
+		version: &str,
+		manifest: Value,
+		digest: &str,
+		source: &str,
+	) -> aidash_application::Result<(PackageRecord, bool)> {
+		records::publish(self.db, id, version, manifest, digest, source)
+			.await
+			.map_err(Into::into)
+	}
+	async fn install(
+		&mut self,
+		entry: &Entry,
+		digest: &str,
+		config: Value,
+	) -> aidash_application::Result<bool> {
+		records::install(self.db, entry, digest, config)
+			.await
+			.map_err(Into::into)
+	}
+	async fn append_event(&mut self, kind: &str, payload: Value) -> aidash_application::Result<()> {
+		event_records::append(self.db, self.node, None, kind, payload)
+			.await
+			.map(|_| ())
+			.map_err(Into::into)
+	}
+}
+
+pub(crate) struct NativeScope<'a>(pub(crate) &'a mut dyn TransactionExecutor);
+#[async_trait]
+impl DefinitionLookup for NativeScope<'_> {
+	async fn definition(&mut self, id: &str, version: &str) -> aidash_application::Result<Entry> {
+		Ok(serde_json::from_value(
+			transaction_records::definition(self.0, id, version)
+				.await?
+				.metadata
+				.into_inner(),
+		)?)
+	}
+	async fn overrides(
+		&mut self,
+		id: &str,
+		version: &str,
+	) -> aidash_application::Result<Option<Value>> {
+		transaction_records::installation(self.0, id, version)
+			.await
+			.map_err(Into::into)
+	}
+	async fn executor_kind(
+		&mut self,
+		id: &str,
+		version: &str,
+	) -> aidash_application::Result<Option<String>> {
+		Ok(Some(
+			aidash_application::registry::effective(self, id, version)
+				.await?
+				.kind,
+		))
+	}
+}
+#[async_trait]
+impl DefinitionWriter for NativeScope<'_> {
+	async fn insert_definition(&mut self, entry: &Entry) -> aidash_application::Result<bool> {
+		transaction_records::insert_definition(self.0, entry)
+			.await
+			.map_err(Into::into)
+	}
+}
+
+pub(crate) async fn validate_references_with<E: OrmExecutor>(
+	db: &mut E,
+	entry: &Entry,
+	node: &str,
+) -> Result<()> {
+	Ok(aidash_application::registry::validate_references(
+		&mut OrmScope { db, node },
+		&crate::bootstrap::registry_validation(),
+		entry,
+		node,
+	)
+	.await?)
+}
+pub(crate) async fn register_in(
+	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	entry: &Entry,
+	node: &str,
+) -> Result<bool> {
+	Ok(aidash_application::registry::register_definition(
+		&mut sql::SqlScope(tx),
+		&crate::bootstrap::registry_validation(),
+		entry,
+		node,
+	)
+	.await?)
+}
+
+use aidash_application::ports::registry::{PrivateKnowledgeRead, PrivateKnowledgeScope};
+#[async_trait]
+impl<E: OrmExecutor> PrivateKnowledgeRead for OrmScope<'_, E> {
+	async fn documents(&mut self, entry: &Entry) -> aidash_application::Result<Option<Value>> {
+		records::documents(self.db, entry).await.map_err(Into::into)
+	}
+}
+#[async_trait]
+impl PrivateKnowledgeScope for OrmScope<'_, AtomicTransaction> {
+	async fn insert_documents(
+		&mut self,
+		entry: &Entry,
+		documents: Value,
+	) -> aidash_application::Result<()> {
+		records::insert_documents(self.db, entry, documents)
+			.await
+			.map_err(Into::into)
+	}
+}
+impl Registry {
+	pub(crate) async fn register_personal(
+		&self,
+		draft: aidash_application::registry::personal::PersonalDraft,
+		key: Uuid,
+	) -> Result<Entry> {
+		let mut db = self.db;
+		let registration = aidash_application::registry::personal::prepare(
+			&mut OrmScope {
+				db: &mut db,
+				node: &self.node_id,
+			},
+			&crate::bootstrap::registry_validation(),
+			draft,
+		)
+		.await?;
+		self.db
+			.atomic(async |tx| {
+				Ok(aidash_application::registry::personal::register(
+					&mut OrmScope {
+						db: tx,
+						node: &self.node_id,
+					},
+					&crate::bootstrap::registry_validation(),
+					registration,
+					key,
+					&self.node_id,
+				)
+				.await?)
+			})
+			.await
+	}
+}
+pub(crate) async fn private_documents(db: &DatabaseConnection, entry: &Entry) -> Result<Value> {
+	let mut connection = *db;
+	Ok(aidash_application::registry::personal::load(
+		&mut OrmScope {
+			db: &mut connection,
+			node: "",
+		},
+		entry,
+	)
+	.await?)
+}

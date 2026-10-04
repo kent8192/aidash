@@ -1,0 +1,47 @@
+//! Pure validation of configured identities and transport references.
+use crate::{Error, Result};
+
+pub fn validate_node_id(id: &str) -> Result<()> {
+	let suffix = id.strip_prefix("aidash://").unwrap_or_default();
+	if suffix.is_empty()
+		|| suffix.len() > 100
+		|| !suffix
+			.chars()
+			.all(|c| c.is_ascii_alphanumeric() || c == '-')
+	{
+		return Err(Error::Invalid(
+			"node id must be aidash:// followed by letters, numbers or hyphens".into(),
+		));
+	}
+	Ok(())
+}
+
+pub fn validate_endpoint(endpoint: &str) -> Result<()> {
+	let url =
+		url::Url::parse(endpoint).map_err(|_| Error::Invalid("invalid endpoint URL".into()))?;
+	if !matches!(url.scheme(), "http" | "https")
+		|| url.host_str().is_none()
+		|| !url.username().is_empty()
+		|| url.password().is_some()
+		|| url.query().is_some()
+		|| url.fragment().is_some()
+	{
+		return Err(Error::Invalid(
+			"endpoint requires HTTP(S) without inline credentials, query or fragment".into(),
+		));
+	}
+	Ok(())
+}
+
+pub fn validate_secret_reference(name: &str) -> Result<()> {
+	if !name.starts_with("AIDASH_SECRET_")
+		|| !name
+			.chars()
+			.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+	{
+		return Err(Error::Invalid(
+			"credential references must use AIDASH_SECRET_* environment variables".into(),
+		));
+	}
+	Ok(())
+}

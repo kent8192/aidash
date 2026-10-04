@@ -1,0 +1,3927 @@
+{
+  "source_revision": "d120162",
+  "legacy_migrations": [
+    "m20260920_200623_m0001_core",
+    "m20260920_200623_m0002_federation",
+    "m20260920_200623_m0003_task_abandonment",
+    "m20260920_200623_m0004_authorization",
+    "m20260920_200623_m0005_subject_credentials",
+    "m20260920_200623_m0006_execution_authority",
+    "m20260920_200623_m0007_interaction_authority",
+    "m20260920_200623_m0008_generation",
+    "m20260920_200623_m0009_generation_compaction",
+    "m20260920_200623_m0010_delivery_retries",
+    "m20260920_204136_m0011_resource_reads",
+    "m20260920_210304_review_isolation",
+    "m20260920_211600_atomic_transactions",
+    "m20260920_215543_semantic_memory",
+    "m20260920_235900_generation_embeddings",
+    "m20260921_003656_authorization_peer_mappings",
+    "m20260921_010628_authorization_remote_reads",
+    "m20260921_014954_authorization_remote_grants",
+    "m20260921_021051_authorization_remote_admissions",
+    "m20260921_024105_authorization_remote_grant_reads",
+    "m20260921_070000_registry_requests",
+    "m20260921_071045_record_constraints",
+    "m20260921_230000_agent_knowledge",
+    "m20260922_080000_personal_agent_constraints",
+    "m20260922_134000_inference_timeout_constraints",
+    "m20260923_010000_channel_threads",
+    "m20260923_020000_channel_attachments",
+    "m20260923_120000_atomic_gate_commit_epoch",
+    "m20260923_190000_dashboard_oidc",
+    "m20260924_020000_dashboard_oidc_indexes",
+    "m20260924_030000_dashboard_session_revocation_indexes",
+    "m20260924_040000_run_inputs",
+    "m20260924_050000_run_input_delivery_refs",
+    "m20260924_060000_legacy_run_input_bridge",
+    "m20260924_070000_legacy_run_input_gate",
+    "m20260924_080000_legacy_federated_input_gate",
+    "m20260924_090000_worker_ledger_fence",
+    "m20260924_100000_remote_message_fence",
+    "m20260925_000000_agent_workbenches",
+    "m20260925_140000_core_working_files",
+    "m20260926_010000_scoped_remote_execution",
+    "m20260927_000000_core_operation_queue",
+    "m20260928_000000_transaction_authority",
+    "m20260928_000000_worker_activation",
+    "m20260929_010000_activation_trigger_lookups",
+    "m20260929_020000_pending_authority_indexes",
+    "m20260929_020000_channel_attachment_order",
+    "m20260929_030000_media_route_constraints",
+    "m20260929_030000_graph_operator_grants",
+    "m20260929_040000_graph_grant_revocation",
+    "m20260930_000000_remote_semantic_memory",
+    "m20260930_010000_foreign_generation",
+    "m20260930_010000_marketplace_authorization",
+    "m20261001_000000_typed_run_state"
+  ],
+  "migrations": [
+    {
+      "app": "operations",
+      "name": "0000_environment",
+      "operations": 2
+    },
+    {
+      "app": "execution",
+      "name": "0001_functions",
+      "operations": 13
+    },
+    {
+      "app": "federation",
+      "name": "0001_functions",
+      "operations": 4
+    },
+    {
+      "app": "knowledge",
+      "name": "0001_functions",
+      "operations": 3
+    },
+    {
+      "app": "registry",
+      "name": "0001_functions",
+      "operations": 13
+    },
+    {
+      "app": "workspaces",
+      "name": "0001_functions",
+      "operations": 6
+    },
+    {
+      "app": "execution",
+      "name": "0002_tables",
+      "operations": 37
+    },
+    {
+      "app": "federation",
+      "name": "0002_tables",
+      "operations": 24
+    },
+    {
+      "app": "identity",
+      "name": "0002_tables",
+      "operations": 26
+    },
+    {
+      "app": "knowledge",
+      "name": "0002_tables",
+      "operations": 14
+    },
+    {
+      "app": "marketplace",
+      "name": "0002_tables",
+      "operations": 8
+    },
+    {
+      "app": "registry",
+      "name": "0002_tables",
+      "operations": 18
+    },
+    {
+      "app": "workspaces",
+      "name": "0002_tables",
+      "operations": 9
+    },
+    {
+      "app": "execution",
+      "name": "0003_keys_indexes",
+      "operations": 58
+    },
+    {
+      "app": "federation",
+      "name": "0003_keys_indexes",
+      "operations": 25
+    },
+    {
+      "app": "identity",
+      "name": "0003_keys_indexes",
+      "operations": 45
+    },
+    {
+      "app": "knowledge",
+      "name": "0003_keys_indexes",
+      "operations": 15
+    },
+    {
+      "app": "marketplace",
+      "name": "0003_keys_indexes",
+      "operations": 14
+    },
+    {
+      "app": "registry",
+      "name": "0003_keys_indexes",
+      "operations": 23
+    },
+    {
+      "app": "workspaces",
+      "name": "0003_keys_indexes",
+      "operations": 24
+    },
+    {
+      "app": "execution",
+      "name": "0004_references",
+      "operations": 28
+    },
+    {
+      "app": "federation",
+      "name": "0004_references",
+      "operations": 11
+    },
+    {
+      "app": "identity",
+      "name": "0004_references",
+      "operations": 30
+    },
+    {
+      "app": "knowledge",
+      "name": "0004_references",
+      "operations": 8
+    },
+    {
+      "app": "marketplace",
+      "name": "0004_references",
+      "operations": 2
+    },
+    {
+      "app": "registry",
+      "name": "0004_references",
+      "operations": 10
+    },
+    {
+      "app": "workspaces",
+      "name": "0004_references",
+      "operations": 15
+    },
+    {
+      "app": "federation",
+      "name": "0005_seed",
+      "operations": 1
+    },
+    {
+      "app": "marketplace",
+      "name": "0005_seed",
+      "operations": 1
+    },
+    {
+      "app": "execution",
+      "name": "0006_triggers",
+      "operations": 34
+    },
+    {
+      "app": "federation",
+      "name": "0006_triggers",
+      "operations": 10
+    },
+    {
+      "app": "identity",
+      "name": "0006_triggers",
+      "operations": 18
+    },
+    {
+      "app": "knowledge",
+      "name": "0006_triggers",
+      "operations": 13
+    },
+    {
+      "app": "marketplace",
+      "name": "0006_triggers",
+      "operations": 10
+    },
+    {
+      "app": "registry",
+      "name": "0006_triggers",
+      "operations": 24
+    },
+    {
+      "app": "workspaces",
+      "name": "0006_triggers",
+      "operations": 19
+    }
+  ],
+  "objects": [
+    {
+      "name": "pg_jsonschema",
+      "kind": "EXTENSION",
+      "app": "operations",
+      "phase": 0
+    },
+    {
+      "name": "aidash_activation_trigger()",
+      "kind": "FUNCTION",
+      "app": "execution",
+      "phase": 1
+    },
+    {
+      "name": "aidash_media_routes_valid(jsonb)",
+      "kind": "FUNCTION",
+      "app": "registry",
+      "phase": 1
+    },
+    {
+      "name": "aidash_model_response_is_valid(jsonb)",
+      "kind": "FUNCTION",
+      "app": "execution",
+      "phase": 1
+    },
+    {
+      "name": "aidash_package_source_matches(jsonb, text)",
+      "kind": "FUNCTION",
+      "app": "registry",
+      "phase": 1
+    },
+    {
+      "name": "aidash_request_activation(uuid, text)",
+      "kind": "FUNCTION",
+      "app": "execution",
+      "phase": 1
+    },
+    {
+      "name": "aidash_tool_config_is_valid(jsonb)",
+      "kind": "FUNCTION",
+      "app": "registry",
+      "phase": 1
+    },
+    {
+      "name": "aidash_valid_http_endpoint(jsonb)",
+      "kind": "FUNCTION",
+      "app": "registry",
+      "phase": 1
+    },
+    {
+      "name": "aidash_valid_pending_timestamp(jsonb)",
+      "kind": "FUNCTION",
+      "app": "execution",
+      "phase": 1
+    },
+    {
+      "name": "atomic_immutable_decision()",
+      "kind": "FUNCTION",
+      "app": "federation",
+      "phase": 1
+    },
+    {
+      "name": "atomic_write_guard()",
+      "kind": "FUNCTION",
+      "app": "federation",
+      "phase": 1
+    },
+    {
+      "name": "gate_legacy_federated_run_message()",
+      "kind": "FUNCTION",
+      "app": "execution",
+      "phase": 1
+    },
+    {
+      "name": "gate_legacy_run_message()",
+      "kind": "FUNCTION",
+      "app": "execution",
+      "phase": 1
+    },
+    {
+      "name": "gate_legacy_run_output()",
+      "kind": "FUNCTION",
+      "app": "execution",
+      "phase": 1
+    },
+    {
+      "name": "gate_legacy_run_worker()",
+      "kind": "FUNCTION",
+      "app": "execution",
+      "phase": 1
+    },
+    {
+      "name": "gate_remote_task_terminal()",
+      "kind": "FUNCTION",
+      "app": "federation",
+      "phase": 1
+    },
+    {
+      "name": "guard_installation_config()",
+      "kind": "FUNCTION",
+      "app": "registry",
+      "phase": 1
+    },
+    {
+      "name": "guard_registry_agent_model_refs()",
+      "kind": "FUNCTION",
+      "app": "registry",
+      "phase": 1
+    },
+    {
+      "name": "guard_registry_agent_resource_refs()",
+      "kind": "FUNCTION",
+      "app": "registry",
+      "phase": 1
+    },
+    {
+      "name": "guard_semantic_index_input_limit()",
+      "kind": "FUNCTION",
+      "app": "knowledge",
+      "phase": 1
+    },
+    {
+      "name": "guard_semantic_memory_entry_bytes()",
+      "kind": "FUNCTION",
+      "app": "knowledge",
+      "phase": 1
+    },
+    {
+      "name": "guard_task_dependencies()",
+      "kind": "FUNCTION",
+      "app": "workspaces",
+      "phase": 1
+    },
+    {
+      "name": "guard_task_dependency_cycle()",
+      "kind": "FUNCTION",
+      "app": "workspaces",
+      "phase": 1
+    },
+    {
+      "name": "guard_task_parent_cycle()",
+      "kind": "FUNCTION",
+      "app": "workspaces",
+      "phase": 1
+    },
+    {
+      "name": "legacy_run_input_bridge()",
+      "kind": "FUNCTION",
+      "app": "execution",
+      "phase": 1
+    },
+    {
+      "name": "lock_registry_installation_writes()",
+      "kind": "FUNCTION",
+      "app": "registry",
+      "phase": 1
+    },
+    {
+      "name": "lock_task_hierarchy_before_change()",
+      "kind": "FUNCTION",
+      "app": "workspaces",
+      "phase": 1
+    },
+    {
+      "name": "marketplace_catalog_fence()",
+      "kind": "FUNCTION",
+      "app": "execution",
+      "phase": 1
+    },
+    {
+      "name": "marketplace_immutable()",
+      "kind": "FUNCTION",
+      "app": "execution",
+      "phase": 1
+    },
+    {
+      "name": "marketplace_overlay_fence()",
+      "kind": "FUNCTION",
+      "app": "execution",
+      "phase": 1
+    },
+    {
+      "name": "marketplace_registry_fence()",
+      "kind": "FUNCTION",
+      "app": "registry",
+      "phase": 1
+    },
+    {
+      "name": "sync_registry_agent_model_refs()",
+      "kind": "FUNCTION",
+      "app": "registry",
+      "phase": 1
+    },
+    {
+      "name": "sync_registry_agent_resource_refs()",
+      "kind": "FUNCTION",
+      "app": "registry",
+      "phase": 1
+    },
+    {
+      "name": "sync_task_dependencies()",
+      "kind": "FUNCTION",
+      "app": "workspaces",
+      "phase": 1
+    },
+    {
+      "name": "validate_registry_installations()",
+      "kind": "FUNCTION",
+      "app": "registry",
+      "phase": 1
+    },
+    {
+      "name": "activation_quarantine",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "agent_draft_registrations",
+      "kind": "TABLE",
+      "app": "registry",
+      "phase": 2
+    },
+    {
+      "name": "agent_draft_shares",
+      "kind": "TABLE",
+      "app": "registry",
+      "phase": 2
+    },
+    {
+      "name": "agent_drafts",
+      "kind": "TABLE",
+      "app": "registry",
+      "phase": 2
+    },
+    {
+      "name": "agent_incident_events",
+      "kind": "TABLE",
+      "app": "registry",
+      "phase": 2
+    },
+    {
+      "name": "agent_incident_events_id_seq",
+      "kind": "SEQUENCE",
+      "app": "registry",
+      "phase": 2
+    },
+    {
+      "name": "agent_incident_events_id_seq",
+      "kind": "SEQUENCE OWNED BY",
+      "app": "registry",
+      "phase": 2
+    },
+    {
+      "name": "agent_incidents",
+      "kind": "TABLE",
+      "app": "registry",
+      "phase": 2
+    },
+    {
+      "name": "agent_knowledge",
+      "kind": "TABLE",
+      "app": "registry",
+      "phase": 2
+    },
+    {
+      "name": "agent_test_limits",
+      "kind": "TABLE",
+      "app": "registry",
+      "phase": 2
+    },
+    {
+      "name": "agent_test_profiles",
+      "kind": "TABLE",
+      "app": "registry",
+      "phase": 2
+    },
+    {
+      "name": "agent_test_sessions",
+      "kind": "TABLE",
+      "app": "registry",
+      "phase": 2
+    },
+    {
+      "name": "artifacts",
+      "kind": "TABLE",
+      "app": "workspaces",
+      "phase": 2
+    },
+    {
+      "name": "atomic_authority_attempts",
+      "kind": "TABLE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "atomic_coordinators",
+      "kind": "TABLE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "atomic_gate",
+      "kind": "TABLE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "atomic_history",
+      "kind": "TABLE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "atomic_history_sequence_seq",
+      "kind": "SEQUENCE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "atomic_history_sequence_seq",
+      "kind": "SEQUENCE OWNED BY",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "atomic_participants",
+      "kind": "TABLE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "atomic_peer_trust",
+      "kind": "TABLE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "atomic_preflights",
+      "kind": "TABLE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "atomic_subjects",
+      "kind": "TABLE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "atomic_votes",
+      "kind": "TABLE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "authorization_bundles",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "authorization_catalog",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "authorization_catalog_history",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "authorization_credentials",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "authorization_decisions",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "authorization_decisions_sequence_seq",
+      "kind": "SEQUENCE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "authorization_execution",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "authorization_graph_operator_grants",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "authorization_peer_mapping_history",
+      "kind": "TABLE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "authorization_peer_mapping_history_sequence_seq",
+      "kind": "SEQUENCE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "authorization_peer_mapping_history_sequence_seq",
+      "kind": "SEQUENCE OWNED BY",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "authorization_peer_mappings",
+      "kind": "TABLE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "authorization_remote_admissions",
+      "kind": "TABLE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "authorization_remote_commands",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "authorization_remote_execution",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "authorization_remote_grant_reads",
+      "kind": "TABLE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "authorization_remote_grants",
+      "kind": "TABLE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "authorization_remote_outputs",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "authorization_revisions",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "authorization_run_outputs",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "authorization_run_reads",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "authorization_run_registry_reads",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "authorization_run_remote_reads",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "authorization_task_origins",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "authorization_workspaces",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "channel_attachments",
+      "kind": "TABLE",
+      "app": "workspaces",
+      "phase": 2
+    },
+    {
+      "name": "channel_message_context",
+      "kind": "TABLE",
+      "app": "workspaces",
+      "phase": 2
+    },
+    {
+      "name": "channel_threads",
+      "kind": "TABLE",
+      "app": "workspaces",
+      "phase": 2
+    },
+    {
+      "name": "conversations",
+      "kind": "TABLE",
+      "app": "workspaces",
+      "phase": 2
+    },
+    {
+      "name": "core_areas",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "core_objects",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "core_operations",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "core_quotas",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "core_records",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "core_requests",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "core_runs",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "core_task_sessions",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "dashboard_execution_origins",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "dashboard_identities",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "dashboard_login_transactions",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "dashboard_logout_tokens",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "dashboard_mappings",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "dashboard_operator_grants",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "dashboard_registration_requests",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "dashboard_sessions",
+      "kind": "TABLE",
+      "app": "identity",
+      "phase": 2
+    },
+    {
+      "name": "delegations",
+      "kind": "TABLE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "events",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "events_sequence_seq",
+      "kind": "SEQUENCE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "generation_budgets",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "generation_compaction_usage",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "generation_embedding_usage",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "generation_history",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "generation_history_sequence_seq",
+      "kind": "SEQUENCE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "generation_policies",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "generation_policy_history",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "generation_remote_dispatches",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "generation_remote_finalizations",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "generation_remote_intents",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "generation_remote_usage",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "generation_requests",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "generation_usage",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "human_requests",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "inbox",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "installations",
+      "kind": "TABLE",
+      "app": "registry",
+      "phase": 2
+    },
+    {
+      "name": "invocations",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "marketplace_audiences",
+      "kind": "TABLE",
+      "app": "marketplace",
+      "phase": 2
+    },
+    {
+      "name": "marketplace_consents",
+      "kind": "TABLE",
+      "app": "marketplace",
+      "phase": 2
+    },
+    {
+      "name": "marketplace_gate",
+      "kind": "TABLE",
+      "app": "marketplace",
+      "phase": 2
+    },
+    {
+      "name": "marketplace_installations",
+      "kind": "TABLE",
+      "app": "marketplace",
+      "phase": 2
+    },
+    {
+      "name": "marketplace_provenance",
+      "kind": "TABLE",
+      "app": "marketplace",
+      "phase": 2
+    },
+    {
+      "name": "marketplace_requests",
+      "kind": "TABLE",
+      "app": "marketplace",
+      "phase": 2
+    },
+    {
+      "name": "marketplace_revisions",
+      "kind": "TABLE",
+      "app": "marketplace",
+      "phase": 2
+    },
+    {
+      "name": "marketplace_versions",
+      "kind": "TABLE",
+      "app": "marketplace",
+      "phase": 2
+    },
+    {
+      "name": "memory",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "messages",
+      "kind": "TABLE",
+      "app": "workspaces",
+      "phase": 2
+    },
+    {
+      "name": "packages",
+      "kind": "TABLE",
+      "app": "registry",
+      "phase": 2
+    },
+    {
+      "name": "peer_events",
+      "kind": "TABLE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "peers",
+      "kind": "TABLE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "registry",
+      "kind": "TABLE",
+      "app": "registry",
+      "phase": 2
+    },
+    {
+      "name": "registry_agent_model_refs",
+      "kind": "TABLE",
+      "app": "registry",
+      "phase": 2
+    },
+    {
+      "name": "registry_agent_resource_refs",
+      "kind": "TABLE",
+      "app": "registry",
+      "phase": 2
+    },
+    {
+      "name": "registry_requests",
+      "kind": "TABLE",
+      "app": "registry",
+      "phase": 2
+    },
+    {
+      "name": "remote_run_message_fences",
+      "kind": "TABLE",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "run_activations",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "run_activations_generation_seq",
+      "kind": "SEQUENCE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "run_activations_generation_seq",
+      "kind": "SEQUENCE OWNED BY",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "run_inputs",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "run_inputs_seq_seq",
+      "kind": "SEQUENCE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "run_inputs_seq_seq",
+      "kind": "SEQUENCE OWNED BY",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "runs",
+      "kind": "TABLE",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "semantic_agent_memory",
+      "kind": "TABLE",
+      "app": "knowledge",
+      "phase": 2
+    },
+    {
+      "name": "semantic_collections",
+      "kind": "TABLE",
+      "app": "knowledge",
+      "phase": 2
+    },
+    {
+      "name": "semantic_entries",
+      "kind": "TABLE",
+      "app": "knowledge",
+      "phase": 2
+    },
+    {
+      "name": "semantic_history",
+      "kind": "TABLE",
+      "app": "knowledge",
+      "phase": 2
+    },
+    {
+      "name": "semantic_history_sequence_seq",
+      "kind": "SEQUENCE",
+      "app": "knowledge",
+      "phase": 2
+    },
+    {
+      "name": "semantic_history_sequence_seq",
+      "kind": "SEQUENCE OWNED BY",
+      "app": "knowledge",
+      "phase": 2
+    },
+    {
+      "name": "semantic_indexes",
+      "kind": "TABLE",
+      "app": "knowledge",
+      "phase": 2
+    },
+    {
+      "name": "semantic_points",
+      "kind": "TABLE",
+      "app": "knowledge",
+      "phase": 2
+    },
+    {
+      "name": "semantic_remote_attempts",
+      "kind": "TABLE",
+      "app": "knowledge",
+      "phase": 2
+    },
+    {
+      "name": "semantic_remote_operations",
+      "kind": "TABLE",
+      "app": "knowledge",
+      "phase": 2
+    },
+    {
+      "name": "semantic_remote_reads",
+      "kind": "TABLE",
+      "app": "knowledge",
+      "phase": 2
+    },
+    {
+      "name": "semantic_remote_receipts",
+      "kind": "TABLE",
+      "app": "knowledge",
+      "phase": 2
+    },
+    {
+      "name": "semantic_run_reads",
+      "kind": "TABLE",
+      "app": "knowledge",
+      "phase": 2
+    },
+    {
+      "name": "task_dependencies",
+      "kind": "TABLE",
+      "app": "workspaces",
+      "phase": 2
+    },
+    {
+      "name": "tasks",
+      "kind": "TABLE",
+      "app": "workspaces",
+      "phase": 2
+    },
+    {
+      "name": "workspaces",
+      "kind": "TABLE",
+      "app": "workspaces",
+      "phase": 2
+    },
+    {
+      "name": "agent_incident_events id",
+      "kind": "DEFAULT",
+      "app": "registry",
+      "phase": 2
+    },
+    {
+      "name": "atomic_history sequence",
+      "kind": "DEFAULT",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "authorization_peer_mapping_history sequence",
+      "kind": "DEFAULT",
+      "app": "federation",
+      "phase": 2
+    },
+    {
+      "name": "run_activations generation",
+      "kind": "DEFAULT",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "run_inputs seq",
+      "kind": "DEFAULT",
+      "app": "execution",
+      "phase": 2
+    },
+    {
+      "name": "semantic_history sequence",
+      "kind": "DEFAULT",
+      "app": "knowledge",
+      "phase": 2
+    },
+    {
+      "name": "activation_quarantine activation_quarantine_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "agent_draft_registrations agent_draft_registrations_pkey",
+      "kind": "CONSTRAINT",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "agent_draft_shares agent_draft_shares_pkey",
+      "kind": "CONSTRAINT",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "agent_drafts agent_drafts_managed_id_key",
+      "kind": "CONSTRAINT",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "agent_drafts agent_drafts_pkey",
+      "kind": "CONSTRAINT",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "agent_incident_events agent_incident_events_pkey",
+      "kind": "CONSTRAINT",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "agent_incidents agent_incidents_pkey",
+      "kind": "CONSTRAINT",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "agent_knowledge agent_knowledge_pkey",
+      "kind": "CONSTRAINT",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "agent_test_limits agent_test_limits_pkey",
+      "kind": "CONSTRAINT",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "agent_test_profiles agent_test_profiles_pkey",
+      "kind": "CONSTRAINT",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "agent_test_sessions agent_test_sessions_active_slot_key",
+      "kind": "CONSTRAINT",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "agent_test_sessions agent_test_sessions_pkey",
+      "kind": "CONSTRAINT",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "artifacts artifacts_idempotency_key_key",
+      "kind": "CONSTRAINT",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "artifacts artifacts_pkey",
+      "kind": "CONSTRAINT",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "atomic_authority_attempts atomic_authority_attempts_pkey",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "atomic_coordinators atomic_coordinators_pkey",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "atomic_gate atomic_gate_pkey",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "atomic_history atomic_history_pkey",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "atomic_participants atomic_participants_pkey",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "atomic_peer_trust atomic_peer_trust_pkey",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "atomic_preflights atomic_preflights_pkey",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "atomic_subjects atomic_subjects_pkey",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "atomic_votes atomic_votes_pkey",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "authorization_bundles authorization_bundles_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_catalog_history authorization_catalog_history_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_catalog authorization_catalog_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_credentials authorization_credentials_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_credentials authorization_credentials_token_hash_key",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_decisions authorization_decisions_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_execution authorization_execution_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_execution authorization_execution_task_id_key",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_graph_operator_grants authorization_graph_operator_grants_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_peer_mapping_history authorization_peer_mapping_history_pkey",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "authorization_peer_mappings authorization_peer_mappings_pkey",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "authorization_remote_admissions authorization_remote_admissions_pkey",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "authorization_remote_admissions authorization_remote_admissions_source_node_grant_id_key",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "authorization_remote_admissions authorization_remote_admissions_source_node_task_id_key",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "authorization_remote_commands authorization_remote_commands_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_remote_execution authorization_remote_execution_admission_id_key",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_remote_execution authorization_remote_execution_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_remote_execution authorization_remote_execution_task_id_key",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_remote_grant_reads authorization_remote_grant_reads_pkey",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "authorization_remote_grants authorization_remote_grants_pkey",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "authorization_remote_outputs authorization_remote_outputs_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_revisions authorization_revisions_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_run_outputs authorization_run_outputs_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_run_reads authorization_run_reads_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_run_registry_reads authorization_run_registry_reads_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_run_remote_reads authorization_run_remote_reads_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_task_origins authorization_task_origins_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_workspaces authorization_workspaces_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "channel_attachments channel_attachment_idempotency",
+      "kind": "CONSTRAINT",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "channel_attachments channel_attachment_scope_key",
+      "kind": "CONSTRAINT",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "channel_attachments channel_attachments_pkey",
+      "kind": "CONSTRAINT",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "channel_message_context channel_message_context_pkey",
+      "kind": "CONSTRAINT",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "channel_threads channel_thread_scope_key",
+      "kind": "CONSTRAINT",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "channel_threads channel_threads_pkey",
+      "kind": "CONSTRAINT",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "channel_threads channel_threads_root_message_id_key",
+      "kind": "CONSTRAINT",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "conversations conversations_pkey",
+      "kind": "CONSTRAINT",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "core_areas core_areas_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "core_objects core_objects_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "core_operations core_operation_key",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "core_operations core_operations_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "core_quotas core_quotas_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "core_records core_records_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "core_requests core_requests_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "core_runs core_run_order",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "core_runs core_runs_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "core_areas core_session_identity",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "core_task_sessions core_task_sessions_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_execution_origins dashboard_execution_origins_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_identities dashboard_identities_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_identities dashboard_identity_key",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_login_transactions dashboard_login_transactions_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_logout_tokens dashboard_logout_tokens_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_mappings dashboard_mapping_key",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_mappings dashboard_mappings_credential_id_key",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_mappings dashboard_mappings_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_operator_grants dashboard_operator_grants_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_registration_requests dashboard_registration_requests_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_sessions dashboard_sessions_pkey",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_sessions dashboard_sessions_token_hash_key",
+      "kind": "CONSTRAINT",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "delegations delegations_pkey",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "events events_id_key",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "events events_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_budgets generation_budgets_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_compaction_usage generation_compaction_usage_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_embedding_usage generation_embedding_usage_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_history generation_history_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_policies generation_policies_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_policy_history generation_policy_history_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_remote_dispatches generation_remote_dispatches_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_remote_finalizations generation_remote_finalizations_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_remote_intents generation_remote_intents_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_remote_usage generation_remote_usage_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_requests generation_requests_agent_id_key",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_requests generation_requests_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_usage generation_usage_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "human_requests human_requests_id_run_id_key",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "human_requests human_requests_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "human_requests human_requests_request_key_key",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "inbox inbox_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "installations installations_pkey",
+      "kind": "CONSTRAINT",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "invocations invocations_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "marketplace_audiences marketplace_audiences_pkey",
+      "kind": "CONSTRAINT",
+      "app": "marketplace",
+      "phase": 3
+    },
+    {
+      "name": "marketplace_consents marketplace_consents_pkey",
+      "kind": "CONSTRAINT",
+      "app": "marketplace",
+      "phase": 3
+    },
+    {
+      "name": "marketplace_gate marketplace_gate_pkey",
+      "kind": "CONSTRAINT",
+      "app": "marketplace",
+      "phase": 3
+    },
+    {
+      "name": "marketplace_installations marketplace_installations_pkey",
+      "kind": "CONSTRAINT",
+      "app": "marketplace",
+      "phase": 3
+    },
+    {
+      "name": "marketplace_installations marketplace_installations_tenant_package_key_key",
+      "kind": "CONSTRAINT",
+      "app": "marketplace",
+      "phase": 3
+    },
+    {
+      "name": "marketplace_provenance marketplace_provenance_pkey",
+      "kind": "CONSTRAINT",
+      "app": "marketplace",
+      "phase": 3
+    },
+    {
+      "name": "marketplace_requests marketplace_requests_pkey",
+      "kind": "CONSTRAINT",
+      "app": "marketplace",
+      "phase": 3
+    },
+    {
+      "name": "marketplace_revisions marketplace_revisions_entry_id_entry_version_key",
+      "kind": "CONSTRAINT",
+      "app": "marketplace",
+      "phase": 3
+    },
+    {
+      "name": "marketplace_revisions marketplace_revisions_installation_revision_key",
+      "kind": "CONSTRAINT",
+      "app": "marketplace",
+      "phase": 3
+    },
+    {
+      "name": "marketplace_revisions marketplace_revisions_pkey",
+      "kind": "CONSTRAINT",
+      "app": "marketplace",
+      "phase": 3
+    },
+    {
+      "name": "marketplace_versions marketplace_versions_pkey",
+      "kind": "CONSTRAINT",
+      "app": "marketplace",
+      "phase": 3
+    },
+    {
+      "name": "marketplace_versions marketplace_versions_repository_owner_package_id_version_key",
+      "kind": "CONSTRAINT",
+      "app": "marketplace",
+      "phase": 3
+    },
+    {
+      "name": "memory memory_next_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "messages messages_idempotency_key_key",
+      "kind": "CONSTRAINT",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "messages messages_pkey",
+      "kind": "CONSTRAINT",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "packages packages_pkey",
+      "kind": "CONSTRAINT",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "peer_events peer_events_pkey",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "peers peers_pkey",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "registry_agent_model_refs registry_agent_model_refs_pkey",
+      "kind": "CONSTRAINT",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "registry_agent_resource_refs registry_agent_resource_refs_pkey",
+      "kind": "CONSTRAINT",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "registry registry_pkey",
+      "kind": "CONSTRAINT",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "registry_requests registry_requests_pkey",
+      "kind": "CONSTRAINT",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "remote_run_message_fences remote_run_message_fences_pkey",
+      "kind": "CONSTRAINT",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "run_activations run_activations_id_key",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "run_activations run_activations_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "run_inputs run_inputs_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "run_inputs run_inputs_run_key",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "runs runs_home_node_task_id_key",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "runs runs_pkey",
+      "kind": "CONSTRAINT",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "semantic_agent_memory semantic_agent_memory_pkey",
+      "kind": "CONSTRAINT",
+      "app": "knowledge",
+      "phase": 3
+    },
+    {
+      "name": "semantic_collections semantic_collections_pkey",
+      "kind": "CONSTRAINT",
+      "app": "knowledge",
+      "phase": 3
+    },
+    {
+      "name": "semantic_entries semantic_entries_pkey",
+      "kind": "CONSTRAINT",
+      "app": "knowledge",
+      "phase": 3
+    },
+    {
+      "name": "semantic_entries semantic_entries_workspace_id_key_key",
+      "kind": "CONSTRAINT",
+      "app": "knowledge",
+      "phase": 3
+    },
+    {
+      "name": "semantic_history semantic_history_pkey",
+      "kind": "CONSTRAINT",
+      "app": "knowledge",
+      "phase": 3
+    },
+    {
+      "name": "semantic_indexes semantic_indexes_collection_key",
+      "kind": "CONSTRAINT",
+      "app": "knowledge",
+      "phase": 3
+    },
+    {
+      "name": "semantic_indexes semantic_indexes_pkey",
+      "kind": "CONSTRAINT",
+      "app": "knowledge",
+      "phase": 3
+    },
+    {
+      "name": "semantic_points semantic_points_pkey",
+      "kind": "CONSTRAINT",
+      "app": "knowledge",
+      "phase": 3
+    },
+    {
+      "name": "semantic_remote_attempts semantic_remote_attempts_pkey",
+      "kind": "CONSTRAINT",
+      "app": "knowledge",
+      "phase": 3
+    },
+    {
+      "name": "semantic_remote_operations semantic_remote_operations_pkey",
+      "kind": "CONSTRAINT",
+      "app": "knowledge",
+      "phase": 3
+    },
+    {
+      "name": "semantic_remote_reads semantic_remote_reads_pkey",
+      "kind": "CONSTRAINT",
+      "app": "knowledge",
+      "phase": 3
+    },
+    {
+      "name": "semantic_remote_receipts semantic_remote_receipts_pkey",
+      "kind": "CONSTRAINT",
+      "app": "knowledge",
+      "phase": 3
+    },
+    {
+      "name": "semantic_run_reads semantic_run_reads_pkey",
+      "kind": "CONSTRAINT",
+      "app": "knowledge",
+      "phase": 3
+    },
+    {
+      "name": "task_dependencies task_dependencies_pkey",
+      "kind": "CONSTRAINT",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "tasks tasks_completion_key_key",
+      "kind": "CONSTRAINT",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "tasks tasks_creation_key_key",
+      "kind": "CONSTRAINT",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "tasks tasks_pkey",
+      "kind": "CONSTRAINT",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "workspaces workspaces_pkey",
+      "kind": "CONSTRAINT",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "activation_dependency_runs",
+      "kind": "INDEX",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "activation_due",
+      "kind": "INDEX",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "activation_run_generation",
+      "kind": "INDEX",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "agent_draft_registered_version",
+      "kind": "INDEX",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "agent_drafts_tenant_owner",
+      "kind": "INDEX",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "agent_incidents_version",
+      "kind": "INDEX",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "agent_test_sessions_draft_created",
+      "kind": "INDEX",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "atomic_authority_pending",
+      "kind": "INDEX",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "atomic_authority_pending_peer",
+      "kind": "INDEX",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "authorization_credentials_tenant",
+      "kind": "INDEX",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_decisions_tenant",
+      "kind": "INDEX",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_output_resource",
+      "kind": "INDEX",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "authorization_peer_mapping_history_tenant_sequence",
+      "kind": "INDEX",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "authorization_workspaces_tenant",
+      "kind": "INDEX",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "channel_attachment_message_lookup",
+      "kind": "INDEX",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "channel_message_history_order",
+      "kind": "INDEX",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "channel_message_scope_key",
+      "kind": "INDEX",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "channel_reply_lookup",
+      "kind": "INDEX",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "core_operation_pending_queue",
+      "kind": "INDEX",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_login_browser",
+      "kind": "INDEX",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_login_expiry",
+      "kind": "INDEX",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_logout_expiry",
+      "kind": "INDEX",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_origin_identity_run",
+      "kind": "INDEX",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_registration_pending",
+      "kind": "INDEX",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_session_expiry",
+      "kind": "INDEX",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_session_identity",
+      "kind": "INDEX",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_session_provider_sid",
+      "kind": "INDEX",
+      "app": "identity",
+      "phase": 3
+    },
+    {
+      "name": "dashboard_status_waiting_runs",
+      "kind": "INDEX",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "delegations_retry",
+      "kind": "INDEX",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "events_marketplace_package_sequence",
+      "kind": "INDEX",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "events_marketplace_tenant_sequence",
+      "kind": "INDEX",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "events_outbox",
+      "kind": "INDEX",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "events_retry",
+      "kind": "INDEX",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "events_workspace",
+      "kind": "INDEX",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_remote_dispatches_pending_finalization",
+      "kind": "INDEX",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_remote_dispatches_preparing",
+      "kind": "INDEX",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_remote_intents_cancel_retry",
+      "kind": "INDEX",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_remote_usage_attempt_digest",
+      "kind": "INDEX",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_requests_home_task",
+      "kind": "INDEX",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_requests_local_task",
+      "kind": "INDEX",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "generation_requests_policy",
+      "kind": "INDEX",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "marketplace_audiences_tenants",
+      "kind": "INDEX",
+      "app": "marketplace",
+      "phase": 3
+    },
+    {
+      "name": "marketplace_versions_source_content",
+      "kind": "INDEX",
+      "app": "marketplace",
+      "phase": 3
+    },
+    {
+      "name": "registry_id_version_kind_unique",
+      "kind": "INDEX",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "registry_metadata",
+      "kind": "INDEX",
+      "app": "registry",
+      "phase": 3
+    },
+    {
+      "name": "remote_run_message_fences_sequence",
+      "kind": "INDEX",
+      "app": "federation",
+      "phase": 3
+    },
+    {
+      "name": "runs_id_workspace_unique",
+      "kind": "INDEX",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "runs_ready",
+      "kind": "INDEX",
+      "app": "execution",
+      "phase": 3
+    },
+    {
+      "name": "semantic_remote_operation_run",
+      "kind": "INDEX",
+      "app": "knowledge",
+      "phase": 3
+    },
+    {
+      "name": "semantic_remote_receipts_run",
+      "kind": "INDEX",
+      "app": "knowledge",
+      "phase": 3
+    },
+    {
+      "name": "task_dependencies_target",
+      "kind": "INDEX",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "tasks_id_workspace_unique",
+      "kind": "INDEX",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "tasks_workspace",
+      "kind": "INDEX",
+      "app": "workspaces",
+      "phase": 3
+    },
+    {
+      "name": "core_areas aidash_activation",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "core_records aidash_activation",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "core_runs aidash_activation",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "human_requests aidash_activation",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "run_inputs aidash_activation",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "runs aidash_activation",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "tasks aidash_activation",
+      "kind": "TRIGGER",
+      "app": "workspaces",
+      "phase": 6
+    },
+    {
+      "name": "atomic_coordinators atomic_immutable_decision",
+      "kind": "TRIGGER",
+      "app": "federation",
+      "phase": 6
+    },
+    {
+      "name": "agent_draft_registrations atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "agent_draft_shares atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "agent_drafts atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "agent_incident_events atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "agent_incidents atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "agent_knowledge atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "agent_test_limits atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "agent_test_profiles atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "agent_test_sessions atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "artifacts atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "workspaces",
+      "phase": 6
+    },
+    {
+      "name": "authorization_bundles atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "identity",
+      "phase": 6
+    },
+    {
+      "name": "authorization_catalog atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "identity",
+      "phase": 6
+    },
+    {
+      "name": "authorization_catalog_history atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "identity",
+      "phase": 6
+    },
+    {
+      "name": "authorization_credentials atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "identity",
+      "phase": 6
+    },
+    {
+      "name": "authorization_decisions atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "identity",
+      "phase": 6
+    },
+    {
+      "name": "authorization_execution atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "identity",
+      "phase": 6
+    },
+    {
+      "name": "authorization_graph_operator_grants atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "identity",
+      "phase": 6
+    },
+    {
+      "name": "authorization_peer_mapping_history atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "federation",
+      "phase": 6
+    },
+    {
+      "name": "authorization_peer_mappings atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "federation",
+      "phase": 6
+    },
+    {
+      "name": "authorization_remote_admissions atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "federation",
+      "phase": 6
+    },
+    {
+      "name": "authorization_remote_commands atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "identity",
+      "phase": 6
+    },
+    {
+      "name": "authorization_remote_execution atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "identity",
+      "phase": 6
+    },
+    {
+      "name": "authorization_remote_grant_reads atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "federation",
+      "phase": 6
+    },
+    {
+      "name": "authorization_remote_grants atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "federation",
+      "phase": 6
+    },
+    {
+      "name": "authorization_remote_outputs atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "identity",
+      "phase": 6
+    },
+    {
+      "name": "authorization_revisions atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "identity",
+      "phase": 6
+    },
+    {
+      "name": "authorization_run_outputs atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "identity",
+      "phase": 6
+    },
+    {
+      "name": "authorization_run_reads atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "identity",
+      "phase": 6
+    },
+    {
+      "name": "authorization_run_registry_reads atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "identity",
+      "phase": 6
+    },
+    {
+      "name": "authorization_run_remote_reads atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "identity",
+      "phase": 6
+    },
+    {
+      "name": "authorization_task_origins atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "identity",
+      "phase": 6
+    },
+    {
+      "name": "authorization_workspaces atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "identity",
+      "phase": 6
+    },
+    {
+      "name": "channel_attachments atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "workspaces",
+      "phase": 6
+    },
+    {
+      "name": "channel_message_context atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "workspaces",
+      "phase": 6
+    },
+    {
+      "name": "channel_threads atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "workspaces",
+      "phase": 6
+    },
+    {
+      "name": "conversations atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "workspaces",
+      "phase": 6
+    },
+    {
+      "name": "core_areas atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "core_objects atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "core_operations atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "core_quotas atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "core_records atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "core_requests atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "core_runs atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "core_task_sessions atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "delegations atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "federation",
+      "phase": 6
+    },
+    {
+      "name": "events atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "generation_budgets atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "generation_compaction_usage atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "generation_embedding_usage atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "generation_history atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "generation_policies atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "generation_policy_history atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "generation_remote_dispatches atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "generation_remote_finalizations atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "generation_remote_intents atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "generation_remote_usage atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "generation_requests atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "generation_usage atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "human_requests atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "inbox atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "installations atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "invocations atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "marketplace_audiences atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "marketplace",
+      "phase": 6
+    },
+    {
+      "name": "marketplace_consents atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "marketplace",
+      "phase": 6
+    },
+    {
+      "name": "marketplace_gate atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "marketplace",
+      "phase": 6
+    },
+    {
+      "name": "marketplace_installations atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "marketplace",
+      "phase": 6
+    },
+    {
+      "name": "marketplace_provenance atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "marketplace",
+      "phase": 6
+    },
+    {
+      "name": "marketplace_requests atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "marketplace",
+      "phase": 6
+    },
+    {
+      "name": "marketplace_revisions atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "marketplace",
+      "phase": 6
+    },
+    {
+      "name": "marketplace_versions atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "marketplace",
+      "phase": 6
+    },
+    {
+      "name": "memory atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "messages atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "workspaces",
+      "phase": 6
+    },
+    {
+      "name": "packages atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "peer_events atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "federation",
+      "phase": 6
+    },
+    {
+      "name": "peers atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "federation",
+      "phase": 6
+    },
+    {
+      "name": "registry atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "registry_requests atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "remote_run_message_fences atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "federation",
+      "phase": 6
+    },
+    {
+      "name": "run_inputs atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "runs atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "semantic_agent_memory atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "knowledge",
+      "phase": 6
+    },
+    {
+      "name": "semantic_collections atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "knowledge",
+      "phase": 6
+    },
+    {
+      "name": "semantic_entries atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "knowledge",
+      "phase": 6
+    },
+    {
+      "name": "semantic_history atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "knowledge",
+      "phase": 6
+    },
+    {
+      "name": "semantic_indexes atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "knowledge",
+      "phase": 6
+    },
+    {
+      "name": "semantic_points atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "knowledge",
+      "phase": 6
+    },
+    {
+      "name": "semantic_remote_attempts atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "knowledge",
+      "phase": 6
+    },
+    {
+      "name": "semantic_remote_operations atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "knowledge",
+      "phase": 6
+    },
+    {
+      "name": "semantic_remote_reads atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "knowledge",
+      "phase": 6
+    },
+    {
+      "name": "semantic_remote_receipts atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "knowledge",
+      "phase": 6
+    },
+    {
+      "name": "semantic_run_reads atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "knowledge",
+      "phase": 6
+    },
+    {
+      "name": "tasks atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "workspaces",
+      "phase": 6
+    },
+    {
+      "name": "workspaces atomic_write_guard",
+      "kind": "TRIGGER",
+      "app": "workspaces",
+      "phase": 6
+    },
+    {
+      "name": "messages gate_legacy_federated_run_message",
+      "kind": "TRIGGER",
+      "app": "workspaces",
+      "phase": 6
+    },
+    {
+      "name": "messages gate_legacy_run_message",
+      "kind": "TRIGGER",
+      "app": "workspaces",
+      "phase": 6
+    },
+    {
+      "name": "messages gate_legacy_run_output",
+      "kind": "TRIGGER",
+      "app": "workspaces",
+      "phase": 6
+    },
+    {
+      "name": "runs gate_legacy_run_worker",
+      "kind": "TRIGGER",
+      "app": "execution",
+      "phase": 6
+    },
+    {
+      "name": "tasks gate_remote_task_terminal",
+      "kind": "TRIGGER",
+      "app": "workspaces",
+      "phase": 6
+    },
+    {
+      "name": "installations installations_config_guard",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "installations installations_registry_writes_lock",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "messages legacy_run_input_bridge",
+      "kind": "TRIGGER",
+      "app": "workspaces",
+      "phase": 6
+    },
+    {
+      "name": "authorization_catalog marketplace_catalog_fence",
+      "kind": "TRIGGER",
+      "app": "identity",
+      "phase": 6
+    },
+    {
+      "name": "marketplace_revisions marketplace_immutable",
+      "kind": "TRIGGER",
+      "app": "marketplace",
+      "phase": 6
+    },
+    {
+      "name": "marketplace_versions marketplace_immutable",
+      "kind": "TRIGGER",
+      "app": "marketplace",
+      "phase": 6
+    },
+    {
+      "name": "installations marketplace_overlay_fence",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "registry marketplace_registry_fence",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "registry_agent_model_refs registry_agent_model_refs_guard",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "registry registry_agent_model_refs_sync",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "registry_agent_resource_refs registry_agent_resource_refs_guard",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "registry registry_agent_resource_refs_sync",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "registry registry_installation_writes_lock",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "registry registry_installations_config_guard",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "registry registry_installations_model_override_guard",
+      "kind": "TRIGGER",
+      "app": "registry",
+      "phase": 6
+    },
+    {
+      "name": "semantic_indexes semantic_index_input_limit_guard",
+      "kind": "TRIGGER",
+      "app": "knowledge",
+      "phase": 6
+    },
+    {
+      "name": "semantic_entries semantic_memory_entry_bytes_guard",
+      "kind": "TRIGGER",
+      "app": "knowledge",
+      "phase": 6
+    },
+    {
+      "name": "task_dependencies task_dependencies_guard",
+      "kind": "TRIGGER",
+      "app": "workspaces",
+      "phase": 6
+    },
+    {
+      "name": "tasks tasks_dependencies_sync",
+      "kind": "TRIGGER",
+      "app": "workspaces",
+      "phase": 6
+    },
+    {
+      "name": "tasks tasks_hierarchy_serialize",
+      "kind": "TRIGGER",
+      "app": "workspaces",
+      "phase": 6
+    },
+    {
+      "name": "tasks tasks_parent_cycle_guard",
+      "kind": "TRIGGER",
+      "app": "workspaces",
+      "phase": 6
+    },
+    {
+      "name": "tasks zz_tasks_dependency_cycle_guard",
+      "kind": "TRIGGER",
+      "app": "workspaces",
+      "phase": 6
+    },
+    {
+      "name": "agent_draft_registrations agent_draft_registrations_draft_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "registry",
+      "phase": 4
+    },
+    {
+      "name": "agent_draft_shares agent_draft_shares_draft_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "registry",
+      "phase": 4
+    },
+    {
+      "name": "agent_incident_events agent_incident_events_incident_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "registry",
+      "phase": 4
+    },
+    {
+      "name": "agent_knowledge agent_knowledge_agent_id_agent_version_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "registry",
+      "phase": 4
+    },
+    {
+      "name": "agent_test_sessions agent_test_sessions_draft_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "registry",
+      "phase": 4
+    },
+    {
+      "name": "artifacts artifacts_task_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "workspaces",
+      "phase": 4
+    },
+    {
+      "name": "artifacts artifacts_task_workspace",
+      "kind": "FK CONSTRAINT",
+      "app": "workspaces",
+      "phase": 4
+    },
+    {
+      "name": "artifacts artifacts_workspace_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "workspaces",
+      "phase": 4
+    },
+    {
+      "name": "atomic_gate atomic_gate_transaction_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "federation",
+      "phase": 4
+    },
+    {
+      "name": "atomic_peer_trust atomic_peer_trust_node_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "federation",
+      "phase": 4
+    },
+    {
+      "name": "atomic_votes atomic_votes_transaction_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "federation",
+      "phase": 4
+    },
+    {
+      "name": "authorization_catalog authorization_catalog_entry_id_entry_version_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_catalog_history authorization_catalog_history_tenant_entry_id_entry_versio_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_catalog authorization_catalog_tenant_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_credentials authorization_credentials_tenant_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_decisions authorization_decisions_tenant_revision_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_execution authorization_execution_credential_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_execution authorization_execution_run_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_execution authorization_execution_task_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_execution authorization_execution_tenant_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_execution authorization_execution_workspace_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_graph_operator_grants authorization_graph_operator_grants_tenant_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_peer_mapping_history authorization_peer_mapping_history_credential_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "federation",
+      "phase": 4
+    },
+    {
+      "name": "authorization_peer_mapping_history authorization_peer_mapping_history_tenant_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "federation",
+      "phase": 4
+    },
+    {
+      "name": "authorization_peer_mappings authorization_peer_mappings_credential_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "federation",
+      "phase": 4
+    },
+    {
+      "name": "authorization_peer_mappings authorization_peer_mappings_tenant_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "federation",
+      "phase": 4
+    },
+    {
+      "name": "authorization_remote_grant_reads authorization_remote_grant_reads_grant_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "federation",
+      "phase": 4
+    },
+    {
+      "name": "authorization_remote_grants authorization_remote_grants_task_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "federation",
+      "phase": 4
+    },
+    {
+      "name": "authorization_revisions authorization_revisions_tenant_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_run_outputs authorization_run_outputs_run_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_run_reads authorization_run_reads_run_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_run_reads authorization_run_reads_workspace_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_run_registry_reads authorization_run_registry_reads_run_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_run_remote_reads authorization_run_remote_reads_run_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_task_origins authorization_task_origins_source_run_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_task_origins authorization_task_origins_task_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_task_origins authorization_task_origins_tenant_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_workspaces authorization_workspaces_tenant_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "authorization_workspaces authorization_workspaces_workspace_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "channel_attachments channel_attachments_workspace_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "workspaces",
+      "phase": 4
+    },
+    {
+      "name": "channel_attachments channel_attachments_workspace_id_message_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "workspaces",
+      "phase": 4
+    },
+    {
+      "name": "channel_message_context channel_message_context_workspace_id_message_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "workspaces",
+      "phase": 4
+    },
+    {
+      "name": "channel_message_context channel_message_context_workspace_id_thread_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "workspaces",
+      "phase": 4
+    },
+    {
+      "name": "channel_threads channel_threads_workspace_id_root_message_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "workspaces",
+      "phase": 4
+    },
+    {
+      "name": "conversations conversations_workspace_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "workspaces",
+      "phase": 4
+    },
+    {
+      "name": "core_runs core_runs_area_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "core_runs core_runs_run_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "dashboard_execution_origins dashboard_execution_origins_identity_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "dashboard_execution_origins dashboard_execution_origins_mapping_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "dashboard_execution_origins dashboard_execution_origins_run_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "dashboard_mappings dashboard_mappings_credential_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "dashboard_mappings dashboard_mappings_identity_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "dashboard_operator_grants dashboard_operator_grants_identity_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "dashboard_registration_requests dashboard_registration_requests_identity_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "dashboard_sessions dashboard_sessions_identity_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "identity",
+      "phase": 4
+    },
+    {
+      "name": "delegations delegations_task_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "federation",
+      "phase": 4
+    },
+    {
+      "name": "events events_workspace_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_budgets generation_budgets_request_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_compaction_usage generation_compaction_usage_provider_id_provider_version_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_compaction_usage generation_compaction_usage_request_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_compaction_usage generation_compaction_usage_run_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_embedding_usage generation_embedding_usage_provider_id_provider_version_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_embedding_usage generation_embedding_usage_request_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_embedding_usage generation_embedding_usage_run_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_embedding_usage generation_embedding_usage_workspace_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_history generation_history_request_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_policies generation_policies_tenant_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_policy_history generation_policy_history_tenant_policy_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_remote_intents generation_remote_intents_credential_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_remote_intents generation_remote_intents_task_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_requests generation_requests_credential_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_requests generation_requests_local_task_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_requests generation_requests_local_workspace_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_requests generation_requests_task_workspace",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_requests generation_requests_tenant_policy_id_policy_revision_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_usage generation_usage_request_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "generation_usage generation_usage_run_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "human_requests human_requests_run_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "human_requests human_requests_run_workspace",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "installations installations_id_version_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "registry",
+      "phase": 4
+    },
+    {
+      "name": "invocations invocations_run_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "marketplace_revisions marketplace_revisions_entry_id_entry_version_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "marketplace",
+      "phase": 4
+    },
+    {
+      "name": "marketplace_revisions marketplace_revisions_installation_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "marketplace",
+      "phase": 4
+    },
+    {
+      "name": "messages messages_workspace_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "workspaces",
+      "phase": 4
+    },
+    {
+      "name": "registry_agent_model_refs registry_agent_model_source",
+      "kind": "FK CONSTRAINT",
+      "app": "registry",
+      "phase": 4
+    },
+    {
+      "name": "registry_agent_model_refs registry_agent_model_target",
+      "kind": "FK CONSTRAINT",
+      "app": "registry",
+      "phase": 4
+    },
+    {
+      "name": "registry_agent_resource_refs registry_agent_resource_source",
+      "kind": "FK CONSTRAINT",
+      "app": "registry",
+      "phase": 4
+    },
+    {
+      "name": "registry_agent_resource_refs registry_agent_resource_target",
+      "kind": "FK CONSTRAINT",
+      "app": "registry",
+      "phase": 4
+    },
+    {
+      "name": "remote_run_message_fences remote_run_message_fences_task_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "federation",
+      "phase": 4
+    },
+    {
+      "name": "run_inputs run_inputs_run_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "runs runs_human_request_ref",
+      "kind": "FK CONSTRAINT",
+      "app": "execution",
+      "phase": 4
+    },
+    {
+      "name": "semantic_agent_memory semantic_agent_memory_entry_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "knowledge",
+      "phase": 4
+    },
+    {
+      "name": "semantic_collections semantic_collections_workspace_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "knowledge",
+      "phase": 4
+    },
+    {
+      "name": "semantic_entries semantic_entries_workspace_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "knowledge",
+      "phase": 4
+    },
+    {
+      "name": "semantic_indexes semantic_indexes_workspace_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "knowledge",
+      "phase": 4
+    },
+    {
+      "name": "semantic_points semantic_points_collection_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "knowledge",
+      "phase": 4
+    },
+    {
+      "name": "semantic_points semantic_points_entry_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "knowledge",
+      "phase": 4
+    },
+    {
+      "name": "semantic_run_reads semantic_run_reads_entry_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "knowledge",
+      "phase": 4
+    },
+    {
+      "name": "semantic_run_reads semantic_run_reads_run_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "knowledge",
+      "phase": 4
+    },
+    {
+      "name": "task_dependencies tasks_dependencies_source_workspace",
+      "kind": "FK CONSTRAINT",
+      "app": "workspaces",
+      "phase": 4
+    },
+    {
+      "name": "task_dependencies tasks_dependencies_target_workspace",
+      "kind": "FK CONSTRAINT",
+      "app": "workspaces",
+      "phase": 4
+    },
+    {
+      "name": "tasks tasks_parent_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "workspaces",
+      "phase": 4
+    },
+    {
+      "name": "tasks tasks_parent_workspace",
+      "kind": "FK CONSTRAINT",
+      "app": "workspaces",
+      "phase": 4
+    },
+    {
+      "name": "tasks tasks_workspace_id_fkey",
+      "kind": "FK CONSTRAINT",
+      "app": "workspaces",
+      "phase": 4
+    }
+  ],
+  "model_state": [
+    {
+      "app": "identity",
+      "name": "0007_model_state",
+      "state_only": true
+    },
+    {
+      "app": "registry",
+      "name": "0007_model_state",
+      "state_only": true
+    },
+    {
+      "app": "workspaces",
+      "name": "0007_model_state",
+      "state_only": true
+    },
+    {
+      "app": "execution",
+      "name": "0007_model_state",
+      "state_only": true
+    },
+    {
+      "app": "federation",
+      "name": "0007_model_state",
+      "state_only": true
+    },
+    {
+      "app": "knowledge",
+      "name": "0007_model_state",
+      "state_only": true
+    },
+    {
+      "app": "marketplace",
+      "name": "0007_model_state",
+      "state_only": true
+    },
+    {
+      "app": "operations",
+      "name": "0007_model_state",
+      "state_only": true
+    }
+  ]
+}

@@ -1,0 +1,81 @@
+# Base Settings for server
+#
+# This file contains the base configuration that is common across all environments.
+# Environment-specific settings should be placed in their respective files:
+# - local.toml (development)
+# - staging.toml (staging environment)
+# - production.toml (production environment)
+#
+# IMPORTANT: Copy this file to base.toml and update the values.
+# Commit non-secret defaults only when they are meant to be shared.
+
+[core]
+debug = false
+# secret_key = "uncomment-this-line-and-replace-with-a-long-random-string"
+allowed_hosts = []
+language_code = "en-us"
+time_zone = "UTC"
+use_i18n = true
+use_tz = true
+default_auto_field = "BigAutoField"
+middleware = []
+root_urlconf = ""
+
+[core.security]
+session_cookie_secure = false
+csrf_cookie_secure = false
+secure_ssl_redirect = false
+secure_hsts_seconds = 0
+secure_hsts_include_subdomains = false
+secure_hsts_preload = false
+append_slash = true
+
+[core.databases.default]
+engine = "postgresql"
+host = "localhost"
+port = 5432
+name = "server_db"
+user = "postgres"
+# password = "uncomment-this-line-and-replace-with-db-password"
+
+# Optional recipients for administrator and manager notifications.
+[contacts]
+admins = []
+managers = []
+
+[static]
+url = "/static/"
+root = "staticfiles"
+
+[node]
+node_id = "aidash://local"
+endpoint = "http://127.0.0.1:8000"
+# api_token = "set-a-random-operator-token-at-least-16-characters"
+nats_url = "nats://127.0.0.1:4222"
+web_dir = "../web/dist"
+lease_seconds = 30
+worker_count = 4
+# Optional dedicated /live and /ready listener for runserver.
+# Worker probe listeners are disabled unless this address is configured.
+# probe_listen = "127.0.0.1:8081"
+background_enabled = true
+
+# Omit this table to disable dashboard OIDC.
+# [dashboard.oidc]
+# issuer = "https://identity.example/realms/aidash"
+# client_id = "aidash-dashboard"
+# client_secret = "${OIDC_CLIENT_SECRET}"
+# public_origin = "https://aidash.example"
+# keycloak_admin_url = "https://identity.example/admin"
+# status_client_id = "aidash-status"
+# status_client_secret = "${OIDC_STATUS_CLIENT_SECRET}"
+# session_absolute_seconds = 43200
+# session_idle_seconds = 1800
+
+[kubernetes]
+enabled = false
+# namespace = "aidash"
+# release = "aidash"
+# endpoint = "https://kubernetes.default.svc"
+# ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+# token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
