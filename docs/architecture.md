@@ -51,6 +51,9 @@ Transaction HTTP replies are decoded in integrations. Current peer lookup,
 response headers and the complete body share the original ten-second deadline;
 the four-MiB limit, rotating credentials and recovery error classification remain
 unchanged for coordinator and authority RPCs.
+Authorized subject aborts also arbitrate and inspect the immutable decision
+through application ports inside the retained authority transaction. A concurrent
+commit remains irrevocable, and fault cuts retain their before/after commit order.
 
 Scoped commands authorize effects, track disclosed outputs, journal mutation
 results, and recheck the source lease through the application use case. A claim

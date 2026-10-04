@@ -10,7 +10,7 @@ use crate::{
 use aidash_domain::{
 	identity::execution::ExecutionPrincipal,
 	transactions::{
-		Manifest,
+		CoordinatorDecision, CoordinatorTransition, Manifest,
 		authority::{Binding, Origin, Preflight, Status},
 	},
 };
@@ -280,11 +280,26 @@ pub async fn manage(
 		return finish(scope, Err(error)).await;
 	}
 	let mut scope = scope.into_submission()?;
-	let result = if action == "transaction.abort" {
-		scope.abort(state.id).await
-	} else {
+	let result = async {
+		if action == "transaction.abort" {
+			scope
+				.transition(
+					state.id,
+					CoordinatorTransition::Decide(CoordinatorDecision::Abort),
+					"subject requested abort",
+				)
+				.await?;
+			// The status is read in the same transaction after decision arbitration.
+			if scope.status(state.id).await?.decision.as_deref() == Some("COMMIT") {
+				return Err(Error::Conflict("commit is irrevocable".into()));
+			}
+			repository
+				.fault(state.id, "coordinator.abort.before")
+				.await?;
+		}
 		Ok(())
-	};
+	}
+	.await;
 	finish_submission(scope, result).await?;
 	if action == "transaction.abort" {
 		repository

@@ -356,10 +356,44 @@ impl SubmissionScope for Submission {
 		self.binding = Some(binding.clone());
 		Ok(())
 	}
-	async fn abort(&mut self, _: Uuid) -> Result<()> {
+	async fn transition(
+		&mut self,
+		_: Uuid,
+		change: CoordinatorTransition,
+		detail: &str,
+	) -> Result<()> {
 		self.repository.event("abort")?;
-		self.abort = true;
+		assert!(matches!(
+			change,
+			CoordinatorTransition::Decide(CoordinatorDecision::Abort)
+		));
+		assert_eq!(detail, "subject requested abort");
+		self.abort = self
+			.repository
+			.state
+			.lock()
+			.unwrap()
+			.status
+			.as_ref()
+			.unwrap()
+			.decision
+			.is_none();
 		Ok(())
+	}
+	async fn status(&mut self, _: Uuid) -> Result<Status> {
+		self.repository.event("status:submission")?;
+		let mut status = self
+			.repository
+			.state
+			.lock()
+			.unwrap()
+			.status
+			.clone()
+			.unwrap();
+		if self.abort {
+			status.decision = Some("ABORT".into());
+		}
+		Ok(status)
 	}
 	async fn finish(mut self: Box<Self>, result: Result<()>) -> Result<()> {
 		self.finished = true;
@@ -963,7 +997,95 @@ async fn abort_requires_both_live_subject_permission_and_remote_read_access(
 		Some("ABORT")
 	);
 	assert_eq!(
-		&repository.log()[repository.log().len() - 3..],
-		["abort", "commit:submission", "coordinator.abort.after"]
+		&repository.log()[repository.log().len() - 5..],
+		[
+			"abort",
+			"status:submission",
+			"coordinator.abort.before",
+			"commit:submission",
+			"coordinator.abort.after"
+		]
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn concurrent_commit_remains_irrevocable_after_authorized_subject_abort(
+	origin: Origin,
+	manifest: Manifest,
+) {
+	let repository = Repository::new(origin.clone());
+	let stale = status(&manifest);
+	let mut committed = stale.clone();
+	committed.decision = Some("COMMIT".into());
+	repository.state.lock().unwrap().status = Some(committed);
+	let result = manage(
+		&repository,
+		&principal(&origin),
+		&stale,
+		"transaction.abort",
+	)
+	.await;
+	assert!(matches!(result, Err(Error::Conflict(message)) if message == "commit is irrevocable"));
+	assert_eq!(
+		repository
+			.state
+			.lock()
+			.unwrap()
+			.status
+			.as_ref()
+			.unwrap()
+			.decision
+			.as_deref(),
+		Some("COMMIT")
+	);
+	let calls = repository.log();
+	assert_eq!(
+		&calls[calls.len() - 3..],
+		["abort", "status:submission", "rollback:submission"]
+	);
+	assert!(
+		!calls
+			.iter()
+			.any(|call| call.starts_with("coordinator.abort."))
+	);
+}
+
+#[rstest]
+#[case::transition("abort", & ["abort", "rollback:submission"], None)]
+#[case::status("status:submission", & ["abort", "status:submission", "rollback:submission"], None)]
+#[case::before("coordinator.abort.before", & ["abort", "status:submission", "coordinator.abort.before", "rollback:submission"], None)]
+#[case::after("coordinator.abort.after", & ["abort", "status:submission", "coordinator.abort.before", "commit:submission", "coordinator.abort.after"], Some("ABORT"))]
+#[tokio::test]
+async fn subject_abort_faults_preserve_the_native_commit_boundary(
+	origin: Origin,
+	manifest: Manifest,
+	#[case] failure: &str,
+	#[case] suffix: &[&str],
+	#[case] decision: Option<&str>,
+) {
+	let repository = Repository::new(origin.clone());
+	let stored = status(&manifest);
+	{
+		let mut state = repository.state.lock().unwrap();
+		state.status = Some(stored.clone());
+		state.failure = Some(failure.into());
+	}
+	assert!(
+		matches!(manage(&repository, &principal(&origin), &stored, "transaction.abort").await, Err(Error::External(message)) if message == failure)
+	);
+	assert_eq!(
+		repository
+			.state
+			.lock()
+			.unwrap()
+			.status
+			.as_ref()
+			.unwrap()
+			.decision
+			.as_deref(),
+		decision
+	);
+	let calls = repository.log();
+	assert_eq!(&calls[calls.len() - suffix.len()..], suffix);
 }

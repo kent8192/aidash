@@ -1,10 +1,6 @@
 use super::{Manifest, Status, Vote};
-use crate::apps::federation::transactions::models::{
-	coordinator_records, states::AtomicCoordinatorDecision,
-};
 pub(crate) use crate::apps::federation::transactions::repositories::coordination::connection as coordinator_connection;
-use crate::apps::federation::transactions::services::decisions::CoordinatorTransition;
-use crate::{Error, Result, federation::Federation};
+use crate::{Result, federation::Federation};
 use uuid::Uuid;
 
 pub async fn status(f: &Federation, id: Uuid) -> Result<Status> {
@@ -91,26 +87,4 @@ pub async fn run(f: Federation) -> Result<()> {
 	aidash_runtime::transactions::run_coordinator(active, aborted)
 		.await
 		.map_err(Into::into)
-}
-
-pub(crate) async fn abort_in(
-	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
-	id: Uuid,
-) -> Result<()> {
-	coordinator_records::transition_in(
-		tx,
-		id,
-		CoordinatorTransition::Decide(AtomicCoordinatorDecision::Abort),
-		"subject requested abort",
-	)
-	.await?;
-	if coordinator_records::status_in(tx, id)
-		.await?
-		.decision
-		.as_deref()
-		== Some("COMMIT")
-	{
-		return Err(Error::Conflict("commit is irrevocable".into()));
-	}
-	super::fault::cut(id, "coordinator.abort.before").await
 }

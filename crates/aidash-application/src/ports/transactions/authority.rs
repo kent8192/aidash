@@ -1,7 +1,7 @@
 //! Control scopes retain the same policy, credential and visibility locks until finish.
 use crate::{Result, ports::transactions::TransactionAuthorityScope};
 use aidash_domain::transactions::{
-	Manifest,
+	CoordinatorTransition, Manifest,
 	authority::{Binding, Origin, Preflight, Status},
 };
 use async_trait::async_trait;
@@ -28,7 +28,14 @@ pub trait ControlScope: Send {
 pub trait SubmissionScope: Send {
 	async fn submit(&mut self, manifest: &Manifest, origin: &Origin) -> Result<Status>;
 	async fn bind(&mut self, id: Uuid, binding: &Binding) -> Result<()>;
-	async fn abort(&mut self, id: Uuid) -> Result<()>;
+	/// Arbitrate the immutable decision and its audit under this transaction's row lock.
+	async fn transition(
+		&mut self,
+		id: Uuid,
+		change: CoordinatorTransition,
+		detail: &str,
+	) -> Result<()>;
+	async fn status(&mut self, id: Uuid) -> Result<Status>;
 	async fn finish(self: Box<Self>, result: Result<()>) -> Result<()>;
 }
 

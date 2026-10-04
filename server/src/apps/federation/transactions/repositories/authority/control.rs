@@ -2,6 +2,7 @@
 use super::super::transport;
 use super::{Scope, persistence};
 use crate::apps::federation::transactions::{
+	models::coordinator_records,
 	serializers::authority as dto,
 	services::{coordinator, fault, gate},
 };
@@ -17,7 +18,7 @@ use aidash_application::{
 	},
 };
 use aidash_domain::transactions::{
-	Manifest,
+	CoordinatorTransition, Manifest,
 	authority::{Binding, Origin, Preflight, Status},
 };
 use async_trait::async_trait;
@@ -214,9 +215,21 @@ impl SubmissionScope for Submission {
 		.await
 		.map_err(Into::into)
 	}
-	async fn abort(&mut self, id: Uuid) -> Result<()> {
-		coordinator::abort_in(self.access.tx.as_mut(), id)
+	async fn transition(
+		&mut self,
+		id: Uuid,
+		change: CoordinatorTransition,
+		detail: &str,
+	) -> Result<()> {
+		coordinator_records::transition_in(self.access.tx.as_mut(), id, change.into(), detail)
 			.await
+			.map(|_| ())
+			.map_err(Into::into)
+	}
+	async fn status(&mut self, id: Uuid) -> Result<Status> {
+		coordinator_records::status_in(self.access.tx.as_mut(), id)
+			.await
+			.map(Into::into)
 			.map_err(Into::into)
 	}
 	async fn finish(self: Box<Self>, result: Result<()>) -> Result<()> {
