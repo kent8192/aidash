@@ -30,7 +30,7 @@ fn draft() -> Draft {
 }
 #[fixture]
 fn entry() -> Entry {
-	serde_json::from_value(json!({"id":"managed","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"model":{"id":"model","version":"1.0.0"},"tools":[],"skills":[],"cluster":null}})).unwrap()
+	serde_json::from_value(json!({"id":"managed","version":"1.0.0","kind":"agent","name":{"en":"Managed agent"},"description":{"en":"Publication fixture"},"config":{"model":{"id":"model","version":"1.0.0"},"instructions":"Follow the fixture request.","max_steps":8,"tools":[],"skills":[],"cluster":null}})).unwrap()
 }
 struct Repository {
 	draft: Draft,
@@ -127,7 +127,7 @@ impl DefinitionLookup for Scope {
 		self.record(format!("definition:{id}@{version}"));
 		if id == "model" {
 			return Ok(serde_json::from_value(
-				json!({"id":id,"version":version,"kind":"model","name":{},"description":{},"config":{"provider":"openrouter","model_id":"model","endpoint":"https://openrouter.ai/api/v1","credential_env":null,"context_window":32768,"max_output_tokens":1024,"modalities":["text"],"cost":{}}}),
+				json!({"id":id,"version":version,"kind":"model","name":{"en":"Fixture model"},"description":{"en":"Publication model"},"config":{"provider":"openrouter","model_id":"model","endpoint":"https://openrouter.ai/api/v1","credential_env":null,"context_window":32768,"max_output_tokens":1024,"modalities":["text"],"cost":{}}}),
 			)?);
 		}
 		let mut entry: Entry = serde_json::from_value(self.draft.entry.clone())?;
