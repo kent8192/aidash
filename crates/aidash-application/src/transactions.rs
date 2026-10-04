@@ -6,3 +6,4 @@ pub fn validate(registry: &DefinitionValidation, manifest: &Manifest) -> Result<
 }
 
 pub mod authority;
+pub mod coordination;

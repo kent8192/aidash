@@ -93,3 +93,34 @@ impl From<&Status> for aidash_domain::transactions::authority::Status {
 		status.clone().into()
 	}
 }
+
+impl From<Vote> for aidash_domain::transactions::coordination::Vote {
+	fn from(vote: Vote) -> Self {
+		Self {
+			node_id: vote.node_id,
+			phase: vote.phase,
+		}
+	}
+}
+
+impl From<aidash_domain::transactions::coordination::Vote> for Vote {
+	fn from(vote: aidash_domain::transactions::coordination::Vote) -> Self {
+		Self {
+			node_id: vote.node_id,
+			phase: vote.phase,
+		}
+	}
+}
+
+impl From<LocalStatus> for aidash_domain::transactions::coordination::LocalStatus {
+	fn from(status: LocalStatus) -> Self {
+		Self {
+			id: status.id,
+			coordinator: status.coordinator,
+			digest: status.digest,
+			manifest: status.manifest,
+			phase: status.phase,
+			updated_at: status.updated_at,
+		}
+	}
+}

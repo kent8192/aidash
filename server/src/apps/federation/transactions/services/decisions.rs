@@ -11,6 +11,20 @@ pub enum CoordinatorTransition {
 	Publish,
 	Complete,
 }
+impl From<DomainTransition> for CoordinatorTransition {
+	fn from(change: DomainTransition) -> Self {
+		match change {
+			DomainTransition::Decide(CoordinatorDecision::Commit) => {
+				Self::Decide(AtomicCoordinatorDecision::Commit)
+			}
+			DomainTransition::Decide(CoordinatorDecision::Abort) => {
+				Self::Decide(AtomicCoordinatorDecision::Abort)
+			}
+			DomainTransition::Publish => Self::Publish,
+			DomainTransition::Complete => Self::Complete,
+		}
+	}
+}
 impl CoordinatorTransition {
 	fn domain(&self) -> DomainTransition {
 		match self {

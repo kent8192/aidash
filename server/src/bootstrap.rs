@@ -1207,6 +1207,23 @@ pub(crate) fn transaction_authority_repository(
 	}
 }
 
+/// CLI, HTTP and recovery share the same storage, authority and participant adapters.
+pub(crate) fn transaction_coordinator(
+	runtime: &Federation,
+) -> aidash_application::transactions::coordination::Coordinator {
+	use crate::apps::federation::transactions::repositories::coordination::{
+		Repository, Transport,
+	};
+	aidash_application::transactions::coordination::Coordinator::new(
+		Arc::new(Repository {
+			runtime: runtime.clone(),
+		}),
+		Arc::new(Transport {
+			runtime: runtime.clone(),
+		}),
+	)
+}
+
 pub(crate) fn operation_withdrawal_repository(
 	store: &Store,
 ) -> crate::apps::execution::repositories::withdrawal::Repository<'_> {

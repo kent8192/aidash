@@ -20,6 +20,14 @@ the caller's transaction and lock order. Authority withdrawal reloads the Area
 before the operation under row locks, keeps cancellation possible after
 revocation, and retains possible effects for dispatched writers.
 
+Coordinator advancement, decision verification, operator abort and recovery
+batches use application ports. Domain rules select participant votes and bind
+acknowledgements to the immutable manifest and exact phase. Native repositories
+retain the recovery advisory lease across participant I/O, update each vote and
+clear its error atomically, and commit immutable decisions with their audit
+history under the same row lock. Operator abort competes for that decision
+without waiting for the recovery lease.
+
 Scoped commands authorize effects, track disclosed outputs, journal mutation
 results, and recheck the source lease through the application use case. A claim
 binds the complete inspected agent definition. Operation reconciliation owns one
