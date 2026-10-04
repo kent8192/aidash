@@ -66,10 +66,12 @@ class RemoteMemory(Cluster):
         command += ["http://provider:8080/control" if body is not None else "http://provider:8080/status"]
         return json.loads(self.kube(*command).stdout)
 
-    def captured(self, kind, task=None):
+    def captured(self, kind, task=None, embedding_input=None):
         state = self.provider()
         assert not state["errors"], state["errors"]
-        return [item for item in state["requests"] if item["kind"] == kind and (task is None or item.get("task") == task)]
+        return [item for item in state["requests"]
+                if item["kind"] == kind and (task is None or item.get("task") == task)
+                and (embedding_input is None or item.get("body", {}).get("input") == embedding_input)]
 
     def scale(self, node, role, replicas):
         self.kube("scale", f"deployment/tx-{node}-{role}", f"--replicas={replicas}")
@@ -322,19 +324,23 @@ class RemoteMemory(Cluster):
         prepared = self.ok(self.user(0, route, intent))
         assert prepared["prepared"] and prepared["agent"] == pending["agent"]
         assert len(self.db(1, "requests", child)) == 1
-        return child, prepared["agent"], parent_task
+        return children[0], prepared["agent"], parent_task
 
     def generated(self):
         record = {"name": "generated-home-sigkill-link-outage-and-restart", "started_at": now(), "result": "failed"}
         self.evidence["cases"].append(record)
         workspace, source = self.workspace()
-        task, agent, parent = self.generated_task(workspace)
+        child, agent, parent = self.generated_task(workspace)
+        task = child["id"]
+        # Qdrant restarts can legitimately trigger background source reindexing.
+        # Count this task's query input so those calls cannot imitate a resend.
+        embedding_input = f"{child['title']}\n{child['description']}"
         grant, run = self.activate(task, agent)
         record.update(task=task, grant=grant, run=run, parent=parent, agent=agent)
-        baseline = len(self.captured("embedding"))
+        baseline = len(self.captured("embedding", embedding_input=embedding_input))
         self.provider({"hold_embedding": True, "hold_inference": True})
         self.scale(1, "worker", 1)
-        self.until(lambda: len(self.captured("embedding")) == baseline + 1, "generated embedding dispatched")
+        self.until(lambda: len(self.captured("embedding", embedding_input=embedding_input)) == baseline + 1, "generated embedding dispatched")
         cut = self.snapshot(task, run)
         for node in ("0", "1"):
             usage = cut[node]["usage"]
@@ -371,7 +377,7 @@ class RemoteMemory(Cluster):
         attempts = recovered["0"]["attempts"]
         assert len(attempts) == 2 and len({a["id"] for a in attempts}) == 2, attempts
         assert any(a["state"] == "UNCERTAIN" for a in attempts), attempts
-        assert len(self.captured("embedding")) == baseline + 2, "no same-attempt embedding resend"
+        assert len(self.captured("embedding", embedding_input=embedding_input)) == baseline + 2, "no same-attempt embedding resend"
         record["recovered_before_inference_response"] = recovered
         self.provider({"hold_inference": False})
         self.finish(task, run)
