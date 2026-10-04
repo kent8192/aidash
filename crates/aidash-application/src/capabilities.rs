@@ -133,3 +133,5 @@ pub mod patch;
 pub mod skills;
 
 pub mod thread_lifecycle;
+
+pub mod sharing;

@@ -76,3 +76,5 @@ pub mod configuration;
 pub mod patch;
 
 pub mod thread_lifecycle;
+
+pub mod sharing;
