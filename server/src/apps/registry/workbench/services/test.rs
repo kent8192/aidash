@@ -6,8 +6,6 @@ use reinhardt::db::orm::connection::DatabaseConnectionLease;
 use reinhardt::injectable;
 use std::sync::Arc;
 
-use aidash_application::registry::workbench::sandbox::execution::Job as TestJob;
-
 /// Remove ordinary test payloads. The metadata and expiry marker remain.
 pub async fn purge_expired(pool: &sqlx::PgPool) -> Result<u64> {
 	let lease = DatabaseConnectionLease::register(BackendConnection::new(Arc::new(
@@ -17,16 +15,6 @@ pub async fn purge_expired(pool: &sqlx::PgPool) -> Result<u64> {
 		.handle()
 		.atomic(async |tx| AgentTestSession::purge(tx).await)
 		.await
-}
-
-async fn complete(f: Federation, session_id: Uuid, actor: Actor, job: TestJob) -> Result<()> {
-	aidash_runtime::sandbox::complete(
-		crate::bootstrap::workbench_sandbox_execution(&f, actor),
-		session_id,
-		job,
-	)
-	.await
-	.map_err(Into::into)
 }
 
 pub use crate::apps::registry::workbench::serializers::test::{TestInput, TestLimits, TestSession};
@@ -90,10 +78,11 @@ impl BehavioralTests {
 		id: Uuid,
 		input: TestInput,
 	) -> Result<TestSession> {
-		let runtime = self.runtime.clone();
-		let repository = crate::bootstrap::workbench_sandbox_repository(&runtime, actor.clone());
+		let runtime = &self.runtime;
+		let permit = runtime.sandbox.permit()?;
+		let repository = crate::bootstrap::workbench_sandbox_repository(runtime, actor.clone());
 		let credentials = crate::bootstrap::workbench_sandbox_credentials();
-		let models = crate::bootstrap::workbench_sandbox_models(&runtime);
+		let models = crate::bootstrap::workbench_sandbox_models(runtime);
 		let admitted = aidash_application::registry::workbench::sandbox::admission::admit(
 			&aidash_application::registry::workbench::sandbox::admission::Admission {
 				repository: &repository,
@@ -105,11 +94,27 @@ impl BehavioralTests {
 		)
 		.await?;
 		let session_id = admitted.session.id;
-		tokio::spawn(async move {
-			if let Err(error) = complete(runtime, session_id, actor, admitted.job).await {
-				tracing::error!(%session_id,%error,"sandbox session completion failed");
-			}
-		});
+		let execution = crate::bootstrap::workbench_sandbox_execution(runtime, actor);
+		let repository = execution.repository.clone();
+		let message = admitted.job.input.message.clone();
+		if let Err(error) = permit.spawn(
+			session_id,
+			aidash_runtime::sandbox::complete(execution, session_id, admitted.job),
+		) {
+			// No job was launched, so persist a known failure and release the admitted active slot.
+			aidash_application::registry::workbench::sandbox::execution::settle(
+				repository.as_ref(),
+				session_id,
+				&message,
+				Err(
+					aidash_application::registry::workbench::sandbox::execution::Failure::Execution(
+						aidash_application::Error::Conflict(error.to_string()),
+					),
+				),
+			)
+			.await?;
+			return Err(error.into());
+		}
 		Ok(admitted.session)
 	}
 }

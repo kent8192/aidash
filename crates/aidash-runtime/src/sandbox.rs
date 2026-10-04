@@ -20,5 +20,14 @@ pub async fn complete(
 		Ok(Err(error)) => Err(Failure::Execution(error)),
 		Err(_) => Err(Failure::TimedOut),
 	};
-	execution::settle(execution.repository.as_ref(), session_id, &job, result).await
+	execution::settle(
+		execution.repository.as_ref(),
+		session_id,
+		&job.input.message,
+		result,
+	)
+	.await
 }
+
+mod sessions;
+pub use sessions::{Permit, Sessions};

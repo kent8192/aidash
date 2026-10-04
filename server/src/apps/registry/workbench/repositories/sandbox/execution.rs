@@ -21,19 +21,14 @@ impl ExecutionRepository for Repository {
 	async fn begin_execution(&self) -> Result<Box<dyn ExecutionScope + '_>> {
 		Ok(Box::new(Scope {
 			tx: PgTransactionExecutor::new(
-				self.runtime
-					.store
-					.pool
-					.begin()
-					.await
-					.map_err(crate::Error::from)?,
+				self.store.pool.begin().await.map_err(crate::Error::from)?,
 			),
 			actor: self.actor.clone(),
-			node_id: self.runtime.config.node_id.clone(),
+			node_id: self.node_id.clone(),
 		}))
 	}
 	async fn read_session(&self, id: Uuid) -> Result<TestSession> {
-		let lease = self.runtime.store.orm_connection()?;
+		let lease = self.store.orm_connection()?;
 		lease
 			.handle()
 			.atomic(async |tx| AgentTestSession::read(tx, id, false).await)
@@ -47,7 +42,7 @@ impl ExecutionRepository for Repository {
 		calls: Value,
 		usage: Value,
 	) -> Result<()> {
-		let lease = self.runtime.store.orm_connection()?;
+		let lease = self.store.orm_connection()?;
 		lease
 			.handle()
 			.atomic(async |tx| AgentTestSession::progress(tx, id, conversation, calls, usage).await)
@@ -55,7 +50,7 @@ impl ExecutionRepository for Repository {
 			.map_err(Into::into)
 	}
 	async fn finish(&self, id: Uuid, outcome: &TestOutcome) -> Result<()> {
-		let lease = self.runtime.store.orm_connection()?;
+		let lease = self.store.orm_connection()?;
 		lease
 			.handle()
 			.atomic(async |tx| {

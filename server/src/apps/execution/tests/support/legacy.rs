@@ -124,6 +124,7 @@ pub fn setup(
 			.await
 			.unwrap();
 		let federation = Federation {
+			sandbox: Default::default(),
 			store,
 			registry: Registry::new(pool, "aidash://execution-test").unwrap(),
 			config: Config {

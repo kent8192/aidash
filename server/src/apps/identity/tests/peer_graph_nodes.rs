@@ -47,6 +47,7 @@ impl Node {
 			oidc: None,
 		};
 		let f = Federation {
+			sandbox: Default::default(),
 			registry: Registry::new(store.pool.clone(), &store.node_id).unwrap(),
 			store,
 			config,

@@ -483,7 +483,7 @@ async fn fresh_revocation_after_progress_prevents_a_second_inference(
 	settle(
 		repository.as_ref(),
 		session().id,
-		&job,
+		&job.input.message,
 		Err(Failure::Execution(error)),
 	)
 	.await
@@ -628,9 +628,14 @@ async fn completion_classifies_failure_from_durable_evidence(
 	} else {
 		Failure::Execution(Error::External("inference failed".into()))
 	};
-	settle(repository.as_ref(), session().id, &job, Err(failure))
-		.await
-		.unwrap();
+	settle(
+		repository.as_ref(),
+		session().id,
+		&job.input.message,
+		Err(failure),
+	)
+	.await
+	.unwrap();
 	let state = repository.state.lock().unwrap();
 	let outcome = state.finished.as_ref().unwrap();
 	assert_eq!(outcome.status, status);
@@ -661,7 +666,7 @@ async fn missing_payload_uses_only_the_original_message_and_finish_preserves_sto
 	settle(
 		repository.as_ref(),
 		session().id,
-		&job,
+		&job.input.message,
 		Err(Failure::TimedOut),
 	)
 	.await
@@ -682,7 +687,7 @@ async fn missing_payload_uses_only_the_original_message_and_finish_preserves_sto
 	settle(
 		repository.as_ref(),
 		session().id,
-		&job,
+		&job.input.message,
 		Err(Failure::TimedOut),
 	)
 	.await

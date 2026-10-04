@@ -1,6 +1,6 @@
 //! Native sandbox management retains current identity, tenant limits and atomic stop predicates.
 use crate::apps::registry::workbench::models::{AgentDraft, AgentTestLimit, AgentTestSession};
-use crate::{authorization::identity::Actor, federation::Federation};
+use crate::{authorization::identity::Actor, store::Store};
 use aidash_application::{
 	Result,
 	ports::registry::workbench::sandbox::{SandboxRepository, SandboxScope},
@@ -16,7 +16,8 @@ use async_trait::async_trait;
 use reinhardt::db::backends::{TransactionExecutor, dialect::postgres::PgTransactionExecutor};
 use uuid::Uuid;
 pub(crate) struct Repository {
-	pub(crate) runtime: Federation,
+	pub(crate) store: Store,
+	pub(crate) node_id: String,
 	pub(crate) actor: Actor,
 }
 struct Scope {
@@ -37,19 +38,14 @@ impl SandboxRepository for Repository {
 	async fn begin(&self) -> Result<Box<dyn SandboxScope + '_>> {
 		Ok(Box::new(Scope {
 			tx: PgTransactionExecutor::new(
-				self.runtime
-					.store
-					.pool
-					.begin()
-					.await
-					.map_err(crate::Error::from)?,
+				self.store.pool.begin().await.map_err(crate::Error::from)?,
 			),
 			actor: self.actor.clone(),
-			node_id: self.runtime.config.node_id.clone(),
+			node_id: self.node_id.clone(),
 		}))
 	}
 	async fn purge(&self) -> Result<u64> {
-		let lease = self.runtime.store.orm_connection()?;
+		let lease = self.store.orm_connection()?;
 		lease
 			.handle()
 			.atomic(async |tx| AgentTestSession::purge(tx).await)

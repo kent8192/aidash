@@ -48,6 +48,7 @@ pub async fn initialize(
 		.redirect(reqwest::redirect::Policy::none())
 		.build()?;
 	let federation = Federation {
+		sandbox: Default::default(),
 		store,
 		registry,
 		config,
@@ -90,6 +91,7 @@ impl RuntimeTasks {
 		let (stopping, mut requested) = watch::channel(false);
 		let mut tasks = aidash_runtime::Supervisor::new(Duration::from_secs(20));
 		let receiver = tasks.stop_receiver();
+		tasks.spawn_worker(federation.sandbox.clone().run(receiver.clone()));
 		tasks.spawn_service(runtime_task(
 			crate::apps::execution::services::metrics::run(coordinator.clone()),
 		));
@@ -187,6 +189,7 @@ impl RuntimeTasks {
 				activation.worker(harness, receiver).await
 			}));
 		}
+		let sandbox = federation.sandbox.clone();
 		let mut shutdown = coordinator.subscribe();
 		let supervisor = tokio::spawn(async move {
 			tasks
@@ -198,6 +201,7 @@ impl RuntimeTasks {
 						}
 					},
 					move || {
+						sandbox.close();
 						if let Some(service) = event_streams {
 							service.shutdown();
 						}
@@ -1660,7 +1664,8 @@ pub(crate) fn workbench_sandbox_repository(
 	actor: crate::authorization::identity::Actor,
 ) -> crate::apps::registry::workbench::repositories::sandbox::Repository {
 	crate::apps::registry::workbench::repositories::sandbox::Repository {
-		runtime: runtime.clone(),
+		store: runtime.store.clone(),
+		node_id: runtime.config.node_id.clone(),
 		actor,
 	}
 }

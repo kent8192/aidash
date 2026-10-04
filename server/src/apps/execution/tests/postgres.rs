@@ -354,6 +354,7 @@ async fn registry_installation_versions_and_authenticated_api(
 		oidc: None,
 	};
 	let f = Federation {
+		sandbox: Default::default(),
 		store: store.clone(),
 		registry,
 		config,
@@ -426,6 +427,7 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 		oidc: None,
 	};
 	let federation = Federation {
+		sandbox: Default::default(),
 		store: store.clone(),
 		registry,
 		config,
@@ -543,6 +545,7 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 
 fn federation_for(store: &Store) -> Federation {
 	Federation {
+		sandbox: Default::default(),
 		store: store.clone(),
 		registry: Registry::new(store.pool.clone(), &store.node_id).unwrap(),
 		config: Config {

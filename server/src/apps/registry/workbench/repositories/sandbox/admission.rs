@@ -17,15 +17,10 @@ impl AdmissionRepository for Repository {
 	async fn begin_admission(&self) -> Result<Box<dyn AdmissionScope + '_>> {
 		Ok(Box::new(Scope {
 			tx: PgTransactionExecutor::new(
-				self.runtime
-					.store
-					.pool
-					.begin()
-					.await
-					.map_err(crate::Error::from)?,
+				self.store.pool.begin().await.map_err(crate::Error::from)?,
 			),
 			actor: self.actor.clone(),
-			node_id: self.runtime.config.node_id.clone(),
+			node_id: self.node_id.clone(),
 		}))
 	}
 }

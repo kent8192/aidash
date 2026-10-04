@@ -232,7 +232,7 @@ pub enum Failure {
 pub async fn settle(
 	repository: &dyn ExecutionRepository,
 	session_id: Uuid,
-	job: &Job,
+	message: &str,
 	result: std::result::Result<TestOutcome, Failure>,
 ) -> Result<()> {
 	let outcome = match result {
@@ -267,7 +267,7 @@ pub async fn settle(
 				status: status.into(),
 				conversation: prior
 					.conversation
-					.unwrap_or_else(|| json!([{"role":"user","content":job.input.message}])),
+					.unwrap_or_else(|| json!([{"role":"user","content":message}])),
 				tool_calls: prior.tool_calls.unwrap_or_else(|| json!([])),
 				usage: prior.usage,
 				error: Some(error),

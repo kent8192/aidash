@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct Federation {
+	pub sandbox: aidash_runtime::sandbox::Sessions,
 	pub store: Store,
 	pub registry: Registry,
 	pub config: Config,

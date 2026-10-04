@@ -1371,6 +1371,7 @@ async fn embedded_worker_child() {
 		.await
 		.unwrap();
 	let f = Federation {
+		sandbox: Default::default(),
 		registry: aidash_server::registry::Registry::new(store.pool.clone(), node).unwrap(),
 		store,
 		config: aidash_server::config::Config {
