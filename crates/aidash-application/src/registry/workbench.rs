@@ -174,3 +174,5 @@ pub mod audit;
 pub mod inspection;
 
 pub mod permissions;
+
+pub mod incidents;

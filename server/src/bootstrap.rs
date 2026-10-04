@@ -1618,3 +1618,17 @@ pub(crate) fn workbench_inspection_repository(
 ) -> crate::apps::registry::workbench::repositories::inspection::Repository<'_> {
 	crate::apps::registry::workbench::repositories::inspection::Repository { runtime, actor }
 }
+
+/// Incident commands share native identity and record locks with atomic history.
+pub(crate) fn workbench_incident_repository(
+	runtime: &Federation,
+	actor: crate::authorization::identity::Actor,
+) -> crate::apps::registry::workbench::repositories::incidents::Repository<'_> {
+	crate::apps::registry::workbench::repositories::incidents::Repository { runtime, actor }
+}
+/// Retention reuses the native locked batch and commits copied payload disposal atomically.
+pub(crate) fn workbench_incident_retention_repository(
+	pool: &sqlx::PgPool,
+) -> crate::apps::registry::workbench::repositories::incidents::RetentionRepository<'_> {
+	crate::apps::registry::workbench::repositories::incidents::RetentionRepository { pool }
+}
