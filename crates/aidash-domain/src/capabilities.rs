@@ -71,3 +71,6 @@ pub mod python;
 
 pub mod errors;
 pub mod files;
+
+pub mod configuration;
+pub mod patch;

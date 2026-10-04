@@ -70,3 +70,6 @@ pub(crate) mod packages;
 pub(crate) mod python;
 
 pub(crate) mod files;
+
+pub(crate) mod configuration;
+pub(crate) mod patch;

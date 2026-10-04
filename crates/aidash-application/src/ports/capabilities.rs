@@ -76,3 +76,6 @@ pub mod packages;
 pub mod python;
 
 pub mod files;
+
+pub mod configuration;
+pub mod patch;

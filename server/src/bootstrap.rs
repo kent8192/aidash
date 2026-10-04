@@ -1404,3 +1404,10 @@ pub(crate) fn file_scope<'a>(
 		pending: None,
 	}
 }
+
+pub(crate) fn capability_configuration_scope<'a>(
+	store: &'a Store,
+	access: &'a mut crate::authorization::access::Access,
+) -> crate::apps::execution::repositories::configuration::Scope<'a> {
+	crate::apps::execution::repositories::configuration::Scope { store, access }
+}
