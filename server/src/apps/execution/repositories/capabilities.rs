@@ -376,3 +376,14 @@ impl aidash_application::ports::capabilities::OperationControlScope for Control<
 			.map_err(Into::into)
 	}
 }
+
+impl From<ShellRequest> for Shell {
+	fn from(v: ShellRequest) -> Self {
+		Self {
+			idempotency_key: v.idempotency_key,
+			command: v.command,
+			timeout_seconds: v.timeout_seconds,
+			expected_revision: v.expected_revision,
+		}
+	}
+}

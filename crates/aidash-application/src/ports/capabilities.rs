@@ -74,3 +74,5 @@ pub mod cleanup;
 
 pub mod packages;
 pub mod python;
+
+pub mod files;

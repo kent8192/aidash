@@ -1391,3 +1391,16 @@ pub(crate) fn package_scope<'a>(
 ) -> crate::apps::execution::repositories::packages::Scope<'a> {
 	crate::apps::execution::repositories::packages::Scope { store, access, run }
 }
+
+pub(crate) fn file_scope<'a>(
+	store: Option<&'a Store>,
+	access: &'a mut crate::authorization::access::Access,
+	run: Option<&'a crate::domain::Run>,
+) -> crate::apps::execution::repositories::files::Scope<'a> {
+	crate::apps::execution::repositories::files::Scope {
+		store,
+		access,
+		run,
+		pending: None,
+	}
+}
