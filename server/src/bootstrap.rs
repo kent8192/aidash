@@ -1632,3 +1632,11 @@ pub(crate) fn workbench_incident_retention_repository(
 ) -> crate::apps::registry::workbench::repositories::incidents::RetentionRepository<'_> {
 	crate::apps::registry::workbench::repositories::incidents::RetentionRepository { pool }
 }
+
+/// Report sources share the independent native inspection, permission and incident adapters.
+pub(crate) fn workbench_report_sources(
+	runtime: &Federation,
+	actor: crate::authorization::identity::Actor,
+) -> crate::apps::registry::workbench::repositories::report::Sources<'_> {
+	crate::apps::registry::workbench::repositories::report::Sources { runtime, actor }
+}

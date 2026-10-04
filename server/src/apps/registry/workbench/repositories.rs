@@ -10,3 +10,5 @@ pub(crate) mod permissions;
 pub(crate) mod inspection;
 
 pub(crate) mod incidents;
+
+pub(crate) mod report;

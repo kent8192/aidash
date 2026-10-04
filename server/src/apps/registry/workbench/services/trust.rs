@@ -3,19 +3,6 @@ use super::*;
 use crate::registry::EntityRef;
 use reinhardt::injectable;
 
-pub(super) async fn require_inspection(
-	tx: &mut dyn TransactionExecutor,
-	actor: &Actor,
-	reference: &EntityRef,
-) -> Result<()> {
-	aidash_application::registry::workbench::inspection::require(
-		&mut crate::bootstrap::draft_authority_scope(tx, actor),
-		reference,
-	)
-	.await
-	.map_err(Into::into)
-}
-
 fn escape_html(value: &str) -> String {
 	value
 		.replace('&', "&amp;")
@@ -76,79 +63,14 @@ impl TrustInspection {
 		(id, version): (String, String),
 		query: ReportQuery,
 	) -> Result<Response> {
-		let f = self.runtime.clone();
-		let format = query.format.as_deref().unwrap_or("json");
-		if !matches!(format, "json" | "html") {
-			return Err(Error::Invalid("report format must be json or html".into()));
-		}
-		let inspection = self
-			.inspect(actor.clone(), (id.clone(), version.clone()))
-			.await?;
-		let context_input = match &actor {
-			Actor::Subject(identity) => {
-				if query
-					.tenant
-					.as_ref()
-					.is_some_and(|tenant| tenant != &identity.tenant)
-					|| query
-						.subject
-						.as_ref()
-						.is_some_and(|subject| subject != &identity.subject)
-				{
-					return Err(Error::Forbidden);
-				}
-				Some(PermissionInput {
-					tenant: identity.tenant.clone(),
-					subject: identity.subject.clone(),
-					workspace_id: query.workspace_id,
-				})
-			}
-			Actor::Operator => match (&query.tenant, &query.subject) {
-				(Some(tenant), Some(subject)) => Some(PermissionInput {
-					tenant: tenant.clone(),
-					subject: subject.clone(),
-					workspace_id: query.workspace_id,
-				}),
-				(None, None) if query.workspace_id.is_none() => None,
-				_ => {
-					return Err(Error::Invalid(
-						"report permission context requires tenant and subject together".into(),
-					));
-				}
-			},
-		};
-		let context = if let Some(input) = context_input {
-			Some(
-				self.permission_context(actor.clone(), (id.clone(), version.clone()), input)
-					.await?,
-			)
-		} else {
-			None
-		};
-		let mut incidents = super::incident::Incidents { runtime: f }
-			.list(actor, (id, version))
-			.await?;
-		if !query.include_sensitive {
-			for incident in &mut incidents {
-				if let Some(copies) = incident.evidence.as_array_mut() {
-					for copy in copies {
-						if let Some(copy) = copy.as_object_mut() {
-							copy.remove("content");
-						}
-					}
-				}
-			}
-		}
-		let report = Report {
-			inspection,
-			permission_context: context,
-			incidents,
-			exported_at: Utc::now(),
-			note:
-				"Factual connected-node snapshot; no Trust assessment or certification is provided."
-					.into(),
-		};
-		if format == "json" {
+		let output = aidash_application::registry::workbench::report::assemble(
+			&crate::bootstrap::workbench_report_sources(&self.runtime, actor),
+			EntityRef { id, version },
+			query,
+		)
+		.await?;
+		let report = output.report;
+		if output.format == aidash_application::registry::workbench::report::Format::Json {
 			return Ok(Response::ok().with_json(&(report))?);
 		}
 		let title = escape_html(&format!(

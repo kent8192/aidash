@@ -88,3 +88,5 @@ pub mod permissions;
 pub mod inspection;
 
 pub mod incidents;
+
+pub mod report;

@@ -201,3 +201,5 @@ pub mod permissions;
 pub mod inspection;
 
 pub mod incident;
+
+pub mod report;

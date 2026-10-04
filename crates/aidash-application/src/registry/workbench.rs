@@ -176,3 +176,5 @@ pub mod inspection;
 pub mod permissions;
 
 pub mod incidents;
+
+pub mod report;
