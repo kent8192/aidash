@@ -1,8 +1,6 @@
 //! All projection reads borrow the caller's existing policy and mapping locks.
-use crate::{
-	apps::identity::services::peer::graph::{self, GraphAuthority},
-	federation::Federation,
-};
+use self::persistence::{self as graph, GraphAuthority};
+use crate::federation::Federation;
 use aidash_application::{Result, ports::graph::GraphProjectionScope};
 use aidash_domain::federation::graph::*;
 use async_trait::async_trait;
@@ -90,5 +88,61 @@ impl GraphProjectionScope for Projection<'_, '_> {
 		)
 		.await
 		.map_err(Into::into)
+	}
+}
+
+pub(crate) mod persistence;
+
+pub(crate) struct Visibility<'a, 'scope>(pub(crate) &'a mut GraphAuthority<'scope>);
+#[async_trait]
+impl aidash_application::ports::graph::GraphVisibility for Visibility<'_, '_> {
+	fn operator(&self) -> bool {
+		matches!(self.0, GraphAuthority::Operator { .. })
+	}
+	async fn operator_workspace(&mut self, id: Uuid) -> Result<bool> {
+		crate::authorization::remote::operator::visible(self.0.connection(), id)
+			.await
+			.map_err(Into::into)
+	}
+	async fn registry(
+		&mut self,
+		entry: &aidash_domain::registry::Entry,
+		action: &str,
+	) -> Result<bool> {
+		let GraphAuthority::Subject(access) = &mut self.0 else {
+			return Err(aidash_application::Error::Forbidden);
+		};
+		let resource = crate::authorization::catalog::resource(access, entry);
+		access.decide(&resource, action).await.map_err(Into::into)
+	}
+	async fn workspace(&mut self, id: Uuid, action: &str) -> Result<bool> {
+		let GraphAuthority::Subject(access) = &mut self.0 else {
+			return Err(aidash_application::Error::Forbidden);
+		};
+		access.allowed(id, action).await.map_err(Into::into)
+	}
+	async fn record(&mut self, candidate: &Candidate) -> Result<bool> {
+		let GraphAuthority::Subject(access) = &mut self.0 else {
+			return Err(aidash_application::Error::Forbidden);
+		};
+		match candidate {
+			Candidate::Task(row) => access.task_visible(row).await.map_err(Into::into),
+			Candidate::Run(row) => access.run_visible(row).await.map_err(Into::into),
+			Candidate::Artifact(row) => access.artifact_visible(row).await.map_err(Into::into),
+			_ => Err(aidash_application::Error::Invalid(
+				"record visibility requires a task, run or artifact".into(),
+			)),
+		}
+	}
+	async fn conversation(
+		&mut self,
+		conversation: &aidash_domain::Conversation,
+		action: &str,
+	) -> Result<bool> {
+		let GraphAuthority::Subject(access) = &mut self.0 else {
+			return Err(aidash_application::Error::Forbidden);
+		};
+		let resource = access.conversation_resource(conversation).await?;
+		access.decide(&resource, action).await.map_err(Into::into)
 	}
 }

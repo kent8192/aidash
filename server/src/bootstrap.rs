@@ -1956,3 +1956,11 @@ pub(crate) fn dashboard_login(
 ) -> crate::apps::identity::repositories::dashboard::Login {
 	crate::apps::identity::repositories::dashboard::Login(connection)
 }
+
+pub(crate) fn graph_visibility<'a, 'scope>(
+	authority: &'a mut crate::apps::identity::repositories::graph::persistence::GraphAuthority<
+		'scope,
+	>,
+) -> crate::apps::identity::repositories::graph::Visibility<'a, 'scope> {
+	crate::apps::identity::repositories::graph::Visibility(authority)
+}
