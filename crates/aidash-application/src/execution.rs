@@ -712,3 +712,5 @@ pub mod admission;
 
 pub mod terminal;
 pub mod worker;
+
+pub mod headroom;
