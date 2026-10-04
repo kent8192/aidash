@@ -75,7 +75,7 @@ pub(in crate::apps::federation::transactions) async fn ticket(
 	.map_err(Into::into)
 }
 
-pub(super) async fn admission(
+pub(in crate::apps::federation::transactions) async fn admission(
 	f: &Federation,
 	caller: &str,
 	manifest: &Manifest,

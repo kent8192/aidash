@@ -186,3 +186,34 @@ fn commit_requires_every_prepared_vote(manifest: Manifest) {
 		Err(Error::Conflict(message)) if message == "commit requires every prepared vote"
 	));
 }
+
+#[rstest]
+#[case::reserved("RESERVED", true, false)]
+#[case::prepared("PREPARED", true, true)]
+#[case::applied("APPLIED", false, true)]
+#[case::committed("COMMITTED", false, false)]
+#[case::aborted("ABORTED", true, false)]
+fn participant_phase_preserves_abort_and_commit_preconditions(
+	manifest: Manifest,
+	#[case] phase: &str,
+	#[case] can_abort: bool,
+	#[case] can_commit: bool,
+) {
+	let state = state(&manifest, None, false);
+	let existing = LocalStatus {
+		id: manifest.id,
+		coordinator: manifest.coordinator.clone(),
+		digest: state.digest,
+		manifest: state.manifest,
+		phase: phase.into(),
+		updated_at: state.created_at,
+	};
+	assert_eq!(
+		(abortable(&existing), commit_ready(&existing)),
+		(can_abort, can_commit)
+	);
+	assert_eq!(
+		participant_matches(&manifest, &manifest.digest().unwrap(), &existing),
+		true
+	);
+}

@@ -13,7 +13,7 @@ use reinhardt::db::backends::TransactionExecutor;
 use serde_json::json;
 
 /// Preparation invokes this same implementation under a rollback-only savepoint.
-pub(super) async fn apply(
+pub(in crate::apps::federation::transactions) async fn apply(
 	store: &Store,
 	tx: &mut dyn TransactionExecutor,
 	manifest: &Manifest,

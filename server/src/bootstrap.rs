@@ -1243,6 +1243,20 @@ pub(crate) fn transaction_coordinator(
 	)
 }
 
+pub(crate) fn transaction_participant(
+	runtime: &Federation,
+) -> aidash_application::transactions::participation::Participant {
+	aidash_application::transactions::participation::Participant::new(
+		Arc::new(
+			crate::apps::federation::transactions::repositories::participation::Repository {
+				runtime: runtime.clone(),
+			},
+		),
+		transaction_coordinator(runtime),
+		registry_validation(),
+	)
+}
+
 /// Unreachable aborted history cannot consume active recovery's connection capacity.
 pub(crate) async fn transaction_recovery_coordinators(
 	runtime: &Federation,

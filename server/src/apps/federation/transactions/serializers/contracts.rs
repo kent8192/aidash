@@ -124,3 +124,16 @@ impl From<LocalStatus> for aidash_domain::transactions::coordination::LocalStatu
 		}
 	}
 }
+
+impl From<aidash_domain::transactions::coordination::LocalStatus> for LocalStatus {
+	fn from(status: aidash_domain::transactions::coordination::LocalStatus) -> Self {
+		Self {
+			id: status.id,
+			coordinator: status.coordinator,
+			digest: status.digest,
+			manifest: status.manifest,
+			phase: status.phase,
+			updated_at: status.updated_at,
+		}
+	}
+}

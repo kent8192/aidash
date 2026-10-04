@@ -22,6 +22,41 @@ pub struct LocalStatus {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParticipantPhase {
+	Reserved,
+	Prepared,
+	Applied,
+	Committed,
+	Aborted,
+}
+
+impl ParticipantPhase {
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Reserved => "RESERVED",
+			Self::Prepared => "PREPARED",
+			Self::Applied => "APPLIED",
+			Self::Committed => "COMMITTED",
+			Self::Aborted => "ABORTED",
+		}
+	}
+}
+
+pub fn participant_matches(manifest: &Manifest, digest: &str, existing: &LocalStatus) -> bool {
+	existing.coordinator == manifest.coordinator
+		&& existing.digest == digest
+		&& existing.manifest == json!(manifest)
+}
+
+pub fn abortable(existing: &LocalStatus) -> bool {
+	!matches!(existing.phase.as_str(), "APPLIED" | "COMMITTED")
+}
+
+pub fn commit_ready(existing: &LocalStatus) -> bool {
+	matches!(existing.phase.as_str(), "PREPARED" | "APPLIED")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParticipantOperation {
 	Reserve,
 	Prepare,

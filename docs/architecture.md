@@ -33,6 +33,12 @@ Manifest admission uses a borrowed application scope over the caller's existing
 transaction. Immutable replay checks the bound origin before accepting the
 manifest; new admission checks the deadline and peer trust before persisting
 the coordinator, votes, history and origin binding.
+Participant reserve, prepare, finish and recovery also use application scopes.
+Durable reservations precede live authorization rechecks. Native scopes retain
+serializable transactions, speculative validation savepoints, mutation context,
+visibility barriers and authority auditing. Commit application and visibility
+release remain separate durable transitions; abort tombstones reject delayed
+reservation replay.
 
 Scoped commands authorize effects, track disclosed outputs, journal mutation
 results, and recheck the source lease through the application use case. A claim

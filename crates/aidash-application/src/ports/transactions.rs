@@ -33,3 +33,4 @@ pub trait TransactionAuthorityScope: Send {
 pub mod admission;
 pub mod authority;
 pub mod coordination;
+pub mod participation;
