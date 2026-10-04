@@ -93,7 +93,7 @@ impl Task {
 	/// The caller holds the task lock and has checked its expected revision.
 	pub(crate) async fn complete(
 		tx: &mut dyn TransactionExecutor,
-		task: &Self,
+		task: &TaskContract,
 		artifact: &ArtifactInput,
 		key: &str,
 	) -> Result<(TaskContract, ArtifactContract)> {

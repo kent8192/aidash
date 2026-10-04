@@ -41,6 +41,12 @@ release remain separate durable transitions; abort tombstones reject delayed
 reservation replay.
 Participant recovery is also scheduled by runtime under the drain supervisor;
 server services compose the same application workflow for explicit recovery.
+Application also orders manifest mutations, task child/delegation checks, paired
+task and Run completion, provenance recording and their unchanged event payloads.
+Domain rules check task and Run preconditions before execution-state decoding.
+Native mutation ports retain row locks, database-clock lease checks, selective
+updates and event persistence inside the participant's existing transaction;
+speculative preparation runs this same workflow under its rollback-only savepoint.
 
 Scoped commands authorize effects, track disclosed outputs, journal mutation
 results, and recheck the source lease through the application use case. A claim

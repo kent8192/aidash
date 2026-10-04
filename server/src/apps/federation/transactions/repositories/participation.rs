@@ -6,7 +6,7 @@ use crate::apps::federation::transactions::{
 		states::AtomicParticipantPhase,
 	},
 	serializers::contracts as native,
-	services::{authority, fault, mutation},
+	services::{authority, fault},
 };
 use crate::{Error, authorization::access::NativeAccess, federation::Federation};
 use aidash_application::{
@@ -117,7 +117,13 @@ impl ParticipantScope for Scope {
 		tx.savepoint("participant_validation")
 			.await
 			.map_err(Error::from)?;
-		mutation::apply(&self.runtime.store, tx, manifest).await?;
+		aidash_application::transactions::mutation::apply(
+			&mut crate::bootstrap::transaction_mutation_scope(tx),
+			&crate::bootstrap::registry_validation(),
+			&self.runtime.store.node_id,
+			manifest,
+		)
+		.await?;
 		tx.rollback_to_savepoint("participant_validation")
 			.await
 			.map_err(Error::from)?;
@@ -129,9 +135,13 @@ impl ParticipantScope for Scope {
 	async fn apply_mutations(&mut self, manifest: &Manifest) -> Result<()> {
 		let tx = self.transaction.executor();
 		AtomicParticipant::mutation_context(tx, manifest.id).await?;
-		mutation::apply(&self.runtime.store, tx, manifest)
-			.await
-			.map_err(Into::into)
+		aidash_application::transactions::mutation::apply(
+			&mut crate::bootstrap::transaction_mutation_scope(tx),
+			&crate::bootstrap::registry_validation(),
+			&self.runtime.store.node_id,
+			manifest,
+		)
+		.await
 	}
 	async fn finish(self: Box<Self>, result: Result<LocalStatus>) -> Result<LocalStatus> {
 		match self.transaction {

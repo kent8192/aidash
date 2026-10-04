@@ -6,8 +6,6 @@ pub mod coordinator;
 pub mod fault;
 #[path = "gate.rs"]
 pub mod gate;
-#[path = "mutation.rs"]
-pub mod mutation;
 #[path = "participant.rs"]
 pub mod participant;
 
