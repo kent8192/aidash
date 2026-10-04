@@ -96,3 +96,5 @@ pub mod semantic;
 pub mod capabilities;
 
 pub mod outbound;
+
+pub mod references;

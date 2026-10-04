@@ -1,4 +1,5 @@
 //! Native authority transactions and unchanged PostgreSQL statements implement outbound ports.
+use super::capability_records::{domain, native};
 use crate::apps::execution::capabilities::services::{
 	approvals,
 	records::{self, Record as NativeRecord},
@@ -30,32 +31,7 @@ struct Scope<'a> {
 	store: &'a Store,
 	access: Access,
 }
-fn domain(record: NativeRecord) -> Record {
-	Record {
-		id: record.id,
-		tenant: record.tenant,
-		owner: record.owner,
-		area_id: record.area_id,
-		kind: record.kind,
-		state: record.state,
-		revision: record.revision,
-		data: record.data,
-		expires_at: record.expires_at,
-	}
-}
-fn native(record: &Record) -> NativeRecord {
-	NativeRecord {
-		id: record.id,
-		tenant: record.tenant.clone(),
-		owner: record.owner.clone(),
-		area_id: record.area_id,
-		kind: record.kind.clone(),
-		state: record.state.clone(),
-		revision: record.revision,
-		data: record.data.clone(),
-		expires_at: record.expires_at,
-	}
-}
+
 #[async_trait]
 impl OutboundRepository for Repository<'_> {
 	fn fetch_policy(&self) -> FetchPolicy {

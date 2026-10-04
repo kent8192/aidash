@@ -15,3 +15,5 @@ pub fn validate_config(config: &AgentConfig) -> Result<()> {
 	}
 	Ok(())
 }
+
+pub mod lifecycle;
