@@ -42,50 +42,14 @@ async fn source_authority(
 	node: &str,
 	inspection: &Inspection,
 ) -> Result<()> {
-	crate::generation::foreign::check_home(access, task, node, inspection.generation.as_ref())
-		.await?;
-	let executor = qualified_agent(node, &inspection.agent.id, &inspection.agent.version);
-	if access.subjects.last() != Some(&executor)
-		|| access
-			.snapshot
-			.bundle
-			.subjects
-			.get(&executor)
-			.is_none_or(|subject| subject.kind != SubjectKind::Agent)
-	{
-		return Err(Error::Forbidden);
-	}
-	let workspace = access.workspace(task.workspace_id).await?;
-	access.context = workspace.attributes.clone();
-	access.require(&workspace, "workspace.read").await?;
-	let resource = access.task_resource(task).await?;
-	access.require(&resource, "task.read").await?;
-	access.require(&resource, "task.delegate").await?;
-	access.require(&resource, "task.execute").await?;
-	let resource = access.resource("node", node, json!({"remote_node":node}));
-	access.require(&resource, "federation.execute").await?;
-	for definition in &inspection.definitions {
-		let id = format!(
-			"{node}/{}s/{}@{}",
-			definition.kind, definition.entry.id, definition.entry.version
-		);
-		let mut resource = super::catalog::resource(access, &definition.metadata);
-		resource.id = id;
-		resource.attributes["remote_node"] = json!(node);
-		resource.attributes["digest"] = json!(definition.digest);
-		access.require(&resource, "registry.read").await?;
-		let action = match definition.kind.as_str() {
-			"agent" => "agent.execute",
-			"model" => "model.infer",
-			"tool" => "tool.invoke",
-			"skill" => "skill.use",
-			"cluster" => "cluster.execute",
-			"compactor" => "compaction.invoke",
-			_ => return Err(Error::Forbidden),
-		};
-		access.require(&resource, action).await?;
-	}
-	Ok(())
+	aidash_application::authorization::source::authorize(
+		&mut crate::bootstrap::source_authority_scope(access),
+		task,
+		node,
+		inspection,
+	)
+	.await
+	.map_err(Into::into)
 }
 pub(crate) async fn live(access: &mut Access, id: Uuid) -> Result<bool> {
 	Ok({

@@ -1538,3 +1538,10 @@ pub(crate) fn home_execution_repository(
 		actor,
 	}
 }
+
+/// Borrow source policy and credential locks across the shared application checks.
+pub(crate) fn source_authority_scope(
+	access: &mut crate::authorization::access::Access,
+) -> crate::apps::identity::repositories::remote_grants::authority::Scope<'_> {
+	crate::apps::identity::repositories::remote_grants::authority::Scope { access }
+}

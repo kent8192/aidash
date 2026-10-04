@@ -73,3 +73,5 @@ impl From<HomeBinding> for home::HomeBinding {
 		}
 	}
 }
+
+pub(crate) mod authority;
