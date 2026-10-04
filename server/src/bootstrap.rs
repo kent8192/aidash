@@ -1653,3 +1653,14 @@ pub(crate) fn workbench_profile_configuration()
 -> crate::apps::registry::workbench::repositories::profile::Configuration {
 	crate::apps::registry::workbench::repositories::profile::Configuration
 }
+
+/// Sandbox HTTP and background callers share the native persistence and current actor.
+pub(crate) fn workbench_sandbox_repository(
+	runtime: &Federation,
+	actor: crate::authorization::identity::Actor,
+) -> crate::apps::registry::workbench::repositories::sandbox::Repository {
+	crate::apps::registry::workbench::repositories::sandbox::Repository {
+		runtime: runtime.clone(),
+		actor,
+	}
+}

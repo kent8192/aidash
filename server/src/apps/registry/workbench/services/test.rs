@@ -502,13 +502,14 @@ pub async fn provide_test(#[inject] runtime: Federation) -> BehavioralTests {
 
 impl BehavioralTests {
 	pub(crate) async fn get_limits(&self, actor: Actor, id: Uuid) -> Result<TestLimits> {
-		let f = self.runtime.clone();
-		let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-		let draft = AgentDraft::read(&mut tx, id, false).await?;
-		authorize(&mut tx, &actor, &draft, "agent_draft.test", true).await?;
-		let value = AgentTestLimit::locked(&mut tx, &draft.tenant).await?;
-		Box::new(tx).commit().await?;
-		Ok(value)
+		Ok(
+			aidash_application::registry::workbench::sandbox::get_limits(
+				&crate::bootstrap::workbench_sandbox_repository(&self.runtime, actor),
+				id,
+			)
+			.await?
+			.into(),
+		)
 	}
 	pub(crate) async fn set_limits(
 		&self,
@@ -516,40 +517,31 @@ impl BehavioralTests {
 		tenant: String,
 		input: TestLimits,
 	) -> Result<TestLimits> {
-		let f = self.runtime.clone();
-		if !matches!(actor, Actor::Operator) {
-			return Err(Error::Forbidden);
-		}
-		if tenant != input.tenant {
-			return Err(Error::Invalid("tenant mismatch".into()));
-		}
-		validate_limits(&input)?;
-		let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-		AgentTestLimit::save(&mut tx, &input).await?;
-		Box::new(tx).commit().await?;
-		Ok(input)
+		Ok(
+			aidash_application::registry::workbench::sandbox::set_limits(
+				&crate::bootstrap::workbench_sandbox_repository(&self.runtime, actor),
+				tenant,
+				input.into(),
+			)
+			.await?
+			.into(),
+		)
 	}
 	pub(crate) async fn sessions(&self, actor: Actor, id: Uuid) -> Result<Vec<TestSession>> {
-		let f = self.runtime.clone();
-		purge_expired(&f.store.pool).await?;
-		let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-		let draft = AgentDraft::read(&mut tx, id, false).await?;
-		authorize(&mut tx, &actor, &draft, "agent_draft.read", true).await?;
-		let mut native = tx;
-		let rows = AgentTestSession::page(&mut native, id).await?;
-		Box::new(native).commit().await?;
-		Ok(rows)
+		aidash_application::registry::workbench::sandbox::sessions(
+			&crate::bootstrap::workbench_sandbox_repository(&self.runtime, actor),
+			id,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	pub(crate) async fn stop(&self, actor: Actor, id: Uuid) -> Result<TestSession> {
-		let f = self.runtime.clone();
-		let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-		let session = load_session(&mut tx, id).await?;
-		let draft = AgentDraft::read(&mut tx, session.draft_id, false).await?;
-		authorize(&mut tx, &actor, &draft, "agent_draft.test", true).await?;
-		let mut native = tx;
-		let result = AgentTestSession::stop(&mut native, id).await?;
-		Box::new(native).commit().await?;
-		Ok(result)
+		aidash_application::registry::workbench::sandbox::stop(
+			&crate::bootstrap::workbench_sandbox_repository(&self.runtime, actor),
+			id,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	pub(crate) async fn start(
 		&self,

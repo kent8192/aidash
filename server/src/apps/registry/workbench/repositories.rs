@@ -14,3 +14,5 @@ pub(crate) mod incidents;
 pub(crate) mod report;
 
 pub(crate) mod profile;
+
+pub(crate) mod sandbox;
