@@ -13,13 +13,14 @@ for transaction_peer in $(seq 1 15); do
   export "$transaction_key=transaction-acceptance-test-peer-$transaction_peer-only"
 done
 export AIDASH_SECRET_TEST_QDRANT=local-semantic-vector-fixture-key-0123456789
+scripts/build-test-postgres.sh
 case "${1:-}" in
   '') cargo test --locked --workspace --all-targets ;;
   --coverage)
     mkdir -p coverage
     coverage_target_dir="${AIDASH_COVERAGE_TARGET_DIR:-$PWD/target/llvm-cov}"
     CARGO_TARGET_DIR="$coverage_target_dir" cargo llvm-cov --locked --workspace --all-targets --lcov \
-      --ignore-filename-regex '(/tests/|/migration/)' --output-path coverage/rust.lcov
+      --ignore-filename-regex '(/tests/|/migrations/)' --output-path coverage/rust.lcov
     test -s coverage/rust.lcov
     ;;
   *) echo 'Usage: scripts/test-rust.sh [--coverage]' >&2; exit 2 ;;

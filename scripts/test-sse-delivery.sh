@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+scripts/build-test-postgres.sh
 export RUSTC_WRAPPER=
 export RUST_MIN_STACK="${RUST_MIN_STACK:-8388608}"
 export AIDASH_SECRET_TEST_PEER=local-peer-regression-test-token-0123456789
@@ -33,7 +34,7 @@ record = {'git_sha':subprocess.check_output(['git','rev-parse','HEAD']).decode()
           'utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'platform':platform.platform(),
           'rustc':subprocess.check_output(['rustc','--version']).decode().strip(),
           'settings':{'api_processes':3,'connections':100,'filtered_connections':90,'global_connections':10,'workspaces':10,'active_seconds':30,'events_per_second':10,'active_repetitions':3,'idle_seconds':60,'idle_repetitions':3,'active_reconcile_ms':60000,'idle_reconcile_ms':5000},
-          'service_images':['aidash-test-postgres:17-pg-jsonschema-0.3.4','nats:2.12-alpine','qdrant/qdrant:v1.19.1'],
+          'service_images':['aidash-orm-test-postgres:17-pg-jsonschema-0.3.4','nats:2.12-alpine','qdrant/qdrant:v1.19.1'],
           'resource_limits':'No per-process limits; API processes on host, services in local Docker engine.',
           'timing':'Controller monotonic clock, release of writer event/commit advisory barrier through complete frame parsing; nearest-rank percentiles of slowest eligible client per event.'}
 (root/'invocation.json').write_text(json.dumps(record,indent=2)+'\n')
@@ -58,10 +59,10 @@ if os.environ['AIDASH_SSE_BENCHMARK']:
 PY
 export AIDASH_SSE_BASELINE_BINARY="$AIDASH_SSE_EVIDENCE_DIR/baseline-aidash"
 if [[ "${1:-}" == "--benchmark" ]]; then
-  cargo build --locked --release --bin aidash --message-format=json-render-diagnostics > "$AIDASH_SSE_EVIDENCE_DIR/candidate-release-build.jsonl"
+  cargo build --locked -p aidash-server --release --bin aidash --message-format=json-render-diagnostics > "$AIDASH_SSE_EVIDENCE_DIR/candidate-release-build.jsonl"
   export AIDASH_SSE_CANDIDATE_BINARY="$AIDASH_SSE_EVIDENCE_DIR/candidate-aidash"
 fi
-cargo test --locked --test sse_delivery --no-run --message-format=json-render-diagnostics > "$AIDASH_SSE_EVIDENCE_DIR/candidate-build.jsonl"
+cargo test --locked -p aidash-server --test sse_delivery --no-run --message-format=json-render-diagnostics > "$AIDASH_SSE_EVIDENCE_DIR/candidate-build.jsonl"
 python3 - <<'PY'
 import hashlib,json,os,pathlib,shutil,subprocess
 root=pathlib.Path(os.environ['AIDASH_SSE_EVIDENCE_DIR'])
@@ -75,8 +76,8 @@ artifacts=[json.loads(line) for line in (root/build_log).read_text().splitlines(
 binary=next(item['executable'] for item in artifacts if item.get('target',{}).get('name')=='aidash' and item.get('executable'))
 data['candidate_binary_sha256']=hashlib.sha256(pathlib.Path(binary).read_bytes()).hexdigest()
 if os.environ['AIDASH_SSE_BENCHMARK']: shutil.copy2(binary,root/'candidate-aidash')
-data['commands']=['cargo test --locked --test sse_delivery -- --nocapture --test-threads=1']
-if os.environ['AIDASH_SSE_BENCHMARK']: data['commands'].append('cargo test --locked --test sse_delivery -- --ignored --nocapture --test-threads=1')
+data['commands']=['cargo test --locked -p aidash-server --test sse_delivery -- --nocapture --test-threads=1']
+if os.environ['AIDASH_SSE_BENCHMARK']: data['commands'].append('cargo test --locked -p aidash-server --test sse_delivery -- --ignored --nocapture --test-threads=1')
 data['image_metadata']=[]
 for name in data['service_images']:
     result=subprocess.run(['docker','image','inspect',name,'--format','{{json .Id}} {{json .RepoDigests}} {{json .Architecture}}'],capture_output=True,text=True)
@@ -85,10 +86,10 @@ data['docker_resources']=subprocess.check_output(['docker','info','--format','CP
 path.write_text(json.dumps(data,indent=2)+'\n')
 PY
 set +e
-cargo test --locked --test sse_delivery -- --nocapture --test-threads=1 2>&1 | tee "$AIDASH_SSE_EVIDENCE_DIR/functional.log"
+cargo test --locked -p aidash-server --test sse_delivery -- --nocapture --test-threads=1 2>&1 | tee "$AIDASH_SSE_EVIDENCE_DIR/functional.log"
 sse_status=${PIPESTATUS[0]}
 if [[ "$sse_status" == 0 && "${1:-}" == "--benchmark" ]]; then
-  cargo test --locked --test sse_delivery -- --ignored --nocapture --test-threads=1 2>&1 | tee "$AIDASH_SSE_EVIDENCE_DIR/benchmark.log"
+  cargo test --locked -p aidash-server --test sse_delivery -- --ignored --nocapture --test-threads=1 2>&1 | tee "$AIDASH_SSE_EVIDENCE_DIR/benchmark.log"
   sse_status=${PIPESTATUS[0]}
 fi
 set -e

@@ -16,11 +16,12 @@ coverage:
         threshold: 1%
 flags:
   rust:
-    paths: [src/]
+    paths: [crates/, server/src/]
     carryforward: false
 ignore:
-  - "tests/**"
-  - "migration/**"
+  - "**/tests/**"
+  - "**/tests.rs"
+  - "server/migrations/**"
   - "openapi/**"
   - "web/src/generated/**"
   - "web/dist/**"

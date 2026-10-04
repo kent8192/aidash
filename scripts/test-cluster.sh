@@ -89,10 +89,10 @@ else
   k3d image import "$postgres_image" --cluster "$cluster"
 fi
 if [[ "$profile" == remote-memory ]]; then
-  RUSTC_WRAPPER= cargo run --locked --quiet --example remote_memory_queries > "$tools_dir/remote-memory-queries.json"
+  RUSTC_WRAPPER= cargo run --locked --quiet -p aidash-server --example remote_memory_queries > "$tools_dir/remote-memory-queries.json"
   python3 scripts/remote_memory_cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --postgres-image "$postgres_image" --queries "$tools_dir/remote-memory-queries.json"
 elif [[ "$profile" == transactions ]]; then
-  RUSTC_WRAPPER= cargo run --locked --quiet --example acceptance_queries > "$tools_dir/transaction-queries.json"
+  RUSTC_WRAPPER= cargo run --locked --quiet -p aidash-server --example acceptance_queries > "$tools_dir/transaction-queries.json"
   python3 scripts/transaction_cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --postgres-image "$postgres_image" --queries "$tools_dir/transaction-queries.json"
 else
   python3 scripts/cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --frontend-image aidash-frontend:cluster-acceptance --postgres-image "$postgres_image" --dashboard
