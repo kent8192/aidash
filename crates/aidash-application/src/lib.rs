@@ -79,3 +79,5 @@ pub mod semantic;
 pub mod capabilities;
 
 pub mod transactions;
+
+pub mod activation;

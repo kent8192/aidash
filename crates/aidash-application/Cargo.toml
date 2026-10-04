@@ -30,6 +30,8 @@ base64 = "0.22"
 
 regex = "1"
 
+metrics = "0.24"
+
 [dev-dependencies]
 rstest.workspace = true
 

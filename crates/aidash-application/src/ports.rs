@@ -174,3 +174,5 @@ pub mod graph;
 pub mod capabilities;
 
 pub mod transactions;
+
+pub mod activation;

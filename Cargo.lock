@@ -85,6 +85,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "jsonschema",
+ "metrics",
  "regex",
  "rstest",
  "schemars 1.2.2",
