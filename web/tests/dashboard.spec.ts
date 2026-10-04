@@ -206,7 +206,7 @@ test("creates a workspace and task and receives live assignment changes", async 
 test("publishes and installs a skill through the marketplace", async ({
   page,
 }) => {
-  const id = `browser-skill-${Date.now()}`;
+  const name = `Research checklist browser-skill-${Date.now()}`;
   await page.goto("/settings?view=registry");
   await page
     .getByRole("button", { name: "エンティティを登録", exact: true })
@@ -214,28 +214,23 @@ test("publishes and installs a skill through the marketplace", async ({
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("エンティティの種類").selectOption("skill");
   await expect(dialog.getByLabel("エンティティID")).toHaveCount(0);
-  await dialog.getByLabel("名前").fill(`Research checklist ${id}`);
+  await dialog.getByLabel("名前").fill(name);
   await dialog.getByLabel("説明").fill("Cite every factual claim.");
   await dialog
     .getByLabel("指示", { exact: true })
     .fill("Cite every factual claim.");
-  const registration = page.waitForResponse(
-    (response) =>
-      response.url().endsWith("/api/registry") &&
-      response.request().method() === "POST",
-  );
   await dialog
     .getByRole("button", { name: "エンティティを登録", exact: true })
     .click();
-  const registered = await (await registration).json();
   await expect(dialog).not.toBeVisible();
+  await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
   await page.goto("/settings?view=marketplace");
   await page
     .getByRole("button", { name: "パッケージを公開", exact: true })
     .click();
   await dialog
     .getByLabel("ローカルのエンティティ")
-    .selectOption(`${registered.id}@1.0.0`);
+    .selectOption({ label: `${name} · 1.0.0` });
   await dialog.getByLabel("作成者").fill("Acceptance fixture");
   await dialog
     .getByRole("button", { name: "パッケージを公開", exact: true })
@@ -244,10 +239,7 @@ test("publishes and installs a skill through the marketplace", async ({
   await page
     .getByRole("button")
     .filter({
-      has: page.getByRole("heading", {
-        name: `Research checklist ${id}`,
-        exact: true,
-      }),
+      has: page.getByRole("heading", { name, exact: true }),
     })
     .click();
   await dialog
