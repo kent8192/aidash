@@ -39,6 +39,8 @@ serializable transactions, speculative validation savepoints, mutation context,
 visibility barriers and authority auditing. Commit application and visibility
 release remain separate durable transitions; abort tombstones reject delayed
 reservation replay.
+Participant recovery is also scheduled by runtime under the drain supervisor;
+server services compose the same application workflow for explicit recovery.
 
 Scoped commands authorize effects, track disclosed outputs, journal mutation
 results, and recheck the source lease through the application use case. A claim

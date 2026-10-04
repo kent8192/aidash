@@ -31,10 +31,7 @@ pub async fn recover_once(f: &Federation) -> Result<usize> {
 }
 
 pub async fn run(f: Federation) -> Result<()> {
-	loop {
-		if let Err(error) = recover_once(&f).await {
-			tracing::warn!(%error,"participant recovery failed; barriers retained");
-		}
-		tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-	}
+	aidash_runtime::transactions::run_participant(crate::bootstrap::transaction_participant(&f))
+		.await
+		.map_err(Into::into)
 }

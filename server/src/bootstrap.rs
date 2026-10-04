@@ -113,9 +113,9 @@ impl RuntimeTasks {
 			active_recovery,
 			aborted_recovery,
 		));
-		tasks.spawn_service(runtime_task(crate::transactions::participant::run(
-			participant_runtime,
-		)));
+		tasks.spawn_service(aidash_runtime::transactions::run_participant(
+			transaction_participant(&participant_runtime),
+		));
 		tasks.spawn_service(aidash_runtime::generation::run(
 			Arc::new(generation_provisioning_repository(&worker_runtime)),
 			registry_validation(),
