@@ -45,3 +45,10 @@ pub fn validate_secret_reference(name: &str) -> Result<()> {
 	}
 	Ok(())
 }
+/// Compare fixed-size digests without leaking a matching prefix or secret length.
+pub fn same_secret(a: &str, b: &str) -> bool {
+	use sha2::{Digest, Sha256};
+	let a = Sha256::digest(a.as_bytes());
+	let b = Sha256::digest(b.as_bytes());
+	a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
