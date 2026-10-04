@@ -491,15 +491,13 @@ async fn recorded_keys(connection: &BackendConnection) -> BTreeSet<(String, Stri
 }
 
 #[rstest]
-#[case::zero("zero", false)]
-#[case::earlier("0002_tables", false)]
-#[case::snapshot("0006_triggers", false)]
-#[case::fake_zero("zero", true)]
+#[case::zero("zero")]
+#[case::earlier("0002_tables")]
+#[case::snapshot("0006_triggers")]
 #[tokio::test]
-async fn management_refuses_baseline_rollback_without_changing_data_or_history(
+async fn management_refuses_fake_baseline_rollback_without_changing_data_or_history(
 	#[future] fresh_database: MigrationFixture,
 	#[case] target: &str,
-	#[case] fake: bool,
 ) {
 	// Arrange: the baseline has live data and all model-state snapshots recorded.
 	let fixture = fresh_database.await;
@@ -518,10 +516,7 @@ async fn management_refuses_baseline_rollback_without_changing_data_or_history(
 		.unwrap();
 	let before = recorded_keys(&fixture.connection).await;
 	let mut command = deployment_command(&fixture.url, fixture.directory.path());
-	command.args(["migrate", "marketplace", target]);
-	if fake {
-		command.arg("--fake");
-	}
+	command.args(["migrate", "marketplace", target, "--fake"]);
 	// Act: use the actual management entry point, including the entire preflight.
 	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
 		.await
@@ -530,7 +525,7 @@ async fn management_refuses_baseline_rollback_without_changing_data_or_history(
 	// Assert: no state snapshot or physical migration is unrecorded.
 	assert!(!output.status.success());
 	assert!(
-		String::from_utf8_lossy(&output.stderr).contains("frozen baseline is forward-only"),
+		String::from_utf8_lossy(&output.stderr).contains("baseline reversal cannot be faked"),
 		"{}",
 		String::from_utf8_lossy(&output.stderr)
 	);
@@ -546,7 +541,7 @@ async fn management_refuses_baseline_rollback_without_changing_data_or_history(
 
 #[rstest]
 #[tokio::test]
-async fn direct_physical_baseline_reversal_keeps_the_native_ledger(
+async fn out_of_order_physical_reversal_keeps_the_native_ledger(
 	#[future] fresh_database: MigrationFixture,
 ) {
 	// Arrange
@@ -569,13 +564,69 @@ async fn direct_physical_baseline_reversal_keeps_the_native_ledger(
 		.rollback_migrations(&[migration])
 		.await
 		.unwrap_err();
-	// Assert: the reverse guard executes before the executor removes this record.
+	// Assert: PostgreSQL refuses dropping a referenced table and atomic rollback
+	// retains its ledger entry. The management graph must order dependents first.
+	assert!(error.to_string().contains("depend"), "{error}");
+	assert_eq!(recorded_keys(&fixture.connection).await, before);
+}
+
+#[rstest]
+#[tokio::test]
+async fn complete_baseline_reverses_and_reapplies_through_the_management_graph(
+	#[future] fresh_database: MigrationFixture,
+) {
+	// Arrange
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let before = recorded_keys(&fixture.connection).await;
+	let mut command = deployment_command(&fixture.url, fixture.directory.path());
+	command.args(["migrate", "operations", "zero"]);
+	// Act
+	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
+		.await
+		.unwrap()
+		.unwrap();
+	// Assert: every physical migration and state snapshot is reversed, then the
+	// same history can build a fresh schema again without changing its identities.
 	assert!(
-		error
-			.to_string()
-			.contains("frozen baseline is forward-only"),
-		"{error}"
+		output.status.success(),
+		"{}\n{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
 	);
+	assert!(recorded_keys(&fixture.connection).await.is_empty());
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+	let tables = fixture
+		.connection
+		.fetch_all(
+			&Query::select()
+				.column(Alias::new("tablename"))
+				.from((Alias::new("pg_catalog"), Alias::new("pg_tables")))
+				.and_where(Expr::col(Alias::new("schemaname")).eq("public"))
+				.to_string(PostgresQueryBuilder),
+			vec![],
+		)
+		.await
+		.unwrap();
+	assert_eq!(tables.len(), 1);
+	assert_eq!(
+		tables[0].get::<String>("tablename").unwrap(),
+		"reinhardt_migrations"
+	);
+	let extensions = fixture
+		.connection
+		.fetch_all(
+			&Query::select()
+				.column(Alias::new("extname"))
+				.from((Alias::new("pg_catalog"), Alias::new("pg_extension")))
+				.and_where(Expr::col(Alias::new("extname")).eq("pg_jsonschema"))
+				.to_string(PostgresQueryBuilder),
+			vec![],
+		)
+		.await
+		.unwrap();
+	assert!(extensions.is_empty());
+	fixture.migrate().await;
 	assert_eq!(recorded_keys(&fixture.connection).await, before);
 }
 

@@ -11,6 +11,8 @@ use reinhardt::query::{
 };
 use std::{collections::HashSet, path::PathBuf};
 
+mod backward;
+
 /// All entry points hold the same transaction-scoped lock for the complete run,
 /// including creation of the native ledger. Dropping the transaction on errors
 /// or cancellation releases it; no session lock can leak into the pool.
@@ -45,7 +47,7 @@ pub async fn run(context: &CommandContext) -> Result<()> {
 			"Aidash migration sources are missing".into(),
 		));
 	}
-	let recorder = DatabaseMigrationRecorder::new(connection);
+	let recorder = DatabaseMigrationRecorder::new(connection.clone());
 	let applied = recorder
 		.get_applied_migrations_if_present()
 		.await
@@ -82,8 +84,44 @@ pub async fn run(context: &CommandContext) -> Result<()> {
 			"the Aidash empty-database baseline cannot be faked".into(),
 		));
 	}
-	if !context.has_option("plan") {
-		refuse_baseline_rollback(context, &applied)?;
+	if !context.has_option("plan") && context.has_option("fake") {
+		refuse_fake_baseline_rollback(context, &applied)?;
+	}
+	if let (Some(app), Some(target)) = (context.arg(0), context.arg(1))
+		&& let Some(plan) = backward::plan(&migrations, &applied, app, target)
+			.map_err(|error| Error::External(error.to_string()))?
+	{
+		if context.has_option("plan") {
+			context.info(&format!(
+				"[plan] Would unapply {} migration(s):",
+				plan.len()
+			));
+			for migration in plan.iter().rev() {
+				context.info(&format!("  - {} (unapply)", migration.id()));
+			}
+		} else if context.has_option("fake") {
+			for migration in plan.iter().rev() {
+				recorder
+					.unapply(&migration.app_label, &migration.name)
+					.await
+					.map_err(|error| Error::External(error.to_string()))?;
+			}
+			context.success(&format!("Faked rollback of {} migration(s)", plan.len()));
+		} else {
+			let result = reinhardt::db::migrations::DatabaseMigrationExecutor::new(connection)
+				.rollback_migrations(&plan)
+				.await
+				.map_err(|error| Error::External(error.to_string()))?;
+			for id in &result.applied {
+				context.success(&format!("  ✓ Rolled back: {id}"));
+			}
+			context.success(&format!(
+				"Rolled back {} migration(s)",
+				result.applied.len()
+			));
+		}
+		schema_lock.commit().await?;
+		return Ok(());
 	}
 	let mut native = context.clone();
 	native.set_option(
@@ -98,10 +136,9 @@ pub async fn run(context: &CommandContext) -> Result<()> {
 	Ok(())
 }
 
-/// Preflight the pinned command's applied-target direction before it unrecords
-/// any state-only snapshot. Physical migrations also refuse reversal directly.
-/// Future reversible migrations can still return to the complete baseline.
-fn refuse_baseline_rollback(
+/// Fake reversal would leave physical objects behind after removing baseline
+/// records, making the next fresh-schema check and replay unsafe.
+fn refuse_fake_baseline_rollback(
 	context: &CommandContext,
 	applied: &[reinhardt::db::migrations::recorder::MigrationRecord],
 ) -> Result<()> {
@@ -147,7 +184,7 @@ fn refuse_baseline_rollback(
 		.any(|record| keys.contains(&(record.app.clone(), record.name.clone())))
 	{
 		return Err(Error::Invalid(
-			"Aidash frozen baseline is forward-only; restore a backup to roll back".into(),
+			"Aidash baseline reversal cannot be faked; apply its backward operations".into(),
 		));
 	}
 	Ok(())
