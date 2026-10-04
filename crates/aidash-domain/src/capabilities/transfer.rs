@@ -68,3 +68,5 @@ pub fn receipt_matches(description: &Description, response: &Value) -> bool {
 }
 #[cfg(test)]
 mod tests;
+
+pub mod receiver;

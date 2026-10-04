@@ -71,3 +71,5 @@ pub trait TransferRepository: Send + Sync {
 	async fn jobs(&self) -> Result<Vec<Uuid>>;
 	async fn record_failure(&self, id: Uuid, terminal: bool) -> Result<()>;
 }
+
+pub mod receiver;
