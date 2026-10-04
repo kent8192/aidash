@@ -1587,3 +1587,10 @@ pub(crate) fn source_semantic_search_repository(
 		transport: semantic_transport(runtime.store.semantic_client.clone()),
 	}
 }
+
+/// Source snapshots and HTTP adapters retain one current grant, snapshot and audit transaction.
+pub(crate) fn source_snapshot_scope(
+	access: &mut crate::authorization::access::Access,
+) -> crate::apps::identity::repositories::remote_grants::snapshot::Scope<'_> {
+	crate::apps::identity::repositories::remote_grants::snapshot::Scope { access }
+}

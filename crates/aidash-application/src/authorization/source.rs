@@ -73,3 +73,5 @@ pub mod reads;
 pub mod provenance;
 
 pub mod search;
+
+pub mod snapshot;

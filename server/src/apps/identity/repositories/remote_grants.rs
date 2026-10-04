@@ -85,3 +85,5 @@ pub(crate) mod reads;
 pub(crate) mod provenance;
 
 pub(crate) mod search;
+
+pub(crate) mod snapshot;

@@ -141,17 +141,13 @@ impl RemoteGrants {
 			input.grant_id,
 		)
 		.await?;
-		access.read_grant = Some(description.grant_id);
-		let result = async {
-			let snapshot = access
-				.workspace_snapshot(description.task.workspace_id)
-				.await?;
-			if !live(&mut access, description.grant_id).await? {
-				return Err(Error::Forbidden);
-			}
-			Ok(snapshot)
-		}
-		.await;
+		let result = aidash_application::authorization::source::snapshot::read(
+			&mut crate::bootstrap::source_snapshot_scope(&mut access),
+			description.grant_id,
+			description.task.workspace_id,
+		)
+		.await
+		.map_err(Into::into);
 		access.finish(result).await
 	}
 }
