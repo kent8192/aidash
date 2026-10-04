@@ -250,3 +250,5 @@ mod operation_tests;
 pub mod journal;
 
 pub mod status;
+
+pub mod disclosure;

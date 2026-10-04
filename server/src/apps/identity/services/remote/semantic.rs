@@ -1,6 +1,6 @@
 //! Home-side authority for explicitly disclosed remote semantic context.
 use super::Inspection;
-use crate::semantic::remote::{Operation, Receipt, SourceRead, bounded_query, journal};
+use crate::semantic::remote::{Operation, Receipt, bounded_query, journal};
 use crate::{
 	Error, Result,
 	authorization::access::Access,
@@ -238,7 +238,7 @@ pub(crate) async fn search(
 				result,
 				estimated_tokens: 0,
 			};
-			fit_receipt(&mut receipt, max_tokens)?;
+			receipt.fit_budget(max_tokens)?;
 			journal::complete(&f.store, &attempt, &receipt).await?;
 			Ok(receipt)
 		}
@@ -265,36 +265,6 @@ pub(crate) async fn search(
 	// revocation must be observed before source text leaves the Home node.
 	let (access, _) = super::description_lease(&f, node, operation.grant_id).await?;
 	access.finish(Ok(receipt)).await
-}
-
-fn fit_receipt(receipt: &mut Receipt, budget: usize) -> Result<()> {
-	let had_matches = !receipt.result.matches.is_empty() || receipt.result.truncated;
-	loop {
-		receipt.result.estimated_tokens = crate::semantic::service::result_tokens(&receipt.result)?;
-		receipt.sources = receipt
-			.result
-			.matches
-			.iter()
-			.map(|m| SourceRead {
-				entry_id: m.entry_id,
-				revision: m.revision,
-				content_digest: crate::semantic::service::content_digest(&m.text),
-			})
-			.collect();
-		receipt.estimated_tokens =
-			crate::context::estimated_tokens(&serde_json::to_string(receipt)?) + 16;
-		if receipt.estimated_tokens <= budget {
-			break;
-		}
-		if receipt.result.matches.pop().is_none() {
-			return Err(Error::RemoteSemantic(Failure::ContextBudget));
-		}
-		receipt.result.truncated = true;
-	}
-	if had_matches && receipt.result.matches.is_empty() {
-		return Err(Error::RemoteSemantic(Failure::ContextBudget));
-	}
-	Ok(())
 }
 
 impl Access {
