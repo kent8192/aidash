@@ -188,6 +188,11 @@ impl DraftScope for Scope {
 			.await
 			.map_err(Into::into)
 	}
+	async fn transfer(&mut self, id: Uuid, owner: &str) -> Result<()> {
+		AgentDraft::transfer(&mut self.tx, id, owner)
+			.await
+			.map_err(Into::into)
+	}
 	async fn commit(self) -> Result<()> {
 		Box::new(self.tx)
 			.commit()

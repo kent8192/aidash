@@ -282,5 +282,35 @@ pub async fn shares<R: DraftRepository>(repository: &R, id: Uuid) -> Result<Vec<
 		.collect())
 }
 
+use aidash_domain::registry::workbench::TransferInput;
+pub async fn transfer<R: DraftRepository>(
+	repository: &R,
+	id: Uuid,
+	input: TransferInput,
+) -> Result<Draft> {
+	let actor = repository.principal();
+	let mut scope = repository.begin().await?;
+	let draft = scope.read(id, true).await?;
+	owner_only(&actor, &draft)?;
+	authorize(&mut scope, &draft, "agent_draft.transfer", false).await?;
+	if draft.revision != input.expected_revision {
+		return Err(Error::Conflict("draft revision changed".into()));
+	}
+	target_enabled(&mut scope, &draft.tenant, &input.new_owner).await?;
+	// Ownership supersedes a share. Retaining it would restore the former
+	// owner's access after a later transfer.
+	scope.remove_share(id, &input.new_owner).await?;
+	scope.transfer(id, &input.new_owner).await?;
+	scope
+		.append_event(
+			"agent_draft.owner_changed",
+			json!({"draft_id":id,"tenant":draft.tenant,"from":draft.owner,"to":input.new_owner}),
+		)
+		.await?;
+	let result = scope.read(id, false).await?;
+	scope.commit().await?;
+	Ok(result)
+}
+
 #[cfg(test)]
 mod tests;

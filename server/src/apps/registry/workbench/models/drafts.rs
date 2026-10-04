@@ -94,7 +94,6 @@ impl AgentDraft {
 		id: Uuid,
 		owner: &str,
 	) -> Result<()> {
-		AgentDraftShare::remove(tx, id, owner).await?;
 		let (sql, values) = Query::update()
 			.table(Alias::new(Self::table_name()))
 			.value_expr(Alias::new("owner"), Expr::value(owner))

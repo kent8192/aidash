@@ -234,6 +234,13 @@ impl DraftScope for Scope {
 		self.record(format!("share-remove:{subject}"));
 		Ok(())
 	}
+	async fn transfer(&mut self, id: Uuid, owner: &str) -> Result<()> {
+		assert_eq!(id, self.draft.id);
+		self.record(format!("transfer:{owner}"));
+		self.draft.owner = owner.into();
+		self.draft.revision += 1;
+		Ok(())
+	}
 	async fn commit(self) -> Result<()> {
 		self.record("commit");
 		Ok(())
@@ -728,4 +735,87 @@ async fn nonowners_cannot_share_before_policy_checks(mut draft: Draft) {
 		Err(Error::Forbidden)
 	));
 	assert_eq!(repository.logs(), ["begin", "read:true"]);
+}
+
+#[rstest]
+#[tokio::test]
+async fn transfer_removes_new_owner_share_before_changing_owner(draft: Draft) {
+	let repository = Repository::new(draft.clone());
+	let saved = transfer(
+		&repository,
+		draft.id,
+		TransferInput {
+			expected_revision: 3,
+			new_owner: "guest".into(),
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(saved.owner, "guest");
+	assert_eq!(saved.revision, 4);
+	let logs = repository.logs();
+	assert_eq!(
+		&logs[..7],
+		[
+			"begin",
+			"read:true",
+			"identity",
+			"agent_draft.transfer",
+			"target",
+			"share-remove:guest",
+			"transfer:guest"
+		]
+	);
+	assert!(logs[7].starts_with("event:agent_draft.owner_changed:"));
+	assert_eq!(&logs[8..], ["read:false", "commit"]);
+}
+#[rstest]
+#[tokio::test]
+async fn transfer_requires_current_revision_before_target_lookup(draft: Draft) {
+	let repository = Repository::new(draft.clone());
+	assert_eq!(
+		transfer(
+			&repository,
+			draft.id,
+			TransferInput {
+				expected_revision: 2,
+				new_owner: "guest".into()
+			}
+		)
+		.await
+		.unwrap_err()
+		.to_string(),
+		"draft revision changed"
+	);
+	assert_eq!(
+		repository.logs(),
+		["begin", "read:true", "identity", "agent_draft.transfer"]
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn disabled_transfer_target_does_not_mutate_draft(draft: Draft) {
+	let repository = Repository::new(draft.clone());
+	assert_eq!(
+		transfer(
+			&repository,
+			draft.id,
+			TransferInput {
+				expected_revision: 3,
+				new_owner: "missing".into()
+			}
+		)
+		.await
+		.unwrap_err()
+		.to_string(),
+		"target subject must exist and be enabled in the same tenant"
+	);
+	assert!(
+		!repository
+			.logs()
+			.iter()
+			.any(|step| step.starts_with("transfer:")
+				|| step.starts_with("share-remove:")
+				|| step == "commit")
+	);
 }

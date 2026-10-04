@@ -205,29 +205,13 @@ impl Drafts {
 		id: Uuid,
 		input: TransferInput,
 	) -> Result<Draft> {
-		let f = self.runtime.clone();
-		let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-		let draft = AgentDraft::read(&mut tx, id, true).await?;
-		owner_only(&actor, &draft)?;
-		authorize(&mut tx, &actor, &draft, "agent_draft.transfer", false).await?;
-		if draft.revision != input.expected_revision {
-			return Err(Error::Conflict("draft revision changed".into()));
-		}
-		target_enabled(&mut tx, &draft.tenant, &input.new_owner).await?;
-		// Ownership supersedes a share. Retaining it would restore the former
-		// owner's access after a later transfer.
-		AgentDraft::transfer(&mut tx, id, &input.new_owner).await?;
-		event_records::append(
-			&mut tx,
-			&f.config.node_id,
-			None,
-			"agent_draft.owner_changed",
-			json!({"draft_id":id,"tenant":draft.tenant,"from":draft.owner,"to":input.new_owner}),
+		Ok(aidash_application::registry::workbench::drafts::transfer(
+			&crate::bootstrap::draft_repository(&self.runtime, actor),
+			id,
+			input,
 		)
-		.await?;
-		let result = AgentDraft::read(&mut tx, id, false).await?;
-		Box::new(tx).commit().await?;
-		Ok(result)
+		.await?
+		.into())
 	}
 	pub(crate) async fn archive(
 		&self,
