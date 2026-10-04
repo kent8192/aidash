@@ -1192,8 +1192,19 @@ pub(crate) fn operation_control_scope<'a>(
 
 pub(crate) fn transaction_authority_scope(
 	access: &mut crate::authorization::access::Access,
-) -> crate::apps::federation::transactions::repositories::authority::Scope<'_> {
+) -> crate::apps::federation::transactions::repositories::authority::Scope<
+	&mut crate::authorization::access::Access,
+> {
 	crate::apps::federation::transactions::repositories::authority::Scope { access }
+}
+
+/// HTTP, peer and recovery callers share the same native authority implementation.
+pub(crate) fn transaction_authority_repository(
+	runtime: &Federation,
+) -> crate::apps::federation::transactions::repositories::authority::control::Repository {
+	crate::apps::federation::transactions::repositories::authority::control::Repository {
+		runtime: runtime.clone(),
+	}
 }
 
 pub(crate) fn operation_withdrawal_repository(

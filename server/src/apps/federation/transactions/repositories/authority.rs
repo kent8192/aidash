@@ -9,11 +9,14 @@ use async_trait::async_trait;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, SimpleExpr};
 use serde_json::Value;
 use uuid::Uuid;
-pub(crate) struct Scope<'a> {
-	pub(crate) access: &'a mut Access,
+pub(crate) struct Scope<A> {
+	pub(crate) access: A,
 }
 #[async_trait]
-impl TransactionAuthorityScope for Scope<'_> {
+impl<A> TransactionAuthorityScope for Scope<A>
+where
+	A: std::ops::DerefMut<Target = Access> + Send,
+{
 	fn identity(&self) -> ExecutionPrincipal {
 		ExecutionPrincipal {
 			tenant: self.access.identity.tenant.clone(),
@@ -47,14 +50,14 @@ impl TransactionAuthorityScope for Scope<'_> {
 			.map_err(Into::into)
 	}
 	async fn inherit_task(&mut self, task: Uuid) -> Result<()> {
-		crate::authorization::execution::inherit_task_origin(self.access, task)
+		crate::authorization::execution::inherit_task_origin(&mut self.access, task)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
 	}
 	async fn inherit_local_run(&mut self, run: &RunMetadata) -> Result<()> {
 		aidash_application::authorization::execution::inherit_run(
-			&mut crate::bootstrap::execution_grant_scope(self.access),
+			&mut crate::bootstrap::execution_grant_scope(&mut self.access),
 			run,
 		)
 		.await
@@ -110,7 +113,7 @@ impl TransactionAuthorityScope for Scope<'_> {
 		}))
 	}
 	async fn run(&mut self, id: Uuid) -> Result<RunMetadata> {
-		persistence::run(self.access, id)
+		persistence::run(&mut self.access, id)
 			.await
 			.map(|run| run.metadata())
 			.map_err(Into::into)
@@ -135,3 +138,5 @@ impl TransactionAuthorityScope for Scope<'_> {
 use reinhardt::query::QueryStatementBuilder as _;
 
 pub(in crate::apps::federation::transactions) mod persistence;
+
+pub(crate) mod control;

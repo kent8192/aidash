@@ -29,3 +29,5 @@ pub trait TransactionAuthorityScope: Send {
 	async fn task_resource(&mut self, task: &Task) -> Result<Resource>;
 	async fn artifact_creation_resource(&mut self, task: Uuid, owner: &str) -> Result<Resource>;
 }
+
+pub mod authority;

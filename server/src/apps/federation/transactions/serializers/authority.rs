@@ -44,3 +44,85 @@ pub(crate) struct Binding {
 }
 
 use uuid::Uuid;
+
+impl From<&Origin> for aidash_domain::transactions::authority::Origin {
+	fn from(origin: &Origin) -> Self {
+		Self {
+			credential_id: origin.credential_id,
+			tenant: origin.tenant.clone(),
+			subject: origin.subject.clone(),
+		}
+	}
+}
+impl From<aidash_domain::transactions::authority::Preflight> for Preflight {
+	fn from(input: aidash_domain::transactions::authority::Preflight) -> Self {
+		Self {
+			id: input.id,
+			coordinator: input.coordinator,
+			digest: input.digest,
+			origin: Origin {
+				credential_id: input.origin.credential_id,
+				tenant: input.origin.tenant,
+				subject: input.origin.subject,
+			},
+			recipients: input.recipients,
+			targets: input
+				.targets
+				.into_iter()
+				.map(|target| Target {
+					kind: target.kind,
+					id: target.id,
+					task_id: target.task_id,
+				})
+				.collect(),
+		}
+	}
+}
+impl From<&Preflight> for aidash_domain::transactions::authority::Preflight {
+	fn from(input: &Preflight) -> Self {
+		Self {
+			id: input.id,
+			coordinator: input.coordinator.clone(),
+			digest: input.digest.clone(),
+			origin: (&input.origin).into(),
+			recipients: input.recipients.clone(),
+			targets: input
+				.targets
+				.iter()
+				.map(|target| aidash_domain::transactions::authority::Target {
+					kind: target.kind.clone(),
+					id: target.id,
+					task_id: target.task_id,
+				})
+				.collect(),
+		}
+	}
+}
+
+impl From<aidash_domain::transactions::authority::Origin> for Origin {
+	fn from(origin: aidash_domain::transactions::authority::Origin) -> Self {
+		Self {
+			credential_id: origin.credential_id,
+			tenant: origin.tenant,
+			subject: origin.subject,
+		}
+	}
+}
+impl From<&Binding> for aidash_domain::transactions::authority::Binding {
+	fn from(binding: &Binding) -> Self {
+		Self {
+			request: (&binding.request).into(),
+			local: (&binding.local).into(),
+			subjects: binding.subjects.clone(),
+		}
+	}
+}
+impl From<&aidash_domain::transactions::authority::Binding> for Binding {
+	fn from(binding: &aidash_domain::transactions::authority::Binding) -> Self {
+		Self {
+			request: binding.request.clone().into(),
+			local: binding.local.clone().into(),
+			subjects: binding.subjects.clone(),
+		}
+	}
+}

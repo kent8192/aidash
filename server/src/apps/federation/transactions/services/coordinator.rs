@@ -19,29 +19,6 @@ pub async fn status(f: &Federation, id: Uuid) -> Result<Status> {
 	let lease = coordinator_connection(f)?;
 	coordinator_records::status(&mut lease.handle(), id).await
 }
-pub(super) async fn status_with<'e>(
-	executor: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
-	id: Uuid,
-) -> Result<Status> {
-	{
-		let query_bind_1 = id;
-		sqlx::query_as(
-			&reinhardt::query::Query::select()
-				.expr(reinhardt::query::SimpleExpr::from(
-					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
-				))
-				.from(reinhardt::query::Alias::new("atomic_coordinators"))
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(id = ?)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.to_string(reinhardt::query::PostgresQueryBuilder),
-		)
-		.fetch_optional(executor)
-		.await?
-	}
-	.ok_or_else(|| Error::NotFound("transaction".into()))
-}
 pub async fn votes(f: &Federation, id: Uuid) -> Result<Vec<Vote>> {
 	let lease = coordinator_connection(f)?;
 	coordinator_records::votes(&mut lease.handle(), id).await
@@ -449,9 +426,3 @@ pub(super) async fn abort_in(
 	}
 	super::fault::cut(id, "coordinator.abort.before").await
 }
-
-use reinhardt::query::QueryStatementBuilder as _;
-
-use reinhardt::query::SimpleExpr;
-
-use reinhardt::query::Expr;

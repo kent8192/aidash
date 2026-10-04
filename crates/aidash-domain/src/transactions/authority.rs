@@ -22,6 +22,37 @@ pub struct Preflight {
 	pub recipients: Vec<String>,
 	pub targets: Vec<Target>,
 }
+
+/// An immutable reservation records both source and local subject authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Binding {
+	pub request: Preflight,
+	pub local: Origin,
+	pub subjects: Vec<String>,
+}
+
+/// Coordinator facts used by admission and control, independent of an ORM row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Status {
+	pub id: Uuid,
+	pub digest: String,
+	pub manifest: serde_json::Value,
+	pub decision: Option<String>,
+	pub visible: bool,
+	pub complete: bool,
+	pub last_error: Option<String>,
+	pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<&ExecutionPrincipal> for Origin {
+	fn from(identity: &ExecutionPrincipal) -> Self {
+		Self {
+			credential_id: identity.credential_id,
+			tenant: identity.tenant.clone(),
+			subject: identity.subject.clone(),
+		}
+	}
+}
 impl Preflight {
 	pub fn permits(&self, caller: &str, node: &str) -> bool {
 		caller == self.coordinator

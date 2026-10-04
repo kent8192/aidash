@@ -409,3 +409,27 @@ pub(crate) async fn attempt(access: &mut Access, id: Uuid, node: &str) -> Result
 		.await?
 	})
 }
+
+pub(crate) async fn status_with<'e>(
+	executor: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+	id: Uuid,
+) -> Result<crate::apps::federation::transactions::serializers::contracts::Status> {
+	{
+		let query_bind_1 = id;
+		sqlx::query_as(
+			&reinhardt::query::Query::select()
+				.expr(reinhardt::query::SimpleExpr::from(
+					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
+				))
+				.from(reinhardt::query::Alias::new("atomic_coordinators"))
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(id = ?)".to_owned(),
+					vec![Expr::value(query_bind_1.to_owned()).into()],
+				))
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
+		.fetch_optional(executor)
+		.await?
+	}
+	.ok_or_else(|| Error::NotFound("transaction".into()))
+}

@@ -57,3 +57,39 @@ impl From<AtomicParticipant> for LocalStatus {
 }
 
 use uuid::Uuid;
+
+impl From<Status> for aidash_domain::transactions::authority::Status {
+	fn from(status: Status) -> Self {
+		Self {
+			id: status.id,
+			digest: status.digest,
+			manifest: status.manifest,
+			decision: status.decision,
+			visible: status.visible,
+			complete: status.complete,
+			last_error: status.last_error,
+			created_at: status.created_at,
+		}
+	}
+}
+
+impl From<aidash_domain::transactions::authority::Status> for Status {
+	fn from(status: aidash_domain::transactions::authority::Status) -> Self {
+		Self {
+			id: status.id,
+			digest: status.digest,
+			manifest: status.manifest,
+			decision: status.decision,
+			visible: status.visible,
+			complete: status.complete,
+			last_error: status.last_error,
+			created_at: status.created_at,
+		}
+	}
+}
+
+impl From<&Status> for aidash_domain::transactions::authority::Status {
+	fn from(status: &Status) -> Self {
+		status.clone().into()
+	}
+}
