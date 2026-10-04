@@ -87,8 +87,8 @@ From the repository root, apply or inspect the native history:
 cargo run --locked -p aidash-server --bin aidash -- migrate
 cargo run --locked -p aidash-server --bin manage -- migrate --plan
 cargo run --locked -p aidash-server --bin manage -- showmigrations
-cargo run --locked -p aidash-server --bin manage -- makemigrations --state-source files --migration-dir server/migrations
-cargo run --locked -p aidash-server --bin manage -- makemigrations --state-source files --migration-dir server/migrations --dry-run --check
+(cd server && cargo run --locked --bin manage -- makemigrations --state-source files)
+(cd server && cargo run --locked --bin manage -- makemigrations --state-source files --dry-run --check)
 ```
 
 Both migration entry points use the same graph and transaction-scoped advisory
@@ -110,7 +110,8 @@ it would remove ledger records while retaining physical objects. `--plan` and
 still cannot be adopted by this native ledger.
 
 For an intentional model change, run `manage makemigrations --state-source files`
-from `server/` (or explicitly pass `--migration-dir server/migrations` from the workspace root), inspect
+from `server/`, where the native command requires `src/bin/manage.rs`. Pass
+`--migration-dir /absolute/path/to/migrations` when selecting a different history. Inspect
 the generated app migration, and retain any procedural DDL required by the business
 invariants. Use one history throughout; do not run the retired SeaORM migrator.
 `temporary-db` is inappropriate for this baseline because a generic PostgreSQL
