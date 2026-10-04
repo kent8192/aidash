@@ -6,6 +6,7 @@ use aidash_domain::{
 	registry::Entry,
 };
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use rstest::{fixture, rstest};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -33,6 +34,7 @@ struct Repository {
 	draft: Draft,
 	log: Arc<Mutex<Vec<String>>>,
 	deny: bool,
+	pages: Vec<Vec<Draft>>,
 }
 impl Repository {
 	fn new(draft: Draft) -> Self {
@@ -40,6 +42,7 @@ impl Repository {
 			draft,
 			log: Arc::new(Mutex::new(Vec::new())),
 			deny: false,
+			pages: Vec::new(),
 		}
 	}
 	fn logs(&self) -> Vec<String> {
@@ -50,6 +53,7 @@ struct Scope {
 	draft: Draft,
 	log: Arc<Mutex<Vec<String>>>,
 	deny: bool,
+	pages: Vec<Vec<Draft>>,
 }
 impl Scope {
 	fn record(&self, value: impl Into<String>) {
@@ -71,6 +75,7 @@ impl DraftRepository for Repository {
 			draft: self.draft.clone(),
 			log: self.log.clone(),
 			deny: self.deny,
+			pages: self.pages.clone(),
 		})
 	}
 }
@@ -148,6 +153,21 @@ impl DraftScope for Scope {
 		self.draft.release_notes = notes.into();
 		self.draft.revision += 1;
 		Ok(self.draft.clone())
+	}
+	async fn page(
+		&mut self,
+		tenant: Option<&str>,
+		cursor: Option<(DateTime<Utc>, Uuid)>,
+	) -> Result<Vec<Draft>> {
+		assert_eq!(tenant, Some("tenant"));
+		self.record(format!(
+			"page:{}",
+			cursor.map_or_else(|| "none".into(), |(_, id)| id.to_string())
+		));
+		if self.pages.is_empty() {
+			return Ok(Vec::new());
+		}
+		Ok(self.pages.remove(0))
 	}
 	async fn commit(self) -> Result<()> {
 		self.record("commit");
@@ -317,5 +337,83 @@ async fn edits_cannot_rebind_managed_agent_identity(draft: Draft, mut entry: Ent
 			.logs()
 			.iter()
 			.any(|step| step == "save" || step == "commit")
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn get_checks_current_sharing_in_read_scope(draft: Draft) {
+	let repository = Repository::new(draft.clone());
+	let saved = get(&repository, draft.id).await.unwrap();
+	assert_eq!(saved.id, draft.id);
+	assert_eq!(
+		repository.logs(),
+		[
+			"begin",
+			"read:false",
+			"identity",
+			"share",
+			"agent_draft.read",
+			"commit"
+		]
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn incomplete_cursor_does_not_query_a_page(draft: Draft) {
+	let repository = Repository::new(draft.clone());
+	assert_eq!(
+		list(
+			&repository,
+			DraftPage {
+				before_updated_at: Some(draft.updated_at),
+				before_id: None
+			}
+		)
+		.await
+		.unwrap_err()
+		.to_string(),
+		"draft cursor requires both timestamp and ID"
+	);
+	assert_eq!(repository.logs(), ["begin"]);
+}
+#[rstest]
+#[tokio::test]
+async fn hidden_full_page_does_not_hide_later_visible_drafts(draft: Draft) {
+	let mut repository = Repository::new(draft.clone());
+	let hidden: Vec<_> = (1..=100)
+		.map(|number| {
+			let mut row = draft.clone();
+			row.id = Uuid::from_u128(number);
+			row.owner = "other".into();
+			row
+		})
+		.collect();
+	let after = hidden.last().unwrap().id;
+	repository.pages = vec![hidden, vec![draft.clone()]];
+	let visible = list(&repository, DraftPage::default()).await.unwrap();
+	assert_eq!(
+		visible.iter().map(|row| row.id).collect::<Vec<_>>(),
+		[draft.id]
+	);
+	let pages: Vec<_> = repository
+		.logs()
+		.into_iter()
+		.filter(|step| step.starts_with("page:"))
+		.collect();
+	assert_eq!(pages, ["page:none".to_owned(), format!("page:{after}")]);
+	assert_eq!(repository.logs().last().map(String::as_str), Some("commit"));
+}
+#[rstest]
+#[tokio::test]
+async fn revoked_credential_drafts_are_not_disclosed(draft: Draft) {
+	let mut repository = Repository::new(draft.clone());
+	repository.deny = true;
+	repository.pages = vec![vec![draft]];
+	let visible = list(&repository, DraftPage::default()).await.unwrap();
+	assert!(visible.is_empty());
+	assert_eq!(
+		repository.logs(),
+		["begin", "page:none", "identity", "commit"]
 	);
 }

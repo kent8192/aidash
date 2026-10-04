@@ -132,50 +132,22 @@ impl Drafts {
 		.into())
 	}
 	pub(crate) async fn list(&self, actor: Actor, page: DraftPage) -> Result<Vec<Draft>> {
-		let f = self.runtime.clone();
-		let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-		let mut visible = Vec::new();
-		let mut cursor = match (page.before_updated_at, page.before_id) {
-			(None, None) => None,
-			(Some(updated_at), Some(id)) => Some((updated_at, id)),
-			_ => {
-				return Err(Error::Invalid(
-					"draft cursor requires both timestamp and ID".into(),
-				));
-			}
-		};
-		let tenant = match &actor {
-			Actor::Operator => None,
-			Actor::Subject(identity) => Some(&identity.tenant),
-		};
-		loop {
-			let rows = AgentDraft::page(&mut tx, tenant.map(String::as_str), cursor).await?;
-			let more = rows.len() == 100;
-			cursor = rows.last().map(|row| (row.updated_at, row.id));
-			for row in rows {
-				match authorize(&mut tx, &actor, &row, "agent_draft.read", true).await {
-					Ok(()) => visible.push(row),
-					Err(Error::Forbidden) => {}
-					Err(error) => return Err(error),
-				}
-				if visible.len() == 100 {
-					break;
-				}
-			}
-			if visible.len() == 100 || !more {
-				break;
-			}
-		}
-		Box::new(tx).commit().await?;
-		Ok(visible)
+		Ok(aidash_application::registry::workbench::drafts::list(
+			&crate::bootstrap::draft_repository(&self.runtime, actor),
+			page,
+		)
+		.await?
+		.into_iter()
+		.map(Into::into)
+		.collect())
 	}
 	pub(crate) async fn get(&self, actor: Actor, id: Uuid) -> Result<Draft> {
-		let f = self.runtime.clone();
-		let mut tx = PgTransactionExecutor::new(f.store.pool.begin().await?);
-		let draft = AgentDraft::read(&mut tx, id, false).await?;
-		authorize(&mut tx, &actor, &draft, "agent_draft.read", true).await?;
-		Box::new(tx).commit().await?;
-		Ok(draft)
+		Ok(aidash_application::registry::workbench::drafts::get(
+			&crate::bootstrap::draft_repository(&self.runtime, actor),
+			id,
+		)
+		.await?
+		.into())
 	}
 	pub(crate) async fn save(&self, actor: Actor, id: Uuid, input: SaveDraft) -> Result<Draft> {
 		Ok(aidash_application::registry::workbench::drafts::save(

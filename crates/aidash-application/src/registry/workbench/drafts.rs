@@ -77,5 +77,52 @@ pub async fn save<R: DraftRepository>(
 	Ok(saved)
 }
 
+use aidash_domain::{identity::Principal, registry::workbench::DraftPage};
+pub async fn list<R: DraftRepository>(repository: &R, page: DraftPage) -> Result<Vec<Draft>> {
+	let actor = repository.principal();
+	let mut scope = repository.begin().await?;
+	let mut visible = Vec::new();
+	let mut cursor = match (page.before_updated_at, page.before_id) {
+		(None, None) => None,
+		(Some(updated_at), Some(id)) => Some((updated_at, id)),
+		_ => {
+			return Err(Error::Invalid(
+				"draft cursor requires both timestamp and ID".into(),
+			));
+		}
+	};
+	let tenant = match &actor {
+		Principal::Operator => None,
+		Principal::Subject { tenant, .. } => Some(tenant),
+	};
+	loop {
+		let rows = scope.page(tenant.map(String::as_str), cursor).await?;
+		let more = rows.len() == 100;
+		cursor = rows.last().map(|row| (row.updated_at, row.id));
+		for row in rows {
+			match authorize(&mut scope, &row, "agent_draft.read", true).await {
+				Ok(()) => visible.push(row),
+				Err(Error::Forbidden) => {}
+				Err(error) => return Err(error),
+			}
+			if visible.len() == 100 {
+				break;
+			}
+		}
+		if visible.len() == 100 || !more {
+			break;
+		}
+	}
+	scope.commit().await?;
+	Ok(visible)
+}
+pub async fn get<R: DraftRepository>(repository: &R, id: Uuid) -> Result<Draft> {
+	let mut scope = repository.begin().await?;
+	let draft = scope.read(id, false).await?;
+	authorize(&mut scope, &draft, "agent_draft.read", true).await?;
+	scope.commit().await?;
+	Ok(draft)
+}
+
 #[cfg(test)]
 mod tests;

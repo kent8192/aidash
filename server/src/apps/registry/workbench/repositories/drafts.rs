@@ -21,6 +21,7 @@ use aidash_domain::{
 	registry::{Entry, workbench::Draft},
 };
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use reinhardt::db::backends::{TransactionExecutor, dialect::postgres::PgTransactionExecutor};
 use serde_json::Value;
 use uuid::Uuid;
@@ -111,6 +112,17 @@ impl DraftScope for Scope {
 				.await?
 				.into(),
 		)
+	}
+	async fn page(
+		&mut self,
+		tenant: Option<&str>,
+		cursor: Option<(DateTime<Utc>, Uuid)>,
+	) -> Result<Vec<Draft>> {
+		Ok(AgentDraft::page(&mut self.tx, tenant, cursor)
+			.await?
+			.into_iter()
+			.map(Into::into)
+			.collect())
 	}
 	async fn commit(self) -> Result<()> {
 		Box::new(self.tx)

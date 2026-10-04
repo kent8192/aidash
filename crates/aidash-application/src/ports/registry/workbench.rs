@@ -17,6 +17,7 @@ pub trait DraftAuthority: DefinitionLookup {
 }
 
 use aidash_domain::registry::workbench::Draft;
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 /// The scope retains draft row locks, current identity and atomic writes until commit or drop.
 #[async_trait]
@@ -30,6 +31,11 @@ pub trait DraftScope: DraftAuthority + Sized {
 		documents: Value,
 		notes: &str,
 	) -> Result<Draft>;
+	async fn page(
+		&mut self,
+		tenant: Option<&str>,
+		cursor: Option<(DateTime<Utc>, Uuid)>,
+	) -> Result<Vec<Draft>>;
 	async fn commit(self) -> Result<()>;
 }
 #[async_trait]
