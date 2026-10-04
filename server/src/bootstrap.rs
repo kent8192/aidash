@@ -1371,3 +1371,23 @@ pub(crate) fn cleanup_repository(
 ) -> crate::apps::execution::repositories::cleanup::Repository<'_> {
 	crate::apps::execution::repositories::cleanup::Repository { store }
 }
+
+pub(crate) fn python_scope<'a>(
+	store: Option<&'a Store>,
+	access: &'a mut crate::authorization::access::Access,
+	run: Option<&'a crate::domain::Run>,
+) -> crate::apps::execution::repositories::python::Scope<'a> {
+	crate::apps::execution::repositories::python::Scope { store, access, run }
+}
+pub(crate) fn python_repository(
+	store: &Store,
+) -> crate::apps::execution::repositories::python::Repository<'_> {
+	crate::apps::execution::repositories::python::Repository { store }
+}
+pub(crate) fn package_scope<'a>(
+	store: &'a Store,
+	access: &'a mut crate::authorization::access::Access,
+	run: Option<&'a crate::domain::Run>,
+) -> crate::apps::execution::repositories::packages::Scope<'a> {
+	crate::apps::execution::repositories::packages::Scope { store, access, run }
+}
