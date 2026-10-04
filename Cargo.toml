@@ -14,7 +14,7 @@ aidash-domain = { path = "crates/aidash-domain" }
 aidash-application = { path = "crates/aidash-application" }
 aidash-runtime = { path = "crates/aidash-runtime" }
 aidash-integrations = { path = "crates/aidash-integrations" }
-reinhardt = { git = "https://github.com/kent8192/reinhardt-web", rev = "ab21faf668cec073798fa2c3a09f6d6bf70687d8", package = "reinhardt-web", default-features = false }
+reinhardt = { git = "https://github.com/kent8192/reinhardt-web", rev = "e43a0194d40155c9e18afac39c68ce92f3b9d3c7", package = "reinhardt-web", default-features = false }
 async-trait = "0.1.89"
 chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
