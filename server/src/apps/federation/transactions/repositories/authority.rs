@@ -1,7 +1,5 @@
 //! Native authority adapter retains the borrowed Access and its SHARE locks.
-use crate::{
-	Error, apps::federation::transactions::services::authority, authorization::access::Access,
-};
+use crate::{Error, authorization::access::Access};
 use aidash_application::{Result, ports::transactions::TransactionAuthorityScope};
 use aidash_domain::{
 	RunMetadata, Task, identity::execution::ExecutionPrincipal, policy::Resource,
@@ -112,7 +110,7 @@ impl TransactionAuthorityScope for Scope<'_> {
 		}))
 	}
 	async fn run(&mut self, id: Uuid) -> Result<RunMetadata> {
-		authority::run(self.access, id)
+		persistence::run(self.access, id)
 			.await
 			.map(|run| run.metadata())
 			.map_err(Into::into)
@@ -135,3 +133,5 @@ impl TransactionAuthorityScope for Scope<'_> {
 }
 
 use reinhardt::query::QueryStatementBuilder as _;
+
+pub(in crate::apps::federation::transactions) mod persistence;
