@@ -62,7 +62,7 @@ async fn denied_workspace_cannot_disclose_conversation_resources(
 	mut scope: Scope,
 	conversation: Candidate,
 ) {
-	assert_eq!(visible(&mut scope, &conversation).await.unwrap(), false);
+	assert!(!visible(&mut scope, &conversation).await.unwrap());
 	assert_eq!(scope.trace, ["workspace.read"]);
 }
 
@@ -73,7 +73,7 @@ async fn subject_requires_workspace_before_conversation_permission(
 	conversation: Candidate,
 ) {
 	scope.permitted = true;
-	assert_eq!(visible(&mut scope, &conversation).await.unwrap(), true);
+	assert!(visible(&mut scope, &conversation).await.unwrap());
 	assert_eq!(scope.trace, ["workspace.read", "conversation.read"]);
 }
 
@@ -84,7 +84,7 @@ async fn operator_uses_its_granted_tenant_workspace_scope(
 	conversation: Candidate,
 ) {
 	scope.operator = true;
-	assert_eq!(visible(&mut scope, &conversation).await.unwrap(), false);
+	assert!(!visible(&mut scope, &conversation).await.unwrap());
 	assert_eq!(scope.trace, ["operator-workspace"]);
 }
 

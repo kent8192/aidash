@@ -157,7 +157,7 @@ fn decision_proofs_cannot_substitute_another_manifest(manifest: Manifest, #[case
 		"manifest" => proof.manifest["deadline"] = json!("2031-01-01T00:00:00Z"),
 		_ => unreachable!(),
 	}
-	assert_eq!(decision_matches(&manifest, &digest, &proof), false);
+	assert!(!decision_matches(&manifest, &digest, &proof));
 }
 
 #[rstest]
@@ -212,8 +212,9 @@ fn participant_phase_preserves_abort_and_commit_preconditions(
 		(abortable(&existing), commit_ready(&existing)),
 		(can_abort, can_commit)
 	);
-	assert_eq!(
-		participant_matches(&manifest, &manifest.digest().unwrap(), &existing),
-		true
-	);
+	assert!(participant_matches(
+		&manifest,
+		&manifest.digest().unwrap(),
+		&existing
+	));
 }

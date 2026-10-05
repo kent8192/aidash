@@ -130,7 +130,7 @@ async fn disabling_a_peer_uses_its_stored_definition_without_external_credential
 	peer.endpoint = "https://changed.example.test".into();
 	let scope = Arc::new(scope);
 	let disabled = authority(scope.clone()).register(peer).await.unwrap();
-	assert_eq!(disabled.enabled, false);
+	assert!(!disabled.enabled);
 	assert_eq!(disabled.endpoint, "https://peer.example.test");
 	assert_eq!(*scope.trace.lock().unwrap(), ["scope", "disable"]);
 }

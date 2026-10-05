@@ -395,5 +395,5 @@ async fn failed_submission_preserves_its_commit_boundary(
 	);
 	let log = adapter.log();
 	assert_eq!(log.contains(&"rollback".into()), !committed);
-	assert_eq!(log.contains(&"wake".into()), false);
+	assert!(!log.contains(&"wake".into()));
 }

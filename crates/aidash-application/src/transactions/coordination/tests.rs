@@ -386,11 +386,11 @@ async fn deterministic_rejection_aborts_only_an_undecided_transaction(
 		state.last_error.as_deref(),
 		Some(failure.error().to_string().as_str())
 	);
-	assert_eq!(adapter.log().contains(&"record_error".into()), false);
+	assert!(!adapter.log().contains(&"record_error".into()));
 	adapter.state.lock().unwrap().status.decision = Some("COMMIT".into());
 	let state = adapter.coordinator().advance(manifest.id).await.unwrap();
 	assert_eq!(state.decision.as_deref(), Some("COMMIT"));
-	assert_eq!(adapter.log().contains(&"record_error".into()), true);
+	assert!(adapter.log().contains(&"record_error".into()));
 }
 
 #[rstest]
@@ -410,7 +410,7 @@ async fn pending_authority_aborts_only_scoped_admission(
 	}
 	let state = adapter.coordinator().advance(manifest.id).await.unwrap();
 	assert_eq!(state.decision.as_deref(), decision);
-	assert_eq!(adapter.log().contains(&"scoped".into()), true);
+	assert!(adapter.log().contains(&"scoped".into()));
 }
 
 #[rstest]
@@ -436,10 +436,7 @@ async fn authority_denial_prevents_participant_io(manifest: Manifest) {
 	adapter.state.lock().unwrap().issue_failure = true;
 	let state = adapter.coordinator().advance(manifest.id).await.unwrap();
 	assert_eq!(state.decision.as_deref(), Some("ABORT"));
-	assert_eq!(
-		adapter.log().iter().any(|event| event.starts_with("send:")),
-		false
-	);
+	assert!(!adapter.log().iter().any(|event| event.starts_with("send:")));
 }
 
 #[rstest]
@@ -493,12 +490,11 @@ async fn invalid_acknowledgement_releases_lease_without_settlement(
 	assert!(
 		matches!(adapter.coordinator().advance(manifest.id).await, Err(Error::Domain(aidash_domain::Error::Conflict(message))) if message == expected)
 	);
-	assert_eq!(
-		adapter
+	assert!(
+		!adapter
 			.log()
 			.iter()
-			.any(|event| event.starts_with("settle:")),
-		false
+			.any(|event| event.starts_with("settle:"))
 	);
 	assert_eq!(adapter.state.lock().unwrap().votes[0].phase, "PENDING");
 	let log = adapter.log();
@@ -527,7 +523,7 @@ async fn operator_abort_ignores_recovery_contention_and_preserves_commit(manifes
 	assert!(
 		matches!(adapter.coordinator().abort(manifest.id).await, Err(Error::Conflict(message)) if message == "commit is irrevocable")
 	);
-	assert_eq!(adapter.log().contains(&"lease.acquire".into()), false);
+	assert!(!adapter.log().contains(&"lease.acquire".into()));
 }
 
 #[rstest]
@@ -590,7 +586,7 @@ async fn cancelling_peer_io_drops_connection_before_recovery_lease(manifest: Man
 	let advance = tokio::spawn(async move { coordinator.advance(manifest.id).await });
 	adapter.started.notified().await;
 	advance.abort();
-	assert_eq!(advance.await.unwrap_err().is_cancelled(), true);
+	assert!(advance.await.unwrap_err().is_cancelled());
 	let log = adapter.log();
 	assert_eq!(&log[log.len() - 2..], &["connection.drop", "lease.drop"]);
 	assert_eq!(adapter.state.lock().unwrap().status.decision, None);

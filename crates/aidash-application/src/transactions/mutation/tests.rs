@@ -314,7 +314,7 @@ async fn task_completion_keeps_provenance_and_event_after_the_selective_write(mu
 		.await
 		.unwrap();
 	let key = format!("atomic:{}:task:{}", manifest.id, scope.task.id);
-	assert_eq!(scope.keys, [key.clone()]);
+	assert_eq!(scope.keys.as_slice(), std::slice::from_ref(&key));
 	assert_eq!(
 		scope.outputs,
 		[(

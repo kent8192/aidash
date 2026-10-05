@@ -63,7 +63,7 @@ fn changed_digest_cannot_be_snapshotted() {
 fn duplicate_selection_is_rejected() {
 	let f = file();
 	assert!(
-		matches!(select_files(&[f.clone()],&[select(&f),select(&f)],&limits()),Err(Error::Invalid(code)) if code=="SHARE_FILE_LIMIT")
+		matches!(select_files(std::slice::from_ref(&f),&[select(&f),select(&f)],&limits()),Err(Error::Invalid(code)) if code=="SHARE_FILE_LIMIT")
 	);
 }
 #[rstest::rstest]

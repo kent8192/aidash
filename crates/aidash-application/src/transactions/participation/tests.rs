@@ -541,7 +541,7 @@ async fn abort_tombstone_prevents_a_delayed_reservation(manifest: Manifest) {
 		"ABORTED"
 	);
 	assert_eq!(adapter.0.lock().unwrap().persisted.gate, None);
-	assert_eq!(adapter.log().contains(&"admission".into()), false);
+	assert!(!adapter.log().contains(&"admission".into()));
 }
 
 #[rstest]
@@ -567,7 +567,7 @@ async fn durable_commit_cannot_be_aborted(manifest: Manifest, #[case] phase: &st
 			.phase,
 		phase
 	);
-	assert_eq!(adapter.log().contains(&"release_gate:false".into()), false);
+	assert!(!adapter.log().contains(&"release_gate:false".into()));
 }
 
 #[rstest]
@@ -594,7 +594,7 @@ async fn apply_faults_preserve_the_durable_commit_boundary(
 	assert_eq!(state.persisted.applied, applied);
 	assert_eq!(state.persisted.row.as_ref().unwrap().phase, phase);
 	assert_eq!(state.persisted.gate, Some(manifest.id));
-	assert_eq!(state.log.contains(&"wake".into()), false);
+	assert!(!state.log.contains(&"wake".into()));
 }
 
 #[rstest]
