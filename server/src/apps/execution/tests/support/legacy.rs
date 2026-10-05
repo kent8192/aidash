@@ -297,12 +297,18 @@ pub fn native_process_environment(
 	let destination = directory.join(format!("settings-{}", Uuid::new_v4()));
 	std::fs::create_dir_all(&destination).unwrap();
 	std::fs::write(destination.join("base.toml"), process_settings(&settings)).unwrap();
+	let listen = reqwest::Url::parse(&f.config.endpoint)
+		.unwrap()
+		.socket_addrs(|| None)
+		.unwrap();
+	assert_eq!(listen.len(), 1, "fixture must advertise one local listener");
 	vec![
 		(
 			"REINHARDT_SETTINGS_DIR",
 			destination.to_string_lossy().into_owned(),
 		),
 		("REINHARDT_ENV", "container".into()),
+		("AIDASH_LISTEN", listen[0].to_string()),
 	]
 }
 #[allow(dead_code)]
