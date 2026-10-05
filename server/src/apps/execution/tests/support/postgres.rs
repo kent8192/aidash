@@ -24,7 +24,9 @@ pub async fn postgres_container() -> (ContainerAsync<GenericImage>, Arc<PgPool>,
 		.with_startup_timeout(Duration::from_secs(120));
 	let container = image.start().await.expect("build the test target of deploy/postgres/Dockerfile as aidash-orm-test-postgres:17-pg-jsonschema-0.3.4 before database tests");
 	let port = container.get_host_port_ipv4(5432).await.unwrap();
-	let url = format!("postgres://aidash:fixture-password@127.0.0.1:{port}/aidash");
+	// The fixture has no TLS listener; avoid negotiating through an initializing
+	// Docker port proxy before its PostgreSQL backend becomes available.
+	let url = format!("postgres://aidash:fixture-password@127.0.0.1:{port}/aidash?sslmode=disable");
 	let pool = tokio::time::timeout(Duration::from_secs(30), async {
 		loop {
 			match sqlx::postgres::PgPoolOptions::new()
@@ -34,7 +36,7 @@ pub async fn postgres_container() -> (ContainerAsync<GenericImage>, Arc<PgPool>,
 				.await
 			{
 				Ok(pool) => break pool,
-				Err(sqlx::Error::Io(_)) => {}
+				Err(sqlx::Error::Io(_) | sqlx::Error::PoolTimedOut) => {}
 				Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("57P03") => {}
 				Err(error) => panic!("fixture PostgreSQL connection failed: {error}"),
 			}
