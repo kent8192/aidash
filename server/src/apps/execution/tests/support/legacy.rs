@@ -303,6 +303,8 @@ pub fn native_process_environment(
 		.unwrap();
 	assert_eq!(listen.len(), 1, "fixture must advertise one local listener");
 	vec![
+		// Multi-process fixtures need bounded executors even on high-core hosts.
+		("TOKIO_WORKER_THREADS", "2".into()),
 		(
 			"REINHARDT_SETTINGS_DIR",
 			destination.to_string_lossy().into_owned(),
