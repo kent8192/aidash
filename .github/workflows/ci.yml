@@ -86,6 +86,9 @@ jobs:
         uses: codecov/codecov-action@04b047e8bb82a0c002c8312c1c880fbc6a999d45 # v5
         with:
           use_oidc: true
+          # See docs/operations/ci-coverage.md for the CLI download outage and removal condition.
+          use_pypi: true
+          version: v11.3.1
           files: coverage/rust.lcov
           flags: rust
           disable_search: true
