@@ -789,6 +789,75 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 	.await;
 	assert_eq!(status, 200, "{grant}");
 	assert_eq!(grant["revision"], 1);
+	let workspace = federation
+		.store
+		.create_workspace("Browser management", "Pause and cancel an admitted run")
+		.await
+		.unwrap();
+	let task = federation
+		.store
+		.create_task(
+			workspace.id,
+			&aidash_server::domain::NewTask {
+				title: "Managed run".into(),
+				description: "Browser operator control".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"human",
+			None,
+		)
+		.await
+		.unwrap();
+	let run = federation
+		.store
+		.accept_run(&task, &federation.config.node_id, "fixture-agent", "1.0.0")
+		.await
+		.unwrap();
+	let run_management = format!("/api/runs/{}/management", run.id);
+	assert_eq!(
+		call(
+			&app,
+			"POST",
+			&run_management,
+			true,
+			false,
+			Some("operator"),
+			false,
+			json!({"action":"pause"})
+		)
+		.await
+		.0,
+		403,
+		"restoring the route must retain CSRF enforcement"
+	);
+	assert_eq!(
+		federation.store.inspect_run(run.id).await.unwrap().control,
+		aidash_server::domain::RunControl::Active
+	);
+	for (action, expected) in [
+		("pause", aidash_server::domain::RunControl::Paused),
+		("cancel", aidash_server::domain::RunControl::Cancelled),
+	] {
+		let (status, body) = call(
+			&app,
+			"POST",
+			&run_management,
+			true,
+			true,
+			Some("operator"),
+			false,
+			json!({"action":action}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		assert_eq!(body["control"], json!(expected));
+		assert_eq!(
+			federation.store.inspect_run(run.id).await.unwrap().control,
+			expected
+		);
+	}
 	assert_eq!(
 		call(
 			&app,
@@ -887,6 +956,22 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 	.await;
 	assert_eq!(status, 200, "{revoked}");
 	assert_eq!(revoked["revision"], 2);
+	assert_eq!(
+		call(
+			&app,
+			"POST",
+			&run_management,
+			true,
+			true,
+			Some("operator"),
+			false,
+			json!({"action":"pause"})
+		)
+		.await
+		.0,
+		403,
+		"a revoked operator grant must still deny management writes"
+	);
 	assert!(
 		tokio::time::timeout(std::time::Duration::from_secs(7), operator_stream.next())
 			.await

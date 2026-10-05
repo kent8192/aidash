@@ -36,7 +36,7 @@ pub(crate) fn browser_operator_allowed(method: &Method, path: &str) -> bool {
 	let segments: Vec<&str> = path.split('/').collect();
 	if matches!(
 		segments.as_slice(),
-		["", "runs", _, "control"] | ["", "tasks", _, "abandon"]
+		["", "runs", _, "control" | "management"] | ["", "tasks", _, "abandon"]
 	) {
 		return true;
 	}
