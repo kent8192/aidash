@@ -21,6 +21,10 @@ the upload. `CI Success` also requires every partition and the upload separately
 Bruno runs all 269 endpoints and 935 scenarios in its own required job; only
 sanitized source identity, executable hashes and assertion results are archived.
 
+The isolated capability gate prepares the same extension-enabled PostgreSQL
+fixture before running its library and integration targets. Its Cargo cache is
+separate from the eight instrumented coverage partitions.
+
 ## Download outage
 
 On 2026-10-05, [CI run 37242692329](https://github.com/kent8192/aidash/actions/runs/37242692329)

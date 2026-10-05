@@ -6,6 +6,7 @@ cd "$(dirname "$0")/.."
 export AIDASH_SECRET_TEST_PEER=local-peer-regression-test-token-0123456789
 export AIDASH_SECRET_TEST_QDRANT=local-semantic-vector-fixture-key-0123456789
 export RUSTC_WRAPPER=
+scripts/build-test-postgres.sh
 # Each case owns up to two independent twelve-connection pools.
 export RUST_TEST_THREADS="${RUST_TEST_THREADS:-4}"
 # Scoped remote execution polls the full two-node HTTP/worker stack on each
