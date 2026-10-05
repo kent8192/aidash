@@ -1,5 +1,42 @@
 use rstest::rstest;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+#[rstest]
+fn public_http_routes_match_the_committed_api_contract() {
+	// The committed contract is the URL oracle used by the React API client.
+	let contract: serde_json::Value = serde_json::from_str(include_str!(concat!(
+		env!("CARGO_MANIFEST_DIR"),
+		"/../openapi/aidash.json"
+	)))
+	.unwrap();
+	let mut registered = BTreeMap::<(String, String), usize>::new();
+	let router = super::routes();
+	for (path, _name, _namespace, methods) in router.server_ref().get_all_routes() {
+		for method in methods {
+			*registered
+				.entry((method.to_string(), path.clone()))
+				.or_default() += 1;
+		}
+	}
+
+	// Every documented operation must resolve to exactly one native endpoint.
+	let mut checked = 0;
+	for (path, item) in contract["paths"].as_object().unwrap() {
+		for method in [
+			"get", "post", "put", "patch", "delete", "head", "options", "trace",
+		] {
+			if item.get(method).is_some() {
+				let key = (method.to_ascii_uppercase(), path.clone());
+				assert_eq!(registered.get(&key), Some(&1), "route {key:?}");
+				checked += 1;
+			}
+		}
+	}
+	assert!(
+		checked > 0,
+		"the committed API contract must contain operations"
+	);
+}
 
 #[rstest]
 fn federation_registration_retains_the_previous_undocumented_peer_protocol() {

@@ -7,21 +7,26 @@ equivalents can miss.
 ## `#[routes]`
 
 Keep project-level route composition in `src/config/urls.rs`. Mount each app's
-single `ServerRouter` aggregate instead of importing individual handlers into
-project configuration.
+`UnifiedRouter` aggregate with `mount_unified`; app-local `url_patterns()`
+functions configure HTTP endpoints through `.server(...)`.
 
 ```rust,ignore
 #[routes]
 pub fn routes() -> UnifiedRouter {
-    UnifiedRouter::new().mount(
-        "/api/",
-        crate::apps::users::urls::server_url_patterns(),
+    UnifiedRouter::new().mount_unified(
+        "/",
+        crate::apps::users::urls::url_patterns(),
     )
 }
 ```
 
 The prefix should be a literal path. Dynamic parameters belong in the app's
 endpoint route, not in the project mount prefix.
+
+Keep a single `#[routes]` registration on the project root. The
+`#[url_patterns]` attribute removes native HTTP expressions from shared
+native/WASM builders when `cfg(server)` is inactive; Aidash's native backend
+does not need that target-dependent transformation.
 
 ## Endpoint macros
 

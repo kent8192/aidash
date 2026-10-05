@@ -48,14 +48,17 @@ until the feature can live inside an app created with `startapp`.
 
 ## Route aggregation
 
-The project router mounts app aggregates under a literal API prefix:
+The project router mounts each app's `UnifiedRouter` aggregate with
+`mount_unified` under a literal prefix. Aidash endpoints already contain their
+public `/api/`, `/auth/`, and `/federation/v0.1/` prefixes, so the root mounts at
+`/` without changing those paths:
 
 ```rust,ignore
 #[routes]
 pub fn routes() -> UnifiedRouter {
-    UnifiedRouter::new().mount(
-        "/api/",
-        crate::apps::users::urls::server_url_patterns(),
+    UnifiedRouter::new().mount_unified(
+        "/",
+        crate::apps::users::urls::url_patterns(),
     )
 }
 ```
@@ -63,13 +66,22 @@ pub fn routes() -> UnifiedRouter {
 The app aggregate owns endpoint ordering and registration:
 
 ```rust,ignore
-pub fn server_url_patterns() -> ServerRouter {
-    ServerRouter::new()
-        .endpoint(views::list)
-        .endpoint(views::create)
-        .endpoint(views::retrieve)
+pub fn url_patterns() -> UnifiedRouter {
+    UnifiedRouter::new().server(|server| {
+        server
+            .endpoint(views::list)
+            .endpoint(views::create)
+            .endpoint(views::retrieve)
+    })
 }
 ```
+
+Configure `with_route_middleware` on the native `server` builder immediately
+after its endpoint. `mount_unified` retains each child's route configuration
+and deferred dependency registrations. Only the project root carries `#[routes]`
+and registers the management CLI's route factory. Native app builders use ordinary
+Rust functions; the `#[url_patterns]` attribute is for target-dependent shared
+builders and requires the calling crate's `cfg(server)`.
 
 Register literal paths such as `/config/` before a dynamic `/{id}/` path when
 both can match the same request shape.

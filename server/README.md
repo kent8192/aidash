@@ -113,6 +113,20 @@ cargo make help             # Show all available tasks
 
 - [Generated ORM and Migration Guide](instructions/ORM_GUIDANCE.md)
 
+## Routing
+
+Each app exposes `urls::url_patterns() -> UnifiedRouter`. HTTP endpoints and
+their access middleware are configured inside the `.server(...)` closure.
+The single `#[routes]` function in `src/config/urls.rs` combines these app
+aggregates with `mount_unified`, retaining child routing metadata and deferred
+dependency registrations. Endpoint paths already include their public prefixes,
+so the root mounts at `/` and preserves the existing API, authentication,
+Federation, SSE, and frontend URLs.
+
+The implementation follows the pinned framework's
+[unified router](https://github.com/kent8192/reinhardt-web/blob/83a1e1702c279fdc9f054439539e5ccc693a2f4c/crates/reinhardt-urls/src/routers/unified_router.rs)
+and [routing guide](https://github.com/kent8192/reinhardt-web/blob/83a1e1702c279fdc9f054439539e5ccc693a2f4c/crates/reinhardt-urls/README.md).
+
 ## Generated with
 
 This project was created using `reinhardt-admin startproject`.

@@ -1,7 +1,7 @@
 //! URL configuration for activation app (RESTful)
 
-use reinhardt::ServerRouter;
+use reinhardt::UnifiedRouter;
 
-pub fn server_url_patterns() -> ServerRouter {
-	ServerRouter::new()
+pub fn url_patterns() -> UnifiedRouter {
+	UnifiedRouter::new()
 }
