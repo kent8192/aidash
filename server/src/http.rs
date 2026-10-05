@@ -1,5 +1,6 @@
 //! HTTP response rendering shared by application views.
 pub mod json;
+mod observability;
 pub mod validated_json;
 use reinhardt::StatusCode;
 use reinhardt::core::validators::Validate as ValidateRules;
@@ -319,6 +320,7 @@ impl ExceptionHandler for ApiErrors {
 #[async_trait]
 impl Middleware for Gateway {
 	async fn process(&self, mut request: Request, next: Arc<dyn Handler>) -> ViewResult<Response> {
+		let observation = observability::Observation::start(&request);
 		let context = request
 			.get_di_context::<Arc<InjectionContext>>()
 			.ok_or_else(|| {
@@ -356,7 +358,6 @@ impl Middleware for Gateway {
 		} else {
 			BODY_LIMIT
 		};
-		let start = Instant::now();
 		let response = if request.body().len() > limit {
 			Response::new(StatusCode::PAYLOAD_TOO_LARGE)
 				.with_body(b"request body too large".to_vec())
@@ -382,13 +383,16 @@ impl Middleware for Gateway {
 								}))))
 							}
 							Err(_) => {
-								return Ok(private_response(
-									rejection(
-										StatusCode::SERVICE_UNAVAILABLE,
-										"SSE connection limit reached",
+								return Ok(observation.finish(
+									private_response(
+										rejection(
+											StatusCode::SERVICE_UNAVAILABLE,
+											"SSE connection limit reached",
+										),
+										&id,
+										private,
 									),
 									&id,
-									private,
 								));
 							}
 						}
@@ -428,12 +432,7 @@ impl Middleware for Gateway {
 				}
 			}
 		};
-		// Route names are bounded labels; raw paths, query values and credentials never enter logs.
-		metrics::counter!("aidash_http_requests_total", "status" => response.status.as_u16().to_string()).increment(1);
-		metrics::histogram!("aidash_http_request_duration_seconds")
-			.record(start.elapsed().as_secs_f64());
-		tracing::info!(request_id=%id,status=response.status.as_u16(),duration_ms=start.elapsed().as_secs_f64()*1000.0,"HTTP response");
-		Ok(private_response(response, &id, private))
+		Ok(observation.finish(private_response(response, &id, private), &id))
 	}
 }
 fn private_response(mut response: Response, id: &str, private: bool) -> Response {

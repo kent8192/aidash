@@ -44,6 +44,16 @@ pub async fn initialize(
 	settings: &ProjectSettings,
 	connection: BackendConnection,
 ) -> Result<Federation> {
+	// Native runserver/worker also need the application response logs. An
+	// embedding host's existing subscriber keeps ownership of logging.
+	let _ = tracing_subscriber::fmt()
+		.with_env_filter(
+			tracing_subscriber::EnvFilter::try_from_default_env()
+				.unwrap_or_else(|_| "aidash=info".into()),
+		)
+		.with_writer(std::io::stderr)
+		.with_ansi(false)
+		.try_init();
 	let config = Config::from_settings(settings)?;
 	crate::apps::execution::services::metrics::initialize_recorder()?;
 	let pool = connection

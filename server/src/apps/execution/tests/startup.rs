@@ -42,6 +42,14 @@ async fn manage_runserver_initializes_routes_authentication_and_persistence(
 	// Assert
 	assert_eq!(workspace.title, "Native startup");
 	assert_eq!(identity["id"], "aidash://manage-fixture");
+	assert_eq!(
+		app.client
+			.get(&format!("/api/workspaces/{id}?token=fixture-private-query"))
+			.await
+			.unwrap()
+			.status_code(),
+		200
+	);
 	assert_eq!(app.probes.get("/live").await.unwrap().status_code(), 200);
 	assert_eq!(app.probes.get("/ready").await.unwrap().status_code(), 200);
 	assert_eq!(
@@ -51,6 +59,60 @@ async fn manage_runserver_initializes_routes_authentication_and_persistence(
 	let metrics = app.metrics.get("/metrics").await.unwrap();
 	assert_eq!(metrics.status_code(), 200);
 	let metrics = metrics.text();
+	for (name, labels, value) in [
+		(
+			"axum_http_requests_total",
+			[
+				"method=\"POST\"",
+				"endpoint=\"/api/workspaces\"",
+				"status=\"200\"",
+			]
+			.as_slice(),
+			" 1",
+		),
+		(
+			"axum_http_requests_total",
+			[
+				"method=\"GET\"",
+				"endpoint=\"/api/workspaces/{id}\"",
+				"status=\"200\"",
+			]
+			.as_slice(),
+			" 1",
+		),
+		(
+			"axum_http_requests_pending",
+			["method=\"GET\"", "endpoint=\"/api/workspaces/{id}\""].as_slice(),
+			" 0",
+		),
+	] {
+		assert!(
+			metrics
+				.lines()
+				.any(|line| line.starts_with(&format!("{name}{{"))
+					&& labels.iter().all(|label| line.contains(label))
+					&& line.ends_with(value)),
+			"{metrics}"
+		);
+	}
+	let log = app.log();
+	let response_logs: Vec<_> = log
+		.lines()
+		.filter(|line| line.contains("HTTP response"))
+		.collect();
+	assert!(
+		response_logs
+			.iter()
+			.any(|line| line.contains("method=\"GET\"")
+				&& line.contains("route=\"/api/workspaces/{id}\"")),
+		"{log}"
+	);
+	assert!(
+		response_logs
+			.iter()
+			.all(|line| !line.contains("fixture-private-query") && !line.contains(&id.to_string())),
+		"{log}"
+	);
 	assert!(
 		metrics
 			.lines()
