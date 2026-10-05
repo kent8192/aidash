@@ -746,7 +746,7 @@ pub async fn refresh_active(
 				)
 				.and_where(
 					Expr::col((table("s"), table("last_activity_at")))
-						.gt(Expr::cust("clock_timestamp()-make_interval(secs => $1)")),
+						.gt(Expr::cust("clock_timestamp()-make_interval(secs => coalesce(s.desktop_idle_seconds::double precision,$1))")),
 				)
 				.to_owned();
 			let ongoing_runs = Query::select()
@@ -2348,6 +2348,28 @@ async fn backchannel_logout(
 	if sub.is_some() {
 		identities.and_where(Expr::col(table("subject")).eq(Expr::cust("$2")));
 	}
+	if let Some(sid) = sid
+		&& sub.is_none()
+	{
+		let sessions = Query::select()
+			.column(table("identity_id"))
+			.from(table("dashboard_sessions"))
+			.and_where(Expr::col(table("provider_sid")).eq(sid))
+			.to_owned();
+		identities.and_where(Expr::col(table("id")).in_subquery(sessions));
+	}
+	// Handoffs and refreshes take a shared identity lock before locking a
+	// session. Wait here first, then revoke with a fresh statement snapshot
+	// that includes any desktop session issued by the preceding handoff.
+	identities
+		.order_by(table("id"), Order::Asc)
+		.lock(LockType::Update);
+	let lock_query = identities.to_string(PostgresQueryBuilder);
+	let mut statement = sqlx::query_scalar::<_, Uuid>(&lock_query).bind(&config.issuer);
+	if let Some(sub) = sub {
+		statement = statement.bind(sub);
+	}
+	let identity_ids = statement.fetch_all(&mut *tx).await?;
 	let mut update = Query::update();
 	update
 		.table(table("dashboard_sessions"))
@@ -2355,20 +2377,13 @@ async fn backchannel_logout(
 			table("revoked_at"),
 			Expr::cust("coalesce(revoked_at,clock_timestamp())"),
 		)
-		.and_where(Expr::col(table("identity_id")).in_subquery(identities.to_owned()));
-	if sid.is_some() {
-		let sid_parameter = if sub.is_some() { "$3" } else { "$2" };
-		update.and_where(Expr::col(table("provider_sid")).eq(Expr::cust(sid_parameter)));
-	}
-	let query = update.to_string(PostgresQueryBuilder);
-	let mut statement = sqlx::query(&query).bind(&config.issuer);
-	if let Some(sub) = sub {
-		statement = statement.bind(sub);
-	}
+		.and_where(Expr::col(table("identity_id")).is_in(identity_ids));
 	if let Some(sid) = sid {
-		statement = statement.bind(sid);
+		update.and_where(Expr::col(table("provider_sid")).eq(sid));
 	}
-	statement.execute(&mut *tx).await?;
+	sqlx::query(&update.to_string(PostgresQueryBuilder))
+		.execute(&mut *tx)
+		.await?;
 	tx.commit().await?;
 	Ok(axum::http::StatusCode::OK)
 }

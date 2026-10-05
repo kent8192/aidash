@@ -104,7 +104,10 @@ pub async fn request<T: DeserializeOwned>(
 	let mut response = request.send().await.map_err(|_| {
 		Failure::Other("Cannot reach Aidash. Check the connection and retry.".into())
 	})?;
-	if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+	if response.status() == reqwest::StatusCode::UNAUTHORIZED
+		|| (matches!(endpoint, Endpoint::Refresh)
+			&& response.status() == reqwest::StatusCode::FORBIDDEN)
+	{
 		return Err(Failure::Unauthorized);
 	}
 	if !response.status().is_success() {
@@ -272,6 +275,61 @@ pub fn challenge(verifier: &str) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[rstest::rstest]
+	#[case(Endpoint::Refresh, 401, true)]
+	#[case(Endpoint::Refresh, 403, true)]
+	#[case(Endpoint::Refresh, 500, false)]
+	#[case(Endpoint::Refresh, 503, false)]
+	#[case(Endpoint::Exchange, 403, false)]
+	#[tokio::test]
+	async fn refresh_denials_expire_credentials_but_outages_remain_retryable(
+		#[case] endpoint: Endpoint,
+		#[case] status: u16,
+		#[case] expired: bool,
+	) {
+		let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let profile = Profile {
+			id: uuid::Uuid::new_v4().to_string(),
+			name: "Authentication status fixture".into(),
+			origin: format!("http://{}", listener.local_addr().unwrap()),
+		};
+		let server = tokio::spawn(async move {
+			let (mut socket, _) = listener.accept().await.unwrap();
+			let mut request = Vec::new();
+			loop {
+				let mut chunk = [0; 1024];
+				let received = socket.read(&mut chunk).await.unwrap();
+				assert!(received > 0);
+				request.extend_from_slice(&chunk[..received]);
+				assert!(request.len() <= 8192);
+				if request.ends_with(b"\r\n\r\n{}") {
+					break;
+				}
+			}
+			assert!(
+				request.starts_with(format!("POST {} HTTP/1.1\r\n", endpoint.path()).as_bytes())
+			);
+			socket
+				.write_all(
+					format!(
+						"HTTP/1.1 {status} Fixture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+					)
+					.as_bytes(),
+				)
+				.await
+				.unwrap();
+		});
+		let failure = request::<serde_json::Value>(
+			&client().unwrap(),
+			&profile,
+			endpoint,
+			Some(serde_json::json!({})),
+		)
+		.await
+		.expect_err("fixture returns a denial");
+		assert_eq!(matches!(failure, Failure::Unauthorized), expired);
+		server.await.unwrap();
+	}
 	#[test]
 	fn callback_is_bound_to_state_host_and_single_values() {
 		let code = "a".repeat(64);
