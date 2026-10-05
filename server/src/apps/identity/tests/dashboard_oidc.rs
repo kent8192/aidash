@@ -231,7 +231,9 @@ async fn call(
 		)
 		.header("content-type", "application/json");
 	if cookie {
-		request = request.header("cookie", "aidash-session=fixture-session");
+		request = request
+			.header("cookie", "unrelated=first")
+			.header("cookie", "aidash-session=fixture-session");
 	}
 	if csrf {
 		request = request

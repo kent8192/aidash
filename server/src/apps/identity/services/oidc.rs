@@ -51,15 +51,19 @@ pub(crate) fn required_config(f: &Federation) -> Result<&OidcConfig> {
 
 pub(crate) fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 	headers
-		.get(header::COOKIE)?
-		.to_str()
-		.ok()?
-		.split(';')
+		.get_all(header::COOKIE)
+		.iter()
+		.filter_map(|value| value.to_str().ok())
+		.flat_map(|value| value.split(';'))
 		.find_map(|item| {
 			let (key, value) = item.trim().split_once('=')?;
 			(key == name).then_some(value)
 		})
 }
+
+#[cfg(test)]
+#[path = "../tests/oidc_headers.rs"]
+mod header_tests;
 
 fn secure_cookie(config: &OidcConfig) -> bool {
 	config.public_origin.starts_with("https://")
