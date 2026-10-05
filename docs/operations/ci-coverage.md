@@ -1,8 +1,25 @@
 # CI coverage uploader
 
-The Rust coverage job installs Codecov CLI 11.3.1 from PyPI through the pinned
+The Rust coverage upload job installs Codecov CLI 11.3.1 from PyPI through the pinned
 `codecov/codecov-action`'s official `use_pypi` input. OIDC authentication,
 the explicit LCOV input and `fail_ci_if_error: true` remain required.
+
+## Partitioned execution
+
+Eight independent jobs execute the locked Cargo targets: foundation, server unit
+and binaries, identity, execution, persistence, collaboration, federation, and
+knowledge/marketplace. `scripts/rust-test-partitions.py` inventories the actual
+workspace; new integration targets are assigned by their owning application.
+Unsupported target kinds fail the inventory instead of silently losing coverage.
+`scripts/test-rust.sh --coverage --partition NAME` builds the extension-enabled
+PostgreSQL image when required and writes `coverage/rust-NAME.lcov`.
+
+The uploader waits for all eight jobs and checks the exact set of nonempty LCOV
+artifacts. It submits all reports together with `flags: rust`; Codecov combines
+execution counts for shared source files. An absent or failed partition prevents
+the upload. `CI Success` also requires every partition and the upload separately.
+Bruno runs all 269 endpoints and 935 scenarios in its own required job; only
+sanitized source identity, executable hashes and assertion results are archived.
 
 ## Download outage
 

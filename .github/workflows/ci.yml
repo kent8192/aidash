@@ -65,9 +65,56 @@ jobs:
           path: web/test-results/
           if-no-files-found: ignore
   rust-tests:
-    name: Rust tests and coverage
+    name: Rust tests (${{ matrix.partition }})
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        partition:
+          [
+            foundation,
+            server-unit,
+            identity,
+            execution,
+            persistence,
+            collaboration,
+            federation,
+            knowledge-marketplace,
+          ]
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      AIDASH_COVERAGE_TARGET_DIR: ${{ github.workspace }}/target/llvm-cov
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: rust-coverage
+          key: ${{ matrix.partition }}
+          workspaces: ". -> target/llvm-cov"
+      - name: Install coverage tool
+        run: command -v cargo-llvm-cov || cargo install cargo-llvm-cov --version 0.8.7 --locked
+      - name: Verify workspace boundaries and complete test partition inventory
+        run: |
+          cargo metadata --locked --format-version 1 | python3 scripts/check-workspace-boundaries.py
+          python3 scripts/rust-test-partitions.py --check
+      - name: Test the selected partition with disposable services and collect LCOV
+        run: scripts/test-rust.sh --coverage --partition '${{ matrix.partition }}'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rust-coverage-${{ matrix.partition }}
+          path: coverage/rust-${{ matrix.partition }}.lcov
+          if-no-files-found: error
+  rust-coverage:
+    name: Rust coverage upload
+    needs: rust-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       id-token: write
@@ -75,34 +122,43 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: rustup show active-toolchain
-      - name: Install coverage tool
-        run: cargo install cargo-llvm-cov --version 0.8.7 --locked
-      - name: Verify workspace dependency boundaries
-        run: cargo metadata --locked --format-version 1 | python3 scripts/check-workspace-boundaries.py
-      - name: Test with disposable Testcontainers services and collect LCOV
-        run: scripts/test-rust.sh --coverage
-      - name: Verify cluster visibility oracle
-        run: python3 -m unittest discover -s scripts -p test_transaction_cluster_acceptance.py
-      - name: Check runner resource admission
-        run: python3 -m unittest discover -s runner -p test_resource_limits.py
-      - name: Upload Rust coverage to Codecov
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: rust-coverage-*
+          merge-multiple: true
+          path: coverage/parts
+      - name: Require every partition's coverage before upload
+        run: |
+          python3 - <<'PY_CHECK'
+          from pathlib import Path
+          import runpy
+          partitions = runpy.run_path("scripts/rust-test-partitions.py")["PARTITIONS"]
+          directory = Path("coverage/parts")
+          expected = {f"rust-{partition}.lcov" for partition in partitions}
+          actual = {path.name for path in directory.glob("*.lcov") if path.stat().st_size}
+          assert actual == expected, (expected - actual, actual - expected)
+          PY_CHECK
+      - name: Upload all Rust partitions to Codecov together
         uses: codecov/codecov-action@04b047e8bb82a0c002c8312c1c880fbc6a999d45 # v5
         with:
           use_oidc: true
           # See docs/operations/ci-coverage.md for the CLI download outage and removal condition.
           use_pypi: true
           version: v11.3.1
-          files: coverage/rust.lcov
+          files: coverage/parts/rust-foundation.lcov,coverage/parts/rust-server-unit.lcov,coverage/parts/rust-identity.lcov,coverage/parts/rust-execution.lcov,coverage/parts/rust-persistence.lcov,coverage/parts/rust-collaboration.lcov,coverage/parts/rust-federation.lcov,coverage/parts/rust-knowledge-marketplace.lcov
           flags: rust
           disable_search: true
           fail_ci_if_error: true
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always()
+  infrastructure-tests:
+    name: Infrastructure contract tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: rust-coverage
-          path: coverage/rust.lcov
-          if-no-files-found: error
+          persist-credentials: false
+      - run: python3 -m unittest discover -s scripts -p test_transaction_cluster_acceptance.py
+      - run: python3 -m unittest discover -s runner -p test_resource_limits.py
   acceptance:
     name: Federation and browser tests
     runs-on: ubuntu-latest
@@ -119,8 +175,6 @@ jobs:
       - run: rustup show active-toolchain
       - name: Test scoped and legacy federation, Worker crashes and Chromium dashboard
         run: scripts/test-acceptance.sh
-      - name: Test the running HTTP API with Bruno
-        run: npm exec --yes --package=@usebruno/cli@3.1.3 -- scripts/test-bruno-api.sh
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -128,12 +182,46 @@ jobs:
           include-hidden-files: true
           path: |
             .ignore/acceptance/
-            .ignore/bruno/
             .ignore/dashboard-*.png
             web/test-results/
       - name: Stop verification services
         if: always()
         run: docker compose down
+  bruno:
+    name: Bruno API contracts (269 endpoints)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: production-http
+      - name: Validate every route, scenario and sanitized evidence requirement
+        run: |
+          python3 scripts/bruno_contracts.py --check
+          python3 scripts/test_bruno_contracts.py
+      - name: Start real PostgreSQL and JetStream fixtures
+        run: docker compose up --build -d --wait postgres nats
+      - name: Run all 935 HTTP scenarios through the native management server
+        run: npm exec --yes --package=@usebruno/cli@3.1.3 -- scripts/test-bruno-api.sh
+        env:
+          AIDASH_BRUNO_POSTGRES_PASSWORD: aidash-local
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: bruno-api-evidence
+          include-hidden-files: true
+          path: .ignore/bruno/
+          if-no-files-found: error
+      - name: Stop owned verification services
+        if: always()
+        run: docker compose down -v
   orchestration:
     name: Cluster recovery (${{ matrix.distribution }}, ${{ matrix.profile }})
     runs-on: ubuntu-latest
@@ -191,6 +279,9 @@ jobs:
         lint,
         collaboration-ui,
         rust-tests,
+        rust-coverage,
+        infrastructure-tests,
+        bruno,
         acceptance,
         orchestration,
         core-runtime,
