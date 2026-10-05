@@ -36,6 +36,8 @@ struct Process {
 	child: std::process::Child,
 	log: PathBuf,
 	consumes: bool,
+	#[cfg(target_os = "macos")]
+	_binary_directory: tempfile::TempDir,
 }
 impl Process {
 	fn start(
@@ -53,7 +55,22 @@ impl Process {
 			.append_pair("options", &format!("-c application_name={schema}"));
 		let log = directory.join(format!("{mode}-{ordinal}.log"));
 		let file = std::fs::File::create(&log).unwrap();
-		let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_aidash"));
+		let binary = env!("CARGO_BIN_EXE_aidash");
+		// Match the transaction process fixture: macOS can stall in dyld while
+		// opening the large executable from an external build volume. Own the
+		// exact local copy until the child has been killed and reaped.
+		#[cfg(target_os = "macos")]
+		let binary_directory = tempfile::Builder::new()
+			.prefix("aidash-activation-binary-")
+			.tempdir_in("/tmp")
+			.unwrap();
+		#[cfg(target_os = "macos")]
+		let binary = {
+			let snapshot = binary_directory.path().join("aidash");
+			std::fs::copy(binary, &snapshot).expect("snapshot the exact worker test executable");
+			snapshot
+		};
+		let mut cmd = std::process::Command::new(binary);
 		cmd.args(native_process_args(f, mode))
 			.envs(native_process_environment(
 				f,
@@ -98,6 +115,8 @@ impl Process {
 			child: cmd.spawn().unwrap(),
 			log,
 			consumes: mode != "server",
+			#[cfg(target_os = "macos")]
+			_binary_directory: binary_directory,
 		}
 	}
 	async fn ready(&mut self) {
