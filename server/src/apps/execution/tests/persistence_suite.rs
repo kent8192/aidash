@@ -97,6 +97,49 @@ async fn nullable_timestamps_round_trip_through_the_orm(
 	assert_eq!(saved.disabled_at, None);
 }
 
+#[rstest]
+#[case::pool(false)]
+#[case::transaction(true)]
+#[tokio::test]
+async fn native_null_parameters_retain_timestamp_and_uuid_types(
+	#[future] database: DatabaseFixture,
+	#[case] transactional: bool,
+) {
+	// Arrange: use real NULL parameters, not SQL literal substitution.
+	use reinhardt::db::backends::types::QueryValue;
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, Value};
+	let database = database.await;
+	let (sql, values) = Query::select()
+		.expr_as(
+			Expr::value(Value::Null).cast_as(Alias::new("timestamptz")),
+			Alias::new("expires_at"),
+		)
+		.expr_as(
+			Expr::value(Value::Null).cast_as(Alias::new("uuid")),
+			Alias::new("request_id"),
+		)
+		.build(PostgresQueryBuilder);
+	let parameters = reinhardt::db::orm::execution::convert_values(values);
+	assert_eq!(parameters, vec![QueryValue::Null, QueryValue::Null]);
+	// Act: both native executor paths must infer the SQL context (#6631).
+	let rows = if transactional {
+		let mut transaction = database.connection.begin().await.unwrap();
+		let rows = transaction.fetch_all(&sql, parameters).await.unwrap();
+		transaction.rollback().await.unwrap();
+		rows
+	} else {
+		database
+			.connection
+			.fetch_all(&sql, parameters)
+			.await
+			.unwrap()
+	};
+	// Assert: neither parameter is encoded as an integer or converted to JSON null.
+	assert_eq!(rows.len(), 1);
+	assert_eq!(rows[0].data.get("expires_at"), Some(&QueryValue::Null));
+	assert_eq!(rows[0].data.get("request_id"), Some(&QueryValue::Null));
+}
+
 #[path = "database_leases.rs"]
 mod leases;
 #[path = "run_fixtures.rs"]
