@@ -2295,10 +2295,6 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 	// Replay the complete native graph; a frozen baseline is never unrecorded.
 	let replay = executor.apply_migrations(&migrations).await.unwrap();
 	assert!(replay.applied.is_empty());
-	let migration = migrations
-		.iter()
-		.find(|migration| migration.app_label == "marketplace" && migration.name == "0002_tables")
-		.unwrap();
 	enable(&app, &f).await;
 	f.registry.register(tool("immutable-source")).await.unwrap();
 	approve(&f, "a", &reference("immutable-source")).await;
@@ -2429,6 +2425,14 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 		.0,
 		200
 	);
+	let installation_path = format!("/api/marketplace/installations/{protected_id}");
+	let before_replay = request(&app, &a, "GET", &installation_path, Value::Null).await;
+	assert_eq!(before_replay.0, 200, "{before_replay:?}");
+	// A native baseline replay must retain populated tenant projections exactly.
+	let replay = executor.apply_migrations(&migrations).await.unwrap();
+	assert!(replay.applied.is_empty());
+	let after_replay = request(&app, &a, "GET", &installation_path, Value::Null).await;
+	assert_eq!(after_replay, before_replay);
 	policy(
 		&f,
 		"a",
@@ -2443,13 +2447,7 @@ async fn immutable_versions_replays_and_recovery_keep_their_authority_boundaries
 		403,
 		"publication replay cannot recover currently denied read access"
 	);
-	assert!(
-		executor
-			.rollback_migrations(std::slice::from_ref(migration))
-			.await
-			.is_err(),
-		"downgrade must preserve populated tenant projections"
-	);
+
 	// Even trusted SQL callers cannot overwrite immutable published bytes.
 	let update = Query::update()
 		.table(Alias::new("marketplace_versions"))

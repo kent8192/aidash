@@ -638,7 +638,7 @@ async fn out_of_order_physical_reversal_keeps_the_native_ledger(
 			.unwrap();
 	let migration = migrations
 		.into_iter()
-		.find(|migration| migration.app_label == "marketplace" && migration.name == "0002_tables")
+		.find(|migration| migration.app_label == "registry" && migration.name == "0002_tables")
 		.unwrap();
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
