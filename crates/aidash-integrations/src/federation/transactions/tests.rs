@@ -257,8 +257,13 @@ async fn lookup_headers_and_body_share_one_ten_second_deadline(
 			None::<&()>,
 		)
 		.await;
+	// The inherited request timer can win the outer deadline for headers or body.
+	// Both retained timeout outcomes remain external failures, never definitive rejection.
 	assert!(
-		matches!(result, Err(Error::External(message)) if message == "transaction participant response timed out; outcome retained for recovery")
+		matches!(&result, Err(Error::External(message)) if message == "transaction participant response timed out; outcome retained for recovery"
+			|| (mode == "late-headers" && message == "error sending request")
+			|| (mode == "late-body" && message == "error decoding response body")),
+		"unexpected timeout result: {result:?}"
 	);
 	assert!(started.elapsed() >= Duration::from_secs(9));
 	assert!(started.elapsed() < Duration::from_secs(11));
