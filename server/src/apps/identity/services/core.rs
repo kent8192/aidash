@@ -50,7 +50,7 @@ impl Authorization {
 		)
 	}
 
-	// Share the application's pool while remaining compound transactions are migrated.
+	// Scope ORM reads and compound transactions to the application's native connection.
 	fn native_connection(&self) -> Result<DatabaseConnectionLease> {
 		Ok(DatabaseConnectionLease::register(self.pool.connection())?)
 	}
