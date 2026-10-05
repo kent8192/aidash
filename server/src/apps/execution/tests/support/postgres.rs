@@ -12,8 +12,10 @@ use std::{sync::Arc, time::Duration};
 pub async fn postgres_container() -> (ContainerAsync<GenericImage>, Arc<PgPool>, u16, String) {
 	let image = GenericImage::new("aidash-orm-test-postgres", "17-pg-jsonschema-0.3.4")
 		.with_exposed_port(5432.tcp())
+		// The initialization server only accepts Unix sockets. Wait for the final
+		// TCP listener, then verify readiness with an actual pool connection below.
 		.with_wait_for(WaitFor::message_on_stderr(
-			"database system is ready to accept connections",
+			"listening on IPv4 address \"0.0.0.0\", port 5432",
 		))
 		.with_env_var("POSTGRES_USER", "aidash")
 		.with_env_var("POSTGRES_PASSWORD", "fixture-password")
@@ -23,11 +25,23 @@ pub async fn postgres_container() -> (ContainerAsync<GenericImage>, Arc<PgPool>,
 	let container = image.start().await.expect("build the test target of deploy/postgres/Dockerfile as aidash-orm-test-postgres:17-pg-jsonschema-0.3.4 before database tests");
 	let port = container.get_host_port_ipv4(5432).await.unwrap();
 	let url = format!("postgres://aidash:fixture-password@127.0.0.1:{port}/aidash");
-	let pool = sqlx::postgres::PgPoolOptions::new()
-		.max_connections(2)
-		.acquire_timeout(Duration::from_secs(30))
-		.connect(&url)
-		.await
-		.unwrap();
+	let pool = tokio::time::timeout(Duration::from_secs(30), async {
+		loop {
+			match sqlx::postgres::PgPoolOptions::new()
+				.max_connections(2)
+				.acquire_timeout(Duration::from_secs(1))
+				.connect(&url)
+				.await
+			{
+				Ok(pool) => break pool,
+				Err(sqlx::Error::Io(_)) => {}
+				Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("57P03") => {}
+				Err(error) => panic!("fixture PostgreSQL connection failed: {error}"),
+			}
+			tokio::time::sleep(Duration::from_millis(50)).await;
+		}
+	})
+	.await
+	.expect("fixture PostgreSQL must accept TCP connections within 30 seconds");
 	(container, Arc::new(pool), port, url)
 }
