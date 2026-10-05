@@ -718,6 +718,7 @@ async fn complete_baseline_reverses_and_reapplies_through_the_management_graph(
 #[case::ps("\u{2029}")]
 #[case::vertical_tab("\u{b}")]
 #[case::form_feed("\u{c}")]
+#[case::carriage_return("\r")]
 #[tokio::test]
 async fn escaped_whitespace_checks_still_reject_blank_content(
 	#[future] fresh_database: MigrationFixture,

@@ -181,7 +181,7 @@ pub(super) fn migration() -> Migration {
 				                r#"(((status = 'OPEN'::text) AND (owner IS NULL)) OR (status <> 'OPEN'::text))"#
 				                .to_owned() }, Constraint::Check { name : "tasks_content".to_owned(),
 				                expression :
-				                r#"COALESCE(((length(btrim(title, E'\u0009\u000a\u000b\u000c\u000a \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000'::text)) > 0) AND (length(btrim(description, E'\u0009\u000a\u000b\u000c\u000a \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000'::text)) > 0) AND (jsonb_typeof(requirements) = 'object'::text) AND (revision >= 0) AND (revision < '9223372036854775807'::bigint) AND
+				                r#"COALESCE(((length(btrim(title, E'\u0009\u000a\u000b\u000c\u000d \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000'::text)) > 0) AND (length(btrim(description, E'\u0009\u000a\u000b\u000c\u000d \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000'::text)) > 0) AND (jsonb_typeof(requirements) = 'object'::text) AND (revision >= 0) AND (revision < '9223372036854775807'::bigint) AND
 						CASE
 						WHEN (jsonb_typeof(requirements) = 'object'::text) THEN ((requirements - ARRAY['kind'::text, 'query'::text, 'capability'::text, 'language'::text, 'skill'::text, 'tag'::text, 'model'::text]) = '{}'::jsonb)
 						ELSE false
@@ -213,7 +213,7 @@ pub(super) fn migration() -> Migration {
 				            ],
 				            constraints: vec![
 				                Constraint::Check { name : "workspaces_content".to_owned(), expression :
-				                r#"COALESCE(((length(btrim(title, E'\u0009\u000a\u000b\u000c\u000a \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000'::text)) > 0) AND (length(btrim(goal, E'\u0009\u000a\u000b\u000c\u000a \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000'::text)) > 0) AND (jsonb_typeof(state) = 'object'::text) AND (revision >= 0)), false)"#
+				                r#"COALESCE(((length(btrim(title, E'\u0009\u000a\u000b\u000c\u000d \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000'::text)) > 0) AND (length(btrim(goal, E'\u0009\u000a\u000b\u000c\u000d \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000'::text)) > 0) AND (jsonb_typeof(state) = 'object'::text) AND (revision >= 0)), false)"#
 				                .to_owned() }
 				            ],
 				            without_rowid: None,
