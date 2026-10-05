@@ -78,7 +78,7 @@ pub(crate) async fn handoff<T: Serialize>(
 	});
 	let result = access.finish(result).await;
 	if let Some(denial) = denial {
-		let mut tx = store.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&store.pool).await?;
 		store
 			.event(&mut tx, None, "marketplace.audit", denial)
 			.await?;
@@ -270,7 +270,7 @@ impl MarketplaceManagement {
 	pub(crate) async fn compatibility(&self, actor: Actor) -> Result<Compatibility> {
 		let f = self.runtime.clone();
 		operator(&actor)?;
-		let mut tx = f.store.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&f.store.pool).await?;
 		aidash_application::marketplace::operations::compatibility(
 			&mut crate::bootstrap::marketplace_operator_scope(&f.store, &mut tx, principal(&actor)),
 		)

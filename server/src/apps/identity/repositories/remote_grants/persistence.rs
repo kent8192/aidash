@@ -34,7 +34,7 @@ use uuid::Uuid;
 pub(crate) async fn live(access: &mut Access, id: Uuid) -> NativeResult<bool> {
 	Ok({
 		let query_bind_1 = id;
-		sqlx::query_scalar(
+		crate::database::native::query_scalar(
 			&Query::select()
 				.expr(Expr::cust("NOT revoked AND expires_at > CLOCK_TIMESTAMP()"))
 				.from(Alias::new("authorization_remote_grants"))
@@ -44,7 +44,7 @@ pub(crate) async fn live(access: &mut Access, id: Uuid) -> NativeResult<bool> {
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&mut **access.tx)
+		.scalar_one(&mut **access.tx)
 		.await?
 	})
 }
@@ -136,7 +136,7 @@ impl GrantScope for Scope {
 			let access = &mut *self.access;
 			{
 				let query_bind_1 = id.to_string();
-				sqlx::query(
+				crate::database::native::query(
 					&reinhardt::query::Query::select()
 						.expr(SimpleExpr::CustomWithExpr(
 							"(PG_ADVISORY_XACT_LOCK(HASHTEXTEXTENDED(?, 71003801)))".to_owned(),
@@ -157,7 +157,7 @@ impl GrantScope for Scope {
 			let access = &mut *self.access;
 			Ok({
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&reinhardt::query::Query::select()
 						.expr(reinhardt::query::SimpleExpr::from(
 							reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
@@ -224,7 +224,7 @@ impl GrantScope for Scope {
 				let query_bind_9 = &access.subjects;
 				let query_bind_10 = metadata;
 				let query_bind_11 = input.ttl_seconds as f64;
-				sqlx::query(&format!(
+				crate::database::native::query(&format!(
 					"{} ON CONFLICT DO NOTHING",
 					reinhardt::query::Query::insert()
 						.into_table(reinhardt::query::Alias::new("authorization_remote_grants"))
@@ -306,7 +306,7 @@ impl GrantScope for Scope {
 			{
 				let query_bind_1 = id;
 				let query_bind_2 = semantic;
-				sqlx::query(
+				crate::database::native::query(
 					&reinhardt::query::Query::update()
 						.table(reinhardt::query::Alias::new("authorization_remote_grants"))
 						.value_expr(
@@ -339,7 +339,7 @@ impl GrantScope for Scope {
 				let query_bind_2 = task_id;
 				let query_bind_3 = &identity.tenant;
 				let query_bind_4 = &identity.subject;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
 						.from(Alias::new("authorization_remote_grants"))
@@ -368,7 +368,7 @@ impl GrantScope for Scope {
 			let access = &mut *self.access;
 			{
 				let query_bind_1 = id;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("authorization_remote_grants"))
 						.value_expr(Alias::new("revoked"), Expr::cust("TRUE"))
@@ -423,7 +423,7 @@ impl GrantRepository for Repository {
 			Ok({
 				let query_bind_1 = id;
 				let query_bind_2 = node;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&reinhardt::query::Query::select()
 						.expr(reinhardt::query::SimpleExpr::from(
 							reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),

@@ -182,7 +182,7 @@ async fn approval_activation_and_stop_are_atomic_and_audited(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -577,7 +577,7 @@ async fn agent_created_tasks_keep_generation_depth_when_requested_by_root(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_all(&f.store.pool)
+		.fetch_all(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -596,7 +596,7 @@ async fn agent_created_tasks_keep_generation_depth_when_requested_by_root(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -667,7 +667,7 @@ async fn revoked_requester_cannot_activate_and_failed_admission_leaves_no_agent(
 			.and_where(reinhardt::query::Expr::cust("subject = 'alice'"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.execute(&f.store.pool)
+	.execute(f.store.pool.driver())
 	.await
 	.unwrap();
 	aidash_server::generation::provision::reconcile(&f)
@@ -1084,7 +1084,7 @@ async fn expiration_cancels_generated_run_before_any_provider_call(
 			)
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.execute(&f.store.pool)
+	.execute(f.store.pool.driver())
 	.await
 	.unwrap();
 	let worker = aidash_server::harness::Harness {
@@ -1189,7 +1189,7 @@ async fn stop_commits_during_inflight_inference_and_discards_its_result(
 			.from(reinhardt::query::Alias::new("generation_budgets"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(&f.store.pool)
+	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(used, 132096, "reserve must commit before provider I/O");
@@ -1327,7 +1327,7 @@ async fn atomic_commit_discards_generated_output_but_settles_its_usage(
 	tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
 		.await
 		.expect("provider must receive the first request");
-	let mut transaction = f.store.control_pool.begin().await.unwrap();
+	let mut transaction = f.store.control_pool.driver().begin().await.unwrap();
 	sqlx::query(
 		&Query::update()
 			.table(Alias::new("atomic_gate"))
@@ -1357,7 +1357,7 @@ async fn atomic_commit_discards_generated_output_but_settles_its_usage(
 			.from(Alias::new("generation_usage"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&f.store.pool)
+	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(reserved, 132096);
@@ -1368,7 +1368,7 @@ async fn atomic_commit_discards_generated_output_but_settles_its_usage(
 			.from(Alias::new("generation_budgets"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&f.store.pool)
+	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(used, 12, "stale output must refund unused reserved tokens");
@@ -1572,7 +1572,7 @@ async fn policy_history_constraint_failure_rolls_back_revision_and_preserves_ret
 		.unwrap()
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&collision)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap();
 	let mut next_spec = spec.clone();
@@ -1605,7 +1605,7 @@ async fn policy_history_constraint_failure_rolls_back_revision_and_preserves_ret
 		.order_by(Alias::new("revision"), Order::Asc)
 		.to_string(PostgresQueryBuilder);
 	let history: Vec<(i64, Value, String)> = sqlx::query_as(&history_query)
-		.fetch_all(&f.store.pool)
+		.fetch_all(f.store.pool.driver())
 		.await
 		.unwrap();
 	let expected_actor = if subject { "alice" } else { "operator" };
@@ -1623,7 +1623,7 @@ async fn policy_history_constraint_failure_rolls_back_revision_and_preserves_ret
 		.and_where(Expr::col("revision").eq(Expr::value(2_i64)))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&remove_collision)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap();
 	let (status, retried) = request(
@@ -1637,7 +1637,7 @@ async fn policy_history_constraint_failure_rolls_back_revision_and_preserves_ret
 	assert_eq!(status, 200, "{retried}");
 	assert_eq!(retried["revision"], 2);
 	let history: Vec<(i64, Value, String)> = sqlx::query_as(&history_query)
-		.fetch_all(&f.store.pool)
+		.fetch_all(f.store.pool.driver())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -1719,7 +1719,7 @@ async fn count_concurrency_and_total_token_limits_are_independent(
 				.from(reinhardt::query::Alias::new("generation_requests"))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 		.unwrap();
 		assert_eq!(
@@ -1945,7 +1945,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 					.from_subquery(source)
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&f.store.pool)
+			.execute(f.store.pool.driver())
 			.await
 			.unwrap();
 			let fields = [
@@ -1997,7 +1997,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 					.from_subquery(source)
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&f.store.pool)
+			.execute(f.store.pool.driver())
 			.await
 			.unwrap();
 		}
@@ -2030,7 +2030,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -2067,7 +2067,7 @@ async fn generation_visibility_paginates_and_cannot_override_later_event_ownersh
 			.from(reinhardt::query::Alias::new("events"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(&f.store.pool)
+	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap();
 	let mut tx = f.store.pool.begin().await.unwrap();

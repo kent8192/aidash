@@ -1,5 +1,5 @@
 //! PostgreSQL dispatch CAS and owned leases preserve the original query boundaries.
-use crate::{Error, federation::Federation, store::Store};
+use crate::{federation::Federation, store::Store};
 use aidash_application::{
 	Result,
 	ports::generation::dispatch::{
@@ -17,10 +17,9 @@ use reinhardt::query::{
 	Alias, Expr, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
 use serde_json::{Value, json};
-use sqlx::{Postgres, Transaction};
+
 use uuid::Uuid;
 
-#[derive(sqlx::FromRow)]
 struct StoredDispatch {
 	usage: Value,
 	digest: String,
@@ -30,6 +29,16 @@ struct StoredDispatch {
 	finalization: Option<Value>,
 	peer_finalized: bool,
 }
+crate::native_record!(StoredDispatch {
+	usage,
+	digest,
+	peer_node,
+	boundary,
+	state,
+	finalization,
+	peer_finalized
+});
+
 impl From<StoredDispatch> for Record {
 	fn from(row: StoredDispatch) -> Self {
 		Self {
@@ -51,7 +60,7 @@ pub(crate) struct NativeSettlement {
 	pub runtime: Federation,
 }
 struct Preparation {
-	transaction: Transaction<'static, Postgres>,
+	transaction: crate::database::native::Transaction,
 }
 struct Visibility {
 	store: Store,
@@ -62,7 +71,7 @@ struct Visibility {
 impl DispatchPreparation for Preparation {
 	async fn insert(&mut self, input: &Input, peer: &str, digest: &str) -> Result<()> {
 		let tx = &mut self.transaction;
-		sqlx::query(&format!(
+		crate::database::native::query(&format!(
 			"{} ON CONFLICT DO NOTHING",
 			Query::insert()
 				.into_table(Alias::new("generation_remote_dispatches"))
@@ -85,15 +94,14 @@ impl DispatchPreparation for Preparation {
 		.bind(peer)
 		.bind(&input.boundary)
 		.execute(&mut **tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 		Ok(())
 	}
 	async fn record(&mut self, attempt: Uuid) -> Result<Record> {
 		let tx = &mut self.transaction;
 		let record: StoredDispatch = {
 			let query_bind_1 = attempt;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.column(Asterisk)
 					.from(Alias::new("generation_remote_dispatches"))
@@ -105,13 +113,12 @@ impl DispatchPreparation for Preparation {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_one(&mut **tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(record.into())
 	}
 	async fn commit(self: Box<Self>) -> Result<()> {
-		self.transaction.commit().await.map_err(Error::from)?;
+		self.transaction.commit().await?;
 		Ok(())
 	}
 }
@@ -123,13 +130,13 @@ impl GenerationDispatchRepository for NativeDispatch {
 	}
 	async fn begin_preparation(&self) -> Result<Box<dyn DispatchPreparation>> {
 		Ok(Box::new(Preparation {
-			transaction: self.store.pool.begin().await.map_err(Error::from)?,
+			transaction: crate::database::native::begin(&self.store.pool).await?,
 		}))
 	}
 	async fn record(&self, attempt: Uuid) -> Result<Option<Record>> {
 		let record: Option<StoredDispatch> = {
 			let query_bind_1 = attempt;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.column(Asterisk)
 					.from(Alias::new("generation_remote_dispatches"))
@@ -140,8 +147,7 @@ impl GenerationDispatchRepository for NativeDispatch {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_optional(&self.store.pool)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(record.map(Into::into))
 	}
@@ -150,7 +156,7 @@ impl GenerationDispatchRepository for NativeDispatch {
 			let query_bind_1 = input.usage.attempt_id;
 			let query_bind_2 = input.usage.digest()?;
 			let query_bind_3 = json!(reservations);
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("generation_remote_dispatches"))
 					.value(Alias::new("state"), "DISPATCHED")
@@ -171,8 +177,7 @@ impl GenerationDispatchRepository for NativeDispatch {
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&self.store.pool)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(changed.rows_affected())
 	}
@@ -182,7 +187,7 @@ impl GenerationDispatchRepository for NativeDispatch {
 			let query_bind_2 = from;
 			let query_bind_3 = state;
 			let query_bind_4 = value;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("generation_remote_dispatches"))
 					.value_expr(
@@ -209,8 +214,7 @@ impl GenerationDispatchRepository for NativeDispatch {
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&self.store.pool)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(changed.rows_affected())
 	}
@@ -223,7 +227,7 @@ impl GenerationDispatchRepository for NativeDispatch {
 	async fn mark_peer_finalized(&self, attempt: Uuid) -> Result<()> {
 		{
 			let query_bind_1 = attempt;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("generation_remote_dispatches"))
 					.value(Alias::new("peer_finalized"), true)
@@ -234,8 +238,7 @@ impl GenerationDispatchRepository for NativeDispatch {
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&self.store.pool)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(())
 	}
@@ -246,7 +249,7 @@ impl DispatchVisibility for Visibility {
 	async fn terminal_record(&mut self, attempt: Uuid) -> Result<Option<Record>> {
 		let record: Option<StoredDispatch> = {
 			let query_bind_1 = attempt;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.column(Asterisk)
 					.from(Alias::new("generation_remote_dispatches"))
@@ -257,13 +260,12 @@ impl DispatchVisibility for Visibility {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_optional(&self.store.pool)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(record.map(Into::into))
 	}
 	async fn abort_stale_preparations(&mut self) -> Result<()> {
-		sqlx::query(
+		crate::database::native::query(
 			&Query::update()
 				.table(Alias::new("generation_remote_dispatches"))
 				.value(Alias::new("state"), "ABORTED")
@@ -277,12 +279,11 @@ impl DispatchVisibility for Visibility {
 				.to_string(PostgresQueryBuilder),
 		)
 		.execute(&self.store.pool)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 		Ok(())
 	}
 	async fn pending(&mut self) -> Result<Vec<Uuid>> {
-		let ids: Vec<Uuid> = sqlx::query_scalar(
+		let ids: Vec<Uuid> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("attempt_id"))
 				.from(Alias::new("generation_remote_dispatches"))
@@ -293,9 +294,8 @@ impl DispatchVisibility for Visibility {
 				.limit(16)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(&self.store.pool)
-		.await
-		.map_err(Error::from)?;
+		.scalar_all(&self.store.pool)
+		.await?;
 		Ok(ids)
 	}
 	async fn suspend(&mut self) -> Result<()> {

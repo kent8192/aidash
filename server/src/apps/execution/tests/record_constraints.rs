@@ -331,7 +331,7 @@ async fn registry_constraints_reject_invalid_models_without_application_validati
 		let mut entry = good.clone();
 		entry["config"][field] = invalid;
 		check_rejected(
-			insert_entry(&f.store.pool, &entry).await,
+			insert_entry(f.store.pool.driver(), &entry).await,
 			"registry_model_config",
 		);
 	}
@@ -345,7 +345,7 @@ async fn registry_constraints_reject_invalid_models_without_application_validati
 		let mut entry = good.clone();
 		entry["config"]["endpoint"] = json!(endpoint);
 		check_rejected(
-			insert_entry(&f.store.pool, &entry).await,
+			insert_entry(f.store.pool.driver(), &entry).await,
 			"registry_model_config",
 		);
 	}
@@ -355,33 +355,42 @@ async fn registry_constraints_reject_invalid_models_without_application_validati
 		.unwrap()
 		.remove("model_id");
 	check_rejected(
-		insert_entry(&f.store.pool, &missing).await,
+		insert_entry(f.store.pool.driver(), &missing).await,
 		"registry_model_config",
 	);
 	let mut malformed = good.clone();
 	malformed["name"] = json!([]);
 	check_rejected(
-		insert_entry(&f.store.pool, &malformed).await,
+		insert_entry(f.store.pool.driver(), &malformed).await,
 		"registry_metadata_shape",
 	);
 	for version in ["latest", "01.0.0", "1.0.0-01"] {
 		let mut entry = good.clone();
 		entry["version"] = json!(version);
-		check_rejected(insert_entry(&f.store.pool, &entry).await, "registry_semver");
+		check_rejected(
+			insert_entry(f.store.pool.driver(), &entry).await,
+			"registry_semver",
+		);
 	}
-	insert_entry(&f.store.pool, &good).await.unwrap();
+	insert_entry(f.store.pool.driver(), &good).await.unwrap();
 	let mut bounded = good.clone();
 	bounded["id"] = json!("bounded-output-model");
 	bounded["config"]["max_output_tokens"] = json!(4096);
-	insert_entry(&f.store.pool, &bounded).await.unwrap();
+	insert_entry(f.store.pool.driver(), &bounded).await.unwrap();
 	// An alias and a distinct version are intentionally valid; names/config are not unique keys.
 	let mut alias = good.clone();
 	alias["id"] = json!("alias");
-	insert_entry(&f.store.pool, &alias).await.unwrap();
+	insert_entry(f.store.pool.driver(), &alias).await.unwrap();
 	alias["version"] = json!("1.1.0-rc.1+build.01");
-	insert_entry(&f.store.pool, &alias).await.unwrap();
+	insert_entry(f.store.pool.driver(), &alias).await.unwrap();
 	check_rejected(
-		update(&f.store.pool, "registry", "id", Expr::value("mismatch")).await,
+		update(
+			f.store.pool.driver(),
+			"registry",
+			"id",
+			Expr::value("mismatch"),
+		)
+		.await,
 		"registry_identity",
 	);
 	let mut whitespace = model();
@@ -421,12 +430,18 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 		.await
 		.unwrap();
 	check_rejected(
-		update(&f.store.pool, "workspaces", "revision", Expr::value(-1)).await,
+		update(
+			f.store.pool.driver(),
+			"workspaces",
+			"revision",
+			Expr::value(-1),
+		)
+		.await,
 		"workspaces_content",
 	);
 	check_rejected(
 		update(
-			&f.store.pool,
+			f.store.pool.driver(),
 			"workspaces",
 			"state",
 			Expr::cust("'[]'::jsonb"),
@@ -435,12 +450,12 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 		"workspaces_content",
 	);
 	check_rejected(
-		update(&f.store.pool, "tasks", "title", Expr::value(" ")).await,
+		update(f.store.pool.driver(), "tasks", "title", Expr::value(" ")).await,
 		"tasks_content",
 	);
 	check_rejected(
 		update(
-			&f.store.pool,
+			f.store.pool.driver(),
 			"tasks",
 			"parent_id",
 			Expr::col(Alias::new("id")),
@@ -459,7 +474,7 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 		sqlx::query(&set_task_revision())
 			.bind(i64::MAX)
 			.bind(task.id)
-			.execute(&f.store.pool)
+			.execute(f.store.pool.driver())
 			.await
 			.map(|_| ()),
 		"tasks_content",
@@ -467,21 +482,21 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 	sqlx::query(&set_task_revision())
 		.bind(i64::MAX - 1)
 		.bind(task.id)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap();
 	check_rejected(
 		sqlx::query(&set_task_revision())
 			.bind(i64::MAX)
 			.bind(task.id)
-			.execute(&f.store.pool)
+			.execute(f.store.pool.driver())
 			.await
 			.map(|_| ()),
 		"tasks_content",
 	);
 	check_rejected(
 		update(
-			&f.store.pool,
+			f.store.pool.driver(),
 			"tasks",
 			"dependencies",
 			Expr::cust("ARRAY[id]"),
@@ -508,7 +523,7 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 				)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 	}
 	.unwrap_err();
@@ -547,7 +562,7 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 	let error = sqlx::query(&artifact)
 		.bind(other.id)
 		.bind(task.id)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap_err();
 	assert_eq!(
@@ -557,7 +572,7 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 	sqlx::query(&artifact)
 		.bind(workspace.id)
 		.bind(task.id)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap();
 	// Remote runs are allowed even if their workspace/task only exist at their home node.
@@ -596,7 +611,7 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 	let error = sqlx::query(&human_request)
 		.bind(workspace.id)
 		.bind(run.id)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap_err();
 	assert_eq!(
@@ -606,16 +621,16 @@ async fn workspace_task_and_run_constraints_preserve_local_and_remote_boundaries
 	sqlx::query(&human_request)
 		.bind(remote.workspace_id)
 		.bind(run.id)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap();
 	check_rejected(
-		update(&f.store.pool, "runs", "step", Expr::value(-1)).await,
+		update(f.store.pool.driver(), "runs", "step", Expr::value(-1)).await,
 		"runs_counters",
 	);
 	check_rejected(
 		update(
-			&f.store.pool,
+			f.store.pool.driver(),
 			"runs",
 			"lease_owner",
 			Expr::cust("gen_random_uuid()"),
@@ -634,9 +649,12 @@ async fn nonblank_constraints_match_rust_unicode_whitespace(
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	let (f, url, schema) = setup(&_test_environment).await;
-	insert_entry(&f.store.pool, &serde_json::to_value(model()).unwrap())
-		.await
-		.unwrap();
+	insert_entry(
+		f.store.pool.driver(),
+		&serde_json::to_value(model()).unwrap(),
+	)
+	.await
+	.unwrap();
 	let workspace = f.store.create_workspace("Main", "Goal").await.unwrap();
 	f.store
 		.create_task(
@@ -672,7 +690,10 @@ async fn nonblank_constraints_match_rust_unicode_whitespace(
 			let mut entry = serde_json::to_value(model()).unwrap();
 			entry["kind"] = json!(kind);
 			entry["config"][field] = json!(blank);
-			check_rejected(insert_entry(&f.store.pool, &entry).await, constraint);
+			check_rejected(
+				insert_entry(f.store.pool.driver(), &entry).await,
+				constraint,
+			);
 		}
 		for (table, column, constraint) in [
 			("workspaces", "title", "workspaces_content"),
@@ -681,7 +702,13 @@ async fn nonblank_constraints_match_rust_unicode_whitespace(
 			("tasks", "description", "tasks_content"),
 		] {
 			check_rejected(
-				update(&f.store.pool, table, column, Expr::value(blank.clone())).await,
+				update(
+					f.store.pool.driver(),
+					table,
+					column,
+					Expr::value(blank.clone()),
+				)
+				.await,
 				constraint,
 			);
 		}
@@ -699,7 +726,7 @@ async fn nonblank_constraints_match_rust_unicode_whitespace(
 				entry["config"] =
 					json!({"instructions":content, "model":{"id":"test-model", "version":"1.0.0"}});
 			}
-			insert_entry(&f.store.pool, &entry).await.unwrap();
+			insert_entry(f.store.pool.driver(), &entry).await.unwrap();
 		}
 		for (table, column) in [
 			("workspaces", "title"),
@@ -707,7 +734,7 @@ async fn nonblank_constraints_match_rust_unicode_whitespace(
 			("tasks", "title"),
 			("tasks", "description"),
 		] {
-			update(&f.store.pool, table, column, Expr::value(*content))
+			update(f.store.pool.driver(), table, column, Expr::value(*content))
 				.await
 				.unwrap();
 		}
@@ -735,7 +762,7 @@ async fn localized_metadata_requires_string_values_for_every_locale(
 			let mut entry = serde_json::to_value(model()).unwrap();
 			entry[field] = json!({"en":"Valid", "ja":invalid});
 			check_rejected(
-				insert_entry(&f.store.pool, &entry).await,
+				insert_entry(f.store.pool.driver(), &entry).await,
 				"registry_metadata_shape",
 			);
 		}
@@ -743,9 +770,12 @@ async fn localized_metadata_requires_string_values_for_every_locale(
 	let mut entry = model();
 	entry.name.insert("ja".into(), "モデル".into());
 	entry.description.insert("ja".into(), "説明".into());
-	insert_entry(&f.store.pool, &serde_json::to_value(&entry).unwrap())
-		.await
-		.unwrap();
+	insert_entry(
+		f.store.pool.driver(),
+		&serde_json::to_value(&entry).unwrap(),
+	)
+	.await
+	.unwrap();
 	assert_eq!(
 		f.registry.get(&entry.id, &entry.version).await.unwrap(),
 		entry
@@ -786,7 +816,8 @@ async fn package_identity_requires_matching_json_strings(
 		let mut manifest = record.manifest.clone();
 		manifest["entity"][field] = invalid;
 		check_rejected(
-			update_package_manifest(&f.store.pool, &record.id, &record.version, manifest).await,
+			update_package_manifest(f.store.pool.driver(), &record.id, &record.version, manifest)
+				.await,
 			"packages_identity",
 		);
 	}
@@ -794,7 +825,8 @@ async fn package_identity_requires_matching_json_strings(
 		let mut manifest = record.manifest.clone();
 		manifest["entity"].as_object_mut().unwrap().remove(field);
 		check_rejected(
-			update_package_manifest(&f.store.pool, &record.id, &record.version, manifest).await,
+			update_package_manifest(f.store.pool.driver(), &record.id, &record.version, manifest)
+				.await,
 			"packages_identity",
 		);
 	}
@@ -804,7 +836,13 @@ async fn package_identity_requires_matching_json_strings(
 		json!({"entity":{"id":"1","version":"1.0.0","kind":"skill","name":{"en":7},"description":{"en":"Description"},"config":{"instructions":"Complete the task"}},"author":"Fixture","permissions":[],"dependencies":[]}),
 	] {
 		check_rejected(
-			update_package_manifest(&f.store.pool, &record.id, &record.version, malformed).await,
+			update_package_manifest(
+				f.store.pool.driver(),
+				&record.id,
+				&record.version,
+				malformed,
+			)
+			.await,
 			"packages_identity",
 		);
 	}
@@ -816,13 +854,14 @@ async fn package_identity_requires_matching_json_strings(
 		let mut manifest = record.manifest.clone();
 		manifest["entity"]["schema"] = invalid_schema;
 		check_rejected(
-			update_package_manifest(&f.store.pool, &record.id, &record.version, manifest).await,
+			update_package_manifest(f.store.pool.driver(), &record.id, &record.version, manifest)
+				.await,
 			"packages_identity",
 		);
 	}
 	check_rejected(
 		update_package_digest(
-			&f.store.pool,
+			f.store.pool.driver(),
 			&record.id,
 			&record.version,
 			"sha256:0000000000000000000000000000000000000000000000000000000000000000",
@@ -833,7 +872,7 @@ async fn package_identity_requires_matching_json_strings(
 	let alternate_source = format!(" \n{}\n", record.manifest);
 	let alternate_digest = format!("sha256:{:x}", Sha256::digest(alternate_source.as_bytes()));
 	update_package_source(
-		&f.store.pool,
+		f.store.pool.driver(),
 		&record.id,
 		&record.version,
 		&alternate_source,
@@ -891,7 +930,8 @@ async fn package_agent_config_requires_all_typed_fields(
 		let mut manifest = record.manifest.clone();
 		manifest["entity"]["config"]["max_steps"] = invalid;
 		check_rejected(
-			update_package_manifest(&f.store.pool, &record.id, &record.version, manifest).await,
+			update_package_manifest(f.store.pool.driver(), &record.id, &record.version, manifest)
+				.await,
 			"packages_identity",
 		);
 	}
@@ -899,7 +939,8 @@ async fn package_agent_config_requires_all_typed_fields(
 		let mut manifest = record.manifest.clone();
 		manifest["entity"]["config"]["instructions"] = invalid;
 		check_rejected(
-			update_package_manifest(&f.store.pool, &record.id, &record.version, manifest).await,
+			update_package_manifest(f.store.pool.driver(), &record.id, &record.version, manifest)
+				.await,
 			"packages_identity",
 		);
 	}
@@ -911,13 +952,19 @@ async fn package_agent_config_requires_all_typed_fields(
 		let mut manifest = record.manifest.clone();
 		manifest["entity"]["config"]["cluster"] = invalid;
 		check_rejected(
-			update_package_manifest(&f.store.pool, &record.id, &record.version, manifest).await,
+			update_package_manifest(f.store.pool.driver(), &record.id, &record.version, manifest)
+				.await,
 			"packages_identity",
 		);
 	}
-	update_package_manifest(&f.store.pool, &record.id, &record.version, record.manifest)
-		.await
-		.unwrap();
+	update_package_manifest(
+		f.store.pool.driver(),
+		&record.id,
+		&record.version,
+		record.manifest,
+	)
+	.await
+	.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -951,7 +998,8 @@ async fn package_tool_config_uses_registry_validation(
 		let mut manifest = record.manifest.clone();
 		manifest["entity"]["config"] = invalid;
 		check_rejected(
-			update_package_manifest(&f.store.pool, &record.id, &record.version, manifest).await,
+			update_package_manifest(f.store.pool.driver(), &record.id, &record.version, manifest)
+				.await,
 			"packages_identity",
 		);
 	}
@@ -959,7 +1007,8 @@ async fn package_tool_config_uses_registry_validation(
 		let mut manifest = record.manifest.clone();
 		manifest["entity"]["config"]["instructions"] = invalid;
 		check_rejected(
-			update_package_manifest(&f.store.pool, &record.id, &record.version, manifest).await,
+			update_package_manifest(f.store.pool.driver(), &record.id, &record.version, manifest)
+				.await,
 			"packages_identity",
 		);
 	}
@@ -1006,7 +1055,7 @@ async fn registry_json_shapes_remain_deserializable(
 		let mut invalid = good.clone();
 		invalid["schema"] = invalid_schema;
 		check_rejected(
-			insert_entry(&f.store.pool, &invalid).await,
+			insert_entry(f.store.pool.driver(), &invalid).await,
 			"registry_metadata_shape",
 		);
 	}
@@ -1022,7 +1071,7 @@ async fn registry_json_shapes_remain_deserializable(
 			let mut entry = good.clone();
 			entry[field] = json!(["valid", invalid]);
 			check_rejected(
-				insert_entry(&f.store.pool, &entry).await,
+				insert_entry(f.store.pool.driver(), &entry).await,
 				"registry_metadata_shape",
 			);
 		}
@@ -1030,21 +1079,21 @@ async fn registry_json_shapes_remain_deserializable(
 	let mut unknown = good.clone();
 	unknown["unexpected"] = json!(true);
 	check_rejected(
-		insert_entry(&f.store.pool, &unknown).await,
+		insert_entry(f.store.pool.driver(), &unknown).await,
 		"registry_metadata_shape",
 	);
 	for field in ["capabilities", "tags", "languages", "skills"] {
 		unknown.as_object_mut().unwrap().remove(field);
 	}
 	unknown.as_object_mut().unwrap().remove("unexpected");
-	insert_entry(&f.store.pool, &unknown).await.unwrap();
+	insert_entry(f.store.pool.driver(), &unknown).await.unwrap();
 	assert_eq!(f.registry.list(&Default::default()).await.unwrap().len(), 1);
 	let mut full = good;
 	full["id"] = json!("full");
 	for field in ["capabilities", "tags", "languages", "skills"] {
 		full[field] = json!(["one", "two"]);
 	}
-	insert_entry(&f.store.pool, &full).await.unwrap();
+	insert_entry(f.store.pool.driver(), &full).await.unwrap();
 	assert_eq!(f.registry.list(&Default::default()).await.unwrap().len(), 2);
 	cleanup(f, &url, &schema).await;
 }
@@ -1068,14 +1117,14 @@ async fn model_and_agent_configs_reject_unusable_shapes(
 		let mut entry = good.clone();
 		entry["config"][field] = value;
 		check_rejected(
-			insert_entry(&f.store.pool, &entry).await,
+			insert_entry(f.store.pool.driver(), &entry).await,
 			"registry_model_config",
 		);
 	}
 	let mut missing = good.clone();
 	missing["config"].as_object_mut().unwrap().remove("cost");
 	check_rejected(
-		insert_entry(&f.store.pool, &missing).await,
+		insert_entry(f.store.pool.driver(), &missing).await,
 		"registry_model_config",
 	);
 	let mut agent = good.clone();
@@ -1083,20 +1132,22 @@ async fn model_and_agent_configs_reject_unusable_shapes(
 	agent["kind"] = json!("agent");
 	agent["config"] = json!({"instructions":"Work"});
 	check_rejected(
-		insert_entry(&f.store.pool, &agent).await,
+		insert_entry(f.store.pool.driver(), &agent).await,
 		"registry_agent_config",
 	);
-	insert_entry(&f.store.pool, &good).await.unwrap();
+	insert_entry(f.store.pool.driver(), &good).await.unwrap();
 	let mut other_kind = serde_json::to_value(model()).unwrap();
 	other_kind["id"] = json!("not-a-model");
 	other_kind["kind"] = json!("tool");
 	other_kind["config"] = json!({"transport":"native","operation":"echo"});
-	insert_entry(&f.store.pool, &other_kind).await.unwrap();
+	insert_entry(f.store.pool.driver(), &other_kind)
+		.await
+		.unwrap();
 	let mut skill = serde_json::to_value(model()).unwrap();
 	skill["id"] = json!("test-skill");
 	skill["kind"] = json!("skill");
 	skill["config"] = json!({"instructions":"Help with a focused task"});
-	insert_entry(&f.store.pool, &skill).await.unwrap();
+	insert_entry(f.store.pool.driver(), &skill).await.unwrap();
 	for invalid in [
 		Value::Null,
 		json!([]),
@@ -1107,7 +1158,7 @@ async fn model_and_agent_configs_reject_unusable_shapes(
 	] {
 		agent["config"]["model"] = invalid;
 		check_rejected(
-			insert_entry(&f.store.pool, &agent).await,
+			insert_entry(f.store.pool.driver(), &agent).await,
 			"registry_agent_config",
 		);
 	}
@@ -1116,14 +1167,14 @@ async fn model_and_agent_configs_reject_unusable_shapes(
 	missing_model["id"] = json!("missing-model-agent");
 	missing_model["config"]["model"] = json!({"id":"does-not-exist","version":"1.0.0"});
 	check_foreign_key_rejected(
-		insert_entry(&f.store.pool, &missing_model).await,
+		insert_entry(f.store.pool.driver(), &missing_model).await,
 		"registry_agent_model_target",
 	);
 	let mut wrong_kind_model = agent.clone();
 	wrong_kind_model["id"] = json!("wrong-kind-model-agent");
 	wrong_kind_model["config"]["model"] = json!({"id":"not-a-model","version":"1.0.0"});
 	check_foreign_key_rejected(
-		insert_entry(&f.store.pool, &wrong_kind_model).await,
+		insert_entry(f.store.pool.driver(), &wrong_kind_model).await,
 		"registry_agent_model_target",
 	);
 	for (field, invalid) in [
@@ -1135,14 +1186,14 @@ async fn model_and_agent_configs_reject_unusable_shapes(
 		let mut malformed = agent.clone();
 		malformed["config"][field] = invalid;
 		check_rejected(
-			insert_entry(&f.store.pool, &malformed).await,
+			insert_entry(f.store.pool.driver(), &malformed).await,
 			"registry_agent_config",
 		);
 	}
 	let mut fractional_steps = agent.clone();
 	fractional_steps["config"]["max_steps"] = json!(1.0);
 	check_rejected(
-		insert_entry(&f.store.pool, &fractional_steps).await,
+		insert_entry(f.store.pool.driver(), &fractional_steps).await,
 		"registry_agent_config",
 	);
 	let mut integer_steps = agent.clone();
@@ -1150,20 +1201,22 @@ async fn model_and_agent_configs_reject_unusable_shapes(
 	integer_steps["config"]["max_steps"] = json!(1);
 	let _: aidash_server::registry::AgentConfig =
 		serde_json::from_value(integer_steps["config"].clone()).unwrap();
-	insert_entry(&f.store.pool, &integer_steps).await.unwrap();
+	insert_entry(f.store.pool.driver(), &integer_steps)
+		.await
+		.unwrap();
 	let _: aidash_server::registry::AgentConfig =
 		serde_json::from_value(agent["config"].clone()).unwrap();
-	insert_entry(&f.store.pool, &agent).await.unwrap();
+	insert_entry(f.store.pool.driver(), &agent).await.unwrap();
 	let mut cluster = serde_json::to_value(model()).unwrap();
 	cluster["id"] = json!("test-cluster");
 	cluster["kind"] = json!("cluster");
 	cluster["config"] = json!({"coordinator":{"id":"agent","version":"1.0.0"}});
-	insert_entry(&f.store.pool, &cluster).await.unwrap();
+	insert_entry(f.store.pool.driver(), &cluster).await.unwrap();
 	let mut linked_agent_config = agent["config"].clone();
 	linked_agent_config["tools"] = json!([{"id":"not-a-model","version":"1.0.0"}]);
 	linked_agent_config["skills"] = json!([{"id":"test-skill","version":"1.0.0"}]);
 	linked_agent_config["cluster"] = json!({"id":"test-cluster","version":"1.0.0"});
-	update_registry_config(&f.store.pool, "agent", "1.0.0", linked_agent_config)
+	update_registry_config(f.store.pool.driver(), "agent", "1.0.0", linked_agent_config)
 		.await
 		.unwrap();
 	for (id, field, target) in [
@@ -1206,17 +1259,17 @@ async fn model_and_agent_configs_reject_unusable_shapes(
 			invalid_reference["config"][field] = json!([target]);
 		}
 		check_foreign_key_rejected(
-			insert_entry(&f.store.pool, &invalid_reference).await,
+			insert_entry(f.store.pool.driver(), &invalid_reference).await,
 			"registry_agent_resource_target",
 		);
 	}
 	let truncate_model_refs = sqlx::query("TRUNCATE registry_agent_model_refs")
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.map(|_| ());
 	check_rejected(truncate_model_refs, "registry_agent_model_reference");
 	let truncate_resource_refs = sqlx::query("TRUNCATE registry_agent_resource_refs")
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.map(|_| ());
 	check_rejected(truncate_resource_refs, "registry_agent_resource_reference");
@@ -1255,7 +1308,7 @@ async fn tool_configs_reject_undecodable_shapes(
 	] {
 		tool["config"] = config;
 		check_rejected(
-			insert_entry(&f.store.pool, &tool).await,
+			insert_entry(f.store.pool.driver(), &tool).await,
 			"registry_tool_config",
 		);
 	}
@@ -1272,7 +1325,7 @@ async fn tool_configs_reject_undecodable_shapes(
 			"credential_env":null,
 			"replay":"read_only"
 		});
-		insert_entry(&f.store.pool, &tool).await.unwrap();
+		insert_entry(f.store.pool.driver(), &tool).await.unwrap();
 	}
 	tool["id"] = json!("secret-tool");
 	tool["config"] = json!({
@@ -1281,7 +1334,7 @@ async fn tool_configs_reject_undecodable_shapes(
 		"credential_env":"AIDASH_SECRET_TOOL_TOKEN",
 		"replay":"read_only"
 	});
-	insert_entry(&f.store.pool, &tool).await.unwrap();
+	insert_entry(f.store.pool.driver(), &tool).await.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1304,7 +1357,7 @@ async fn compactor_and_embedding_configs_reject_undecodable_shapes(
 	] {
 		entry["config"] = invalid;
 		check_rejected(
-			insert_entry(&f.store.pool, &entry).await,
+			insert_entry(f.store.pool.driver(), &entry).await,
 			"registry_compactor_config",
 		);
 	}
@@ -1317,7 +1370,7 @@ async fn compactor_and_embedding_configs_reject_undecodable_shapes(
 		"max_questions":8,
 		"max_response_bytes":16384
 	});
-	insert_entry(&f.store.pool, &entry).await.unwrap();
+	insert_entry(f.store.pool.driver(), &entry).await.unwrap();
 
 	entry["id"] = json!("embedding");
 	entry["kind"] = json!("embedding");
@@ -1329,7 +1382,7 @@ async fn compactor_and_embedding_configs_reject_undecodable_shapes(
 	] {
 		entry["config"] = invalid;
 		check_rejected(
-			insert_entry(&f.store.pool, &entry).await,
+			insert_entry(f.store.pool.driver(), &entry).await,
 			"registry_embedding_config",
 		);
 	}
@@ -1341,7 +1394,7 @@ async fn compactor_and_embedding_configs_reject_undecodable_shapes(
 		"model_version":"1",
 		"dimensions":1536
 	});
-	insert_entry(&f.store.pool, &entry).await.unwrap();
+	insert_entry(f.store.pool.driver(), &entry).await.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 
@@ -1378,7 +1431,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 		.to_string(PostgresQueryBuilder);
 	check_rejected(
 		sqlx::query(&claimed_without_owner)
-			.execute(&f.store.pool)
+			.execute(f.store.pool.driver())
 			.await
 			.map(|_| ()),
 		"tasks_active_owner",
@@ -1390,15 +1443,26 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 		json!({"model":{}}),
 	] {
 		check_rejected(
-			update(&f.store.pool, "tasks", "requirements", Expr::value(invalid)).await,
+			update(
+				f.store.pool.driver(),
+				"tasks",
+				"requirements",
+				Expr::value(invalid),
+			)
+			.await,
 			"tasks_content",
 		);
 	}
 	let valid = json!({"kind":null,"query":"text","capability":"code","language":"en","skill":"read","tag":"tag","model":"model"});
 	let _: aidash_server::registry::Search = serde_json::from_value(valid.clone()).unwrap();
-	update(&f.store.pool, "tasks", "requirements", Expr::value(valid))
-		.await
-		.unwrap();
+	update(
+		f.store.pool.driver(),
+		"tasks",
+		"requirements",
+		Expr::value(valid),
+	)
+	.await
+	.unwrap();
 	let run = f
 		.store
 		.accept_run(&task, "aidash://remote", "executor", "1.0.0")
@@ -1408,7 +1472,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	// fenced failure path remain available. The codec is the shape authority.
 	for column in ["context", "pending"] {
 		for invalid in [Value::Null, json!([]), json!(7), json!("text"), json!({})] {
-			update(&f.store.pool, "runs", column, Expr::value(invalid))
+			update(f.store.pool.driver(), "runs", column, Expr::value(invalid))
 				.await
 				.unwrap();
 			assert!(f.store.run(run.id).await.is_err());
@@ -1422,7 +1486,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 			);
 		}
 		update(
-			&f.store.pool,
+			f.store.pool.driver(),
 			"runs",
 			column,
 			Expr::value(if column == "context" {
@@ -1444,7 +1508,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	};
 	check_foreign_key_rejected(
 		update_run_state(
-			&f.store.pool,
+			f.store.pool.driver(),
 			run.id,
 			"WAITING",
 			human(uuid::Uuid::new_v4()),
@@ -1457,12 +1521,12 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 		.human_request(&run, "QUESTION", "Continue?", "waiting-shape-test")
 		.await
 		.unwrap();
-	update_run_state(&f.store.pool, run.id, "WAITING", human(request.id))
+	update_run_state(f.store.pool.driver(), run.id, "WAITING", human(request.id))
 		.await
 		.unwrap();
 	check_foreign_key_rejected(
 		update(
-			&f.store.pool,
+			f.store.pool.driver(),
 			"human_requests",
 			"id",
 			uuid_expr(uuid::Uuid::new_v4()),
@@ -1493,7 +1557,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 		.unwrap();
 	check_foreign_key_rejected(
 		update(
-			&f.store.pool,
+			f.store.pool.driver(),
 			"human_requests",
 			"run_id",
 			uuid_expr(other_run.id),
@@ -1508,13 +1572,13 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	check_foreign_key_rejected(
 		sqlx::query(&delete_request)
 			.bind(request.id)
-			.execute(&f.store.pool)
+			.execute(f.store.pool.driver())
 			.await
 			.map(|_| ()),
 		"runs_human_request_ref",
 	);
 	update_run_state(
-		&f.store.pool,
+		f.store.pool.driver(),
 		other_run.id,
 		"COMPLETED",
 		common::pending(aidash_server::domain::RunState::Completed(
@@ -1524,7 +1588,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	.await
 	.unwrap();
 	update_run_state(
-		&f.store.pool,
+		f.store.pool.driver(),
 		run.id,
 		"READY",
 		common::pending(aidash_server::domain::RunState::default()),
@@ -1534,7 +1598,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	let valid = common::tool_pending(
 		json!({"response":{"text":"","tool_calls":[{"id":"call-1","name":"echo","arguments":{}}]},"cursor":1}),
 	);
-	update_run_state(&f.store.pool, run.id, "TOOL_CALL", valid.clone())
+	update_run_state(f.store.pool.driver(), run.id, "TOOL_CALL", valid.clone())
 		.await
 		.unwrap();
 	assert!(f.store.run(run.id).await.is_ok());
@@ -1545,13 +1609,13 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	] {
 		let mut invalid = valid.clone();
 		invalid["data"][field] = value;
-		update_run_state(&f.store.pool, run.id, "TOOL_CALL", invalid)
+		update_run_state(f.store.pool.driver(), run.id, "TOOL_CALL", invalid)
 			.await
 			.unwrap();
 		assert!(f.store.run(run.id).await.is_err());
 	}
 	update_run_state(
-		&f.store.pool,
+		f.store.pool.driver(),
 		run.id,
 		"READY",
 		common::pending(aidash_server::domain::RunState::default()),
@@ -1559,7 +1623,13 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	.await
 	.unwrap();
 	check_rejected(
-		update(&f.store.pool, "runs", "revision", Expr::value(i64::MAX)).await,
+		update(
+			f.store.pool.driver(),
+			"runs",
+			"revision",
+			Expr::value(i64::MAX),
+		)
+		.await,
 		"runs_counters",
 	);
 	let second_task = f
@@ -1591,13 +1661,13 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	sqlx::query(&max_safe_revision)
 		.bind(i64::MAX - 1)
 		.bind(run.id)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap();
 	sqlx::query(&max_safe_revision)
 		.bind(i64::MAX - 2)
 		.bind(second_run.id)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap();
 	let third_task = f
@@ -1636,9 +1706,14 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 		json!({"compactions":4294967296_u64}),
 		common::context(json!({"history":[{"kind":"future_event"}]})),
 	] {
-		update(&f.store.pool, "runs", "context", Expr::value(malformed))
-			.await
-			.unwrap();
+		update(
+			f.store.pool.driver(),
+			"runs",
+			"context",
+			Expr::value(malformed),
+		)
+		.await
+		.unwrap();
 		assert!(
 			f.store
 				.inspect_run(run.id)
@@ -1649,7 +1724,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 		);
 	}
 	update(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"runs",
 		"context",
 		Expr::value(common::context(json!({}))),
@@ -1671,7 +1746,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 		check_rejected(
 			sqlx::query(&lease_deadline_update(deadline))
 				.bind(run.id)
-				.execute(&f.store.pool)
+				.execute(f.store.pool.driver())
 				.await
 				.map(|_| ()),
 			"runs_lease",
@@ -1679,7 +1754,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 	}
 	sqlx::query(&lease_deadline_update("2030-01-01 00:00:00+00"))
 		.bind(run.id)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap();
 	cleanup(f, &url, &schema).await;
@@ -1703,7 +1778,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 	let spec = index_spec();
 	let _: aidash_server::semantic::IndexSpec = serde_json::from_value(spec.clone()).unwrap();
 	insert_values(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"semantic_indexes",
 		&[
 			("workspace_id", uuid_expr(workspace.id)),
@@ -1717,7 +1792,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 	.unwrap();
 	check_rejected(
 		update(
-			&f.store.pool,
+			f.store.pool.driver(),
 			"semantic_indexes",
 			"revision",
 			Expr::value(i64::MAX),
@@ -1731,7 +1806,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 		serde_json::from_value(empty_port.clone()).unwrap();
 	runtime.validate().unwrap();
 	update(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"semantic_indexes",
 		"spec",
 		Expr::value(empty_port),
@@ -1751,7 +1826,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 				serde_json::from_value(boundary.clone()).unwrap();
 			runtime.validate().unwrap();
 			update(
-				&f.store.pool,
+				f.store.pool.driver(),
 				"semantic_indexes",
 				"spec",
 				Expr::value(boundary),
@@ -1767,7 +1842,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 			serde_json::from_value(boundary.clone()).unwrap();
 		runtime.validate().unwrap();
 		update(
-			&f.store.pool,
+			f.store.pool.driver(),
 			"semantic_indexes",
 			"spec",
 			Expr::value(boundary),
@@ -1776,7 +1851,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 		.unwrap();
 	}
 	update(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"semantic_indexes",
 		"spec",
 		Expr::value(spec.clone()),
@@ -1868,7 +1943,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 	for invalid in invalid_specs {
 		check_rejected(
 			update(
-				&f.store.pool,
+				f.store.pool.driver(),
 				"semantic_indexes",
 				"spec",
 				Expr::value(invalid),
@@ -1878,7 +1953,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 		);
 	}
 	insert_values(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"semantic_entries",
 		&[
 			("id", uuid_expr(uuid::Uuid::new_v4())),
@@ -1917,7 +1992,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 	] {
 		check_rejected(
 			update(
-				&f.store.pool,
+				f.store.pool.driver(),
 				"semantic_entries",
 				"authority",
 				Expr::value(invalid),
@@ -1942,7 +2017,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 	] {
 		check_rejected(
 			update(
-				&f.store.pool,
+				f.store.pool.driver(),
 				"semantic_entries",
 				"source",
 				Expr::value(invalid),
@@ -1952,7 +2027,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 		);
 	}
 	update(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"semantic_entries",
 		"deleted",
 		Expr::value(true),
@@ -1960,7 +2035,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 	.await
 	.unwrap();
 	update(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"semantic_entries",
 		"source",
 		Expr::value(json!({"kind":"memory","text":""})),
@@ -1968,7 +2043,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 	.await
 	.unwrap();
 	update(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"semantic_entries",
 		"source",
 		Expr::value(json!({"kind":"memory","text":"text"})),
@@ -1976,7 +2051,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 	.await
 	.unwrap();
 	update(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"semantic_entries",
 		"deleted",
 		Expr::value(false),
@@ -1995,7 +2070,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 			let _: aidash_server::semantic::Source =
 				serde_json::from_value(source.clone()).unwrap();
 			update(
-				&f.store.pool,
+				f.store.pool.driver(),
 				"semantic_entries",
 				"source",
 				Expr::value(source),
@@ -2005,7 +2080,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 		}
 	}
 	update(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"semantic_entries",
 		"source",
 		Expr::value(json!({"kind":"memory","text":"x".repeat(129)})),
@@ -2016,7 +2091,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 	smaller_limit["max_input_bytes"] = json!(128);
 	check_rejected(
 		update(
-			&f.store.pool,
+			f.store.pool.driver(),
 			"semantic_indexes",
 			"spec",
 			Expr::value(smaller_limit.clone()),
@@ -2025,7 +2100,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 		"semantic_index_input_bytes",
 	);
 	update(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"semantic_entries",
 		"source",
 		Expr::value(json!({"kind":"memory","text":"short"})),
@@ -2033,7 +2108,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 	.await
 	.unwrap();
 	update(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"semantic_indexes",
 		"spec",
 		Expr::value(smaller_limit),
@@ -2042,7 +2117,7 @@ async fn semantic_specs_and_sources_reject_undecodable_records(
 	.unwrap();
 	check_rejected(
 		update(
-			&f.store.pool,
+			f.store.pool.driver(),
 			"semantic_entries",
 			"source",
 			Expr::value(json!({"kind":"memory","text":"é".repeat(65)})),
@@ -2104,7 +2179,7 @@ async fn concurrent_dependency_changes_cannot_race_target_deletion(
 			.create_task(workspace.id, &input, "human", None)
 			.await
 			.unwrap();
-		let mut transaction = f.store.pool.begin().await.unwrap();
+		let mut transaction = f.store.pool.driver().begin().await.unwrap();
 		if deletion_first {
 			sqlx::query(&delete_task())
 				.bind(target.id)
@@ -2119,7 +2194,7 @@ async fn concurrent_dependency_changes_cannot_race_target_deletion(
 				.await
 				.unwrap();
 		}
-		let pool = f.store.pool.clone();
+		let pool = f.store.pool.driver().clone();
 		let mut competing = tokio::spawn(async move {
 			if deletion_first {
 				sqlx::query(&dependencies_update())
@@ -2189,13 +2264,13 @@ async fn task_parent_cycle_guard_rejects_direct_cycles(
 	sqlx::query(&parent_update)
 		.bind(child.id)
 		.bind(parent.id)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap();
 	let error = sqlx::query(&parent_update)
 		.bind(parent.id)
 		.bind(child.id)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap_err();
 	let database = error.as_database_error().unwrap();
@@ -2238,13 +2313,13 @@ async fn task_dependency_cycles_include_parent_edges(
 	sqlx::query(&set_dependencies)
 		.bind(first.id)
 		.bind(second.id)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap();
 	let error = sqlx::query(&set_dependencies)
 		.bind(second.id)
 		.bind(first.id)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap_err();
 	let database = error.as_database_error().unwrap();
@@ -2263,7 +2338,7 @@ async fn task_dependency_cycles_include_parent_edges(
 	let error = sqlx::query(&set_parent)
 		.bind(first.id)
 		.bind(second.id)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap_err();
 	let database = error.as_database_error().unwrap();
@@ -2309,7 +2384,7 @@ async fn task_cycle_checks_deduplicate_diamond_reachability(
 				sqlx::query(&dependencies_update())
 					.bind(task_id)
 					.bind(previous.clone())
-					.execute(&f.store.pool)
+					.execute(f.store.pool.driver())
 					.await
 					.unwrap();
 			}
@@ -2319,7 +2394,7 @@ async fn task_cycle_checks_deduplicate_diamond_reachability(
 	let error = sqlx::query(&dependencies_update())
 		.bind(levels[0][0])
 		.bind(vec![levels.last().unwrap()[0]])
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap_err();
 	let database = error.as_database_error().unwrap();
@@ -2363,8 +2438,8 @@ async fn concurrent_parent_cycle_checks_are_serialized(
 		.value_expr(Alias::new("parent_id"), Expr::cust("$1"))
 		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$2")))
 		.to_string(PostgresQueryBuilder);
-	let mut left = f.store.pool.begin().await.unwrap();
-	let mut right = f.store.pool.begin().await.unwrap();
+	let mut left = f.store.pool.driver().begin().await.unwrap();
+	let mut right = f.store.pool.driver().begin().await.unwrap();
 	sqlx::query(&parent_update)
 		.bind(second_task.id)
 		.bind(first_task.id)
@@ -2411,22 +2486,24 @@ async fn cluster_and_registry_identity_constraints_match_application_bounds(
 		let mut invalid = cluster.clone();
 		invalid["config"] = config;
 		check_rejected(
-			insert_entry(&f.store.pool, &invalid).await,
+			insert_entry(f.store.pool.driver(), &invalid).await,
 			"registry_cluster_config",
 		);
 	}
 	cluster["config"] = json!({"coordinator":{"id":"agent","version":"1.2.3+build.01"}});
-	insert_entry(&f.store.pool, &cluster).await.unwrap();
+	insert_entry(f.store.pool.driver(), &cluster).await.unwrap();
 
 	let mut build_only = serde_json::to_value(model()).unwrap();
 	build_only["id"] = json!("build-only");
 	build_only["version"] = json!("1.2.3+build.01");
-	insert_entry(&f.store.pool, &build_only).await.unwrap();
+	insert_entry(f.store.pool.driver(), &build_only)
+		.await
+		.unwrap();
 	let mut oversized = serde_json::to_value(model()).unwrap();
 	oversized["id"] = json!("oversized");
 	oversized["version"] = json!("18446744073709551616.0.0");
 	check_rejected(
-		insert_entry(&f.store.pool, &oversized).await,
+		insert_entry(f.store.pool.driver(), &oversized).await,
 		"registry_semver",
 	);
 
@@ -2439,7 +2516,7 @@ async fn cluster_and_registry_identity_constraints_match_application_bounds(
 		"instructions":"Work"
 	});
 	check_rejected(
-		insert_entry(&f.store.pool, &agent).await,
+		insert_entry(f.store.pool.driver(), &agent).await,
 		"registry_identity",
 	);
 	cleanup(f, &url, &schema).await;
@@ -2454,9 +2531,9 @@ async fn installation_constraints_validate_model_overrides(
 ) {
 	let (f, url, schema) = setup(&_test_environment).await;
 	let entry = serde_json::to_value(model()).unwrap();
-	insert_entry(&f.store.pool, &entry).await.unwrap();
+	insert_entry(f.store.pool.driver(), &entry).await.unwrap();
 	insert_values(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"installations",
 		&[
 			("id", Expr::value("test-model").into()),
@@ -2475,7 +2552,7 @@ async fn installation_constraints_validate_model_overrides(
 	] {
 		check_rejected(
 			update(
-				&f.store.pool,
+				f.store.pool.driver(),
 				"installations",
 				"config",
 				Expr::value(invalid),
@@ -2485,7 +2562,7 @@ async fn installation_constraints_validate_model_overrides(
 		);
 	}
 	update(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"installations",
 		"config",
 		Expr::value(json!({"context_window":8192})),
@@ -2505,15 +2582,21 @@ async fn agent_installation_model_overrides_keep_valid_registry_references(
 	let (f, url, schema) = setup(&_test_environment).await;
 	let mut base_model = serde_json::to_value(model()).unwrap();
 	base_model["id"] = json!("base-model");
-	insert_entry(&f.store.pool, &base_model).await.unwrap();
+	insert_entry(f.store.pool.driver(), &base_model)
+		.await
+		.unwrap();
 	let mut override_model = serde_json::to_value(model()).unwrap();
 	override_model["id"] = json!("override-model");
-	insert_entry(&f.store.pool, &override_model).await.unwrap();
+	insert_entry(f.store.pool.driver(), &override_model)
+		.await
+		.unwrap();
 	let mut wrong_kind = serde_json::to_value(model()).unwrap();
 	wrong_kind["id"] = json!("not-a-model");
 	wrong_kind["kind"] = json!("tool");
 	wrong_kind["config"] = json!({"transport":"native","operation":"echo"});
-	insert_entry(&f.store.pool, &wrong_kind).await.unwrap();
+	insert_entry(f.store.pool.driver(), &wrong_kind)
+		.await
+		.unwrap();
 	let mut agent = serde_json::to_value(model()).unwrap();
 	agent["id"] = json!("installed-agent");
 	agent["kind"] = json!("agent");
@@ -2521,14 +2604,14 @@ async fn agent_installation_model_overrides_keep_valid_registry_references(
 		"model":{"id":"base-model","version":"1.0.0"},
 		"instructions":"Work"
 	});
-	insert_entry(&f.store.pool, &agent).await.unwrap();
+	insert_entry(f.store.pool.driver(), &agent).await.unwrap();
 	for model_ref in [
 		json!({"id":"missing-model","version":"1.0.0"}),
 		json!({"id":"not-a-model","version":"1.0.0"}),
 	] {
 		check_rejected(
 			insert_values(
-				&f.store.pool,
+				f.store.pool.driver(),
 				"installations",
 				&[
 					("id", Expr::value("installed-agent").into()),
@@ -2542,7 +2625,7 @@ async fn agent_installation_model_overrides_keep_valid_registry_references(
 		);
 	}
 	insert_values(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"installations",
 		&[
 			("id", Expr::value("installed-agent").into()),
@@ -2563,7 +2646,7 @@ async fn agent_installation_model_overrides_keep_valid_registry_references(
 		.to_string(PostgresQueryBuilder);
 	check_rejected(
 		sqlx::query(&delete_override_model)
-			.execute(&f.store.pool)
+			.execute(f.store.pool.driver())
 			.await
 			.map(|_| ()),
 		"registry_agent_model_installation_reference",
@@ -2588,9 +2671,9 @@ async fn installation_constraints_validate_effective_tool_config(
 		"credential_env":null,
 		"replay":"read_only"
 	});
-	insert_entry(&f.store.pool, &tool).await.unwrap();
+	insert_entry(f.store.pool.driver(), &tool).await.unwrap();
 	insert_values(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"installations",
 		&[
 			("id", Expr::value("installed-tool").into()),
@@ -2608,7 +2691,7 @@ async fn installation_constraints_validate_effective_tool_config(
 	] {
 		check_rejected(
 			update(
-				&f.store.pool,
+				f.store.pool.driver(),
 				"installations",
 				"config",
 				Expr::value(invalid),
@@ -2618,7 +2701,7 @@ async fn installation_constraints_validate_effective_tool_config(
 		);
 	}
 	update(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"installations",
 		"config",
 		Expr::value(json!({"endpoint":"http://localhost:8888/tool"})),
@@ -2640,9 +2723,9 @@ async fn installation_constraints_validate_skill_overrides(
 	skill["id"] = json!("installed-skill");
 	skill["kind"] = json!("skill");
 	skill["config"] = json!({"instructions":"Base instructions"});
-	insert_entry(&f.store.pool, &skill).await.unwrap();
+	insert_entry(f.store.pool.driver(), &skill).await.unwrap();
 	insert_values(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"installations",
 		&[
 			("id", Expr::value("installed-skill").into()),
@@ -2660,7 +2743,7 @@ async fn installation_constraints_validate_skill_overrides(
 	] {
 		check_rejected(
 			update(
-				&f.store.pool,
+				f.store.pool.driver(),
 				"installations",
 				"config",
 				Expr::value(invalid),
@@ -2670,7 +2753,7 @@ async fn installation_constraints_validate_skill_overrides(
 		);
 	}
 	update(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"installations",
 		"config",
 		Expr::value(json!({"instructions":"Override instructions"})),
@@ -2697,9 +2780,9 @@ async fn registry_updates_revalidate_installed_tool_overrides(
 		"credential_env":null,
 		"replay":"read_only"
 	});
-	insert_entry(&f.store.pool, &tool).await.unwrap();
+	insert_entry(f.store.pool.driver(), &tool).await.unwrap();
 	insert_values(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"installations",
 		&[
 			("id", Expr::value("changing-tool").into()),
@@ -2715,7 +2798,7 @@ async fn registry_updates_revalidate_installed_tool_overrides(
 	.unwrap();
 	check_rejected(
 		update_registry_config(
-			&f.store.pool,
+			f.store.pool.driver(),
 			"changing-tool",
 			"1.0.0",
 			json!({"transport":"native","operation":"echo"}),
@@ -2724,7 +2807,7 @@ async fn registry_updates_revalidate_installed_tool_overrides(
 		"installations_config",
 	);
 	update_registry_config(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"changing-tool",
 		"1.0.0",
 		json!({
@@ -2756,9 +2839,9 @@ async fn concurrent_registry_and_installation_writes_use_one_lock_order(
 		"credential_env":null,
 		"replay":"read_only"
 	});
-	insert_entry(&f.store.pool, &tool).await.unwrap();
+	insert_entry(f.store.pool.driver(), &tool).await.unwrap();
 	insert_values(
-		&f.store.pool,
+		f.store.pool.driver(),
 		"installations",
 		&[
 			("id", Expr::value("concurrent-tool").into()),
@@ -2771,7 +2854,7 @@ async fn concurrent_registry_and_installation_writes_use_one_lock_order(
 	.unwrap();
 	let start = std::sync::Arc::new(tokio::sync::Barrier::new(3));
 	let registry_start = start.clone();
-	let registry_pool = f.store.pool.clone();
+	let registry_pool = f.store.pool.driver().clone();
 	let registry_update = tokio::spawn(async move {
 		registry_start.wait().await;
 		update_registry_config(
@@ -2783,7 +2866,7 @@ async fn concurrent_registry_and_installation_writes_use_one_lock_order(
 		.await
 	});
 	let installation_start = start.clone();
-	let installation_pool = f.store.pool.clone();
+	let installation_pool = f.store.pool.driver().clone();
 	let installation_update = tokio::spawn(async move {
 		installation_start.wait().await;
 		update(
@@ -2847,7 +2930,7 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
 			sqlx::query(&query)
 				.bind(task.id)
 				.bind(vec![dependency])
-				.execute(&f.store.pool)
+				.execute(f.store.pool.driver())
 				.await
 				.unwrap_err(),
 		);
@@ -2855,7 +2938,7 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
 	// Bypassing the application on insertion must reject a foreign dependency too.
 	dependency_error(
 		insert_values(
-			&f.store.pool,
+			f.store.pool.driver(),
 			"tasks",
 			&[
 				("id", uuid_expr(uuid::Uuid::new_v4())),
@@ -2876,13 +2959,13 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
 	sqlx::query(&query)
 		.bind(task.id)
 		.bind(vec![target.id, target.id])
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap();
 	dependency_error(
 		sqlx::query(&delete_task())
 			.bind(target.id)
-			.execute(&f.store.pool)
+			.execute(f.store.pool.driver())
 			.await
 			.unwrap_err(),
 	);
@@ -2893,7 +2976,7 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
 		.to_string(PostgresQueryBuilder);
 	dependency_error(
 		sqlx::query(&move_target)
-			.execute(&f.store.pool)
+			.execute(f.store.pool.driver())
 			.await
 			.unwrap_err(),
 	);
@@ -2903,7 +2986,7 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
 				.from_table(Alias::new("task_dependencies"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.map(|_| ()),
 		"tasks_dependencies_managed",
@@ -2913,12 +2996,12 @@ async fn task_dependencies_enforce_existence_ownership_and_reverse_changes(
 	sqlx::query(&dependencies_update())
 		.bind(task.id)
 		.bind(Vec::<uuid::Uuid>::new())
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap();
 	sqlx::query(&delete_task())
 		.bind(target.id)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap();
 	cleanup(f, &url, &schema).await;

@@ -35,7 +35,6 @@ impl StreamAuthorityStore for Authority<'_> {
 	}
 	async fn current(&self, workspace: Option<Uuid>) -> Result<Option<AuthorityRecord>> {
 		let result: NativeResult<Option<AuthorityRecord>> = async {
-			#[derive(sqlx::FromRow)]
 			struct Current {
 				revision: i64,
 				document: Value,
@@ -46,6 +45,17 @@ impl StreamAuthorityStore for Authority<'_> {
 				last_valid_at: Option<chrono::DateTime<chrono::Utc>>,
 				disabled_at: Option<chrono::DateTime<chrono::Utc>>,
 			}
+			crate::native_record!(Current {
+				revision,
+				document,
+				owner_subject,
+				mapping_id,
+				mapping_enabled,
+				issuer,
+				last_valid_at,
+				disabled_at
+			});
+
 			let col =
 				|table: &str, column: &str| Expr::col((Alias::new(table), Alias::new(column)));
 			let mut query = Query::select();
@@ -93,7 +103,7 @@ impl StreamAuthorityStore for Authority<'_> {
 						Alias::new("w"),
 					),
 					Condition::all()
-						.add(col("w", "workspace_id").eq(Expr::cust("$4")))
+						.add(col("w", "workspace_id").eq(Expr::value(workspace)))
 						.add(col("w", "tenant").equals((Alias::new("c"), Alias::new("tenant")))),
 				)
 				.and_where(col("c", "id").eq(Expr::cust("$1")))
@@ -101,13 +111,13 @@ impl StreamAuthorityStore for Authority<'_> {
 				.and_where(col("c", "subject").eq(Expr::cust("$3")))
 				.and_where(col("c", "revoked_at").is_null())
 				.and_where(col("c", "expires_at").gt(Expr::cust("clock_timestamp()")));
-			let current: Option<Current> = sqlx::query_as(&query.to_string(PostgresQueryBuilder))
-				.bind(self.workspaces.identity.credential_id)
-				.bind(&self.workspaces.identity.tenant)
-				.bind(&self.workspaces.identity.subject)
-				.bind(workspace)
-				.fetch_optional(&self.workspaces.store.pool)
-				.await?;
+			let current: Option<Current> =
+				crate::database::native::query_as(&query.to_string(PostgresQueryBuilder))
+					.bind(self.workspaces.identity.credential_id)
+					.bind(&self.workspaces.identity.tenant)
+					.bind(&self.workspaces.identity.subject)
+					.fetch_optional(&self.workspaces.store.pool)
+					.await?;
 			Ok(current.map(|current| AuthorityRecord {
 				revision: current.revision,
 				document: current.document,

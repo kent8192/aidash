@@ -28,8 +28,8 @@ async fn inference_cancellation_poll_errors_do_not_signal_cancellation() {
 	pool.close().await;
 	let store = crate::store::Store {
 		capabilities: crate::capabilities::Runtime::new(Default::default()).unwrap(),
-		pool: pool.clone(),
-		control_pool: pool,
+		pool: pool.clone().into(),
+		control_pool: pool.into(),
 		node_id: "cancellation-poll-test".into(),
 		semantic_client: reqwest::Client::new(),
 		recovery_cursors: Default::default(),

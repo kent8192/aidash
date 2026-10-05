@@ -38,7 +38,7 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -58,7 +58,7 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -83,12 +83,12 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
 	assert_eq!(sender, "alice");
-	let before:Value=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("JSONB_BUILD_ARRAY((SELECT COUNT(*) FROM workspaces), (SELECT COUNT(*) FROM authorization_workspaces), (SELECT COUNT(*) FROM tasks), (SELECT COUNT(*) FROM conversations), (SELECT COUNT(*) FROM runs), (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM events))")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(&f.store.pool).await.unwrap();
+	let before:Value=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("JSONB_BUILD_ARRAY((SELECT COUNT(*) FROM workspaces), (SELECT COUNT(*) FROM authorization_workspaces), (SELECT COUNT(*) FROM tasks), (SELECT COUNT(*) FROM conversations), (SELECT COUNT(*) FROM runs), (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM events))")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(f.store.pool.driver()).await.unwrap();
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-execution","effect":"deny","subjects":{"any":true},"actions":["task.execute"],"resources":{"kinds":["task"]}}));
 	assert_eq!(
 		request(
@@ -108,7 +108,7 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 			.0,
 		403
 	);
-	let after:Value=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("JSONB_BUILD_ARRAY((SELECT COUNT(*) FROM workspaces), (SELECT COUNT(*) FROM authorization_workspaces), (SELECT COUNT(*) FROM tasks), (SELECT COUNT(*) FROM conversations), (SELECT COUNT(*) FROM runs), (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM events))")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(&f.store.pool).await.unwrap();
+	let after:Value=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("JSONB_BUILD_ARRAY((SELECT COUNT(*) FROM workspaces), (SELECT COUNT(*) FROM authorization_workspaces), (SELECT COUNT(*) FROM tasks), (SELECT COUNT(*) FROM conversations), (SELECT COUNT(*) FROM runs), (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM events))")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(f.store.pool.driver()).await.unwrap();
 	assert_eq!(
 		before, after,
 		"a late admission denial must roll back the entire conversation"
@@ -122,7 +122,7 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 			))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(&f.store.pool)
+	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(
@@ -165,7 +165,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -309,7 +309,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -360,7 +360,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -421,7 +421,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -438,7 +438,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -458,7 +458,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	);
 	// A journal can contain copied human prompts. Denying the source also hides
 	// that run's aggregate data instead of exposing it through its context.
-	{ let query_bind_1 = run.id; let query_bind_2 = common::pending(aidash_server::domain::RunState::Waiting(Box::new(aidash_server::domain::WaitingState::Human { request_id: human.id, resume: aidash_server::domain::ResumeState::Thinking(Default::default()) }))); let query_bind_3 = common::context(json!({"history":[{"kind":"human","request":"private approval prompt","request_kind":"APPROVAL","response":null}]})); sqlx::query(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), reinhardt::query::Expr::cust("'WAITING'")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("context"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).execute(&f.store.pool).await }.unwrap();
+	{ let query_bind_1 = run.id; let query_bind_2 = common::pending(aidash_server::domain::RunState::Waiting(Box::new(aidash_server::domain::WaitingState::Human { request_id: human.id, resume: aidash_server::domain::ResumeState::Thinking(Default::default()) }))); let query_bind_3 = common::context(json!({"history":[{"kind":"human","request":"private approval prompt","request_kind":"APPROVAL","response":null}]})); sqlx::query(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), reinhardt::query::Expr::cust("'WAITING'")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("context"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).execute(f.store.pool.driver()).await }.unwrap();
 	assert_eq!(
 		request(
 			&app,
@@ -563,7 +563,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 	}
 	.unwrap();

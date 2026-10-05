@@ -75,7 +75,7 @@ impl ReceiverRepository for Repository<'_> {
 			let f = self.federation;
 			{
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_records")
 						.and_where(
 							Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())),
@@ -99,7 +99,7 @@ impl ReceiverRepository for Repository<'_> {
 			let f = self.federation;
 			{
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_records")
 						.and_where(
 							Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())),
@@ -134,7 +134,7 @@ impl ReceiverScope for Scope<'_> {
 				let query_bind_3 = description.target.thread_id;
 				let query_bind_4 = &description.target.agent_id;
 				let query_bind_5 = node_id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_areas")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant"))).eq(
@@ -190,7 +190,7 @@ impl ReceiverScope for Scope<'_> {
 				let query_bind_1 = area.id;
 				let query_bind_2 = area.generation;
 				let query_bind_3 = version;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column((Alias::new("r"), Alias::new("id")))
 						.from_as(Alias::new("runs"), Alias::new("r"))
@@ -218,7 +218,7 @@ impl ReceiverScope for Scope<'_> {
 						.limit(1)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **access.tx)
+				.scalar_optional(&mut **access.tx)
 				.await?
 			})
 		}
@@ -232,7 +232,7 @@ impl ReceiverScope for Scope<'_> {
 				let query_bind_1 = &access.identity.tenant;
 				let query_bind_2 = &access.identity.subject;
 				let query_bind_3 = cursor.unwrap_or(Uuid::nil());
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_areas")
 						.and_where(
 							Expr::col(Alias::new("tenant"))
@@ -267,7 +267,7 @@ impl ReceiverScope for Scope<'_> {
 			Ok({
 				let query_bind_1 = area.id;
 				let query_bind_2 = area.generation;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.distinct()
 						.column((Alias::new("r"), Alias::new("agent_version")))
@@ -293,7 +293,7 @@ impl ReceiverScope for Scope<'_> {
 						.limit((MAX_RECIPIENT_VERSIONS_PER_AREA + 1) as u64)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_all(&mut **access.tx)
+				.scalar_all(&mut **access.tx)
 				.await?
 			})
 		}

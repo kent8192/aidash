@@ -2,7 +2,7 @@
 use super::*;
 use crate::{context::Context, domain::RunControl};
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RunMetadata {
 	pub id: Uuid,
 	pub task_id: Uuid,
@@ -21,7 +21,26 @@ pub struct RunMetadata {
 	pub lease_until: Option<DateTime<Utc>>,
 	pub updated_at: DateTime<Utc>,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+crate::native_record!(RunMetadata {
+	id,
+	task_id,
+	workspace_id,
+	home_node,
+	agent_id,
+	agent_version,
+	phase,
+	control,
+	step,
+	revision,
+	observed_input_seq,
+	ledger_worker_ready,
+	error,
+	lease_owner,
+	lease_until,
+	updated_at
+});
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RawRun {
 	#[sqlx(flatten)]
 	#[serde(flatten)]
@@ -29,6 +48,12 @@ pub(crate) struct RawRun {
 	pub context: Value,
 	pub pending: Value,
 }
+crate::native_record!(RawRun {
+	metadata,
+	context,
+	pending
+});
+
 impl RawRun {
 	pub fn decode(&self) -> Result<Run> {
 		let (state, recovery) = decode(self.metadata.phase, self.pending.clone())?;
@@ -89,13 +114,14 @@ impl RawRun {
 		}
 	}
 }
-impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for Run {
-	fn from_row(row: &'r sqlx::postgres::PgRow) -> std::result::Result<Self, sqlx::Error> {
-		RawRun::from_row(row)?
+impl crate::database::native::Decode for Run {
+	fn decode(row: &crate::database::native::Row, _: &[&str]) -> crate::Result<Self> {
+		<RawRun as crate::database::native::Decode>::decode(row, &[])?
 			.decode()
-			.map_err(|e| sqlx::Error::Decode(Box::new(e)))
+			.map_err(|error| crate::Error::Invalid(error.to_string()))
 	}
 }
+
 impl Run {
 	pub fn metadata(&self) -> RunMetadata {
 		RunMetadata {

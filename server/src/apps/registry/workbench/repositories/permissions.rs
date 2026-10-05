@@ -14,7 +14,7 @@ use aidash_domain::{
 	registry::{EntityRef, Entry},
 };
 use async_trait::async_trait;
-use reinhardt::db::backends::{TransactionExecutor, dialect::postgres::PgTransactionExecutor};
+use reinhardt::db::backends::TransactionExecutor;
 use uuid::Uuid;
 pub(crate) struct Repository<'a> {
 	pub(crate) runtime: &'a Federation,
@@ -34,14 +34,7 @@ impl PermissionRepository for Repository<'_> {
 	}
 	async fn begin(&self) -> Result<Box<dyn PermissionScope + '_>> {
 		Ok(Box::new(Scope {
-			tx: Box::new(PgTransactionExecutor::new(
-				self.runtime
-					.store
-					.pool
-					.begin()
-					.await
-					.map_err(crate::Error::from)?,
-			)),
+			tx: Box::new(crate::database::native::begin(&self.runtime.store.pool).await?),
 			actor: self.actor.clone(),
 		}))
 	}

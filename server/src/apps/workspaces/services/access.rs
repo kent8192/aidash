@@ -8,12 +8,12 @@ use crate::{
 use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 use serde_json::json;
-use sqlx::{Postgres, Transaction};
+
 use uuid::Uuid;
 
 pub(crate) enum Lease {
 	Scoped(Box<Access>),
-	Operator(Transaction<'static, Postgres>),
+	Operator(crate::database::native::Transaction),
 }
 
 impl Lease {
@@ -61,11 +61,11 @@ impl Lease {
 				Ok(Self::Scoped(Box::new(access)))
 			}
 			Actor::Operator => {
-				let mut tx = store.pool.begin().await?;
+				let mut tx = crate::database::native::begin(&store.pool).await?;
 				crate::authorization::remote::operator::require(&mut tx, workspace).await?;
 				let exists: Option<Uuid> = {
 					let query_bind_1 = workspace;
-					sqlx::query_scalar(
+					crate::database::native::query_scalar(
 						&Query::select()
 							.column(Alias::new("id"))
 							.from(Alias::new("workspaces"))
@@ -80,7 +80,7 @@ impl Lease {
 							.lock(LockType::Share)
 							.to_string(PostgresQueryBuilder),
 					)
-					.fetch_optional(&mut *tx)
+					.scalar_optional(&mut *tx)
 					.await?
 				};
 				if exists.is_none() {
@@ -91,7 +91,7 @@ impl Lease {
 		}
 	}
 
-	pub fn tx(&mut self) -> &mut Transaction<'static, Postgres> {
+	pub fn tx(&mut self) -> &mut crate::database::native::Transaction {
 		match self {
 			Self::Scoped(access) => &mut access.tx,
 			Self::Operator(tx) => tx,
@@ -182,7 +182,7 @@ impl Lease {
 use reinhardt::query::ColumnRef;
 
 use crate::authorization::access::NativeAccess;
-use reinhardt::db::backends::{TransactionExecutor, dialect::postgres::PgTransactionExecutor};
+use reinhardt::db::backends::TransactionExecutor;
 pub(crate) enum NativeLease {
 	Scoped(Box<NativeAccess>),
 	Operator(Box<dyn TransactionExecutor>),
@@ -191,9 +191,7 @@ impl Lease {
 	pub(crate) fn into_native(self) -> Result<NativeLease> {
 		match self {
 			Self::Scoped(access) => Ok(NativeLease::Scoped(Box::new((*access).into_native()?))),
-			Self::Operator(tx) => Ok(NativeLease::Operator(Box::new(PgTransactionExecutor::new(
-				tx,
-			)))),
+			Self::Operator(tx) => Ok(NativeLease::Operator(tx.into_executor())),
 		}
 	}
 }

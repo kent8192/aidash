@@ -5,14 +5,13 @@ use crate::{
 	store::Store,
 };
 use serde_json::json;
-use sqlx::{Postgres, Transaction};
 
 pub(crate) fn resource(access: &Access, install: &Installation, revision: Option<i64>) -> Resource {
 	access.resource("installation",&install.id,json!({"installing_tenant":install.tenant,"package_key":install.package_key,"installation_revision":revision}))
 }
 
 pub(crate) async fn propagate_provenance(
-	tx: &mut Transaction<'_, Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	source: &EntityRef,
 	target: &Entry,
 	tenant: &str,

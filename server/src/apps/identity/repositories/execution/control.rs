@@ -99,7 +99,7 @@ impl RunControlScope for Scope<'_> {
 		let result: NativeResult<Option<Grant>> = async {
 			Ok({
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(Asterisk)
 						.from(Alias::new("authorization_execution"))
@@ -127,7 +127,7 @@ impl RunControlScope for Scope<'_> {
 		let result: NativeResult<()> = async {
 			let query_bind_1 = id;
 			let query_bind_2 = credential;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("authorization_execution"))
 					.value_expr(

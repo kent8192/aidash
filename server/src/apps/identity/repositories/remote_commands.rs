@@ -1,5 +1,5 @@
 //! Scoped command reads retain the current native Access and durable replay query.
-use crate::{Error, authorization::access::Access};
+use crate::authorization::access::Access;
 use aidash_application::{Result, ports::authorization::commands::RemoteCommandScope};
 use aidash_domain::{Task, identity::commands::Binding, policy::Resource};
 use async_trait::async_trait;
@@ -30,7 +30,7 @@ impl RemoteCommandScope for Scope<'_> {
 		let previous: Option<(String, Value)> = {
 			let query_bind_1 = grant;
 			let query_bind_2 = key;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.columns([Alias::new("digest"), Alias::new("result")])
 					.from(Alias::new("authorization_remote_commands"))
@@ -43,9 +43,9 @@ impl RemoteCommandScope for Scope<'_> {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
+			.columns(&["digest", "result"])
 			.fetch_optional(&mut **self.access.tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(previous)
 	}

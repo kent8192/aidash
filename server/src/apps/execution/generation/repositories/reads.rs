@@ -94,16 +94,14 @@ impl GenerationReads for NativeReads {
 			.bind(tenant)
 			.bind(id)
 			.fetch_all(&self.store.pool)
-			.await
-			.map_err(Error::from)?)
+			.await?)
 	}
 	async fn operator_usage(&self, tenant: &str, id: Uuid) -> aidash_application::Result<Usage> {
 		crate::database::query_as(&usage_query())
 			.bind(tenant)
 			.bind(id)
 			.fetch_optional(&self.store.pool)
-			.await
-			.map_err(Error::from)?
+			.await?
 			.ok_or(aidash_application::Error::Forbidden)
 	}
 	async fn operator_specification(
@@ -111,12 +109,11 @@ impl GenerationReads for NativeReads {
 		tenant: &str,
 		id: Uuid,
 	) -> aidash_application::Result<Value> {
-		sqlx::query_scalar(&spec_query())
+		crate::database::native::query_scalar(&spec_query())
 			.bind(tenant)
 			.bind(id)
-			.fetch_optional(&self.store.pool)
-			.await
-			.map_err(Error::from)?
+			.scalar_optional(&self.store.pool)
+			.await?
 			.ok_or(aidash_application::Error::Forbidden)
 	}
 }
@@ -181,8 +178,7 @@ impl GenerationReadScope for Scope {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_optional(&mut **access.tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 
 		Ok(job)
@@ -196,24 +192,21 @@ impl GenerationReadScope for Scope {
 			.bind(tenant)
 			.bind(id)
 			.fetch_all(&mut **self.access.tx)
-			.await
-			.map_err(Error::from)?)
+			.await?)
 	}
 	async fn usage(&mut self, tenant: &str, id: Uuid) -> aidash_application::Result<Usage> {
 		Ok(crate::database::query_as(&usage_query())
 			.bind(tenant)
 			.bind(id)
 			.fetch_one(&mut **self.access.tx)
-			.await
-			.map_err(Error::from)?)
+			.await?)
 	}
 	async fn specification(&mut self, tenant: &str, id: Uuid) -> aidash_application::Result<Value> {
-		Ok(sqlx::query_scalar(&spec_query())
+		Ok(crate::database::native::query_scalar(&spec_query())
 			.bind(tenant)
 			.bind(id)
-			.fetch_one(&mut **self.access.tx)
-			.await
-			.map_err(Error::from)?)
+			.scalar_one(&mut **self.access.tx)
+			.await?)
 	}
 	async fn finish_requests(
 		self: Box<Self>,

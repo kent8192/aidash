@@ -1,4 +1,5 @@
 //! Database-boundary compatibility for the pinned Reinhardt revision.
+pub mod native;
 mod records;
 pub use records::Record;
 mod projections;

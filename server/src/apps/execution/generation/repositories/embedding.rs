@@ -55,7 +55,7 @@ impl GenerationEmbeddingAuthority for NativeEmbeddingAuthority<'_> {
 			.order_by_expr(SimpleExpr::from(Expr::col(Alias::new("id"))), Order::Asc)
 			.to_string(PostgresQueryBuilder))
 	.fetch_all(&mut **access.tx)
-	.await.map_err(Error::from)?
+	.await?
 		};
 
 		Ok(jobs)
@@ -66,7 +66,7 @@ impl GenerationEmbeddingAuthority for NativeEmbeddingAuthority<'_> {
 			let query_bind_1 = &job.tenant;
 			let query_bind_2 = &job.policy_id;
 			let query_bind_3 = job.policy_revision;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.expr(SimpleExpr::from(Expr::col(Alias::new("spec"))))
 					.from(Alias::new("generation_policy_history"))
@@ -80,9 +80,8 @@ impl GenerationEmbeddingAuthority for NativeEmbeddingAuthority<'_> {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(&mut **access.tx)
-			.await
-			.map_err(Error::from)?
+			.scalar_one(&mut **access.tx)
+			.await?
 		};
 
 		serde_json::from_value(spec)

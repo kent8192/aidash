@@ -348,7 +348,7 @@ async fn dispose(f: aidash_server::federation::Federation, url: &str, schema: &s
 			.from(reinhardt::query::Alias::new("semantic_collections"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_all(&f.store.pool)
+	.fetch_all(f.store.pool.driver())
 	.await
 	.unwrap();
 	for (collection, config) in rows {
@@ -631,7 +631,7 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -650,7 +650,7 @@ async fn semantic_access_is_checked_before_search_and_jobs_retain_revocation(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -826,7 +826,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -850,7 +850,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 			))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(&f.store.pool)
+	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(
@@ -912,7 +912,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 			.from(reinhardt::query::Alias::new("semantic_agent_memory"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(&f.store.pool)
+	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(
@@ -1085,7 +1085,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -1099,7 +1099,7 @@ async fn linked_sources_and_agent_metadata_filters_respect_original_authority(
 			)
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.execute(&f.store.pool)
+	.execute(f.store.pool.driver())
 	.await
 	.unwrap();
 	semantic::worker::sweep(&f.store).await.unwrap();
@@ -1237,7 +1237,7 @@ async fn semantic_qdrant_restart_outage_and_lost_points_recover(
 			)
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.execute(&f.store.pool)
+	.execute(f.store.pool.driver())
 	.await
 	.unwrap();
 	semantic::worker::sweep(&f.store).await.unwrap();
@@ -1255,7 +1255,7 @@ async fn semantic_qdrant_restart_outage_and_lost_points_recover(
 			.limit(1)
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(&f.store.pool)
+	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(state, "ERROR");
@@ -1286,7 +1286,7 @@ async fn semantic_qdrant_restart_outage_and_lost_points_recover(
 			)
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.execute(&f.store.pool)
+	.execute(f.store.pool.driver())
 	.await
 	.unwrap();
 	semantic::worker::sweep(&f.store).await.unwrap();

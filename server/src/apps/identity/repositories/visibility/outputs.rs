@@ -24,7 +24,7 @@ impl LocalOutputScope for Reads<'_> {
 				let query_bind_1 = workspace;
 				let query_bind_2 = kind;
 				let query_bind_3 = id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&reinhardt::query::Query::select()
 						.expr(reinhardt::query::SimpleExpr::from(
 							reinhardt::query::Expr::col(reinhardt::query::Alias::new("run_id")),
@@ -47,7 +47,7 @@ impl LocalOutputScope for Reads<'_> {
 						)
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.fetch_all(&mut **this.tx)
+				.scalar_all(&mut **this.tx)
 				.await?
 			};
 			Ok(producers)
@@ -73,7 +73,7 @@ impl OutputScope for Reads<'_> {
 				let query_bind_1 = workspace;
 				let query_bind_2 = kind;
 				let query_bind_3 = id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("grant_id"))
 						.from(Alias::new("authorization_remote_outputs"))
@@ -88,7 +88,7 @@ impl OutputScope for Reads<'_> {
 						.order_by(Alias::new("grant_id"), Order::Asc)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_all(&mut **this.tx)
+				.scalar_all(&mut **this.tx)
 				.await?
 			};
 			Ok(grants)

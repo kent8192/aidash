@@ -1,6 +1,6 @@
 //! Process readiness and a dedicated probe listener, independent of admission.
 use crate::{Error, Result, federation::Federation};
-use reinhardt::db::backends::{DatabaseConnection, dialect::PostgresBackend};
+use reinhardt::db::backends::DatabaseConnection;
 use reinhardt::di::{KeyedFactoryOutput, SelfKey};
 use reinhardt::server::{HttpServer, ShutdownCoordinator};
 use reinhardt::{Depends, InjectionContext, injectable};
@@ -40,9 +40,7 @@ pub async fn provide_health(
 	#[inject] lifecycle: Depends<ProcessLifecycle>,
 ) -> ProcessHealth {
 	ProcessHealth {
-		connection: DatabaseConnection::new(Arc::new(PostgresBackend::new(
-			runtime.store.control_pool.clone(),
-		))),
+		connection: runtime.store.control_pool.connection(),
 		lifecycle: (*lifecycle).clone(),
 	}
 }

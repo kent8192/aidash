@@ -130,7 +130,7 @@ async fn seed_history(f: &Federation, run: &aidash_server::domain::Run) {
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -199,7 +199,7 @@ async fn approved_compaction_is_pinned_bounded_and_accounted_before_http(
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	let (f, url, schema) = setup(&_test_environment).await;
-	let pool = f.store.pool.clone();
+	let pool = f.store.pool.driver().clone();
 	let calls = Arc::new(AtomicUsize::new(0));
 	let seen = calls.clone();
 	let app = Router::new().route("/systemone", post(move |Json(body): Json<Value>| {
@@ -373,7 +373,7 @@ async fn failed_compaction_attempts_remain_charged_and_exhaustion_prevents_http(
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.execute(&f.store.pool)
+			.execute(f.store.pool.driver())
 			.await
 		}
 		.unwrap();
@@ -392,7 +392,7 @@ async fn failed_compaction_attempts_remain_charged_and_exhaustion_prevents_http(
 			.from(reinhardt::query::Alias::new("generation_compaction_usage"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(&f.store.pool)
+	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(counts, (2, 2));
@@ -404,7 +404,7 @@ async fn failed_compaction_attempts_remain_charged_and_exhaustion_prevents_http(
 			.from(reinhardt::query::Alias::new("generation_budgets"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(&f.store.pool)
+	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(tokens, 0, "no inference started");
@@ -476,7 +476,7 @@ async fn compaction_denial_and_catalog_revocation_prevent_disclosure(
 				.from(reinhardt::query::Alias::new("generation_compaction_usage"))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 		.unwrap();
 		assert_eq!(count, 0);
@@ -507,7 +507,7 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
             }}
         }))
         .route("/systemone", post({
-            let started=first_compaction.clone(); let calls=compaction_calls.clone(); let pool=f.store.pool.clone();
+            let started=first_compaction.clone(); let calls=compaction_calls.clone(); let pool=f.store.pool.driver().clone();
             move |Json(body):Json<Value>| { let started=started.clone(); let calls=calls.clone(); let pool=pool.clone(); async move {
                 let number=calls.fetch_add(1, Ordering::SeqCst)+1;
                 let committed:i64=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("COUNT(*)")).from(reinhardt::query::Alias::new("generation_compaction_usage")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(&pool).await.unwrap();
@@ -562,7 +562,7 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -589,7 +589,7 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -628,7 +628,7 @@ async fn process_restart_preserves_provisioning_and_uncertain_compaction_charge(
 			.and_where(reinhardt::query::Expr::cust("id LIKE 'generated-%'"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(&f.store.pool)
+	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(entries, 1);
@@ -647,7 +647,7 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
 		let (f, url, schema) = setup(&_test_environment).await;
 		let calls = Arc::new(AtomicUsize::new(0));
 		let seen = calls.clone();
-		let pool = f.store.pool.clone();
+		let pool = f.store.pool.driver().clone();
 		let server=Router::new().route("/systemone",post(move |Json(body):Json<Value>| {
             let seen=seen.clone(); let pool=pool.clone(); async move {
                 seen.fetch_add(1,Ordering::SeqCst);
@@ -682,7 +682,7 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.execute(&f.store.pool)
+			.execute(f.store.pool.driver())
 			.await
 		}
 		.unwrap();
@@ -758,7 +758,7 @@ async fn nested_generation_intersects_compaction_approval_and_charges_both_ances
 					)
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.execute(&f.store.pool)
+			.execute(f.store.pool.driver())
 			.await
 		}
 		.unwrap();

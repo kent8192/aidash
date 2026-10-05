@@ -281,7 +281,7 @@ impl FileScopePort for Scope<'_> {
 				let query_bind_1 = id;
 				let query_bind_2 = area.id;
 				let query_bind_3 = &area.tenant;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.columns(["digest", "size", "kind"].map(Alias::new))
 						.from(Alias::new("core_objects"))
@@ -303,6 +303,7 @@ impl FileScopePort for Scope<'_> {
 						]))
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["digest", "size", "kind"])
 				.fetch_optional(&mut **access.tx)
 				.await?
 			};
@@ -316,7 +317,7 @@ impl FileScopePort for Scope<'_> {
 			let access = &mut *self.access;
 			let previous = {
 				let query_bind_1 = area.id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("manifest"))
 						.from(Alias::new("core_areas"))
@@ -330,7 +331,7 @@ impl FileScopePort for Scope<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(&mut **access.tx)
+				.scalar_one(&mut **access.tx)
 				.await?
 			};
 			Ok(previous)
@@ -344,7 +345,7 @@ impl FileScopePort for Scope<'_> {
 			{
 				let query_bind_1 = file;
 				let query_bind_2 = area.id;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("core_objects"))
 						.value(Alias::new("kind"), "superseded_working")
@@ -377,7 +378,7 @@ impl FileScopePort for Scope<'_> {
 				let query_bind_2 = &area.manifest;
 				let query_bind_3 = &area.constraints;
 				let query_bind_4 = area.revision;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("core_areas"))
 						.value_expr(

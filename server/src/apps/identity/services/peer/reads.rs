@@ -30,7 +30,7 @@ impl Access {
 		self.track_registry(&local).await?;
 		// This independent commit precedes invocation/context persistence, so a
 		// killed worker cannot retain metadata without its visibility dependency.
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		for agent in agents.iter().filter(|agent| agent.node_id != self.node_id) {
 			let metadata = serde_json::to_value(&agent.entity)?;
 			{
@@ -40,7 +40,7 @@ impl Access {
 				let query_bind_4 = &agent.entity.version;
 				let query_bind_5 = digest(&metadata);
 				let query_bind_6 = metadata;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::insert()
 						.into_table(Alias::new("authorization_run_remote_reads"))
 						.columns([

@@ -260,7 +260,7 @@ async fn real_server_sigkill_at_durable_cut(
 						))
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.fetch_one(&node.f.store.pool)
+				.fetch_one(node.f.store.pool.driver())
 				.await
 			}
 			.unwrap();

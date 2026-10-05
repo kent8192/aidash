@@ -1,5 +1,5 @@
 //! Stable ancestor lookup and atomic compaction updates retain their original Query trees.
-use crate::{Error, apps::identity::repositories::catalog::NativeCatalog, store::Store};
+use crate::{apps::identity::repositories::catalog::NativeCatalog, store::Store};
 use aidash_application::{
 	Result,
 	ports::{
@@ -33,7 +33,7 @@ impl GenerationCompactionAuthority for NativeCompactionAuthority<'_> {
 			let query_bind_1 = access.identity.tenant.clone();
 			let query_bind_2 = node;
 			let query_bind_3 = access.subjects.clone();
-			sqlx::query_as(&reinhardt::query::Query::select()
+			crate::database::native::query_as(&reinhardt::query::Query::select()
 				.expr(reinhardt::query::SimpleExpr::from(
 					reinhardt::query::Expr::col((
 						reinhardt::query::Alias::new("r"),
@@ -60,9 +60,9 @@ impl GenerationCompactionAuthority for NativeCompactionAuthority<'_> {
 					))),
 					reinhardt::query::Order::Asc,
 				)
-				.to_string(reinhardt::query::PostgresQueryBuilder))
+				.to_string(reinhardt::query::PostgresQueryBuilder)).columns(&["id", "spec"])
 		.fetch_all(&mut **access.tx)
-		.await.map_err(Error::from)?
+		.await?
 		};
 
 		Ok(jobs)
@@ -101,7 +101,7 @@ pub(crate) struct NativeCompactionRepository {
 	pub store: Store,
 }
 struct Session {
-	transaction: sqlx::Transaction<'static, sqlx::Postgres>,
+	transaction: crate::database::native::Transaction,
 }
 #[async_trait]
 impl GenerationCompactionRepository for NativeCompactionRepository {
@@ -110,7 +110,7 @@ impl GenerationCompactionRepository for NativeCompactionRepository {
 	}
 	async fn begin(&self) -> Result<Box<dyn GenerationCompactionSession>> {
 		Ok(Box::new(Session {
-			transaction: self.store.pool.begin().await.map_err(Error::from)?,
+			transaction: crate::database::native::begin(&self.store.pool).await?,
 		}))
 	}
 }
@@ -120,7 +120,7 @@ impl GenerationCompactionSession for Session {
 		let tx = &mut self.transaction;
 		let reserved: Option<Uuid> = {
 			let query_bind_1 = id;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&reinhardt::query::Query::update()
 					.table(reinhardt::query::Alias::new("generation_budgets"))
 					.value_expr(
@@ -136,9 +136,8 @@ impl GenerationCompactionSession for Session {
 					)])
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_optional(&mut **tx)
-			.await
-			.map_err(Error::from)?
+			.scalar_optional(&mut **tx)
+			.await?
 		};
 
 		Ok(reserved.is_some())
@@ -153,7 +152,7 @@ impl GenerationCompactionSession for Session {
 			let query_bind_5 = &attempt.provider.version;
 			let query_bind_6 = attempt.request_bytes;
 			let query_bind_7 = attempt.questions;
-			sqlx::query(
+			crate::database::native::query(
 				&reinhardt::query::Query::insert()
 					.into_table(reinhardt::query::Alias::new("generation_compaction_usage"))
 					.columns([
@@ -200,13 +199,12 @@ impl GenerationCompactionSession for Session {
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
 			.execute(&mut **tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(())
 	}
 	async fn commit(self: Box<Self>) -> Result<()> {
-		self.transaction.commit().await.map_err(Error::from)?;
+		self.transaction.commit().await?;
 		Ok(())
 	}
 }

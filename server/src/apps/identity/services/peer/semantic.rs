@@ -21,7 +21,7 @@ pub(crate) async fn context(
 	let description: Value = {
 		let query_bind_1 = run.id;
 		let query_bind_2 = &run.home_node;
-		sqlx::query_scalar(
+		crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("description"))
 				.from(Alias::new("authorization_remote_admissions"))
@@ -34,7 +34,7 @@ pub(crate) async fn context(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_optional(&f.store.pool)
+		.scalar_optional(&f.store.pool)
 		.await?
 	}
 	.ok_or(Error::Forbidden)?;
@@ -107,8 +107,8 @@ pub(crate) async fn context(
 	let value = serde_json::to_value(&receipt)?;
 	// Persist before this function makes the text available to compaction/model
 	// construction. The Home keeps the accumulated dependencies across replays.
-	let mut tx = f.store.pool.begin().await?;
-	sqlx::query(
+	let mut tx = crate::database::native::begin(&f.store.pool).await?;
+	crate::database::native::query(
 		&Query::insert()
 			.into_table(Alias::new("semantic_remote_receipts"))
 			.columns(["operation_id", "run_id", "digest", "receipt"].map(Alias::new))
@@ -136,7 +136,7 @@ pub(crate) async fn context(
 	{
 		let query_bind_1 = operation.id;
 		let query_bind_2 = &value;
-		sqlx::query(
+		crate::database::native::query(
 			&Query::update()
 				.table(Alias::new("semantic_remote_operations"))
 				.value(Alias::new("state"), "READY")

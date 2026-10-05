@@ -13,7 +13,6 @@ use reinhardt::query::{
 };
 use uuid::Uuid;
 
-#[derive(sqlx::FromRow)]
 struct Attachment {
 	filename: String,
 	media_type: String,
@@ -21,9 +20,16 @@ struct Attachment {
 	size_bytes: i64,
 	content: Vec<u8>,
 }
+crate::native_record!(Attachment {
+	filename,
+	media_type,
+	sha256,
+	size_bytes,
+	content
+});
 
-pub(crate) struct Attachments<'a, 'connection> {
-	pub(crate) tx: &'a mut sqlx::Transaction<'connection, sqlx::Postgres>,
+pub(crate) struct Attachments<'a> {
+	pub(crate) tx: &'a mut crate::database::native::Transaction,
 }
 pub(crate) struct ScopedMedia<'a> {
 	pub(crate) access: &'a mut Access,
@@ -32,10 +38,10 @@ pub(crate) struct OperatorMedia<'a> {
 	pub(crate) store: &'a Store,
 }
 struct Transaction {
-	tx: sqlx::Transaction<'static, sqlx::Postgres>,
+	tx: crate::database::native::Transaction,
 }
 #[async_trait]
-impl MediaAttachments for Attachments<'_, '_> {
+impl MediaAttachments for Attachments<'_> {
 	async fn attachments(
 		&mut self,
 		workspace: Uuid,
@@ -58,7 +64,8 @@ impl MediaAttachments for Attachments<'_, '_> {
 				.order_by(Alias::new("position"), Order::Asc)
 				.order_by(Alias::new("id"), Order::Asc)
 				.to_string(PostgresQueryBuilder);
-			let attachments: Vec<Attachment> = sqlx::query_as(&query)
+			let attachments: Vec<Attachment> = crate::database::native::query_as(&query)
+				.columns(&["filename", "media_type", "sha256", "size_bytes", "content"])
 				.bind(workspace)
 				.bind(message)
 				.fetch_all(&mut **self.tx)
@@ -108,7 +115,7 @@ impl OperatorMediaRepository for OperatorMedia<'_> {
 		&self.store.node_id
 	}
 	async fn begin(&self) -> Result<Box<dyn MediaTransaction>> {
-		let tx = self.store.pool.begin().await.map_err(crate::Error::from)?;
+		let tx = crate::database::native::begin(&self.store.pool).await?;
 		Ok(Box::new(Transaction { tx }))
 	}
 }
@@ -128,12 +135,7 @@ impl MediaAttachments for Transaction {
 impl MediaTransaction for Transaction {
 	async fn commit(self: Box<Self>) -> Result<()> {
 		let transaction = *self;
-		transaction
-			.tx
-			.commit()
-			.await
-			.map_err(crate::Error::from)
-			.map_err(Into::into)
+		transaction.tx.commit().await.map_err(Into::into)
 	}
 }
 

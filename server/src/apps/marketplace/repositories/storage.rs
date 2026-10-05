@@ -5,16 +5,15 @@ use reinhardt::query::{
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use sqlx::{Postgres, Transaction};
 
 pub(crate) async fn get<T: DeserializeOwned>(
-	tx: &mut Transaction<'_, Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	table: &str,
 	key: &str,
 ) -> Result<Option<T>> {
 	let value: Option<Value> = {
 		let query_bind_1 = key;
-		sqlx::query_scalar(
+		crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("document"))
 				.from(Alias::new(table))
@@ -28,7 +27,7 @@ pub(crate) async fn get<T: DeserializeOwned>(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_optional(&mut **tx)
+		.scalar_optional(&mut **tx)
 		.await?
 	};
 	value
@@ -38,12 +37,12 @@ pub(crate) async fn get<T: DeserializeOwned>(
 }
 
 pub(crate) async fn documents_page<T: DeserializeOwned>(
-	tx: &mut Transaction<'_, Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	table: &str,
 	after: &str,
 	limit: u64,
 ) -> Result<Vec<(String, T)>> {
-	let rows: Vec<(String, Value)> = sqlx::query_as(
+	let rows: Vec<(String, Value)> = crate::database::native::query_as(
 		&Query::select()
 			.columns([Alias::new("key"), Alias::new("document")])
 			.from(Alias::new(table))
@@ -52,6 +51,7 @@ pub(crate) async fn documents_page<T: DeserializeOwned>(
 			.limit(limit)
 			.to_string(PostgresQueryBuilder),
 	)
+	.columns(&["key", "document"])
 	.fetch_all(&mut **tx)
 	.await?;
 	rows.into_iter()
@@ -60,7 +60,7 @@ pub(crate) async fn documents_page<T: DeserializeOwned>(
 }
 
 pub(crate) async fn put(
-	tx: &mut Transaction<'_, Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	table: &str,
 	key: &str,
 	value: &impl Serialize,
@@ -69,7 +69,7 @@ pub(crate) async fn put(
 		let updated = {
 			let query_bind_1 = key;
 			let query_bind_2 = serde_json::to_value(value)?;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new(table))
 					.value_expr(
@@ -96,7 +96,7 @@ pub(crate) async fn put(
 	{
 		let query_bind_1 = key;
 		let query_bind_2 = serde_json::to_value(value)?;
-		sqlx::query(
+		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new(table))
 				.columns([Alias::new("key"), Alias::new("document")])
@@ -127,7 +127,7 @@ pub(crate) async fn put(
 
 /// Preserve the legacy operator adoption snapshot on its existing transaction.
 pub(crate) async fn effective_legacy(
-	tx: &mut Transaction<'_, Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	id: &str,
 	version: &str,
 ) -> Result<crate::registry::Entry> {
@@ -137,7 +137,9 @@ pub(crate) async fn effective_legacy(
 		.and_where(Expr::col("id").eq(Expr::value(id)))
 		.and_where(Expr::col("version").eq(Expr::value(version)))
 		.to_string(PostgresQueryBuilder);
-	let value: Value = sqlx::query_scalar(&sql).fetch_one(&mut **tx).await?;
+	let value: Value = crate::database::native::query_scalar(&sql)
+		.scalar_one(&mut **tx)
+		.await?;
 	let mut entry: crate::registry::Entry = serde_json::from_value(value)?;
 	let sql = Query::select()
 		.column(Alias::new("config"))
@@ -145,8 +147,8 @@ pub(crate) async fn effective_legacy(
 		.and_where(Expr::col("id").eq(Expr::value(id)))
 		.and_where(Expr::col("version").eq(Expr::value(version)))
 		.to_string(PostgresQueryBuilder);
-	if let Some(config) = sqlx::query_scalar::<_, Value>(&sql)
-		.fetch_optional(&mut **tx)
+	if let Some(config) = crate::database::native::query_scalar::<Value>(&sql)
+		.scalar_optional(&mut **tx)
 		.await?
 	{
 		crate::registry::overlay_config(&mut entry.config, &config)?;

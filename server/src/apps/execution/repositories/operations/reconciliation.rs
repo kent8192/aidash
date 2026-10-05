@@ -89,7 +89,7 @@ impl OperationReconciliationRepository for Repository<'_> {
 		let result: NativeResult<Snapshot> = async {
 			let snapshot: Operation = {
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_operations")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(

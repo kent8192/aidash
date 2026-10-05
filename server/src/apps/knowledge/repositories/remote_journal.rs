@@ -25,7 +25,7 @@ fn a(name: &str) -> Alias {
 fn sql(q: reinhardt::query::SelectStatement) -> String {
 	q.to_string(PostgresQueryBuilder)
 }
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug)]
 pub(crate) struct Record {
 	pub id: Uuid,
 	pub home_node: String,
@@ -43,6 +43,24 @@ pub(crate) struct Record {
 	pub error: Option<String>,
 	pub receipt: Option<Value>,
 }
+crate::native_record!(Record {
+	id,
+	home_node,
+	grant_id,
+	admission_id,
+	digest,
+	binding,
+	state,
+	cycle,
+	failures,
+	attempt_id,
+	fence,
+	lease_until,
+	next_attempt,
+	error,
+	receipt
+});
+
 impl From<Record> for State {
 	fn from(row: Record) -> Self {
 		Self {
@@ -88,16 +106,16 @@ impl From<State> for Record {
 pub(crate) struct Repository<'a> {
 	pub(crate) store: &'a Store,
 }
-pub(crate) enum Transaction<'a, 'tx> {
-	Owned(sqlx::Transaction<'static, sqlx::Postgres>),
-	Borrowed(&'a mut sqlx::Transaction<'tx, sqlx::Postgres>),
+pub(crate) enum Transaction<'a> {
+	Owned(crate::database::native::Transaction),
+	Borrowed(&'a mut crate::database::native::Transaction),
 }
-pub(crate) struct Scope<'a, 'tx> {
+pub(crate) struct Scope<'a> {
 	pub(crate) store: &'a Store,
-	pub(crate) transaction: Transaction<'a, 'tx>,
+	pub(crate) transaction: Transaction<'a>,
 }
-impl Scope<'_, '_> {
-	fn connection(&mut self) -> &mut sqlx::PgConnection {
+impl Scope<'_> {
+	fn connection(&mut self) -> &mut crate::database::native::Transaction {
 		match &mut self.transaction {
 			Transaction::Owned(tx) => tx,
 			Transaction::Borrowed(tx) => tx,
@@ -107,7 +125,7 @@ impl Scope<'_, '_> {
 #[async_trait]
 impl JournalRepository for Repository<'_> {
 	async fn begin(&self) -> Result<Box<dyn JournalScope + '_>> {
-		let tx = self.store.pool.begin().await.map_err(NativeError::from)?;
+		let tx = crate::database::native::begin(&self.store.pool).await?;
 		Ok(Box::new(Scope {
 			store: self.store,
 			transaction: Transaction::Owned(tx),
@@ -116,7 +134,7 @@ impl JournalRepository for Repository<'_> {
 	async fn bound(&self, id: Uuid) -> Result<State> {
 		let result: NativeResult<Record> = async {
 			let store = self.store;
-			let record: Record = sqlx::query_as(&sql(Query::select()
+			let record: Record = crate::database::native::query_as(&sql(Query::select()
 				.column(Asterisk)
 				.from(a("semantic_remote_operations"))
 				.and_where(
@@ -137,7 +155,7 @@ impl JournalRepository for Repository<'_> {
 			let store = self.store;
 			{
 				let query_bind_1 = id;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(a("semantic_remote_operations"))
 						.value(a("state"), "PENDING")
@@ -158,7 +176,7 @@ impl JournalRepository for Repository<'_> {
 	}
 }
 #[async_trait]
-impl JournalScope for Scope<'_, '_> {
+impl JournalScope for Scope<'_> {
 	async fn insert_binding(
 		&mut self,
 		operation: &Operation,
@@ -167,7 +185,7 @@ impl JournalScope for Scope<'_, '_> {
 	) -> Result<()> {
 		let result: NativeResult<()> = async {
 			let tx = self.connection();
-			sqlx::query(&format!(
+			crate::database::native::query(&format!(
 				"{} ON CONFLICT DO NOTHING",
 				Query::insert()
 					.into_table(a("semantic_remote_operations"))
@@ -211,7 +229,7 @@ impl JournalScope for Scope<'_, '_> {
 	async fn shared(&mut self, id: Uuid) -> Result<State> {
 		let result: NativeResult<State> = async {
 			let tx = self.connection();
-			let record: Record = sqlx::query_as(&sql(Query::select()
+			let record: Record = crate::database::native::query_as(&sql(Query::select()
 				.column(Asterisk)
 				.from(a("semantic_remote_operations"))
 				.and_where(
@@ -230,7 +248,7 @@ impl JournalScope for Scope<'_, '_> {
 	async fn locked(&mut self, id: Uuid) -> Result<State> {
 		let result: NativeResult<State> = async {
 			let tx = self.connection();
-			let record: Record = sqlx::query_as(&sql(Query::select()
+			let record: Record = crate::database::native::query_as(&sql(Query::select()
 				.column(Asterisk)
 				.from(a("semantic_remote_operations"))
 				.and_where(
@@ -249,10 +267,10 @@ impl JournalScope for Scope<'_, '_> {
 	async fn clock(&mut self) -> Result<DateTime<Utc>> {
 		let result: NativeResult<DateTime<Utc>> = async {
 			let tx = self.connection();
-			let now: DateTime<Utc> = sqlx::query_scalar(&sql(Query::select()
+			let now: DateTime<Utc> = crate::database::native::query_scalar(&sql(Query::select()
 				.expr(Expr::cust("CLOCK_TIMESTAMP()"))
 				.to_owned()))
-			.fetch_one(&mut *tx)
+			.scalar_one(&mut *tx)
 			.await?;
 			Ok(now)
 		}
@@ -264,7 +282,7 @@ impl JournalScope for Scope<'_, '_> {
 			let tx = self.connection();
 			{
 				let query_bind_1 = previous;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(a("semantic_remote_attempts"))
 						.value_expr(
@@ -302,7 +320,7 @@ impl JournalScope for Scope<'_, '_> {
 				let query_bind_2 = state;
 				let query_bind_3 = delay.map(|s| s as f64);
 				let query_bind_4 = error;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(a("semantic_remote_operations"))
 						.value_expr(
@@ -354,7 +372,7 @@ impl JournalScope for Scope<'_, '_> {
 			{
 				let query_bind_1 = id;
 				let query_bind_2 = attempt.id;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(a("semantic_remote_operations"))
 						.value(a("state"), "ACTIVE")
@@ -385,7 +403,7 @@ impl JournalScope for Scope<'_, '_> {
 			{
 				let query_bind_1 = attempt.id;
 				let query_bind_2 = id;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::insert()
 						.into_table(a("semantic_remote_attempts"))
 						.columns(["id", "operation_id", "fence", "cycle", "state"].map(a))
@@ -417,7 +435,7 @@ impl JournalScope for Scope<'_, '_> {
 	async fn current(&mut self, attempt: &Attempt) -> Result<State> {
 		let result: NativeResult<Record> = async {
 			let tx = self.connection();
-			sqlx::query_as(&sql(Query::select()
+			crate::database::native::query_as(&sql(Query::select()
 				.column(Asterisk)
 				.from(a("semantic_remote_operations"))
 				.and_where(Expr::cust(
@@ -441,7 +459,7 @@ impl JournalScope for Scope<'_, '_> {
 			let changed = {
 				let query_bind_1 = attempt.id;
 				let query_bind_2 = reservations;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(a("semantic_remote_attempts"))
 						.value(a("state"), "DISPATCHED")
@@ -471,7 +489,7 @@ impl JournalScope for Scope<'_, '_> {
 	async fn record_source(&mut self, receipt: &Receipt, source: &SourceRead) -> Result<()> {
 		let result: NativeResult<()> = async {
 			let tx = self.connection();
-			sqlx::query(&format!(
+			crate::database::native::query(&format!(
 				"{} ON CONFLICT DO NOTHING",
 				Query::insert()
 					.into_table(a("semantic_remote_reads"))
@@ -515,7 +533,7 @@ impl JournalScope for Scope<'_, '_> {
 			{
 				let query_bind_1 = receipt.operation_id;
 				let query_bind_2 = serde_json::to_value(receipt)?;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(a("semantic_remote_operations"))
 						.value(a("state"), "READY")
@@ -549,7 +567,7 @@ impl JournalScope for Scope<'_, '_> {
 			let tx = self.connection();
 			{
 				let query_bind_1 = attempt.id;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(a("semantic_remote_attempts"))
 						.value(a("state"), "COMPLETED")
@@ -584,7 +602,7 @@ impl JournalScope for Scope<'_, '_> {
 				let query_bind_1 = record.id;
 				let query_bind_2 = error;
 				let query_bind_3 = delay.map(|s| s as f64);
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(a("semantic_remote_operations"))
 						.value(a("state"), state)
@@ -626,7 +644,7 @@ impl JournalScope for Scope<'_, '_> {
 			{
 				let query_bind_1 = attempt.id;
 				let query_bind_2 = error;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(a("semantic_remote_attempts"))
 						.value_expr(
@@ -659,7 +677,7 @@ impl JournalScope for Scope<'_, '_> {
 	async fn resume_records(&mut self, grant: Uuid, admission: Uuid) -> Result<Vec<State>> {
 		let result: NativeResult<Vec<State>> = async {
 			let tx = self.connection();
-			let records: Vec<Record> = sqlx::query_as(&sql(Query::select()
+			let records: Vec<Record> = crate::database::native::query_as(&sql(Query::select()
 				.column(Asterisk)
 				.from(a("semantic_remote_operations"))
 				.and_where(Expr::cust("grant_id=$1 AND admission_id=$2"))
@@ -680,7 +698,7 @@ impl JournalScope for Scope<'_, '_> {
 			let tx = self.connection();
 			{
 				let query_bind_1 = record.id;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(a("semantic_remote_operations"))
 						.value_expr(
@@ -719,11 +737,7 @@ impl JournalScope for Scope<'_, '_> {
 	}
 	async fn commit(self: Box<Self>) -> Result<()> {
 		match self.transaction {
-			Transaction::Owned(tx) => tx
-				.commit()
-				.await
-				.map_err(NativeError::from)
-				.map_err(Into::into),
+			Transaction::Owned(tx) => tx.commit().await.map_err(Into::into),
 			Transaction::Borrowed(_) => {
 				Err(Error::External("journal commit scope invariant".into()))
 			}

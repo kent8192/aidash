@@ -13,16 +13,14 @@ use aidash_domain::registry::{
 	},
 };
 use async_trait::async_trait;
-use reinhardt::db::backends::dialect::postgres::PgTransactionExecutor;
+
 use serde_json::Value;
 use uuid::Uuid;
 #[async_trait]
 impl ExecutionRepository for Repository {
 	async fn begin_execution(&self) -> Result<Box<dyn ExecutionScope + '_>> {
 		Ok(Box::new(Scope {
-			tx: PgTransactionExecutor::new(
-				self.store.pool.begin().await.map_err(crate::Error::from)?,
-			),
+			tx: crate::database::native::begin(&self.store.pool).await?,
 			actor: self.actor.clone(),
 			node_id: self.node_id.clone(),
 		}))

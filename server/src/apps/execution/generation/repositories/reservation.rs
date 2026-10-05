@@ -1,6 +1,6 @@
 //! Current policy/catalog locks and owned budget transactions implement usage ports.
 use super::settlement::{NativeSettlementScope, counter};
-use crate::{Error, store::Store};
+use crate::store::Store;
 use aidash_application::{
 	Result,
 	ports::{
@@ -28,7 +28,7 @@ use reinhardt::query::{
 	Alias, Expr, LockType, Order, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
 use serde_json::Value;
-use sqlx::{Postgres, Transaction};
+
 use uuid::Uuid;
 
 pub(crate) struct NativeUsageAuthority<'a> {
@@ -63,7 +63,7 @@ impl GenerationUsageAuthority for NativeUsageAuthority<'_> {
 				.to_string(PostgresQueryBuilder),
 		)
 		.fetch_all(&mut **access.tx)
-		.await.map_err(Error::from)?
+		.await?
 		})
 	}
 	async fn policy_enabled(&mut self, job: &Request) -> Result<bool> {
@@ -77,7 +77,7 @@ impl GenerationUsageAuthority for NativeUsageAuthority<'_> {
 			let query_bind_1 = &job.tenant;
 			let query_bind_2 = &job.policy_id;
 			let query_bind_3 = job.policy_revision;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("spec"))
 					.from(Alias::new("generation_policy_history"))
@@ -91,9 +91,8 @@ impl GenerationUsageAuthority for NativeUsageAuthority<'_> {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(&mut **access.tx)
-			.await
-			.map_err(Error::from)?
+			.scalar_one(&mut **access.tx)
+			.await?
 		};
 		Ok(value)
 	}
@@ -116,7 +115,7 @@ pub(crate) struct NativeReservation {
 	pub store: Store,
 }
 struct Session {
-	transaction: Transaction<'static, Postgres>,
+	transaction: crate::database::native::Transaction,
 }
 #[async_trait]
 impl GenerationReservationRepository for NativeReservation {
@@ -125,7 +124,7 @@ impl GenerationReservationRepository for NativeReservation {
 	}
 	async fn begin(&self) -> Result<Box<dyn GenerationReservationSession>> {
 		Ok(Box::new(Session {
-			transaction: self.store.pool.begin().await.map_err(Error::from)?,
+			transaction: crate::database::native::begin(&self.store.pool).await?,
 		}))
 	}
 }
@@ -142,7 +141,7 @@ impl GenerationReservationSession for Session {
 		let tx = &mut self.transaction;
 		let _: Uuid = {
 			let query_bind_1 = job.id;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("request_id"))
 					.from(Alias::new("generation_budgets"))
@@ -153,9 +152,8 @@ impl GenerationReservationSession for Session {
 					.lock(LockType::Update)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(&mut **tx)
-			.await
-			.map_err(Error::from)?
+			.scalar_one(&mut **tx)
+			.await?
 		};
 		Ok(())
 	}
@@ -168,7 +166,7 @@ impl GenerationReservationSession for Session {
 		let existing: Option<(String, String)> = {
 			let query_bind_1 = job.id;
 			let query_bind_2 = usage.attempt_id;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.columns(["digest", "state"].map(Alias::new))
 					.from(Alias::new("generation_remote_usage"))
@@ -181,9 +179,9 @@ impl GenerationReservationSession for Session {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
+			.columns(&["digest", "state"])
 			.fetch_optional(&mut **tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(existing.map(|(digest, state)| ReservationBinding { digest, state }))
 	}
@@ -199,17 +197,16 @@ impl GenerationReservationSession for Session {
 			q.value_expr(Alias::new(counter), Expr::cust(format!("{counter}+1")))
 				.and_where(Expr::cust(format!("{counter} < {limit}")));
 		}
-		let changed = sqlx::query(&q.to_string(PostgresQueryBuilder))
+		let changed = crate::database::native::query(&q.to_string(PostgresQueryBuilder))
 			.bind(job.id)
 			.bind(usage.reserved_tokens)
 			.execute(&mut **tx)
-			.await
-			.map_err(Error::from)?;
+			.await?;
 		Ok(changed.rows_affected())
 	}
 	async fn insert(&mut self, job: &Request, usage: &Usage, digest: &str) -> Result<()> {
 		let tx = &mut self.transaction;
-		sqlx::query(
+		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new("generation_remote_usage"))
 				.columns(
@@ -251,12 +248,11 @@ impl GenerationReservationSession for Session {
 		.bind(digest)
 		.bind(usage.reserved_tokens)
 		.execute(&mut **tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 		Ok(())
 	}
 	async fn commit(self: Box<Self>) -> Result<()> {
-		self.transaction.commit().await.map_err(Error::from)?;
+		self.transaction.commit().await?;
 		Ok(())
 	}
 }

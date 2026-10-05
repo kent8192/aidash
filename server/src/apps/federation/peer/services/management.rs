@@ -625,7 +625,7 @@ impl PeerManagement {
 			"event" => {
 				let event_id =
 					crate::registry::digest(&json!({"node":node,"task":task.id,"key":key()?}));
-				let mut tx = f.store.pool.begin().await?;
+				let mut tx = crate::database::native::begin(&f.store.pool).await?;
 				// A deterministic UUID-sized identifier is enough for the inbox key;
 				// the full source namespace is included in the hash.
 				use sha2::{Digest, Sha256};
@@ -636,7 +636,7 @@ impl PeerManagement {
 				let inserted = {
 					let query_bind_1 = node;
 					let query_bind_2 = id;
-					sqlx::query(
+					crate::database::native::query(
 						&Query::insert()
 							.into_table(Alias::new("peer_events"))
 							.columns([Alias::new("node_id"), Alias::new("event_id")])
@@ -705,10 +705,10 @@ impl PeerManagement {
 				let valid: bool = {
 					let query_bind_1 = id;
 					let query_bind_2 = run.id;
-					sqlx::query_scalar(&Query::select()
+					crate::database::native::query_scalar(&Query::select()
 						.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM human_requests WHERE id = ? AND run_id = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
 						.to_string(PostgresQueryBuilder))
-				.fetch_one(&f.store.pool)
+				.scalar_one(&f.store.pool)
 				.await?
 				};
 				if !valid {

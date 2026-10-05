@@ -1,9 +1,10 @@
 //! Decode projected database rows without attaching a persistence trait to a domain type.
+use super::native::Row as PgRow;
+use crate::{Error, Result as NativeResult};
 use aidash_domain::{entities::*, run_state::RawRun};
-use sqlx::{FromRow, Row, postgres::PgRow};
 
 impl Record for aidash_domain::run_input::RunInput {
-	fn decode(row: &PgRow) -> Result<Self, sqlx::Error> {
+	fn decode(row: &PgRow) -> NativeResult<Self> {
 		Ok(Self {
 			seq: row.try_get("seq")?,
 			sender: row.try_get("sender")?,
@@ -16,30 +17,18 @@ impl Record for aidash_domain::run_input::RunInput {
 }
 
 pub trait Record: Sized {
-	fn decode(row: &PgRow) -> Result<Self, sqlx::Error>;
+	fn decode(row: &PgRow) -> NativeResult<Self>;
 }
 
-pub(super) struct RecordRow<T>(pub T);
-impl<'r, T: Record> FromRow<'r, PgRow> for RecordRow<T> {
-	fn from_row(row: &'r PgRow) -> Result<Self, sqlx::Error> {
-		T::decode(row).map(Self)
-	}
-}
-
-fn text<T: serde::de::DeserializeOwned>(row: &PgRow, column: &str) -> Result<T, sqlx::Error> {
+fn text<T: serde::de::DeserializeOwned>(row: &PgRow, column: &str) -> NativeResult<T> {
 	let value: String = row.try_get(column)?;
-	serde_json::from_value(serde_json::Value::String(value)).map_err(|error| {
-		sqlx::Error::ColumnDecode {
-			index: column.to_owned(),
-			source: Box::new(error),
-		}
-	})
+	serde_json::from_value(serde_json::Value::String(value)).map_err(Error::from)
 }
 
 macro_rules! record {
     ($name:ident { $($field:ident),* $(,)? } $(, $special:ident = $value:expr)*) => {
         impl Record for $name {
-            fn decode(row: &PgRow) -> Result<Self, sqlx::Error> {
+            fn decode(row: &PgRow) -> NativeResult<Self> {
                 Ok(Self { $($field: row.try_get(stringify!($field))?,)* $($special: ($value)(row)?,)* })
             }
         }
@@ -137,18 +126,18 @@ record!(
 );
 
 impl Record for TaskStatus {
-	fn decode(row: &PgRow) -> Result<Self, sqlx::Error> {
+	fn decode(row: &PgRow) -> NativeResult<Self> {
 		text(row, "status")
 	}
 }
 impl Record for RunControl {
-	fn decode(row: &PgRow) -> Result<Self, sqlx::Error> {
+	fn decode(row: &PgRow) -> NativeResult<Self> {
 		text(row, "control")
 	}
 }
 
 impl Record for RawRun {
-	fn decode(row: &PgRow) -> Result<Self, sqlx::Error> {
+	fn decode(row: &PgRow) -> NativeResult<Self> {
 		Ok(Self {
 			metadata: RunMetadata::decode(row)?,
 			context: row.try_get("context")?,
@@ -157,10 +146,10 @@ impl Record for RawRun {
 	}
 }
 impl Record for Run {
-	fn decode(row: &PgRow) -> Result<Self, sqlx::Error> {
+	fn decode(row: &PgRow) -> NativeResult<Self> {
 		<RawRun as Record>::decode(row)?
 			.decode()
-			.map_err(|error| sqlx::Error::Decode(Box::new(error)))
+			.map_err(|error| Error::Invalid(error.to_string()))
 	}
 }
 

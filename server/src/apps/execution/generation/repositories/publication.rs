@@ -1,5 +1,5 @@
 //! Native publication and ancestor lookups keep the caller's exact transaction.
-use crate::{Error, authorization::access::Access, federation::Federation};
+use crate::{authorization::access::Access, federation::Federation};
 use aidash_application::{
 	authorization::Snapshot,
 	ports::generation::publication::{GenerationLive, GenerationPublication},
@@ -33,7 +33,7 @@ impl GenerationPublication for NativePublication<'_> {
 		let query_bind_1 = &job.tenant;
 		let query_bind_2 = access.snapshot.revision;
 		let query_bind_3 = json!(access.snapshot.bundle);
-		sqlx::query(
+		crate::database::native::query(
 			&reinhardt::query::Query::update()
 				.table(reinhardt::query::Alias::new("authorization_bundles"))
 				.value_expr(
@@ -61,14 +61,13 @@ impl GenerationPublication for NativePublication<'_> {
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.execute(&mut **access.tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 
 		let query_bind_1 = &job.tenant;
 		let query_bind_2 = access.snapshot.revision;
 		let query_bind_3 = json!(access.snapshot.bundle);
 		let query_bind_4 = &job.root_subject;
-		sqlx::query(
+		crate::database::native::query(
 			&reinhardt::query::Query::insert()
 				.into_table(reinhardt::query::Alias::new("authorization_revisions"))
 				.columns([
@@ -100,8 +99,7 @@ impl GenerationPublication for NativePublication<'_> {
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.execute(&mut **access.tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 		Ok(())
 	}
 	async fn register(&mut self, entry: &Entry) -> aidash_application::Result<()> {
@@ -116,7 +114,7 @@ impl GenerationPublication for NativePublication<'_> {
 		let query_bind_1 = &job.tenant;
 		let query_bind_2 = &entry.id;
 		let query_bind_3 = &entry.version;
-		sqlx::query(
+		crate::database::native::query(
 			&reinhardt::query::Query::insert()
 				.into_table(reinhardt::query::Alias::new("authorization_catalog"))
 				.columns([
@@ -147,8 +145,7 @@ impl GenerationPublication for NativePublication<'_> {
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.execute(&mut **access.tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 		Ok(())
 	}
 	async fn catalog_history(
@@ -162,7 +159,7 @@ impl GenerationPublication for NativePublication<'_> {
 		let query_bind_2 = &entry.id;
 		let query_bind_3 = &entry.version;
 		let query_bind_4 = &job.root_subject;
-		sqlx::query(
+		crate::database::native::query(
 			&reinhardt::query::Query::insert()
 				.into_table(reinhardt::query::Alias::new(
 					"authorization_catalog_history",
@@ -200,8 +197,7 @@ impl GenerationPublication for NativePublication<'_> {
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.execute(&mut **access.tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 		Ok(())
 	}
 }
@@ -228,7 +224,7 @@ impl GenerationLive for NativeLive<'_> {
 			let query_bind_3 = &access.subjects;
 			let query_bind_4 = &agent.id;
 			let query_bind_5 = &agent.version;
-			crate::database::query_as(&reinhardt::query::Query::select().expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk))).from(reinhardt::query::Alias::new("generation_requests")).and_where(SimpleExpr::CustomWithExpr("((tenant = ? AND (? || '/agents/' || agent_id || '@' || agent_version) = ANY(?)) OR (agent_id = ? AND agent_version = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), crate::database::text_array(query_bind_3.to_owned()), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_5.to_owned()).into()])).order_by_expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::Alias::new("id"))), reinhardt::query::Order::Asc).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_all(&mut **access.tx).await.map_err(Error::from)?
+			crate::database::query_as(&reinhardt::query::Query::select().expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk))).from(reinhardt::query::Alias::new("generation_requests")).and_where(SimpleExpr::CustomWithExpr("((tenant = ? AND (? || '/agents/' || agent_id || '@' || agent_version) = ANY(?)) OR (agent_id = ? AND agent_version = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), crate::database::text_array(query_bind_3.to_owned()), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_5.to_owned()).into()])).order_by_expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::Alias::new("id"))), reinhardt::query::Order::Asc).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_all(&mut **access.tx).await?
 		};
 		Ok(jobs)
 	}
@@ -237,7 +233,7 @@ impl GenerationLive for NativeLive<'_> {
 		let enabled: bool = {
 			let query_bind_1 = &job.tenant;
 			let query_bind_2 = &job.policy_id;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&reinhardt::query::Query::select()
 					.expr(reinhardt::query::Expr::cust(
 						"CAST((spec ->> 'enabled') AS BOOLEAN)",
@@ -252,9 +248,8 @@ impl GenerationLive for NativeLive<'_> {
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_one(&mut **access.tx)
-			.await
-			.map_err(Error::from)?
+			.scalar_one(&mut **access.tx)
+			.await?
 		};
 		Ok(enabled)
 	}

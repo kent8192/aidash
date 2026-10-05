@@ -18,13 +18,13 @@ use reinhardt::query::{
 	Alias, Expr, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
 use serde_json::{Value, json};
-use sqlx::{Postgres, Transaction};
+
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-pub(crate) struct NativeStaging<'a, 'connection> {
+pub(crate) struct NativeStaging<'a> {
 	pub(crate) store: &'a Store,
-	pub(crate) tx: &'a mut Transaction<'connection, Postgres>,
+	pub(crate) tx: &'a mut crate::database::native::Transaction,
 	pub(crate) actor: &'a str,
 }
 #[async_trait]
@@ -44,7 +44,7 @@ impl<Events: Send> InstallationRead for NativeDefinitions<'_, Events> {
 	) -> aidash_application::Result<Option<Installation>> {
 		let doc: Option<Value> = {
 			let query_bind_1 = &id;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("document"))
 					.from(Alias::new("marketplace_installations"))
@@ -55,9 +55,8 @@ impl<Events: Send> InstallationRead for NativeDefinitions<'_, Events> {
 					.lock(LockType::Share)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_optional(&mut **self.access.tx)
-			.await
-			.map_err(crate::Error::from)?
+			.scalar_optional(&mut **self.access.tx)
+			.await?
 		};
 		doc.map(serde_json::from_value)
 			.transpose()
@@ -87,13 +86,13 @@ impl<Events: Send> PrivateKnowledgeRead for NativeDefinitions<'_, Events> {
 	}
 }
 #[async_trait]
-impl PrivateKnowledgeRead for NativeStaging<'_, '_> {
+impl PrivateKnowledgeRead for NativeStaging<'_> {
 	async fn documents(&mut self, entry: &Entry) -> aidash_application::Result<Option<Value>> {
 		documents(self.tx, entry).await.map_err(Into::into)
 	}
 }
 #[async_trait]
-impl StagingScope for NativeStaging<'_, '_> {
+impl StagingScope for NativeStaging<'_> {
 	fn actor(&self) -> &str {
 		self.actor
 	}
@@ -290,14 +289,14 @@ impl InstallationScope for NativeDefinitions<'_, &Store> {
 	}
 }
 async fn persist_revision(
-	tx: &mut Transaction<'_, Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	install: &Installation,
 	revision: &Revision,
 ) -> Result<()> {
 	let entry = &revision.entry;
 	let revision_number = revision.revision;
 	if revision_number == 1 {
-		sqlx::query(
+		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new("marketplace_installations"))
 				.columns(["key", "document", "tenant", "package_key"].map(Alias::new))
@@ -319,7 +318,7 @@ async fn persist_revision(
 	} else {
 		put(tx, "marketplace_installations", &install.id, &install).await?;
 	}
-	sqlx::query(
+	crate::database::native::query(
 		&Query::insert()
 			.into_table(Alias::new("registry"))
 			.columns(["id", "version", "kind", "metadata"].map(Alias::new))
@@ -338,7 +337,7 @@ async fn persist_revision(
 	.bind(json!(entry))
 	.execute(&mut **tx)
 	.await?;
-	sqlx::query(
+	crate::database::native::query(
 		&Query::insert()
 			.into_table(Alias::new("marketplace_revisions"))
 			.columns(
@@ -372,11 +371,14 @@ async fn persist_revision(
 	.await?;
 	Ok(())
 }
-async fn documents(tx: &mut Transaction<'_, Postgres>, original: &Entry) -> Result<Option<Value>> {
+async fn documents(
+	tx: &mut crate::database::native::Transaction,
+	original: &Entry,
+) -> Result<Option<Value>> {
 	let documents = {
 		let query_bind_1 = &original.id;
 		let query_bind_2 = &original.version;
-		sqlx::query_scalar(
+		crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("documents"))
 				.from(Alias::new("agent_knowledge"))
@@ -389,13 +391,13 @@ async fn documents(tx: &mut Transaction<'_, Postgres>, original: &Entry) -> Resu
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_optional(&mut **tx)
+		.scalar_optional(&mut **tx)
 		.await?
 	};
 	Ok(documents)
 }
 async fn insert_documents(
-	tx: &mut Transaction<'_, Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	entry: &Entry,
 	documents: Value,
 ) -> Result<()> {
@@ -403,7 +405,7 @@ async fn insert_documents(
 		let query_bind_1 = &entry.id;
 		let query_bind_2 = &entry.version;
 		let query_bind_3 = documents;
-		sqlx::query(
+		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new("agent_knowledge"))
 				.columns(["agent_id", "agent_version", "documents"].map(Alias::new))
@@ -431,7 +433,7 @@ async fn insert_documents(
 	Ok(())
 }
 pub(crate) async fn approved(
-	tx: &mut Transaction<'_, Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	tenant: &str,
 	entry: &EntityRef,
 ) -> Result<bool> {
@@ -439,7 +441,7 @@ pub(crate) async fn approved(
 		let query_bind_1 = tenant;
 		let query_bind_2 = &entry.id;
 		let query_bind_3 = &entry.version;
-		sqlx::query_scalar(
+		crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("enabled"))
 				.from(Alias::new("authorization_catalog"))
@@ -454,14 +456,14 @@ pub(crate) async fn approved(
 				.lock(LockType::Share)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_optional(&mut **tx)
+		.scalar_optional(&mut **tx)
 		.await?
 	};
 	Ok(approved == Some(true))
 }
 
 pub(crate) async fn revision(
-	tx: &mut Transaction<'_, Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	id: &str,
 	revision: i64,
 ) -> Result<Revision> {
@@ -470,7 +472,7 @@ pub(crate) async fn revision(
 		.ok_or(Error::Forbidden)
 }
 pub(crate) async fn provenance(
-	tx: &mut Transaction<'_, Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	entry: &Entry,
 	tenant: &str,
 ) -> Result<BTreeSet<ConsentEdge>> {
@@ -488,11 +490,11 @@ pub(crate) async fn provenance(
 	edges.extend(copies);
 	Ok(edges)
 }
-pub(crate) struct NativeProvenance<'a, 'connection> {
-	pub(crate) tx: &'a mut Transaction<'connection, Postgres>,
+pub(crate) struct NativeProvenance<'a> {
+	pub(crate) tx: &'a mut crate::database::native::Transaction,
 }
 #[async_trait]
-impl aidash_application::ports::marketplace::ProvenanceScope for NativeProvenance<'_, '_> {
+impl aidash_application::ports::marketplace::ProvenanceScope for NativeProvenance<'_> {
 	async fn raw_definition(&mut self, reference: &EntityRef) -> aidash_application::Result<Entry> {
 		super::definitions::raw(self.tx, reference)
 			.await

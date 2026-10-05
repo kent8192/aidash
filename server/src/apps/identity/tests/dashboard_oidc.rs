@@ -112,7 +112,7 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins(
 	sqlx::query(&insert)
 		.bind(Sha256::digest(b"abandoned-state").to_vec())
 		.bind(Sha256::digest(b"abandoned-browser").to_vec())
-		.execute(&federation.store.pool)
+		.execute(federation.store.pool.driver())
 		.await
 		.unwrap();
 	let app = common::application(federation.clone()).await;
@@ -125,7 +125,7 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins(
 			.unwrap()
 	});
 	discovery_started.notified().await;
-	let mut admission_probe = federation.store.pool.begin().await.unwrap();
+	let mut admission_probe = federation.store.pool.driver().begin().await.unwrap();
 	let admission_lock_available: bool =
 		sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(71003204)")
 			.fetch_one(&mut *admission_probe)
@@ -176,7 +176,7 @@ async fn login_prunes_expired_transactions_and_bounds_pending_browser_logins(
 		.from(Alias::new("dashboard_login_transactions"))
 		.to_string(PostgresQueryBuilder);
 	let count: i64 = sqlx::query_scalar(&count_query)
-		.fetch_one(&federation.store.pool)
+		.fetch_one(federation.store.pool.driver())
 		.await
 		.unwrap();
 	assert_eq!(count, 8);
@@ -302,7 +302,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		.bind(identity_id)
 		.bind(issuer)
 		.bind("keycloak-user-1")
-		.execute(&federation.store.pool)
+		.execute(federation.store.pool.driver())
 		.await
 		.unwrap();
 	let insert_session = Query::insert()
@@ -336,7 +336,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		.bind(Sha256::digest(b"fixture-session").to_vec())
 		.bind(Sha256::digest(b"fixture-csrf").to_vec())
 		.bind(identity_id)
-		.execute(&federation.store.pool)
+		.execute(federation.store.pool.driver())
 		.await
 		.unwrap();
 	let app = common::application(federation.clone()).await;
@@ -456,7 +456,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&expire)
 		.bind(first["id"].as_str().unwrap().parse::<Uuid>().unwrap())
-		.execute(&federation.store.pool)
+		.execute(federation.store.pool.driver())
 		.await
 		.unwrap();
 	let (_, expired) = call(
@@ -520,7 +520,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		sqlx::query(&insert_old)
 			.bind(Uuid::new_v4())
 			.bind(identity_id)
-			.execute(&federation.store.pool)
+			.execute(federation.store.pool.driver())
 			.await
 			.unwrap();
 	}
@@ -562,7 +562,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		.to_string(PostgresQueryBuilder);
 	let credential_id: Uuid = sqlx::query_scalar(&credential_query)
 		.bind(mapping["id"].as_str().unwrap().parse::<Uuid>().unwrap())
-		.fetch_one(&federation.store.pool)
+		.fetch_one(federation.store.pool.driver())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -626,7 +626,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 	)
 	.await;
 	let revision = mapping_rows[0]["revision"].as_i64().unwrap();
-	let mut worker = federation.store.pool.begin().await.unwrap();
+	let mut worker = federation.store.pool.driver().begin().await.unwrap();
 	let lock_credential = Query::select()
 		.column(Alias::new("id"))
 		.from(Alias::new("authorization_credentials"))
@@ -959,7 +959,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&expire_session)
-		.execute(&federation.store.pool)
+		.execute(federation.store.pool.driver())
 		.await
 		.unwrap();
 	let (stop, stopping) = tokio::sync::watch::channel(false);
@@ -974,7 +974,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 	tokio::time::timeout(std::time::Duration::from_secs(5), async {
 		loop {
 			let count: i64 = sqlx::query_scalar(&count_query)
-				.fetch_one(&federation.store.pool)
+				.fetch_one(federation.store.pool.driver())
 				.await
 				.unwrap();
 			if count == 0 {
@@ -992,7 +992,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 			.bind(Uuid::new_v4())
 			.bind(issuer)
 			.bind(format!("paged-{index:03}"))
-			.execute(&federation.store.pool)
+			.execute(federation.store.pool.driver())
 			.await
 			.unwrap();
 	}
@@ -1082,7 +1082,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 			.bind(&subject)
 			.bind(Sha256::digest(format!("mapping-token-{index}")).to_vec())
 			.bind("operator")
-			.execute(&federation.store.pool)
+			.execute(federation.store.pool.driver())
 			.await
 			.unwrap();
 		sqlx::query(&insert_mapping)
@@ -1091,7 +1091,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 			.bind("acme")
 			.bind(subject)
 			.bind(credential_id)
-			.execute(&federation.store.pool)
+			.execute(federation.store.pool.driver())
 			.await
 			.unwrap();
 	}
@@ -1139,7 +1139,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		.bind(Sha256::digest(b"issuer-change-session").to_vec())
 		.bind(Sha256::digest(b"issuer-change-csrf").to_vec())
 		.bind(identity_id)
-		.execute(&federation.store.pool)
+		.execute(federation.store.pool.driver())
 		.await
 		.unwrap();
 	let mut changed_issuer = federation.clone();
@@ -1161,7 +1161,7 @@ async fn unmapped_identity_stays_denied_until_operator_approves_existing_user(
 		loop {
 			let disabled_at: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(&disabled)
 				.bind(identity_id)
-				.fetch_one(&federation.store.pool)
+				.fetch_one(federation.store.pool.driver())
 				.await
 				.unwrap();
 			if disabled_at.is_some() {
@@ -1237,7 +1237,7 @@ async fn older_negative_status_cannot_revoke_a_newer_valid_session(
 	sqlx::query(&identity)
 		.bind(identity_id)
 		.bind(&issuer)
-		.execute(&federation.store.pool)
+		.execute(federation.store.pool.driver())
 		.await
 		.unwrap();
 	let session = Query::insert()
@@ -1271,7 +1271,7 @@ async fn older_negative_status_cannot_revoke_a_newer_valid_session(
 		.bind(Sha256::digest(b"fixture-session").to_vec())
 		.bind(Sha256::digest(b"fixture-csrf").to_vec())
 		.bind(identity_id)
-		.execute(&federation.store.pool)
+		.execute(federation.store.pool.driver())
 		.await
 		.unwrap();
 	let app = common::application(federation.clone()).await;
@@ -1351,7 +1351,7 @@ async fn older_negative_status_cannot_revoke_a_newer_valid_session(
 		Option<chrono::DateTime<chrono::Utc>>,
 	) = sqlx::query_as(&status)
 		.bind(identity_id)
-		.fetch_one(&federation.store.pool)
+		.fetch_one(federation.store.pool.driver())
 		.await
 		.unwrap();
 	assert!(disabled_at.is_none() && revoked_at.is_none());

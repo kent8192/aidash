@@ -281,7 +281,7 @@ async fn crowded_workbench() -> Workbench {
 			.bind(id)
 			.bind(id.to_string())
 			.bind(entry)
-			.execute(&wb.f.store.pool)
+			.execute(wb.f.store.pool.driver())
 			.await
 			.unwrap();
 	}
@@ -319,7 +319,7 @@ async fn duplicate_waits_for_concurrent_source_edit_and_rejects_stale_revision(
 	#[future(awt)] workbench: Workbench,
 ) {
 	let wb = workbench;
-	let mut edit = wb.f.store.pool.begin().await.unwrap();
+	let mut edit = wb.f.store.pool.driver().begin().await.unwrap();
 	let id: uuid::Uuid = wb.draft["id"].as_str().unwrap().parse().unwrap();
 	{
 		let query_bind_1 = id;
@@ -439,7 +439,7 @@ async fn expired_real_tests_keep_profile_and_continuation_metadata_in_trust(
 			)
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&wb.f.store.pool)
+	.execute(wb.f.store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(
@@ -505,7 +505,7 @@ async fn expired_incidents() -> Workbench {
 			)
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&wb.f.store.pool)
+	.execute(wb.f.store.pool.driver())
 	.await
 	.unwrap();
 	wb
@@ -529,7 +529,7 @@ async fn incident_expiry_drains_multiple_batches_in_one_invocation(
 			.from(Alias::new("agent_incidents"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(&wb.f.store.pool)
+	.fetch_all(wb.f.store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(copies.len(), 101);
@@ -996,7 +996,7 @@ async fn incident_event_backlog() -> (Workbench, Value) {
 		sqlx::query(&query)
 			.bind(uuid::Uuid::parse_str(incident["id"].as_str().unwrap()).unwrap())
 			.bind(json!({"sequence":n}))
-			.execute(&wb.f.store.pool)
+			.execute(wb.f.store.pool.driver())
 			.await
 			.unwrap();
 	}
@@ -1059,7 +1059,7 @@ async fn trust_run_backlog(#[default("workspace.read")] denied_action: &str) -> 
 			.to_string(PostgresQueryBuilder);
 		sqlx::query(&query)
 			.bind(workspace.id)
-			.execute(&wb.f.store.pool)
+			.execute(wb.f.store.pool.driver())
 			.await
 			.unwrap();
 	}
@@ -1125,7 +1125,7 @@ async fn trust_run_backlog(#[default("workspace.read")] denied_action: &str) -> 
 			.bind(workspace)
 			.bind(&wb.f.config.node_id)
 			.bind(wb.draft["entry"]["id"].as_str().unwrap())
-			.execute(&wb.f.store.pool)
+			.execute(wb.f.store.pool.driver())
 			.await
 			.unwrap();
 	}
@@ -1323,7 +1323,7 @@ async fn visible_draft_backlog() -> Workbench {
 			.bind(id.to_string())
 			.bind(entry)
 			.bind(timestamp)
-			.execute(&wb.f.store.pool)
+			.execute(wb.f.store.pool.driver())
 			.await
 			.unwrap();
 	}
@@ -1630,7 +1630,7 @@ async fn audit_rechecks_incident_visibility_before_returning_event_history(
 ) {
 	let (wb, incident) = incident_audit_workbench;
 	let id: uuid::Uuid = incident["id"].as_str().unwrap().parse().unwrap();
-	let mut change = wb.f.store.pool.begin().await.unwrap();
+	let mut change = wb.f.store.pool.driver().begin().await.unwrap();
 	{
 		let query_bind_1 = id;
 		sqlx::query(

@@ -688,7 +688,7 @@ async fn exchange_identity(
 impl BrowserOrigin {
 	pub(crate) async fn require_operator(
 		&self,
-		tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		lock: bool,
 	) -> Result<()> {
 		if self.mapping_id.is_some() {
@@ -707,7 +707,8 @@ impl BrowserOrigin {
 		if lock {
 			query.lock(LockType::Share);
 		}
-		let status = sqlx::query_as(&query.to_string(PostgresQueryBuilder))
+		let status = crate::database::native::query_as(&query.to_string(PostgresQueryBuilder))
+			.columns(&["issuer", "last_valid_at", "disabled_at"])
 			.bind(self.identity_id)
 			.fetch_optional(&mut **tx)
 			.await?;
@@ -723,10 +724,11 @@ impl BrowserOrigin {
 		if lock {
 			query.lock(LockType::Share);
 		}
-		let enabled: Option<bool> = sqlx::query_scalar(&query.to_string(PostgresQueryBuilder))
-			.bind(self.identity_id)
-			.fetch_optional(&mut **tx)
-			.await?;
+		let enabled: Option<bool> =
+			crate::database::native::query_scalar(&query.to_string(PostgresQueryBuilder))
+				.bind(self.identity_id)
+				.scalar_optional(&mut **tx)
+				.await?;
 		if enabled != Some(true) {
 			return Err(Error::Forbidden);
 		}

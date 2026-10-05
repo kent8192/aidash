@@ -104,7 +104,7 @@ impl OperationAdmissionScope<Operation> for Admission<'_> {
 			let query_bind_1 = &self.access.identity.tenant;
 			let query_bind_2 = &self.access.identity.subject;
 			let query_bind_3 = key;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&sessions::select("core_operations")
 					.and_where(
 						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant"))).eq(
@@ -132,8 +132,7 @@ impl OperationAdmissionScope<Operation> for Admission<'_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_optional(&mut **self.access.tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(previous.map(|operation| {
 			let digest = operation.digest.clone();
@@ -202,7 +201,7 @@ impl OperationAdmissionScope<Operation> for Admission<'_> {
 			input: value,
 		} = operation;
 
-		sqlx::query(
+		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new("core_operations"))
 				.columns(
@@ -268,8 +267,7 @@ impl OperationAdmissionScope<Operation> for Admission<'_> {
 		.bind(value)
 		.bind(json!({}))
 		.execute(&mut **self.access.tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 		self.store
 			.event(
 				&mut self.access.tx,

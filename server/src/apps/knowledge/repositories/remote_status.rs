@@ -22,7 +22,7 @@ use reinhardt::query::{
 };
 use serde_json::Value;
 use uuid::Uuid;
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug)]
 struct AllowanceRow {
 	pub request_id: Uuid,
 	pub token_limit: i64,
@@ -32,6 +32,16 @@ struct AllowanceRow {
 	pub compaction_call_limit: i64,
 	pub compaction_calls: i64,
 }
+crate::native_record!(AllowanceRow {
+	request_id,
+	token_limit,
+	used_tokens,
+	embedding_call_limit,
+	embedding_calls,
+	compaction_call_limit,
+	compaction_calls
+});
+
 impl From<AllowanceRow> for Allowance {
 	fn from(row: AllowanceRow) -> Self {
 		Self {
@@ -120,7 +130,7 @@ impl StatusScope for Scope<'_> {
 		let result: NativeResult<AllowanceRow> = async {
 			Ok({
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(Asterisk)
 						.from(Alias::new("generation_budgets"))
@@ -152,7 +162,7 @@ impl StatusScope for Scope<'_> {
 		let result: NativeResult<Option<Value>> = async {
 			Ok({
 				let query_bind_1 = id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("receipt"))
 						.from(Alias::new("semantic_remote_receipts"))
@@ -165,7 +175,7 @@ impl StatusScope for Scope<'_> {
 						.limit(1)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **self.access.tx)
+				.scalar_optional(&mut **self.access.tx)
 				.await?
 			})
 		}
@@ -183,7 +193,7 @@ impl StatusRepository for Repository<'_> {
 		let result: NativeResult<Option<Record>> = async {
 			Ok({
 				let query_bind_1 = grant;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(Asterisk)
 						.from(Alias::new("semantic_remote_operations"))

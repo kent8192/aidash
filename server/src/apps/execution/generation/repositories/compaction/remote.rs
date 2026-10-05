@@ -1,5 +1,5 @@
 //! The existing remote description query and worker leases implement compaction ports.
-use crate::{Error, apps::identity::repositories::catalog::NativeCatalog, federation::Federation};
+use crate::{apps::identity::repositories::catalog::NativeCatalog, federation::Federation};
 use aidash_application::{
 	Result,
 	ports::{catalog::CatalogScope, generation::compaction::remote::RemoteCompactionAuthority},
@@ -47,7 +47,7 @@ impl RemoteCompactionAuthority for NativeRemoteCompaction<'_> {
 		let access = &mut *self.catalog.0;
 		let description: Value = {
 			let query_bind_1 = run;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("description"))
 					.from(Alias::new("authorization_remote_admissions"))
@@ -61,9 +61,8 @@ impl RemoteCompactionAuthority for NativeRemoteCompaction<'_> {
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(&mut **access.tx)
-			.await
-			.map_err(Error::from)?
+			.scalar_one(&mut **access.tx)
+			.await?
 		};
 
 		Ok(description)

@@ -1,7 +1,7 @@
 //! Mapping statements retain policy-before-credential locks, revision fences and control-pool revocation.
 use crate::apps::identity::serializers::peer::PeerMapping;
 use crate::{
-	Error as NativeError, Result as NativeResult,
+	Result as NativeResult,
 	authorization::{Authorization, access::Access, identity::SubjectIdentity},
 	federation::Federation,
 };
@@ -21,7 +21,7 @@ pub(crate) struct Repository<'a> {
 	pub runtime: &'a Federation,
 }
 pub(crate) struct WriteScope {
-	tx: sqlx::Transaction<'static, sqlx::Postgres>,
+	tx: crate::database::native::Transaction,
 	_visibility: Option<crate::transactions::gate::ReadLease>,
 }
 pub(crate) struct AccessScope {
@@ -49,9 +49,9 @@ impl MappingRepository for Repository<'_> {
 				None
 			};
 			let mut tx = if enabled {
-				self.runtime.store.pool.begin().await?
+				crate::database::native::begin(&self.runtime.store.pool).await?
 			} else {
-				self.runtime.store.control_pool.begin().await?
+				crate::database::native::begin(&self.runtime.store.control_pool).await?
 			};
 			if !enabled {
 				crate::transactions::authority::control(&mut tx).await?;
@@ -71,7 +71,7 @@ impl MappingRepository for Repository<'_> {
 				let query_bind_1 = node;
 				let query_bind_2 = tenant;
 				let query_bind_3 = subject;
-				sqlx::query_as(
+				crate::database::native::query_as(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::SimpleExpr::from(
 					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
@@ -101,7 +101,7 @@ impl MappingRepository for Repository<'_> {
 			Ok({
 				let query_bind_1 = mapping.credential_id;
 				let query_bind_2 = &mapping.tenant;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&reinhardt::query::Query::select()
 						.expr(reinhardt::query::SimpleExpr::from(
 							reinhardt::query::Expr::col(reinhardt::query::Alias::new("subject")),
@@ -116,7 +116,7 @@ impl MappingRepository for Repository<'_> {
 						))
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.fetch_optional(&f.store.pool)
+				.scalar_optional(&f.store.pool)
 				.await?
 			})
 		}
@@ -160,7 +160,7 @@ impl MappingWrite for WriteScope {
 			Ok({
 				let query_bind_1 = tenant;
 				let query_bind_2 = id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.expr(SimpleExpr::from(Expr::col(Alias::new("subject"))))
 						.from(Alias::new("authorization_credentials"))
@@ -174,7 +174,7 @@ impl MappingWrite for WriteScope {
 						.lock(LockType::Share)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut *self.tx)
+				.scalar_optional(&mut *self.tx)
 				.await?
 			})
 		}
@@ -203,7 +203,7 @@ impl MappingWrite for WriteScope {
 				let query_bind_4 = tenant;
 				let query_bind_5 = input.credential_id;
 				let query_bind_6 = input.enabled;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::insert()
 						.into_table(Alias::new("authorization_peer_mappings"))
 						.columns([
@@ -254,6 +254,16 @@ impl MappingWrite for WriteScope {
 						.returning_all()
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&[
+					"source_node",
+					"source_tenant",
+					"source_subject",
+					"tenant",
+					"credential_id",
+					"enabled",
+					"revision",
+					"actor",
+				])
 				.fetch_optional(&mut *self.tx)
 				.await?
 			})
@@ -262,7 +272,7 @@ impl MappingWrite for WriteScope {
 		result.map(|row| row.map(Into::into)).map_err(Into::into)
 	}
 	async fn update(&mut self, tenant: &str, input: &PeerMappingInput) -> Result<Option<Mapping>> {
-		let result:NativeResult<Option<PeerMapping>>=async {Ok({ let query_bind_1 = &input.source_node; let query_bind_2 = &input.source_tenant; let query_bind_3 = &input.source_subject; let query_bind_4 = tenant; let query_bind_5 = input.credential_id; let query_bind_6 = input.enabled; let query_bind_7 = input.expected_revision; sqlx::query_as(&Query::update().table(Alias::new("authorization_peer_mappings")).value_expr(Alias::new("credential_id"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(Alias::new("enabled"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(Alias::new("revision"), Expr::cust("revision + 1")).value_expr(Alias::new("actor"), Expr::cust("'operator'")).value_expr(Alias::new("updated_at"), Expr::cust("CLOCK_TIMESTAMP()")).and_where(SimpleExpr::CustomWithExpr("(source_node = ? AND source_tenant = ? AND source_subject = ? AND tenant = ? AND revision = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_7.to_owned()).into()])).returning_all().to_string(PostgresQueryBuilder)).fetch_optional(&mut *self.tx).await? })}.await;
+		let result:NativeResult<Option<PeerMapping>>=async {Ok({ let query_bind_1 = &input.source_node; let query_bind_2 = &input.source_tenant; let query_bind_3 = &input.source_subject; let query_bind_4 = tenant; let query_bind_5 = input.credential_id; let query_bind_6 = input.enabled; let query_bind_7 = input.expected_revision; crate::database::native::query_as(&Query::update().table(Alias::new("authorization_peer_mappings")).value_expr(Alias::new("credential_id"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(Alias::new("enabled"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(Alias::new("revision"), Expr::cust("revision + 1")).value_expr(Alias::new("actor"), Expr::cust("'operator'")).value_expr(Alias::new("updated_at"), Expr::cust("CLOCK_TIMESTAMP()")).and_where(SimpleExpr::CustomWithExpr("(source_node = ? AND source_tenant = ? AND source_subject = ? AND tenant = ? AND revision = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_7.to_owned()).into()])).returning_all().to_string(PostgresQueryBuilder)).fetch_optional(&mut *self.tx).await? })}.await;
 		result.map(|row| row.map(Into::into)).map_err(Into::into)
 	}
 	async fn history(&mut self, mapping: &Mapping) -> Result<()> {
@@ -275,7 +285,7 @@ impl MappingWrite for WriteScope {
 				let query_bind_5 = mapping.credential_id;
 				let query_bind_6 = mapping.enabled;
 				let query_bind_7 = mapping.revision;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::insert()
 						.into_table(Alias::new("authorization_peer_mapping_history"))
 						.columns([
@@ -332,7 +342,7 @@ impl MappingWrite for WriteScope {
 		result.map_err(Into::into)
 	}
 	async fn commit(self) -> Result<()> {
-		self.tx.commit().await.map_err(NativeError::from)?;
+		self.tx.commit().await?;
 		Ok(())
 	}
 }
@@ -349,7 +359,7 @@ impl MappingAccess for AccessScope {
 				let query_bind_1 = node;
 				let query_bind_2 = tenant;
 				let query_bind_3 = subject;
-				sqlx::query_as(
+				crate::database::native::query_as(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::SimpleExpr::from(
 					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
@@ -378,7 +388,7 @@ impl MappingAccess for AccessScope {
 		let result: NativeResult<Option<String>> = async {
 			Ok({
 				let query_bind_1 = node;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&reinhardt::query::Query::select()
 						.expr(reinhardt::query::SimpleExpr::from(
 							reinhardt::query::Expr::col(reinhardt::query::Alias::new("node_id")),
@@ -391,7 +401,7 @@ impl MappingAccess for AccessScope {
 						.lock(reinhardt::query::LockType::Share)
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **self.access.tx)
+				.scalar_optional(&mut **self.access.tx)
 				.await?
 			})
 		}

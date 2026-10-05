@@ -222,7 +222,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 			let value: Option<native::Entry> = {
 				let query_bind_1 = workspace;
 				let query_bind_2 = key;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
 						.from(Alias::new("semantic_entries"))
@@ -253,7 +253,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 		let result: NativeResult<i64> = async {
 			let value: i64 = {
 				let query_bind_1 = workspace;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.expr(Expr::cust("COUNT(*)"))
 						.from(Alias::new("semantic_entries"))
@@ -263,7 +263,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(&mut **lease.tx())
+				.scalar_one(&mut **lease.tx())
 				.await?
 			};
 			Ok(value)
@@ -289,7 +289,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 				let query_bind_9 = entry.index_revision;
 				let query_bind_10 = entry.created_by;
 				let query_bind_11 = saved;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::insert()
 						.into_table(Alias::new("semantic_entries"))
 						.columns([
@@ -374,6 +374,21 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 						.returning_all()
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&[
+					"id",
+					"workspace_id",
+					"key",
+					"source",
+					"agent",
+					"metadata",
+					"revision",
+					"point_id",
+					"index_revision",
+					"deleted",
+					"state",
+					"created_by",
+					"authority",
+				])
 				.fetch_one(&mut **lease.tx())
 				.await?
 			};
@@ -389,7 +404,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 		let result: NativeResult<Vec<native::Entry>> = async {
 			let value: Vec<native::Entry> = {
 				let query_bind_1 = workspace;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
 						.from(Alias::new("semantic_entries"))
@@ -418,7 +433,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 			let value: Option<native::Entry> = {
 				let query_bind_1 = workspace;
 				let query_bind_2 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
 						.from(Alias::new("semantic_entries"))
@@ -446,7 +461,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 	async fn reindex_replay(&mut self, id: Uuid, revision: i64) -> Result<bool> {
 		let lease = &mut *self.lease;
 
-		let result: NativeResult<bool>=async { let value: bool={ let query_bind_1 = id; let query_bind_2 = revision; sqlx::query_scalar(&Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM semantic_history WHERE entry_id = ? AND revision = ? AND state = 'PENDING' AND detail = 'reindex requested'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()])).to_string(PostgresQueryBuilder)).fetch_one(&mut **lease.tx()).await? }; Ok(value) }.await;
+		let result: NativeResult<bool>=async { let value: bool={ let query_bind_1 = id; let query_bind_2 = revision; crate::database::native::query_scalar(&Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM semantic_history WHERE entry_id = ? AND revision = ? AND state = 'PENDING' AND detail = 'reindex requested'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()])).to_string(PostgresQueryBuilder)).scalar_one(&mut **lease.tx()).await? }; Ok(value) }.await;
 		result.map_err(Into::into)
 	}
 
@@ -456,7 +471,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 		let result: NativeResult<Option<(String, String, String)>> = async {
 			let value: Option<(String, String, String)> = {
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.expr(SimpleExpr::from(Expr::col(Alias::new("agent_id"))))
 						.expr(SimpleExpr::from(Expr::col(Alias::new("agent_version"))))
@@ -468,6 +483,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 						))
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["agent_id", "agent_version", "home_node"])
 				.fetch_optional(&mut **lease.tx())
 				.await?
 			};
@@ -517,7 +533,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 			let query_bind_2 = agent_id;
 			let query_bind_3 = agent_version;
 			let query_bind_4 = home;
-			sqlx::query(&Query::delete().from_table(Alias::new("memory")).and_where(SimpleExpr::CustomWithExpr("(workspace_id = ? AND agent_id = ? AND agent_version = ? AND home_node = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()])).to_string(PostgresQueryBuilder)).execute(&mut **lease.tx()).await?;
+			crate::database::native::query(&Query::delete().from_table(Alias::new("memory")).and_where(SimpleExpr::CustomWithExpr("(workspace_id = ? AND agent_id = ? AND agent_version = ? AND home_node = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()])).to_string(PostgresQueryBuilder)).execute(&mut **lease.tx()).await?;
 			Ok(())
 		}.await;
 		result.map_err(Into::into)
@@ -534,7 +550,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 	) -> Result<Entry> {
 		let lease = &mut *self.lease;
 		let saved = authority;
-		let result: NativeResult<native::Entry>=async { let value: native::Entry={ let query_bind_1 = id; let query_bind_2 = workspace; let query_bind_3 = point; let query_bind_4 = index_revision; let query_bind_5 = delete; let query_bind_6 = if delete {"DELETED"} else {"PENDING"}; let query_bind_7 = saved; sqlx::query_as(&Query::update().table(Alias::new("semantic_entries")).value_expr(Alias::new("revision"), Expr::cust("revision + 1")).value_expr(Alias::new("point_id"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(Alias::new("index_revision"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_4.to_owned()).into()])).value_expr(Alias::new("deleted"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(Alias::new("state"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(Alias::new("source"), SimpleExpr::CustomWithExpr("(CASE WHEN ? THEN JSONB_BUILD_OBJECT('kind', 'memory', 'text', '') ELSE source END)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(Alias::new("authority"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_7.to_owned()).into()])).value_expr(Alias::new("attempts"), Expr::cust("0")).value_expr(Alias::new("last_error"), Expr::cust("NULL")).value_expr(Alias::new("next_attempt"), Expr::cust("CLOCK_TIMESTAMP()")).value_expr(Alias::new("updated_at"), Expr::cust("CLOCK_TIMESTAMP()")).and_where(SimpleExpr::CustomWithExpr("(id = ? AND workspace_id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()])).returning_all().to_string(PostgresQueryBuilder)).fetch_one(&mut **lease.tx()).await? }; Ok(value) }.await;
+		let result: NativeResult<native::Entry>=async { let value: native::Entry={ let query_bind_1 = id; let query_bind_2 = workspace; let query_bind_3 = point; let query_bind_4 = index_revision; let query_bind_5 = delete; let query_bind_6 = if delete {"DELETED"} else {"PENDING"}; let query_bind_7 = saved; crate::database::native::query_as(&Query::update().table(Alias::new("semantic_entries")).value_expr(Alias::new("revision"), Expr::cust("revision + 1")).value_expr(Alias::new("point_id"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(Alias::new("index_revision"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_4.to_owned()).into()])).value_expr(Alias::new("deleted"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(Alias::new("state"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(Alias::new("source"), SimpleExpr::CustomWithExpr("(CASE WHEN ? THEN JSONB_BUILD_OBJECT('kind', 'memory', 'text', '') ELSE source END)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(Alias::new("authority"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_7.to_owned()).into()])).value_expr(Alias::new("attempts"), Expr::cust("0")).value_expr(Alias::new("last_error"), Expr::cust("NULL")).value_expr(Alias::new("next_attempt"), Expr::cust("CLOCK_TIMESTAMP()")).value_expr(Alias::new("updated_at"), Expr::cust("CLOCK_TIMESTAMP()")).and_where(SimpleExpr::CustomWithExpr("(id = ? AND workspace_id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()])).returning_all().to_string(PostgresQueryBuilder)).fetch_one(&mut **lease.tx()).await? }; Ok(value) }.await;
 		result.map(|value| value.into()).map_err(Into::into)
 	}
 
@@ -545,7 +561,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 			let value: Vec<native::History> = {
 				let query_bind_1 = workspace;
 				let query_bind_2 = cursor;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
 						.from(Alias::new("semantic_history"))
@@ -578,7 +594,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 		let result: NativeResult<native::Entry> = async {
 			let value: native::Entry = {
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
 						.from(Alias::new("semantic_entries"))

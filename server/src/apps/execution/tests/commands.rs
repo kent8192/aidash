@@ -70,3 +70,78 @@ async fn worker_command_validates_arguments_before_loading_runtime_settings(
 	let text = String::from_utf8_lossy(text);
 	assert!(text.contains(expected), "{text}");
 }
+
+#[rstest]
+#[case::serve("serve")]
+#[case::server("server")]
+#[case::worker("worker")]
+#[case::openapi("openapi")]
+#[case::diagnostics("diagnostics")]
+#[tokio::test]
+async fn deployment_aliases_use_reinhardt_commands_before_runtime_configuration(
+	temp_dir: TempDir,
+	#[case] name: &str,
+) {
+	// Arrange
+	std::fs::write(temp_dir.path().join("base.toml"), "invalid TOML!").unwrap();
+	// Act: both binaries select the same registered command without opening DB/HTTP.
+	for binary in [env!("CARGO_BIN_EXE_aidash"), env!("CARGO_BIN_EXE_manage")] {
+		let mut command = Command::new(binary);
+		command
+			.args([name, "--help"])
+			.env_clear()
+			.env("REINHARDT_SETTINGS_DIR", temp_dir.path())
+			.current_dir(temp_dir.path())
+			.kill_on_drop(true);
+		let output = tokio::time::timeout(std::time::Duration::from_secs(10), command.output())
+			.await
+			.unwrap()
+			.unwrap();
+		// Assert
+		assert!(
+			output.status.success(),
+			"{}",
+			String::from_utf8_lossy(&output.stderr)
+		);
+		let text = String::from_utf8_lossy(&output.stdout);
+		assert!(text.contains(name), "{text}");
+		assert!(text.contains("Usage:"), "{text}");
+	}
+}
+
+#[rstest]
+#[case::acceptance("acceptance")]
+#[case::memory("remote-memory")]
+#[tokio::test]
+async fn diagnostics_are_registered_static_commands_instead_of_example_binaries(
+	temp_dir: TempDir,
+	#[case] profile: &str,
+) {
+	// Arrange
+	std::fs::write(temp_dir.path().join("base.toml"), "invalid TOML!").unwrap();
+	let mut command = Command::new(env!("CARGO_BIN_EXE_manage"));
+	command
+		.args(["diagnostics", profile])
+		.env_clear()
+		.env("REINHARDT_SETTINGS_DIR", temp_dir.path())
+		.current_dir(temp_dir.path())
+		.kill_on_drop(true);
+	// Act
+	let output = tokio::time::timeout(std::time::Duration::from_secs(10), command.output())
+		.await
+		.unwrap()
+		.unwrap();
+	// Assert
+	assert!(
+		output.status.success(),
+		"{}",
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+	assert!(!document.as_object().unwrap().is_empty());
+	assert!(document.as_object().unwrap().values().any(|value| {
+		value
+			.as_str()
+			.is_some_and(|query| query.contains("SELECT") || query.contains("UPDATE"))
+	}));
+}

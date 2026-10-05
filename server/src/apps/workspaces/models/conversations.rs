@@ -25,16 +25,9 @@ pub struct Conversation {
 impl Conversation {}
 
 impl crate::database::Record for Conversation {
-	fn decode(row: &sqlx::postgres::PgRow) -> std::result::Result<Self, sqlx::Error> {
-		use sqlx::Row;
+	fn decode(row: &crate::database::native::Row) -> crate::Result<Self> {
 		let kind: String = row.try_get("target_kind")?;
-		let target_kind =
-			serde_json::from_value(serde_json::Value::String(kind)).map_err(|error| {
-				sqlx::Error::ColumnDecode {
-					index: "target_kind".into(),
-					source: Box::new(error),
-				}
-			})?;
+		let target_kind = serde_json::from_value(serde_json::Value::String(kind))?;
 		Ok(Self {
 			id: row.try_get("id")?,
 			workspace_id: row.try_get("workspace_id")?,

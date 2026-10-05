@@ -5,7 +5,7 @@ use chrono::DateTime;
 use chrono::Utc;
 use serde_json::Value;
 
-#[derive(Debug, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Deserialize)]
 pub(crate) struct EvidenceRow {
 	pub id: Uuid,
 	pub status: String,
@@ -15,6 +15,15 @@ pub(crate) struct EvidenceRow {
 	pub expires_at: DateTime<Utc>,
 	pub expired_at: Option<DateTime<Utc>>,
 }
+crate::native_record!(EvidenceRow {
+	id,
+	status,
+	scenario,
+	usage,
+	created_at,
+	expires_at,
+	expired_at
+});
 
 pub use aidash_domain::registry::workbench::inspection::{Inspection, TestEvidence, WorkspaceUse};
 

@@ -125,7 +125,7 @@ async fn invalid_deadline_does_not_bind_remote_preflight(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&b.f.store.control_pool)
+		.fetch_one(b.f.store.control_pool.driver())
 		.await
 	}
 	.unwrap();
@@ -334,8 +334,12 @@ async fn bidirectional_submissions_reserve_inbound_control_capacity(
 	.expect("both nodes must issue preflights concurrently");
 	tokio::time::sleep(StdDuration::from_millis(100)).await;
 	// A blocked outbound RPC may retain one connection, but not all sixteen.
-	let spare_a = a.f.store.control_pool.size() as usize - a.f.store.control_pool.num_idle() < 16;
-	let spare_b = b.f.store.control_pool.size() as usize - b.f.store.control_pool.num_idle() < 16;
+	let spare_a = a.f.store.control_pool.driver().size() as usize
+		- a.f.store.control_pool.driver().num_idle()
+		< 16;
+	let spare_b = b.f.store.control_pool.driver().size() as usize
+		- b.f.store.control_pool.driver().num_idle()
+		< 16;
 	gate.add_permits(32);
 	let results = tokio::time::timeout(
 		StdDuration::from_secs(15),

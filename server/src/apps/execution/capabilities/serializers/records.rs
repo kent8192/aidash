@@ -3,9 +3,7 @@ use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-#[derive(
-	Clone, Debug, Serialize, Deserialize, sqlx::FromRow, schemars::JsonSchema, reinhardt::Validate,
-)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 pub struct Record {
 	pub id: Uuid,
 	pub tenant: String,
@@ -17,5 +15,16 @@ pub struct Record {
 	pub data: Value,
 	pub expires_at: Option<DateTime<Utc>>,
 }
+crate::native_record!(Record {
+	id,
+	tenant,
+	owner,
+	area_id,
+	kind,
+	state,
+	revision,
+	data,
+	expires_at
+});
 
 use uuid::Uuid;

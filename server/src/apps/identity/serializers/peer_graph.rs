@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::apps::identity::services::peer::graph::grant_page_size;
 use chrono::{DateTime, Utc};
 
-#[derive(Debug, Clone, Serialize, sqlx::FromRow, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct GraphOperatorGrant {
 	pub source_node: String,
 	pub source_operator: Uuid,
@@ -12,6 +12,14 @@ pub struct GraphOperatorGrant {
 	pub revision: i64,
 	pub updated_at: DateTime<Utc>,
 }
+crate::native_record!(GraphOperatorGrant {
+	source_node,
+	source_operator,
+	tenant,
+	enabled,
+	revision,
+	updated_at
+});
 
 #[derive(Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]

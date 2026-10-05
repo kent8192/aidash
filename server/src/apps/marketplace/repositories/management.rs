@@ -23,7 +23,7 @@ impl<Events: Send> MarketplaceRead for NativeDefinitions<'_, Events> {
 		offset: usize,
 		limit: u64,
 	) -> aidash_application::Result<Vec<EntityRef>> {
-		let candidates: Vec<(String, String)> = sqlx::query_as(
+		let candidates: Vec<(String, String)> = crate::database::native::query_as(
 			&Query::select()
 				.columns(
 					["entry_id", "entry_version"].map(|name| (Alias::new("c"), Alias::new(name))),
@@ -46,9 +46,9 @@ impl<Events: Send> MarketplaceRead for NativeDefinitions<'_, Events> {
 				.offset(offset as u64)
 				.to_string(PostgresQueryBuilder),
 		)
+		.columns(&["entry_id", "entry_version"])
 		.fetch_all(&mut **self.access.tx)
-		.await
-		.map_err(crate::Error::from)?;
+		.await?;
 		Ok(candidates
 			.into_iter()
 			.map(|(id, version)| EntityRef { id, version })
@@ -59,7 +59,7 @@ impl<Events: Send> MarketplaceRead for NativeDefinitions<'_, Events> {
 	) -> aidash_application::Result<Vec<serde_json::Value>> {
 		let documents: Vec<serde_json::Value> = {
 			let query_bind_1 = &self.access.identity.tenant;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("document"))
 					.from(Alias::new("marketplace_installations"))
@@ -74,9 +74,8 @@ impl<Events: Send> MarketplaceRead for NativeDefinitions<'_, Events> {
 					.order_by(Alias::new("key"), Order::Asc)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_all(&mut **self.access.tx)
-			.await
-			.map_err(crate::Error::from)?
+			.scalar_all(&mut **self.access.tx)
+			.await?
 		};
 		Ok(documents)
 	}

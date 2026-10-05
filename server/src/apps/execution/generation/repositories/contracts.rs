@@ -1,4 +1,5 @@
 //! Generation projections and caller-owned visibility query adapters.
+use crate::database::native::Row;
 use crate::{Result, authorization::access::Access, database::Record};
 use aidash_application::ports::generation::visibility::GenerationVisibility;
 use aidash_domain::{
@@ -9,11 +10,10 @@ use aidash_domain::{
 use async_trait::async_trait;
 use reinhardt::query::{Expr, QueryStatementBuilder, SimpleExpr};
 use serde_json::Value;
-use sqlx::{Row, postgres::PgRow};
 use uuid::Uuid;
 
 impl Record for Request {
-	fn decode(row: &PgRow) -> std::result::Result<Self, sqlx::Error> {
+	fn decode(row: &Row) -> crate::Result<Self> {
 		Ok(Self {
 			id: row.try_get("id")?,
 			tenant: row.try_get("tenant")?,
@@ -44,7 +44,7 @@ impl Record for Request {
 }
 
 impl Record for History {
-	fn decode(row: &PgRow) -> std::result::Result<Self, sqlx::Error> {
+	fn decode(row: &Row) -> crate::Result<Self> {
 		Ok(Self {
 			sequence: row.try_get("sequence")?,
 			request_id: row.try_get("request_id")?,
@@ -57,7 +57,7 @@ impl Record for History {
 }
 
 impl Record for Usage {
-	fn decode(row: &PgRow) -> std::result::Result<Self, sqlx::Error> {
+	fn decode(row: &Row) -> crate::Result<Self> {
 		Ok(Self {
 			token_limit: row.try_get("token_limit")?,
 			used_tokens: row.try_get("used_tokens")?,
@@ -111,8 +111,7 @@ impl GenerationVisibility for NativeVisibility<'_> {
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
 			.fetch_optional(&mut **self.access.tx)
-			.await
-			.map_err(crate::Error::from)?
+			.await?
 		};
 
 		Ok(task)

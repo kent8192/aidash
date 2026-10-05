@@ -16,9 +16,8 @@ use aidash_domain::transactions::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use reinhardt::db::backends::{DatabaseConnection, TransactionExecutor, dialect::PostgresBackend};
+use reinhardt::db::backends::TransactionExecutor;
 use serde_json::json;
-use std::sync::Arc;
 use uuid::Uuid;
 
 pub(crate) struct Scope<'a> {
@@ -105,9 +104,7 @@ pub(crate) struct Repository {
 #[async_trait]
 impl AdmissionRepository for Repository {
 	async fn begin(&self) -> Result<Box<dyn OwnedAdmissionScope>> {
-		let db = DatabaseConnection::new(Arc::new(PostgresBackend::new(
-			self.runtime.store.control_pool.clone(),
-		)));
+		let db = self.runtime.store.control_pool.connection();
 		let tx = db.begin().await.map_err(Error::from)?;
 		Ok(Box::new(Owned {
 			runtime: self.runtime.clone(),

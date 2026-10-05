@@ -26,14 +26,14 @@ use aidash_domain::{
 	},
 };
 use async_trait::async_trait;
-use reinhardt::db::backends::{TransactionExecutor, dialect::postgres::PgTransactionExecutor};
+use reinhardt::db::backends::TransactionExecutor;
 use uuid::Uuid;
 pub(crate) struct Repository<'a> {
 	pub(crate) runtime: &'a Federation,
 	pub(crate) actor: Actor,
 }
 struct Scope {
-	tx: PgTransactionExecutor,
+	tx: crate::database::native::Transaction,
 	actor: Actor,
 }
 #[async_trait]
@@ -43,14 +43,7 @@ impl AuditRepository for Repository<'_> {
 	}
 	async fn begin(&self) -> Result<Box<dyn AuditScope + '_>> {
 		Ok(Box::new(Scope {
-			tx: PgTransactionExecutor::new(
-				self.runtime
-					.store
-					.pool
-					.begin()
-					.await
-					.map_err(crate::Error::from)?,
-			),
+			tx: crate::database::native::begin(&self.runtime.store.pool).await?,
 			actor: self.actor.clone(),
 		}))
 	}

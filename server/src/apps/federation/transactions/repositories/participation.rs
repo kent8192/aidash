@@ -20,11 +20,7 @@ use aidash_domain::transactions::{
 	coordination::{LocalStatus, ParticipantPhase},
 };
 use async_trait::async_trait;
-use reinhardt::db::{
-	backends::{DatabaseConnection, PostgresBackend, TransactionExecutor},
-	orm::DatabaseConnectionLease,
-};
-use std::sync::Arc;
+use reinhardt::db::{backends::TransactionExecutor, orm::DatabaseConnectionLease};
 use uuid::Uuid;
 
 enum Transaction {
@@ -185,9 +181,7 @@ impl ParticipantRepository for Repository {
 		&self.runtime.config.node_id
 	}
 	async fn begin(&self) -> Result<Box<dyn ParticipantScope>> {
-		let db = DatabaseConnection::new(Arc::new(PostgresBackend::new(
-			self.runtime.store.control_pool.clone(),
-		)));
+		let db = self.runtime.store.control_pool.connection();
 		let tx = AtomicParticipant::begin(&db).await?;
 		Ok(Box::new(Scope {
 			runtime: self.runtime.clone(),

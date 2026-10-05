@@ -3,16 +3,16 @@ use crate::{Result as NativeResult, store::Store};
 use aidash_application::{Result, ports::semantic::run_context::RunSemanticJournal};
 use async_trait::async_trait;
 use reinhardt::query::{Expr, QueryStatementBuilder as _, SimpleExpr};
-use sqlx::{Postgres, Transaction};
+
 use uuid::Uuid;
 pub(crate) struct Journal {
-	tx: Transaction<'static, Postgres>,
+	tx: crate::database::native::Transaction,
 	run: Uuid,
 }
 impl Journal {
 	pub(crate) async fn begin(store: &Store, run: Uuid) -> NativeResult<Self> {
 		Ok(Self {
-			tx: store.pool.begin().await?,
+			tx: crate::database::native::begin(&store.pool).await?,
 			run,
 		})
 	}
@@ -24,7 +24,7 @@ impl RunSemanticJournal for Journal {
 			let query_bind_1 = self.run;
 			let query_bind_2 = entry;
 			let query_bind_3 = revision;
-			sqlx::query(&format!(
+			crate::database::native::query(&format!(
 				"{} ON CONFLICT DO NOTHING",
 				reinhardt::query::Query::insert()
 					.into_table(reinhardt::query::Alias::new("semantic_run_reads"))
@@ -60,9 +60,6 @@ impl RunSemanticJournal for Journal {
 		result.map_err(Into::into)
 	}
 	async fn commit(self: Box<Self>) -> Result<()> {
-		self.tx
-			.commit()
-			.await
-			.map_err(|error| crate::Error::from(error).into())
+		self.tx.commit().await.map_err(|error| error.into())
 	}
 }

@@ -90,7 +90,8 @@ async fn authorization_submission_and_abort_work_with_one_control_connection(
 		.acquire_timeout(std::time::Duration::from_secs(2))
 		.connect_with(old_pool.connect_options().as_ref().clone())
 		.await
-		.unwrap();
+		.unwrap()
+		.into();
 	drop(app);
 	old_pool.close().await;
 	let app = common::application(f.clone()).await;
@@ -159,7 +160,7 @@ async fn audit_count(f: &aidash_server::federation::Federation) -> i64 {
 			.from(Alias::new("authorization_decisions"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&f.store.pool)
+	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap()
 }
@@ -266,7 +267,7 @@ async fn peer_mapping_writes_work_with_one_control_connection(
 			])
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&f.store.pool)
+	.execute(f.store.pool.driver())
 	.await
 	.unwrap();
 	let old_pool = f.store.control_pool.clone();
@@ -277,7 +278,8 @@ async fn peer_mapping_writes_work_with_one_control_connection(
 		.acquire_timeout(std::time::Duration::from_secs(2))
 		.connect_with(old_pool.connect_options().as_ref().clone())
 		.await
-		.unwrap();
+		.unwrap()
+		.into();
 	drop(app);
 	old_pool.close().await;
 	let app = common::application(f.clone()).await;
@@ -360,7 +362,7 @@ async fn subject_transaction_errors_do_not_reveal_other_owners(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&f.store.control_pool)
+		.execute(f.store.control_pool.driver())
 		.await
 	}
 	.unwrap();

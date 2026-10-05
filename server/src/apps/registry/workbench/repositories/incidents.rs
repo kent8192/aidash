@@ -20,7 +20,7 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use reinhardt::db::backends::{TransactionExecutor, dialect::postgres::PgTransactionExecutor};
+use reinhardt::db::backends::TransactionExecutor;
 use serde_json::Value;
 use uuid::Uuid;
 pub(crate) struct Repository<'a> {
@@ -28,10 +28,10 @@ pub(crate) struct Repository<'a> {
 	pub(crate) actor: Actor,
 }
 pub(crate) struct RetentionRepository<'a> {
-	pub(crate) pool: &'a sqlx::PgPool,
+	pub(crate) pool: &'a crate::database::native::Pool,
 }
 struct Scope {
-	tx: PgTransactionExecutor,
+	tx: crate::database::native::Transaction,
 	actor: Actor,
 }
 #[async_trait]
@@ -41,14 +41,7 @@ impl IncidentRepository for Repository<'_> {
 	}
 	async fn begin(&self) -> Result<Box<dyn IncidentScope + '_>> {
 		Ok(Box::new(Scope {
-			tx: PgTransactionExecutor::new(
-				self.runtime
-					.store
-					.pool
-					.begin()
-					.await
-					.map_err(crate::Error::from)?,
-			),
+			tx: crate::database::native::begin(&self.runtime.store.pool).await?,
 			actor: self.actor.clone(),
 		}))
 	}
@@ -151,7 +144,7 @@ impl IncidentScope for Scope {
 impl IncidentRetentionRepository for RetentionRepository<'_> {
 	async fn begin(&self) -> Result<Box<dyn IncidentRetentionScope + '_>> {
 		Ok(Box::new(Scope {
-			tx: PgTransactionExecutor::new(self.pool.begin().await.map_err(crate::Error::from)?),
+			tx: crate::database::native::begin(self.pool).await?,
 			actor: Actor::Operator,
 		}))
 	}

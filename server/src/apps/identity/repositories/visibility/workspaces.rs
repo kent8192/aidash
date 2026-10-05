@@ -86,10 +86,10 @@ impl WorkspaceResourceScope for Reads<'_> {
 					.lock(LockType::Share)
 					.to_string(PostgresQueryBuilder)
 			};
-			let owner: Option<String> = sqlx::query_scalar(&query)
+			let owner: Option<String> = crate::database::native::query_scalar(&query)
 				.bind(id)
 				.bind(&self.access.identity.tenant)
-				.fetch_optional(&mut **self.access.tx)
+				.scalar_optional(&mut **self.access.tx)
 				.await?;
 			Ok(owner)
 		}
@@ -104,7 +104,7 @@ impl WorkspaceAuthorityScope for Reads<'_> {
 			let owner: Option<String> = {
 				let query_bind_1 = id;
 				let query_bind_2 = &self.access.identity.tenant;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("owner_subject"))
 						.from(Alias::new("authorization_workspaces"))
@@ -132,7 +132,7 @@ impl WorkspaceAuthorityScope for Reads<'_> {
 						.lock(LockType::Share)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **self.access.tx)
+				.scalar_optional(&mut **self.access.tx)
 				.await?
 			};
 			Ok(owner)
@@ -147,7 +147,7 @@ impl WorkspaceAuthorityScope for Reads<'_> {
 		let result: NativeResult<Vec<(Uuid, String)>> = async {
 			let rows: Vec<(Uuid, String)> = {
 				let query_bind_1 = &self.access.identity.tenant;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(Alias::new("workspace_id"))
 						.column(Alias::new("owner_subject"))
@@ -164,6 +164,7 @@ impl WorkspaceAuthorityScope for Reads<'_> {
 						.lock(LockType::Share)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["workspace_id", "owner_subject"])
 				.fetch_all(&mut **self.access.tx)
 				.await?
 			};
@@ -191,8 +192,9 @@ impl WorkspaceAuthorityScope for Reads<'_> {
 				);
 			}
 			let sql = query.to_string(PostgresQueryBuilder);
-			let mut query =
-				sqlx::query_as::<_, (Uuid, String)>(&sql).bind(&self.access.identity.tenant);
+			let mut query = crate::database::native::query_as::<(Uuid, String)>(&sql)
+				.columns(&["workspace_id", "owner_subject"])
+				.bind(&self.access.identity.tenant);
 			if let Some(id) = selected {
 				query = query.bind(id);
 			}

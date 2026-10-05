@@ -11,9 +11,9 @@ use reinhardt::query::{
 	SimpleExpr,
 };
 use serde_json::Value;
-pub(crate) struct SqlScope<'a, 't>(pub(crate) &'a mut sqlx::Transaction<'t, sqlx::Postgres>);
+pub(crate) struct SqlScope<'a>(pub(crate) &'a mut crate::database::native::Transaction);
 #[async_trait]
-impl DefinitionLookup for SqlScope<'_, '_> {
+impl DefinitionLookup for SqlScope<'_> {
 	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry> {
 		let query = Query::select()
 			.column(Alias::new("metadata"))
@@ -21,10 +21,9 @@ impl DefinitionLookup for SqlScope<'_, '_> {
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.and_where(Expr::col("version").eq(Expr::value(version)))
 			.to_string(PostgresQueryBuilder);
-		let value: Option<Value> = sqlx::query_scalar(&query)
-			.fetch_optional(&mut **self.0)
-			.await
-			.map_err(Error::from)?;
+		let value: Option<Value> = crate::database::native::query_scalar(&query)
+			.scalar_optional(&mut **self.0)
+			.await?;
 		Ok(serde_json::from_value(
 			value.ok_or_else(|| Error::NotFound(id.into()))?,
 		)?)
@@ -36,10 +35,9 @@ impl DefinitionLookup for SqlScope<'_, '_> {
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.and_where(Expr::col("version").eq(Expr::value(version)))
 			.to_string(PostgresQueryBuilder);
-		Ok(sqlx::query_scalar(&query)
-			.fetch_optional(&mut **self.0)
-			.await
-			.map_err(Error::from)?)
+		Ok(crate::database::native::query_scalar(&query)
+			.scalar_optional(&mut **self.0)
+			.await?)
 	}
 	async fn executor_kind(&mut self, id: &str, version: &str) -> Result<Option<String>> {
 		let query = Query::select()
@@ -48,20 +46,19 @@ impl DefinitionLookup for SqlScope<'_, '_> {
 			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.and_where(Expr::col("version").eq(Expr::value(version)))
 			.to_string(PostgresQueryBuilder);
-		Ok(sqlx::query_scalar(&query)
-			.fetch_optional(&mut **self.0)
-			.await
-			.map_err(Error::from)?)
+		Ok(crate::database::native::query_scalar(&query)
+			.scalar_optional(&mut **self.0)
+			.await?)
 	}
 }
 #[async_trait]
-impl DefinitionWriter for SqlScope<'_, '_> {
+impl DefinitionWriter for SqlScope<'_> {
 	async fn insert_definition(&mut self, entry: &Entry) -> Result<bool> {
 		insert(self.0, entry).await.map_err(Into::into)
 	}
 }
 async fn insert(
-	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	entry: &Entry,
 ) -> crate::Result<bool> {
 	let value = serde_json::to_value(entry)?;
@@ -70,7 +67,7 @@ async fn insert(
 		let query_bind_2 = &entry.version;
 		let query_bind_3 = &entry.kind;
 		let query_bind_4 = &value;
-		sqlx::query(
+		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new("registry"))
 				.columns([
@@ -114,7 +111,7 @@ async fn insert(
 	let stored: Value = {
 		let query_bind_1 = &entry.id;
 		let query_bind_2 = &entry.version;
-		sqlx::query_scalar(
+		crate::database::native::query_scalar(
 			&Query::select()
 				.expr(reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
 					"metadata",
@@ -129,7 +126,7 @@ async fn insert(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&mut **tx)
+		.scalar_one(&mut **tx)
 		.await?
 	};
 	if stored != value {

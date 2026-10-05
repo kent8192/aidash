@@ -78,7 +78,7 @@ async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_object
 			.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&c.f.store.pool)
+	.fetch_one(c.f.store.pool.driver())
 	.await
 	.unwrap();
 	// The first object is fsynced; reserving the second object fails. The real
@@ -94,7 +94,7 @@ async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_object
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&quota_query)
 		.bind(quota)
-		.execute(&c.f.store.pool)
+		.execute(c.f.store.pool.driver())
 		.await
 		.unwrap();
 	let (status,failed)=request(&c.app,&c.token,"POST",&path,json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"preconditions":{"a.txt":null,"b.txt":null},"patch":"*** Begin Patch\n*** Add File: a.txt\n+a\n*** Add File: b.txt\n+b\n*** End Patch"})).await;
@@ -111,7 +111,7 @@ async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_object
 	assert_eq!(before, after, "no partial patch may become visible");
 	sqlx::query(&quota_query)
 		.bind(used)
-		.execute(&c.f.store.pool)
+		.execute(c.f.store.pool.driver())
 		.await
 		.unwrap();
 	let known: Vec<Uuid> = sqlx::query_scalar(
@@ -120,7 +120,7 @@ async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_object
 			.from(Alias::new("core_objects"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(&c.f.store.pool)
+	.fetch_all(c.f.store.pool.driver())
 	.await
 	.unwrap();
 	let mut abandoned = vec![];
@@ -143,7 +143,7 @@ async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_object
 	// A transaction still allocating another object owns the same advisory lock
 	// as production. The collector must leave it untouched until rollback.
 	let live = Uuid::new_v4();
-	let mut tx = c.f.store.pool.begin().await.unwrap();
+	let mut tx = c.f.store.pool.driver().begin().await.unwrap();
 	{
 		let query_bind_1 = format!("core-object:{live}");
 		sqlx::query(
@@ -246,7 +246,7 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 	let base_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
 	let base: aidash_server::capabilities::contracts::Area = {
 		let query_bind_1 = base_id;
-		sqlx::query_as(
+		aidash_server::database::native::query_as(
 			&Query::select()
 				.column(ColumnRef::Asterisk)
 				.from(Alias::new("core_areas"))
@@ -260,7 +260,7 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&c.f.store.pool)
+		.fetch_one(c.f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -314,7 +314,7 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 			.bind(extra.manifest)
 			.bind(extra.constraints)
 			.bind(extra.next_sequence)
-			.execute(&c.f.store.pool)
+			.execute(c.f.store.pool.driver())
 			.await
 			.unwrap();
 	}
@@ -353,7 +353,7 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 				.order_by(Alias::new("id"), reinhardt::query::Order::Asc)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(&c.f.store.pool)
+		.fetch_all(c.f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -398,7 +398,7 @@ async fn thread_run_waiting_behind_deletion_cannot_create_an_area(
 
 	// Hold the serialization row while the delete request queues first. The
 	// later run request must wait behind it, then observe the committed tombstone.
-	let mut blocker = c.f.store.pool.begin().await.unwrap();
+	let mut blocker = c.f.store.pool.driver().begin().await.unwrap();
 	let lock_thread = Query::select()
 		.column(Alias::new("id"))
 		.from(Alias::new("channel_threads"))
@@ -427,7 +427,7 @@ async fn thread_run_waiting_behind_deletion_cannot_create_an_area(
 		)
 		.await
 	});
-	wait_for_channel_thread_lock_waiters(&c.f.store.pool, 1).await;
+	wait_for_channel_thread_lock_waiters(c.f.store.pool.driver(), 1).await;
 
 	let run_app = c.app.clone();
 	let run_token = c.token.clone();
@@ -442,7 +442,7 @@ async fn thread_run_waiting_behind_deletion_cannot_create_an_area(
 		)
 		.await
 	});
-	wait_for_channel_thread_lock_waiters(&c.f.store.pool, 2).await;
+	wait_for_channel_thread_lock_waiters(c.f.store.pool.driver(), 2).await;
 	blocker.commit().await.unwrap();
 
 	let (delete_status, deleted) = deleting.await.unwrap();
@@ -466,7 +466,7 @@ async fn thread_run_waiting_behind_deletion_cannot_create_an_area(
 	let areas: i64 = sqlx::query_scalar(&count_query)
 		.bind(workspace)
 		.bind(thread_id)
-		.fetch_one(&c.f.store.pool)
+		.fetch_one(c.f.store.pool.driver())
 		.await
 		.unwrap();
 	assert_eq!(areas, 0, "a tombstoned thread cannot gain a new area");
@@ -711,7 +711,7 @@ async fn expired_upload_releases_only_its_owned_staging_bytes(
 			.from(Alias::new("core_objects"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&c.f.store.pool)
+	.fetch_one(c.f.store.pool.driver())
 	.await
 	.unwrap();
 	let object_path = c.root.join(object.simple().to_string());
@@ -730,7 +730,7 @@ async fn expired_upload_releases_only_its_owned_staging_bytes(
 				.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_optional(&c.f.store.pool)
+		.fetch_optional(c.f.store.pool.driver())
 		.await
 		.unwrap();
 		if used == Some(0) {
@@ -826,10 +826,10 @@ async fn failed_snapshot_preserves_active_files_and_interrupted_delete_is_reconc
 	// status polling deterministically overlaps the failure transaction.
 	let barrier_key = Uuid::new_v4().as_u128() as i64;
 	sqlx::query(&format!("CREATE FUNCTION pause_cleanup_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock({barrier_key}); RETURN NEW; END; $$"))
-		.execute(&c.f.store.pool).await.unwrap();
+		.execute(c.f.store.pool.driver()).await.unwrap();
 	sqlx::query("CREATE TRIGGER pause_cleanup_failure BEFORE UPDATE OF state ON core_records FOR EACH ROW WHEN (NEW.state = 'cleanup_failed') EXECUTE FUNCTION pause_cleanup_failure()")
-		.execute(&c.f.store.pool).await.unwrap();
-	let mut barrier = c.f.store.pool.begin().await.unwrap();
+		.execute(c.f.store.pool.driver()).await.unwrap();
+	let mut barrier = c.f.store.pool.driver().begin().await.unwrap();
 	sqlx::query(
 		&Query::select()
 			.expr(SimpleExpr::FunctionCall(
@@ -861,13 +861,13 @@ async fn failed_snapshot_preserves_active_files_and_interrupted_delete_is_reconc
 		"/api/file-cleanups/{}",
 		deletion["operation_id"].as_str().unwrap()
 	);
-	let failure_pid = wait_for_blocked_connection(&c.f.store.pool, barrier_pid).await;
+	let failure_pid = wait_for_blocked_connection(c.f.store.pool.driver(), barrier_pid).await;
 	let app = c.app.clone();
 	let token = c.token.clone();
 	let polling_path = status_path.clone();
 	let polling =
 		tokio::spawn(async move { request(&app, &token, "GET", &polling_path, Value::Null).await });
-	wait_for_blocked_connection(&c.f.store.pool, failure_pid).await;
+	wait_for_blocked_connection(c.f.store.pool.driver(), failure_pid).await;
 	barrier.rollback().await.unwrap();
 	let (status, state) = polling.await.unwrap();
 	assert_eq!(
@@ -937,7 +937,7 @@ async fn cleanup_status_does_not_block_the_worker_while_waiting_for_its_area(
 	assert_eq!(status, 200, "{cleanup}");
 	let operation_id: Uuid = serde_json::from_value(cleanup["operation_id"].clone()).unwrap();
 	// Pause a worker transaction after it has locked the area, before its record.
-	let mut worker = c.f.store.pool.begin().await.unwrap();
+	let mut worker = c.f.store.pool.driver().begin().await.unwrap();
 	let lock = Query::select()
 		.column(Alias::new("id"))
 		.from(Alias::new("core_areas"))
@@ -974,7 +974,7 @@ async fn cleanup_status_does_not_block_the_worker_while_waiting_for_its_area(
 		)
 		.await
 	});
-	wait_for_blocked_connection(&c.f.store.pool, pid).await;
+	wait_for_blocked_connection(c.f.store.pool.driver(), pid).await;
 	let lock = Query::select()
 		.column(Alias::new("id"))
 		.from(Alias::new("core_records"))

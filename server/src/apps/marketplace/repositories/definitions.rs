@@ -10,18 +10,21 @@ use reinhardt::query::{
 	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
 use serde_json::Value;
-use sqlx::{Postgres, Transaction};
+
 use uuid::Uuid;
 
 pub(crate) struct NativeDefinitions<'a, Events = ()> {
 	pub(crate) access: &'a mut Access,
 	pub(crate) events: Events,
 }
-pub(crate) async fn raw(tx: &mut Transaction<'_, Postgres>, r: &EntityRef) -> crate::Result<Entry> {
+pub(crate) async fn raw(
+	tx: &mut crate::database::native::Transaction,
+	r: &EntityRef,
+) -> crate::Result<Entry> {
 	let value: Option<Value> = {
 		let query_bind_1 = &r.id;
 		let query_bind_2 = &r.version;
-		sqlx::query_scalar(
+		crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("metadata"))
 				.from(Alias::new("registry"))
@@ -34,7 +37,7 @@ pub(crate) async fn raw(tx: &mut Transaction<'_, Postgres>, r: &EntityRef) -> cr
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_optional(&mut **tx)
+		.scalar_optional(&mut **tx)
 		.await?
 	};
 	serde_json::from_value(value.ok_or(crate::Error::Forbidden)?).map_err(Into::into)
@@ -87,7 +90,7 @@ impl<Events: Send> DefinitionScope for NativeDefinitions<'_, Events> {
 		reference: &EntityRef,
 		source_content: &str,
 	) -> Result<Option<Version>> {
-		let version: Option<Value> = sqlx::query_scalar(
+		let version: Option<Value> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("document"))
 				.from(Alias::new("marketplace_versions"))
@@ -102,9 +105,8 @@ impl<Events: Send> DefinitionScope for NativeDefinitions<'_, Events> {
 				.limit(1)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_optional(&mut **self.access.tx)
-		.await
-		.map_err(crate::Error::from)?;
+		.scalar_optional(&mut **self.access.tx)
+		.await?;
 		let version = version.map(serde_json::from_value::<Version>).transpose()?;
 		Ok(version)
 	}

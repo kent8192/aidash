@@ -43,7 +43,7 @@ async fn add_peer(f: &Federation, node: &str, endpoint: &str) {
 			])
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&f.store.pool)
+	.execute(f.store.pool.driver())
 	.await
 	.unwrap();
 }
@@ -109,7 +109,7 @@ async fn failed_admission_with_unavailable_release_expires_at_home(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&fixture.home.store.pool)
+		.fetch_one(fixture.home.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -127,7 +127,7 @@ async fn failed_admission_with_unavailable_release_expires_at_home(
 			.and_where(Expr::col(Alias::new("task_id")).eq(uuid_expr(run.task_id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&fixture.home.store.pool)
+	.execute(fixture.home.store.pool.driver())
 	.await
 	.unwrap();
 	let task = fixture.home.store.task(run.task_id).await.unwrap();
@@ -219,7 +219,7 @@ impl RemoteFixture {
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&home.store.pool)
+		.execute(home.store.pool.driver())
 		.await
 		.unwrap();
 		let task = home
@@ -306,7 +306,7 @@ async fn admitted_input_recovers_promotion_after_expiry_and_terminal_home(
 			.and_where(Expr::col(Alias::new("task_id")).eq(uuid_expr(run.task_id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&fixture.home.store.pool)
+	.execute(fixture.home.store.pool.driver())
 	.await
 	.unwrap();
 	let task = fixture.home.store.task(run.task_id).await.unwrap();
@@ -492,7 +492,7 @@ async fn scoped_remote_admission_imports_history_before_assigning_new_sequence(
 			.and_where(Expr::col(Alias::new("id")).eq(uuid_expr(run.id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&f.store.pool)
+	.execute(f.store.pool.driver())
 	.await
 	.unwrap();
 	let (status, response) = request(
@@ -649,7 +649,7 @@ async fn terminal_rpc_is_bounded_for_large_historical_ledgers(
 		);
 	}
 	sqlx::query(&insert.to_string(PostgresQueryBuilder))
-		.execute(&fixture.executor.store.pool)
+		.execute(fixture.executor.store.pool.driver())
 		.await
 		.unwrap();
 	let task = fixture
@@ -712,7 +712,7 @@ async fn bounded_terminal_transition_keeps_unadmitted_reservations_and_rolls_bac
 			.and_where(Expr::col(Alias::new("idempotency_key")).eq(key.clone()))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&fixture.home.store.pool)
+	.fetch_one(fixture.home.store.pool.driver())
 	.await
 	.unwrap();
 	assert!(

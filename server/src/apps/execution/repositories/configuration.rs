@@ -95,7 +95,7 @@ impl ConfigurationScope for Scope<'_> {
 				let query_bind_1 = id;
 				let query_bind_2 = version;
 				let query_bind_3 = source;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::insert()
 						.into_table(Alias::new("agent_knowledge"))
 						.columns(["agent_id", "agent_version", "documents"].map(Alias::new))

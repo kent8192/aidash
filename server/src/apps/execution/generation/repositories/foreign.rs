@@ -1,5 +1,5 @@
 //! Foreign-generation query adapters retain their original row locks and transaction.
-use crate::{Error, authorization::access::Access, federation::Federation};
+use crate::{authorization::access::Access, federation::Federation};
 use aidash_application::{
 	Result,
 	ports::generation::foreign::{ForeignGenerationBinding, ForeignGenerationGuard},
@@ -24,7 +24,6 @@ use reinhardt::query::{
 use serde_json::Value;
 use uuid::Uuid;
 
-#[derive(sqlx::FromRow)]
 struct StoredIntent {
 	tenant: String,
 	credential_id: Uuid,
@@ -33,6 +32,15 @@ struct StoredIntent {
 	binding: Value,
 	cancelled: bool,
 }
+crate::native_record!(StoredIntent {
+	tenant,
+	credential_id,
+	root_subject,
+	subject_chain,
+	binding,
+	cancelled
+});
+
 impl From<StoredIntent> for Record {
 	fn from(row: StoredIntent) -> Self {
 		Self {
@@ -82,8 +90,7 @@ impl ForeignGenerationGuard for NativeForeignGuard<'_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_optional(&mut **access.tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(job)
 	}
@@ -91,7 +98,7 @@ impl ForeignGenerationGuard for NativeForeignGuard<'_> {
 		let access = &mut *self.access;
 		let record: Option<StoredIntent> = {
 			let query_bind_1 = id;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.column(Asterisk)
 					.from(Alias::new("generation_remote_intents"))
@@ -103,8 +110,7 @@ impl ForeignGenerationGuard for NativeForeignGuard<'_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_optional(&mut **access.tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(record.map(Into::into))
 	}
@@ -134,9 +140,9 @@ impl ForeignGenerationGuard for NativeForeignGuard<'_> {
 			let query_bind_2 = description.task.id;
 			let query_bind_3 = description.grant_id;
 			let query_bind_4 = run;
-			sqlx::query_scalar(&Query::select().expr(Expr::cust("COUNT(*)=1")).from(Alias::new("generation_requests"))
+			crate::database::native::query_scalar(&Query::select().expr(Expr::cust("COUNT(*)=1")).from(Alias::new("generation_requests"))
     .and_where(SimpleExpr::CustomWithExpr("(home_node=? AND task_id=? AND grant_id=? AND admission_id=? AND status='ACTIVE' AND NOT quota_released AND expires_at>CLOCK_TIMESTAMP())".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()]))
-    .to_string(PostgresQueryBuilder)).fetch_one(&mut **access.tx).await.map_err(Error::from)?
+    .to_string(PostgresQueryBuilder)).scalar_one(&mut **access.tx).await?
 		};
 		Ok(live)
 	}
@@ -162,7 +168,7 @@ impl ForeignGenerationBinding for NativeForeignBinding<'_> {
 			.lock(LockType::Update)
 			.to_string(PostgresQueryBuilder))
 	.fetch_one(&mut **access.tx)
-	.await.map_err(Error::from)?
+	.await?
 		};
 		Ok(job)
 	}
@@ -173,7 +179,7 @@ impl ForeignGenerationBinding for NativeForeignBinding<'_> {
 			let query_bind_1 = job;
 			let query_bind_2 = grant;
 			let query_bind_3 = admission;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("generation_requests"))
 					.value_expr(
@@ -197,8 +203,7 @@ impl ForeignGenerationBinding for NativeForeignBinding<'_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **access.tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(())
 	}

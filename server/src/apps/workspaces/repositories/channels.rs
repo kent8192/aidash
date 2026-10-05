@@ -25,7 +25,7 @@ pub(crate) struct NativeChannels<'a> {
 	pub(crate) store: &'a Store,
 	pub(crate) lease: &'a mut Lease,
 }
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug)]
 struct LinkRecord {
 	id: Uuid,
 	filename: String,
@@ -33,6 +33,14 @@ struct LinkRecord {
 	size_bytes: i64,
 	message_id: Option<Uuid>,
 }
+crate::native_record!(LinkRecord {
+	id,
+	filename,
+	media_type,
+	size_bytes,
+	message_id
+});
+
 impl LinkRecord {
 	fn public(&self) -> ChannelAttachment {
 		ChannelAttachment {
@@ -50,8 +58,7 @@ struct HistoryRecord {
 	root_thread_id: Option<Uuid>,
 }
 impl crate::database::Record for HistoryRecord {
-	fn decode(row: &sqlx::postgres::PgRow) -> std::result::Result<Self, sqlx::Error> {
-		use sqlx::Row;
+	fn decode(row: &crate::database::native::Row) -> crate::Result<Self> {
 		Ok(Self {
 			message: MessageRecord::decode(row)?,
 			reply_thread_id: row.try_get("reply_thread_id")?,
@@ -104,15 +111,14 @@ impl ChannelScope for NativeChannels<'_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_optional(&mut **self.lease.tx())
-			.await
-			.map_err(crate::Error::from)?
+			.await?
 		};
 		Ok(thread.map(Into::into))
 	}
 	async fn reply_thread(&mut self, message: Uuid) -> Result<Option<Uuid>> {
 		let thread: Option<Option<Uuid>> = {
 			let query_bind_1 = message;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("thread_id"))
 					.from(Alias::new("channel_message_context"))
@@ -126,9 +132,8 @@ impl ChannelScope for NativeChannels<'_> {
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_optional(&mut **self.lease.tx())
-			.await
-			.map_err(crate::Error::from)?
+			.scalar_optional(&mut **self.lease.tx())
+			.await?
 		};
 		Ok(thread.flatten())
 	}
@@ -181,8 +186,7 @@ impl ChannelScope for NativeChannels<'_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_optional(&mut **self.lease.tx())
-			.await
-			.map_err(crate::Error::from)?
+			.await?
 		};
 		Ok(inserted.map(Into::into))
 	}
@@ -213,8 +217,7 @@ impl ChannelScope for NativeChannels<'_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_one(&mut **self.lease.tx())
-			.await
-			.map_err(crate::Error::from)?
+			.await?
 		};
 		Ok(existing.into())
 	}
@@ -254,7 +257,7 @@ impl ChannelScope for NativeChannels<'_> {
 			let query_bind_2 = workspace;
 			let query_bind_3 = thread;
 			let query_bind_4 = digest;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("channel_message_context"))
 					.columns([
@@ -291,8 +294,7 @@ impl ChannelScope for NativeChannels<'_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **self.lease.tx())
-			.await
-			.map_err(crate::Error::from)?
+			.await?
 		};
 		let context: ContextRecord = {
 			let query_bind_1 = workspace;
@@ -319,8 +321,7 @@ impl ChannelScope for NativeChannels<'_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_one(&mut **self.lease.tx())
-			.await
-			.map_err(crate::Error::from)?
+			.await?
 		};
 		Ok(MessageContext {
 			thread_id: context.thread_key,
@@ -330,7 +331,7 @@ impl ChannelScope for NativeChannels<'_> {
 	async fn root_thread(&mut self, message: Uuid) -> Result<Option<Uuid>> {
 		let root_thread: Option<Uuid> = {
 			let query_bind_1 = message;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("id"))
 					.from(Alias::new("channel_threads"))
@@ -345,9 +346,8 @@ impl ChannelScope for NativeChannels<'_> {
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_optional(&mut **self.lease.tx())
-			.await
-			.map_err(crate::Error::from)?
+			.scalar_optional(&mut **self.lease.tx())
+			.await?
 		};
 		Ok(root_thread)
 	}
@@ -359,7 +359,7 @@ impl ChannelScope for NativeChannels<'_> {
 		let rows: Vec<(Uuid, i32)> = {
 			let query_bind_1 = workspace;
 			let query_bind_2 = message;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.columns([Alias::new("id"), Alias::new("position")])
 					.from(Alias::new("channel_attachments"))
@@ -380,9 +380,9 @@ impl ChannelScope for NativeChannels<'_> {
 					)
 					.to_string(PostgresQueryBuilder),
 			)
+			.columns(&["id", "position"])
 			.fetch_all(&mut **self.lease.tx())
-			.await
-			.map_err(crate::Error::from)?
+			.await?
 		};
 		Ok(rows)
 	}
@@ -416,13 +416,12 @@ impl ChannelScope for NativeChannels<'_> {
 			.order_by(Alias::new("id"), Order::Asc)
 			.lock(LockType::Update);
 		let sql = query.to_string(PostgresQueryBuilder);
-		let records: Vec<LinkRecord> = sqlx::query_as(&sql)
+		let records: Vec<LinkRecord> = crate::database::native::query_as(&sql)
 			.bind(workspace)
 			.bind(ids.to_vec())
 			.bind(uploader)
 			.fetch_all(&mut **self.lease.tx())
-			.await
-			.map_err(crate::Error::from)?;
+			.await?;
 		Ok(records
 			.into_iter()
 			.map(|r| AttachmentLink {
@@ -458,15 +457,14 @@ impl ChannelScope for NativeChannels<'_> {
 			)
 			.and_where(Expr::col(Alias::new("message_id")).is_null())
 			.to_string(PostgresQueryBuilder);
-		sqlx::query(&update)
+		crate::database::native::query(&update)
 			.bind(message)
 			.bind(workspace)
 			.bind(id)
 			.bind(uploader)
 			.bind(position)
 			.execute(&mut **self.lease.tx())
-			.await
-			.map_err(crate::Error::from)?;
+			.await?;
 		Ok(())
 	}
 	async fn insert_attachment(
@@ -529,8 +527,7 @@ impl ChannelScope for NativeChannels<'_> {
 			)
 			.bind(content)
 			.fetch_optional(&mut **self.lease.tx())
-			.await
-			.map_err(crate::Error::from)?;
+			.await?;
 		Ok(inserted.map(Into::into))
 	}
 	async fn existing_attachment(
@@ -562,8 +559,7 @@ impl ChannelScope for NativeChannels<'_> {
 			.bind(uploader)
 			.bind(key)
 			.fetch_one(&mut **self.lease.tx())
-			.await
-			.map_err(crate::Error::from)?;
+			.await?;
 		Ok(existing.into())
 	}
 	async fn attachment(&mut self, workspace: Uuid, id: Uuid) -> Result<Option<AttachmentState>> {
@@ -583,8 +579,7 @@ impl ChannelScope for NativeChannels<'_> {
 			.bind(workspace)
 			.bind(id)
 			.fetch_optional(&mut **self.lease.tx())
-			.await
-			.map_err(crate::Error::from)?;
+			.await?;
 		Ok(attachment.map(Into::into))
 	}
 	async fn history_rows(
@@ -674,8 +669,7 @@ impl ChannelScope for NativeChannels<'_> {
 		let sql = query.to_string(PostgresQueryBuilder);
 		let rows = aidash_server::database::query_as::<HistoryRecord>(&sql)
 			.fetch_all(&mut **self.lease.tx())
-			.await
-			.map_err(crate::Error::from)?;
+			.await?;
 		Ok(rows
 			.into_iter()
 			.map(|r| HistoryRow {
@@ -712,12 +706,19 @@ impl ChannelScope for NativeChannels<'_> {
 			.order_by(Alias::new("position"), Order::Asc)
 			.order_by(Alias::new("id"), Order::Asc)
 			.to_string(PostgresQueryBuilder);
-		let records: Vec<LinkRecord> = sqlx::query_as(&query)
+		let records: Vec<LinkRecord> = crate::database::native::query_as(&query)
+			.columns(&[
+				"id",
+				"filename",
+				"media_type",
+				"size_bytes",
+				"message_id",
+				"position",
+			])
 			.bind(workspace)
 			.bind(ids.to_vec())
 			.fetch_all(&mut **self.lease.tx())
-			.await
-			.map_err(crate::Error::from)?;
+			.await?;
 		for record in records {
 			if let Some(message) = record.message_id {
 				grouped

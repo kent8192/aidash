@@ -6,7 +6,7 @@ pub use aidash_domain::registry::workbench::sandbox::{
 use reinhardt::Validate;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-#[derive(Debug, Clone, Deserialize, Serialize, sqlx::FromRow, JsonSchema, Validate)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct TestLimits {
 	pub tenant: String,
@@ -27,6 +27,18 @@ pub struct TestLimits {
 	#[validate(range(min = 1, max = 3650))]
 	pub incident_evidence_days: i32,
 }
+crate::native_record!(TestLimits {
+	tenant,
+	max_input_bytes,
+	max_output_tokens,
+	max_total_tokens,
+	max_steps,
+	max_duration_secs,
+	max_concurrent,
+	payload_days,
+	incident_evidence_days
+});
+
 impl From<AgentTestSession> for TestSession {
 	fn from(record: AgentTestSession) -> Self {
 		Self {

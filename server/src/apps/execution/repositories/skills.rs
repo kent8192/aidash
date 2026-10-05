@@ -100,7 +100,7 @@ impl SkillHeadroom for Headroom<'_> {
 
 			let data: Option<Value> = {
 				let query_bind_1 = run.id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("data"))
 						.from(Alias::new("core_records"))
@@ -113,7 +113,7 @@ impl SkillHeadroom for Headroom<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&store.pool)
+				.scalar_optional(&store.pool)
 				.await?
 			};
 			Ok(data)

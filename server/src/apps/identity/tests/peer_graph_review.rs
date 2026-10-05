@@ -91,7 +91,7 @@ async fn viewer(f: &Federation, app: &common::TestApplication) -> (Value, Uuid) 
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -134,7 +134,7 @@ async fn admitted_run(
 			.and_where(Expr::cust("id='research' AND version='1.0.0'"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&f.store.pool)
+	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap();
 	let grant = Uuid::new_v4();
@@ -181,7 +181,7 @@ async fn admitted_run(
 		aidash_server::domain::qualified_agent(&f.config.node_id, "research", "1.0.0"),
 	])
 	.bind(description)
-	.execute(&f.store.pool)
+	.execute(f.store.pool.driver())
 	.await
 	.unwrap();
 	sqlx::query(
@@ -213,7 +213,7 @@ async fn admitted_run(
 	.bind(source)
 	.bind("research")
 	.bind("1.0.0")
-	.execute(&f.store.pool)
+	.execute(f.store.pool.driver())
 	.await
 	.unwrap();
 	id
@@ -249,7 +249,7 @@ async fn event(f: &Federation, workspace: Option<Uuid>, kind: &str, data: Value,
 	.bind(kind)
 	.bind(data)
 	.bind(chrono::Utc::now() - chrono::Duration::seconds(age))
-	.execute(&f.store.pool)
+	.execute(f.store.pool.driver())
 	.await
 	.unwrap();
 }
@@ -267,7 +267,7 @@ async fn bump_run(f: &Federation, id: Uuid) {
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -306,7 +306,7 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -378,7 +378,7 @@ async fn admitted_graph_runs_use_receiver_authority_and_scope_bound_generations(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -463,7 +463,7 @@ async fn event_decisions(f: &Federation) -> i64 {
 			.and_where(Expr::cust("tenant='acme' AND action='workspace.events'"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&f.store.pool)
+	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap()
 }
@@ -491,7 +491,7 @@ async fn graph_activity_is_newest_first_and_checks_workspace_events_once(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 	}
 	.unwrap();

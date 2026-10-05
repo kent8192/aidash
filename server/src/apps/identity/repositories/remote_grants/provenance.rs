@@ -23,7 +23,7 @@ impl SemanticSourceScope for Scope<'_> {
 		let result: NativeResult<Vec<(Uuid, i64, String)>> = async {
 			let sources: Vec<(Uuid, i64, String)> = {
 				let query_bind_1 = grant;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.columns(["entry_id", "revision", "content_digest"].map(Alias::new))
 						.from(Alias::new("semantic_remote_reads"))
@@ -37,6 +37,7 @@ impl SemanticSourceScope for Scope<'_> {
 						.order_by(Alias::new("entry_id"), reinhardt::query::Order::Asc)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["entry_id", "revision", "content_digest"])
 				.fetch_all(&mut **self.access.tx)
 				.await?
 			};
@@ -60,7 +61,7 @@ impl SemanticSourceScope for Scope<'_> {
 		let result: NativeResult<Option<crate::semantic::Entry>> = async {
 			let entry: Option<crate::semantic::Entry> = {
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(Asterisk)
 						.from(Alias::new("semantic_entries"))

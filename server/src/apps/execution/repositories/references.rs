@@ -106,7 +106,7 @@ impl ReferenceRepository for Repository<'_> {
 		let result: NativeResult<Record> = async {
 			let snapshot: NativeRecord = {
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_records")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
@@ -147,7 +147,7 @@ impl ReferenceRepository for Repository<'_> {
 		let result: NativeResult<Vec<Uuid>> = async {
 			let ids: Vec<Uuid> = {
 				let query_bind_1 = after;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("core_records"))
@@ -166,7 +166,7 @@ impl ReferenceRepository for Repository<'_> {
 						.limit(8)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_all(&self.store.pool)
+				.scalar_all(&self.store.pool)
 				.await?
 			};
 			Ok(ids)
@@ -178,7 +178,7 @@ impl ReferenceRepository for Repository<'_> {
 		let result: NativeResult<Vec<(Uuid, Value)>> = async {
 			let receipts: Vec<(Uuid, Value)> = {
 				let query_bind_1 = after;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.columns(["id", "data"].map(Alias::new))
 						.from(Alias::new("core_records"))
@@ -194,6 +194,7 @@ impl ReferenceRepository for Repository<'_> {
 						.limit(8)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["id", "data"])
 				.fetch_all(&self.store.pool)
 				.await?
 			};
@@ -206,7 +207,7 @@ impl ReferenceRepository for Repository<'_> {
 		let result: NativeResult<()> = async {
 			{
 				let query_bind_1 = id;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("core_records"))
 						.value_expr(

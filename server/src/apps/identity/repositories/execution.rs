@@ -21,7 +21,7 @@ use reinhardt::query::{
 use serde_json::Value;
 use uuid::Uuid;
 
-#[derive(Clone, sqlx::FromRow)]
+#[derive(Clone)]
 pub(crate) struct Grant {
 	pub(crate) run_id: Uuid,
 	pub(crate) task_id: Uuid,
@@ -31,6 +31,16 @@ pub(crate) struct Grant {
 	pub(crate) root_subject: String,
 	pub(crate) subject_chain: Vec<String>,
 }
+crate::native_record!(Grant {
+	run_id,
+	task_id,
+	workspace_id,
+	tenant,
+	credential_id,
+	root_subject,
+	subject_chain
+});
+
 impl Grant {
 	pub(crate) fn identity(&self) -> SubjectIdentity {
 		SubjectIdentity {
@@ -84,7 +94,7 @@ impl ExecutionGrantRepository for Grants<'_> {
 		let result: NativeResult<Option<Grant>> = async {
 			let grant: Option<Grant> = {
 				let query_bind_1 = run;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
 						.from(Alias::new("authorization_execution"))
@@ -157,7 +167,7 @@ impl ExecutionGrantSession for GrantScope<'_> {
 		let result: NativeResult<Grant> = async {
 			let current: Grant = {
 				let query_bind_1 = run;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(Asterisk)
 						.from(Alias::new("authorization_execution"))
@@ -184,7 +194,7 @@ impl ExecutionGrantSession for GrantScope<'_> {
 		let result: NativeResult<Option<Grant>> = async {
 			let grant: Option<Grant> = {
 				let query_bind_1 = run;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
 						.from(Alias::new("authorization_execution"))
@@ -213,7 +223,7 @@ impl ExecutionGrantSession for GrantScope<'_> {
 		let result: NativeResult<Option<(String, String, Vec<String>)>> = async {
 			let origin: Option<(String, String, Vec<String>)> = {
 				let query_bind_1 = task;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(Alias::new("tenant"))
 						.column(Alias::new("root_subject"))
@@ -228,6 +238,7 @@ impl ExecutionGrantSession for GrantScope<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["tenant", "root_subject", "subject_chain"])
 				.fetch_optional(&mut **self.access.tx)
 				.await?
 			};
@@ -242,7 +253,7 @@ impl ExecutionGrantSession for GrantScope<'_> {
 		let result: NativeResult<Option<(String, String, Vec<String>)>> = async {
 			let origin = {
 				let query_bind_1 = task;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.columns([
 							(Alias::new("g"), Alias::new("tenant")),
@@ -264,6 +275,7 @@ impl ExecutionGrantSession for GrantScope<'_> {
 						))
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["tenant", "root_subject", "subject_chain"])
 				.fetch_optional(&mut **self.access.tx)
 				.await?
 			};

@@ -67,13 +67,13 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 			let query_bind_1 = &access.identity.tenant;
 			let query_bind_2 = &f.config.node_id;
 			let query_bind_3 = &access.subjects;
-			sqlx::query_scalar(&reinhardt::query::Query::select()
+			crate::database::native::query_scalar(&reinhardt::query::Query::select()
 			.expr(reinhardt::query::Expr::cust("MAX(depth)"))
 			.from(reinhardt::query::Alias::new("generation_requests"))
 			.and_where(SimpleExpr::CustomWithExpr("(tenant = ? AND (? || '/agents/' || agent_id || '@' || agent_version) = ANY(?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), crate::database::text_array(query_bind_3.to_owned())]))
 			.to_string(reinhardt::query::PostgresQueryBuilder))
-	.fetch_one(&mut **access.tx)
-	.await.map_err(Error::from)?
+	.scalar_one(&mut **access.tx)
+	.await?
 		};
 		Ok(previous_depth)
 	}
@@ -83,13 +83,13 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 		let active: i64 = {
 			let query_bind_1 = &access.identity.tenant;
 			let query_bind_2 = policy_id;
-			sqlx::query_scalar(&reinhardt::query::Query::select()
+			crate::database::native::query_scalar(&reinhardt::query::Query::select()
 			.expr(reinhardt::query::Expr::cust("COUNT(*)"))
 			.from(reinhardt::query::Alias::new("generation_requests"))
 			.and_where(SimpleExpr::CustomWithExpr("(tenant = ? AND policy_id = ? AND status IN ('PENDING_APPROVAL', 'QUEUED', 'ACTIVE'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
 			.to_string(reinhardt::query::PostgresQueryBuilder))
-	.fetch_one(&mut **access.tx)
-	.await.map_err(Error::from)?
+	.scalar_one(&mut **access.tx)
+	.await?
 		};
 		Ok(active)
 	}
@@ -241,8 +241,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
 			.fetch_one(&mut **access.tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(generated)
 	}
@@ -262,7 +261,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 		let query_bind_3 = limits.tokens_per_agent;
 		let query_bind_4 = compaction_calls;
 		let query_bind_5 = embedding_calls;
-		sqlx::query(
+		crate::database::native::query(
 			&reinhardt::query::Query::update()
 				.table(reinhardt::query::Alias::new("generation_policies"))
 				.value_expr(
@@ -300,8 +299,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.execute(&mut **access.tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 		Ok(())
 	}
 
@@ -319,7 +317,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 		let query_bind_2 = limits.tokens_per_agent;
 		let query_bind_3 = compaction_calls;
 		let query_bind_4 = embedding_calls;
-		sqlx::query(
+		crate::database::native::query(
 			&reinhardt::query::Query::insert()
 				.into_table(reinhardt::query::Alias::new("generation_budgets"))
 				.columns([
@@ -351,8 +349,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.execute(&mut **access.tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 		Ok(())
 	}
 
@@ -368,7 +365,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 		let query_bind_2 = status;
 		let query_bind_3 = &access.identity.subject;
 		let query_bind_4 = reason;
-		sqlx::query(
+		crate::database::native::query(
 			&reinhardt::query::Query::insert()
 				.into_table(reinhardt::query::Alias::new("generation_history"))
 				.columns([
@@ -400,8 +397,7 @@ impl GenerationCreationScope for NativeAssignment<'_> {
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.execute(&mut **access.tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 		Ok(())
 	}
 
@@ -456,8 +452,7 @@ impl GenerationAssignmentScope for NativeAssignment<'_> {
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
 			.fetch_optional(&mut **access.tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		}
 		.ok_or(Error::Forbidden)?;
 		Ok(task)
@@ -507,8 +502,7 @@ impl GenerationAssignmentScope for NativeAssignment<'_> {
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
 			.fetch_optional(&mut **access.tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(existing)
 	}
@@ -522,7 +516,7 @@ impl GenerationAssignmentScope for NativeAssignment<'_> {
 			let query_bind_1 = task_id;
 			let query_bind_2 = &access.identity.tenant;
 			let query_bind_3 = &access.identity.subject;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&reinhardt::query::Query::select()
 					.expr(reinhardt::query::SimpleExpr::from(
 						reinhardt::query::Expr::col((
@@ -564,9 +558,9 @@ impl GenerationAssignmentScope for NativeAssignment<'_> {
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
+			.columns(&["agent_id", "agent_version", "subject_chain"])
 			.fetch_optional(&mut **access.tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(existing)
 	}
@@ -582,11 +576,11 @@ impl GenerationAssignmentScope for NativeAssignment<'_> {
 		let generated: bool = {
 			let query_bind_1 = &entry.id;
 			let query_bind_2 = &entry.version;
-			sqlx::query_scalar(&reinhardt::query::Query::select()
+			crate::database::native::query_scalar(&reinhardt::query::Query::select()
 				.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM generation_requests WHERE agent_id = ? AND agent_version = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
 				.to_string(reinhardt::query::PostgresQueryBuilder))
-		.fetch_one(&mut **access.tx)
-		.await.map_err(Error::from)?
+		.scalar_one(&mut **access.tx)
+		.await?
 		};
 		Ok(generated)
 	}

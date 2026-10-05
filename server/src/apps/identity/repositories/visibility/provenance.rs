@@ -59,7 +59,7 @@ impl ReadProvenanceScope for Reads<'_> {
 			let this = &mut *self.access;
 			let entries: Vec<(String, String)> = {
 				let query_bind_1 = run;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.columns([Alias::new("entry_id"), Alias::new("entry_version")])
 						.from(Alias::new("authorization_run_registry_reads"))
@@ -75,6 +75,7 @@ impl ReadProvenanceScope for Reads<'_> {
 						.order_by(Alias::new("entry_version"), Order::Asc)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["entry_id", "entry_version"])
 				.fetch_all(&mut **this.tx)
 				.await?
 			};
@@ -91,7 +92,7 @@ impl ReadProvenanceScope for Reads<'_> {
 			let this = &mut *self.access;
 			let sources: Vec<(Uuid, String, Uuid)> = {
 				let query_bind_1 = run;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(Alias::new("workspace_id"))
 						.column(Alias::new("resource_kind"))
@@ -109,6 +110,7 @@ impl ReadProvenanceScope for Reads<'_> {
 						.order_by(Alias::new("resource_id"), Order::Asc)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["workspace_id", "resource_kind", "resource_id"])
 				.fetch_all(&mut **this.tx)
 				.await?
 			};

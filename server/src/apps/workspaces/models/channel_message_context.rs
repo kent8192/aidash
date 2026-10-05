@@ -19,8 +19,7 @@ pub struct ChannelMessageContext {
 }
 
 impl crate::database::Record for ChannelMessageContext {
-	fn decode(row: &sqlx::postgres::PgRow) -> std::result::Result<Self, sqlx::Error> {
-		use sqlx::Row;
+	fn decode(row: &crate::database::native::Row) -> crate::Result<Self> {
 		Ok(Self {
 			message_id: row.try_get("message_id")?,
 			workspace_key: row.try_get("workspace_id")?,

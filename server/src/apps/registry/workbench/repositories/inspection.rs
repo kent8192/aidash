@@ -27,7 +27,7 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use reinhardt::db::backends::{TransactionExecutor, dialect::postgres::PgTransactionExecutor};
+use reinhardt::db::backends::TransactionExecutor;
 use uuid::Uuid;
 pub(crate) struct Repository<'a> {
 	pub(crate) runtime: &'a Federation,
@@ -57,14 +57,9 @@ impl InspectionRepository for Repository<'_> {
 	}
 	async fn begin(&self) -> Result<Box<dyn InspectionScope + '_>> {
 		let lease = match &self.actor {
-			Actor::Operator => Lease::Operator(Box::new(PgTransactionExecutor::new(
-				self.runtime
-					.store
-					.pool
-					.begin()
-					.await
-					.map_err(crate::Error::from)?,
-			))),
+			Actor::Operator => Lease::Operator(Box::new(
+				crate::database::native::begin(&self.runtime.store.pool).await?,
+			)),
 			Actor::Subject(identity) => Lease::Subject(Box::new(
 				NativeAccess::begin(&self.runtime.store, identity).await?,
 			)),

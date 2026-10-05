@@ -85,7 +85,7 @@ impl RunDetailsScope for Scope<'_> {
 		let result: NativeResult<Vec<Invocation>> = async {
 			Ok({
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&crate::store::invocation_summary(None)
 						.from(Alias::new("invocations"))
 						.and_where(
@@ -118,7 +118,7 @@ impl RunDetailsScope for Scope<'_> {
 				let query_bind_2 = &run.agent_version;
 				let query_bind_3 = run.workspace_id;
 				let query_bind_4 = self.federation.store.memory_home(run);
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("data"))
 						.from(Alias::new("memory"))
@@ -163,7 +163,7 @@ impl RunDetailsScope for Scope<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **self.access.tx)
+				.scalar_optional(&mut **self.access.tx)
 				.await?
 			})
 		}

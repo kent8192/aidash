@@ -1,16 +1,12 @@
 //! Native boundary adapters for sandbox admission, session management and background execution.
 use super::*;
 use crate::apps::registry::workbench::models::AgentTestSession;
-use reinhardt::db::backends::{DatabaseConnection as BackendConnection, PostgresBackend};
 use reinhardt::db::orm::connection::DatabaseConnectionLease;
 use reinhardt::injectable;
-use std::sync::Arc;
 
 /// Remove ordinary test payloads. The metadata and expiry marker remain.
-pub async fn purge_expired(pool: &sqlx::PgPool) -> Result<u64> {
-	let lease = DatabaseConnectionLease::register(BackendConnection::new(Arc::new(
-		PostgresBackend::new(pool.clone()),
-	)))?;
+pub async fn purge_expired(pool: &crate::database::native::Pool) -> Result<u64> {
+	let lease = DatabaseConnectionLease::register(pool.connection())?;
 	lease
 		.handle()
 		.atomic(async |tx| AgentTestSession::purge(tx).await)

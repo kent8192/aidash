@@ -51,10 +51,11 @@ async fn combined_parent_dependency_cycle_is_rejected_atomically(
 		.await;
 	// The latest development schema rejects the combined graph through its
 	// deferred constraint trigger. Preserve its failure class and rollback.
-	let Err(Error::Database(sqlx::Error::Database(error))) = rejected else {
+	let Err(Error::Framework(error)) = rejected else {
 		panic!("expected the preserved dependency constraint: {rejected:?}");
 	};
-	assert_eq!(error.code().as_deref(), Some("23514"));
+	let error = error.database_error().expect("native database constraint");
+	assert_eq!(error.code(), Some("23514"));
 	assert_eq!(error.constraint(), Some("tasks_dependency_cycle"));
 	assert_eq!(store.tasks(Some(workspace.id)).await.unwrap().len(), 2);
 }

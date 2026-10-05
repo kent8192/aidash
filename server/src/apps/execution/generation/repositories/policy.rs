@@ -16,7 +16,6 @@ use reinhardt::query::{
 	QueryStatementBuilder, SimpleExpr, TableRef,
 };
 use serde_json::{Value, json};
-use sqlx::{Postgres, Transaction};
 
 pub(crate) struct NativePolicies {
 	pub store: Store,
@@ -24,14 +23,14 @@ pub(crate) struct NativePolicies {
 	pub principal: Principal,
 }
 enum Mode {
-	Operator(Transaction<'static, Postgres>),
+	Operator(crate::database::native::Transaction),
 	Subject(Box<Access>),
 }
 struct Session {
 	mode: Mode,
 }
 impl Session {
-	fn tx(&mut self) -> &mut Transaction<'static, Postgres> {
+	fn tx(&mut self) -> &mut crate::database::native::Transaction {
 		match &mut self.mode {
 			Mode::Operator(tx) => tx,
 			Mode::Subject(access) => &mut access.tx,
@@ -44,7 +43,7 @@ impl Session {
 		match self.mode {
 			Mode::Operator(tx) => match result {
 				Ok(value) => {
-					tx.commit().await.map_err(Error::from)?;
+					tx.commit().await?;
 					Ok(value)
 				}
 				Err(error) => Err(error),
@@ -64,7 +63,7 @@ impl GenerationPolicies for NativePolicies {
 	async fn ids(&self, tenant: &str) -> aidash_application::Result<Vec<String>> {
 		let ids: Vec<String> = {
 			let query_bind_1 = &tenant;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.expr(SimpleExpr::from(Expr::col(Alias::new("id"))))
 					.from(Alias::new("generation_policies"))
@@ -75,9 +74,8 @@ impl GenerationPolicies for NativePolicies {
 					.order_by_expr(SimpleExpr::from(Expr::col(Alias::new("id"))), Order::Asc)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_all(&self.store.pool)
-			.await
-			.map_err(Error::from)?
+			.scalar_all(&self.store.pool)
+			.await?
 		};
 
 		Ok(ids)
@@ -88,7 +86,9 @@ impl GenerationPolicies for NativePolicies {
 		exclusive: bool,
 	) -> aidash_application::Result<Box<dyn PolicySession>> {
 		let mode = match &self.actor {
-			Actor::Operator => Mode::Operator(self.store.pool.begin().await.map_err(Error::from)?),
+			Actor::Operator => {
+				Mode::Operator(crate::database::native::begin(&self.store.pool).await?)
+			}
 			Actor::Subject(identity) => Mode::Subject(Box::new(if exclusive {
 				Access::begin_exclusive(&self.store, identity).await
 			} else {
@@ -113,7 +113,7 @@ impl PolicySession for Session {
 		let tx = self.tx();
 		let document: Value = {
 			let query_bind_1 = tenant;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.expr(SimpleExpr::from(Expr::col(Alias::new("document"))))
 					.from(Alias::new("authorization_bundles"))
@@ -124,9 +124,8 @@ impl PolicySession for Session {
 					.lock(LockType::Update)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_optional(&mut **tx)
-			.await
-			.map_err(Error::from)?
+			.scalar_optional(&mut **tx)
+			.await?
 		}
 		.ok_or_else(|| Error::NotFound("authorization policy".into()))?;
 
@@ -143,7 +142,7 @@ impl PolicySession for Session {
 			let query_bind_1 = tenant;
 			let query_bind_2 = id;
 			let query_bind_3 = expected;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.expr(SimpleExpr::from(Expr::col(Alias::new("spec"))))
 					.from(Alias::new("generation_policies"))
@@ -157,9 +156,8 @@ impl PolicySession for Session {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_optional(&mut **tx)
-			.await
-			.map_err(Error::from)?
+			.scalar_optional(&mut **tx)
+			.await?
 		};
 
 		Ok(previous)
@@ -174,7 +172,7 @@ impl PolicySession for Session {
 			let query_bind_1 = tenant;
 			let query_bind_2 = &reference.id;
 			let query_bind_3 = &reference.version;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.expr(SimpleExpr::from(Expr::col((
 						Alias::new("r"),
@@ -199,9 +197,8 @@ impl PolicySession for Session {
 					.lock_tables([Alias::new("c")])
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_optional(&mut **tx)
-			.await
-			.map_err(Error::from)?
+			.scalar_optional(&mut **tx)
+			.await?
 		};
 
 		Ok(metadata)
@@ -219,7 +216,7 @@ impl PolicySession for Session {
 				let query_bind_1 = tenant;
 				let query_bind_2 = id;
 				let query_bind_3 = json!(spec);
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::insert()
 						.into_table(Alias::new("generation_policies"))
 						.columns([
@@ -253,9 +250,8 @@ impl PolicySession for Session {
 						.returning_exprs([SimpleExpr::from(Expr::col(Alias::new("revision")))])
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **tx)
-				.await
-				.map_err(Error::from)?
+				.scalar_optional(&mut **tx)
+				.await?
 			}
 		} else {
 			{
@@ -263,7 +259,7 @@ impl PolicySession for Session {
 				let query_bind_2 = id;
 				let query_bind_3 = expected;
 				let query_bind_4 = json!(spec);
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::update()
 						.table(Alias::new("generation_policies"))
 						.value_expr(Alias::new("revision"), Expr::cust("revision + 1"))
@@ -285,9 +281,8 @@ impl PolicySession for Session {
 						.returning_exprs([SimpleExpr::from(Expr::col(Alias::new("revision")))])
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **tx)
-				.await
-				.map_err(Error::from)?
+				.scalar_optional(&mut **tx)
+				.await?
 			}
 		};
 
@@ -309,7 +304,7 @@ impl PolicySession for Session {
 			let query_bind_3 = revision;
 			let query_bind_4 = json!(spec);
 			let query_bind_5 = actor;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("generation_policy_history"))
 					.columns([
@@ -346,8 +341,7 @@ impl PolicySession for Session {
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 
 		Ok(())
@@ -377,7 +371,7 @@ impl PolicySession for Session {
 }
 
 pub(crate) async fn load(
-	tx: &mut Transaction<'_, Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	tenant: &str,
 	id: &str,
 	exclusive: bool,
@@ -415,7 +409,15 @@ pub(crate) async fn load(
 			.lock(LockType::Share)
 			.to_string(PostgresQueryBuilder)
 	};
-	let row: Option<(i64, Value, i64, i64, i64, i64)> = sqlx::query_as(&query)
+	let row: Option<(i64, Value, i64, i64, i64, i64)> = crate::database::native::query_as(&query)
+		.columns(&[
+			"revision",
+			"spec",
+			"generated_count",
+			"allocated_tokens",
+			"allocated_compaction_calls",
+			"allocated_embedding_calls",
+		])
 		.bind(tenant)
 		.bind(id)
 		.fetch_optional(&mut **tx)

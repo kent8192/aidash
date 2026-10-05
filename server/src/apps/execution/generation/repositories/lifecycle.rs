@@ -11,14 +11,14 @@ use reinhardt::query::{
 	SimpleExpr,
 };
 use serde_json::{Value, json};
-use sqlx::{Postgres, Transaction};
+
 use uuid::Uuid;
-pub(crate) struct NativeLifecycle<'a, 'tx> {
+pub(crate) struct NativeLifecycle<'a> {
 	pub runtime: &'a Federation,
-	pub transaction: &'a mut Transaction<'tx, Postgres>,
+	pub transaction: &'a mut crate::database::native::Transaction,
 }
 #[async_trait]
-impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
+impl GenerationLifecycleScope for NativeLifecycle<'_> {
 	fn node_id(&self) -> &str {
 		&self.runtime.config.node_id
 	}
@@ -30,15 +30,20 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 		let tx = &mut *self.transaction;
 		Ok({
 			let query_bind_1 = job.id;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&reinhardt::query::Query::select()
-					.expr(reinhardt::query::Expr::cust("token_limit - used_tokens"))
-					.expr(reinhardt::query::Expr::cust(
-						"compaction_call_limit - compaction_calls",
-					))
-					.expr(reinhardt::query::Expr::cust(
-						"embedding_call_limit - embedding_calls",
-					))
+					.expr_as(
+						reinhardt::query::Expr::cust("token_limit - used_tokens"),
+						reinhardt::query::Alias::new("remaining_tokens"),
+					)
+					.expr_as(
+						reinhardt::query::Expr::cust("compaction_call_limit - compaction_calls"),
+						reinhardt::query::Alias::new("remaining_compaction_calls"),
+					)
+					.expr_as(
+						reinhardt::query::Expr::cust("embedding_call_limit - embedding_calls"),
+						reinhardt::query::Alias::new("remaining_embedding_calls"),
+					)
 					.from(reinhardt::query::Alias::new("generation_budgets"))
 					.and_where(SimpleExpr::CustomWithExpr(
 						"(request_id = ?)".to_owned(),
@@ -47,9 +52,13 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 					.lock(reinhardt::query::LockType::Update)
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
+			.columns(&[
+				"remaining_tokens",
+				"remaining_compaction_calls",
+				"remaining_embedding_calls",
+			])
 			.fetch_one(&mut **tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		})
 	}
 
@@ -67,7 +76,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 		let query_bind_3 = unused;
 		let query_bind_4 = unused_calls;
 		let query_bind_5 = unused_embeddings;
-		sqlx::query(
+		crate::database::native::query(
 			&reinhardt::query::Query::update()
 				.table(reinhardt::query::Alias::new("generation_policies"))
 				.value_expr(
@@ -101,8 +110,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.execute(&mut **tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 
 		Ok(())
 	}
@@ -111,7 +119,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 		let tx = &mut *self.transaction;
 
 		let query_bind_1 = job.id;
-		sqlx::query(
+		crate::database::native::query(
 			&reinhardt::query::Query::update()
 				.table(reinhardt::query::Alias::new("generation_requests"))
 				.value_expr(
@@ -125,8 +133,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.execute(&mut **tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 
 		Ok(())
 	}
@@ -138,12 +145,12 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 		let query_bind_1 = job.task_id;
 		let query_bind_2 = &job.home_node;
 		let query_bind_3 = &f.config.node_id;
-		sqlx::query(&reinhardt::query::Query::update()
+		crate::database::native::query(&reinhardt::query::Query::update()
 				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("control"), reinhardt::query::Expr::cust("'CANCELLED'"))
 				.and_where(SimpleExpr::CustomWithExpr("(task_id = ? AND (home_node = ? OR (?='' AND home_node=?)) AND NOT phase IN ('COMPLETED', 'FAILED', 'CANCELLED'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()]))
 				.to_string(reinhardt::query::PostgresQueryBuilder))
 		.execute(&mut **tx)
-		.await.map_err(Error::from)?;
+		.await?;
 
 		Ok(())
 	}
@@ -165,7 +172,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 		let query_bind_1 = &job.tenant;
 		let query_bind_2 = snapshot.revision;
 		let query_bind_3 = json!(snapshot.bundle);
-		sqlx::query(
+		crate::database::native::query(
 			&reinhardt::query::Query::update()
 				.table(reinhardt::query::Alias::new("authorization_bundles"))
 				.value_expr(
@@ -193,14 +200,13 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.execute(&mut **tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 
 		let query_bind_1 = &job.tenant;
 		let query_bind_2 = snapshot.revision;
 		let query_bind_3 = json!(snapshot.bundle);
 		let query_bind_4 = actor;
-		sqlx::query(
+		crate::database::native::query(
 			&reinhardt::query::Query::insert()
 				.into_table(reinhardt::query::Alias::new("authorization_revisions"))
 				.columns([
@@ -232,8 +238,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.execute(&mut **tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 
 		Ok(())
 	}
@@ -244,7 +249,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 			let query_bind_1 = &job.tenant;
 			let query_bind_2 = &job.agent_id;
 			let query_bind_3 = &job.agent_version;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&reinhardt::query::Query::update()
 					.table(reinhardt::query::Alias::new("authorization_catalog"))
 					.value_expr(
@@ -269,9 +274,8 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 					)])
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_optional(&mut **tx)
-			.await
-			.map_err(Error::from)?
+			.scalar_optional(&mut **tx)
+			.await?
 		})
 	}
 
@@ -285,7 +289,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 
 		let query_bind_1 = job.id;
 		let query_bind_2 = revision;
-		sqlx::query(
+		crate::database::native::query(
 			&reinhardt::query::Query::update()
 				.table(reinhardt::query::Alias::new("generation_requests"))
 				.value_expr(
@@ -302,15 +306,14 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.execute(&mut **tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 
 		let query_bind_1 = &job.tenant;
 		let query_bind_2 = &job.agent_id;
 		let query_bind_3 = &job.agent_version;
 		let query_bind_4 = revision;
 		let query_bind_5 = actor;
-		sqlx::query(
+		crate::database::native::query(
 			&reinhardt::query::Query::insert()
 				.into_table(reinhardt::query::Alias::new(
 					"authorization_catalog_history",
@@ -351,8 +354,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.execute(&mut **tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 
 		Ok(())
 	}
@@ -384,8 +386,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
 			.fetch_one(&mut **tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		})
 	}
 
@@ -402,7 +403,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 		let query_bind_2 = status;
 		let query_bind_3 = actor;
 		let query_bind_4 = reason;
-		sqlx::query(
+		crate::database::native::query(
 			&reinhardt::query::Query::insert()
 				.into_table(reinhardt::query::Alias::new("generation_history"))
 				.columns([
@@ -434,8 +435,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.execute(&mut **tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 
 		Ok(())
 	}
@@ -467,7 +467,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 			let query_bind_2 = status;
 			let query_bind_3 = actor;
 			let query_bind_4 = &input.reason;
-			sqlx::query_scalar(&Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM generation_history WHERE request_id = ? AND status = ? AND actor = ? AND reason = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()])).to_string(PostgresQueryBuilder)).fetch_one(&mut **tx).await.map_err(Error::from)?
+			crate::database::native::query_scalar(&Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM generation_history WHERE request_id = ? AND status = ? AND actor = ? AND reason = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()])).to_string(PostgresQueryBuilder)).scalar_one(&mut **tx).await?
 		};
 
 		Ok(replay)
@@ -478,7 +478,7 @@ impl GenerationLifecycleScope for NativeLifecycle<'_, '_> {
 	}
 }
 pub(crate) async fn load(
-	tx: &mut Transaction<'_, Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	tenant: &str,
 	id: Uuid,
 ) -> Result<Request> {

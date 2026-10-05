@@ -18,7 +18,7 @@ use aidash_domain::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use sqlx::{Postgres, Transaction};
+
 use uuid::Uuid;
 pub(crate) struct NativeControls {
 	pub runtime: Federation,
@@ -26,7 +26,7 @@ pub(crate) struct NativeControls {
 	pub principal: Principal,
 }
 enum Mode {
-	Operator(Transaction<'static, Postgres>),
+	Operator(crate::database::native::Transaction),
 	Subject(Box<Access>),
 }
 struct Scope {
@@ -34,7 +34,7 @@ struct Scope {
 	mode: Mode,
 }
 impl Scope {
-	fn lifecycle(&mut self) -> NativeLifecycle<'_, 'static> {
+	fn lifecycle(&mut self) -> NativeLifecycle<'_> {
 		NativeLifecycle {
 			runtime: &self.runtime,
 			transaction: match &mut self.mode {
@@ -55,7 +55,7 @@ impl GenerationControls for NativeControls {
 	) -> aidash_application::Result<Box<dyn GenerationControlScope>> {
 		let mode = match &self.actor {
 			Actor::Operator => {
-				Mode::Operator(self.runtime.store.pool.begin().await.map_err(Error::from)?)
+				Mode::Operator(crate::database::native::begin(&self.runtime.store.pool).await?)
 			}
 			Actor::Subject(identity) => Mode::Subject(Box::new(
 				Access::begin_exclusive(&self.runtime.store, identity).await?,
@@ -101,7 +101,7 @@ impl GenerationControlScope for Scope {
 		match self.mode {
 			Mode::Operator(tx) => match result {
 				Ok(job) => {
-					tx.commit().await.map_err(Error::from)?;
+					tx.commit().await?;
 					Ok(job)
 				}
 				Err(error) => Err(error),

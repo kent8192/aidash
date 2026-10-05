@@ -10,7 +10,7 @@ use aidash_application::{
 	ports::authorization::journals::{GrantJournalScope, ReadJournalScope, ReadMembership},
 };
 use async_trait::async_trait;
-use reinhardt::db::backends::{TransactionExecutor, dialect::postgres::PgTransactionExecutor};
+use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::query::{
 	Alias, Condition, Expr, ExprTrait as _, OnConflict, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _, SimpleExpr,
@@ -32,7 +32,7 @@ impl ReadJournalScope for Reads<'_> {
 				let query_bind_1 = workspace;
 				let query_bind_2 = sender;
 				let query_bind_3 = content;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("messages"))
@@ -68,7 +68,7 @@ impl ReadJournalScope for Reads<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_all(&mut **self.access.tx)
+				.scalar_all(&mut **self.access.tx)
 				.await?
 			};
 			Ok(ids)
@@ -83,9 +83,8 @@ impl ReadJournalScope for Reads<'_> {
 		sources: &[(String, Uuid)],
 	) -> Result<()> {
 		let result: NativeResult<()> = async {
-			let mut tx: Box<dyn TransactionExecutor> = Box::new(PgTransactionExecutor::new(
-				self.access.journal_pool().begin().await?,
-			));
+			let mut tx: Box<dyn TransactionExecutor> =
+				Box::new(crate::database::native::begin(self.access.journal_pool()).await?);
 			if let ReadMembership::RemoteGrant(scope) = membership {
 				AuthorizationRemoteGrantRead::record_sources(
 					tx.as_mut(),
@@ -115,7 +114,7 @@ impl ReadJournalScope for Reads<'_> {
 				let query_bind_1 = run;
 				let query_bind_2 = ids;
 				let query_bind_3 = versions;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::insert()
 						.into_table(Alias::new("authorization_run_registry_reads"))
 						.columns([
@@ -185,7 +184,7 @@ impl GrantJournalScope for Reads<'_> {
 		let result: NativeResult<Vec<(Uuid, String, Uuid)>> = async {
 			let sources: Vec<(Uuid, String, Uuid)> = {
 				let query_bind_1 = grant;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&reinhardt::query::Query::select()
 						.expr(reinhardt::query::SimpleExpr::from(
 							reinhardt::query::Expr::col(reinhardt::query::Alias::new(
@@ -223,6 +222,7 @@ impl GrantJournalScope for Reads<'_> {
 						)
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
+				.columns(&["workspace_id", "resource_kind", "resource_id"])
 				.fetch_all(&mut **self.access.tx)
 				.await?
 			};

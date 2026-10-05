@@ -1,8 +1,7 @@
 //! Node-wide durable visibility and serialization barrier.
 use crate::apps::federation::transactions::models::AtomicGate;
 use crate::{Error, Result, store::Store};
-use reinhardt::db::backends::{DatabaseConnection, TransactionExecutor, dialect::PostgresBackend};
-use std::sync::Arc;
+use reinhardt::db::backends::TransactionExecutor;
 
 pub struct ReadLease {
 	transaction: Option<Box<dyn TransactionExecutor>>,
@@ -10,8 +9,7 @@ pub struct ReadLease {
 }
 impl ReadLease {
 	pub async fn begin(store: &Store) -> Result<Self> {
-		let connection =
-			DatabaseConnection::new(Arc::new(PostgresBackend::new(store.control_pool.clone())));
+		let connection = store.control_pool.connection();
 		let (tx, commit_epoch) = AtomicGate::read_lease(&connection).await?;
 		Ok(Self {
 			transaction: Some(tx),
@@ -56,20 +54,17 @@ impl ReadLease {
 		Ok(())
 	}
 }
-pub(crate) fn lock_error(error: sqlx::Error) -> Error {
-	if error
-		.as_database_error()
-		.is_some_and(|e| e.code().as_deref() == Some("55P03"))
-	{
+pub(crate) fn lock_error(error: Error) -> Error {
+	if error.has_database_code("55P03") {
 		Error::TransactionPending
 	} else {
-		Error::Database(error)
+		error
 	}
 }
 
 /// Retain the visibility lock in an existing authority transaction.
-pub(crate) async fn read_in(tx: &mut Transaction<'_, Postgres>) -> Result<i64> {
-	let (pending, commit_epoch): (Option<Uuid>, i64) = sqlx::query_as(
+pub(crate) async fn read_in(tx: &mut crate::database::native::Transaction) -> Result<i64> {
+	let (pending, commit_epoch): (Option<Uuid>, i64) = crate::database::native::query_as(
 		&reinhardt::query::Query::select()
 			.columns([
 				reinhardt::query::Alias::new("transaction_id"),
@@ -83,6 +78,7 @@ pub(crate) async fn read_in(tx: &mut Transaction<'_, Postgres>) -> Result<i64> {
 			.lock_behavior(reinhardt::query::LockBehavior::Nowait)
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
+	.columns(&["transaction_id", "commit_epoch"])
 	.fetch_one(&mut **tx)
 	.await
 	.map_err(lock_error)?;
@@ -93,5 +89,5 @@ pub(crate) async fn read_in(tx: &mut Transaction<'_, Postgres>) -> Result<i64> {
 }
 
 use reinhardt::query::QueryStatementBuilder as _;
-use sqlx::{Postgres, Transaction};
+
 use uuid::Uuid;

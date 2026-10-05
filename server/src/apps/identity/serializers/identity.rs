@@ -4,7 +4,7 @@ use serde::Serialize;
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 
-#[derive(Debug, Serialize, sqlx::FromRow, JsonSchema)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct Credential {
 	pub id: Uuid,
 	pub tenant: String,
@@ -14,6 +14,15 @@ pub struct Credential {
 	pub revoked_at: Option<DateTime<Utc>>,
 	pub issued_by: String,
 }
+crate::native_record!(Credential {
+	id,
+	tenant,
+	subject,
+	created_at,
+	expires_at,
+	revoked_at,
+	issued_by
+});
 
 /// The bearer value is returned exactly once; only its SHA-256 digest is stored.
 #[derive(Serialize, JsonSchema)]

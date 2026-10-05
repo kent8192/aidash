@@ -1,5 +1,5 @@
 //! Native authority adapter retains the borrowed Access and its SHARE locks.
-use crate::{Error, authorization::access::Access};
+use crate::authorization::access::Access;
 use aidash_application::{Result, ports::transactions::TransactionAuthorityScope};
 use aidash_domain::{
 	RunMetadata, Task, identity::execution::ExecutionPrincipal, policy::Resource,
@@ -71,7 +71,7 @@ where
 			let query_bind_1 = run.id;
 			let query_bind_2 = coordinator;
 			let query_bind_3 = run.task_id;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.columns([
 						Alias::new("tenant"),
@@ -91,9 +91,9 @@ where
 					.lock(reinhardt::query::LockType::Share)
 					.to_string(PostgresQueryBuilder),
 			)
+			.columns(&["tenant", "credential_id", "subject_chain", "description"])
 			.fetch_optional(&mut **self.access.tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 
 		let Some((tenant, credential_id, subject_chain, description)) = record else {

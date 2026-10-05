@@ -1,6 +1,5 @@
 //! Withdrawal rechecks committed rows under the original Area-before-operation locks.
 use crate::{
-	Error,
 	apps::execution::capabilities::services::{
 		contracts::Area,
 		operations::{self, Operation},
@@ -19,13 +18,13 @@ use reinhardt::query::{
 	SimpleExpr,
 };
 use serde_json::Value;
-use sqlx::{Postgres, Transaction};
+
 use uuid::Uuid;
 pub(crate) struct Repository<'a> {
 	pub(crate) store: &'a Store,
 }
 struct Scope {
-	tx: Transaction<'static, Postgres>,
+	tx: crate::database::native::Transaction,
 	area: Area,
 	operation: Operation,
 }
@@ -38,12 +37,12 @@ impl OperationWithdrawalRepository for Repository<'_> {
 		}
 		let operation = Seed { area_id: area, id };
 		let store = self.store;
-		let mut tx = store.pool.begin().await.map_err(Error::from)?;
+		let mut tx = crate::database::native::begin(&store.pool).await?;
 		// Keep the normal area-before-operation lock order and recheck committed
 		// state: a stale worker snapshot cannot declare a dispatched writer safe.
 		let area: Area = {
 			let query_bind_1 = operation.area_id;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&sessions::select("core_areas")
 					.and_where(
 						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
@@ -57,12 +56,11 @@ impl OperationWithdrawalRepository for Repository<'_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_one(&mut *tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		let operation: Operation = {
 			let query_bind_1 = operation.id;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&sessions::select("core_operations")
 					.and_where(
 						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
@@ -76,8 +74,7 @@ impl OperationWithdrawalRepository for Repository<'_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_one(&mut *tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 
 		Ok(Box::new(Scope {
@@ -119,7 +116,7 @@ impl OperationWithdrawalScope for Scope {
 			let query_bind_1 = operation.id;
 			let query_bind_2 = change.state;
 			let query_bind_3 = change.result;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("core_operations"))
 					.value_expr(
@@ -147,13 +144,12 @@ impl OperationWithdrawalScope for Scope {
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut *tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		if let Some(area_state) = change.area_state {
 			{
 				let query_bind_1 = operation.area_id;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("core_areas"))
 						.value_expr(Alias::new("state"), Expr::val(area_state))
@@ -163,11 +159,10 @@ impl OperationWithdrawalScope for Scope {
 						.to_string(PostgresQueryBuilder),
 				)
 				.execute(&mut *tx)
-				.await
-				.map_err(Error::from)?
+				.await?
 			};
 		}
-		tx.commit().await.map_err(Error::from)?;
+		tx.commit().await?;
 		Ok(())
 	}
 }

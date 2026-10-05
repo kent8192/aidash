@@ -22,8 +22,7 @@ pub struct ChannelThread {
 }
 
 impl crate::database::Record for ChannelThread {
-	fn decode(row: &sqlx::postgres::PgRow) -> std::result::Result<Self, sqlx::Error> {
-		use sqlx::Row;
+	fn decode(row: &crate::database::native::Row) -> crate::Result<Self> {
 		Ok(Self {
 			id: row.try_get("id")?,
 			workspace_key: row.try_get("workspace_id")?,

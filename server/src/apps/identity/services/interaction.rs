@@ -124,7 +124,7 @@ pub async fn message_keyed(
 			let previous: Option<(String, Option<Uuid>)> = {
 				let query_bind_1 = id;
 				let query_bind_2 = &key;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.columns([Alias::new("content"), Alias::new("message_id")])
 						.from(Alias::new("run_inputs"))
@@ -151,6 +151,7 @@ pub async fn message_keyed(
 						)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["content", "message_id"])
 				.fetch_optional(&mut **access.tx)
 				.await?
 			};
@@ -163,7 +164,7 @@ pub async fn message_keyed(
 			if let Some(Some(message_id)) = previous.as_ref().map(|(_, id)| id) {
 				let attached: Option<Uuid> = {
 					let query_bind_1 = message_id;
-					sqlx::query_scalar(
+					crate::database::native::query_scalar(
 						&Query::select()
 							.column(Alias::new("id"))
 							.from(Alias::new("channel_attachments"))
@@ -174,7 +175,7 @@ pub async fn message_keyed(
 							.limit(1)
 							.to_string(PostgresQueryBuilder),
 					)
-					.fetch_optional(&mut **access.tx)
+					.scalar_optional(&mut **access.tx)
 					.await?
 				};
 				if attached.is_some() {

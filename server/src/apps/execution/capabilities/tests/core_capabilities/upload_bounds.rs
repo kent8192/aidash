@@ -44,7 +44,7 @@ async fn tiny_upload_chunks_allocate_nothing_and_full_chunks_remain_idempotent(
 			.from(Alias::new("core_objects"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&c.f.store.pool)
+	.fetch_one(c.f.store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(count, 0);
@@ -86,7 +86,7 @@ async fn tiny_upload_chunks_allocate_nothing_and_full_chunks_remain_idempotent(
 			.from(Alias::new("core_objects"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&c.f.store.pool)
+	.fetch_one(c.f.store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(count, 2);

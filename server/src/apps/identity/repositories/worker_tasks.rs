@@ -103,7 +103,7 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 		let result: NativeResult<Option<Uuid>> = async {
 			Ok({
 				let query_bind_1 = task;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("workspace_id"))
 						.from(Alias::new("tasks"))
@@ -117,7 +117,7 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **self.access.tx)
+				.scalar_optional(&mut **self.access.tx)
 				.await?
 			})
 		}
@@ -128,7 +128,7 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 		let result: NativeResult<CreatedTaskOrigin> = async {
 			let origin: (Uuid, String, String, Vec<String>) = {
 				let query_bind_1 = task_id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(Alias::new("source_run_id"))
 						.column(Alias::new("tenant"))
@@ -144,6 +144,7 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["source_run_id", "tenant", "root_subject", "subject_chain"])
 				.fetch_one(&mut **self.access.tx)
 				.await?
 			};
@@ -163,7 +164,7 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 		let result: NativeResult<Option<ExecutionGrant>> = async {
 			let grant: Option<Grant> = {
 				let query_bind_1 = task;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(ColumnRef::Asterisk)
 						.from(Alias::new("authorization_execution"))
@@ -192,7 +193,7 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 				let query_bind_3 = &self.access.identity.tenant;
 				let query_bind_4 = &self.access.identity.subject;
 				let query_bind_5 = &self.access.subjects;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::insert()
 						.into_table(Alias::new("authorization_task_origins"))
 						.columns([

@@ -5,20 +5,20 @@ use super::{
 	policy::{Decision, Evaluation, Resource},
 };
 use crate::apps::identity::models::AuthorizationDecision;
+use crate::database::native::Pool;
 use crate::{Error, Result, store::Store};
-use reinhardt::db::backends::{TransactionExecutor, dialect::postgres::PgTransactionExecutor};
+use reinhardt::db::backends::TransactionExecutor;
 use serde_json::{Value, json};
-use sqlx::{PgPool, Postgres, Transaction};
 use std::ops::{Deref, DerefMut};
 use uuid::Uuid;
 
 #[path = "visibility.rs"]
 mod visibility;
 
-pub(crate) struct AccessTransaction(Option<Transaction<'static, Postgres>>);
+pub(crate) struct AccessTransaction(Option<crate::database::native::Transaction>);
 
 impl AccessTransaction {
-	fn new(transaction: Transaction<'static, Postgres>) -> Self {
+	fn new(transaction: crate::database::native::Transaction) -> Self {
 		Self(Some(transaction))
 	}
 
@@ -26,18 +26,18 @@ impl AccessTransaction {
 		self.0.is_some()
 	}
 
-	fn install(&mut self, transaction: Transaction<'static, Postgres>) {
+	fn install(&mut self, transaction: crate::database::native::Transaction) {
 		debug_assert!(self.0.is_none());
 		self.0 = Some(transaction);
 	}
 
-	fn take(&mut self) -> Option<Transaction<'static, Postgres>> {
+	fn take(&mut self) -> Option<crate::database::native::Transaction> {
 		self.0.take()
 	}
 }
 
 impl Deref for AccessTransaction {
-	type Target = Transaction<'static, Postgres>;
+	type Target = crate::database::native::Transaction;
 
 	fn deref(&self) -> &Self::Target {
 		self.0
@@ -75,7 +75,7 @@ pub(crate) struct Access {
 	pub cached_runs: std::collections::BTreeMap<(Uuid, Uuid), bool>,
 	pub cached_humans: std::collections::BTreeMap<Uuid, bool>,
 	pending_decisions: Vec<(Evaluation, Decision)>,
-	pub(super) pool: PgPool,
+	pub(super) pool: Pool,
 	pub read_run: Option<Uuid>,
 	pub read_grant: Option<Uuid>,
 	pub(super) environment: Value,
@@ -88,7 +88,7 @@ impl Access {
 	}
 
 	/// Read membership uses a durable commit separate from the live authority lease.
-	pub(crate) fn journal_pool(&self) -> &PgPool {
+	pub(crate) fn journal_pool(&self) -> &Pool {
 		&self.pool
 	}
 	// The same compound operation can narrow its subject chain or change the
@@ -111,7 +111,7 @@ impl Access {
 		identity: &SubjectIdentity,
 		exclusive: bool,
 	) -> Result<Self> {
-		let mut tx = store.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&store.pool).await?;
 		let snapshot = identity.lock_with_mode(&mut tx, exclusive).await?;
 		Ok(Self {
 			marketplace_audit: None,
@@ -178,7 +178,7 @@ impl Access {
 	// The caller retains the outer Access until this mutation commits. Reusing
 	// its locks avoids queuing a second shared lock behind a waiting revoker.
 	pub async fn under_lease(lease: &Self) -> Result<Self> {
-		let tx = lease.pool.begin().await?;
+		let tx = crate::database::native::begin(&lease.pool).await?;
 		Ok(Self {
 			marketplace_audit: None,
 			core_gc_complete: false,
@@ -225,7 +225,8 @@ impl Access {
 	/// Start a fresh execution authorization boundary after an external wait.
 	pub async fn refresh_execution(&mut self, run_id: Uuid) -> Result<()> {
 		if !self.tx.is_active() {
-			self.tx.install(self.pool.begin().await?);
+			self.tx
+				.install(crate::database::native::begin(&self.pool).await?);
 		}
 		self.snapshot = self.identity.lock_with_mode(&mut self.tx, false).await?;
 		self.remote_read_cache.clear();
@@ -311,7 +312,9 @@ impl Access {
 		// its decision audit before effects so a killed worker cannot lose it.
 		if self.durable_audit {
 			let mut audit: Box<dyn TransactionExecutor> =
-				Box::new(PgTransactionExecutor::new(self.pool.begin().await?));
+				crate::database::native::begin(&self.pool)
+					.await?
+					.into_executor();
 			for (input, decision) in records {
 				AuthorizationDecision::append(
 					audit.as_mut(),
@@ -340,7 +343,7 @@ impl Access {
 		let tx = self
 			.tx
 			.take()
-			.map(|tx| Box::new(PgTransactionExecutor::new(tx)) as Box<dyn TransactionExecutor>);
+			.map(|tx| tx.into_executor() as Box<dyn TransactionExecutor>);
 		self.complete(tx, result).await
 	}
 
@@ -352,7 +355,7 @@ impl Access {
 			.take()
 			.ok_or_else(|| Error::Conflict("authorization transaction is suspended".into()))?;
 		Ok(NativeAccess {
-			tx: Box::new(PgTransactionExecutor::new(transaction)),
+			tx: transaction.into_executor(),
 			access: self,
 		})
 	}
@@ -377,7 +380,9 @@ impl Access {
 			if matches!(result, Err(Error::Forbidden)) {
 				// Denials survive rollback with the evaluated policy revision.
 				let mut audit: Box<dyn TransactionExecutor> =
-					Box::new(PgTransactionExecutor::new(self.pool.begin().await?));
+					crate::database::native::begin(&self.pool)
+						.await?
+						.into_executor();
 				for (input, decision) in &self.pending_decisions {
 					AuthorizationDecision::append(
 						audit.as_mut(),
@@ -412,8 +417,9 @@ impl NativeAccess {
 		self.access.context = context;
 	}
 	pub async fn begin(store: &Store, identity: &SubjectIdentity) -> Result<Self> {
-		let mut tx: Box<dyn TransactionExecutor> =
-			Box::new(PgTransactionExecutor::new(store.pool.begin().await?));
+		let mut tx: Box<dyn TransactionExecutor> = crate::database::native::begin(&store.pool)
+			.await?
+			.into_executor();
 		let snapshot = identity.lock_native(tx.as_mut(), false).await?;
 		Ok(Self {
 			tx,

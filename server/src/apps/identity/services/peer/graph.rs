@@ -92,7 +92,7 @@ pub(crate) async fn expand(
 			if input.options.target_tenant.is_none() {
 				return Err(Error::Invalid("target tenant required".into()));
 			}
-			let mut tx = f.store.pool.begin().await?;
+			let mut tx = crate::database::native::begin(&f.store.pool).await?;
 			source_peer_lease(&mut tx, &input.node_id).await?;
 			let result = remote_page(&f, &input, GraphViewer::Operator { id }).await;
 			if result.is_ok() {

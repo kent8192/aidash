@@ -247,9 +247,11 @@ async fn runtime_task(
 }
 
 /// Bind the policy use case to the same PostgreSQL pool used by HTTP and workers.
-pub fn authorization(pool: sqlx::PgPool) -> aidash_application::authorization::Authorization {
+pub fn authorization(
+	pool: impl Into<crate::database::native::Pool>,
+) -> aidash_application::authorization::Authorization {
 	aidash_application::authorization::Authorization::new(Arc::new(
-		crate::apps::identity::repositories::PolicyRepository { pool },
+		crate::apps::identity::repositories::PolicyRepository { pool: pool.into() },
 	))
 }
 
@@ -484,29 +486,29 @@ pub(crate) fn marketplace_publication_scope<'a>(
 }
 
 /// Operator adoption and subject installation use the same staging implementation.
-pub(crate) fn marketplace_staging_scope<'a, 'connection>(
+pub(crate) fn marketplace_staging_scope<'a>(
 	store: &'a Store,
-	tx: &'a mut sqlx::Transaction<'connection, sqlx::Postgres>,
+	tx: &'a mut crate::database::native::Transaction,
 	actor: &'a str,
-) -> crate::apps::marketplace::repositories::installations::NativeStaging<'a, 'connection> {
+) -> crate::apps::marketplace::repositories::installations::NativeStaging<'a> {
 	crate::apps::marketplace::repositories::installations::NativeStaging { store, tx, actor }
 }
 
 /// Trusted transport authority and the original transaction are shared with maintenance use cases.
-pub(crate) fn marketplace_operator_scope<'a, 'connection>(
+pub(crate) fn marketplace_operator_scope<'a>(
 	store: &'a Store,
-	tx: &'a mut sqlx::Transaction<'connection, sqlx::Postgres>,
+	tx: &'a mut crate::database::native::Transaction,
 	principal: aidash_domain::identity::Principal,
-) -> crate::apps::marketplace::repositories::operations::NativeOperator<'a, 'connection> {
+) -> crate::apps::marketplace::repositories::operations::NativeOperator<'a> {
 	crate::apps::marketplace::repositories::operations::NativeOperator {
 		staging: marketplace_staging_scope(store, tx, "operator-adoption"),
 		principal,
 	}
 }
 
-pub(crate) fn marketplace_provenance_scope<'a, 'connection>(
-	tx: &'a mut sqlx::Transaction<'connection, sqlx::Postgres>,
-) -> crate::apps::marketplace::repositories::installations::NativeProvenance<'a, 'connection> {
+pub(crate) fn marketplace_provenance_scope<'a>(
+	tx: &'a mut crate::database::native::Transaction,
+) -> crate::apps::marketplace::repositories::installations::NativeProvenance<'a> {
 	crate::apps::marketplace::repositories::installations::NativeProvenance { tx }
 }
 
@@ -517,23 +519,23 @@ pub(crate) fn catalog_scope(
 	crate::apps::identity::repositories::catalog::NativeCatalog(access)
 }
 
-pub(crate) fn catalog_mutation_scope<'a, 'connection>(
-	tx: &'a mut sqlx::Transaction<'connection, sqlx::Postgres>,
-) -> crate::apps::identity::repositories::catalog_mutation::NativeMutation<'a, 'connection> {
+pub(crate) fn catalog_mutation_scope<'a>(
+	tx: &'a mut crate::database::native::Transaction,
+) -> crate::apps::identity::repositories::catalog_mutation::NativeMutation<'a> {
 	crate::apps::identity::repositories::catalog_mutation::NativeMutation(tx)
 }
 /// Transport and trusted maintenance callers supply authority, never a request-body actor label.
-pub(crate) fn catalog_administrator_scope<'a, 'connection>(
-	tx: &'a mut sqlx::Transaction<'connection, sqlx::Postgres>,
+pub(crate) fn catalog_administrator_scope<'a>(
+	tx: &'a mut crate::database::native::Transaction,
 	principal: aidash_domain::identity::Principal,
-) -> crate::apps::identity::repositories::catalog_mutation::NativeAdministrator<'a, 'connection> {
+) -> crate::apps::identity::repositories::catalog_mutation::NativeAdministrator<'a> {
 	crate::apps::identity::repositories::catalog_mutation::NativeAdministrator {
 		mutation: catalog_mutation_scope(tx),
 		principal,
 	}
 }
 pub(crate) fn catalog_administration_read(
-	pool: &sqlx::PgPool,
+	pool: &crate::database::native::Pool,
 	principal: aidash_domain::identity::Principal,
 ) -> crate::apps::identity::repositories::catalog_mutation::NativeAdministrationRead<'_> {
 	crate::apps::identity::repositories::catalog_mutation::NativeAdministrationRead {
@@ -610,10 +612,10 @@ pub(crate) fn generation_read_repository(
 	}
 }
 
-pub(crate) fn generation_lifecycle_scope<'a, 'tx>(
+pub(crate) fn generation_lifecycle_scope<'a>(
 	runtime: &'a crate::federation::Federation,
-	transaction: &'a mut sqlx::Transaction<'tx, sqlx::Postgres>,
-) -> crate::apps::execution::generation::repositories::lifecycle::NativeLifecycle<'a, 'tx> {
+	transaction: &'a mut crate::database::native::Transaction,
+) -> crate::apps::execution::generation::repositories::lifecycle::NativeLifecycle<'a> {
 	crate::apps::execution::generation::repositories::lifecycle::NativeLifecycle {
 		runtime,
 		transaction,
@@ -1534,10 +1536,10 @@ pub(crate) fn semantic_journal_repository(
 ) -> crate::apps::knowledge::repositories::remote_journal::Repository<'_> {
 	crate::apps::knowledge::repositories::remote_journal::Repository { store }
 }
-pub(crate) fn semantic_journal_scope<'a, 'tx>(
+pub(crate) fn semantic_journal_scope<'a>(
 	store: &'a Store,
-	tx: &'a mut sqlx::Transaction<'tx, sqlx::Postgres>,
-) -> crate::apps::knowledge::repositories::remote_journal::Scope<'a, 'tx> {
+	tx: &'a mut crate::database::native::Transaction,
+) -> crate::apps::knowledge::repositories::remote_journal::Scope<'a> {
 	crate::apps::knowledge::repositories::remote_journal::Scope {
 		store,
 		transaction: crate::apps::knowledge::repositories::remote_journal::Transaction::Borrowed(
@@ -1717,7 +1719,7 @@ pub(crate) fn workbench_incident_repository(
 }
 /// Retention reuses the native locked batch and commits copied payload disposal atomically.
 pub(crate) fn workbench_incident_retention_repository(
-	pool: &sqlx::PgPool,
+	pool: &crate::database::native::Pool,
 ) -> crate::apps::registry::workbench::repositories::incidents::RetentionRepository<'_> {
 	crate::apps::registry::workbench::repositories::incidents::RetentionRepository { pool }
 }

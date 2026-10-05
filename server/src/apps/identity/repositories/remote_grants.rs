@@ -3,7 +3,7 @@ use aidash_domain::federation::execution::home;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use uuid::Uuid;
-#[derive(Clone, sqlx::FromRow)]
+#[derive(Clone)]
 pub(crate) struct Grant {
 	pub(crate) id: Uuid,
 	pub(crate) task_id: Uuid,
@@ -19,7 +19,23 @@ pub(crate) struct Grant {
 	pub(crate) revoked: bool,
 	pub(crate) semantic: Value,
 }
-#[derive(Clone, sqlx::FromRow)]
+crate::native_record!(Grant {
+	id,
+	task_id,
+	task_revision,
+	workspace_id,
+	node_id,
+	tenant,
+	credential_id,
+	root_subject,
+	subject_chain,
+	inspection,
+	expires_at,
+	revoked,
+	semantic
+});
+
+#[derive(Clone)]
 pub(crate) struct HomeBinding {
 	pub grant_id: Uuid,
 	pub admission_id: Uuid,
@@ -27,6 +43,13 @@ pub(crate) struct HomeBinding {
 	pub task_revision: i64,
 	pub initial_task: Value,
 }
+crate::native_record!(HomeBinding {
+	grant_id,
+	admission_id,
+	task_id,
+	task_revision,
+	initial_task
+});
 
 impl From<Grant> for home::Grant {
 	fn from(row: Grant) -> Self {

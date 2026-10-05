@@ -54,7 +54,7 @@ fn dispatch_fixture(
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&c.f.store.pool)
+			.execute(c.f.store.pool.driver())
 			.await
 		}
 		.unwrap();
@@ -110,7 +110,7 @@ async fn record(f: &DispatchFixture) -> Value {
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&f.c.f.store.pool)
+		.fetch_one(f.c.f.store.pool.driver())
 		.await
 	}
 	.unwrap()
@@ -144,7 +144,7 @@ async fn extraction_requires_current_runner_limits_and_respects_lower_output_bud
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&f.c.f.store.pool)
+		.fetch_one(f.c.f.store.pool.driver())
 		.await
 	}
 	.unwrap();

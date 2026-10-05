@@ -129,7 +129,7 @@ impl TransferRepository for Repository<'_> {
 			let f = self.federation;
 			{
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_records")
 						.and_where(
 							Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())),
@@ -163,13 +163,7 @@ impl TransferRepository for Repository<'_> {
 		}))
 	}
 	async fn begin_receipt(&self, id: Uuid) -> Result<Box<dyn ReceiptScope + '_>> {
-		let tx = self
-			.federation
-			.store
-			.pool
-			.begin()
-			.await
-			.map_err(NativeError::from)?;
+		let tx = crate::database::native::begin(&self.federation.store.pool).await?;
 		Ok(Box::new(Receipt { tx, id }))
 	}
 	async fn request(&self, node: &str, path: &str, body: &Value) -> Result<Value> {
@@ -181,7 +175,7 @@ impl TransferRepository for Repository<'_> {
 		let result: NativeResult<Vec<Uuid>> = async {
 			let f = self.federation;
 
-			let ids: Vec<Uuid> = sqlx::query_scalar(
+			let ids: Vec<Uuid> = crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("id"))
 					.from(Alias::new("core_records"))
@@ -200,7 +194,7 @@ impl TransferRepository for Repository<'_> {
 					.limit(8)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_all(&f.store.pool)
+			.scalar_all(&f.store.pool)
 			.await?;
 			Ok(ids)
 		}
@@ -208,11 +202,11 @@ impl TransferRepository for Repository<'_> {
 		result.map_err(Into::into)
 	}
 	async fn record_failure(&self, id: Uuid, terminal: bool) -> Result<()> {
-		let result:NativeResult<()>=async {let mut tx=self.federation.store.pool.begin().await?;
+		let result:NativeResult<()>=async {let mut tx=crate::database::native::begin(&self.federation.store.pool).await?;
 {
 					let query_bind_1 = id;
 					let query_bind_2 = terminal;
-					sqlx::query(&Query::update().table(Alias::new("core_records")).value_expr(Alias::new("state"),SimpleExpr::CustomWithExpr("(CASE WHEN ? THEN 'blocked' WHEN COALESCE((data->>'retry_count')::int,0) >= 11 THEN 'uncertain' ELSE state END)".into(), vec![Expr::value(query_bind_2.to_owned()).into()])).value_expr(Alias::new("data"),Expr::cust("data || jsonb_build_object('error','TRANSFER_PENDING_OR_DENIED','retry_count',COALESCE((data->>'retry_count')::int,0)+1,'retry_after',CURRENT_TIMESTAMP + INTERVAL '5 seconds')")).and_where(Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned()))).and_where(Expr::col(Alias::new("state")).ne(reinhardt::query::Expr::value("delivered"))).to_string(PostgresQueryBuilder)).execute(&mut *tx).await?
+					crate::database::native::query(&Query::update().table(Alias::new("core_records")).value_expr(Alias::new("state"),SimpleExpr::CustomWithExpr("(CASE WHEN ? THEN 'blocked' WHEN COALESCE((data->>'retry_count')::int,0) >= 11 THEN 'uncertain' ELSE state END)".into(), vec![Expr::value(query_bind_2.to_owned()).into()])).value_expr(Alias::new("data"),Expr::cust("data || jsonb_build_object('error','TRANSFER_PENDING_OR_DENIED','retry_count',COALESCE((data->>'retry_count')::int,0)+1,'retry_after',CURRENT_TIMESTAMP + INTERVAL '5 seconds')")).and_where(Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned()))).and_where(Expr::col(Alias::new("state")).ne(reinhardt::query::Expr::value("delivered"))).to_string(PostgresQueryBuilder)).execute(&mut *tx).await?
 				};tx.commit().await?;Ok(())}.await;
 		result.map_err(Into::into)
 	}
@@ -297,7 +291,7 @@ impl TransferScope for Scope<'_> {
 			let access = self.authority.get_mut();
 			Ok({
 				let query_bind_1 = node;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("enabled"))
 						.from(Alias::new("peers"))
@@ -311,7 +305,7 @@ impl TransferScope for Scope<'_> {
 						.lock(reinhardt::query::LockType::Share)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **access.tx)
+				.scalar_optional(&mut **access.tx)
 				.await?
 			})
 		}
@@ -400,7 +394,7 @@ impl TransferScope for Scope<'_> {
 	}
 }
 struct Receipt {
-	tx: sqlx::Transaction<'static, sqlx::Postgres>,
+	tx: crate::database::native::Transaction,
 	id: Uuid,
 }
 #[async_trait]
@@ -411,7 +405,7 @@ impl ReceiptScope for Receipt {
 			let tx = &mut self.tx;
 			Ok({
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_records")
 						.and_where(
 							Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())),
@@ -438,10 +432,6 @@ impl ReceiptScope for Receipt {
 	}
 	async fn finish(self: Box<Self>, result: Result<()>) -> Result<()> {
 		result?;
-		self.tx
-			.commit()
-			.await
-			.map_err(NativeError::from)
-			.map_err(Into::into)
+		self.tx.commit().await.map_err(Into::into)
 	}
 }

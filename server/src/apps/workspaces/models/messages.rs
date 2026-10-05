@@ -133,8 +133,7 @@ use reinhardt::query::IntoValue;
 impl Message {}
 
 impl crate::database::Record for Message {
-	fn decode(row: &sqlx::postgres::PgRow) -> std::result::Result<Self, sqlx::Error> {
-		use sqlx::Row;
+	fn decode(row: &crate::database::native::Row) -> crate::Result<Self> {
 		Ok(Self {
 			id: row.try_get("id")?,
 			workspace_id: row.try_get("workspace_id")?,

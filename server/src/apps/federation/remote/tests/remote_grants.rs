@@ -95,7 +95,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&b.store.pool)
+		.execute(b.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -171,7 +171,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&a.store.pool)
+		.fetch_one(a.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -221,7 +221,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&a.store.pool)
+		.fetch_one(a.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -262,7 +262,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&a.store.pool)
+		.fetch_one(a.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -316,7 +316,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 			.and_where(reinhardt::query::Expr::cust("id = 'model'"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(&b.store.pool)
+	.fetch_one(b.store.pool.driver())
 	.await
 	.unwrap();
 	let mut changed = metadata.clone();
@@ -336,7 +336,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 				.and_where(reinhardt::query::Expr::cust("id = 'model'"))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&b.store.pool)
+		.execute(b.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -356,7 +356,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 				.and_where(reinhardt::query::Expr::cust("id = 'model'"))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&b.store.pool)
+		.execute(b.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -439,7 +439,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&a.store.pool)
+		.execute(a.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -464,7 +464,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 			)
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.execute(&a.store.pool)
+	.execute(a.store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(
@@ -486,7 +486,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 			))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.execute(&a.store.pool)
+	.execute(a.store.pool.driver())
 	.await
 	.unwrap();
 	{
@@ -504,7 +504,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&a.store.pool)
+		.execute(a.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -540,7 +540,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&a.store.pool)
+		.execute(a.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -570,7 +570,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&a.store.pool)
+		.execute(a.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -590,7 +590,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&a.store.pool)
+		.execute(a.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -625,7 +625,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&a.store.pool)
+		.fetch_one(a.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -703,7 +703,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 			.from(reinhardt::query::Alias::new("authorization_remote_grants"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.fetch_one(&a.store.pool)
+	.fetch_one(a.store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(count, 4);
@@ -714,7 +714,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 				.from(reinhardt::query::Alias::new("runs"))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 		.unwrap();
 		assert_eq!(count, 0, "prepared grants cannot bypass worker admission");

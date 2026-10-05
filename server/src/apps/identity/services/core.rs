@@ -23,19 +23,16 @@ pub mod workspace;
 use crate::apps::identity::models::{
 	AuthorizationBundle, AuthorizationDecision, AuthorizationRevision,
 };
+use crate::database::native::Pool;
 use crate::{Error, Result};
 use policy::{Decision, Evaluation, PolicyBundle, identifier};
-use reinhardt::db::backends::{
-	DatabaseConnection as BackendConnection, PostgresBackend, TransactionExecutor,
-};
+use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::connection::DatabaseConnectionLease;
 use serde_json::Value;
-use sqlx::{PgPool, Postgres, Transaction};
-use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct Authorization {
-	pub pool: PgPool,
+	pub pool: Pool,
 }
 
 impl Authorization {
@@ -55,9 +52,7 @@ impl Authorization {
 
 	// Share the application's pool while remaining compound transactions are migrated.
 	fn native_connection(&self) -> Result<DatabaseConnectionLease> {
-		Ok(DatabaseConnectionLease::register(BackendConnection::new(
-			Arc::new(PostgresBackend::new(self.pool.clone())),
-		))?)
+		Ok(DatabaseConnectionLease::register(self.pool.connection())?)
 	}
 
 	pub async fn replace(
@@ -72,12 +67,15 @@ impl Authorization {
 			.await?)
 	}
 
-	pub(crate) async fn load(tx: &mut Transaction<'_, Postgres>, tenant: &str) -> Result<Snapshot> {
+	pub(crate) async fn load(
+		tx: &mut crate::database::native::Transaction,
+		tenant: &str,
+	) -> Result<Snapshot> {
 		Self::load_with_mode(tx, tenant, false).await
 	}
 
 	pub(crate) async fn load_with_mode(
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		tenant: &str,
 		exclusive: bool,
 	) -> Result<Snapshot> {
@@ -105,7 +103,8 @@ impl Authorization {
 				.lock(LockType::Share)
 				.to_string(PostgresQueryBuilder)
 		};
-		let row: Option<(i64, Value)> = sqlx::query_as(&query)
+		let row: Option<(i64, Value)> = crate::database::native::query_as(&query)
+			.columns(&["revision", "document"])
 			.bind(tenant)
 			.fetch_optional(&mut **tx)
 			.await?;
@@ -127,7 +126,7 @@ impl Authorization {
 	}
 
 	pub async fn evaluate_in_transaction(
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		tenant: &str,
 		input: &Evaluation,
 	) -> Result<Decision> {
@@ -141,7 +140,7 @@ impl Authorization {
 	}
 
 	pub(crate) async fn record(
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		tenant: &str,
 		input: &Evaluation,
 		decision: &Decision,
@@ -152,7 +151,7 @@ impl Authorization {
 	/// Retain every decision and its allocation/commit order, while acquiring
 	/// the transaction-wide audit controls only once for a compound check.
 	pub(super) async fn record_many(
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		tenant: &str,
 		records: &[(Evaluation, Decision)],
 	) -> Result<()> {
@@ -196,7 +195,7 @@ impl Authorization {
 			// The INSERT's source must read this materialized barrier before
 			// defaults allocate any audit sequence. Retain the lock until commit,
 			// but avoid a client round trip between acquiring it and inserting.
-			sqlx::query(
+			crate::database::native::query(
 				&Query::select()
 					.expr(Expr::cust("pg_advisory_xact_lock(71003202)"))
 					.to_string(PostgresQueryBuilder),
@@ -215,7 +214,7 @@ impl Authorization {
 						.to_owned(),
 				);
 			let sql = insert.to_string(PostgresQueryBuilder);
-			let mut query = sqlx::query(&sql);
+			let mut query = crate::database::native::query(&sql);
 			for (input, decision) in records {
 				query = query
 					.bind(tenant)

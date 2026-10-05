@@ -103,7 +103,7 @@ async fn sql_counts(fixture: &Fixture) -> Value {
 			.from((Alias::new("public"), Alias::new("pg_stat_statements")))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(&fixture.f.store.pool)
+	.fetch_all(fixture.f.store.pool.driver())
 	.await
 	.unwrap();
 	let rows: Vec<_> = timings
@@ -164,6 +164,7 @@ async fn accepted_load_and_idle_reduction(#[future(awt)] test_environment: Arc<T
 			.f
 			.store
 			.pool
+			.driver()
 			.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA public")
 			.await
 			.unwrap();
@@ -182,7 +183,7 @@ async fn accepted_load_and_idle_reduction(#[future(awt)] test_environment: Arc<T
 		for sample in 0..300 {
 			tokio::time::sleep_until(window + Duration::from_millis(sample * 100)).await;
 			let ws = fixture.workspaces[sample as usize % 10];
-			let mut barrier = fixture.f.store.pool.begin().await.unwrap();
+			let mut barrier = fixture.f.store.pool.driver().begin().await.unwrap();
 			sqlx::query(
 				&Query::select()
 					.expr(Expr::cust("PG_ADVISORY_XACT_LOCK(71003201)"))
@@ -219,7 +220,7 @@ async fn accepted_load_and_idle_reduction(#[future(awt)] test_environment: Arc<T
 							)
 							.to_string(PostgresQueryBuilder),
 					)
-					.fetch_one(&fixture.f.store.pool)
+					.fetch_one(fixture.f.store.pool.driver())
 					.await
 					.unwrap();
 					if waiting > 0 {

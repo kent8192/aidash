@@ -438,7 +438,7 @@ async fn closed_gate_suppresses_reads_and_resumes_without_a_new_hint(
 	fixture.emit(ws, 1).await;
 	let mut stream = fixture.stream(0, Some(ws), None).await;
 	frame(&mut stream).await;
-	let mut gate = fixture.f.store.control_pool.begin().await.unwrap();
+	let mut gate = fixture.f.store.control_pool.driver().begin().await.unwrap();
 	// Hold the real durable gate's exclusive row lock. No production test hooks.
 	sqlx::query(
 		&Query::select()

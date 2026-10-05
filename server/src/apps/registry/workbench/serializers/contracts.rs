@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde_json::Value;
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Draft {
 	pub id: Uuid,
 	pub tenant: String,
@@ -20,6 +20,19 @@ pub struct Draft {
 	pub archived: bool,
 	pub updated_at: DateTime<Utc>,
 }
+crate::native_record!(Draft {
+	id,
+	tenant,
+	owner,
+	revision,
+	entry,
+	documents,
+	release_notes,
+	source_id,
+	source_version,
+	archived,
+	updated_at
+});
 
 impl From<AgentDraft> for Draft {
 	fn from(row: AgentDraft) -> Self {

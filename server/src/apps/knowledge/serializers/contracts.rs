@@ -35,7 +35,7 @@ pub struct ConfigureIndex {
 	pub spec: IndexSpec,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "SemanticIndex")]
 pub struct Index {
 	pub workspace_id: Uuid,
@@ -45,6 +45,14 @@ pub struct Index {
 	pub collection: String,
 	pub updated_at: DateTime<Utc>,
 }
+crate::native_record!(Index {
+	workspace_id,
+	tenant,
+	revision,
+	spec,
+	collection,
+	updated_at
+});
 
 pub use aidash_domain::semantic::Source;
 
@@ -61,7 +69,7 @@ pub struct PutEntry {
 	pub metadata: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "SemanticEntry")]
 pub struct Entry {
 	pub id: Uuid,
@@ -80,6 +88,23 @@ pub struct Entry {
 	pub created_by: String,
 	pub updated_at: DateTime<Utc>,
 }
+crate::native_record!(Entry {
+	id,
+	workspace_id,
+	key,
+	source,
+	agent,
+	metadata,
+	revision,
+	point_id,
+	index_revision,
+	deleted,
+	state,
+	attempts,
+	last_error,
+	created_by,
+	updated_at
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "SemanticRevision")]
@@ -100,7 +125,7 @@ pub struct Search {
 	pub max_tokens: usize,
 }
 
-#[derive(Debug, Serialize, sqlx::FromRow, JsonSchema)]
+#[derive(Debug, Serialize, JsonSchema)]
 #[schemars(rename = "SemanticHistory")]
 pub struct History {
 	pub sequence: i64,
@@ -111,6 +136,15 @@ pub struct History {
 	pub detail: String,
 	pub created_at: DateTime<Utc>,
 }
+crate::native_record!(History {
+	sequence,
+	workspace_id,
+	entry_id,
+	revision,
+	state,
+	detail,
+	created_at
+});
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "SemanticCleanupCounts")]

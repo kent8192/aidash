@@ -30,3 +30,5 @@ pub mod schema;
 pub mod worker;
 
 pub mod metrics;
+
+pub mod node_commands;

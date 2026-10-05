@@ -228,13 +228,17 @@ impl WorkspaceRecordScope for Reads<'_> {
 		result.map_err(Into::into)
 	}
 }
-#[derive(sqlx::FromRow)]
 struct ChildTaskSummaryRow {
 	id: Uuid,
 	created_by: String,
-	#[sqlx(try_from = "String")]
 	status: crate::domain::TaskStatus,
 }
+crate::native_record!(ChildTaskSummaryRow {
+	id,
+	created_by,
+	status
+});
+
 #[async_trait]
 impl ChildSummaryScope for Reads<'_> {
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
@@ -272,7 +276,7 @@ impl ChildSummaryScope for Reads<'_> {
 				let query_bind_1 = workspace_id;
 				let query_bind_2 = parent_id;
 				let query_bind_3 = after;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.columns([
 							Alias::new("id"),
@@ -317,6 +321,7 @@ impl ChildSummaryScope for Reads<'_> {
 						.limit(100)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["id", "created_by", "status"])
 				.fetch_all(&mut **self.access.tx)
 				.await?
 			};

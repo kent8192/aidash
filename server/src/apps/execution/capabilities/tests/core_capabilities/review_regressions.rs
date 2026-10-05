@@ -70,7 +70,7 @@ async fn withdrawn_operation_fixture(
 	.bind(2_i64)
 	.bind(json!({"command":"must never execute","seconds":1}))
 	.bind(json!({}))
-	.execute(&c.f.store.pool)
+	.execute(c.f.store.pool.driver())
 	.await
 	.unwrap();
 	{
@@ -82,7 +82,7 @@ async fn withdrawn_operation_fixture(
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&c.f.store.pool)
+		.execute(c.f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -118,7 +118,7 @@ async fn authority_withdrawal_before_dispatch_keeps_saved_files_usable(
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(&c.f.store.pool)
+			.fetch_one(c.f.store.pool.driver())
 			.await
 		}
 		.unwrap();
@@ -146,7 +146,7 @@ async fn authority_withdrawal_before_dispatch_keeps_saved_files_usable(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&c.f.store.pool)
+		.fetch_one(c.f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -223,7 +223,7 @@ async fn extraction_queue_fixture(
 			.limit(8)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(&c.f.store.pool)
+	.fetch_all(c.f.store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(first.len(), 8);
@@ -320,7 +320,7 @@ async fn full_mount_fixture(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&c.f.store.pool)
+		.fetch_one(c.f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -385,7 +385,7 @@ async fn mounted_skills_require_writable_capacity_before_operation_commit(
 			.from(Alias::new("core_operations"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&c.f.store.pool)
+	.fetch_one(c.f.store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(

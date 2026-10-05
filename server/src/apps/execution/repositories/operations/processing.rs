@@ -14,7 +14,7 @@ use uuid::Uuid;
 impl OperationProcessingRepository for Repository<'_> {
 	async fn active_operations(&self) -> Result<Vec<Uuid>> {
 		let result: NativeResult<Vec<Uuid>> = async {
-			let ids: Vec<Uuid> = sqlx::query_scalar(
+			let ids: Vec<Uuid> = crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("id"))
 					.from(Alias::new("core_operations"))
@@ -28,7 +28,7 @@ impl OperationProcessingRepository for Repository<'_> {
 					.limit(16)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_all(&self.store.pool)
+			.scalar_all(&self.store.pool)
 			.await?;
 			Ok(ids)
 		}
@@ -39,7 +39,7 @@ impl OperationProcessingRepository for Repository<'_> {
 		let result: NativeResult<Vec<(Uuid, String, Option<String>)>> = async {
 			let rows: Vec<(Uuid, String, Option<String>)> = {
 				let query_bind_1 = after;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.columns(["id", "digest", "runner_instance"].map(Alias::new))
 						.from(Alias::new("core_operations"))
@@ -56,6 +56,7 @@ impl OperationProcessingRepository for Repository<'_> {
 						.limit(16)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["id", "digest", "runner_instance"])
 				.fetch_all(&self.store.pool)
 				.await?
 			};
@@ -78,7 +79,7 @@ impl OperationProcessingRepository for Repository<'_> {
 		let result: NativeResult<()> = async {
 			{
 				let query_bind_1 = id;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("core_operations"))
 						.value_expr(
@@ -108,7 +109,7 @@ impl OperationProcessingRepository for Repository<'_> {
 			{
 				let query_bind_1 = id;
 				let query_bind_2 = detail;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("core_operations"))
 						.value_expr(

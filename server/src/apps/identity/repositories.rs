@@ -1,5 +1,6 @@
 //! Policy ports preserve the caller's transaction and policy/audit lock lifetime.
 use super::models::{AuthorizationBundle, AuthorizationDecision};
+use crate::database::native::Pool;
 use aidash_application::{
 	Result,
 	authorization::Snapshot,
@@ -7,12 +8,10 @@ use aidash_application::{
 };
 use aidash_domain::policy::{Decision, Evaluation, PolicyBundle};
 use async_trait::async_trait;
-use reinhardt::db::backends::{DatabaseConnection, PostgresBackend, TransactionExecutor};
-use sqlx::{PgPool, Postgres, Transaction};
-use std::sync::Arc;
+use reinhardt::db::backends::TransactionExecutor;
 
 pub struct PolicyRepository {
-	pub pool: PgPool,
+	pub pool: Pool,
 }
 
 pub struct NativePolicyScope<'a>(pub &'a mut dyn TransactionExecutor);
@@ -34,10 +33,10 @@ impl AuthorizationScope for NativePolicyScope<'_> {
 }
 
 /// Compound SQL transactions keep their existing connection and isolation level.
-pub struct SqlPolicyScope<'a, 'connection>(pub &'a mut Transaction<'connection, Postgres>);
+pub struct SqlPolicyScope<'a>(pub &'a mut crate::database::native::Transaction);
 
 #[async_trait]
-impl AuthorizationScope for SqlPolicyScope<'_, '_> {
+impl AuthorizationScope for SqlPolicyScope<'_> {
 	async fn load(&mut self, tenant: &str) -> Result<Snapshot> {
 		Ok(super::services::core::Authorization::load(self.0, tenant).await?)
 	}
@@ -101,7 +100,7 @@ impl AuthorizationTransaction for PolicyTransaction {
 #[async_trait]
 impl AuthorizationStore for PolicyRepository {
 	async fn begin(&self) -> Result<Box<dyn AuthorizationTransaction>> {
-		let connection = DatabaseConnection::new(Arc::new(PostgresBackend::new(self.pool.clone())));
+		let connection = self.pool.connection();
 		let transaction = connection.begin().await.map_err(crate::Error::from)?;
 		Ok(Box::new(PolicyTransaction(transaction)))
 	}

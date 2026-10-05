@@ -20,13 +20,10 @@ use aidash_domain::transactions::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reinhardt::db::{
-	backends::{
-		DatabaseConnection as BackendConnection, TransactionExecutor, dialect::PostgresBackend,
-	},
+	backends::TransactionExecutor,
 	orm::{DatabaseConnection, DatabaseConnectionLease},
 };
 use serde_json::json;
-use std::sync::Arc;
 use uuid::Uuid;
 
 pub(crate) struct Repository {
@@ -34,9 +31,9 @@ pub(crate) struct Repository {
 }
 
 pub(crate) fn connection(runtime: &Federation) -> Result<DatabaseConnectionLease> {
-	Ok(DatabaseConnectionLease::register(BackendConnection::new(
-		Arc::new(PostgresBackend::new(runtime.store.control_pool.clone())),
-	))?)
+	Ok(DatabaseConnectionLease::register(
+		runtime.store.control_pool.connection(),
+	)?)
 }
 
 struct Recovery {
@@ -148,9 +145,7 @@ impl CoordinatorRepository for Repository {
 	}
 
 	async fn acquire_recovery(&self, id: Uuid) -> ApplicationResult<Box<dyn RecoveryScope>> {
-		let backend = BackendConnection::new(Arc::new(PostgresBackend::new(
-			self.runtime.store.control_pool.clone(),
-		)));
+		let backend = self.runtime.store.control_pool.connection();
 		let lease = coordinator_records::recovery_lease(&backend, id).await?;
 		Ok(Box::new(Recovery {
 			id,

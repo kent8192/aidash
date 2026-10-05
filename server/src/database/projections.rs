@@ -1,28 +1,29 @@
-//! A scoped PostgreSQL projection converted to an application/domain value.
-use super::records::{Record, RecordRow};
-use sqlx::{Encode, Executor, Postgres, Type, postgres::PgArguments, query::QueryAs};
-
-pub struct Projection<'q, T> {
-	query: QueryAs<'q, Postgres, RecordRow<T>, PgArguments>,
-}
-
-pub fn query_as<T: Record + Send + Unpin>(sql: &str) -> Projection<'_, T> {
-	Projection {
-		query: sqlx::query_as(sql),
+//! Domain projections decoded at the native persistence boundary.
+use super::{
+	Record,
+	native::{self, Decode, Row},
+};
+use crate::Result;
+pub struct RecordRow<T>(T);
+impl<T: Record> Decode for RecordRow<T> {
+	fn decode(row: &Row, _: &[&str]) -> Result<Self> {
+		T::decode(row).map(Self)
 	}
 }
-
-impl<'q, T: Record + Send + Unpin> Projection<'q, T> {
-	pub fn bind<V: 'q + Encode<'q, Postgres> + Type<Postgres>>(mut self, value: V) -> Self {
+pub struct Projection<'q, T> {
+	query: native::Query<'q, RecordRow<T>>,
+}
+pub fn query_as<T: Record>(sql: &str) -> Projection<'_, T> {
+	Projection {
+		query: native::query_as(sql),
+	}
+}
+impl<T: Record> Projection<'_, T> {
+	pub fn bind(mut self, value: impl native::Parameter) -> Self {
 		self.query = self.query.bind(value);
 		self
 	}
-
-	pub async fn fetch_all<'e, E>(self, executor: E) -> Result<Vec<T>, sqlx::Error>
-	where
-		'q: 'e,
-		E: Executor<'e, Database = Postgres>,
-	{
+	pub async fn fetch_all(self, executor: impl native::Executor) -> Result<Vec<T>> {
 		Ok(self
 			.query
 			.fetch_all(executor)
@@ -31,20 +32,10 @@ impl<'q, T: Record + Send + Unpin> Projection<'q, T> {
 			.map(|row| row.0)
 			.collect())
 	}
-
-	pub async fn fetch_one<'e, E>(self, executor: E) -> Result<T, sqlx::Error>
-	where
-		'q: 'e,
-		E: Executor<'e, Database = Postgres>,
-	{
+	pub async fn fetch_one(self, executor: impl native::Executor) -> Result<T> {
 		Ok(self.query.fetch_one(executor).await?.0)
 	}
-
-	pub async fn fetch_optional<'e, E>(self, executor: E) -> Result<Option<T>, sqlx::Error>
-	where
-		'q: 'e,
-		E: Executor<'e, Database = Postgres>,
-	{
+	pub async fn fetch_optional(self, executor: impl native::Executor) -> Result<Option<T>> {
 		Ok(self.query.fetch_optional(executor).await?.map(|row| row.0))
 	}
 }

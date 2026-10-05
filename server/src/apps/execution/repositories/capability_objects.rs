@@ -4,7 +4,7 @@ use crate::apps::execution::capabilities::services::core::{
 	contracts::{FileEntry, FileScope},
 };
 use crate::{Error, Result, authorization::access::Access};
-use reinhardt::query::{Alias, Expr, OnConflict, PostgresQueryBuilder, Query};
+use reinhardt::query::{Alias, Expr, IntoValue as _, OnConflict, PostgresQueryBuilder, Query};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -45,25 +45,21 @@ impl PendingObject {
 		}
 		self.file.sync_all().await?;
 		tokio::fs::File::open(&self.root).await?.sync_all().await?;
-		sqlx::query(
+		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new("core_objects"))
 				.columns(["id", "tenant", "area_id", "kind", "digest", "size"].map(Alias::new))
-				.from_subquery(((1..=6).map(|i| Expr::cust(format!("${i}")))).fold(
-					reinhardt::query::Query::select(),
-					|mut select, expr| {
-						select.expr(expr);
-						select
-					},
-				))
+				.values(vec![
+					self.id.into(),
+					access.identity.tenant.clone().into(),
+					self.area.into_value(),
+					self.kind.into(),
+					hash.clone().into(),
+					(self.size as i64).into(),
+				])
+				.map_err(Error::Invalid)?
 				.to_string(PostgresQueryBuilder),
 		)
-		.bind(self.id)
-		.bind(&access.identity.tenant)
-		.bind(self.area)
-		.bind(self.kind)
-		.bind(&hash)
-		.bind(self.size as i64)
 		.execute(&mut **access.tx)
 		.await?;
 		Ok((self.id, hash))
@@ -82,7 +78,7 @@ impl Runtime {
 	/// acquired, absence of the object row proves these bytes have no owner.
 	pub(crate) async fn reconcile_orphan_batch(
 		&self,
-		pool: &sqlx::PgPool,
+		pool: &crate::database::native::Pool,
 		cursor: &mut Option<tokio::fs::ReadDir>,
 	) -> Result<()> {
 		let intents = self.0.storage.join(".intents");
@@ -105,10 +101,10 @@ impl Runtime {
 			else {
 				continue;
 			};
-			let mut tx = pool.begin().await?;
+			let mut tx = crate::database::native::begin(pool).await?;
 			let acquired: bool = {
 				let query_bind_1 = format!("core-object:{id}");
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.expr(SimpleExpr::CustomWithExpr(
 							"(pg_try_advisory_xact_lock(hashtextextended(?, 0)))".to_owned(),
@@ -116,7 +112,7 @@ impl Runtime {
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(&mut *tx)
+				.scalar_one(&mut *tx)
 				.await?
 			};
 			if !acquired {
@@ -144,7 +140,7 @@ impl Runtime {
 			}
 			let exists: Option<Uuid> = {
 				let query_bind_1 = id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("core_objects"))
@@ -158,7 +154,7 @@ impl Runtime {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut *tx)
+				.scalar_optional(&mut *tx)
 				.await?
 			};
 			if exists.is_none() {
@@ -219,7 +215,7 @@ impl Runtime {
 			.map_err(|_| Error::Invalid("invalid quota".into()))?;
 		{
 			let query_bind_1 = &access.identity.tenant;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("core_quotas"))
 					.columns([Alias::new("tenant")])
@@ -245,7 +241,7 @@ impl Runtime {
 			let query_bind_1 = &access.identity.tenant;
 			let query_bind_2 = size;
 			let query_bind_3 = limit;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::update()
 					.table(Alias::new("core_quotas"))
 					.value_expr(
@@ -277,7 +273,7 @@ impl Runtime {
 					.returning([Alias::new("used_bytes")])
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_optional(&mut **access.tx)
+			.scalar_optional(&mut **access.tx)
 			.await?
 		};
 		if reserved.is_none() {
@@ -306,7 +302,7 @@ impl Runtime {
 		// lock keeps a collector from mistaking an uncommitted object for an orphan.
 		{
 			let query_bind_1 = format!("core-object:{id}");
-			sqlx::query(
+			crate::database::native::query(
 				&Query::select()
 					.expr(SimpleExpr::CustomWithExpr(
 						"(pg_advisory_xact_lock(hashtextextended(?, 0)))".to_owned(),
@@ -353,7 +349,7 @@ impl Runtime {
 		};
 		let known: Vec<Uuid> = {
 			let query_bind_1 = &access.identity.tenant;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("id"))
 					.from(Alias::new("core_objects"))
@@ -367,7 +363,7 @@ impl Runtime {
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_all(&mut **access.tx)
+			.scalar_all(&mut **access.tx)
 			.await?
 		};
 		let known = known.into_iter().collect::<std::collections::HashSet<_>>();
@@ -392,7 +388,7 @@ impl Runtime {
 			}
 			let acquired: bool = {
 				let query_bind_1 = format!("core-object:{id}");
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.expr(SimpleExpr::CustomWithExpr(
 							"(pg_try_advisory_xact_lock(hashtextextended(?, 0)))".to_owned(),
@@ -400,7 +396,7 @@ impl Runtime {
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(&mut **access.tx)
+				.scalar_one(&mut **access.tx)
 				.await?
 			};
 			if !acquired {
@@ -408,7 +404,7 @@ impl Runtime {
 			}
 			let exists: Option<Uuid> = {
 				let query_bind_1 = id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("core_objects"))
@@ -422,7 +418,7 @@ impl Runtime {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **access.tx)
+				.scalar_optional(&mut **access.tx)
 				.await?
 			};
 			if exists.is_some() {
@@ -441,7 +437,7 @@ impl Runtime {
 		let metadata: Option<(String, i64)> = {
 			let query_bind_1 = entry.file_id;
 			let query_bind_2 = &access.identity.tenant;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.columns([Alias::new("digest"), Alias::new("size")])
 					.from(Alias::new("core_objects"))
@@ -463,6 +459,7 @@ impl Runtime {
 					)
 					.to_string(PostgresQueryBuilder),
 			)
+			.columns(&["digest", "size"])
 			.fetch_optional(&mut **access.tx)
 			.await?
 		};
@@ -601,7 +598,7 @@ impl Runtime {
 	pub(crate) async fn reserve(&self, access: &mut Access, bytes: i64) -> Result<()> {
 		{
 			let query_bind_1 = &access.identity.tenant;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("core_quotas"))
 					.columns([Alias::new("tenant")])
@@ -627,7 +624,7 @@ impl Runtime {
 			let query_bind_1 = &access.identity.tenant;
 			let query_bind_2 = bytes;
 			let query_bind_3 = self.0.retained_bytes as i64;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("core_quotas"))
 					.value_expr(
@@ -671,14 +668,14 @@ impl Runtime {
 	/// committed cleanup/expiry record or publication tombstone for this object.
 	pub(crate) async fn erase_committed(
 		&self,
-		tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		tenant: &str,
 		id: Uuid,
 	) -> Result<()> {
 		let size: Option<i64> = {
 			let query_bind_1 = id;
 			let query_bind_2 = tenant;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("size"))
 					.from(Alias::new("core_objects"))
@@ -701,7 +698,7 @@ impl Runtime {
 					.lock(reinhardt::query::LockType::Update)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_optional(&mut **tx)
+			.scalar_optional(&mut **tx)
 			.await?
 		};
 		let Some(size) = size else { return Ok(()) };
@@ -716,7 +713,7 @@ impl Runtime {
 			.await?;
 		{
 			let query_bind_1 = id;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::delete()
 					.from_table(Alias::new("core_objects"))
 					.and_where(
@@ -735,7 +732,7 @@ impl Runtime {
 		{
 			let query_bind_1 = tenant;
 			let query_bind_2 = size;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("core_quotas"))
 					.value_expr(

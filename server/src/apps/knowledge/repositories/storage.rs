@@ -5,17 +5,17 @@ use reinhardt::query::{
 	Alias, ColumnRef, Expr, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 	SimpleExpr,
 };
-use sqlx::{Postgres, Transaction};
+
 use uuid::Uuid;
 
 pub(crate) async fn index(
-	tx: &mut Transaction<'_, Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	workspace: Uuid,
 	exclusive: bool,
 ) -> Result<Index> {
 	{
 		let query_bind_1 = workspace;
-		sqlx::query_as(&if exclusive {
+		crate::database::native::query_as(&if exclusive {
 			Query::select()
 				.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
 				.from(Alias::new("semantic_indexes"))
@@ -43,7 +43,7 @@ pub(crate) async fn index(
 }
 
 pub(crate) async fn history(
-	tx: &mut Transaction<'_, Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	workspace: Uuid,
 	entry: Option<Uuid>,
 	revision: i64,
@@ -56,7 +56,7 @@ pub(crate) async fn history(
 		let query_bind_3 = revision;
 		let query_bind_4 = state;
 		let query_bind_5 = detail;
-		sqlx::query(
+		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new("semantic_history"))
 				.columns([
@@ -99,13 +99,13 @@ pub(crate) async fn history(
 }
 
 pub(crate) async fn schedule_point(
-	tx: &mut Transaction<'_, Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	entry: &Entry,
 	collection: &str,
 ) -> Result<()> {
 	{
 		let query_bind_1 = entry.id;
-		sqlx::query(
+		crate::database::native::query(
 			&Query::update()
 				.table(Alias::new("semantic_points"))
 				.value_expr(Alias::new("retired"), Expr::cust("TRUE"))
@@ -124,7 +124,7 @@ pub(crate) async fn schedule_point(
 			let query_bind_1 = entry.point_id;
 			let query_bind_2 = entry.id;
 			let query_bind_3 = collection;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("semantic_points"))
 					.columns([

@@ -10,7 +10,7 @@ use reinhardt::query::{
 };
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 use serde_json::Value;
-use sqlx::{Postgres, Transaction};
+
 use uuid::Uuid;
 impl From<&SubjectIdentity> for Origin {
 	fn from(identity: &SubjectIdentity) -> Self {
@@ -32,8 +32,8 @@ impl Origin {
 	}
 }
 
-pub(crate) async fn control(tx: &mut Transaction<'_, Postgres>) -> Result<()> {
-	sqlx::query(
+pub(crate) async fn control(tx: &mut crate::database::native::Transaction) -> Result<()> {
+	crate::database::native::query(
 		&Query::select()
 			.expr(Expr::cust(
 				"set_config('aidash.transaction_control','authority',true)",
@@ -58,7 +58,7 @@ pub(crate) async fn access(f: &Federation, origin: &Origin) -> Result<Access> {
 }
 
 pub(crate) async fn bind(
-	tx: &mut Transaction<'_, Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	table: &str,
 	id: Uuid,
 	binding: &Value,
@@ -66,7 +66,7 @@ pub(crate) async fn bind(
 	{
 		let query_bind_1 = id;
 		let query_bind_2 = binding;
-		sqlx::query(
+		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new(table))
 				.columns([Alias::new("id"), Alias::new("binding")])
@@ -90,7 +90,7 @@ pub(crate) async fn bind(
 	};
 	let stored: Value = {
 		let query_bind_1 = id;
-		sqlx::query_scalar(
+		crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("binding"))
 				.from(Alias::new(table))
@@ -100,7 +100,7 @@ pub(crate) async fn bind(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&mut **tx)
+		.scalar_one(&mut **tx)
 		.await?
 	};
 	if stored != *binding {
@@ -119,14 +119,14 @@ pub(crate) async fn binding<T: serde::de::DeserializeOwned>(
 	binding_with(&f.store.control_pool, table, id).await
 }
 
-pub(crate) async fn binding_with<'e, T: serde::de::DeserializeOwned>(
-	executor: impl sqlx::Executor<'e, Database = Postgres>,
+pub(crate) async fn binding_with<T: serde::de::DeserializeOwned>(
+	executor: impl crate::database::native::Executor,
 	table: &str,
 	id: Uuid,
 ) -> Result<Option<T>> {
 	let value: Option<Value> = {
 		let query_bind_1 = id;
-		sqlx::query_scalar(
+		crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("binding"))
 				.from(Alias::new(table))
@@ -136,7 +136,7 @@ pub(crate) async fn binding_with<'e, T: serde::de::DeserializeOwned>(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_optional(executor)
+		.scalar_optional(executor)
 		.await?
 	};
 	value
@@ -145,8 +145,8 @@ pub(crate) async fn binding_with<'e, T: serde::de::DeserializeOwned>(
 		.map_err(Into::into)
 }
 
-pub(crate) async fn match_origin_with<'e>(
-	executor: impl sqlx::Executor<'e, Database = Postgres>,
+pub(crate) async fn match_origin_with(
+	executor: impl crate::database::native::Executor,
 	id: Uuid,
 	origin: Option<&Origin>,
 ) -> Result<()> {
@@ -196,7 +196,7 @@ pub(crate) async fn settle(f: &Federation, id: Uuid, node: &str, outcome: &str) 
 		let query_bind_1 = id;
 		let query_bind_2 = node;
 		let query_bind_3 = outcome;
-		sqlx::query(
+		crate::database::native::query(
 			&Query::update()
 				.table(Alias::new("atomic_authority_attempts"))
 				.value_expr(
@@ -243,11 +243,11 @@ pub(crate) async fn pending(
 		query.and_where(Expr::cust("s.binding->>'credential_id'=$2"));
 	}
 	let sql = query.to_string(PostgresQueryBuilder);
-	let mut query = sqlx::query_scalar(&sql).bind(tenant);
+	let mut query = crate::database::native::query_scalar(&sql).bind(tenant);
 	if let Some(credential) = credential {
 		query = query.bind(credential.to_string());
 	}
-	Ok(query.fetch_all(&f.store.control_pool).await?)
+	query.scalar_all(&f.store.control_pool).await
 }
 
 pub(crate) async fn scoped(f: &Federation, id: Uuid) -> Result<bool> {
@@ -257,7 +257,7 @@ pub(crate) async fn scoped(f: &Federation, id: Uuid) -> Result<bool> {
 pub(crate) async fn trusted(access: &mut Access, node: &str) -> Result<()> {
 	let trusted: Option<bool> = {
 		let query_bind_1 = node;
-		sqlx::query_scalar(
+		crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("enabled"))
 				.from(Alias::new("atomic_peer_trust"))
@@ -268,7 +268,7 @@ pub(crate) async fn trusted(access: &mut Access, node: &str) -> Result<()> {
 				.lock(reinhardt::query::LockType::Share)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_optional(&mut **access.tx)
+		.scalar_optional(&mut **access.tx)
 		.await?
 	};
 	if trusted != Some(true) {
@@ -280,7 +280,7 @@ pub(crate) async fn trusted(access: &mut Access, node: &str) -> Result<()> {
 pub(crate) async fn pending_peer(f: &Federation, node: &str) -> Result<Vec<Uuid>> {
 	Ok({
 		let query_bind_1 = node;
-		sqlx::query_scalar(
+		crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("transaction_id"))
 				.from(Alias::new("atomic_authority_attempts"))
@@ -290,7 +290,7 @@ pub(crate) async fn pending_peer(f: &Federation, node: &str) -> Result<Vec<Uuid>
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(&f.store.control_pool)
+		.scalar_all(&f.store.control_pool)
 		.await?
 	})
 }
@@ -359,7 +359,7 @@ pub(crate) async fn insert_attempt(access: &mut Access, id: Uuid, node: &str) ->
 	{
 		let query_bind_1 = id;
 		let query_bind_2 = node;
-		sqlx::query(
+		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new("atomic_authority_attempts"))
 				.columns([Alias::new("transaction_id"), Alias::new("node_id")])
@@ -392,7 +392,7 @@ pub(crate) async fn attempt(access: &mut Access, id: Uuid, node: &str) -> Result
 	Ok({
 		let query_bind_1 = id;
 		let query_bind_2 = node;
-		sqlx::query_scalar(
+		crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("node_id"))
 				.from(Alias::new("atomic_authority_attempts"))
@@ -405,18 +405,18 @@ pub(crate) async fn attempt(access: &mut Access, id: Uuid, node: &str) -> Result
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_optional(&mut **access.tx)
+		.scalar_optional(&mut **access.tx)
 		.await?
 	})
 }
 
-pub(crate) async fn status_with<'e>(
-	executor: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+pub(crate) async fn status_with(
+	executor: impl crate::database::native::Executor,
 	id: Uuid,
 ) -> Result<crate::apps::federation::transactions::serializers::contracts::Status> {
 	{
 		let query_bind_1 = id;
-		sqlx::query_as(
+		crate::database::native::query_as(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::SimpleExpr::from(
 					reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),

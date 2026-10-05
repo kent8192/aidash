@@ -60,10 +60,10 @@ impl RemoteCommandEffects for Scope<'_> {
 	}
 	async fn created_by_grant(&mut self, grant: Uuid, child: Uuid) -> Result<bool> {
 		let result: NativeResult<bool> = async {
-let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = child; sqlx::query_scalar(&Query::select()
+let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = child; crate::database::native::query_scalar(&Query::select()
 						.expr(SimpleExpr::CustomWithExpr("(EXISTS (SELECT 1 FROM authorization_remote_outputs WHERE grant_id=? AND resource_kind='task' AND resource_id=?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
 						.to_string(PostgresQueryBuilder))
-				.fetch_one(&mut **self.access.tx)
+				.scalar_one(&mut **self.access.tx)
 				.await? };
             Ok(created_by_grant)
         }.await;
@@ -129,7 +129,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 							.await?;
 						let id: Uuid = {
 							let query_bind_1 = key;
-							sqlx::query_scalar(
+							crate::database::native::query_scalar(
 								&Query::select()
 									.column(Alias::new("id"))
 									.from(Alias::new("artifacts"))
@@ -139,7 +139,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 									))
 									.to_string(PostgresQueryBuilder),
 							)
-							.fetch_one(&mut **self.access.tx)
+							.scalar_one(&mut **self.access.tx)
 							.await?
 						};
 						(json!(value), Some(id))
@@ -290,7 +290,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 		id: Uuid,
 	) -> Result<()> {
 		let result: NativeResult<()> = async {
-			sqlx::query(
+			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("authorization_remote_outputs"))
 					.columns(
@@ -376,7 +376,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 		let result: NativeResult<()> = async {
 			let current: i64 = {
 				let query_bind_1 = task;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("revision"))
 						.from(Alias::new("tasks"))
@@ -386,13 +386,13 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(&mut **self.access.tx)
+				.scalar_one(&mut **self.access.tx)
 				.await?
 			};
 			{
 				let query_bind_1 = grant;
 				let query_bind_2 = current;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("authorization_remote_execution"))
 						.value_expr(
@@ -411,7 +411,7 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 				.execute(&mut **self.access.tx)
 				.await?
 			};
-			sqlx::query(
+			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("authorization_remote_commands"))
 					.columns(["grant_id", "request_key", "digest", "result"].map(Alias::new))

@@ -1,5 +1,5 @@
 //! Native settlement retains attempt serialization and atomic bounded refunds.
-use crate::{Error, store::Store};
+use crate::store::Store;
 use aidash_application::{
 	Result,
 	ports::generation::settlement::{
@@ -17,20 +17,20 @@ use reinhardt::query::{
 	SimpleExpr,
 };
 use serde_json::{Value, json};
-use sqlx::{Postgres, Transaction};
+
 use uuid::Uuid;
 
 pub(crate) struct NativeSettlementRepository {
 	pub store: Store,
 }
-pub(crate) struct NativeSettlementScope<'a, 'db> {
-	pub transaction: &'a mut Transaction<'db, Postgres>,
+pub(crate) struct NativeSettlementScope<'a> {
+	pub transaction: &'a mut crate::database::native::Transaction,
 }
 struct Session {
-	transaction: Transaction<'static, Postgres>,
+	transaction: crate::database::native::Transaction,
 }
 impl Session {
-	fn scope(&mut self) -> NativeSettlementScope<'_, 'static> {
+	fn scope(&mut self) -> NativeSettlementScope<'_> {
 		NativeSettlementScope {
 			transaction: &mut self.transaction,
 		}
@@ -41,14 +41,14 @@ impl Session {
 impl GenerationSettlementRepository for NativeSettlementRepository {
 	async fn begin(&self) -> Result<Box<dyn GenerationSettlementSession>> {
 		Ok(Box::new(Session {
-			transaction: self.store.pool.begin().await.map_err(Error::from)?,
+			transaction: crate::database::native::begin(&self.store.pool).await?,
 		}))
 	}
 }
 #[async_trait]
 impl GenerationSettlementSession for Session {
 	async fn commit(self: Box<Self>) -> Result<()> {
-		self.transaction.commit().await.map_err(Error::from)?;
+		self.transaction.commit().await?;
 		Ok(())
 	}
 }
@@ -102,11 +102,11 @@ impl GenerationSettlementScope for Session {
 }
 
 #[async_trait]
-impl GenerationSettlementScope for NativeSettlementScope<'_, '_> {
+impl GenerationSettlementScope for NativeSettlementScope<'_> {
 	async fn lock_attempt(&mut self, attempt: Uuid, digest: &str) -> Result<Attempt> {
 		let tx = &mut *self.transaction;
 
-		sqlx::query(
+		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new("generation_remote_finalizations"))
 				.columns(["attempt_id", "digest"].map(Alias::new))
@@ -126,11 +126,10 @@ impl GenerationSettlementScope for NativeSettlementScope<'_, '_> {
 		.bind(attempt)
 		.bind(digest)
 		.execute(&mut **tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 		let (saved_digest, result): (String, Option<Value>) = {
 			let query_bind_1 = attempt;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.columns(["digest", "result"].map(Alias::new))
 					.from(Alias::new("generation_remote_finalizations"))
@@ -141,9 +140,9 @@ impl GenerationSettlementScope for NativeSettlementScope<'_, '_> {
 					.lock(LockType::Update)
 					.to_string(PostgresQueryBuilder),
 			)
+			.columns(&["digest", "result"])
 			.fetch_one(&mut **tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(Attempt {
 			digest: saved_digest,
@@ -155,7 +154,7 @@ impl GenerationSettlementScope for NativeSettlementScope<'_, '_> {
 		let rows: Vec<(Uuid, String, Option<i64>)> = {
 			let query_bind_1 = attempt;
 			let query_bind_2 = digest;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.columns(["request_id", "state", "reported_tokens"].map(Alias::new))
 					.from(Alias::new("generation_remote_usage"))
@@ -170,9 +169,9 @@ impl GenerationSettlementScope for NativeSettlementScope<'_, '_> {
 					.lock(LockType::Update)
 					.to_string(PostgresQueryBuilder),
 			)
+			.columns(&["request_id", "state", "reported_tokens"])
 			.fetch_all(&mut **tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(rows
 			.into_iter()
@@ -200,12 +199,11 @@ impl GenerationSettlementScope for NativeSettlementScope<'_, '_> {
 			q.value_expr(Alias::new(counter), Expr::cust(format!("{counter}-1")))
 				.and_where(Expr::cust(format!("{counter}>0")));
 		}
-		let changed = sqlx::query(&q.to_string(PostgresQueryBuilder))
+		let changed = crate::database::native::query(&q.to_string(PostgresQueryBuilder))
 			.bind(id)
 			.bind(refund)
 			.execute(&mut **tx)
-			.await
-			.map_err(Error::from)?;
+			.await?;
 		Ok(changed.rows_affected())
 	}
 
@@ -224,8 +222,7 @@ impl GenerationSettlementScope for NativeSettlementScope<'_, '_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_one(&mut **tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(job)
 	}
@@ -256,13 +253,12 @@ impl GenerationSettlementScope for NativeSettlementScope<'_, '_> {
 			)
 			.and_where(Expr::cust(format!("{allocation}>0")));
 		}
-		let changed = sqlx::query(&q.to_string(PostgresQueryBuilder))
+		let changed = crate::database::native::query(&q.to_string(PostgresQueryBuilder))
 			.bind(&job.tenant)
 			.bind(&job.policy_id)
 			.bind(refund)
 			.execute(&mut **tx)
-			.await
-			.map_err(Error::from)?;
+			.await?;
 		Ok(changed.rows_affected())
 	}
 
@@ -279,7 +275,7 @@ impl GenerationSettlementScope for NativeSettlementScope<'_, '_> {
 			let query_bind_2 = attempt;
 			let query_bind_3 = state;
 			let query_bind_4 = reported;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("generation_remote_usage"))
 					.value_expr(
@@ -306,8 +302,7 @@ impl GenerationSettlementScope for NativeSettlementScope<'_, '_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(())
 	}
@@ -316,7 +311,7 @@ impl GenerationSettlementScope for NativeSettlementScope<'_, '_> {
 		{
 			let query_bind_1 = attempt;
 			let query_bind_2 = json!(result);
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("generation_remote_finalizations"))
 					.value_expr(
@@ -333,8 +328,7 @@ impl GenerationSettlementScope for NativeSettlementScope<'_, '_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(())
 	}

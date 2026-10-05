@@ -30,7 +30,6 @@ use reinhardt::query::{
 use serde_json::Value;
 use std::{borrow::Borrow, ops::DerefMut};
 use uuid::Uuid;
-#[derive(sqlx::FromRow)]
 struct Record {
 	id: Uuid,
 	source_node: String,
@@ -41,6 +40,17 @@ struct Record {
 	subject_chain: Vec<String>,
 	description: Value,
 }
+crate::native_record!(Record {
+	id,
+	source_node,
+	grant_id,
+	task_id,
+	tenant,
+	credential_id,
+	subject_chain,
+	description
+});
+
 impl From<Record> for State {
 	fn from(r: Record) -> Self {
 		Self {
@@ -154,7 +164,7 @@ impl PeerAdmissionScope for Owned {
 			let access = &mut *self.access;
 			{
 				let query_bind_1 = format!("{source}:{}", description.task.id);
-				sqlx::query(
+				crate::database::native::query(
 					&reinhardt::query::Query::select()
 						.expr(SimpleExpr::CustomWithExpr(
 							"(PG_ADVISORY_XACT_LOCK(HASHTEXTEXTENDED(?, 71003209)))".to_owned(),
@@ -176,10 +186,10 @@ impl PeerAdmissionScope for Owned {
 		description: &Description,
 		grant: Uuid,
 	) -> Result<bool> {
-		let result:NativeResult<bool>=async {let access=&mut *self.access;let input=crate::apps::identity::serializers::peer_admission::Input {grant_id:grant};Ok({ let query_bind_1 = source; let query_bind_2 = description.task.id; let query_bind_3 = input.grant_id; sqlx::query_scalar(&reinhardt::query::Query::select()
+		let result:NativeResult<bool>=async {let access=&mut *self.access;let input=crate::apps::identity::serializers::peer_admission::Input {grant_id:grant};Ok({ let query_bind_1 = source; let query_bind_2 = description.task.id; let query_bind_3 = input.grant_id; crate::database::native::query_scalar(&reinhardt::query::Query::select()
 				.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM runs r WHERE home_node = ? AND task_id = ? AND NOT EXISTS(SELECT 1 FROM authorization_remote_admissions a WHERE a.id = r.id AND a.source_node = r.home_node AND a.grant_id = ?)))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()]))
 				.to_string(reinhardt::query::PostgresQueryBuilder))
-		.fetch_one(&mut **access.tx)
+		.scalar_one(&mut **access.tx)
 		.await? })}.await;
 		result.map_err(Into::into)
 	}
@@ -191,7 +201,7 @@ impl PeerAdmissionScope for Owned {
 			Ok({
 				let query_bind_1 = source;
 				let query_bind_2 = input.grant_id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("authorization_remote_admissions"))
@@ -204,7 +214,7 @@ impl PeerAdmissionScope for Owned {
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **access.tx)
+				.scalar_optional(&mut **access.tx)
 				.await?
 			})
 		}
@@ -231,7 +241,7 @@ impl PeerAdmissionScope for Owned {
 				let query_bind_6 = access.identity.credential_id;
 				let query_bind_7 = &access.subjects;
 				let query_bind_8 = serde_json::to_value(description)?;
-				sqlx::query(&format!(
+				crate::database::native::query(&format!(
 					"{} ON CONFLICT DO NOTHING",
 					reinhardt::query::Query::insert()
 						.into_table(reinhardt::query::Alias::new(
@@ -302,7 +312,7 @@ impl PeerAdmissionScope for Owned {
 			let row: Option<Record> = {
 				let query_bind_1 = source;
 				let query_bind_2 = input.grant_id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&reinhardt::query::Query::select()
 						.expr(reinhardt::query::SimpleExpr::from(
 							reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
@@ -334,7 +344,7 @@ impl PeerAdmissionScope for Owned {
 			let description_expires_at = expires;
 			Ok({
 				let query_bind_1 = description_expires_at;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&reinhardt::query::Query::select()
 						.expr(SimpleExpr::CustomWithExpr(
 							"(CAST(? AS TIMESTAMPTZ) > CLOCK_TIMESTAMP())".to_owned(),
@@ -342,7 +352,7 @@ impl PeerAdmissionScope for Owned {
 						))
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.fetch_one(&mut **access.tx)
+				.scalar_one(&mut **access.tx)
 				.await?
 			})
 		}
@@ -355,7 +365,7 @@ impl PeerAdmissionScope for Owned {
 			let description_expires_at = expires;
 			Ok({
 				let query_bind_1 = description_expires_at;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&reinhardt::query::Query::select()
 						.expr(SimpleExpr::CustomWithExpr(
 							"(CAST(? AS TIMESTAMPTZ) > CLOCK_TIMESTAMP())".to_owned(),
@@ -363,7 +373,7 @@ impl PeerAdmissionScope for Owned {
 						))
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.fetch_one(&mut **access.tx)
+				.scalar_one(&mut **access.tx)
 				.await?
 			})
 		}
@@ -381,7 +391,7 @@ impl PeerAdmissionScope for Owned {
 			let run_id = id;
 			let row: Record = {
 				let query_bind_1 = run_id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(Asterisk)
 						.from(Alias::new("authorization_remote_admissions"))
@@ -420,7 +430,7 @@ impl PeerAdmissionScope for Owned {
 			let access = &mut *self.access;
 			let row: Option<Record> = {
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(Asterisk)
 						.from(Alias::new("authorization_remote_admissions"))
@@ -449,7 +459,7 @@ impl PeerAdmissionScope for Owned {
 			let d = description;
 			{
 				let query_bind_1 = format!("{source}:{}", d.task.id);
-				sqlx::query(
+				crate::database::native::query(
 					&Query::select()
 						.expr(SimpleExpr::CustomWithExpr(
 							"(PG_ADVISORY_XACT_LOCK(HASHTEXTEXTENDED(?, 71003209)))".to_owned(),
@@ -474,7 +484,7 @@ impl PeerAdmissionScope for Owned {
 		let result: NativeResult<()> = async {
 			let access = &mut *self.access;
 			let d = description;
-			sqlx::query(&format!(
+			crate::database::native::query(&format!(
 				"{} ON CONFLICT DO NOTHING",
 				Query::insert()
 					.into_table(Alias::new("runs"))
@@ -572,7 +582,7 @@ impl PeerAdmissionRecords for Records<'_> {
 			let run_id = id;
 			let row: Option<Record> = {
 				let query_bind_1 = run_id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(Asterisk)
 						.from(Alias::new("authorization_remote_admissions"))
@@ -600,7 +610,7 @@ impl PeerAdmissionRecords for Records<'_> {
 			let run_id = id;
 			Ok({
 				let query_bind_1 = run_id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("description"))
 						.from(Alias::new("authorization_remote_admissions"))
@@ -614,7 +624,7 @@ impl PeerAdmissionRecords for Records<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(&f_store.pool)
+				.scalar_one(&f_store.pool)
 				.await?
 			})
 		}
@@ -678,7 +688,7 @@ impl PeerAdmissionRepository for Repository<'_> {
 			let row: Option<Record> = {
 				let query_bind_1 = source;
 				let query_bind_2 = input.grant_id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(Asterisk)
 						.from(Alias::new("authorization_remote_admissions"))
@@ -735,7 +745,7 @@ impl PeerAdmissionRepository for Repository<'_> {
 				let query_bind_1 = admission;
 				let query_bind_2 = source;
 				let query_bind_3 = grant;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(Asterisk)
 						.from(Alias::new("authorization_remote_admissions"))

@@ -47,7 +47,7 @@ impl SemanticDisclosureScope for Disclosure<'_, '_> {
 			let entry_id = id;
 			let managed: Option<(String, String)> = {
 				let query_bind_1 = entry_id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&reinhardt::query::Query::select()
 						.expr(reinhardt::query::SimpleExpr::from(
 							reinhardt::query::Expr::col(reinhardt::query::Alias::new("agent_id")),
@@ -64,6 +64,7 @@ impl SemanticDisclosureScope for Disclosure<'_, '_> {
 						))
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
+				.columns(&["agent_id", "agent_version"])
 				.fetch_optional(&mut **self.lease.access().expect("scoped semantic authority").tx)
 				.await?
 			};

@@ -12,7 +12,7 @@ use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::query::{Alias, Condition, Expr, LockType, PostgresQueryBuilder, Query};
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 use sha2::{Digest, Sha256};
-use sqlx::{Postgres, Transaction};
+
 use uuid::Uuid;
 
 type IdentityValidity = (String, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
@@ -148,7 +148,7 @@ impl SubjectIdentity {
 	/// revocation must wait for this boundary, and the next boundary reloads both.
 	pub(crate) async fn lock_with_mode(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		exclusive: bool,
 	) -> Result<Snapshot> {
 		let snapshot = Authorization::load_with_mode(tx, &self.tenant, exclusive).await?;
@@ -156,7 +156,7 @@ impl SubjectIdentity {
 			let query_bind_1 = self.credential_id;
 			let query_bind_2 = &self.tenant;
 			let query_bind_3 = &self.subject;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("id"))
 					.from(Alias::new("authorization_credentials"))
@@ -192,7 +192,7 @@ impl SubjectIdentity {
 					.lock(LockType::Share)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_optional(&mut **tx)
+			.scalar_optional(&mut **tx)
 			.await?
 		};
 		if valid.is_none() {
@@ -203,7 +203,7 @@ impl SubjectIdentity {
 		// execution lease, including leases obtained after browser logout.
 		let mapping: Option<(Uuid, bool)> = {
 			let query_bind_1 = self.credential_id;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.columns([Alias::new("identity_id"), Alias::new("enabled")])
 					.from(Alias::new("dashboard_mappings"))
@@ -217,6 +217,7 @@ impl SubjectIdentity {
 					.lock(LockType::Share)
 					.to_string(PostgresQueryBuilder),
 			)
+			.columns(&["identity_id", "enabled"])
 			.fetch_optional(&mut **tx)
 			.await?
 		};
@@ -226,7 +227,7 @@ impl SubjectIdentity {
 			}
 			let validity: Option<IdentityValidity> = {
 				let query_bind_1 = identity_id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.columns([
 							Alias::new("issuer"),
@@ -245,6 +246,7 @@ impl SubjectIdentity {
 						.lock(LockType::Share)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["issuer", "last_valid_at", "disabled_at"])
 				.fetch_optional(&mut **tx)
 				.await?
 			};
@@ -261,7 +263,7 @@ impl SubjectIdentity {
 	/// locks. Recheck clock expiry at disclosure without reacquiring a lock.
 	pub(crate) async fn session_current(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		lock: bool,
 	) -> Result<()> {
 		let Some(session) = &self.http_session else {
@@ -274,7 +276,7 @@ impl SubjectIdentity {
 impl HttpSession {
 	pub(crate) async fn current(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		lock: bool,
 	) -> Result<()> {
 		let mut query = Query::select();
@@ -283,12 +285,13 @@ impl HttpSession {
 		if lock {
 			query.lock(LockType::Share);
 		}
-		let valid: Option<Uuid> = sqlx::query_scalar(&query.to_string(PostgresQueryBuilder))
-			.bind(self.id)
-			.bind(self.identity_id)
-			.bind(self.idle_seconds)
-			.fetch_optional(&mut **tx)
-			.await?;
+		let valid: Option<Uuid> =
+			crate::database::native::query_scalar(&query.to_string(PostgresQueryBuilder))
+				.bind(self.id)
+				.bind(self.identity_id)
+				.bind(self.idle_seconds)
+				.scalar_optional(&mut **tx)
+				.await?;
 		if valid.is_none() {
 			return Err(Error::Unauthorized);
 		}

@@ -32,7 +32,7 @@ fn missing() -> Error {
 pub(crate) async fn serialize(access: &mut Access) -> NativeResult<()> {
 	{
 		let query_bind_1 = format!("core-share:{}", access.identity.tenant);
-		sqlx::query(
+		crate::database::native::query(
 			&Query::select()
 				.expr(SimpleExpr::CustomWithExpr(
 					"(pg_advisory_xact_lock(hashtextextended(?, 0)))".to_owned(),
@@ -117,7 +117,7 @@ impl SharingScope for Scope<'_> {
 				let query_bind_4 = &target.agent_id;
 				let query_bind_5 = &store.node_id;
 				let query_bind_6 = &access.identity.subject;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_areas")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant"))).eq(
@@ -182,7 +182,7 @@ impl SharingScope for Scope<'_> {
 				Ok({
 					let query_bind_1 = recipient.id;
 					let query_bind_2 = version;
-					sqlx::query_scalar(
+					crate::database::native::query_scalar(
 						&Query::select()
 							.column((Alias::new("runs"), Alias::new("id")))
 							.from(Alias::new("runs"))
@@ -208,7 +208,7 @@ impl SharingScope for Scope<'_> {
 							.limit(1)
 							.to_string(PostgresQueryBuilder),
 					)
-					.fetch_optional(&mut **access.tx)
+					.scalar_optional(&mut **access.tx)
 					.await?
 				})
 			}

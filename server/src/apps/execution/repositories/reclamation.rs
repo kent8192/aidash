@@ -32,21 +32,21 @@ impl<'a> Repository<'a> {
 }
 struct Scope<'a> {
 	store: &'a Store,
-	tx: sqlx::Transaction<'static, sqlx::Postgres>,
+	tx: crate::database::native::Transaction,
 }
 #[async_trait]
 impl ReclamationRepository for Repository<'_> {
 	async fn begin(&self) -> Result<Box<dyn ReclamationScope + '_>> {
 		Ok(Box::new(Scope {
 			store: self.store,
-			tx: self.store.pool.begin().await.map_err(crate::Error::from)?,
+			tx: crate::database::native::begin(&self.store.pool).await?,
 		}))
 	}
 	async fn retained(&self, after: Uuid) -> Result<Vec<Uuid>> {
 		let result:NativeResult<Vec<Uuid>>=async {
 let ids: Vec<Uuid> = {
 			let query_bind_1 = after;
-			sqlx::query_scalar(&Query::select().column(Alias::new("id")).from(Alias::new("core_records"))
+			crate::database::native::query_scalar(&Query::select().column(Alias::new("id")).from(Alias::new("core_records"))
             .and_where(Expr::col(Alias::new("kind")).is_in(["transfer_in", "transfer_out", "reference"]))
             .and_where(Expr::cust("COALESCE(data->>'objects_released','false') <> 'true'"))
             .and_where(Condition::any()
@@ -55,7 +55,7 @@ let ids: Vec<Uuid> = {
                 .add(Expr::cust("kind = 'reference' AND (state = 'revoked' OR expires_at <= CURRENT_TIMESTAMP OR (state IN ('ready','extracting') AND jsonb_array_length(data->'chunks') > 0))")))
             .and_where(Expr::col(Alias::new("id")).gt(Expr::value(query_bind_1.to_owned())))
             .order_by(Alias::new("id"), reinhardt::query::Order::Asc)
-            .limit(8).to_string(PostgresQueryBuilder)).fetch_all(&self.store.pool).await?
+            .limit(8).to_string(PostgresQueryBuilder)).scalar_all(&self.store.pool).await?
 		};
         Ok(ids)
     }.await;
@@ -65,7 +65,7 @@ let ids: Vec<Uuid> = {
 		let result: NativeResult<Vec<Uuid>> = async {
 			let ids: Vec<Uuid> = {
 				let query_bind_1 = after;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("core_objects"))
@@ -80,7 +80,7 @@ let ids: Vec<Uuid> = {
 						.limit(16)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_all(&self.store.pool)
+				.scalar_all(&self.store.pool)
 				.await?
 			};
 			Ok(ids)
@@ -106,7 +106,7 @@ impl ReclamationScope for Scope<'_> {
 		let result: NativeResult<NativeRecord> = async {
 			let record: NativeRecord = {
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_records")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
@@ -132,7 +132,7 @@ impl ReclamationScope for Scope<'_> {
 			{
 				let query_bind_1 = tenant;
 				let query_bind_2 = reserved;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("core_quotas"))
 						.value_expr(
@@ -173,7 +173,7 @@ impl ReclamationScope for Scope<'_> {
 			let kind: Option<String> = {
 				let query_bind_1 = id;
 				let query_bind_2 = tenant;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("kind"))
 						.from(Alias::new("core_objects"))
@@ -196,7 +196,7 @@ impl ReclamationScope for Scope<'_> {
 						.and_where(Expr::col(Alias::new("area_id")).is_null())
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut *self.tx)
+				.scalar_optional(&mut *self.tx)
 				.await?
 			};
 			Ok(kind)
@@ -208,7 +208,7 @@ impl ReclamationScope for Scope<'_> {
 		let result: NativeResult<Option<String>> = async {
 			let tenant: Option<String> = {
 				let query_bind_1 = id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("tenant"))
 						.from(Alias::new("core_objects"))
@@ -222,7 +222,7 @@ impl ReclamationScope for Scope<'_> {
 						.lock(LockType::Update)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut *self.tx)
+				.scalar_optional(&mut *self.tx)
 				.await?
 			};
 			Ok(tenant)
@@ -252,10 +252,7 @@ impl ReclamationScope for Scope<'_> {
 	async fn finish(self: Box<Self>, result: Result<bool>) -> Result<()> {
 		let Scope { tx, .. } = *self;
 		match result {
-			Ok(true) => tx
-				.commit()
-				.await
-				.map_err(|error| crate::Error::from(error).into()),
+			Ok(true) => tx.commit().await.map_err(|error| error.into()),
 			Ok(false) => Ok(()),
 			Err(error) => Err(error),
 		}

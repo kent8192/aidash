@@ -59,9 +59,7 @@ pub struct FileEntry {
 	pub provenance: Value,
 }
 
-#[derive(
-	Debug, Clone, Serialize, Deserialize, sqlx::FromRow, schemars::JsonSchema, reinhardt::Validate,
-)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 pub struct Area {
 	pub id: Uuid,
 	pub tenant: String,
@@ -78,6 +76,22 @@ pub struct Area {
 	pub constraints: Value,
 	pub next_sequence: i64,
 }
+crate::native_record!(Area {
+	id,
+	tenant,
+	home_node,
+	workspace_id,
+	thread_id,
+	agent_id,
+	owner,
+	generation,
+	revision,
+	epoch,
+	state,
+	manifest,
+	constraints,
+	next_sequence
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 pub struct Envelope {
@@ -317,15 +331,19 @@ pub struct Enqueue {
 	pub description: String,
 }
 
-#[derive(
-	Debug, Clone, Serialize, Deserialize, sqlx::FromRow, schemars::JsonSchema, reinhardt::Validate,
-)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 pub struct SessionRun {
 	pub run_id: Uuid,
 	pub sequence: i64,
 	pub phase: String,
 	pub control: String,
 }
+crate::native_record!(SessionRun {
+	run_id,
+	sequence,
+	phase,
+	control
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 pub struct SessionStatus {

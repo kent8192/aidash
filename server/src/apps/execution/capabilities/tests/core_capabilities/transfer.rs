@@ -68,7 +68,7 @@ async fn chunked_transfer(#[future] two_nodes: TransferFixture) -> ChunkedTransf
 		.unwrap();
 	// A text-only recipient must be able to receive media for storage or tools.
 	let file = json!({"file_id":id,"path":"large.svg","digest":digest,"size":bytes.len(),"media_type":"image/svg+xml","scope":"working","provenance":{"kind":"explicit-transport-fixture"}});
-	let mut tx = c.a.f.store.pool.begin().await.unwrap();
+	let mut tx = c.a.f.store.pool.driver().begin().await.unwrap();
 	sqlx::query(
 		&Query::insert()
 			.into_table(Alias::new("core_objects"))
@@ -147,7 +147,7 @@ async fn chunked_transfer(#[future] two_nodes: TransferFixture) -> ChunkedTransf
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&c.a.f.store.pool)
+		.fetch_one(c.a.f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -299,7 +299,7 @@ async fn corrupted_first_chunk_and_quota_exhaustion_never_publish_files(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&c.a.f.store.pool)
+		.fetch_one(c.a.f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -312,7 +312,7 @@ async fn corrupted_first_chunk_and_quota_exhaustion_never_publish_files(
 			.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&c.b.f.store.pool)
+	.fetch_one(c.b.f.store.pool.driver())
 	.await
 	.unwrap();
 	let quota = Query::update()
@@ -325,7 +325,7 @@ async fn corrupted_first_chunk_and_quota_exhaustion_never_publish_files(
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&quota)
 		.bind(c.b.f.store.capabilities.0.retained_bytes as i64)
-		.execute(&c.b.f.store.pool)
+		.execute(c.b.f.store.pool.driver())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -336,7 +336,7 @@ async fn corrupted_first_chunk_and_quota_exhaustion_never_publish_files(
 	);
 	sqlx::query(&quota)
 		.bind(used)
-		.execute(&c.b.f.store.pool)
+		.execute(c.b.f.store.pool.driver())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -439,7 +439,7 @@ pub(super) async fn connect_nodes(
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&home.f.store.pool)
+			.execute(home.f.store.pool.driver())
 			.await
 		}
 		.unwrap();
@@ -658,7 +658,7 @@ async fn transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&c.a.f.store.pool)
+		.fetch_one(c.a.f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -848,7 +848,7 @@ async fn staged_transfer_callbacks_recheck_marketplace_dependency_approvals(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&c.a.f.store.pool)
+		.fetch_one(c.a.f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -898,7 +898,7 @@ async fn staged_transfer_callbacks_recheck_marketplace_dependency_approvals(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&c.b.f.store.pool)
+		.fetch_one(c.b.f.store.pool.driver())
 		.await
 	}
 	.unwrap();

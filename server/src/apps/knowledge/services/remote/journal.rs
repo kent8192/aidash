@@ -35,7 +35,7 @@ pub(crate) async fn bound(
 }
 pub(crate) async fn resume_in(
 	store: &Store,
-	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	grant: Uuid,
 	admission: Uuid,
 	workspace: Uuid,

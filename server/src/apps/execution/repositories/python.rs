@@ -9,7 +9,7 @@ use crate::apps::execution::capabilities::{
 	},
 };
 use crate::{
-	Error as NativeError, Result as NativeResult,
+	Result as NativeResult,
 	authorization::{access::Access, identity::SubjectIdentity},
 	domain::Run,
 	store::Store,
@@ -44,7 +44,7 @@ struct Authority {
 }
 struct Maintenance<'a> {
 	store: &'a Store,
-	tx: sqlx::Transaction<'static, sqlx::Postgres>,
+	tx: crate::database::native::Transaction,
 }
 fn missing() -> Error {
 	Error::External("Python repository scope invariant".into())
@@ -196,7 +196,7 @@ impl PythonRepository for Repository<'_> {
 		let result: NativeResult<Vec<NativeRecord>> = async {
 			let rows = {
 				let query_bind_1 = after;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_records")
 						.and_where(
 							Expr::col(Alias::new("kind"))
@@ -228,7 +228,7 @@ impl PythonRepository for Repository<'_> {
 		let result: NativeResult<operations::Operation> = async {
 			let row = {
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_operations")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
@@ -273,7 +273,7 @@ impl PythonRepository for Repository<'_> {
 	async fn begin(&self) -> Result<Box<dyn HeapMaintenance + '_>> {
 		Ok(Box::new(Maintenance {
 			store: self.store,
-			tx: self.store.pool.begin().await.map_err(NativeError::from)?,
+			tx: crate::database::native::begin(&self.store.pool).await?,
 		}))
 	}
 }
@@ -311,7 +311,7 @@ impl HeapMaintenance for Maintenance<'_> {
 			let tx = &mut self.tx;
 			let _: Uuid = {
 				let query_bind_1 = operation.area_id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("core_areas"))
@@ -326,12 +326,12 @@ impl HeapMaintenance for Maintenance<'_> {
 						.lock(LockType::Update)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(&mut **tx)
+				.scalar_one(&mut **tx)
 				.await?
 			};
 			let current = {
 				let query_bind_1 = snapshot.id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_records")
 						.and_where(
 							Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())),
@@ -365,12 +365,7 @@ impl HeapMaintenance for Maintenance<'_> {
 	}
 	async fn finish(self: Box<Self>, result: Result<bool>) -> Result<()> {
 		match result {
-			Ok(true) => self
-				.tx
-				.commit()
-				.await
-				.map_err(NativeError::from)
-				.map_err(Into::into),
+			Ok(true) => self.tx.commit().await.map_err(Into::into),
 			Ok(false) => Ok(()),
 			Err(error) => Err(error),
 		}

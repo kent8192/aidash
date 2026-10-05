@@ -1,5 +1,5 @@
 //! Native authority leases and unchanged PostgreSQL queries implement allowance ports.
-use crate::{Error, authorization::access::Access, federation::Federation, store::Store};
+use crate::{authorization::access::Access, federation::Federation, store::Store};
 use aidash_application::{
 	Result,
 	ports::generation::protocol::{
@@ -31,7 +31,7 @@ impl GenerationProtocolRepository for NativeProtocolRepository {
 		let description: Value = {
 			let query_bind_1 = run;
 			let query_bind_2 = home;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("description"))
 					.from(Alias::new("authorization_remote_admissions"))
@@ -44,9 +44,8 @@ impl GenerationProtocolRepository for NativeProtocolRepository {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(&self.store.pool)
-			.await
-			.map_err(Error::from)?
+			.scalar_one(&self.store.pool)
+			.await?
 		};
 		Ok(serde_json::from_value(description)?)
 	}
@@ -58,9 +57,9 @@ impl GenerationProtocolRepository for NativeProtocolRepository {
 			let query_bind_1 = admission;
 			let query_bind_2 = grant;
 			let query_bind_3 = step;
-			sqlx::query_scalar(&Query::select().expr(Expr::cust("COUNT(*) > 0")).from(Alias::new("semantic_remote_operations"))
+			crate::database::native::query_scalar(&Query::select().expr(Expr::cust("COUNT(*) > 0")).from(Alias::new("semantic_remote_operations"))
                 .and_where(SimpleExpr::CustomWithExpr("(admission_id=? AND grant_id=? AND state='READY' AND (binding->'operation'->'boundary'->>'step')::integer=?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()]))
-                .to_string(PostgresQueryBuilder)).fetch_one(&self.store.pool).await.map_err(Error::from)?
+                .to_string(PostgresQueryBuilder)).scalar_one(&self.store.pool).await?
 		};
 		Ok(ready)
 	}

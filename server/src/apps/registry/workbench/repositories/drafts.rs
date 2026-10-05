@@ -28,7 +28,7 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use reinhardt::db::backends::{TransactionExecutor, dialect::postgres::PgTransactionExecutor};
+use reinhardt::db::backends::TransactionExecutor;
 use serde_json::Value;
 use uuid::Uuid;
 pub(crate) struct Repository {
@@ -36,7 +36,7 @@ pub(crate) struct Repository {
 	pub actor: Actor,
 }
 pub(crate) struct Scope {
-	pub tx: PgTransactionExecutor,
+	pub tx: crate::database::native::Transaction,
 	pub actor: Actor,
 	node: String,
 }
@@ -72,7 +72,7 @@ impl DraftRepository for Repository {
 	async fn begin(&self) -> Result<Scope> {
 		let result: crate::Result<Scope> = async {
 			Ok(Scope {
-				tx: PgTransactionExecutor::new(self.runtime.store.pool.begin().await?),
+				tx: crate::database::native::begin(&self.runtime.store.pool).await?,
 				actor: self.actor.clone(),
 				node: self.runtime.config.node_id.clone(),
 			})

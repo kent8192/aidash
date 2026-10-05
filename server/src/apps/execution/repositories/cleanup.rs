@@ -44,7 +44,7 @@ pub(crate) struct Repository<'a> {
 }
 struct Erasure<'a> {
 	store: &'a Store,
-	tx: sqlx::Transaction<'static, sqlx::Postgres>,
+	tx: crate::database::native::Transaction,
 }
 fn missing() -> Error {
 	Error::External("cleanup repository scope invariant".into())
@@ -118,7 +118,7 @@ pub(crate) async fn persist(access: &mut Access, area: &NativeArea) -> NativeRes
 		let query_bind_3 = area.generation;
 		let query_bind_4 = area.epoch;
 		let query_bind_5 = area.thread_id;
-		sqlx::query(
+		crate::database::native::query(
 			&Query::update()
 				.table(Alias::new("core_areas"))
 				.value_expr(
@@ -223,7 +223,7 @@ impl CleanupScope for Scope<'_> {
 			let area: Option<NativeArea> = {
 				let query_bind_1 = &access.identity.tenant;
 				let query_bind_2 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_areas")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant"))).eq(
@@ -258,7 +258,7 @@ impl CleanupScope for Scope<'_> {
 			let rows: Vec<NativeArea> = {
 				let query_bind_1 = &access.identity.tenant;
 				let query_bind_2 = cursor.unwrap_or(Uuid::nil());
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_areas")
 						.and_where(
 							Expr::col(Alias::new("tenant"))
@@ -285,7 +285,7 @@ impl CleanupScope for Scope<'_> {
 		let result:NativeResult<_>=async {let access=&mut *self.access;let row:Option<NativeRecord>={
 			let query_bind_1 = area.id;
 			let query_bind_2 = area.generation;
-			sqlx::query_as(&sessions::select("core_records")
+			crate::database::native::query_as(&sessions::select("core_records")
 				.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(query_bind_1.to_owned())))
 				.and_where(Expr::col(Alias::new("kind")).eq(reinhardt::query::Expr::value("cleanup")))
 				.and_where(SimpleExpr::CustomWithExpr("((state = 'recoverable' OR (state = 'kept' AND data->'retained' = 'true'::jsonb)) AND (data->>'generation')::bigint = ?)".into(), vec![Expr::value(query_bind_2.to_owned()).into()]))
@@ -303,7 +303,7 @@ impl CleanupScope for Scope<'_> {
 			let id = {
 				let query_bind_1 = area.id;
 				let query_bind_2 = area.generation;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("core_records"))
@@ -326,7 +326,7 @@ impl CleanupScope for Scope<'_> {
 						.limit(1)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **access.tx)
+				.scalar_optional(&mut **access.tx)
 				.await?
 			};
 			Ok(id)
@@ -340,7 +340,7 @@ impl CleanupScope for Scope<'_> {
 			let record: Option<NativeRecord> = {
 				let query_bind_1 = area.id;
 				let query_bind_2 = area.generation;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_records")
 						.and_where(
 							Expr::col(Alias::new("area_id"))
@@ -375,7 +375,7 @@ impl CleanupScope for Scope<'_> {
 			let area = {
 				let query_bind_1 = id;
 				let query_bind_2 = &access.identity.tenant;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("area_id"))
 						.from(Alias::new("core_records"))
@@ -392,7 +392,7 @@ impl CleanupScope for Scope<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **access.tx)
+				.scalar_optional(&mut **access.tx)
 				.await?
 			};
 			Ok(area)
@@ -406,7 +406,7 @@ impl CleanupScope for Scope<'_> {
 			let root = {
 				let query_bind_1 = thread;
 				let query_bind_2 = area.workspace_id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("root_message_id"))
 						.from(Alias::new("channel_threads"))
@@ -429,7 +429,7 @@ impl CleanupScope for Scope<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **access.tx)
+				.scalar_optional(&mut **access.tx)
 				.await?
 			};
 			Ok(root)
@@ -448,7 +448,7 @@ impl CleanupScope for Scope<'_> {
 				let query_bind_5 = &area.agent_id;
 				let query_bind_6 = &area.owner;
 				let query_bind_7 = area.id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("core_areas"))
@@ -508,7 +508,7 @@ impl CleanupScope for Scope<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **access.tx)
+				.scalar_optional(&mut **access.tx)
 				.await?
 			};
 			Ok(id)
@@ -523,7 +523,7 @@ impl CleanupScope for Scope<'_> {
 				let query_bind_1 = file;
 				let query_bind_2 = area.id;
 				let query_bind_3 = &area.tenant;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("core_objects"))
 						.value(Alias::new("kind"), "working")
@@ -557,7 +557,7 @@ impl CleanupScope for Scope<'_> {
 			let access = &mut *self.access;
 			{
 				let query_bind_1 = area.id;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("runs"))
 						.value(Alias::new("control"), "CANCELLED")
@@ -593,7 +593,7 @@ impl CleanupScope for Scope<'_> {
 			let access = &mut *self.access;
 			{
 				let query_bind_1 = area.id;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("core_records"))
 						.value(Alias::new("state"), "revoked")
@@ -718,7 +718,7 @@ impl CleanupRepository for Repository<'_> {
 		let result: NativeResult<Vec<NativeRecord>> = async {
 			let jobs = {
 				let query_bind_1 = after;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_records")
 						.and_where(
 							Expr::col(Alias::new("kind"))
@@ -764,15 +764,15 @@ impl CleanupRepository for Repository<'_> {
 	async fn begin(&self) -> Result<Box<dyn ErasureScope + '_>> {
 		Ok(Box::new(Erasure {
 			store: self.store,
-			tx: self.store.pool.begin().await.map_err(NativeError::from)?,
+			tx: crate::database::native::begin(&self.store.pool).await?,
 		}))
 	}
 	async fn failure(&self, id: Uuid, area: Option<Uuid>) -> Result<()> {
 		let result: NativeResult<()> = async {
-			let mut tx = self.store.pool.begin().await?;
+			let mut tx = crate::database::native::begin(&self.store.pool).await?;
 			{
 				let query_bind_1 = area;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("core_areas"))
 						.value(Alias::new("state"), "cleanup_failed")
@@ -790,7 +790,7 @@ impl CleanupRepository for Repository<'_> {
 			};
 			{
 				let query_bind_1 = id;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("core_records"))
 						.value(Alias::new("state"), "cleanup_failed")
@@ -821,7 +821,7 @@ impl ErasureScope for Erasure<'_> {
 			let area: NativeArea = {
 				let query_bind_1 = snapshot.area_id.ok_or(Error::Forbidden)?;
 				let query_bind_2 = &snapshot.tenant;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_areas")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
@@ -848,7 +848,7 @@ impl ErasureScope for Erasure<'_> {
 			let record: NativeRecord = {
 				let query_bind_1 = snapshot.id;
 				let query_bind_2 = &area.tenant;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_records")
 						.and_where(
 							Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())),
@@ -880,7 +880,7 @@ impl ErasureScope for Erasure<'_> {
 			let ids = {
 				let query_bind_1 = &area.tenant;
 				let query_bind_2 = area.id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("core_objects"))
@@ -901,7 +901,7 @@ impl ErasureScope for Erasure<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_all(&mut **tx)
+				.scalar_all(&mut **tx)
 				.await?
 			};
 			Ok(ids)
@@ -925,7 +925,7 @@ impl ErasureScope for Erasure<'_> {
 				let query_bind_3 = area.generation;
 				let query_bind_4 = area.epoch;
 				let query_bind_5 = area.revision;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("core_areas"))
 						.value_expr(
@@ -989,12 +989,7 @@ impl ErasureScope for Erasure<'_> {
 	}
 	async fn finish(self: Box<Self>, result: Result<bool>) -> Result<()> {
 		match result {
-			Ok(true) => self
-				.tx
-				.commit()
-				.await
-				.map_err(NativeError::from)
-				.map_err(Into::into),
+			Ok(true) => self.tx.commit().await.map_err(Into::into),
 			Ok(false) => Ok(()),
 			Err(error) => Err(error),
 		}

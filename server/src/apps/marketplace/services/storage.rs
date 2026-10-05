@@ -2,13 +2,11 @@ use super::*;
 use crate::{Error, Result, authorization::access::Access};
 use reinhardt::query::{Alias, Expr, JoinType, PostgresQueryBuilder, Query, TableRef};
 
-use sqlx::{Postgres, Transaction};
-
 pub(super) async fn operator_begin(
 	store: &crate::store::Store,
 	browser: Option<&crate::dashboard_auth::BrowserOrigin>,
-) -> Result<Transaction<'static, Postgres>> {
-	let mut tx = store.pool.begin().await?;
+) -> Result<crate::database::native::Transaction> {
+	let mut tx = crate::database::native::begin(&store.pool).await?;
 	if let Some(browser) = browser {
 		browser.require_operator(&mut tx, true).await?;
 	}
@@ -16,7 +14,7 @@ pub(super) async fn operator_begin(
 }
 
 pub(super) async fn operator_commit(
-	mut tx: Transaction<'static, Postgres>,
+	mut tx: crate::database::native::Transaction,
 	browser: Option<&crate::dashboard_auth::BrowserOrigin>,
 ) -> Result<()> {
 	if let Some(browser) = browser {
@@ -30,8 +28,11 @@ pub(super) async fn operator_commit(
 /// publication and installation mappings. Credential/policy locks precede it;
 /// catalog locks follow it. No network/provider work occurs inside this lease.
 /// This deliberately favors a simple verifiable lock order over write throughput.
-pub(crate) async fn lock(tx: &mut Transaction<'_, Postgres>, exclusive: bool) -> Result<()> {
-	sqlx::query(
+pub(crate) async fn lock(
+	tx: &mut crate::database::native::Transaction,
+	exclusive: bool,
+) -> Result<()> {
+	crate::database::native::query(
 		&Query::select()
 			.expr(Expr::cust(if exclusive {
 				"pg_advisory_xact_lock(74003201)"
@@ -44,8 +45,8 @@ pub(crate) async fn lock(tx: &mut Transaction<'_, Postgres>, exclusive: bool) ->
 	.await?;
 	Ok(())
 }
-pub(crate) async fn writer(tx: &mut Transaction<'_, Postgres>) -> Result<()> {
-	sqlx::query(
+pub(crate) async fn writer(tx: &mut crate::database::native::Transaction) -> Result<()> {
+	crate::database::native::query(
 		&Query::select()
 			.expr(Expr::cust(
 				"set_config('aidash.marketplace_writer','1',true)",
@@ -56,7 +57,7 @@ pub(crate) async fn writer(tx: &mut Transaction<'_, Postgres>) -> Result<()> {
 	.await?;
 	Ok(())
 }
-pub(crate) async fn gate(tx: &mut Transaction<'_, Postgres>) -> Result<()> {
+pub(crate) async fn gate(tx: &mut crate::database::native::Transaction) -> Result<()> {
 	let state: Compatibility = get(tx, "marketplace_gate", "v1")
 		.await?
 		.ok_or(Error::Forbidden)?;
@@ -87,7 +88,7 @@ pub(super) async fn begin(
 pub(super) async fn credential_current(access: &mut Access) -> Result<()> {
 	let valid: bool = {
 		let query_bind_1 = access.identity.credential_id;
-		sqlx::query_scalar(
+		crate::database::native::query_scalar(
 			&Query::select()
 				.expr(Expr::cust(
 					"expires_at>clock_timestamp() AND revoked_at IS NULL",
@@ -99,7 +100,7 @@ pub(super) async fn credential_current(access: &mut Access) -> Result<()> {
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&mut **access.tx)
+		.scalar_one(&mut **access.tx)
 		.await?
 	};
 	if !valid {
@@ -114,12 +115,12 @@ pub(super) async fn credential_current(access: &mut Access) -> Result<()> {
 	let current: Option<bool> = {
 		let query_bind_1 = access.identity.credential_id;
 		let query_bind_2 = crate::config::GOOGLE_OIDC_ISSUER;
-		sqlx::query_scalar(&Query::select()
+		crate::database::native::query_scalar(&Query::select()
 		.expr(SimpleExpr::CustomWithExpr("(i.disabled_at IS NULL AND (i.issuer=? OR i.last_valid_at>clock_timestamp()-interval '15 minutes'))".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()]))
 		.from_as(Alias::new("dashboard_mappings"), Alias::new("m"))
 		.join(JoinType::InnerJoin, TableRef::table_alias(Alias::new("dashboard_identities"), Alias::new("i")), Expr::cust("m.identity_id=i.id"))
 		.and_where(SimpleExpr::CustomWithExpr("(m.credential_id=?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(PostgresQueryBuilder))
-		.fetch_optional(&mut **access.tx).await?
+		.scalar_optional(&mut **access.tx).await?
 	};
 	if current == Some(false) {
 		return Err(Error::IdentityStatusUnavailable);

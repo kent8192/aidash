@@ -37,7 +37,7 @@ impl ForeignRunReadScope for NativeForeignReads<'_> {
 			let query_bind_2 = &self.0.identity.tenant;
 			let query_bind_3 = &run.home_node;
 			let query_bind_4 = run.task_id;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.columns(["credential_id", "subject_chain", "description"].map(Alias::new))
 					.from(Alias::new("authorization_remote_admissions"))
@@ -53,9 +53,9 @@ impl ForeignRunReadScope for NativeForeignReads<'_> {
 					.lock(LockType::Share)
 					.to_string(PostgresQueryBuilder),
 			)
+			.columns(&["credential_id", "subject_chain", "description"])
 			.fetch_optional(&mut **self.0.tx)
-			.await
-			.map_err(crate::Error::from)?
+			.await?
 		};
 
 		record
@@ -78,14 +78,14 @@ impl ForeignRunReadScope for NativeForeignReads<'_> {
 			let query_bind_2 = &d.source_tenant;
 			let query_bind_3 = &d.source_subject;
 			let query_bind_4 = &self.0.identity.tenant;
-			sqlx::query_scalar(&Query::select()
+			crate::database::native::query_scalar(&Query::select()
 				.column(Alias::new("credential_id"))
 				.from(Alias::new("authorization_peer_mappings"))
 				.and_where(SimpleExpr::CustomWithExpr("(source_node=? AND source_tenant=? AND source_subject=? AND tenant=? AND enabled)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()]))
 				.lock(LockType::Share)
 				.to_string(PostgresQueryBuilder))
-		.fetch_optional(&mut **self.0.tx)
-		.await.map_err(crate::Error::from)?
+		.scalar_optional(&mut **self.0.tx)
+		.await?
 		};
 
 		Ok(mapped)
@@ -119,14 +119,14 @@ impl ForeignRunReadScope for NativeForeignReads<'_> {
 			let query_bind_8 = &d.inspection.generation;
 			let query_bind_9 = credential_id;
 			let query_bind_10 = terminal_statuses;
-			sqlx::query_scalar(&Query::select()
+			crate::database::native::query_scalar(&Query::select()
 					.column((Alias::new("g"), Alias::new("definition")))
 					.from_as(Alias::new("generation_requests"), Alias::new("g")).join(JoinType::InnerJoin, reinhardt::query::TableRef::table_alias(Alias::new("authorization_catalog"), Alias::new("c")), Expr::cust("c.tenant=g.tenant AND c.entry_id=g.agent_id AND c.entry_version=g.agent_version"))
 					.and_where(SimpleExpr::CustomWithExpr("(g.tenant=? AND g.home_node=? AND g.task_id=? AND g.grant_id=? AND g.admission_id=? AND g.agent_id=? AND g.agent_version=? AND g.foreign_intent=? AND g.credential_id=? AND g.prepared AND g.status=ANY(?) AND g.quota_released AND NOT c.enabled AND g.retired_catalog_revision=c.revision)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_5.to_owned()).into(), Expr::value(query_bind_6.to_owned()).into(), Expr::value(query_bind_7.to_owned()).into(), Expr::value(query_bind_8.to_owned()).into(), Expr::value(query_bind_9.to_owned()).into(), crate::database::text_array(query_bind_10.to_owned())]))
 					.lock(LockType::Share).lock_tables([Alias::new("g"), Alias::new("c")])
 					.to_string(PostgresQueryBuilder))
-			.fetch_optional(&mut **self.0.tx)
-			.await.map_err(crate::Error::from)?
+			.scalar_optional(&mut **self.0.tx)
+			.await?
 		};
 		Ok(value.map(serde_json::from_value).transpose()?)
 	}

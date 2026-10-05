@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Invocation {
 	pub idempotency_key: String,
 	pub run_id: Uuid,
@@ -17,6 +17,16 @@ pub struct Invocation {
 	pub replay_safe: bool,
 	pub created_at: DateTime<Utc>,
 }
+crate::native_record!(Invocation {
+	idempotency_key,
+	run_id,
+	tool,
+	input,
+	status,
+	result,
+	replay_safe,
+	created_at
+});
 
 impl From<InvocationRecord> for Invocation {
 	fn from(record: InvocationRecord) -> Self {

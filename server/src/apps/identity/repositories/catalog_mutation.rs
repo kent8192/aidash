@@ -1,4 +1,5 @@
 //! Catalog optimistic updates and history retain the original query trees and transaction.
+use crate::database::native::Pool;
 use crate::{
 	Result,
 	authorization::Authorization,
@@ -13,9 +14,7 @@ use reinhardt::query::{
 	Alias, ColumnRef, Condition, Expr, ExprTrait, OnConflict, Order, PostgresQueryBuilder, Query,
 	QueryStatementBuilder, SimpleExpr,
 };
-use sqlx::{PgPool, Postgres, Transaction};
 
-#[derive(sqlx::FromRow)]
 struct BindingRow {
 	tenant: String,
 	entry_id: String,
@@ -23,6 +22,14 @@ struct BindingRow {
 	enabled: bool,
 	revision: i64,
 }
+crate::native_record!(BindingRow {
+	tenant,
+	entry_id,
+	entry_version,
+	enabled,
+	revision
+});
+
 impl From<BindingRow> for Binding {
 	fn from(row: BindingRow) -> Self {
 		Self {
@@ -34,14 +41,15 @@ impl From<BindingRow> for Binding {
 		}
 	}
 }
-pub(crate) struct NativeMutation<'a, 'connection>(
-	pub(crate) &'a mut Transaction<'connection, Postgres>,
-);
-async fn registered(tx: &mut Transaction<'_, Postgres>, entry: &EntityRef) -> Result<bool> {
+pub(crate) struct NativeMutation<'a>(pub(crate) &'a mut crate::database::native::Transaction);
+async fn registered(
+	tx: &mut crate::database::native::Transaction,
+	entry: &EntityRef,
+) -> Result<bool> {
 	let exists: bool = {
 		let query_bind_1 = &entry.id;
 		let query_bind_2 = &entry.version;
-		sqlx::query_scalar(
+		crate::database::native::query_scalar(
 			&Query::select()
 				.expr(Expr::exists(
 					Query::select()
@@ -70,14 +78,14 @@ async fn registered(tx: &mut Transaction<'_, Postgres>, entry: &EntityRef) -> Re
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&mut **tx)
+		.scalar_one(&mut **tx)
 		.await?
 	};
 
 	Ok(exists)
 }
 async fn compare_and_set(
-	tx: &mut Transaction<'_, Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	tenant: &str,
 	entry: &EntityRef,
 	expected_revision: i64,
@@ -89,7 +97,7 @@ async fn compare_and_set(
 			let query_bind_2 = &entry.id;
 			let query_bind_3 = &entry.version;
 			let query_bind_4 = enabled;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::insert()
 					.into_table(Alias::new("authorization_catalog"))
 					.columns([
@@ -128,6 +136,7 @@ async fn compare_and_set(
 					.returning_all()
 					.to_string(PostgresQueryBuilder),
 			)
+			.columns(&["tenant", "entry_id", "entry_version", "enabled", "revision"])
 			.fetch_optional(&mut **tx)
 			.await?
 		}
@@ -138,7 +147,7 @@ async fn compare_and_set(
 			let query_bind_3 = &entry.version;
 			let query_bind_4 = enabled;
 			let query_bind_5 = expected_revision;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::update()
 					.table(Alias::new("authorization_catalog"))
 					.value_expr(
@@ -196,7 +205,11 @@ async fn compare_and_set(
 
 	Ok(binding.map(Into::into))
 }
-async fn history(tx: &mut Transaction<'_, Postgres>, binding: &Binding, actor: &str) -> Result<()> {
+async fn history(
+	tx: &mut crate::database::native::Transaction,
+	binding: &Binding,
+	actor: &str,
+) -> Result<()> {
 	let tenant = binding.tenant.as_str();
 	let entry = EntityRef {
 		id: binding.entry_id.clone(),
@@ -211,7 +224,7 @@ async fn history(tx: &mut Transaction<'_, Postgres>, binding: &Binding, actor: &
 		let query_bind_4 = binding.revision;
 		let query_bind_5 = enabled;
 		let query_bind_6 = actor;
-		sqlx::query(
+		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new("authorization_catalog_history"))
 				.columns([
@@ -257,10 +270,10 @@ async fn history(tx: &mut Transaction<'_, Postgres>, binding: &Binding, actor: &
 	};
 	Ok(())
 }
-async fn bindings(pool: &PgPool, tenant: &str) -> Result<Vec<Binding>> {
+async fn bindings(pool: &Pool, tenant: &str) -> Result<Vec<Binding>> {
 	let rows: Vec<BindingRow> = {
 		let query_bind_1 = tenant;
-		sqlx::query_as(
+		crate::database::native::query_as(
 			&Query::select()
 				.column(ColumnRef::Asterisk)
 				.from(Alias::new("authorization_catalog"))
@@ -283,7 +296,7 @@ async fn bindings(pool: &PgPool, tenant: &str) -> Result<Vec<Binding>> {
 }
 
 #[async_trait]
-impl CatalogMutation for NativeMutation<'_, '_> {
+impl CatalogMutation for NativeMutation<'_> {
 	async fn registered(&mut self, reference: &EntityRef) -> aidash_application::Result<bool> {
 		registered(self.0, reference).await.map_err(Into::into)
 	}
@@ -302,12 +315,12 @@ impl CatalogMutation for NativeMutation<'_, '_> {
 		history(self.0, binding, actor).await.map_err(Into::into)
 	}
 }
-pub(crate) struct NativeAdministrator<'a, 'connection> {
-	pub(crate) mutation: NativeMutation<'a, 'connection>,
+pub(crate) struct NativeAdministrator<'a> {
+	pub(crate) mutation: NativeMutation<'a>,
 	pub(crate) principal: Principal,
 }
 #[async_trait]
-impl CatalogMutation for NativeAdministrator<'_, '_> {
+impl CatalogMutation for NativeAdministrator<'_> {
 	async fn registered(&mut self, reference: &EntityRef) -> aidash_application::Result<bool> {
 		self.mutation.registered(reference).await
 	}
@@ -327,7 +340,7 @@ impl CatalogMutation for NativeAdministrator<'_, '_> {
 	}
 }
 #[async_trait]
-impl CatalogAdministrator for NativeAdministrator<'_, '_> {
+impl CatalogAdministrator for NativeAdministrator<'_> {
 	fn principal(&self) -> &Principal {
 		&self.principal
 	}
@@ -344,7 +357,7 @@ impl CatalogAdministrator for NativeAdministrator<'_, '_> {
 	}
 }
 pub(crate) struct NativeAdministrationRead<'a> {
-	pub(crate) pool: &'a PgPool,
+	pub(crate) pool: &'a Pool,
 	pub(crate) principal: Principal,
 }
 #[async_trait]

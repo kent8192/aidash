@@ -1,14 +1,14 @@
 //! Installation administration is not a mapped tenant reader at another node.
 //! Content in a workspace bound to required Home retrieval requires a Subject
 //! view. Operator APIs retain content-free stop controls and infrastructure data.
+use crate::database::native::Transaction;
 use crate::{Error, Result, domain::Event};
 use reinhardt::query::{Alias, Expr, JoinType, PostgresQueryBuilder, Query, SimpleExpr};
-use sqlx::PgConnection;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 pub(crate) async fn blocked(
-	connection: &mut PgConnection,
+	connection: &mut Transaction,
 	workspaces: &[Uuid],
 ) -> Result<BTreeSet<Uuid>> {
 	if workspaces.is_empty() {
@@ -45,18 +45,18 @@ pub(crate) async fn blocked(
 		))
 		.union(receiver)
 		.to_string(PostgresQueryBuilder);
-	let values: Vec<Uuid> = sqlx::query_scalar(&query)
+	let values: Vec<Uuid> = crate::database::native::query_scalar(&query)
 		.bind(workspaces)
-		.fetch_all(connection)
+		.scalar_all(connection)
 		.await?;
 	Ok(values.into_iter().collect())
 }
 
-pub(crate) async fn visible(connection: &mut PgConnection, workspace: Uuid) -> Result<bool> {
+pub(crate) async fn visible(connection: &mut Transaction, workspace: Uuid) -> Result<bool> {
 	Ok(blocked(connection, &[workspace]).await?.is_empty())
 }
 
-pub(crate) async fn require(connection: &mut PgConnection, workspace: Uuid) -> Result<()> {
+pub(crate) async fn require(connection: &mut Transaction, workspace: Uuid) -> Result<()> {
 	if visible(connection, workspace).await? {
 		Ok(())
 	} else {
@@ -64,7 +64,7 @@ pub(crate) async fn require(connection: &mut PgConnection, workspace: Uuid) -> R
 	}
 }
 
-pub(crate) async fn event_visible(connection: &mut PgConnection, event: &Event) -> Result<bool> {
+pub(crate) async fn event_visible(connection: &mut Transaction, event: &Event) -> Result<bool> {
 	if let Some(workspace) = event_workspaces(connection, std::slice::from_ref(event)).await?[0] {
 		return visible(connection, workspace).await;
 	}
@@ -72,7 +72,7 @@ pub(crate) async fn event_visible(connection: &mut PgConnection, event: &Event) 
 }
 
 async fn event_workspaces(
-	connection: &mut PgConnection,
+	connection: &mut Transaction,
 	events: &[Event],
 ) -> Result<Vec<Option<Uuid>>> {
 	// Foreign Run events have no local Workspace FK. Resolve the durable Run
@@ -92,7 +92,7 @@ async fn event_workspaces(
 	let ids: Vec<_> = events.iter().filter_map(run_id).collect();
 	let runs: Vec<(Uuid, Uuid)> = {
 		let query_bind_1 = &ids;
-		sqlx::query_as(
+		crate::database::native::query_as(
 			&Query::select()
 				.columns(["id", "workspace_id"].map(Alias::new))
 				.from(Alias::new("runs"))
@@ -102,6 +102,7 @@ async fn event_workspaces(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
+		.columns(&["id", "workspace_id"])
 		.fetch_all(connection)
 		.await?
 	};
@@ -127,7 +128,7 @@ pub(crate) fn state_visible(column: &str) -> SimpleExpr {
 }
 
 pub(crate) async fn filter_events(
-	connection: &mut PgConnection,
+	connection: &mut Transaction,
 	events: Vec<Event>,
 ) -> Result<Vec<Event>> {
 	let workspaces = event_workspaces(connection, &events).await?;
@@ -148,7 +149,7 @@ pub(crate) async fn filter_events(
 }
 
 pub(crate) async fn filter_state(
-	connection: &mut PgConnection,
+	connection: &mut Transaction,
 	state: &mut crate::apps::execution::serializers::state::StateResponse,
 ) -> Result<()> {
 	let ids = state

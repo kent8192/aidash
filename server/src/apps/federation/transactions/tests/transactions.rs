@@ -51,7 +51,7 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 		.value(Alias::new("phase"), "TOOL_CALL")
 		.value_expr(Alias::new("pending"), Expr::value(query_bind_2.to_owned()))
 		.and_where(SimpleExpr::CustomWithExpr("(id=?)".into(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(PostgresQueryBuilder))
-		.execute(&f.store.pool).await }.unwrap();
+		.execute(f.store.pool.driver()).await }.unwrap();
 	if denied {
 		let agent = aidash_server::domain::qualified_agent(&f.config.node_id, "research", "1.0.0");
 		policy["policies"].as_array_mut().unwrap().push(json!({"id":"agent-finalize-denied","effect":"deny","subjects":{"ids":[agent]},"actions":["run.finish"],"resources":{"kinds":["run"]}}));

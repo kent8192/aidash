@@ -62,8 +62,8 @@ pub(super) async fn candidates(
 	let Some((sql, _)) = query(&tenant, options, offset) else {
 		return Ok(vec![]);
 	};
-	let documents: Vec<Value> = sqlx::query_scalar(&sql)
-		.fetch_all(authority.connection())
+	let documents: Vec<Value> = crate::database::native::query_scalar(&sql)
+		.scalar_all(authority.connection())
 		.await?;
 	documents
 		.into_iter()

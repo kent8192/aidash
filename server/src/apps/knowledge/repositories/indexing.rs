@@ -55,7 +55,7 @@ impl SemanticIndexingRepository for NativeIndexing {
 	}
 	async fn due(&self) -> Result<Vec<Uuid>> {
 		let store = &self.store;
-		let ids: Vec<Uuid> = sqlx::query_scalar(
+		let ids: Vec<Uuid> = crate::database::native::query_scalar(
 			&Query::select()
 				.expr(SimpleExpr::from(Expr::col(Alias::new("id"))))
 				.from(Alias::new("semantic_entries"))
@@ -70,14 +70,13 @@ impl SemanticIndexingRepository for NativeIndexing {
 				.limit(32)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(&store.pool)
-		.await
-		.map_err(Error::from)?;
+		.scalar_all(&store.pool)
+		.await?;
 		Ok(ids)
 	}
 	async fn initial(&self, id: Uuid) -> Result<Option<(Uuid, Value)>> {
 		let store = &self.store;
-		Ok(sqlx::query_as::<_, (Uuid, Value)>(
+		Ok(crate::database::native::query_as::<(Uuid, Value)>(
 			&Query::select()
 				.expr(SimpleExpr::from(Expr::col(Alias::new("workspace_id"))))
 				.expr(SimpleExpr::from(Expr::col(Alias::new("authority"))))
@@ -85,10 +84,10 @@ impl SemanticIndexingRepository for NativeIndexing {
 				.and_where(Expr::cust("id = $1 AND NOT deleted"))
 				.to_string(PostgresQueryBuilder),
 		)
+		.columns(&["workspace_id", "authority"])
 		.bind(id)
 		.fetch_optional(&store.pool)
-		.await
-		.map_err(Error::from)?)
+		.await?)
 	}
 	async fn restore(&self, authority: &Value) -> Result<Box<dyn SemanticIndexingSession>> {
 		Ok(Box::new(Session {
@@ -100,12 +99,12 @@ impl SemanticIndexingRepository for NativeIndexing {
 	async fn revoke(&self, workspace: Uuid, id: Uuid, authority: &Value) -> Result<()> {
 		let store = &self.store;
 		let result: crate::Result<()> = async {
-			let mut tx = store.pool.begin().await?;
+			let mut tx = crate::database::native::begin(&store.pool).await?;
 			service::index(&mut tx, workspace, false).await?;
 			let entry: Option<Entry> = {
 				let query_bind_1 = id;
 				let query_bind_2 = authority;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::update()
 						.table(Alias::new("semantic_entries"))
 						.value_expr(Alias::new("state"), Expr::cust("'REVOKED'"))
@@ -133,7 +132,7 @@ impl SemanticIndexingRepository for NativeIndexing {
 			if let Some(entry) = entry {
 				{
 					let query_bind_1 = id;
-					sqlx::query(
+					crate::database::native::query(
 						&Query::update()
 							.table(Alias::new("semantic_points"))
 							.value_expr(Alias::new("retired"), Expr::cust("TRUE"))
@@ -202,7 +201,7 @@ impl SemanticIndexingSession for Session {
 		let lease = &mut self.lease;
 		let entry: Option<Entry> = {
 			let query_bind_1 = id;
-			sqlx::query_as::<_, Entry>(
+			crate::database::native::query_as::<Entry>(
 				&Query::select()
 					.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
 					.from(Alias::new("semantic_entries"))
@@ -215,8 +214,7 @@ impl SemanticIndexingSession for Session {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_optional(&mut **lease.tx())
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		let output = entry.as_ref().map(snapshot);
 		self.entry = entry;
@@ -226,7 +224,7 @@ impl SemanticIndexingSession for Session {
 		let lease = &mut self.lease;
 		Ok({
 			let query_bind_1 = id;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.expr(SimpleExpr::from(Expr::col(Alias::new("authority"))))
 					.from(Alias::new("semantic_entries"))
@@ -236,9 +234,8 @@ impl SemanticIndexingSession for Session {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(&mut **lease.tx())
-			.await
-			.map_err(Error::from)?
+			.scalar_one(&mut **lease.tx())
+			.await?
 		})
 	}
 	async fn permits(&mut self, action: &str) -> Result<bool> {
@@ -259,7 +256,7 @@ impl SemanticIndexingSession for Session {
 		{
 			let query_bind_1 = id;
 			let query_bind_2 = reason;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("semantic_entries"))
 					.value_expr(Alias::new("state"), Expr::cust("'REVOKED'"))
@@ -281,8 +278,7 @@ impl SemanticIndexingSession for Session {
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **lease.tx())
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(())
 	}
@@ -290,7 +286,7 @@ impl SemanticIndexingSession for Session {
 		let lease = &mut self.lease;
 		{
 			let query_bind_1 = id;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("semantic_points"))
 					.value_expr(Alias::new("retired"), Expr::cust("TRUE"))
@@ -302,8 +298,7 @@ impl SemanticIndexingSession for Session {
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **lease.tx())
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(())
 	}
@@ -311,7 +306,7 @@ impl SemanticIndexingSession for Session {
 		let lease = &mut self.lease;
 		{
 			let query_bind_1 = id;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("semantic_entries"))
 					.value_expr(
@@ -325,8 +320,7 @@ impl SemanticIndexingSession for Session {
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **lease.tx())
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(())
 	}
@@ -336,7 +330,7 @@ impl SemanticIndexingSession for Session {
 		{
 			let query_bind_1 = point;
 			let query_bind_2 = digest;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("semantic_points"))
 					.value_expr(
@@ -353,8 +347,7 @@ impl SemanticIndexingSession for Session {
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **lease.tx())
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(())
 	}
@@ -362,7 +355,7 @@ impl SemanticIndexingSession for Session {
 		let lease = &mut self.lease;
 		{
 			let query_bind_1 = id;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("semantic_entries"))
 					.value_expr(Alias::new("state"), Expr::cust("'READY'"))
@@ -380,8 +373,7 @@ impl SemanticIndexingSession for Session {
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **lease.tx())
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(())
 	}
@@ -391,7 +383,7 @@ impl SemanticIndexingSession for Session {
 			let query_bind_1 = id;
 			let query_bind_2 = attempts;
 			let query_bind_3 = delay;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("semantic_entries"))
 					.value_expr(Alias::new("state"), Expr::cust("'ERROR'"))
@@ -423,8 +415,7 @@ impl SemanticIndexingSession for Session {
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **lease.tx())
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(())
 	}
@@ -433,7 +424,7 @@ impl SemanticIndexingSession for Session {
 		let entry_point = id;
 		Ok({
 			let query_bind_1 = entry_point;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.expr(SimpleExpr::from(Expr::col(Alias::new("content_digest"))))
 					.expr(SimpleExpr::from(Expr::col(Alias::new("retired"))))
@@ -444,9 +435,9 @@ impl SemanticIndexingSession for Session {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
+			.columns(&["content_digest", "retired"])
 			.fetch_optional(&mut **lease.tx())
-			.await
-			.map_err(Error::from)?
+			.await?
 		})
 	}
 	async fn rotate(&mut self, id: Uuid, point: Uuid) -> Result<IndexingEntry> {
@@ -454,7 +445,7 @@ impl SemanticIndexingSession for Session {
 		let entry: Entry = {
 			let query_bind_1 = id;
 			let query_bind_2 = point;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::update()
 					.table(Alias::new("semantic_entries"))
 					.value_expr(Alias::new("revision"), Expr::cust("revision + 1"))
@@ -476,8 +467,7 @@ impl SemanticIndexingSession for Session {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_one(&mut **lease.tx())
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		let output = snapshot(&entry);
 		self.entry = Some(entry);

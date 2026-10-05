@@ -9,18 +9,18 @@ use crate::authorization::{
 };
 use crate::{Error, Result, store::Store};
 use serde_json::Value;
-use sqlx::{Postgres, Transaction};
+
 use uuid::Uuid;
 
 pub(crate) enum Lease<'a> {
-	Operator(Transaction<'static, Postgres>),
+	Operator(crate::database::native::Transaction),
 	Scoped(Box<Access>),
 	Inherited(&'a mut Access),
 }
 impl Lease<'_> {
 	pub(crate) async fn begin(store: &Store, actor: &Actor) -> Result<Self> {
 		Ok(match actor {
-			Actor::Operator => Self::Operator(store.pool.begin().await?),
+			Actor::Operator => Self::Operator(crate::database::native::begin(&store.pool).await?),
 			Actor::Subject(identity) => {
 				Self::Scoped(Box::new(Access::begin(store, identity).await?))
 			}
@@ -58,7 +58,7 @@ impl Lease<'_> {
 			_ => Err(Error::Forbidden),
 		}
 	}
-	pub(crate) fn tx(&mut self) -> &mut Transaction<'static, Postgres> {
+	pub(crate) fn tx(&mut self) -> &mut crate::database::native::Transaction {
 		match self {
 			Self::Operator(tx) => tx,
 			Self::Scoped(a) => &mut a.tx,

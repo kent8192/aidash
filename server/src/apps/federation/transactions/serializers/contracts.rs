@@ -9,7 +9,6 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "AtomicTransaction")]
-#[derive(sqlx::FromRow)]
 pub struct Status {
 	pub id: Uuid,
 	pub digest: String,
@@ -22,6 +21,16 @@ pub struct Status {
 	pub last_error: Option<String>,
 	pub created_at: DateTime<Utc>,
 }
+crate::native_record!(Status {
+	id,
+	digest,
+	manifest,
+	decision,
+	visible,
+	complete,
+	last_error,
+	created_at
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "TransactionVote")]

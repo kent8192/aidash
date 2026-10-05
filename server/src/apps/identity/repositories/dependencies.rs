@@ -60,8 +60,7 @@ impl DependencyScope for NativeDependencies<'_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_optional(&mut **self.0.tx)
-			.await
-			.map_err(crate::Error::from)?
+			.await?
 		};
 		Ok(run)
 	}
@@ -69,7 +68,7 @@ impl DependencyScope for NativeDependencies<'_> {
 		let admission_id = &admission_id;
 		let bound: Option<Uuid> = {
 			let query_bind_1 = admission_id;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("grant_id"))
 					.from(Alias::new("authorization_remote_admissions"))
@@ -79,9 +78,8 @@ impl DependencyScope for NativeDependencies<'_> {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_optional(&mut **self.0.tx)
-			.await
-			.map_err(crate::Error::from)?
+			.scalar_optional(&mut **self.0.tx)
+			.await?
 		};
 		Ok(bound)
 	}
@@ -123,8 +121,7 @@ impl DependencyScope for NativeDependencies<'_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_optional(&mut **self.0.tx)
-			.await
-			.map_err(crate::Error::from)?
+			.await?
 		};
 		Ok(peer)
 	}

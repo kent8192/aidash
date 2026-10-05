@@ -45,7 +45,7 @@ impl Access {
 		let bound: Option<(String, Uuid)> = {
 			let query_bind_1 = run;
 			let query_bind_2 = &self.identity.tenant;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.columns(["source_node", "grant_id"].map(Alias::new))
 					.from(Alias::new("authorization_remote_admissions"))
@@ -59,6 +59,7 @@ impl Access {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
+			.columns(&["source_node", "grant_id"])
 			.fetch_optional(&mut **self.tx)
 			.await?
 		};

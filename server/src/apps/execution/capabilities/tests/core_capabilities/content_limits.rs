@@ -167,7 +167,7 @@ fn search_boundary_fixture(
 		.bind("working")
 		.bind(&digest)
 		.bind(bytes.len() as i64)
-		.execute(&c.f.store.pool)
+		.execute(c.f.store.pool.driver())
 		.await
 		.unwrap();
 		let mut manifest = area["manifest"].clone();
@@ -195,7 +195,7 @@ fn search_boundary_fixture(
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&c.f.store.pool)
+			.execute(c.f.store.pool.driver())
 			.await
 		}
 		.unwrap();

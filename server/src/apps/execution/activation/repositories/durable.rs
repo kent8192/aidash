@@ -10,7 +10,7 @@ use reinhardt::query::{
 	PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
 use sha2::{Digest, Sha256};
-use sqlx::{Postgres, Transaction};
+
 use uuid::Uuid;
 
 fn a(name: &str) -> Alias {
@@ -46,12 +46,17 @@ fn request_statement(id: Uuid, run_id: Uuid) -> reinhardt::query::InsertStatemen
 }
 
 /// Borrow the existing compatibility writer's transaction without opening another one.
-pub async fn request_in(tx: &mut Transaction<'_, Postgres>, run_id: Uuid) -> Result<Uuid> {
+pub async fn request_in(
+	tx: &mut crate::database::native::Transaction,
+	run_id: Uuid,
+) -> Result<Uuid> {
 	let id = Uuid::new_v4();
-	if sqlx::query(&request_statement(id, run_id).to_string(PostgresQueryBuilder))
-		.execute(&mut **tx)
-		.await?
-		.rows_affected()
+	if crate::database::native::query(
+		&request_statement(id, run_id).to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut **tx)
+	.await?
+	.rows_affected()
 		!= 1
 	{
 		return Err(Error::NotFound("activation Run".into()));

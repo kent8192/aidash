@@ -35,7 +35,7 @@ impl RunGuardScope for RunGuard<'_> {
 		let result: NativeResult<Vec<String>> = async {
 			Ok({
 				let query_bind_1 = workspace;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("target"))
 						.from(Alias::new("conversations"))
@@ -54,7 +54,7 @@ impl RunGuardScope for RunGuard<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_all(&mut **self.access.tx)
+				.scalar_all(&mut **self.access.tx)
 				.await?
 			})
 		}

@@ -18,7 +18,7 @@ use aidash_domain::{
 	},
 };
 use async_trait::async_trait;
-use reinhardt::db::backends::{TransactionExecutor, dialect::postgres::PgTransactionExecutor};
+use reinhardt::db::backends::TransactionExecutor;
 use uuid::Uuid;
 pub(crate) struct Repository<'a> {
 	pub(crate) runtime: &'a Federation,
@@ -31,7 +31,7 @@ impl ProfileConfiguration for Configuration {
 	}
 }
 struct Scope {
-	tx: PgTransactionExecutor,
+	tx: crate::database::native::Transaction,
 	actor: Actor,
 }
 #[async_trait]
@@ -41,14 +41,7 @@ impl ProfileRepository for Repository<'_> {
 	}
 	async fn begin_draft(&self) -> Result<Box<dyn ProfileDraftScope + '_>> {
 		Ok(Box::new(Scope {
-			tx: PgTransactionExecutor::new(
-				self.runtime
-					.store
-					.pool
-					.begin()
-					.await
-					.map_err(crate::Error::from)?,
-			),
+			tx: crate::database::native::begin(&self.runtime.store.pool).await?,
 			actor: self.actor.clone(),
 		}))
 	}

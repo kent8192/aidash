@@ -110,8 +110,7 @@ impl ConversationScope for NativeConversation<'_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_one(&mut **self.access.tx)
-			.await
-			.map_err(crate::Error::from)?
+			.await?
 		};
 		Ok(conversation.into())
 	}
@@ -194,15 +193,14 @@ impl ConversationScope for NativeConversation<'_> {
 			.to_string(PostgresQueryBuilder);
 		Ok(crate::database::query_as(&sql)
 			.fetch_one(&mut **self.access.tx)
-			.await
-			.map_err(crate::Error::from)?)
+			.await?)
 	}
 }
 
 use aidash_application::ports::workspaces::{
 	OperatorConversationTransaction, OperatorConversations,
 };
-use reinhardt::db::backends::{TransactionExecutor, dialect::postgres::PgTransactionExecutor};
+use reinhardt::db::backends::TransactionExecutor;
 
 pub(crate) struct NativeOperatorConversations(pub(crate) Federation);
 #[async_trait]
@@ -222,13 +220,7 @@ impl OperatorConversations for NativeOperatorConversations {
 			.map_err(Into::into)
 	}
 	async fn begin(&self) -> Result<Box<dyn OperatorConversationTransaction>> {
-		let tx = self
-			.0
-			.store
-			.pool
-			.begin()
-			.await
-			.map_err(crate::Error::from)?;
+		let tx = crate::database::native::begin(&self.0.store.pool).await?;
 		Ok(Box::new(NativeOperatorTransaction {
 			federation: self.0.clone(),
 			phase: OperatorPhase::Admission(tx),
@@ -240,7 +232,7 @@ impl OperatorConversations for NativeOperatorConversations {
 }
 // Both phases own the same physical transaction. Dropping either rolls it back.
 enum OperatorPhase {
-	Admission(sqlx::Transaction<'static, sqlx::Postgres>),
+	Admission(crate::database::native::Transaction),
 	Execution(Box<dyn TransactionExecutor>),
 	Consumed,
 }
@@ -249,7 +241,7 @@ struct NativeOperatorTransaction {
 	phase: OperatorPhase,
 }
 impl NativeOperatorTransaction {
-	fn admission(&mut self) -> Result<&mut sqlx::Transaction<'static, sqlx::Postgres>> {
+	fn admission(&mut self) -> Result<&mut crate::database::native::Transaction> {
 		match &mut self.phase {
 			OperatorPhase::Admission(tx) => Ok(tx),
 			_ => Err(
@@ -312,8 +304,7 @@ impl OperatorConversationTransaction for NativeOperatorTransaction {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_one(&mut **tx)
-			.await
-			.map_err(crate::Error::from)?
+			.await?
 		};
 		Ok(conversation.into())
 	}
@@ -357,12 +348,17 @@ impl OperatorConversationTransaction for NativeOperatorTransaction {
 				.into());
 			}
 		};
-		let mut native = PgTransactionExecutor::new(tx);
+		let mut native = tx.into_executor();
 		let result = self
 			.federation
-			.delegate_in(&mut native, task, &self.federation.config.node_id, agent)
+			.delegate_in(
+				native.as_mut(),
+				task,
+				&self.federation.config.node_id,
+				agent,
+			)
 			.await?;
-		self.phase = OperatorPhase::Execution(Box::new(native));
+		self.phase = OperatorPhase::Execution(native);
 		Ok(result)
 	}
 	async fn commit(mut self: Box<Self>) -> Result<()> {

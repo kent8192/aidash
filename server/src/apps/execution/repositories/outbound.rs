@@ -42,7 +42,7 @@ impl OutboundRepository for Repository<'_> {
 	}
 	async fn active_operations(&self) -> Result<Vec<Uuid>> {
 		let result: NativeResult<Vec<Uuid>> = async {
-			let ids: Vec<Uuid> = sqlx::query_scalar(
+			let ids: Vec<Uuid> = crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("id"))
 					.from(Alias::new("core_records"))
@@ -70,7 +70,7 @@ impl OutboundRepository for Repository<'_> {
 					.limit(8)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_all(&self.store.pool)
+			.scalar_all(&self.store.pool)
 			.await?;
 			Ok(ids)
 		}
@@ -81,7 +81,7 @@ impl OutboundRepository for Repository<'_> {
 		let result: NativeResult<Record> = async {
 			let snapshot: NativeRecord = {
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_records")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
@@ -120,7 +120,7 @@ impl OutboundRepository for Repository<'_> {
 				let query_bind_1 = id;
 				let query_bind_2 =
 					aidash_domain::capabilities::outbound::failure_disclosure(message);
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("core_records"))
 						.value_expr(Alias::new("state"), Expr::val("uncertain"))

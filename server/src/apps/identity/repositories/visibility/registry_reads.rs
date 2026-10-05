@@ -61,7 +61,7 @@ impl RegistryReadScope for Reads<'_> {
 		let result: NativeResult<Vec<RegistryJournalRow>> = async {
 			let rows: Vec<(String, String, String, String, Value)> = {
 				let query_bind_1 = run;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&reinhardt::query::Query::select()
 						.expr(reinhardt::query::SimpleExpr::from(
 							reinhardt::query::Expr::col(reinhardt::query::Alias::new("node_id")),
@@ -113,6 +113,7 @@ impl RegistryReadScope for Reads<'_> {
 						)
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
+				.columns(&["node_id", "entry_id", "entry_version", "digest", "metadata"])
 				.fetch_all(&mut **self.access.tx)
 				.await?
 			};

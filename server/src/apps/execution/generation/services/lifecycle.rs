@@ -3,10 +3,10 @@ use super::Request;
 pub(crate) use crate::apps::execution::generation::repositories::lifecycle::load;
 pub use crate::apps::execution::generation::serializers::lifecycle::{Action, Control, History};
 use crate::{Result, federation::Federation};
-use sqlx::{Postgres, Transaction};
+
 pub(crate) async fn transition(
 	f: &Federation,
-	tx: &mut Transaction<'_, Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	job: &Request,
 	status: &str,
 	actor: &str,

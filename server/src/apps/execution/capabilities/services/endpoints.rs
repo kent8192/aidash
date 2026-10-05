@@ -49,7 +49,7 @@ pub(crate) async fn areas(
 ) -> Result<AreaPage> {
 	let mut access = access(&f, actor).await?;
 	let result = async {
-		let rows: Vec<Area> = { let query_bind_1 = &access.identity.tenant; let query_bind_2 = &access.identity.subject; let query_bind_3 = page.cursor.unwrap_or(Uuid::nil()); let query_bind_4 = page.thread_id; let query_bind_5 = page.workspace_id; sqlx::query_as(&sessions::select("core_areas")
+		let rows: Vec<Area> = { let query_bind_1 = &access.identity.tenant; let query_bind_2 = &access.identity.subject; let query_bind_3 = page.cursor.unwrap_or(Uuid::nil()); let query_bind_4 = page.thread_id; let query_bind_5 = page.workspace_id; crate::database::native::query_as(&sessions::select("core_areas")
 				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(query_bind_1.to_owned())))
 				.and_where(Expr::col(Alias::new("owner")).eq(Expr::value(query_bind_2.to_owned())))
 				.and_where(Expr::col(Alias::new("id")).gt(Expr::value(query_bind_3.to_owned())))
@@ -503,7 +503,7 @@ pub(crate) async fn outbound_history(
 			let query_bind_2 = &access.identity.subject;
 			let query_bind_3 = id.to_string();
 			let query_bind_4 = page.cursor.unwrap_or(Uuid::nil());
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&sessions::select("core_records")
 					.and_where(
 						Expr::col(Alias::new("tenant")).eq(Expr::value(query_bind_1.to_owned())),
@@ -546,7 +546,7 @@ pub(crate) async fn approval_list(
 ) -> Result<ApprovalPage> {
 	let mut access = access(&f, actor).await?;
 	let result=async {
-        let rows:Vec<super::records::Record>={ let query_bind_1 = &access.identity.tenant; let query_bind_2 = &access.identity.subject; let query_bind_3 = page.cursor.unwrap_or(Uuid::nil()); sqlx::query_as(&sessions::select("core_records")
+        let rows:Vec<super::records::Record>={ let query_bind_1 = &access.identity.tenant; let query_bind_2 = &access.identity.subject; let query_bind_3 = page.cursor.unwrap_or(Uuid::nil()); crate::database::native::query_as(&sessions::select("core_records")
             .and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(query_bind_1.to_owned()))).and_where(Expr::col(Alias::new("kind")).is_in(["outbound","grant"]))
             .and_where(SimpleExpr::CustomWithExpr("(owner = ? OR data->>'approver' = ?)".into(), vec![Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
             .and_where(Expr::col(Alias::new("id")).gt(Expr::value(query_bind_3.to_owned()))).order_by(Alias::new("id"),Order::Asc).limit(51).to_string(PostgresQueryBuilder)).fetch_all(&mut **access.tx).await? };
@@ -730,7 +730,7 @@ pub(crate) async fn file_download(
 				let query_bind_1 = file;
 				let query_bind_2 = id;
 				let query_bind_3 = &access.identity.tenant;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&reinhardt::query::Query::select()
 						.columns(["digest", "size", "kind"].map(Alias::new))
 						.from(Alias::new("core_objects"))
@@ -752,6 +752,7 @@ pub(crate) async fn file_download(
 						]))
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["digest", "size", "kind"])
 				.fetch_optional(&mut **access.tx)
 				.await?
 			};
@@ -920,7 +921,7 @@ pub(crate) async fn transfer_history(
 			let query_bind_2 = &access.identity.tenant;
 			let query_bind_3 = &access.identity.subject;
 			let query_bind_4 = page.cursor.unwrap_or(Uuid::nil());
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&sessions::select("core_records")
 					.and_where(
 						Expr::col(Alias::new("area_id")).eq(Expr::value(query_bind_1.to_owned())),
@@ -1009,10 +1010,10 @@ pub(crate) async fn operation_history(
 	let (mut access, run) = run_access(&f, actor, id).await?;
 	let result=async {
         let area=sessions::for_run(&mut access,&run).await?;
-        let rows:Vec<(Uuid,String,String)>={ let query_bind_1 = run.id; let query_bind_2 = area.id; let query_bind_3 = page.cursor.unwrap_or(Uuid::nil()); sqlx::query_as(&reinhardt::query::Query::select().columns(["id","kind","state"].map(Alias::new)).from(Alias::new("core_operations"))
+        let rows:Vec<(Uuid,String,String)>={ let query_bind_1 = run.id; let query_bind_2 = area.id; let query_bind_3 = page.cursor.unwrap_or(Uuid::nil()); crate::database::native::query_as(&reinhardt::query::Query::select().columns(["id","kind","state"].map(Alias::new)).from(Alias::new("core_operations"))
             .and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(query_bind_1.to_owned())))
             .and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(query_bind_2.to_owned())))
-            .and_where(Expr::col(Alias::new("id")).gt(Expr::value(query_bind_3.to_owned()))).order_by(Alias::new("id"),Order::Asc).limit(33).to_string(PostgresQueryBuilder)).fetch_all(&mut **access.tx).await? };
+            .and_where(Expr::col(Alias::new("id")).gt(Expr::value(query_bind_3.to_owned()))).order_by(Alias::new("id"),Order::Asc).limit(33).to_string(PostgresQueryBuilder)).columns(&["id", "kind", "state"]).fetch_all(&mut **access.tx).await? };
         let cursor=if rows.len()==33 {Some(rows[31].0)}else{None};
         Ok(json!({"items":rows.into_iter().take(32).map(|(id,kind,status)|json!({"operation_id":id,"kind":kind,"status":status})).collect::<Vec<_>>(),"next_cursor":cursor}))
     }.await;
@@ -1030,7 +1031,7 @@ pub(crate) async fn reference_list(
 			let query_bind_1 = &access.identity.tenant;
 			let query_bind_2 = &access.identity.subject;
 			let query_bind_3 = page.cursor.unwrap_or(Uuid::nil());
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&reinhardt::query::Query::select()
 					.column(Alias::new("id"))
 					.from(Alias::new("core_records"))
@@ -1050,7 +1051,7 @@ pub(crate) async fn reference_list(
 					.limit(51)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_all(&mut **access.tx)
+			.scalar_all(&mut **access.tx)
 			.await?
 		};
 		let next_cursor = if ids.len() == 51 { Some(ids[49]) } else { None };

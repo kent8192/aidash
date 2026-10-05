@@ -143,7 +143,7 @@ impl SemanticMemoryReadSession for Memory<'_, '_> {
 		let result: NativeResult<Vec<(Uuid, i64)>> = async {
 			let dependencies: Vec<(Uuid, i64)> = {
 				let query_bind_1 = run;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.expr(SimpleExpr::from(Expr::col(Alias::new("entry_id"))))
 						.expr(SimpleExpr::from(Expr::col(Alias::new("revision"))))
@@ -162,6 +162,7 @@ impl SemanticMemoryReadSession for Memory<'_, '_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["entry_id", "revision"])
 				.fetch_all(&mut **self.entries.lease.tx())
 				.await?
 			};
@@ -174,7 +175,7 @@ impl SemanticMemoryReadSession for Memory<'_, '_> {
 		let result: NativeResult<native::Entry> = async {
 			let entry: native::Entry = {
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
 						.from(Alias::new("semantic_entries"))
@@ -196,7 +197,7 @@ impl SemanticMemoryReadSession for Memory<'_, '_> {
 		let result: NativeResult<Option<String>> = async {
 			let digest: Option<String> = {
 				let query_bind_1 = point;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.expr(SimpleExpr::from(Expr::col(Alias::new("content_digest"))))
 						.from(Alias::new("semantic_points"))
@@ -206,7 +207,7 @@ impl SemanticMemoryReadSession for Memory<'_, '_> {
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(&mut **self.entries.lease.tx())
+				.scalar_one(&mut **self.entries.lease.tx())
 				.await?
 			};
 			Ok(digest)
@@ -221,7 +222,7 @@ impl SemanticMemoryWriteSession for MemoryWriter<'_, '_> {
 		let result: NativeResult<bool> = async {
 			let exists: bool = {
 				let query_bind_1 = workspace;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.expr(SimpleExpr::CustomWithExpr(
 							"(EXISTS(SELECT 1 FROM semantic_indexes WHERE workspace_id = ?))"
@@ -230,7 +231,7 @@ impl SemanticMemoryWriteSession for MemoryWriter<'_, '_> {
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(&mut **self.inner.entries.lease.tx())
+				.scalar_one(&mut **self.inner.entries.lease.tx())
 				.await?
 			};
 			Ok(exists)
@@ -243,7 +244,7 @@ impl SemanticMemoryWriteSession for MemoryWriter<'_, '_> {
 			let revision: Option<i64> = {
 				let query_bind_1 = workspace;
 				let query_bind_2 = &key;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.expr(SimpleExpr::from(Expr::col(Alias::new("revision"))))
 						.from(Alias::new("semantic_entries"))
@@ -256,7 +257,7 @@ impl SemanticMemoryWriteSession for MemoryWriter<'_, '_> {
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **self.inner.entries.lease.tx())
+				.scalar_optional(&mut **self.inner.entries.lease.tx())
 				.await?
 			};
 			Ok(revision)
@@ -271,7 +272,7 @@ impl SemanticMemoryWriteSession for MemoryWriter<'_, '_> {
 				let query_bind_2 = run.workspace_id;
 				let query_bind_3 = &run.agent_id;
 				let query_bind_4 = &run.agent_version;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::insert()
 						.into_table(Alias::new("semantic_agent_memory"))
 						.columns([

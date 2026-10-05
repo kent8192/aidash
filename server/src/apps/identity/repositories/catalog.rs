@@ -115,11 +115,11 @@ async fn document(access: &mut Access, reference: &EntityRef) -> Result<Option<V
 			.lock_tables([Alias::new("c")])
 			.to_string(PostgresQueryBuilder)
 	};
-	let document: Option<Value> = sqlx::query_scalar(&query)
+	let document: Option<Value> = crate::database::native::query_scalar(&query)
 		.bind(&access.identity.tenant)
 		.bind(&reference.id)
 		.bind(&reference.version)
-		.fetch_optional(&mut **access.tx)
+		.scalar_optional(&mut **access.tx)
 		.await?;
 
 	Ok(document)
@@ -202,9 +202,9 @@ async fn documents(access: &mut Access) -> Result<Vec<Value>> {
 			.lock_tables([Alias::new("c")])
 			.to_string(PostgresQueryBuilder)
 	};
-	let documents: Vec<Value> = sqlx::query_scalar(&query)
+	let documents: Vec<Value> = crate::database::native::query_scalar(&query)
 		.bind(&access.identity.tenant)
-		.fetch_all(&mut **access.tx)
+		.scalar_all(&mut **access.tx)
 		.await?;
 
 	Ok(documents)

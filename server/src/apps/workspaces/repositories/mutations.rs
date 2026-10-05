@@ -84,7 +84,7 @@ impl WorkspaceMutations for NativeMutations<'_> {
 				let query_bind_1 = id;
 				let query_bind_2 = &self.access.identity.tenant;
 				let query_bind_3 = &self.access.identity.subject;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::insert()
 						.into_table(Alias::new("authorization_workspaces"))
 						.columns([

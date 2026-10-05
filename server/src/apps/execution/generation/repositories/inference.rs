@@ -27,14 +27,14 @@ impl GenerationInferenceAuthority for NativeInferenceAuthority<'_> {
 			let query_bind_1 = &access.identity.tenant;
 			let query_bind_2 = node;
 			let query_bind_3 = &access.subjects;
-			sqlx::query_scalar(&Query::select()
+			crate::database::native::query_scalar(&Query::select()
 			.expr(SimpleExpr::from(Expr::col(Alias::new("id"))))
 			.from(Alias::new("generation_requests"))
 			.and_where(SimpleExpr::CustomWithExpr("(tenant = ? AND (? || '/agents/' || agent_id || '@' || agent_version) = ANY(?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), crate::database::text_array(query_bind_3.to_owned())]))
 			.order_by_expr(SimpleExpr::from(Expr::col(Alias::new("id"))), Order::Asc)
 			.to_string(PostgresQueryBuilder))
-	.fetch_all(&mut **access.tx)
-	.await.map_err(Error::from)?
+	.scalar_all(&mut **access.tx)
+	.await?
 		};
 		Ok(requests)
 	}

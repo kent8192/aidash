@@ -205,11 +205,7 @@ impl Context {
 							.map_err(|_| Closed::Authority)?
 							.then(|| event.cloud_event().to_string()),
 						None => {
-							let mut connection = self
-								.f
-								.store
-								.pool
-								.acquire()
+							let mut connection = crate::database::native::begin(&self.f.store.pool)
 								.await
 								.map_err(|_| Closed::Database)?;
 							crate::authorization::remote::operator::event_visible(
@@ -284,13 +280,13 @@ impl Service {
 		if cursor < 0 {
 			let _visibility = ReadLease::begin(&context.f.store).await?;
 			self.record_read(Reasons::INITIAL);
-			cursor = sqlx::query_scalar(
+			cursor = crate::database::native::query_scalar(
 				&reinhardt::query::Query::select()
 					.expr(reinhardt::query::Expr::cust("coalesce(max(sequence),0)"))
 					.from(reinhardt::query::Alias::new("events"))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_one(&context.f.store.pool)
+			.scalar_one(&context.f.store.pool)
 			.await?;
 		}
 		let control = Arc::new(Control {

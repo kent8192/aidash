@@ -8,16 +8,14 @@ use aidash_application::{
 };
 use aidash_domain::registry::{EntityRef, Entry, workbench::profile::TestProfile};
 use async_trait::async_trait;
-use reinhardt::db::backends::{TransactionExecutor, dialect::postgres::PgTransactionExecutor};
+use reinhardt::db::backends::TransactionExecutor;
 use serde_json::Value;
 use uuid::Uuid;
 #[async_trait]
 impl RealDispatchRepository for Repository {
 	async fn begin_real(&self) -> Result<Box<dyn RealDispatchScope + '_>> {
 		Ok(Box::new(Scope {
-			tx: PgTransactionExecutor::new(
-				self.store.pool.begin().await.map_err(crate::Error::from)?,
-			),
+			tx: crate::database::native::begin(&self.store.pool).await?,
 			actor: self.actor.clone(),
 			node_id: self.node_id.clone(),
 		}))

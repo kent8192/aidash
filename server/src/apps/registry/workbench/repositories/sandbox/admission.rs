@@ -10,15 +10,13 @@ use aidash_domain::registry::workbench::{
 	sandbox::{TestLimits, TestSession},
 };
 use async_trait::async_trait;
-use reinhardt::db::backends::dialect::postgres::PgTransactionExecutor;
+
 use serde_json::Value;
 #[async_trait]
 impl AdmissionRepository for Repository {
 	async fn begin_admission(&self) -> Result<Box<dyn AdmissionScope + '_>> {
 		Ok(Box::new(Scope {
-			tx: PgTransactionExecutor::new(
-				self.store.pool.begin().await.map_err(crate::Error::from)?,
-			),
+			tx: crate::database::native::begin(&self.store.pool).await?,
 			actor: self.actor.clone(),
 			node_id: self.node_id.clone(),
 		}))

@@ -1,5 +1,5 @@
 //! Foreign lifecycle queries retain database-time retry CAS and original visibility boundaries.
-use crate::{Error, federation::Federation, transactions::gate::ReadLease};
+use crate::{federation::Federation, transactions::gate::ReadLease};
 use aidash_application::{
 	Result,
 	ports::generation::{
@@ -38,12 +38,12 @@ impl ForeignGenerationMaintenance for NativeMaintenance {
 	}
 	async fn reserve_retry(&self, id: Uuid) -> Result<u64> {
 		let f = &self.federation;
-		let reserved = { let query_bind_1 = id; sqlx::query(&Query::update()
+		let reserved = { let query_bind_1 = id; crate::database::native::query(&Query::update()
 			.table(Alias::new("generation_remote_intents")).value_expr(Alias::new("cancel_retry_at"), Expr::cust("CLOCK_TIMESTAMP() + INTERVAL '30 seconds'"))
 			.and_where(SimpleExpr::CustomWithExpr("(id=? AND cancelled AND NOT cancel_delivered AND (cancel_retry_at IS NULL OR cancel_retry_at<=CLOCK_TIMESTAMP()))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()]))
 			.to_string(PostgresQueryBuilder))
 	.execute(&f.store.pool)
-	.await.map_err(Error::from)? }
+	.await? }
 	.rows_affected();
 		Ok(reserved)
 	}
@@ -62,7 +62,7 @@ impl ForeignGenerationMaintenance for NativeMaintenance {
 
 		{
 			let query_bind_1 = id;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("generation_remote_intents"))
 					.value(Alias::new("cancel_delivered"), true)
@@ -73,14 +73,13 @@ impl ForeignGenerationMaintenance for NativeMaintenance {
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&f.store.pool)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(())
 	}
 	async fn pending(&self) -> Result<Vec<(Uuid, Value)>> {
 		let f = &self.federation;
-		let pending: Vec<(Uuid, Value)> = sqlx::query_as(
+		let pending: Vec<(Uuid, Value)> = crate::database::native::query_as(
 		&Query::select()
 			.columns([Alias::new("id"), Alias::new("binding")])
 			.from(Alias::new("generation_remote_intents"))
@@ -88,16 +87,16 @@ impl ForeignGenerationMaintenance for NativeMaintenance {
 			.order_by(Alias::new("cancel_retry_at"), reinhardt::query::Order::Asc)
 			.limit(16)
 			.to_string(PostgresQueryBuilder),
-	)
+	).columns(&["id", "binding"])
 	.fetch_all(&f.store.pool)
-	.await.map_err(Error::from)?;
+	.await?;
 		Ok(pending)
 	}
 	async fn jobs(&self) -> Result<Vec<Request>> {
 		let f = &self.federation;
 		let jobs:Vec<Request>=crate::database::query_as(&Query::select().column(reinhardt::query::ColumnRef::table_asterisk("g")).from_as(Alias::new("generation_requests"),Alias::new("g")).join(reinhardt::query::JoinType::LeftJoin, reinhardt::query::TableRef::table_alias(Alias::new("runs"), Alias::new("r")), Expr::cust("r.id=g.admission_id AND r.home_node=g.home_node"))
     .and_where(Expr::cust("g.home_node<>'' AND g.status IN ('PENDING_APPROVAL','QUEUED','ACTIVE') AND (g.expires_at<=CLOCK_TIMESTAMP() OR r.phase IN ('COMPLETED','FAILED','CANCELLED'))"))
-    .order_by((Alias::new("g"),Alias::new("created_at")),reinhardt::query::Order::Asc).limit(16).to_string(PostgresQueryBuilder)).fetch_all(&f.store.pool).await.map_err(Error::from)?;
+    .order_by((Alias::new("g"),Alias::new("created_at")),reinhardt::query::Order::Asc).limit(16).to_string(PostgresQueryBuilder)).fetch_all(&f.store.pool).await?;
 		Ok(jobs)
 	}
 	async fn cancel_job(&self, source: &str, id: Uuid) -> Result<Option<Request>> {
@@ -119,8 +118,7 @@ impl ForeignGenerationMaintenance for NativeMaintenance {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_optional(&f.store.pool)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(job)
 	}

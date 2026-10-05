@@ -338,7 +338,7 @@ async fn media_only_channel_message_preserves_attachment_order_and_retry_identit
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -358,7 +358,7 @@ async fn media_only_channel_message_preserves_attachment_order_and_retry_identit
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 	}
 	.unwrap();

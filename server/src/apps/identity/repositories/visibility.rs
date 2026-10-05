@@ -133,7 +133,7 @@ impl RunVisibilityScope for Reads<'_> {
 			let this = &mut *self.access;
 			let admission: Option<Uuid> = {
 				let query_bind_1 = id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("authorization_remote_admissions"))
@@ -147,7 +147,7 @@ impl RunVisibilityScope for Reads<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **this.tx)
+				.scalar_optional(&mut **this.tx)
 				.await?
 			};
 			Ok(admission.is_some())
@@ -163,7 +163,7 @@ impl RunVisibilityScope for Reads<'_> {
 				let query_bind_2 = run.task_id;
 				let query_bind_3 = run.workspace_id;
 				let query_bind_4 = &this.identity.tenant;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("run_id"))
 						.from(Alias::new("authorization_execution"))
@@ -178,7 +178,7 @@ impl RunVisibilityScope for Reads<'_> {
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **this.tx)
+				.scalar_optional(&mut **this.tx)
 				.await?
 			};
 			Ok(local.is_some())

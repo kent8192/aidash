@@ -28,7 +28,7 @@ pub(super) async fn insert_run(f: &Federation, control: &str) -> Uuid {
 			])
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&f.store.pool)
+	.execute(f.store.pool.driver())
 	.await
 	.unwrap();
 	id
@@ -69,7 +69,7 @@ async fn ordering_release_only_notifies_the_next_unblocked_run(
 			])
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&f.store.pool)
+	.execute(f.store.pool.driver())
 	.await
 	.unwrap();
 	let mut runs = Vec::new();
@@ -87,7 +87,7 @@ async fn ordering_release_only_notifies_the_next_unblocked_run(
 				])
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap();
 		runs.push(run);
@@ -109,7 +109,7 @@ async fn ordering_release_only_notifies_the_next_unblocked_run(
 				.and_where(Expr::col(a("id")).eq(Expr::value(runs[index])))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap();
 		if let Some(next) = next {
@@ -123,7 +123,7 @@ async fn ordering_release_only_notifies_the_next_unblocked_run(
 				.order_by(a("generation"), reinhardt::query::Order::Asc)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(&f.store.pool)
+		.fetch_all(f.store.pool.driver())
 		.await
 		.unwrap();
 		assert_eq!(actual, expected, "unexpected release after run {index}");
@@ -157,7 +157,7 @@ async fn visibility_release_retries_existing_work_without_fanout(
 			])
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&f.store.control_pool)
+	.execute(f.store.control_pool.driver())
 	.await
 	.unwrap();
 	sqlx::query(
@@ -166,7 +166,7 @@ async fn visibility_release_retries_existing_work_without_fanout(
 			.value(a("transaction_id"), transaction)
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&f.store.control_pool)
+	.execute(f.store.control_pool.driver())
 	.await
 	.unwrap();
 	let settings = Settings {
@@ -187,7 +187,7 @@ async fn visibility_release_retries_existing_work_without_fanout(
 			.value(a("transaction_id"), Option::<Uuid>::None)
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&f.store.control_pool)
+	.execute(f.store.control_pool.driver())
 	.await
 	.unwrap();
 	let after_release = count(&f, "TRUE").await;
@@ -236,7 +236,7 @@ async fn approval_notifications_target_only_the_bound_run(
 				.and_where(Expr::col(a("id")).eq(reinhardt::query::Expr::value(run)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap();
 	}
@@ -259,7 +259,7 @@ async fn approval_notifications_target_only_the_bound_run(
 				])
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap();
 	}
@@ -270,7 +270,7 @@ async fn approval_notifications_target_only_the_bound_run(
 			.and_where(Expr::col(a("id")).eq(reinhardt::query::Expr::value(approval)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&f.store.pool)
+	.execute(f.store.pool.driver())
 	.await
 	.unwrap();
 	let actual: Vec<Uuid> = sqlx::query_scalar(
@@ -280,7 +280,7 @@ async fn approval_notifications_target_only_the_bound_run(
 			.and_where(Expr::col(a("reason")).eq("approval"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(&f.store.pool)
+	.fetch_all(f.store.pool.driver())
 	.await
 	.unwrap();
 	cleanup(f, &url, &schema).await;

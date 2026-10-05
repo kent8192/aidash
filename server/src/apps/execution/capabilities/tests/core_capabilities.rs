@@ -66,7 +66,7 @@ impl CoreFixture {
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_all(&self.f.store.pool)
+			.fetch_all(self.f.store.pool.driver())
 			.await
 			.unwrap();
 			let client = reqwest::Client::builder()
@@ -1093,7 +1093,7 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&c.f.store.pool)
+		.execute(c.f.store.pool.driver())
 		.await
 	}
 	.unwrap();

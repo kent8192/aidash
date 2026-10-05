@@ -148,7 +148,7 @@ async fn count(f: &Federation, predicate: &str) -> i64 {
 			.and_where(Expr::cust(predicate))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&f.store.pool)
+	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap()
 }
@@ -190,7 +190,7 @@ async fn complete(f: &Federation, id: Uuid) {
 					.and_where(Expr::col(a("run_id")).eq(Expr::value(id)))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(&f.store.pool)
+			.fetch_one(f.store.pool.driver())
 			.await
 			.unwrap();
 			panic!("did not complete: {run:?}; activations: {activations}");
@@ -327,7 +327,7 @@ async fn separate_process_notifications_and_negative_control(
 					.limit(1)
 					.to_string(PostgresQueryBuilder);
 				if let Some(row) = sqlx::query_as(&query)
-					.fetch_optional(&f.store.pool)
+					.fetch_optional(f.store.pool.driver())
 					.await
 					.unwrap()
 				{
@@ -385,7 +385,7 @@ async fn separate_process_notifications_and_negative_control(
 				.and_where(Expr::col(a("claimed_at")).is_not_null())
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_all(&f.store.pool)
+		.fetch_all(f.store.pool.driver())
 		.await
 		.unwrap();
 		assert!(!owners.is_empty());
@@ -537,7 +537,7 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 	let run = admit(&f, &token, task).await;
 	let original = count(&f, "TRUE").await;
 	let mut tx = f.store.pool.begin().await.unwrap();
-	sqlx::query(
+	aidash_server::database::native::query(
 		&Query::update()
 			.table(a("runs"))
 			.value(a("control"), "PAUSED")
@@ -550,13 +550,13 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 	aidash_server::activation::request_in(&mut tx, run)
 		.await
 		.unwrap();
-	let within: i64 = sqlx::query_scalar(
+	let within: i64 = aidash_server::database::native::query_scalar(
 		&Query::select()
 			.expr(Expr::cust("COUNT(*)"))
 			.from(a("run_activations"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&mut *tx)
+	.scalar_one(&mut *tx)
 	.await
 	.unwrap();
 	assert!(within >= original + 2);
@@ -582,7 +582,7 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 			.and_where(Expr::col(a("id")).eq(reinhardt::query::Expr::value(run)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&f.store.pool)
+	.execute(f.store.pool.driver())
 	.await
 	.unwrap();
 	std::fs::remove_file(&pause).unwrap();
@@ -601,7 +601,7 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 			.limit(1)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&f.store.pool)
+	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap();
 	let envelope = aidash_server::activation::Envelope {
@@ -652,7 +652,7 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 				.from(a("activation_quarantine"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 		.unwrap();
 		if quarantined == 4 {
@@ -701,7 +701,7 @@ async fn atomic_deadlines_duplicates_quarantine_and_input_during_active_owner(
 			.and_where(Expr::col(a("run_id")).eq(reinhardt::query::Expr::value(active)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&f.store.pool)
+	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(finished.observed_input_seq, seq);
@@ -1029,7 +1029,7 @@ async fn killed_after_ack_recovers_only_after_real_lease_expiry(
 				.expr(Expr::cust("CURRENT_TIMESTAMP"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 		.unwrap();
 		if now >= leased.lease_until.unwrap() {
@@ -1252,7 +1252,7 @@ async fn startup_reconciliation_drains_all_batches(
 		]);
 	}
 	sqlx::query(&insert.to_string(PostgresQueryBuilder))
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap();
 	// Model an upgrade from writers predating the activation table/triggers.
@@ -1261,7 +1261,7 @@ async fn startup_reconciliation_drains_all_batches(
 			.from_table(a("run_activations"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&f.store.pool)
+	.execute(f.store.pool.driver())
 	.await
 	.unwrap();
 	let settings = Settings {
@@ -1407,7 +1407,7 @@ async fn embedded_worker_child() {
 					.from(a("activation_quarantine"))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(&f.store.pool)
+			.fetch_one(f.store.pool.driver())
 			.await
 			.unwrap();
 			if quarantined == 1 {

@@ -41,7 +41,7 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 		let result: NativeResult<Option<native::Index>> = async {
 			let configured: Option<native::Index> = {
 				let query_bind_1 = workspace;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.expr(SimpleExpr::from(Expr::col(ColumnRef::Asterisk)))
 						.from(Alias::new("semantic_indexes"))
@@ -68,7 +68,7 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 		let result: NativeResult<Vec<native::Entry>> = async {
 			let rows: Vec<native::Entry> = {
 				let query_bind_1 = workspace;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&reinhardt::query::Query::select()
 						.expr(reinhardt::query::SimpleExpr::from(
 							reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
@@ -103,7 +103,7 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 		let result: NativeResult<String> = async {
 			let digest: String = {
 				let query_bind_1 = point;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&reinhardt::query::Query::select()
 						.expr(reinhardt::query::Expr::cust("COALESCE(content_digest, '')"))
 						.from(reinhardt::query::Alias::new("semantic_points"))
@@ -113,7 +113,7 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 						))
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **lease.tx())
+				.scalar_optional(&mut **lease.tx())
 				.await?
 			}
 			.unwrap_or_default();

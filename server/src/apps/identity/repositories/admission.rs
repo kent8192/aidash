@@ -142,7 +142,7 @@ impl ExecutionAdmissionSession for Admission<'_> {
 			let run_id: Uuid = {
 				let query_bind_1 = &f.config.node_id;
 				let query_bind_2 = task;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("runs"))
@@ -169,7 +169,7 @@ impl ExecutionAdmissionSession for Admission<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(&mut **access.tx)
+				.scalar_one(&mut **access.tx)
 				.await?
 			};
 			Ok(run_id)
@@ -189,7 +189,7 @@ impl ExecutionAdmissionSession for Admission<'_> {
 				let query_bind_5 = grant.credential_id;
 				let query_bind_6 = &grant.root_subject;
 				let query_bind_7 = &grant.subject_chain;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::insert()
 						.into_table(Alias::new("authorization_execution"))
 						.columns([
@@ -248,7 +248,7 @@ impl ExecutionAdmissionSession for Admission<'_> {
 			let access = &mut *self.access;
 			let origin: Option<(Uuid, Uuid)> = {
 				let query_bind_1 = credential;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.columns([Alias::new("identity_id"), Alias::new("id")])
 						.from(Alias::new("dashboard_mappings"))
@@ -263,6 +263,7 @@ impl ExecutionAdmissionSession for Admission<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["identity_id", "id"])
 				.fetch_optional(&mut **access.tx)
 				.await?
 			};
@@ -286,7 +287,7 @@ impl ExecutionAdmissionSession for Admission<'_> {
 				let query_bind_1 = run_id;
 				let query_bind_2 = identity_id;
 				let query_bind_3 = mapping_id;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::insert()
 						.into_table(Alias::new("dashboard_execution_origins"))
 						.columns([

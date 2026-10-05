@@ -13,15 +13,14 @@ use crate::apps::workspaces::models::{
 };
 use crate::apps::workspaces::serializers::tasks::TaskPage;
 use crate::apps::workspaces::services::snapshots;
+use crate::database::native::Pool;
 use crate::{
 	Error, Result,
 	domain::*,
 	registry::{Entry, Search},
 };
 use reinhardt::core::exception::Error as FrameworkError;
-use reinhardt::db::backends::{
-	DatabaseConnection as BackendConnection, PostgresBackend, TransactionExecutor,
-};
+use reinhardt::db::backends::{DatabaseConnection as BackendConnection, TransactionExecutor};
 use reinhardt::db::orm::{Model, connection::DatabaseConnectionLease};
 use reinhardt::query::ColumnRef;
 use reinhardt::query::OnConflict;
@@ -29,16 +28,14 @@ use reinhardt::query::SimpleExpr;
 use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 use serde_json::{Value, json};
-use sqlx::{PgPool, Postgres, Transaction};
 use std::future::Future;
-use std::sync::Arc;
 use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct Store {
 	pub capabilities: crate::capabilities::Runtime,
-	pub pool: PgPool,
-	pub control_pool: PgPool,
+	pub pool: Pool,
+	pub control_pool: Pool,
 	pub node_id: String,
 	pub semantic_client: reqwest::Client,
 	pub(crate) recovery_cursors: std::sync::Arc<run_state::RecoveryCursors>,
@@ -137,7 +134,7 @@ impl Store {
 	pub(crate) async fn require_legacy_execution(&self, workspace: Uuid) -> Result<()> {
 		let scoped: bool = {
 			let query_bind_1 = workspace;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.expr(SimpleExpr::CustomWithExpr(
 						"(EXISTS(SELECT 1 FROM authorization_workspaces WHERE workspace_id = ?))"
@@ -146,7 +143,7 @@ impl Store {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_one(&self.pool)
+			.scalar_one(&self.pool)
 			.await?
 		};
 		if scoped {
@@ -157,7 +154,7 @@ impl Store {
 
 	/// Share this store's existing data pool with native persistence operations.
 	pub(crate) fn database(&self) -> BackendConnection {
-		BackendConnection::new(Arc::new(PostgresBackend::new(self.pool.clone())))
+		self.pool.connection()
 	}
 
 	/// Borrow this store's existing pool through an owned native ORM scope.
@@ -165,7 +162,7 @@ impl Store {
 		Ok(DatabaseConnectionLease::register(self.database())?)
 	}
 
-	pub async fn from_pool(pool: PgPool, node_id: String) -> Result<Self> {
+	pub async fn from_pool(pool: sqlx::PgPool, node_id: String) -> Result<Self> {
 		let control_pool = pool
 			.options()
 			.clone()
@@ -173,8 +170,8 @@ impl Store {
 			.connect_with(pool.connect_options().as_ref().clone())
 			.await?;
 		Ok(Self {
-			pool,
-			control_pool,
+			pool: pool.into(),
+			control_pool: control_pool.into(),
 			node_id,
 			semantic_client: crate::semantic::backend::client()?,
 			recovery_cursors: Default::default(),
@@ -192,7 +189,8 @@ impl Store {
 			.max_connections(4)
 			.idle_timeout(std::time::Duration::from_secs(10))
 			.connect_with(self.control_pool.connect_options().as_ref().clone())
-			.await?;
+			.await?
+			.into();
 		Ok(store)
 	}
 
@@ -208,7 +206,7 @@ impl Store {
 			.connect_with(self.pool.connect_options().as_ref().clone())
 			.await?;
 		Ok(Self {
-			pool,
+			pool: pool.into(),
 			control_pool: self.control_pool.clone(),
 			node_id: self.node_id.clone(),
 			semantic_client: self.semantic_client.clone(),
@@ -229,16 +227,17 @@ impl Store {
 			.idle_timeout(std::time::Duration::from_secs(10))
 			.connect_with(self.pool.connect_options().as_ref().clone())
 			.await?;
-		let control_pool = self
+		let control_pool: Pool = self
 			.control_pool
 			.options()
 			.clone()
 			.max_connections(4)
 			.idle_timeout(std::time::Duration::from_secs(10))
 			.connect_with(self.control_pool.connect_options().as_ref().clone())
-			.await?;
+			.await?
+			.into();
 		Ok(Self {
-			pool,
+			pool: pool.into(),
 			control_pool,
 			node_id: self.node_id.clone(),
 			semantic_client: self.semantic_client.clone(),
@@ -248,13 +247,13 @@ impl Store {
 	}
 	pub async fn event(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		workspace: Option<Uuid>,
 		kind: &str,
 		data: Value,
 	) -> Result<Event> {
 		// Sequence allocation and commit order must agree for Last-Event-ID replay.
-		sqlx::query(
+		crate::database::native::query(
 			&Query::select()
 				.expr(Expr::cust("PG_ADVISORY_XACT_LOCK(71003201)"))
 				.to_string(PostgresQueryBuilder),
@@ -322,7 +321,7 @@ impl Store {
 			.await
 	}
 	pub async fn create_workspace(&self, title: &str, goal: &str) -> Result<Workspace> {
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let workspace = self
 			.create_workspace_in(&mut tx, Uuid::new_v4(), title, goal)
 			.await?;
@@ -331,7 +330,7 @@ impl Store {
 	}
 	pub(crate) async fn create_workspace_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		id: Uuid,
 		title: &str,
 		goal: &str,
@@ -385,14 +384,14 @@ impl Store {
 		Ok(WorkspaceRecord::read(&mut lease.handle(), id).await?.into())
 	}
 	pub async fn update_state(&self, id: Uuid, revision: i64, state: Value) -> Result<Workspace> {
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let workspace = self.update_state_in(&mut tx, id, revision, state).await?;
 		tx.commit().await?;
 		Ok(workspace)
 	}
 	pub(crate) async fn update_state_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		id: Uuid,
 		revision: i64,
 		state: Value,
@@ -456,7 +455,7 @@ impl Store {
 		creator: &str,
 		key: Option<&str>,
 	) -> Result<Task> {
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let task = self
 			.create_task_in(&mut tx, workspace, input, creator, key)
 			.await?;
@@ -465,7 +464,7 @@ impl Store {
 	}
 	pub(crate) async fn create_task_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		workspace: Uuid,
 		input: &NewTask,
 		creator: &str,
@@ -482,7 +481,7 @@ impl Store {
 			let valid: bool = {
 				let query_bind_1 = dep;
 				let query_bind_2 = workspace;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&reinhardt::query::Query::select()
 						.expr(SimpleExpr::CustomWithExpr(
 							"(EXISTS(SELECT 1 FROM tasks WHERE id = ? AND workspace_id = ?))"
@@ -494,7 +493,7 @@ impl Store {
 						))
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.fetch_one(&mut **tx)
+				.scalar_one(&mut **tx)
 				.await?
 			};
 			if !valid {
@@ -513,7 +512,7 @@ impl Store {
 			}
 			ancestor = {
 				let query_bind_1 = id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&reinhardt::query::Query::select()
 						.column(reinhardt::query::Alias::new("parent_id"))
 						.from(reinhardt::query::Alias::new("tasks"))
@@ -528,7 +527,7 @@ impl Store {
 						)
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.fetch_one(&mut **tx)
+				.scalar_one(&mut **tx)
 				.await?
 			};
 		}
@@ -554,7 +553,7 @@ impl Store {
 			};
 			let replay: bool = {
 				let query_bind_1 = key;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&reinhardt::query::Query::select()
 						.expr(SimpleExpr::CustomWithExpr(
 							"(EXISTS(SELECT 1 FROM tasks WHERE creation_key = ?))".to_owned(),
@@ -562,7 +561,7 @@ impl Store {
 						))
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.fetch_one(&mut **tx)
+				.scalar_one(&mut **tx)
 				.await?
 			};
 			if status.is_terminal() && !replay {
@@ -693,7 +692,7 @@ impl Store {
 		let task = self.task(id).await?;
 		self.require_legacy_execution(task.workspace_id).await?;
 		self.require_legacy_agent(&agent.id, &agent.version).await?;
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let claimed = self
 			.claim_in(&mut tx, &task, revision, owner, agent)
 			.await?;
@@ -702,7 +701,7 @@ impl Store {
 	}
 	pub(crate) async fn claim_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		task: &Task,
 		revision: i64,
 		owner: &str,
@@ -727,7 +726,7 @@ impl Store {
 				let query_bind_4 = &self.node_id;
 				let query_bind_5 = &agent.id;
 				let query_bind_6 = &agent.version;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::insert()
 						.into_table(Alias::new("runs"))
 						.columns([
@@ -779,7 +778,7 @@ impl Store {
 			let executor: (String, String) = {
 				let query_bind_1 = &self.node_id;
 				let query_bind_2 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.expr(SimpleExpr::from(Expr::col(Alias::new("agent_id"))))
 						.expr(SimpleExpr::from(Expr::col(Alias::new("agent_version"))))
@@ -794,6 +793,7 @@ impl Store {
 						.lock(LockType::Update)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["agent_id", "agent_version"])
 				.fetch_one(&mut **tx)
 				.await?
 			};
@@ -819,7 +819,7 @@ impl Store {
 		owner: &str,
 		next: TaskStatus,
 	) -> Result<Task> {
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let result = self
 			.transition_in(&mut tx, id, revision, owner, next)
 			.await?;
@@ -828,7 +828,7 @@ impl Store {
 	}
 	pub(crate) async fn transition_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		id: Uuid,
 		revision: i64,
 		owner: &str,
@@ -929,7 +929,7 @@ impl Store {
 		run_id: Uuid,
 		inputs: TerminalRunMessageInputs<'_>,
 	) -> Result<Task> {
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let result = self
 			.transition_remote_terminal_in(&mut tx, id, revision, owner, next, run_id, inputs)
 			.await?;
@@ -939,7 +939,7 @@ impl Store {
 	/// Explicit operator abandonment preserves the failed outcome and reason
 	/// while allowing the parent to finish using the remaining results.
 	pub async fn abandon_task(&self, id: Uuid, revision: i64, reason: &str) -> Result<Task> {
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let task = self
 			.abandon_task_in(&mut tx, id, revision, reason, "human")
 			.await?;
@@ -948,7 +948,7 @@ impl Store {
 	}
 	pub(crate) async fn abandon_task_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		id: Uuid,
 		revision: i64,
 		reason: &str,
@@ -987,7 +987,7 @@ impl Store {
 		}
 		let active_children: bool = {
 			let query_bind_1 = id;
-			sqlx::query_scalar(&reinhardt::query::Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM tasks WHERE parent_id = ? AND NOT status IN ('COMPLETED', 'ABANDONED')))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(&mut **tx).await?
+			crate::database::native::query_scalar(&reinhardt::query::Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM tasks WHERE parent_id = ? AND NOT status IN ('COMPLETED', 'ABANDONED')))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).scalar_one(&mut **tx).await?
 		};
 		if active_children {
 			return Err(Error::Conflict(
@@ -1060,7 +1060,7 @@ impl Store {
 		source_run: Option<Uuid>,
 		remote_run_fence: Option<(Uuid, i64)>,
 	) -> Result<Task> {
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let result = self
 			.complete_in(
 				&mut tx,
@@ -1079,7 +1079,7 @@ impl Store {
 	#[allow(clippy::too_many_arguments)]
 	pub(crate) async fn complete_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		id: Uuid,
 		owner: &str,
 		key: &str,
@@ -1148,7 +1148,7 @@ impl Store {
 		}
 		let unresolved: bool = {
 			let query_bind_1 = id;
-			sqlx::query_scalar(&reinhardt::query::Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM tasks WHERE parent_id = ? AND NOT status IN ('COMPLETED', 'ABANDONED')))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(&mut **tx).await?
+			crate::database::native::query_scalar(&reinhardt::query::Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM tasks WHERE parent_id = ? AND NOT status IN ('COMPLETED', 'ABANDONED')))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).scalar_one(&mut **tx).await?
 		};
 		if unresolved {
 			return Err(Error::Conflict("task has unresolved children".into()));
@@ -1158,10 +1158,10 @@ impl Store {
 				let query_bind_1 = id;
 				let query_bind_2 = run_id;
 				let query_bind_3 = through_seq;
-				sqlx::query_scalar(&reinhardt::query::Query::select()
+				crate::database::native::query_scalar(&reinhardt::query::Query::select()
 					.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM remote_run_message_fences WHERE task_id = ? AND NOT consumed AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) AND (run_id <> ? OR input_seq IS NULL OR input_seq > ?)))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()]))
 					.to_string(reinhardt::query::PostgresQueryBuilder))
-			.fetch_one(&mut **tx)
+			.scalar_one(&mut **tx)
 			.await?
 			};
 			if unobserved {
@@ -1174,7 +1174,7 @@ impl Store {
 				let query_bind_1 = id;
 				let query_bind_2 = run_id;
 				let query_bind_3 = through_seq;
-				sqlx::query(
+				crate::database::native::query(
 					&reinhardt::query::Query::update()
 						.table(reinhardt::query::Alias::new("remote_run_message_fences"))
 						.value_expr(
@@ -1321,7 +1321,7 @@ impl Store {
 		input: &ArtifactInput,
 		source_run: Option<Uuid>,
 	) -> Result<Artifact> {
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let result = self
 			.publish_artifact_in(&mut tx, task_id, owner, key, input, source_run)
 			.await?;
@@ -1330,7 +1330,7 @@ impl Store {
 	}
 	pub(crate) async fn publish_artifact_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		task_id: Uuid,
 		owner: &str,
 		key: &str,
@@ -1560,7 +1560,7 @@ impl Store {
 		content: &str,
 		key: Option<&str>,
 	) -> Result<Message> {
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let message = self
 			.message_in(&mut tx, workspace, sender, content, key)
 			.await?;
@@ -1670,7 +1670,7 @@ impl Store {
 		content: &str,
 		key: &str,
 	) -> Result<Message> {
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let task: Task = {
 			let query_bind_1 = task_id;
 			aidash_server::database::query_as(
@@ -1704,10 +1704,10 @@ impl Store {
 		let pending: bool = {
 			let query_bind_1 = task_id;
 			let query_bind_2 = run_id;
-			sqlx::query_scalar(&reinhardt::query::Query::select()
+			crate::database::native::query_scalar(&reinhardt::query::Query::select()
 				.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM remote_run_message_fences WHERE task_id = ? AND run_id = ? AND NOT consumed AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
 				.to_string(reinhardt::query::PostgresQueryBuilder))
-		.fetch_one(&mut *tx)
+		.scalar_one(&mut *tx)
 		.await?
 		};
 		if pending {
@@ -1726,14 +1726,14 @@ impl Store {
 		&self,
 		output: FencedRunMessageOutput<'_>,
 	) -> Result<Message> {
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let result = self.run_message_output_in(&mut tx, output).await?;
 		tx.commit().await?;
 		Ok(result)
 	}
 	pub(crate) async fn run_message_output_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		output: FencedRunMessageOutput<'_>,
 	) -> Result<Message> {
 		let FencedRunMessageOutput {
@@ -1782,23 +1782,23 @@ impl Store {
 			let query_bind_1 = task_id;
 			let query_bind_2 = run_id;
 			let query_bind_3 = included_input_seq;
-			sqlx::query_scalar(&reinhardt::query::Query::select()
+			crate::database::native::query_scalar(&reinhardt::query::Query::select()
 				.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM remote_run_message_fences WHERE task_id = ? AND run_id = ? AND NOT consumed AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP) AND (input_seq IS NULL OR input_seq > ?)))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()]))
 				.to_string(reinhardt::query::PostgresQueryBuilder))
-		.fetch_one(&mut **tx)
+		.scalar_one(&mut **tx)
 		.await?
 		};
 		if newer_input_pending {
 			return Err(Error::TransactionPending);
 		}
-		let _: String = sqlx::query_scalar(
+		let _: String = crate::database::native::query_scalar(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::Expr::cust(
 					"set_config('aidash.input_ledger_worker', 'true', true)",
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&mut **tx)
+		.scalar_one(&mut **tx)
 		.await?;
 		let message = self
 			.message_in(tx, workspace, sender, content, Some(key))
@@ -1967,7 +1967,7 @@ impl Store {
 			.await
 	}
 	pub async fn begin_final_completion(&self, run: &Run, worker: Uuid) -> Result<bool> {
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let mut current: Run = {
 			let query_bind_1 = run.id;
 			aidash_server::database::query_as(
@@ -1997,7 +1997,7 @@ impl Store {
 		let stale: bool = {
 			let query_bind_1 = run.id;
 			let query_bind_2 = run.observed_input_seq;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&reinhardt::query::Query::select()
 					.expr(SimpleExpr::CustomWithExpr(
 						"(EXISTS(SELECT 1 FROM run_inputs WHERE run_id = ? AND seq > ?))"
@@ -2009,7 +2009,7 @@ impl Store {
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_one(&mut *tx)
+			.scalar_one(&mut *tx)
 			.await?
 		};
 		if stale {
@@ -2020,7 +2020,7 @@ impl Store {
 			let query_bind_1 = run.id;
 			let query_bind_2 = worker;
 			let query_bind_3 = current.stored_pending()?;
-			sqlx::query(
+			crate::database::native::query(
 				&reinhardt::query::Query::update()
 					.table(reinhardt::query::Alias::new("runs"))
 					.value_expr(
@@ -2056,7 +2056,7 @@ impl Store {
 		content: &str,
 		key: &str,
 	) -> Result<()> {
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let message = self
 			.message_in(&mut tx, run.workspace_id, sender, content, Some(key))
 			.await?;
@@ -2073,7 +2073,7 @@ impl Store {
 	}
 	pub(crate) async fn record_output_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		run: Option<Uuid>,
 		workspace: Uuid,
 		kind: &str,
@@ -2085,10 +2085,10 @@ impl Store {
 		let valid: bool = {
 			let query_bind_1 = run;
 			let query_bind_2 = workspace;
-			sqlx::query_scalar(&Query::select()
+			crate::database::native::query_scalar(&Query::select()
 				.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM authorization_execution WHERE run_id = ? AND workspace_id = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
 				.to_string(PostgresQueryBuilder))
-		.fetch_one(&mut **tx)
+		.scalar_one(&mut **tx)
 		.await?
 		};
 		if !valid {
@@ -2099,7 +2099,7 @@ impl Store {
 			let query_bind_2 = workspace;
 			let query_bind_3 = kind;
 			let query_bind_4 = id;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("authorization_run_reads"))
 					.columns([
@@ -2143,7 +2143,7 @@ impl Store {
 			let query_bind_2 = workspace;
 			let query_bind_3 = kind;
 			let query_bind_4 = id;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("authorization_run_outputs"))
 					.columns([
@@ -2187,7 +2187,7 @@ impl Store {
 	}
 	pub(crate) async fn message_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		workspace: Uuid,
 		sender: &str,
 		content: &str,
@@ -2202,7 +2202,7 @@ impl Store {
 	/// at least one attachment belongs to this submission before calling it.
 	pub(crate) async fn message_in_with_attachments(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		workspace: Uuid,
 		sender: &str,
 		content: &str,
@@ -2310,10 +2310,10 @@ impl Store {
 		let generated: bool = {
 			let query_bind_1 = id;
 			let query_bind_2 = version;
-			sqlx::query_scalar(&Query::select()
+			crate::database::native::query_scalar(&Query::select()
 				.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM generation_requests WHERE agent_id = ? AND agent_version = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
 				.to_string(PostgresQueryBuilder))
-		.fetch_one(&self.pool)
+		.scalar_one(&self.pool)
 		.await?
 		};
 		if generated {
@@ -2325,7 +2325,7 @@ impl Store {
 		let admitted: bool = {
 			let query_bind_1 = home;
 			let query_bind_2 = task;
-			sqlx::query_scalar(&Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM authorization_remote_admissions WHERE source_node = ? AND task_id = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()])).to_string(PostgresQueryBuilder)).fetch_one(&self.pool).await?
+			crate::database::native::query_scalar(&Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM authorization_remote_admissions WHERE source_node = ? AND task_id = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()])).to_string(PostgresQueryBuilder)).scalar_one(&self.pool).await?
 		};
 		if admitted {
 			return Err(Error::Forbidden);
@@ -2340,12 +2340,12 @@ impl Store {
 		agent_version: &str,
 	) -> Result<Run> {
 		self.require_legacy_execution(task.workspace_id).await?;
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		// Serialize legacy admission against scoped receiver admission. Neither
 		// mode may appear between the other's check and durable commit.
 		{
 			let query_bind_1 = format!("{home_node}:{}", task.id);
-			sqlx::query(
+			crate::database::native::query(
 				&Query::select()
 					.expr(SimpleExpr::CustomWithExpr(
 						"(PG_ADVISORY_XACT_LOCK(HASHTEXTEXTENDED(?, 71003209)))".to_owned(),
@@ -2359,7 +2359,7 @@ impl Store {
 		let admitted: bool = {
 			let query_bind_1 = home_node;
 			let query_bind_2 = task.id;
-			sqlx::query_scalar(&Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM authorization_remote_admissions WHERE source_node = ? AND task_id = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()])).to_string(PostgresQueryBuilder)).fetch_one(&mut *tx).await?
+			crate::database::native::query_scalar(&Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM authorization_remote_admissions WHERE source_node = ? AND task_id = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()])).to_string(PostgresQueryBuilder)).scalar_one(&mut *tx).await?
 		};
 		if admitted {
 			return Err(Error::Forbidden);
@@ -2520,13 +2520,13 @@ impl Store {
 	pub async fn save_run(&self, run: &Run, worker: Uuid, kind: &str) -> Result<Run> {
 		let aidash_domain::run_state::persistence::WorkerSnapshot { pending, error } =
 			run.worker_snapshot(kind)?;
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		if kind == "model.completed" {
 			// Message admission takes this same row lock. A response is durable only
 			// when every accepted input was present in its provider request.
 			let _: Uuid = {
 				let query_bind_1 = run.id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&reinhardt::query::Query::select()
 						.column(reinhardt::query::Alias::new("id"))
 						.from(reinhardt::query::Alias::new("runs"))
@@ -2537,13 +2537,13 @@ impl Store {
 						.lock(reinhardt::query::LockType::Update)
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.fetch_one(&mut *tx)
+				.scalar_one(&mut *tx)
 				.await?
 			};
 			let stale: bool = {
 				let query_bind_1 = run.id;
 				let query_bind_2 = run.included_input_seq();
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&reinhardt::query::Query::select()
 						.expr(SimpleExpr::CustomWithExpr(
 							"(EXISTS(SELECT 1 FROM run_inputs WHERE run_id = ? AND seq > ?))"
@@ -2555,15 +2555,15 @@ impl Store {
 						))
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.fetch_one(&mut *tx)
+				.scalar_one(&mut *tx)
 				.await?
 			};
 			if stale {
 				return Err(Error::StaleInference);
 			}
 		}
-		let saved: Run = { let query_bind_1 = run.id; let query_bind_2 = worker; let query_bind_3 = run.phase(); let query_bind_4 = sqlx::types::Json(&run.context); let query_bind_5 = &pending; let query_bind_6 = run.step; let query_bind_7 = error; let query_bind_8 = kind != "model.completed"; let query_bind_9 = run.observed_input_seq; aidash_server::database::query_as(&reinhardt::query::Query::update()
-				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.as_str()).into()])).value_expr(reinhardt::query::Alias::new("context"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(serde_json::to_value(query_bind_4.0)?).into()])).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("step"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_7.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("observed_input_seq"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_9.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP")).value_expr(reinhardt::query::Alias::new("lease_owner"), reinhardt::query::Expr::cust("NULL")).value_expr(reinhardt::query::Alias::new("lease_until"), reinhardt::query::Expr::cust("NULL"))
+		let saved: Run = { let query_bind_1 = run.id; let query_bind_2 = worker; let query_bind_3 = run.phase(); let query_bind_4 = &run.context; let query_bind_5 = &pending; let query_bind_6 = run.step; let query_bind_7 = error; let query_bind_8 = kind != "model.completed"; let query_bind_9 = run.observed_input_seq; aidash_server::database::query_as(&reinhardt::query::Query::update()
+				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.as_str()).into()])).value_expr(reinhardt::query::Alias::new("context"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(serde_json::to_value(query_bind_4)?).into()])).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_5.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("step"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_6.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_7.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("observed_input_seq"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_9.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP")).value_expr(reinhardt::query::Alias::new("lease_owner"), reinhardt::query::Expr::cust("NULL")).value_expr(reinhardt::query::Alias::new("lease_until"), reinhardt::query::Expr::cust("NULL"))
 				.and_where(SimpleExpr::CustomWithExpr("(id = ? AND lease_owner = ? AND lease_until > CURRENT_TIMESTAMP AND (? OR control <> 'CANCELLED'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_8.to_owned()).into()]))
 				.returning_all()
 				.to_string(reinhardt::query::PostgresQueryBuilder))
@@ -2592,11 +2592,11 @@ impl Store {
 			.await
 	}
 	pub(crate) async fn cancel_execution(&self, run: &Run, worker: Uuid) -> Result<()> {
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let valid: Option<Uuid> = {
 			let query_bind_1 = run.id;
 			let query_bind_2 = worker;
-			sqlx::query_scalar(&reinhardt::query::Query::select()
+			crate::database::native::query_scalar(&reinhardt::query::Query::select()
 				.expr(reinhardt::query::SimpleExpr::from(
 					reinhardt::query::Expr::col(reinhardt::query::Alias::new("id")),
 				))
@@ -2604,7 +2604,7 @@ impl Store {
 				.and_where(SimpleExpr::CustomWithExpr("(id = ? AND lease_owner = ? AND lease_until > CURRENT_TIMESTAMP AND control = 'CANCELLED')".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
 				.lock(reinhardt::query::LockType::Update)
 				.to_string(reinhardt::query::PostgresQueryBuilder))
-		.fetch_optional(&mut *tx)
+		.scalar_optional(&mut *tx)
 		.await?
 		};
 		if valid.is_none() {
@@ -2677,7 +2677,7 @@ impl Store {
 				},
 				&RecoveryState::default(),
 			)?;
-			sqlx::query(
+			crate::database::native::query(
 				&reinhardt::query::Query::update()
 					.table(reinhardt::query::Alias::new("runs"))
 					.value_expr(
@@ -2742,7 +2742,7 @@ impl Store {
 	}
 
 	pub async fn control(&self, id: Uuid, action: RunControlAction) -> Result<RunInspection> {
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let run = self.control_in(&mut tx, id, action).await?;
 		tx.commit().await?;
 		Ok(run)
@@ -2750,7 +2750,7 @@ impl Store {
 
 	pub(crate) async fn control_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		id: Uuid,
 		action: RunControlAction,
 	) -> Result<RunInspection> {
@@ -2777,14 +2777,14 @@ impl Store {
 		}
 		// Control-plane updates are emitted by upgraded code and must remain
 		// available while a pre-upgrade worker lease is fenced by run_inputs.
-		sqlx::query_scalar::<_, String>(
+		crate::database::native::query_scalar::<String>(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::Expr::cust(
 					"set_config('aidash.input_ledger_worker', 'true', true)",
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&mut **tx)
+		.scalar_one(&mut **tx)
 		.await?;
 		let r: RawRun = { let query_bind_1 = id; let query_bind_2 = control; let query_bind_3 = resumed_pending; aidash_server::database::query_as(&reinhardt::query::Query::update()
 				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(COALESCE(?::jsonb, pending))".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("control"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(CASE WHEN ?::jsonb IS NOT NULL OR (? = 'PAUSED' AND error = 'identity status unavailable') THEN NULL ELSE error END)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_2.as_str()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP"))
@@ -2853,7 +2853,7 @@ impl Store {
 		key: &str,
 		prompt: &str,
 	) -> Result<()> {
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let h = self
 			.human_request_sqlx_in(
 				&mut tx,
@@ -2872,7 +2872,7 @@ impl Store {
 			let query_bind_1 = run.id;
 			let query_bind_2 = worker;
 			let query_bind_3 = run.stored_pending()?;
-			sqlx::query(
+			crate::database::native::query(
 				&reinhardt::query::Query::update()
 					.table(reinhardt::query::Alias::new("runs"))
 					.value_expr(
@@ -2982,7 +2982,7 @@ impl Store {
 		input: &Value,
 		replay_safe: bool,
 	) -> Result<Invocation> {
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		self.ensure_run_response_current_in(&mut tx, run.id, worker, run.included_input_seq())
 			.await?;
 		// The bounded call and any prepared workspace-read chunk must survive a
@@ -2992,7 +2992,7 @@ impl Store {
 			let query_bind_1 = run.id;
 			let query_bind_2 = worker;
 			let query_bind_3 = run.stored_pending()?;
-			sqlx::query(
+			crate::database::native::query(
 				&reinhardt::query::Query::update()
 					.table(reinhardt::query::Alias::new("runs"))
 					.value(reinhardt::query::Alias::new("phase"), run.phase().as_str())
@@ -3044,7 +3044,7 @@ impl Store {
 			let query_bind_3 = tool;
 			let query_bind_4 = input;
 			let query_bind_5 = replay_safe;
-			sqlx::query(&format!(
+			crate::database::native::query(&format!(
 				"{} ON CONFLICT DO NOTHING",
 				reinhardt::query::Query::insert()
 					.into_table(reinhardt::query::Alias::new("invocations"))
@@ -3091,7 +3091,7 @@ impl Store {
 			== 1;
 		let mut invocation: Invocation = {
 			let query_bind_1 = key;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&reinhardt::query::Query::select()
 					.expr(reinhardt::query::SimpleExpr::from(
 						reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
@@ -3114,7 +3114,7 @@ impl Store {
 		if !created && invocation.status != "COMPLETED" && !invocation.replay_safe {
 			{
 				let query_bind_1 = key;
-				sqlx::query(
+				crate::database::native::query(
 					&reinhardt::query::Query::update()
 						.table(reinhardt::query::Alias::new("invocations"))
 						.value_expr(
@@ -3180,14 +3180,14 @@ impl Store {
 		}
 	}
 	pub async fn remember(&self, run: &Run, data: &Value) -> Result<()> {
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		self.remember_in(&mut tx, run, data).await?;
 		tx.commit().await?;
 		Ok(())
 	}
 	pub(crate) async fn remember_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		run: &Run,
 		data: &Value,
 	) -> Result<()> {
@@ -3197,7 +3197,7 @@ impl Store {
 			let query_bind_3 = run.workspace_id;
 			let query_bind_4 = data;
 			let query_bind_5 = self.memory_home(&run.metadata()).to_owned();
-			sqlx::query(
+			crate::database::native::query(
 				&reinhardt::query::Query::insert()
 					.into_table(reinhardt::query::Alias::new("memory"))
 					.columns([
@@ -3293,21 +3293,21 @@ impl Store {
 	}
 	pub async fn memory(&self, run: impl Into<RunMetadata>) -> Result<Value> {
 		let run = run.into();
-		Ok({ let query_bind_1 = &run.agent_id; let query_bind_2 = &run.agent_version; let query_bind_3 = run.workspace_id; let query_bind_4 = self.memory_home(&run); sqlx::query_scalar(&reinhardt::query::Query::select()
+		Ok({ let query_bind_1 = &run.agent_id; let query_bind_2 = &run.agent_version; let query_bind_3 = run.workspace_id; let query_bind_4 = self.memory_home(&run); crate::database::native::query_scalar(&reinhardt::query::Query::select()
 				.expr(reinhardt::query::SimpleExpr::from(
 					reinhardt::query::Expr::col(reinhardt::query::Alias::new("data")),
 				))
 				.from(reinhardt::query::Alias::new("memory"))
 				.and_where(SimpleExpr::CustomWithExpr("(agent_id = ? AND agent_version = ? AND workspace_id = ? AND home_node = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()]))
 				.to_string(reinhardt::query::PostgresQueryBuilder))
-		.fetch_optional(&self.pool)
+		.scalar_optional(&self.pool)
 		.await? }
 		.unwrap_or_else(empty_object))
 	}
 	#[allow(clippy::too_many_arguments)]
 	pub(crate) async fn transition_remote_terminal_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		id: Uuid,
 		revision: i64,
 		owner: &str,
@@ -3364,7 +3364,7 @@ impl Store {
 						let query_bind_1 = id;
 						let query_bind_2 = run_id;
 						let query_bind_3 = key;
-						sqlx::query(
+						crate::database::native::query(
 							&reinhardt::query::Query::update()
 								.table(reinhardt::query::Alias::new("remote_run_message_fences"))
 								.value_expr(
@@ -3395,7 +3395,7 @@ impl Store {
 					let query_bind_1 = id;
 					let query_bind_2 = run_id;
 					let query_bind_3 = through_seq;
-					sqlx::query(
+					crate::database::native::query(
 						&reinhardt::query::Query::update()
 							.table(reinhardt::query::Alias::new("remote_run_message_fences"))
 							.value(reinhardt::query::Alias::new("consumed"), true)
@@ -3439,7 +3439,7 @@ impl Store {
 	}
 	pub(crate) async fn run_message_delivery_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		delivery: RunMessageDelivery<'_>,
 	) -> Result<Message> {
 		let RunMessageDelivery {
@@ -3476,14 +3476,20 @@ impl Store {
 			let query_bind_1 = task_id;
 			let query_bind_2 = run_id;
 			let query_bind_3 = input_key;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&reinhardt::query::Query::select()
 					.column(reinhardt::query::Alias::new("run_id"))
 					.column(reinhardt::query::Alias::new("content"))
-					.expr(reinhardt::query::Expr::cust("expires_at IS NULL"))
-					.expr(reinhardt::query::Expr::cust(
-						"expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP",
-					))
+					.expr_as(
+						reinhardt::query::Expr::cust("expires_at IS NULL"),
+						reinhardt::query::Alias::new("permanent"),
+					)
+					.expr_as(
+						reinhardt::query::Expr::cust(
+							"expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP",
+						),
+						reinhardt::query::Alias::new("unexpired"),
+					)
 					.column(reinhardt::query::Alias::new("consumed"))
 					.from(reinhardt::query::Alias::new("remote_run_message_fences"))
 					.and_where(SimpleExpr::CustomWithExpr(
@@ -3497,6 +3503,7 @@ impl Store {
 					.lock(reinhardt::query::LockType::Update)
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
+			.columns(&["run_id", "content", "permanent", "unexpired", "consumed"])
 			.fetch_optional(&mut **tx)
 			.await?
 		};
@@ -3529,14 +3536,14 @@ impl Store {
 		}
 		// The database gate rejects the old home-write path during rolling
 		// upgrades. Only the ledger-backed delivery endpoint sets this marker.
-		sqlx::query_scalar::<_, String>(
+		crate::database::native::query_scalar::<String>(
 			&reinhardt::query::Query::select()
 				.expr(reinhardt::query::Expr::cust(
 					"set_config('aidash.run_message_delivery', 'true', true)",
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&mut **tx)
+		.scalar_one(&mut **tx)
 		.await?;
 		let message = self
 			.message_in(tx, workspace, sender, content, Some(message_key))
@@ -3546,7 +3553,7 @@ impl Store {
 			let query_bind_2 = run_id;
 			let query_bind_3 = input_key;
 			let query_bind_4 = content;
-			sqlx::query(
+			crate::database::native::query(
 				&reinhardt::query::Query::update()
 					.table(reinhardt::query::Alias::new("remote_run_message_fences"))
 					.value_expr(
@@ -3572,7 +3579,7 @@ impl Store {
 	}
 	pub(crate) async fn reserve_remote_run_message_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		task_id: Uuid,
 		run_id: Uuid,
 		peer_node: &str,
@@ -3610,23 +3617,29 @@ impl Store {
 			let query_bind_2 = &full_message_key;
 			let query_bind_3 = format!("human@{peer_node}");
 			let query_bind_4 = content;
-			sqlx::query_scalar(&reinhardt::query::Query::select()
+			crate::database::native::query_scalar(&reinhardt::query::Query::select()
 				.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM messages WHERE workspace_id = ? AND idempotency_key = ? AND sender = ? AND content = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()]))
 				.to_string(reinhardt::query::PostgresQueryBuilder))
-		.fetch_one(&mut **tx)
+		.scalar_one(&mut **tx)
 		.await?
 		};
 		let previous: Option<(Uuid, String, bool, bool, bool)> = {
 			let query_bind_1 = task_id;
 			let query_bind_2 = key;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&reinhardt::query::Query::select()
 					.column(reinhardt::query::Alias::new("run_id"))
 					.column(reinhardt::query::Alias::new("content"))
-					.expr(reinhardt::query::Expr::cust("expires_at IS NULL"))
-					.expr(reinhardt::query::Expr::cust(
-						"expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP",
-					))
+					.expr_as(
+						reinhardt::query::Expr::cust("expires_at IS NULL"),
+						reinhardt::query::Alias::new("permanent"),
+					)
+					.expr_as(
+						reinhardt::query::Expr::cust(
+							"expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP",
+						),
+						reinhardt::query::Alias::new("unexpired"),
+					)
 					.column(reinhardt::query::Alias::new("consumed"))
 					.from(reinhardt::query::Alias::new("remote_run_message_fences"))
 					.and_where(SimpleExpr::CustomWithExpr(
@@ -3638,6 +3651,7 @@ impl Store {
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
+			.columns(&["run_id", "content", "permanent", "unexpired", "consumed"])
 			.fetch_optional(&mut **tx)
 			.await?
 		};
@@ -3656,7 +3670,7 @@ impl Store {
 					let query_bind_1 = task_id;
 					let query_bind_2 = run_id;
 					let query_bind_3 = key;
-					sqlx::query(
+					crate::database::native::query(
 						&reinhardt::query::Query::update()
 							.table(reinhardt::query::Alias::new("remote_run_message_fences"))
 							.value_expr(
@@ -3683,7 +3697,7 @@ impl Store {
 					let query_bind_1 = task_id;
 					let query_bind_2 = run_id;
 					let query_bind_3 = key;
-					sqlx::query(
+					crate::database::native::query(
 						&reinhardt::query::Query::update()
 							.table(reinhardt::query::Alias::new("remote_run_message_fences"))
 							.value_expr(
@@ -3715,7 +3729,7 @@ impl Store {
 				let query_bind_2 = run_id;
 				let query_bind_3 = key;
 				let query_bind_4 = content;
-				sqlx::query(
+				crate::database::native::query(
 					&reinhardt::query::Query::insert()
 						.into_table(reinhardt::query::Alias::new("remote_run_message_fences"))
 						.columns([
@@ -3762,7 +3776,7 @@ impl Store {
 	}
 	pub(crate) async fn commit_remote_run_message_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		task_id: Uuid,
 		run_id: Uuid,
 		key: &str,
@@ -3794,13 +3808,19 @@ impl Store {
 			let query_bind_1 = task_id;
 			let query_bind_2 = run_id;
 			let query_bind_3 = key;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&reinhardt::query::Query::select()
 					.column(reinhardt::query::Alias::new("content"))
-					.expr(reinhardt::query::Expr::cust("expires_at IS NULL"))
-					.expr(reinhardt::query::Expr::cust(
-						"expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP",
-					))
+					.expr_as(
+						reinhardt::query::Expr::cust("expires_at IS NULL"),
+						reinhardt::query::Alias::new("permanent"),
+					)
+					.expr_as(
+						reinhardt::query::Expr::cust(
+							"expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP",
+						),
+						reinhardt::query::Alias::new("unexpired"),
+					)
 					.column(reinhardt::query::Alias::new("input_seq"))
 					.from(reinhardt::query::Alias::new("remote_run_message_fences"))
 					.and_where(SimpleExpr::CustomWithExpr(
@@ -3814,6 +3834,7 @@ impl Store {
 					.lock(reinhardt::query::LockType::Update)
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
+			.columns(&["content", "permanent", "unexpired", "input_seq"])
 			.fetch_optional(&mut **tx)
 			.await?
 		};
@@ -3859,7 +3880,7 @@ impl Store {
 			let query_bind_3 = key;
 			let query_bind_4 = content;
 			let query_bind_5 = input_seq;
-			sqlx::query(
+			crate::database::native::query(
 				&reinhardt::query::Query::update()
 					.table(reinhardt::query::Alias::new("remote_run_message_fences"))
 					.value_expr(
@@ -3892,7 +3913,7 @@ impl Store {
 	}
 	pub(crate) async fn release_remote_run_message_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		task_id: Uuid,
 		run_id: Uuid,
 		peer_node: &str,
@@ -3925,7 +3946,7 @@ impl Store {
 				let query_bind_3 = key;
 				let query_bind_4 = task.workspace_id;
 				let query_bind_5 = full_key;
-				sqlx::query(&reinhardt::query::Query::delete()
+				crate::database::native::query(&reinhardt::query::Query::delete()
 					.from_table(reinhardt::query::Alias::new("remote_run_message_fences"))
 					.and_where(SimpleExpr::CustomWithExpr("(task_id = ? AND run_id = ? AND idempotency_key = ? AND NOT consumed AND (expires_at IS NOT NULL OR input_seq IS NULL) AND NOT EXISTS (SELECT 1 FROM messages WHERE workspace_id = ? AND idempotency_key = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_5.to_owned()).into()]))
 					.to_string(reinhardt::query::PostgresQueryBuilder))
@@ -3941,7 +3962,7 @@ impl Store {
 		}
 		let id: Option<Uuid> = {
 			let query_bind_1 = message_ids;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&reinhardt::query::Query::select()
 					.column(reinhardt::query::Alias::new("id"))
 					.from(reinhardt::query::Alias::new("channel_attachments"))
@@ -3963,7 +3984,7 @@ impl Store {
 					.limit(1)
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_optional(&self.pool)
+			.scalar_optional(&self.pool)
 			.await?
 		};
 		Ok(id.is_some())
@@ -4024,8 +4045,8 @@ impl Store {
 		semantic_reason: Option<crate::semantic::remote::Failure>,
 	) -> Result<()> {
 		let run = run.into();
-		let mut tx = self.pool.begin().await?;
-		let changed = { let query_bind_1 = run.id; let query_bind_2 = worker; let query_bind_3 = reason; let query_bind_4 = event_kind; let query_bind_5 = serde_json::to_value(semantic_reason)?; sqlx::query(&reinhardt::query::Query::update()
+		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let changed = { let query_bind_1 = run.id; let query_bind_2 = worker; let query_bind_3 = reason; let query_bind_4 = event_kind; let query_bind_5 = serde_json::to_value(semantic_reason)?; crate::database::native::query(&reinhardt::query::Query::update()
 				.table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(CASE WHEN ?='run.semantic_blocked' AND control='ACTIVE' THEN jsonb_set(pending, '{recovery,semantic_reason}', ?::jsonb, true) ELSE pending END)".to_owned(), vec![Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_5.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("control"), reinhardt::query::Expr::cust(
 						"CASE WHEN control = 'CANCELLED' THEN control ELSE 'PAUSED' END",
 					)).value_expr(reinhardt::query::Alias::new("error"), SimpleExpr::CustomWithExpr("(CASE WHEN control = 'PAUSED' AND error IS DISTINCT FROM 'identity status unavailable' THEN error ELSE ? END)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("revision"), reinhardt::query::Expr::cust("revision + 1")).value_expr(reinhardt::query::Alias::new("updated_at"), reinhardt::query::Expr::cust("CURRENT_TIMESTAMP")).value_expr(reinhardt::query::Alias::new("lease_owner"), reinhardt::query::Expr::cust("NULL")).value_expr(reinhardt::query::Alias::new("lease_until"), reinhardt::query::Expr::cust("NULL"))
@@ -4054,7 +4075,7 @@ pub(crate) mod run_state;
 impl Store {
 	async fn ensure_run_response_current_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		run_id: Uuid,
 		worker: Uuid,
 		included_input_seq: i64,
@@ -4062,7 +4083,7 @@ impl Store {
 		let valid: Option<Uuid> = {
 			let query_bind_1 = run_id;
 			let query_bind_2 = worker;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&reinhardt::query::Query::select()
 					.column(reinhardt::query::Alias::new("id"))
 					.from(reinhardt::query::Alias::new("runs"))
@@ -4077,7 +4098,7 @@ impl Store {
 					.lock(reinhardt::query::LockType::Update)
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_optional(&mut **tx)
+			.scalar_optional(&mut **tx)
 			.await?
 		};
 		if valid.is_none() {
@@ -4088,7 +4109,7 @@ impl Store {
 		let stale: bool = {
 			let query_bind_1 = run_id;
 			let query_bind_2 = included_input_seq;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&reinhardt::query::Query::select()
 					.expr(SimpleExpr::CustomWithExpr(
 						"(EXISTS(SELECT 1 FROM run_inputs WHERE run_id = ? AND seq > ?))"
@@ -4100,7 +4121,7 @@ impl Store {
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_one(&mut **tx)
+			.scalar_one(&mut **tx)
 			.await?
 		};
 		if stale {
@@ -4139,7 +4160,7 @@ pub(crate) fn invocation_summary(alias: Option<&str>) -> reinhardt::query::Selec
 impl Store {
 	async fn human_request_sqlx_in(
 		&self,
-		tx: &mut Transaction<'_, Postgres>,
+		tx: &mut crate::database::native::Transaction,
 		run: &Run,
 		kind: &str,
 		prompt: &str,

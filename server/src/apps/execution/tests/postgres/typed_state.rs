@@ -34,7 +34,7 @@ async fn damage(store: &Store, id: Uuid, phase: RunPhase, pending: Value, contex
 				)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&store.pool)
+		.execute(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -137,7 +137,10 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 				.to_owned(),
 		)
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&journal).execute(&store.pool).await.unwrap();
+	sqlx::query(&journal)
+		.execute(store.pool.driver())
+		.await
+		.unwrap();
 	let healthy = create(&store, &agent, workspace.id).await;
 	let worker = aidash_server::harness::Harness {
 		federation: f.clone(),
@@ -170,7 +173,7 @@ async fn malformed_rows_fail_without_effect_replay_and_healthy_work_continues(
 			.and_where(Expr::col(a("status")).eq(Expr::value("UNCERTAIN")))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&store.pool)
+	.fetch_one(store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(retained, 1);
@@ -314,7 +317,7 @@ async fn dependency_release_uses_only_the_authoritative_home(
 			.and_where(Expr::col(a("task_id")).eq(Expr::value(dependency.id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&store.pool)
+	.execute(store.pool.driver())
 	.await
 	.unwrap();
 	let mut input = new_task();
@@ -335,7 +338,7 @@ async fn dependency_release_uses_only_the_authoritative_home(
 			.and_where(Expr::col(a("id")).eq(Expr::value(remote.id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&store.pool)
+	.execute(store.pool.driver())
 	.await
 	.unwrap();
 	let future = chrono::Utc::now() + chrono::Duration::hours(1);
@@ -478,7 +481,7 @@ async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
 			.and_where(Expr::col(a("id")).eq(Expr::value(run.id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&store.pool)
+	.fetch_one(store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(context, json!([]), "diagnostic Context remains unmodified");
@@ -489,7 +492,7 @@ async fn invalid_context_failure_delivery_can_resume_without_effect_execution(
 			.and_where(Expr::col(a("run_id")).eq(Expr::value(run.id)))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&store.pool)
+	.fetch_one(store.pool.driver())
 	.await
 	.unwrap();
 	assert_eq!(effects, 0);

@@ -126,6 +126,12 @@ indexes, and lock/lease semantics from the 54-step development schema. State-onl
 ORM snapshots support future autodetection without replacing these physical
 guarantees. Native repository operations retain the caller's transaction and
 visibility/authority scope; transaction control uses separate connection capacity.
+Repository queries and transactions execute through Reinhardt's database
+connection and transaction executors, including authorization leases and their
+protected writes. Typed projections name tuple columns explicitly and distinguish
+SQL NULL from JSON null. The underlying SQLx driver is confined to bootstrap pool
+configuration and independent test fixtures; it does not execute repository
+queries.
 The [migration runbook](../server/migrations/README.md) describes the supported
 empty-database boundary and maintenance cutover. Runtime queries are tested with
 real PostgreSQL; builds do not require a live database.

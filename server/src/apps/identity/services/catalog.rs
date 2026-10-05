@@ -16,7 +16,7 @@ impl Authorization {
 		actor: &str,
 	) -> Result<Binding> {
 		aidash_domain::identity::catalog::validate_revision(expected_revision)?;
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let binding = aidash_application::authorization::catalog::set_catalog(
 			&mut crate::bootstrap::catalog_administrator_scope(
 				&mut tx,
@@ -108,7 +108,7 @@ pub use crate::apps::identity::serializers::catalog::Binding;
 // The caller retains the tenant, compatibility and resource locks until commit.
 // Marketplace callers retain their writer and resource locks through commit.
 pub(crate) async fn set_in(
-	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	tenant: &str,
 	entry: &EntityRef,
 	expected_revision: i64,

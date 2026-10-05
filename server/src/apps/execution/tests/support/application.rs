@@ -1,6 +1,5 @@
 //! A running production router for fixtures that customize their runtime.
 use aidash_server::federation::Federation;
-use reinhardt::db::backends::{DatabaseConnection, dialect::PostgresBackend};
 use reinhardt::db::orm::connection::DatabaseConnectionLease;
 use reinhardt::test::APIClient;
 use reinhardt::test::fixtures::server::{TestServerGuard, test_server_guard};
@@ -55,8 +54,7 @@ pub async fn application_with(
 	settings.node.api_token = runtime.config.api_token.clone();
 	settings.node.web_dir = runtime.config.web_dir.clone();
 	settings.node.lease_seconds = runtime.config.lease_seconds;
-	let connection =
-		DatabaseConnection::new(Arc::new(PostgresBackend::new(runtime.store.pool.clone())));
+	let connection = runtime.store.pool.connection();
 	let lease = DatabaseConnectionLease::register(connection).unwrap();
 	context.set_singleton(lease.handle());
 	context.set_singleton(lease);

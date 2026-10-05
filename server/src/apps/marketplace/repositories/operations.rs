@@ -20,18 +20,18 @@ use reinhardt::query::{
 use serde_json::Value;
 use std::collections::BTreeSet;
 use uuid::Uuid;
-pub(crate) struct NativeOperator<'a, 'connection> {
-	pub(crate) staging: NativeStaging<'a, 'connection>,
+pub(crate) struct NativeOperator<'a> {
+	pub(crate) staging: NativeStaging<'a>,
 	pub(crate) principal: Principal,
 }
 #[async_trait]
-impl PrivateKnowledgeRead for NativeOperator<'_, '_> {
+impl PrivateKnowledgeRead for NativeOperator<'_> {
 	async fn documents(&mut self, entry: &Entry) -> aidash_application::Result<Option<Value>> {
 		self.staging.documents(entry).await
 	}
 }
 #[async_trait]
-impl StagingScope for NativeOperator<'_, '_> {
+impl StagingScope for NativeOperator<'_> {
 	fn actor(&self) -> &str {
 		self.staging.actor()
 	}
@@ -81,7 +81,7 @@ impl StagingScope for NativeOperator<'_, '_> {
 	}
 }
 #[async_trait]
-impl OperatorScope for NativeOperator<'_, '_> {
+impl OperatorScope for NativeOperator<'_> {
 	fn principal(&self) -> &Principal {
 		&self.principal
 	}
@@ -207,7 +207,7 @@ impl OperatorScope for NativeOperator<'_, '_> {
 		let record: Option<(String, String)> = {
 			let query_bind_1 = &reference.id;
 			let query_bind_2 = &reference.version;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.columns([Alias::new("manifest_source"), Alias::new("digest")])
 					.from(Alias::new("packages"))
@@ -220,9 +220,9 @@ impl OperatorScope for NativeOperator<'_, '_> {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
+			.columns(&["manifest_source", "digest"])
 			.fetch_optional(&mut **self.staging.tx)
-			.await
-			.map_err(crate::Error::from)?
+			.await?
 		};
 		Ok(record)
 	}
@@ -233,7 +233,7 @@ impl OperatorScope for NativeOperator<'_, '_> {
 		let config: Option<Value> = {
 			let query_bind_1 = &reference.id;
 			let query_bind_2 = &reference.version;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("config"))
 					.from(Alias::new("installations"))
@@ -246,9 +246,8 @@ impl OperatorScope for NativeOperator<'_, '_> {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_optional(&mut **self.staging.tx)
-			.await
-			.map_err(crate::Error::from)?
+			.scalar_optional(&mut **self.staging.tx)
+			.await?
 		};
 		Ok(config)
 	}
@@ -285,9 +284,16 @@ impl OperatorScope for NativeOperator<'_, '_> {
 		offset: usize,
 		limit: u64,
 	) -> aidash_application::Result<Vec<(Value, Value)>> {
-		let rows: Vec<(Value, Value)> = sqlx::query_as(
+		let rows: Vec<(Value, Value)> = crate::database::native::query_as(
 			&Query::select()
-				.columns(["i", "r"].map(|name| (Alias::new(name), Alias::new("document"))))
+				.expr_as(
+					Expr::col((Alias::new("i"), Alias::new("document"))),
+					Alias::new("installation_document"),
+				)
+				.expr_as(
+					Expr::col((Alias::new("r"), Alias::new("document"))),
+					Alias::new("revision_document"),
+				)
 				.from_as(Alias::new("marketplace_installations"), Alias::new("i"))
 				.join(
 					JoinType::InnerJoin,
@@ -303,9 +309,9 @@ impl OperatorScope for NativeOperator<'_, '_> {
 				.offset(offset as u64)
 				.to_string(PostgresQueryBuilder),
 		)
+		.columns(&["installation_document", "revision_document"])
 		.fetch_all(&mut **self.staging.tx)
-		.await
-		.map_err(crate::Error::from)?;
+		.await?;
 		Ok(rows)
 	}
 }

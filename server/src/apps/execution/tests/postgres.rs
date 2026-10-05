@@ -212,7 +212,7 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&store.pool)
+		.execute(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -444,7 +444,7 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run.id)))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&outage_pause)
-		.execute(&store.pool)
+		.execute(store.pool.driver())
 		.await
 		.unwrap();
 	let explicitly_paused = store
@@ -615,7 +615,7 @@ async fn final_response(store: &Store, task: Uuid) {
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&store.pool)
+		.execute(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -667,7 +667,7 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.execute(&store.pool)
+			.execute(store.pool.driver())
 			.await
 		}
 		.unwrap();
@@ -692,7 +692,7 @@ async fn parent_can_finish_after_explicit_child_abandonment(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&store.pool)
+		.fetch_one(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -855,7 +855,7 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&store.pool)
+		.execute(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -875,7 +875,7 @@ async fn successful_tool_retry_resets_the_next_invocation_budget(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&store.pool)
+		.fetch_one(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -981,7 +981,7 @@ async fn write_approval(
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&store.pool)
+		.execute(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -1004,7 +1004,7 @@ async fn write_approval(
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&store.pool)
+		.fetch_one(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -1035,7 +1035,7 @@ async fn write_approval(
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&store.pool)
+			.execute(store.pool.driver())
 			.await
 		}
 		.unwrap();
@@ -1071,7 +1071,7 @@ async fn write_approval(
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&store.pool)
+			.execute(store.pool.driver())
 			.await
 		}
 		.unwrap();
@@ -1097,7 +1097,7 @@ async fn write_approval(
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.execute(&store.pool)
+			.execute(store.pool.driver())
 			.await
 		}
 		.unwrap();
@@ -1175,7 +1175,7 @@ async fn managed_external_write_requires_exact_one_call_approval(
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_one(&store.pool)
+			.fetch_one(store.pool.driver())
 			.await
 		}
 		.unwrap();
@@ -1374,7 +1374,7 @@ async fn add_test_peer(store: &Store, node: &str, endpoint: &str) {
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&store.pool)
+		.execute(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -1473,7 +1473,7 @@ async fn failed_home_transition_survives_outage_and_worker_restart(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&store.pool)
+		.execute(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -1515,7 +1515,7 @@ async fn failed_home_transition_survives_outage_and_worker_restart(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&store.pool)
+		.execute(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -1590,7 +1590,7 @@ async fn terminal_delegations_allow_reads_and_exact_completion_replay_only(
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&store.pool)
+		.execute(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -1704,7 +1704,7 @@ async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&store.pool)
+		.execute(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -1749,7 +1749,7 @@ async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&store.pool)
+		.fetch_one(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -1782,7 +1782,7 @@ async fn queued_executor_conflict_rolls_back_claim_and_dependencies_wait(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&store.pool)
+		.execute(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -1931,7 +1931,7 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&store.pool)
+		.execute(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -2001,7 +2001,7 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&store.pool)
+		.execute(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -2023,7 +2023,7 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&store.pool)
+		.fetch_one(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -2087,7 +2087,7 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&store.pool)
+		.execute(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -2120,7 +2120,7 @@ async fn peer_disable_and_retry_rotation_do_not_require_a_live_peer(
 			.and_where(reinhardt::query::Expr::cust("node_id = 'aidash://offline'"))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)
-	.execute(&store.pool)
+	.execute(store.pool.driver())
 	.await
 	.unwrap();
 	let disabled = f
@@ -2195,7 +2195,7 @@ async fn peer_disable_and_retry_rotation_do_not_require_a_live_peer(
 					)
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.execute(&store.pool)
+			.execute(store.pool.driver())
 			.await
 		}
 		.unwrap();
@@ -2219,7 +2219,7 @@ async fn peer_disable_and_retry_rotation_do_not_require_a_live_peer(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&store.pool)
+		.fetch_one(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -2243,7 +2243,7 @@ async fn registry_event_and_conversation_creation_roll_back_as_units(
 	sqlx::query(
 		"ALTER TABLE events ADD CONSTRAINT reject_registration CHECK(kind <> 'registry.registered')",
 	)
-	.execute(&store.pool)
+	.execute(store.pool.driver())
 	.await
 	.unwrap();
 	let response = http_client()
@@ -2273,7 +2273,7 @@ async fn registry_event_and_conversation_creation_roll_back_as_units(
 	sqlx::query(
 		"ALTER TABLE events ADD CONSTRAINT reject_conversation CHECK(kind <> 'conversation.created')",
 	)
-	.execute(&store.pool)
+	.execute(store.pool.driver())
 	.await
 	.unwrap();
 	let response=http_client().request(Method::POST, app.url("/api/conversations"))
@@ -2321,7 +2321,7 @@ async fn oversized_outbox_payload_publishes_a_reference_without_blocking_later_e
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&store.pool)
+		.fetch_one(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -2364,7 +2364,7 @@ async fn oversized_outbox_payload_publishes_a_reference_without_blocking_later_e
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.fetch_one(&store.pool)
+			.fetch_one(store.pool.driver())
 			.await
 		}
 		.unwrap()
@@ -2482,7 +2482,7 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&store.pool)
+		.execute(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -2508,7 +2508,7 @@ async fn recovery_publishes_reconciliation_marker_with_the_request(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&store.pool)
+		.execute(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -2580,7 +2580,7 @@ async fn agent_tools_attach_children_and_clusters_require_existing_agents(
 				))
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.fetch_one(&store.pool)
+		.fetch_one(store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -2707,7 +2707,7 @@ async fn terminal_dependencies_fail_dependents_instead_of_polling_forever(
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.execute(&store.pool)
+			.execute(store.pool.driver())
 			.await
 		}
 		.unwrap();
@@ -2730,7 +2730,7 @@ async fn terminal_dependencies_fail_dependents_instead_of_polling_forever(
 					))
 					.to_string(reinhardt::query::PostgresQueryBuilder),
 			)
-			.execute(&store.pool)
+			.execute(store.pool.driver())
 			.await
 		}
 		.unwrap();
@@ -2853,7 +2853,7 @@ async fn remote_workspace_snapshot_pages_large_accumulated_artifacts(
 				)
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
-		.execute(&home.pool)
+		.execute(home.pool.driver())
 		.await
 	}
 	.unwrap();

@@ -2,6 +2,7 @@
 mod catalog;
 mod scoped;
 use crate::authorization::{Authorization, access::Access, policy::identifier};
+use crate::database::native::Transaction;
 use crate::{
 	Error, Result,
 	domain::{Artifact, Conversation, Event, Task, Workspace},
@@ -17,7 +18,6 @@ use reinhardt::query::{
 };
 use serde_json::json;
 use sha2::Sha256;
-use sqlx::{PgConnection, Postgres, Transaction};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
@@ -29,12 +29,12 @@ use aidash_domain::federation::graph::*;
 use reinhardt::Query as QueryParams;
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _, SimpleExpr};
 pub(crate) async fn source_peer_lease(
-	tx: &mut Transaction<'static, Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	node: &str,
 ) -> Result<()> {
 	let enabled: Option<String> = {
 		let query_bind_1 = node;
-		sqlx::query_scalar(
+		crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("node_id"))
 				.from(Alias::new("peers"))
@@ -45,7 +45,7 @@ pub(crate) async fn source_peer_lease(
 				.lock(LockType::Share)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_optional(&mut **tx)
+		.scalar_optional(&mut **tx)
 		.await?
 	};
 	if enabled.is_none() {
@@ -58,7 +58,7 @@ pub(crate) enum GraphAuthority<'a> {
 	Subject(&'a mut Access),
 	Operator {
 		tenant: &'a str,
-		tx: &'a mut Transaction<'static, Postgres>,
+		tx: &'a mut crate::database::native::Transaction,
 	},
 }
 
@@ -70,7 +70,7 @@ impl GraphAuthority<'_> {
 		}
 	}
 
-	pub(super) fn connection(&mut self) -> &mut PgConnection {
+	pub(super) fn connection(&mut self) -> &mut Transaction {
 		match self {
 			Self::Subject(access) => &mut access.tx,
 			Self::Operator { tx, .. } => tx,
@@ -273,8 +273,8 @@ pub(crate) async fn linked_registry(
 		)
 		.limit(1)
 		.to_string(PostgresQueryBuilder);
-	let entry: Option<serde_json::Value> = sqlx::query_scalar(&sql)
-		.fetch_optional(authority.connection())
+	let entry: Option<serde_json::Value> = crate::database::native::query_scalar(&sql)
+		.scalar_optional(authority.connection())
 		.await?;
 	let entry = entry.map(serde_json::from_value::<Entry>).transpose()?;
 	Ok(entry
@@ -308,13 +308,13 @@ pub(crate) fn decode_cursor(f: &Federation, token: &str) -> Result<GraphCursor> 
 }
 
 async fn aggregate_revision(
-	conn: &mut PgConnection,
+	conn: &mut Transaction,
 	table: &str,
 	column: &str,
 	join_column: &str,
 	tenant: &str,
 ) -> Result<(Option<i64>, i64)> {
-	Ok(sqlx::query_as(
+	crate::database::native::query_as(
 		&tenant_resources(table, join_column, tenant)
 			.expr(
 				reinhardt::query::Func::sum(
@@ -327,8 +327,9 @@ async fn aggregate_revision(
 			))
 			.to_string(PostgresQueryBuilder),
 	)
+	.columns(&["sum", "count"])
 	.fetch_one(conn)
-	.await?)
+	.await
 }
 
 fn tenant_resources(
@@ -362,7 +363,7 @@ pub(crate) async fn graph_generation(
 	source_node: &str,
 ) -> Result<String> {
 	let tenant = authority.tenant().to_owned();
-	let catalog: (Option<i64>, i64) = sqlx::query_as(
+	let catalog: (Option<i64>, i64) = crate::database::native::query_as(
 		&Query::select()
 			.expr(
 				reinhardt::query::Func::sum(Expr::col(Alias::new("revision")).into())
@@ -375,6 +376,7 @@ pub(crate) async fn graph_generation(
 			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant.clone())))
 			.to_string(PostgresQueryBuilder),
 	)
+	.columns(&["sum", "count"])
 	.fetch_one(authority.connection())
 	.await?;
 	if let Some(workspace) = options.scope_workspace {
@@ -396,7 +398,7 @@ pub(crate) async fn graph_generation(
 	let tasks =
 		aggregate_revision(&mut *conn, "tasks", "revision", "workspace_id", &tenant).await?;
 	let runs = aggregate_revision(&mut *conn, "runs", "revision", "workspace_id", &tenant).await?;
-	let artifacts: (Option<DateTime<Utc>>, i64) = sqlx::query_as(
+	let artifacts: (Option<DateTime<Utc>>, i64) = crate::database::native::query_as(
 		&tenant_resources("artifacts", "workspace_id", &tenant)
 			.expr(reinhardt::query::Func::max(
 				Expr::col((Alias::new("r"), Alias::new("created_at"))).into(),
@@ -406,9 +408,10 @@ pub(crate) async fn graph_generation(
 			))
 			.to_string(PostgresQueryBuilder),
 	)
+	.columns(&["max", "count"])
 	.fetch_one(&mut *conn)
 	.await?;
-	let conversations: (Option<DateTime<Utc>>, i64) = sqlx::query_as(
+	let conversations: (Option<DateTime<Utc>>, i64) = crate::database::native::query_as(
 		&tenant_resources("conversations", "workspace_id", &tenant)
 			.expr(reinhardt::query::Func::max(
 				Expr::col((Alias::new("r"), Alias::new("created_at"))).into(),
@@ -418,16 +421,17 @@ pub(crate) async fn graph_generation(
 			))
 			.to_string(PostgresQueryBuilder),
 	)
+	.columns(&["max", "count"])
 	.fetch_one(&mut *conn)
 	.await?;
-	let events: Option<i64> = sqlx::query_scalar(
+	let events: Option<i64> = crate::database::native::query_scalar(
 		&tenant_resources("events", "workspace_id", &tenant)
 			.expr(reinhardt::query::Func::max(
 				Expr::col((Alias::new("r"), Alias::new("sequence"))).into(),
 			))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&mut *conn)
+	.scalar_one(&mut *conn)
 	.await?;
 	Ok(crate::registry::digest(&json!({
 		"authority":authority_revision,"catalog":catalog,"workspaces":workspaces,
@@ -578,7 +582,7 @@ pub(crate) async fn list_grants(
 	}
 	let grants = {
 		let query_bind_1 = tenant;
-		sqlx::query_as(
+		crate::database::native::query_as(
 			&Query::select()
 				.column(ColumnRef::Asterisk)
 				.from(Alias::new("authorization_graph_operator_grants"))
@@ -615,9 +619,9 @@ pub(crate) async fn set_grant(
 		));
 	}
 	let mut tx = if input.enabled {
-		f.store.pool.begin().await?
+		crate::database::native::begin(&f.store.pool).await?
 	} else {
-		f.store.control_pool.begin().await?
+		crate::database::native::begin(&f.store.control_pool).await?
 	};
 	if !input.enabled {
 		crate::transactions::authority::control(&mut tx).await?;
@@ -629,7 +633,7 @@ pub(crate) async fn set_grant(
 			let query_bind_2 = input.source_operator;
 			let query_bind_3 = &tenant;
 			let query_bind_4 = input.enabled;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::insert()
 					.into_table(Alias::new("authorization_graph_operator_grants"))
 					.columns([
@@ -656,6 +660,13 @@ pub(crate) async fn set_grant(
 					.returning_all()
 					.to_string(PostgresQueryBuilder),
 			)
+			.columns(&[
+				"source_node",
+				"source_operator",
+				"tenant",
+				"enabled",
+				"revision",
+			])
 			.fetch_optional(&mut *tx)
 			.await?
 		}
@@ -666,7 +677,7 @@ pub(crate) async fn set_grant(
 			let query_bind_3 = &tenant;
 			let query_bind_4 = input.enabled;
 			let query_bind_5 = input.expected_revision;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::update()
 					.table(Alias::new("authorization_graph_operator_grants"))
 					.value_expr(
@@ -706,18 +717,15 @@ pub(crate) async fn operator_grant(
 	node: &str,
 	operator: Uuid,
 	tenant: &str,
-) -> Result<(
-	sqlx::Transaction<'static, sqlx::Postgres>,
-	GraphOperatorGrant,
-)> {
+) -> Result<(crate::database::native::Transaction, GraphOperatorGrant)> {
 	identifier(tenant)?;
-	let mut tx = f.store.pool.begin().await?;
+	let mut tx = crate::database::native::begin(&f.store.pool).await?;
 	Authorization::load(&mut tx, tenant).await?;
 	let grant: GraphOperatorGrant = {
 		let query_bind_1 = node;
 		let query_bind_2 = operator;
 		let query_bind_3 = tenant;
-		sqlx::query_as(
+		crate::database::native::query_as(
 			&Query::select()
 				.column(ColumnRef::Asterisk)
 				.from(Alias::new("authorization_graph_operator_grants"))
@@ -739,7 +747,7 @@ pub(crate) async fn operator_grant(
 	.ok_or(Error::Forbidden)?;
 	let enabled: Option<String> = {
 		let query_bind_1 = node;
-		sqlx::query_scalar(
+		crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("node_id"))
 				.from(Alias::new("peers"))
@@ -750,7 +758,7 @@ pub(crate) async fn operator_grant(
 				.lock(LockType::Share)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_optional(&mut *tx)
+		.scalar_optional(&mut *tx)
 		.await?
 	};
 	if enabled.is_none() {
@@ -777,7 +785,7 @@ pub(crate) async fn mapping_revision(
 	tenant: &str,
 	subject: &str,
 ) -> Result<i64> {
-	sqlx::query_scalar(
+	crate::database::native::query_scalar(
 		&Query::select()
 			.column(Alias::new("revision"))
 			.from(Alias::new("authorization_peer_mappings"))
@@ -792,7 +800,6 @@ pub(crate) async fn mapping_revision(
 			))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&mut **access.tx)
+	.scalar_one(&mut **access.tx)
 	.await
-	.map_err(Into::into)
 }

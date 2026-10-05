@@ -131,7 +131,7 @@ async fn predecessor_run_cannot_read_files_after_its_successor_becomes_active(
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&c.f.store.pool)
+		.execute(c.f.store.pool.driver())
 		.await
 	}
 	.unwrap();

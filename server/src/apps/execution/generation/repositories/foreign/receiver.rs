@@ -1,6 +1,5 @@
 //! Receiver queries preserve their update lock, replay fence and publication transaction.
 use crate::{
-	Error,
 	authorization::{access::Access, peer},
 	federation::Federation,
 };
@@ -104,7 +103,7 @@ impl ForeignGenerationReceiverScope for Scope {
 				.lock(LockType::Update)
 				.to_string(PostgresQueryBuilder))
 		.fetch_optional(&mut **access.tx)
-		.await.map_err(Error::from)?
+		.await?
 		};
 		Ok(existing)
 	}
@@ -113,11 +112,11 @@ impl ForeignGenerationReceiverScope for Scope {
 		let replayed: bool = {
 			let query_bind_1 = source;
 			let query_bind_2 = id.to_string();
-			sqlx::query_scalar(&Query::select()
+			crate::database::native::query_scalar(&Query::select()
 					.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM generation_requests WHERE home_node=? AND foreign_intent->>'id'=?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
 					.to_string(PostgresQueryBuilder))
-			.fetch_one(&mut **access.tx)
-			.await.map_err(Error::from)?
+			.scalar_one(&mut **access.tx)
+			.await?
 		};
 		Ok(replayed)
 	}
@@ -144,7 +143,7 @@ impl ForeignGenerationReceiverScope for Scope {
 		let access = &mut self.access;
 		{
 			let query_bind_1 = id;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("generation_requests"))
 					.value(Alias::new("prepared"), true)
@@ -155,8 +154,7 @@ impl ForeignGenerationReceiverScope for Scope {
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **access.tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(())
 	}

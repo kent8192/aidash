@@ -149,7 +149,7 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 			.bind("working")
 			.bind(&digest)
 			.bind(bytes.len() as i64)
-			.execute(&c.f.store.pool)
+			.execute(c.f.store.pool.driver())
 			.await
 			.unwrap();
 		files.push(json!({"file_id":file,"path":path,"size":bytes.len(),"digest":digest,"media_type":"image/png","scope":"working","provenance":{"kind":"media-fixture"}}));
@@ -162,7 +162,7 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 	sqlx::query(&query)
 		.bind(area_id)
 		.bind(json!(files))
-		.execute(&c.f.store.pool)
+		.execute(c.f.store.pool.driver())
 		.await
 		.unwrap();
 	*selections.lock().unwrap()=[1,0,1].map(|i|json!({"file_id":files[i]["file_id"],"expected_digest":files[i]["digest"],"representation":"model_input"})).to_vec();

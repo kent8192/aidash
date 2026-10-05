@@ -71,7 +71,7 @@ async fn add_peer(f: &Federation, node: &str, endpoint: &str) {
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -203,7 +203,7 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -224,7 +224,7 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 	.bind(task.id)
 	.bind(run.id)
 	.bind(&key)
-	.fetch_one(&f.store.pool)
+	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap();
 	assert!(retained);
@@ -258,7 +258,7 @@ async fn committed_fence_survives_delayed_release_and_terminal_transition_is_ato
 	)
 	.bind(task.id)
 	.bind(&key)
-	.fetch_one(&f.store.pool)
+	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap();
 	assert!(consumed);
@@ -464,7 +464,7 @@ async fn remote_admission_recovers_home_history_before_new_input(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&home.store.pool)
+		.execute(home.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -610,7 +610,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&home.store.pool)
+		.execute(home.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -637,7 +637,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 		.unwrap();
 	let first_key = Uuid::new_v4();
 	delivered_history(&executor, &run, first_key, "remote correction").await;
-	let mut old_lease = executor.store.pool.begin().await.unwrap();
+	let mut old_lease = executor.store.pool.driver().begin().await.unwrap();
 	sqlx::query_scalar::<_, String>(
 		&Query::select()
 			.expr(Expr::cust(
@@ -730,7 +730,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&home.store.pool)
+		.fetch_one(home.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -819,7 +819,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&home.store.pool)
+		.execute(home.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -857,7 +857,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&executor.store.pool)
+		.execute(executor.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -906,7 +906,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_optional(&home.store.pool)
+		.fetch_optional(home.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -955,7 +955,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&home.store.pool)
+		.fetch_one(home.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -1000,7 +1000,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&home.store.pool)
+		.execute(home.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -1132,7 +1132,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	)
 	.bind(task.id)
 	.bind(run.id)
-	.fetch_one(&home.store.pool)
+	.fetch_one(home.store.pool.driver())
 	.await
 	.unwrap();
 	assert!(
@@ -1295,7 +1295,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	let admitted_fence_is_durable: bool = { let query_bind_1 = task.id; let query_bind_2 = run.id; let query_bind_3 = format!("human:{}:{pending_key}", run.id); sqlx::query_scalar(&Query::select()
 			.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM remote_run_message_fences WHERE task_id = ? AND run_id = ? AND idempotency_key = ? AND expires_at IS NULL AND NOT consumed))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()]))
 			.to_string(PostgresQueryBuilder))
-	.fetch_one(&home.store.pool)
+	.fetch_one(home.store.pool.driver())
 	.await }
 	.unwrap();
 	assert!(
@@ -1342,7 +1342,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	)
 	.bind(task.id)
 	.bind(run.id)
-	.fetch_one(&home.store.pool)
+	.fetch_one(home.store.pool.driver())
 	.await
 	.unwrap();
 	assert!(
@@ -1389,7 +1389,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&home.store.pool)
+		.execute(home.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -1440,7 +1440,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	)
 	.bind(task.id)
 	.bind(run.id)
-	.fetch_one(&home.store.pool)
+	.fetch_one(home.store.pool.driver())
 	.await
 	.unwrap();
 	assert!(
@@ -1500,7 +1500,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&executor.store.pool)
+		.execute(executor.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -1539,7 +1539,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&executor.store.pool)
+		.execute(executor.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -1665,7 +1665,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&home.store.pool)
+		.execute(home.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -1708,7 +1708,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	let historical_reservation_committed: bool = { let query_bind_1 = task.id; let query_bind_2 = terminal_history_run.id; let query_bind_3 = &terminal_history_key; sqlx::query_scalar(&Query::select()
 			.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM remote_run_message_fences WHERE task_id = ? AND run_id = ? AND idempotency_key = ? AND expires_at IS NULL))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()]))
 			.to_string(PostgresQueryBuilder))
-	.fetch_one(&home.store.pool)
+	.fetch_one(home.store.pool.driver())
 	.await }
 	.unwrap();
 	assert!(historical_reservation_committed);
@@ -1760,7 +1760,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&home.store.pool)
+		.fetch_one(home.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -1769,7 +1769,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	invalid_terminal_run.id = Uuid::new_v4();
 	let invalid_terminal_key = format!("human:{}:{}", invalid_terminal_run.id, Uuid::new_v4());
 	sqlx::query("ALTER TABLE tasks DISABLE TRIGGER gate_remote_task_terminal")
-		.execute(&home.store.pool)
+		.execute(home.store.pool.driver())
 		.await
 		.unwrap();
 	{
@@ -1784,12 +1784,12 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&home.store.pool)
+		.execute(home.store.pool.driver())
 		.await
 	}
 	.unwrap();
 	sqlx::query("ALTER TABLE tasks ENABLE TRIGGER gate_remote_task_terminal")
-		.execute(&home.store.pool)
+		.execute(home.store.pool.driver())
 		.await
 		.unwrap();
 	home.store
@@ -1803,7 +1803,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 		.await
 		.unwrap();
 	sqlx::query("ALTER TABLE tasks DISABLE TRIGGER gate_remote_task_terminal")
-		.execute(&home.store.pool)
+		.execute(home.store.pool.driver())
 		.await
 		.unwrap();
 	{
@@ -1818,12 +1818,12 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&home.store.pool)
+		.execute(home.store.pool.driver())
 		.await
 	}
 	.unwrap();
 	sqlx::query("ALTER TABLE tasks ENABLE TRIGGER gate_remote_task_terminal")
-		.execute(&home.store.pool)
+		.execute(home.store.pool.driver())
 		.await
 		.unwrap();
 	{
@@ -1848,7 +1848,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&home.store.pool)
+		.execute(home.store.pool.driver())
 		.await
 	}
 	.unwrap();
@@ -1865,7 +1865,7 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	let recovered_terminal_reservation: bool = { let query_bind_1 = task.id; let query_bind_2 = terminal_history_run.id; let query_bind_3 = &terminal_history_key; sqlx::query_scalar(&Query::select()
 			.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM remote_run_message_fences WHERE task_id = ? AND run_id = ? AND idempotency_key = ? AND expires_at IS NULL AND NOT consumed))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into()]))
 			.to_string(PostgresQueryBuilder))
-	.fetch_one(&home.store.pool)
+	.fetch_one(home.store.pool.driver())
 	.await }
 	.unwrap();
 	assert!(recovered_terminal_reservation);

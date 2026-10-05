@@ -24,12 +24,12 @@ use reinhardt::query::{
 use serde_json::Value;
 use uuid::Uuid;
 pub(crate) async fn visible(
-	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	thread: Uuid,
 ) -> NativeResult<()> {
 	let tombstone: Option<Uuid> = {
 		let query_bind_1 = thread;
-		sqlx::query_scalar(
+		crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("id"))
 				.from(Alias::new("core_records"))
@@ -47,7 +47,7 @@ pub(crate) async fn visible(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_optional(&mut **tx)
+		.scalar_optional(&mut **tx)
 		.await?
 	};
 	if tombstone.is_some() {
@@ -110,7 +110,7 @@ impl ThreadScope for Scope<'_> {
 				let query_bind_1 = workspace;
 				let query_bind_2 = thread;
 				let query_bind_3 = &access.identity.subject;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&sessions::select("core_areas")
 				.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(query_bind_1.to_owned())))
 				.and_where(Expr::col(Alias::new("thread_id")).eq(Expr::value(query_bind_2.to_owned())))
@@ -136,7 +136,7 @@ impl ThreadScope for Scope<'_> {
 			let access = &mut *self.access;
 			{
 				let query_bind_1 = area.id;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("runs"))
 						.value(Alias::new("control"), "CANCELLED")

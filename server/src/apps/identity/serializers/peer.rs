@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use reinhardt::Validate;
 use schemars::JsonSchema;
 
-#[derive(Clone, Debug, PartialEq, Serialize, sqlx::FromRow, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct PeerMapping {
 	pub source_node: String,
 	pub source_tenant: String,
@@ -21,6 +21,17 @@ pub struct PeerMapping {
 	pub actor: String,
 	pub updated_at: DateTime<Utc>,
 }
+crate::native_record!(PeerMapping {
+	source_node,
+	source_tenant,
+	source_subject,
+	tenant,
+	credential_id,
+	enabled,
+	revision,
+	actor,
+	updated_at
+});
 
 pub use aidash_domain::identity::peer_mapping::PeerMappingInput;
 

@@ -197,7 +197,7 @@ impl SourceReadScope for Scope<'_> {
 			let query_bind_1 = id;
 			let query_bind_2 = execution_node;
 			let query_bind_3 = &access.identity.tenant;
-			Ok(sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.column(Asterisk)
 					.from(Alias::new("authorization_remote_grants"))
@@ -214,7 +214,7 @@ impl SourceReadScope for Scope<'_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_optional(&mut **access.tx)
-			.await?)
+			.await
 		}
 		.await;
 		result.map(|r| r.map(Into::into)).map_err(Into::into)
@@ -223,7 +223,7 @@ impl SourceReadScope for Scope<'_> {
 		let result: NativeResult<Option<(String, Value)>> = async {
 			Ok({
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.columns(["node_id", "semantic"].map(Alias::new))
 						.from(Alias::new("authorization_remote_grants"))
@@ -233,6 +233,7 @@ impl SourceReadScope for Scope<'_> {
 						))
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["node_id", "semantic"])
 				.fetch_optional(&mut **self.access.tx)
 				.await?
 			})

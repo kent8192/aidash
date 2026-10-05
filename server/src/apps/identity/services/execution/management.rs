@@ -66,7 +66,7 @@ async fn authorized(access: &mut Access, id: Uuid, node: &str) -> Result<RunInsp
 			let query_bind_1 = id;
 			let query_bind_2 = &run.home_node;
 			let query_bind_3 = run.task_id;
-			sqlx::query_scalar(
+			crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("tenant"))
 					.from(Alias::new("authorization_remote_admissions"))
@@ -80,7 +80,7 @@ async fn authorized(access: &mut Access, id: Uuid, node: &str) -> Result<RunInsp
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.fetch_optional(&mut **access.tx)
+			.scalar_optional(&mut **access.tx)
 			.await?
 		};
 		if tenant.as_deref() != Some(&access.identity.tenant) {

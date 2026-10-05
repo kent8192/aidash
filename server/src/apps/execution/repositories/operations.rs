@@ -7,7 +7,7 @@ use reinhardt::query::{
 };
 use serde_json::Value;
 use uuid::Uuid;
-#[derive(Clone, sqlx::FromRow)]
+#[derive(Clone)]
 pub(crate) struct Operation {
 	pub id: Uuid,
 	pub area_id: Uuid,
@@ -27,12 +27,31 @@ pub(crate) struct Operation {
 	pub result: Value,
 	pub runner_instance: Option<String>,
 }
+crate::native_record!(Operation {
+	id,
+	area_id,
+	run_id,
+	tenant,
+	principal,
+	credential_id,
+	subjects,
+	digest,
+	kind,
+	state,
+	epoch,
+	generation,
+	revision,
+	policy_revision,
+	input,
+	result,
+	runner_instance
+});
 
 pub(crate) async fn get(access: &mut Access, id: Uuid) -> Result<Operation> {
 	{
 		let query_bind_1 = id;
 		let query_bind_2 = &access.identity.tenant;
-		sqlx::query_as(
+		crate::database::native::query_as(
 			&sessions::select("core_operations")
 				.and_where(
 					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
@@ -64,7 +83,7 @@ pub(crate) async fn set_area(access: &mut Access, id: Uuid, state: &str, epoch: 
 		let query_bind_1 = id;
 		let query_bind_2 = state;
 		let query_bind_3 = epoch;
-		sqlx::query(
+		crate::database::native::query(
 			&Query::update()
 				.table(Alias::new("core_areas"))
 				.value_expr(
@@ -104,7 +123,7 @@ pub(crate) async fn persist(access: &mut Access, operation: &Operation) -> Resul
 		let query_bind_3 = &operation.result;
 		let query_bind_4 = &operation.runner_instance;
 		let query_bind_5 = operation.revision;
-		sqlx::query(
+		crate::database::native::query(
 			&Query::update()
 				.table(Alias::new("core_operations"))
 				.value_expr(

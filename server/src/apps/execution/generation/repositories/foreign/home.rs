@@ -77,7 +77,7 @@ impl HomeGenerationRepository for NativeHome {
 		let f = &self.federation;
 		let row = {
 			let query_bind_1 = id;
-			sqlx::query_as::<_, StoredIntent>(
+			crate::database::native::query_as::<StoredIntent>(
 				&Query::select()
 					.column(Asterisk)
 					.from(Alias::new("generation_remote_intents"))
@@ -88,8 +88,7 @@ impl HomeGenerationRepository for NativeHome {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_optional(&f.store.pool)
-			.await
-			.map_err(Error::from)?
+			.await?
 		}
 		.ok_or(Error::Forbidden);
 		Ok(row?.into())
@@ -189,7 +188,7 @@ impl HomeGenerationScope for Scope {
 	async fn insert(&mut self, intent: &Intent) -> Result<()> {
 		let access = &mut self.access;
 		let identity = &access.identity;
-		sqlx::query(&format!(
+		crate::database::native::query(&format!(
 			"{} ON CONFLICT DO NOTHING",
 			Query::insert()
 				.into_table(Alias::new("generation_remote_intents"))
@@ -227,15 +226,14 @@ impl HomeGenerationScope for Scope {
 		.bind(&access.subjects)
 		.bind(json!(intent))
 		.execute(&mut **access.tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 		Ok(())
 	}
 	async fn saved(&mut self, id: Uuid) -> Result<Record> {
 		let access = &mut self.access;
 		let saved: StoredIntent = {
 			let query_bind_1 = id;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.column(Asterisk)
 					.from(Alias::new("generation_remote_intents"))
@@ -246,8 +244,7 @@ impl HomeGenerationScope for Scope {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_one(&mut **access.tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(saved.into())
 	}
@@ -255,7 +252,7 @@ impl HomeGenerationScope for Scope {
 		let access = &mut self.access;
 		let current: StoredIntent = {
 			let query_bind_1 = id;
-			sqlx::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.column(Asterisk)
 					.from(Alias::new("generation_remote_intents"))
@@ -267,8 +264,7 @@ impl HomeGenerationScope for Scope {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_one(&mut **access.tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(current.into())
 	}
@@ -279,7 +275,7 @@ impl HomeGenerationScope for Scope {
 			let query_bind_1 = &access.identity.tenant;
 			let query_bind_2 = access.snapshot.revision;
 			let query_bind_3 = json!(access.snapshot.bundle);
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("authorization_bundles"))
 					.value_expr(
@@ -304,10 +300,9 @@ impl HomeGenerationScope for Scope {
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **access.tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
-		sqlx::query(
+		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new("authorization_revisions"))
 				.columns(["tenant", "revision", "document", "actor"].map(Alias::new))
@@ -326,15 +321,14 @@ impl HomeGenerationScope for Scope {
 		.bind(json!(access.snapshot.bundle))
 		.bind(&access.identity.subject)
 		.execute(&mut **access.tx)
-		.await
-		.map_err(Error::from)?;
+		.await?;
 		Ok(())
 	}
 	async fn set_cancelled(&mut self, id: Uuid) -> Result<()> {
 		let access = &mut self.access;
 		{
 			let query_bind_1 = id;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("generation_remote_intents"))
 					.value(Alias::new("cancelled"), true)
@@ -345,8 +339,7 @@ impl HomeGenerationScope for Scope {
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **access.tx)
-			.await
-			.map_err(Error::from)?
+			.await?
 		};
 		Ok(())
 	}

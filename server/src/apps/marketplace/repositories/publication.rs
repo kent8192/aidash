@@ -132,7 +132,7 @@ async fn publication_kind(
 	repository: &str,
 	package: &str,
 ) -> crate::Result<Option<String>> {
-	Ok(sqlx::query_scalar(
+	crate::database::native::query_scalar(
 		&Query::select()
 			.column(Alias::new("kind"))
 			.from(Alias::new("marketplace_versions"))
@@ -142,18 +142,18 @@ async fn publication_kind(
 			.limit(1)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_optional(&mut **access.tx)
-	.await?)
+	.scalar_optional(&mut **access.tx)
+	.await
 }
 pub(crate) async fn insert_in(
-	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	version: &Version,
 	audience: &Audience,
 ) -> crate::Result<()> {
 	let source_content = aidash_domain::marketplace::definitions::content(
 		&aidash_domain::marketplace::definitions::manifest(version)?.entity,
 	);
-	sqlx::query(
+	crate::database::native::query(
 		&Query::insert()
 			.into_table(Alias::new("marketplace_versions"))
 			.columns(

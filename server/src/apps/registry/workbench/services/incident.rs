@@ -19,7 +19,7 @@ pub(crate) async fn read_events(
 	.map_err(Into::into)
 }
 
-pub async fn purge_expired(pool: &sqlx::PgPool) -> Result<u64> {
+pub async fn purge_expired(pool: &crate::database::native::Pool) -> Result<u64> {
 	aidash_application::registry::workbench::incidents::purge_expired(
 		&crate::bootstrap::workbench_incident_retention_repository(pool),
 	)

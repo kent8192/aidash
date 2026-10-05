@@ -18,7 +18,7 @@ async fn simultaneous_replica_startup_reuses_the_preapplied_native_schema(
 	// Arrange: deployment runs `manage migrate` before starting application replicas.
 	let (f, url, schema) = common::setup(&test_environment).await;
 	let recorder = DatabaseMigrationRecorder::new(DatabaseConnection::new(Arc::new(
-		PostgresBackend::new(f.store.pool.clone()),
+		PostgresBackend::new(f.store.pool.driver().clone()),
 	)));
 	let migrations =
 		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))

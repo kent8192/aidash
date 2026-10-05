@@ -83,7 +83,7 @@ pub(crate) async fn visible(
 		let query_bind_2 = tenant;
 		let query_bind_3 = &run.home_node;
 		let query_bind_4 = run.task_id;
-		sqlx::query_as(
+		crate::database::native::query_as(
 			&Query::select()
 				.columns([Alias::new("grant_id"), Alias::new("description")])
 				.from(Alias::new("authorization_remote_admissions"))
@@ -99,6 +99,7 @@ pub(crate) async fn visible(
 				.lock(LockType::Share)
 				.to_string(PostgresQueryBuilder),
 		)
+		.columns(&["grant_id", "description"])
 		.fetch_optional(authority.connection())
 		.await?
 	};
@@ -160,15 +161,16 @@ pub(super) async fn revision(
 		return Ok(Value::Null);
 	}
 	let tenant = authority.tenant().to_owned();
-	let revisions: (Option<i64>, i64) = sqlx::query_as(
+	let revisions: (Option<i64>, i64) = crate::database::native::query_as(
 		&runs(&tenant, workspace, source_node)
 			.expr(Expr::cust("SUM(r.revision)::bigint"))
 			.expr(Expr::cust("COUNT(*)"))
 			.to_string(PostgresQueryBuilder),
 	)
+	.columns(&["sum", "count"])
 	.fetch_one(authority.connection())
 	.await?;
-	let events: Option<i64> = sqlx::query_scalar(
+	let events: Option<i64> = crate::database::native::query_scalar(
 		&runs(&tenant, workspace, source_node)
 			.expr(Expr::cust("MAX(e.sequence)"))
 			.join(
@@ -185,7 +187,7 @@ pub(super) async fn revision(
 			.and_where(Expr::cust("e.kind LIKE 'run.%'"))
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(authority.connection())
+	.scalar_one(authority.connection())
 	.await?;
 	Ok(json!({"runs":revisions,"events":events}))
 }

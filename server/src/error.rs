@@ -160,7 +160,7 @@ impl Error {
 }
 
 impl Error {
-	fn has_database_code(&self, expected: &str) -> bool {
+	pub(crate) fn has_database_code(&self, expected: &str) -> bool {
 		match self {
 			Self::Database(error) => error
 				.as_database_error()

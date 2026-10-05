@@ -97,13 +97,13 @@ impl Store {
 		worker: Uuid,
 		seconds: i32,
 	) -> Result<Option<FailureDelivery>> {
-		let mut tx = self.pool.begin().await?;
-		let now: DateTime<Utc> = sqlx::query_scalar(
+		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let now: DateTime<Utc> = crate::database::native::query_scalar(
 			&Query::select()
 				.expr(Expr::cust("CURRENT_TIMESTAMP"))
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(&mut *tx)
+		.scalar_one(&mut *tx)
 		.await?;
 		let mut cursor = self.recovery_cursors.delivery.lock().await;
 		let mut query = Query::select()
@@ -233,7 +233,7 @@ impl Store {
 			}
 		};
 		let m = &delivery.metadata;
-		let mut tx = self.pool.begin().await?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
 		let query = Query::update()
 			.table(a("runs"))
 			.value(a("phase"), state.phase().as_str())
@@ -249,7 +249,9 @@ impl Store {
 				"lease_until>CURRENT_TIMESTAMP AND phase='WAITING' AND set_config('aidash.input_ledger_worker','true',true)='true'",
 			))
 			.to_string(PostgresQueryBuilder);
-		let updated = sqlx::query(&query).execute(&mut *tx).await?;
+		let updated = crate::database::native::query(&query)
+			.execute(&mut *tx)
+			.await?;
 		if updated.rows_affected() != 1 {
 			return Err(Error::Conflict(
 				"failure delivery lease or revision lost".into(),

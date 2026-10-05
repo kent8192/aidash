@@ -10,14 +10,11 @@ use aidash_application::ports::registry::{
 	RegistrationScope, RegistryRead,
 };
 use async_trait::async_trait;
-use reinhardt::db::backends::{
-	DatabaseConnection as BackendConnection, PostgresBackend, TransactionExecutor,
-};
+use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::{
 	AtomicTransaction, DatabaseConnection, DatabaseConnectionLease, OrmExecutor,
 };
 use serde_json::Value;
-use std::sync::Arc;
 use uuid::Uuid;
 mod sql;
 
@@ -28,10 +25,8 @@ pub struct Registry {
 	node_id: String,
 }
 impl Registry {
-	pub fn new(pool: sqlx::PgPool, node_id: &str) -> Result<Self> {
-		let lease = DatabaseConnectionLease::register(BackendConnection::new(Arc::new(
-			PostgresBackend::new(pool),
-		)))?;
+	pub fn new(pool: impl Into<crate::database::native::Pool>, node_id: &str) -> Result<Self> {
+		let lease = DatabaseConnectionLease::register(pool.into().connection())?;
 		Ok(Self {
 			db: lease.handle(),
 			_lease: lease,
@@ -345,7 +340,7 @@ pub(crate) async fn validate_references_with<E: OrmExecutor>(
 	.await?)
 }
 pub(crate) async fn register_in(
-	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+	tx: &mut crate::database::native::Transaction,
 	entry: &Entry,
 	node: &str,
 ) -> Result<bool> {

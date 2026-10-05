@@ -45,7 +45,7 @@ pub(crate) struct Scope {
 pub(crate) async fn binding(access: &mut Access, grant: Uuid) -> NativeResult<Option<BindingRow>> {
 	Ok({
 		let query_bind_1 = grant;
-		sqlx::query_as(
+		crate::database::native::query_as(
 			&Query::select()
 				.column(ColumnRef::Asterisk)
 				.from(Alias::new("authorization_remote_execution"))
@@ -129,7 +129,7 @@ impl HomeScope for Scope {
 				let query_bind_2 = task;
 				let query_bind_3 = &identity.tenant;
 				let query_bind_4 = &identity.subject;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(Asterisk)
 						.from(Alias::new("authorization_remote_grants"))
@@ -182,7 +182,7 @@ impl HomeScope for Scope {
 				let query_bind_1 = task;
 				let query_bind_2 = &identity.tenant;
 				let query_bind_3 = &identity.subject;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column(Asterisk)
 						.from(Alias::new("authorization_remote_grants"))
@@ -208,7 +208,7 @@ impl HomeScope for Scope {
 			.map_err(Into::into)
 	}
 	async fn delegation_grants(&mut self, task: &Task, node: &str) -> Result<Vec<Grant>> {
-		let result:NativeResult<Vec<GrantRow>>=async {let identity=self.access.identity.clone();let access=&mut *self.access;Ok({ let query_bind_1 = task.id; let query_bind_2 = node; let query_bind_3 = &identity.tenant; let query_bind_4 = &identity.subject; sqlx::query_as(&Query::select().column(Asterisk).from(Alias::new("authorization_remote_grants"))
+		let result:NativeResult<Vec<GrantRow>>=async {let identity=self.access.identity.clone();let access=&mut *self.access;Ok({ let query_bind_1 = task.id; let query_bind_2 = node; let query_bind_3 = &identity.tenant; let query_bind_4 = &identity.subject; crate::database::native::query_as(&Query::select().column(Asterisk).from(Alias::new("authorization_remote_grants"))
             .and_where(SimpleExpr::CustomWithExpr("(task_id=? AND node_id=? AND tenant=? AND root_subject=? AND NOT revoked AND expires_at>CLOCK_TIMESTAMP())".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()]))
             .order_by(Alias::new("expires_at"),reinhardt::query::Order::Desc).limit(100).to_string(PostgresQueryBuilder)).fetch_all(&mut **access.tx).await? })}.await;
 		result
@@ -230,7 +230,7 @@ impl HomeScope for Scope {
 				let query_bind_3 = task;
 				let query_bind_4 = description.task.revision;
 				let query_bind_5 = json!(description.task);
-				sqlx::query(&format!(
+				crate::database::native::query(&format!(
 					"{} ON CONFLICT DO NOTHING",
 					Query::insert()
 						.into_table(Alias::new("authorization_remote_execution"))
@@ -287,7 +287,7 @@ impl HomeScope for Scope {
 				let query_bind_1 = id;
 				let query_bind_2 = &identity.tenant;
 				let query_bind_3 = &identity.subject;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("authorization_remote_grants"))
 						.value(Alias::new("revoked"), true)
@@ -315,7 +315,7 @@ impl HomeScope for Scope {
 			Ok({
 				let query_bind_1 = task;
 				let query_bind_2 = admission;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("idempotency_key"))
 						.from(Alias::new("remote_run_message_fences"))
@@ -328,7 +328,7 @@ impl HomeScope for Scope {
 						))
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_all(&mut **access.tx)
+				.scalar_all(&mut **access.tx)
 				.await?
 			})
 		}
@@ -341,7 +341,7 @@ impl HomeScope for Scope {
 			{
 				let query_bind_1 = id;
 				let query_bind_2 = revision;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("authorization_remote_execution"))
 						.value_expr(
@@ -370,7 +370,7 @@ impl HomeScope for Scope {
 			let access = &mut *self.access;
 			Ok({
 				let query_bind_1 = id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("receipt"))
 						.from(Alias::new("semantic_remote_operations"))
@@ -383,7 +383,7 @@ impl HomeScope for Scope {
 						.limit(1)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **access.tx)
+				.scalar_optional(&mut **access.tx)
 				.await?
 			})
 		}

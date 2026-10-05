@@ -90,7 +90,7 @@ impl SessionScope for Scope<'_> {
 			{
 				let query_bind_1 = task;
 				let query_bind_2 = thread;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::insert()
 						.into_table(Alias::new("core_task_sessions"))
 						.columns(["task_id", "thread_id"].map(Alias::new))
@@ -122,7 +122,7 @@ impl SessionScope for Scope<'_> {
 			let area: Option<NativeArea> = {
 				let query_bind_1 = id;
 				let query_bind_2 = &access.identity.tenant;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&select("core_areas")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
@@ -158,7 +158,7 @@ impl SessionScope for Scope<'_> {
 			let access = &mut *self.access;
 			let row = {
 				let query_bind_1 = run_id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.columns(["area_id", "generation"].map(Alias::new))
 						.from(Alias::new("core_runs"))
@@ -172,6 +172,7 @@ impl SessionScope for Scope<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["area_id", "generation"])
 				.fetch_optional(&mut **access.tx)
 				.await?
 			};
@@ -186,7 +187,7 @@ impl SessionScope for Scope<'_> {
 			let current = {
 				let query_bind_1 = area.id;
 				let query_bind_2 = area.generation;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("run_id"))
 						.from(Alias::new("core_runs"))
@@ -206,7 +207,7 @@ impl SessionScope for Scope<'_> {
 						.limit(1)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **access.tx)
+				.scalar_optional(&mut **access.tx)
 				.await?
 			};
 			Ok(current)
@@ -219,7 +220,7 @@ impl SessionScope for Scope<'_> {
 			let access = &mut *self.access;
 			let area: Option<NativeArea> = {
 				let query_bind_1 = run_id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&select("core_areas")
 						.and_where(
 							Expr::col(Alias::new("id")).in_subquery(
@@ -244,6 +245,7 @@ impl SessionScope for Scope<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["area_id"])
 				.fetch_optional(&mut **access.tx)
 				.await?
 			};
@@ -259,7 +261,7 @@ impl SessionScope for Scope<'_> {
 			let access = &mut *self.access;
 			let row = {
 				let query_bind_1 = task_id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("thread_id"))
 						.from(Alias::new("core_task_sessions"))
@@ -272,7 +274,7 @@ impl SessionScope for Scope<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **access.tx)
+				.scalar_optional(&mut **access.tx)
 				.await?
 			};
 			Ok(row)
@@ -310,7 +312,7 @@ impl SessionScope for Scope<'_> {
 			let access = &mut *self.access;
 			let areas: Vec<NativeArea> = {
 				let query_bind_1 = id;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&select("core_areas")
 						.and_where(
 							Expr::col(Alias::new("id")).in_subquery(
@@ -341,6 +343,7 @@ impl SessionScope for Scope<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["area_id"])
 				.fetch_all(&mut **access.tx)
 				.await?
 			};
@@ -357,7 +360,7 @@ impl SessionScope for Scope<'_> {
 			let _channel: Option<Uuid> = {
 				let query_bind_1 = thread;
 				let query_bind_2 = workspace;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("channel_threads"))
@@ -381,7 +384,7 @@ impl SessionScope for Scope<'_> {
 						.lock(LockType::Update)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **access.tx)
+				.scalar_optional(&mut **access.tx)
 				.await?
 			};
 			thread_lifecycle::visible(&mut access.tx, thread).await?;
@@ -396,7 +399,7 @@ impl SessionScope for Scope<'_> {
 				.store
 				.ok_or_else(|| NativeError::Invalid("session repository scope invariant".into()))?;
 			let access = &mut *self.access;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("core_areas"))
 					.columns(
@@ -451,7 +454,7 @@ impl SessionScope for Scope<'_> {
 				let query_bind_4 = agent_id;
 				let query_bind_5 = &store.node_id;
 				let query_bind_6 = &access.identity.subject;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&select("core_areas")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant"))).eq(
@@ -515,7 +518,7 @@ impl SessionScope for Scope<'_> {
 			let access = &mut *self.access;
 			let initialized = {
 				let query_bind_1 = run_id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("initialized"))
 						.from(Alias::new("core_runs"))
@@ -529,7 +532,7 @@ impl SessionScope for Scope<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_optional(&mut **access.tx)
+				.scalar_optional(&mut **access.tx)
 				.await?
 			};
 			Ok(initialized)
@@ -542,7 +545,7 @@ impl SessionScope for Scope<'_> {
 			let access = &mut *self.access;
 			let initialized = {
 				let query_bind_1 = run_id;
-				sqlx::query_scalar(
+				crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("initialized"))
 						.from(Alias::new("core_runs"))
@@ -556,7 +559,7 @@ impl SessionScope for Scope<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
-				.fetch_one(&mut **access.tx)
+				.scalar_one(&mut **access.tx)
 				.await?
 			};
 			Ok(initialized)
@@ -569,7 +572,7 @@ impl SessionScope for Scope<'_> {
 			let access = &mut *self.access;
 			{
 				let query_bind_1 = run_id;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("core_runs"))
 						.value(Alias::new("initialized"), true)
@@ -609,7 +612,7 @@ impl SessionScope for Scope<'_> {
 				let query_bind_3 = area.next_sequence;
 				let query_bind_4 = area.generation;
 				let query_bind_5 = initialized;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::insert()
 						.into_table(Alias::new("core_runs"))
 						.columns(
@@ -647,7 +650,7 @@ impl SessionScope for Scope<'_> {
 			};
 			{
 				let query_bind_1 = area.id;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::update()
 						.table(Alias::new("core_areas"))
 						.value_expr(
@@ -674,7 +677,7 @@ impl SessionScope for Scope<'_> {
 			let rows: Vec<NativeSessionRun> = {
 				let query_bind_1 = area.id;
 				let query_bind_2 = area.generation;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column((Alias::new("q"), Alias::new("run_id")))
 						.column((Alias::new("q"), Alias::new("sequence")))
@@ -709,6 +712,7 @@ impl SessionScope for Scope<'_> {
 						.limit(101)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["run_id", "sequence", "phase", "control"])
 				.fetch_all(&mut **access.tx)
 				.await?
 			};
@@ -725,7 +729,7 @@ impl SessionScope for Scope<'_> {
 			let last = {
 				let query_bind_1 = area.id;
 				let query_bind_2 = area.generation;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.column((Alias::new("q"), Alias::new("run_id")))
 						.column((Alias::new("r"), Alias::new("agent_version")))
@@ -751,6 +755,7 @@ impl SessionScope for Scope<'_> {
 						.limit(1)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["run_id", "agent_version"])
 				.fetch_optional(&mut **access.tx)
 				.await?
 			};
@@ -768,7 +773,7 @@ impl SessionScope for Scope<'_> {
 			);
 			{
 				let query_bind_1 = lock;
-				sqlx::query(
+				crate::database::native::query(
 					&Query::select()
 						.expr(SimpleExpr::CustomWithExpr(
 							"(pg_advisory_xact_lock(hashtextextended(?, 0)))".to_owned(),
@@ -783,7 +788,7 @@ impl SessionScope for Scope<'_> {
 				let query_bind_1 = &access.identity.tenant;
 				let query_bind_2 = &access.identity.subject;
 				let query_bind_3 = key;
-				sqlx::query_as(
+				crate::database::native::query_as(
 					&Query::select()
 						.columns(["digest", "result"].map(Alias::new))
 						.from(Alias::new("core_requests"))
@@ -812,6 +817,7 @@ impl SessionScope for Scope<'_> {
 						)
 						.to_string(PostgresQueryBuilder),
 				)
+				.columns(&["digest", "result"])
 				.fetch_optional(&mut **access.tx)
 				.await?
 			};
@@ -823,7 +829,7 @@ impl SessionScope for Scope<'_> {
 	async fn cache(&mut self, key: Uuid, digest: &str, result: &Value) -> Result<()> {
 		let result: NativeResult<_> = async {
 			let access = &mut *self.access;
-			sqlx::query(
+			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("core_requests"))
 					.columns(["tenant", "principal", "key", "digest", "result"].map(Alias::new))
