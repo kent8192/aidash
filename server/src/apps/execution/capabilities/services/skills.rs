@@ -1,7 +1,7 @@
 //! Native Skill contracts adapt to shared application workflows.
 use super::contracts::{Area, FileEntry};
 pub use crate::apps::execution::capabilities::serializers::skills::{
-	SkillAttachment, SkillList, SkillLoad, SkillMetadata, SkillRead,
+	SkillAttachment, SkillList, SkillLoad, SkillRead,
 };
 use crate::{
 	Result, authorization::access::Access, domain::Run, registry::AgentConfig, store::Store,
@@ -64,7 +64,7 @@ pub(crate) async fn mounted(access: &mut Access, run: Uuid) -> Result<Vec<FileEn
 #[cfg(test)]
 use super::contracts::FileScope;
 #[cfg(test)]
-use crate::apps::execution::capabilities::serializers::skills::Pinned;
+use crate::apps::execution::capabilities::serializers::skills::{Pinned, SkillMetadata};
 #[cfg(test)]
 use serde_json::json;
 #[cfg(test)]
