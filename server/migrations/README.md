@@ -70,7 +70,7 @@ confined sibling SQL assets. Execution, inspection, and `makemigrations` use the
 original app history directly, without a project-specific expansion or child
 command adapter.
 
-The pinned revision `6e523bada84a38296351d373cb40684e17bb45f4` includes SQL asset
+The pinned revision `43fc443e02bf4165487ba2c39d9204be597b3a0e` includes SQL asset
 loading [#6505](https://github.com/kent8192/reinhardt-web/issues/6505) and native
 PostgreSQL sequence/identity operations
 [#6506](https://github.com/kent8192/reinhardt-web/issues/6506), column-default
