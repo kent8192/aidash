@@ -14,11 +14,6 @@ use std::{future::Future, sync::Arc, time::Duration};
 use tokio::{sync::watch, task::JoinSet};
 use uuid::Uuid;
 
-#[derive(Clone, Copy)]
-enum LeaseTarget {
-	Token,
-	Run(Uuid),
-}
 enum Completion<T> {
 	Completed(Result<T>),
 	Lost,
@@ -43,7 +38,7 @@ async fn renew(leases: &dyn WorkerLeases, run: Uuid, token: Uuid, seconds: i32) 
 async fn keepalive<T>(
 	work: impl Future<Output = Result<T>>,
 	leases: &dyn WorkerLeases,
-	target: LeaseTarget,
+	run: Uuid,
 	token: Uuid,
 	seconds: i32,
 ) -> Result<Completion<T>> {
@@ -54,10 +49,6 @@ async fn keepalive<T>(
 		tokio::select! {
 			result = &mut work => return Ok(Completion::Completed(result)),
 			_ = heartbeat.tick() => {
-				let run = match target {
-					LeaseTarget::Token => leases.current_id(token).await?,
-					LeaseTarget::Run(run) => run,
-				};
 				if !renew(leases, run, token, seconds).await? {
 					return Ok(Completion::Lost);
 				}
@@ -73,10 +64,14 @@ pub async fn advance(
 	token: Uuid,
 	seconds: i32,
 ) -> Result<()> {
+	// The step can durably clear its owner before its authority future returns.
+	// Renew the claimed run directly so that normal lease release is handled by
+	// the existing false-renewal cancellation path, rather than a failed lookup.
+	let run = scope.metadata().id;
 	let Completion::Completed(result) = keepalive(
 		worker::advance(scope.as_mut(), token),
 		leases,
-		LeaseTarget::Token,
+		run,
 		token,
 		seconds,
 	)
@@ -120,7 +115,7 @@ pub async fn failure_once(
 	if let Completion::Completed(result) = keepalive(
 		terminal::deliver(scope.as_mut()),
 		leases,
-		LeaseTarget::Run(run),
+		run,
 		token,
 		seconds,
 	)

@@ -37,7 +37,7 @@ fn leases() -> Leases {
 impl WorkerLeases for Leases {
 	async fn current_id(&self, _: Uuid) -> Result<Uuid> {
 		self.trace.lock().unwrap().push("lookup");
-		Ok(self.run)
+		Err(Error::Conflict("worker lease lost".into()))
 	}
 	async fn renew(&self, run: Uuid, _: Uuid, _: i32) -> Result<bool> {
 		assert_eq!(run, self.run);
@@ -220,7 +220,7 @@ async fn permanent_renewal_failure_is_not_retried(leases: Leases) {
 
 #[rstest]
 #[tokio::test(start_paused = true)]
-async fn lost_step_lease_drops_scope_without_resume_or_recovery(leases: Leases) {
+async fn released_step_owner_cancels_without_lookup_resume_or_recovery(leases: Leases) {
 	let mut scope = Scope::new(&leases);
 	scope.blocked = true;
 	leases.renewals.lock().unwrap().push_back(Ok(false));
@@ -229,7 +229,7 @@ async fn lost_step_lease_drops_scope_without_resume_or_recovery(leases: Leases) 
 		.unwrap();
 	assert_eq!(
 		*leases.trace.lock().unwrap(),
-		["cancel", "admit", "invoke", "lookup", "renew", "drop"]
+		["cancel", "admit", "invoke", "renew", "drop"]
 	);
 }
 
@@ -297,7 +297,7 @@ async fn terminal_heartbeat_uses_claimed_run_and_cancels_lost_work(leases: Lease
 	};
 	leases.renewals.lock().unwrap().push_back(Ok(false));
 	assert!(matches!(
-		keepalive(work, &leases, LeaseTarget::Run(leases.run), Uuid::nil(), 3)
+		keepalive(work, &leases, leases.run, Uuid::nil(), 3)
 			.await
 			.unwrap(),
 		Completion::Lost
