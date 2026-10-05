@@ -42,17 +42,24 @@ async fn keepalive<T>(
 	token: Uuid,
 	seconds: i32,
 ) -> Result<Completion<T>> {
-	let mut work = Box::pin(work);
-	let mut heartbeat = tokio::time::interval(Duration::from_secs((seconds / 3).max(1) as u64));
-	heartbeat.tick().await;
-	loop {
-		tokio::select! {
-			result = &mut work => return Ok(Completion::Completed(result)),
-			_ = heartbeat.tick() => {
-				if !renew(leases, run, token, seconds).await? {
-					return Ok(Completion::Lost);
-				}
+	let renewal = async {
+		let mut heartbeat = tokio::time::interval(Duration::from_secs((seconds / 3).max(1) as u64));
+		heartbeat.tick().await;
+		loop {
+			heartbeat.tick().await;
+			if !renew(leases, run, token, seconds).await? {
+				return Ok::<_, aidash_application::Error>(());
 			}
+		}
+	};
+	// A renewal can wait on a row lock held by the step's own transaction.
+	// Keep polling the step so it can commit and release that lock; completion
+	// drops the pending renewal, while a lost lease still cancels the step.
+	tokio::select! {
+		result = work => Ok(Completion::Completed(result)),
+		lost = renewal => {
+			lost?;
+			Ok(Completion::Lost)
 		}
 	}
 }

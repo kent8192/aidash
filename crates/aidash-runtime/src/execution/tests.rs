@@ -22,6 +22,7 @@ struct Leases {
 	renewals: Mutex<VecDeque<Result<bool>>>,
 	controls: Mutex<VecDeque<Result<RunControl>>>,
 	times: Mutex<Vec<Instant>>,
+	blocked_renewal: Option<Arc<tokio::sync::Notify>>,
 }
 #[fixture]
 fn leases() -> Leases {
@@ -31,6 +32,7 @@ fn leases() -> Leases {
 		renewals: Mutex::new(VecDeque::new()),
 		controls: Mutex::new(VecDeque::new()),
 		times: Mutex::new(vec![]),
+		blocked_renewal: None,
 	}
 }
 #[async_trait]
@@ -43,6 +45,11 @@ impl WorkerLeases for Leases {
 		assert_eq!(run, self.run);
 		self.trace.lock().unwrap().push("renew");
 		self.times.lock().unwrap().push(Instant::now());
+		if let Some(entered) = &self.blocked_renewal {
+			let _guard = PendingRenewal(self.trace.clone());
+			entered.notify_one();
+			return std::future::pending().await;
+		}
 		self.renewals
 			.lock()
 			.unwrap()
@@ -60,6 +67,13 @@ impl WorkerLeases for Leases {
 			.unwrap()
 			.pop_front()
 			.unwrap_or(Ok(RunControl::Active))
+	}
+}
+
+struct PendingRenewal(Journal);
+impl Drop for PendingRenewal {
+	fn drop(&mut self) {
+		self.0.lock().unwrap().push("renew-cancelled");
 	}
 }
 
@@ -216,6 +230,33 @@ async fn permanent_renewal_failure_is_not_retried(leases: Leases) {
 		Err(Error::Forbidden)
 	));
 	assert_eq!(*leases.trace.lock().unwrap(), ["renew"]);
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn pending_renewal_does_not_stop_the_step_from_committing(mut leases: Leases) {
+	// Arrange: the renewal cannot finish until the step releases its row lock.
+	let entered = Arc::new(tokio::sync::Notify::new());
+	leases.blocked_renewal = Some(entered.clone());
+	let work = async {
+		entered.notified().await;
+		leases.trace.lock().unwrap().push("commit");
+		Ok(77)
+	};
+	// Act: the committed result must finish without waiting for the renewal.
+	let result = tokio::time::timeout(
+		Duration::from_secs(2),
+		keepalive(work, &leases, leases.run, Uuid::nil(), 3),
+	)
+	.await
+	.expect("the step must progress while its renewal is pending")
+	.unwrap();
+	// Assert: completion also cancels the pending database operation.
+	assert!(matches!(result, Completion::Completed(Ok(77))));
+	assert_eq!(
+		*leases.trace.lock().unwrap(),
+		["renew", "commit", "renew-cancelled"]
+	);
 }
 
 #[rstest]
