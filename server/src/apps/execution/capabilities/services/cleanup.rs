@@ -1,9 +1,8 @@
 //! Native lifecycle entry points adapt unchanged contracts to application workflows.
 use super::{contracts::Area, records::Record};
 pub use crate::apps::execution::capabilities::serializers::cleanup::{
-	Choice, Cleanup, CleanupResult, ManagedArea, ManagementPage, Restore, RestoreNewThread,
+	Choice, Cleanup, CleanupResult, ManagementPage, Restore, RestoreNewThread,
 };
-pub(crate) use crate::apps::execution::repositories::cleanup::persist;
 use crate::{Result, authorization::access::Access, store::Store};
 use aidash_application::capabilities::cleanup as application;
 use serde_json::Value;

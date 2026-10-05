@@ -1,7 +1,7 @@
 //! HTTP and workers adapt DTOs to one shared approval and authorization workflow.
 use super::{contracts::Area, records::Record};
 pub use crate::apps::execution::capabilities::serializers::approvals::{
-	ApprovalChoice, ApprovalDecision, Outbound, Revoke,
+	ApprovalDecision, Outbound, Revoke,
 };
 use crate::{Result, authorization::access::Access, domain::Run, store::Store};
 use serde_json::Value;

@@ -26,7 +26,6 @@ use openidconnect::{
 	ClientId, ClientSecret, CsrfToken, Nonce, PkceCodeChallenge, RedirectUrl,
 	core::{CoreAuthenticationFlow, CoreClient, CoreProviderMetadata},
 };
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 

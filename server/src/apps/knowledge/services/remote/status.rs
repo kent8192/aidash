@@ -6,9 +6,7 @@ use crate::{
 	federation::Federation,
 	store::Store,
 };
-pub use aidash_domain::semantic::remote::status::{
-	Allowance, Provenance, SourceProvenance, Status,
-};
+pub use aidash_domain::semantic::remote::status::{Provenance, Status};
 use serde_json::Value;
 use uuid::Uuid;
 pub(crate) async fn provenance(

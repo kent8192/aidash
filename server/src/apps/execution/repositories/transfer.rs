@@ -11,7 +11,6 @@ use crate::apps::execution::capabilities::{
 use crate::{
 	Error as NativeError, Result as NativeResult,
 	authorization::{access::Access, catalog, identity::SubjectIdentity, peer},
-	domain::Run,
 	federation::Federation,
 	registry::{EntityRef, Entry},
 	store::Store,
@@ -36,7 +35,7 @@ use reinhardt::query::{
 	Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 	SimpleExpr,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use uuid::Uuid;
 pub(crate) struct Repository<'a> {
 	pub(crate) federation: &'a Federation,

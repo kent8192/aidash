@@ -14,7 +14,7 @@ pub(crate) mod graph;
 pub(crate) mod reads;
 
 use super::{access::Access, catalog, policy::identifier};
-use crate::{Error, Result, federation::Federation, registry::Entry};
+use crate::{Result, federation::Federation, registry::Entry};
 
 use serde_json::json;
 

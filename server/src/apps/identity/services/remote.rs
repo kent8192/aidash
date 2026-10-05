@@ -7,7 +7,7 @@ pub(crate) mod execution;
 use super::{access::Access, identity::Actor, peer::execution::Inspection};
 #[cfg(test)]
 use crate::registry::Search;
-use crate::{Error, Result, domain::Task, federation::Federation, registry::EntityRef};
+use crate::{Result, domain::Task, federation::Federation, registry::EntityRef};
 use reinhardt::injectable;
 use serde_json::Value;
 #[cfg(test)]

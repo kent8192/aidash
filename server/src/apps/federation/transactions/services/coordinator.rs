@@ -1,5 +1,4 @@
 use super::{Manifest, Status, Vote};
-pub(crate) use crate::apps::federation::transactions::repositories::coordination::connection as coordinator_connection;
 use crate::{Result, federation::Federation};
 use uuid::Uuid;
 

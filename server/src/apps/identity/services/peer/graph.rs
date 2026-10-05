@@ -1,9 +1,7 @@
 //! Scoped graph projection. A peer connection authenticates the source Node;
 //! a mapped Subject or a typed operator grant supplies the receiving authority.
 pub(crate) use crate::apps::identity::repositories::graph::persistence::{
-	GraphAuthority, candidate_visible, candidates, decode_cursor, encode_cursor, graph_generation,
-	linked_registry, linked_task, linked_workspace, list_grants, operator_grant, project_activity,
-	set_grant, source_peer_lease,
+	GraphAuthority, list_grants, operator_grant, set_grant, source_peer_lease,
 };
 
 use crate::{
@@ -262,16 +260,11 @@ pub async fn provide(#[inject] runtime: Federation) -> GraphManagement {
 
 use reinhardt::injectable;
 
-use reinhardt::Query as QueryParams;
-
 pub use crate::apps::identity::serializers::peer_graph::{
-	GraphActivity, GraphExpandInput, GraphNode, GraphOperatorGrant, GraphOperatorGrantInput,
-	GraphOptions, GraphPage, GraphPeer, GraphRequest,
+	GraphExpandInput, GraphOperatorGrantInput, GraphOptions, GraphPage, GraphPeer, GraphRequest,
 };
 
-pub(crate) use crate::apps::identity::serializers::peer_graph::{
-	GrantPage, GraphCursor, GraphViewer,
-};
+pub(crate) use crate::apps::identity::serializers::peer_graph::{GrantPage, GraphViewer};
 
 #[cfg(test)]
 #[path = "../../tests/services_peer_graph_tests.rs"]
@@ -284,6 +277,6 @@ use chrono::Utc;
 use std::collections::BTreeMap;
 
 #[cfg(test)]
-use crate::apps::identity::serializers::peer_graph::GraphEdge;
+use crate::apps::identity::serializers::peer_graph::{GraphEdge, GraphNode};
 #[cfg(test)]
 use aidash_domain::federation::graph::entity_key;

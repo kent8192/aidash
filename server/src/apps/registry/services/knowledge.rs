@@ -8,7 +8,6 @@ use uuid::Uuid;
 pub(crate) fn validate(documents: &[ReferenceDocument]) -> Result<()> {
 	aidash_domain::registry::knowledge::validate(documents).map_err(Into::into)
 }
-pub(crate) use aidash_domain::registry::knowledge::digest;
 pub async fn load(db: &DatabaseConnection, entry: &Entry) -> Result<Value> {
 	crate::apps::registry::repositories::private_documents(db, entry).await
 }

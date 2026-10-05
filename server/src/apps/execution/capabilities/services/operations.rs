@@ -1,6 +1,6 @@
 //! Durable operation admission and reconciliation. Workers never run host commands.
 use super::{contracts::*, service};
-use crate::{Error, Result, authorization::access::Access, domain::Run, store::Store};
+use crate::{Result, authorization::access::Access, domain::Run, store::Store};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
