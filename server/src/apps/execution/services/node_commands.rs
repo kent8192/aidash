@@ -1,5 +1,5 @@
 //! Deployment roles and static utilities registered with Reinhardt's command driver.
-use crate::{Error, Result, activation, bootstrap, config::startup::load_settings};
+use crate::{Error, bootstrap, config::startup::load_settings};
 use async_trait::async_trait;
 use reinhardt::commands::{
 	CapabilityCommand, CapabilityContext, CapabilityRequirement, CommandError, CommandResult,
@@ -85,38 +85,6 @@ impl CapabilityCommand for CapabilityProfile {
 	}
 }
 
-struct ProvisionActivation;
-#[async_trait]
-impl CapabilityCommand for ProvisionActivation {
-	fn cli(&self) -> clap::Command {
-		clap::Command::new("activation-provision")
-			.about("Provision the durable worker activation stream")
-	}
-	fn requirements(&self, _: &clap::ArgMatches) -> Vec<CapabilityRequirement> {
-		Vec::new()
-	}
-	async fn execute(&self, _: &clap::ArgMatches, _: &CapabilityContext) -> CommandResult<()> {
-		provision_activation().await.map_err(command_error)
-	}
-}
-async fn provision_activation() -> Result<()> {
-	let node = std::env::var("AIDASH_NODE_ID")
-		.map_err(|_| Error::Invalid("AIDASH_NODE_ID is required".into()))?;
-	crate::config::validate_node_id(&node)?;
-	let settings = activation::Settings::from_env()?;
-	let url = std::env::var("AIDASH_ACTIVATION_NATS_URL")
-		.or_else(|_| std::env::var("NATS_URL"))
-		.unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
-	let broker = activation::Broker::provision(&url, &node, &settings).await?;
-	println!(
-		"{}",
-		serde_json::json!({
-			"stream": broker.stream_name, "subject": broker.subject, "consumer": "workers-v1",
-			"consumer_created": broker.consumer.as_ref().map(|c| c.cached_info().created.to_string()),
-		})
-	);
-	Ok(())
-}
 fn command_error(error: Error) -> CommandError {
 	CommandError::ExecutionError(error.to_string())
 }
@@ -128,6 +96,6 @@ pub fn commands() -> Vec<Box<dyn CapabilityCommand>> {
 		Box::new(RunNode(Role::Worker)),
 		Box::new(OpenApi),
 		Box::new(CapabilityProfile),
-		Box::new(ProvisionActivation),
+		Box::new(crate::activation::services::provision::ProvisionActivation),
 	]
 }

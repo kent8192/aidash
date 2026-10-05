@@ -6,28 +6,35 @@ and outstanding activation responsibility. Domain event routing remains separate
 
 ## Provisioning and roles
 
-Run `aidash migrate` with the normal database configuration, then run
-`aidash activation-provision` with operator NATS credentials. The latter prints
+Run `manage migrate` with the normal database configuration, then run
+`manage activation-provision` with operator NATS credentials. The latter prints
 the stream name, subject, durable consumer name, and creation timestamp. Use the same Node ID,
 namespace, retention, and replication settings as the runtime. The command creates
 missing objects and validates existing ones; it does not delete/reset consumers.
 A mismatch is an operator error and puts runtime activation into recovery.
+
+Provisioning selects only `node.node_id` and `node.nats_url` from the same composed
+settings as the runtime: base/profile TOML, interpolated variables and the legacy
+`AIDASH_NODE_ID` / `NATS_URL` deployment inputs. It does not require database, API
+or provider secrets. `AIDASH_ACTIVATION_NATS_URL` overrides the selected broker
+connection in both provisioning and runtime. The `aidash` compatibility binary
+runs the same registered Reinhardt commands.
 
 All runtime roles publish. Only `worker` and `serve` consume the shared
 `workers-v1` durable pull consumer. Each free slot requests one reference and
 retains its capacity until its leased durable step ends. Server-only processes
 never pull or acknowledge activation messages. No consumer is tied to a Pod name.
 
-| Configuration                        | Default      | Purpose                                                                                                          |
-| ------------------------------------ | ------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `AIDASH_ACTIVATION_NAMESPACE`        | `default`    | Stable deployment/account namespace, combined with exact Node ID and protocol version in a SHA-256 broker scope. |
-| `AIDASH_ACTIVATION_NATS_URL`         | `NATS_URL`   | Optional dedicated activation connection/role credentials. Never print this URL in diagnostics.                  |
-| `AIDASH_ACTIVATION_NATS_CREDENTIALS` | Unset        | Optional mounted NATS credentials file; takes precedence over URL credentials.                                   |
-| `AIDASH_ACTIVATION_BOOTSTRAP`        | `false`      | Explicit local-development creation of identical objects; production provisions separately.                      |
-| `AIDASH_ACTIVATION_MAX_AGE_SECONDS`  | `86400`      | Broker retention; unresolved database obligations do not expire.                                                 |
-| `AIDASH_ACTIVATION_MAX_BYTES`        | `1073741824` | File/WorkQueue capacity with DiscardNew.                                                                         |
-| `AIDASH_ACTIVATION_REPLICAS`         | `1`          | Broker replicas, 1–5; operator must provision matching JetStream capacity.                                       |
-| `AIDASH_WORKER_SLOTS`                | `4`          | 1–4 execution slots per process, preserving the existing database pool budget. Scale replicas for more capacity. |
+| Configuration                        | Default         | Purpose                                                                                                          |
+| ------------------------------------ | --------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `AIDASH_ACTIVATION_NAMESPACE`        | `default`       | Stable deployment/account namespace, combined with exact Node ID and protocol version in a SHA-256 broker scope. |
+| `AIDASH_ACTIVATION_NATS_URL`         | `node.nats_url` | Optional dedicated activation connection/role credentials. Never print this URL in diagnostics.                  |
+| `AIDASH_ACTIVATION_NATS_CREDENTIALS` | Unset           | Optional mounted NATS credentials file; takes precedence over URL credentials.                                   |
+| `AIDASH_ACTIVATION_BOOTSTRAP`        | `false`         | Explicit local-development creation of identical objects; production provisions separately.                      |
+| `AIDASH_ACTIVATION_MAX_AGE_SECONDS`  | `86400`         | Broker retention; unresolved database obligations do not expire.                                                 |
+| `AIDASH_ACTIVATION_MAX_BYTES`        | `1073741824`    | File/WorkQueue capacity with DiscardNew.                                                                         |
+| `AIDASH_ACTIVATION_REPLICAS`         | `1`             | Broker replicas, 1–5; operator must provision matching JetStream capacity.                                       |
+| `AIDASH_WORKER_SLOTS`                | `4`             | 1–4 execution slots per process, preserving the existing database pool budget. Scale replicas for more capacity. |
 
 The Helm chart exposes `activation.*`, `worker.slots`, and optional
 `server.existingSecret` / `worker.existingSecret`. Role secrets may contain a

@@ -123,6 +123,7 @@ async fn worker_command_validates_arguments_before_loading_runtime_settings(
 #[case::worker("worker")]
 #[case::openapi("openapi")]
 #[case::diagnostics("diagnostics")]
+#[case::activation("activation-provision")]
 #[tokio::test]
 async fn deployment_aliases_use_reinhardt_commands_before_runtime_configuration(
 	#[future(awt)]
@@ -158,6 +159,135 @@ async fn deployment_aliases_use_reinhardt_commands_before_runtime_configuration(
 		assert!(text.contains(name), "{text}");
 		assert!(text.contains("Usage:"), "{text}");
 	}
+}
+
+#[rstest]
+#[case::toml("toml", "aidash://file-target")]
+#[case::legacy("legacy", "aidash://legacy-target")]
+#[case::composed("composed", "aidash://composed-target")]
+#[case::dedicated("dedicated", "aidash://file-target")]
+#[tokio::test]
+async fn activation_provision_uses_composed_target_without_unrelated_runtime_settings(
+	#[future(awt)]
+	#[from(management_process)]
+	_process_slot: tokio::sync::SemaphorePermit<'static>,
+	temp_dir: TempDir,
+	#[case] source: &str,
+	#[case] node_id: &str,
+) {
+	use aidash_server::activation::{Broker, Settings};
+	use reinhardt::test::testcontainers::{
+		GenericImage, ImageExt,
+		core::{ContainerPort, WaitFor},
+		runners::AsyncRunner,
+	};
+	// Arrange: only node identity and NATS are available. Other fragments retain
+	// unresolved secrets to prove this command requests a selected settings view.
+	let container = GenericImage::new("nats", "2.12-alpine")
+		.with_exposed_port(ContainerPort::Tcp(4222))
+		.with_wait_for(WaitFor::message_on_stderr("Server is ready"))
+		.with_cmd(["-js"])
+		.start()
+		.await
+		.unwrap();
+	let url = format!(
+		"nats://{}:{}",
+		container.get_host().await.unwrap(),
+		container.get_host_port_ipv4(4222).await.unwrap()
+	);
+	let configured_url = if matches!(source, "legacy" | "composed" | "dedicated") {
+		"nats://127.0.0.1:1"
+	} else {
+		&url
+	};
+	std::fs::write(
+		temp_dir.path().join("base.toml"),
+		format!(
+			r#"
+[node]
+node_id = "aidash://file-target"
+nats_url = "{configured_url}"
+endpoint = "${{UNAVAILABLE_ENDPOINT}}"
+api_token = "${{UNAVAILABLE_API_TOKEN}}"
+[core]
+secret_key = "${{UNAVAILABLE_CORE_SECRET}}"
+"#
+		),
+	)
+	.unwrap();
+	let namespace = uuid::Uuid::new_v4().simple().to_string();
+	let expected = Broker::names(
+		node_id,
+		&Settings {
+			namespace: namespace.clone(),
+			..Default::default()
+		},
+	);
+	let nats = async_nats::connect(&url).await.unwrap();
+	let jetstream = async_nats::jetstream::new(nats);
+	for binary in [env!("CARGO_BIN_EXE_manage"), env!("CARGO_BIN_EXE_aidash")] {
+		let mut command = Command::new(binary);
+		command
+			.arg("activation-provision")
+			.env_clear()
+			.env("TOKIO_WORKER_THREADS", "2")
+			.env("REINHARDT_SETTINGS_DIR", temp_dir.path())
+			.env("AIDASH_ACTIVATION_NAMESPACE", &namespace)
+			.current_dir(temp_dir.path())
+			.kill_on_drop(true);
+		if source == "legacy" {
+			command
+				.env("AIDASH_NODE_ID", "aidash://legacy-target")
+				.env("NATS_URL", &url);
+		}
+		if source == "composed" {
+			std::fs::write(
+				temp_dir.path().join("provision.toml"),
+				format!(
+					r#"[node]
+node_id = "{node_id}"
+nats_url = "${{REINHARDT_ACTIVATION_TEST_NATS}}"
+"#
+				),
+			)
+			.unwrap();
+			command
+				.env("REINHARDT_ENV", "provision")
+				.env("REINHARDT_ACTIVATION_TEST_NATS", &url);
+		}
+		if source == "dedicated" {
+			command.env("AIDASH_ACTIVATION_NATS_URL", &url);
+		}
+		// Act: both public binaries use the same registered Reinhardt command.
+		let output = tokio::time::timeout(std::time::Duration::from_secs(15), command.output())
+			.await
+			.unwrap()
+			.unwrap();
+		// Assert: exact durable objects exist at the effective broker and node scope.
+		assert!(
+			output.status.success(),
+			"{}",
+			String::from_utf8_lossy(&output.stderr)
+		);
+		let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+		assert_eq!(result["stream"], expected.0);
+		assert_eq!(result["subject"], expected.1);
+		assert_eq!(result["consumer"], "workers-v1");
+		assert!(result["consumer_created"].as_str().is_some());
+		assert!(!String::from_utf8_lossy(&output.stdout).contains(&url));
+		let mut stream = jetstream.get_stream(&expected.0).await.unwrap();
+		assert_eq!(
+			stream.info().await.unwrap().config.subjects,
+			vec![expected.1.clone()]
+		);
+		assert!(
+			stream
+				.get_consumer::<async_nats::jetstream::consumer::pull::Config>("workers-v1")
+				.await
+				.is_ok()
+		);
+	}
+	// The container owns all created streams and consumers, including failed cases.
 }
 
 #[rstest]
