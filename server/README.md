@@ -7,11 +7,13 @@ A Reinhardt project.
 ### Using cargo-make (Recommended)
 
 Install cargo-make:
+
 ```bash
 cargo install cargo-make
 ```
 
 Run the development server:
+
 ```bash
 cargo make runserver
 ```

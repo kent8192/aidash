@@ -196,13 +196,13 @@ follow this order:
 
 Useful options are:
 
-| Option | Use |
-| --- | --- |
-| `<APP_LABEL>` | Limit generation to one app; omit it to inspect all apps. |
-| `--dry-run` | Show the migration that would be created without writing files. |
-| `--empty` | Create an intentional empty migration for a data or manual operation. |
-| `--merge` | Create a merge migration after independent migration branches conflict. |
-| `-n, --name <NAME>` | Give a generated migration a stable descriptive suffix. |
+| Option                | Use                                                                      |
+| --------------------- | ------------------------------------------------------------------------ |
+| `<APP_LABEL>`         | Limit generation to one app; omit it to inspect all apps.                |
+| `--dry-run`           | Show the migration that would be created without writing files.          |
+| `--empty`             | Create an intentional empty migration for a data or manual operation.    |
+| `--merge`             | Create a merge migration after independent migration branches conflict.  |
+| `-n, --name <NAME>`   | Give a generated migration a stable descriptive suffix.                  |
 | `--force-empty-state` | Treat the previous state as empty; use only for a genuinely new history. |
 
 The default state builder uses the project's local infrastructure when

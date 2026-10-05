@@ -117,10 +117,7 @@ cfg_aliases = "0.2"
 [dev-dependencies]
 axum-test = "18.7"
 axum = { version = "0.8", features = ["json", "query", "macros"] }
-reinhardt = { workspace = true, features = [
-  "test",
-  "testcontainers",
-] }
+reinhardt = { workspace = true, features = ["test", "testcontainers"] }
 rstest = "0.26.1"
 tempfile = "3"
 toml = "1.1"
