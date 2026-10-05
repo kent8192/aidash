@@ -1771,3 +1771,35 @@ details > summary {
 .model-options p {
   padding: 12px;
 }
+
+.desktop-connections {
+  display: flex;
+  padding: 8px 16px;
+  border-bottom: 1px solid #8884;
+  align-items: center;
+}
+.desktop-connections select {
+  max-width: min(80vw, 700px);
+}
+
+.desktop-shell {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+.desktop-connections {
+  flex: none;
+  gap: 8px;
+}
+.desktop-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.desktop-content .collab-app {
+  height: 100%;
+}
+.desktop-shell > .login {
+  min-height: 0;
+  flex: 1;
+}

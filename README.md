@@ -250,6 +250,8 @@ The PostgreSQL image supplies the `pg_jsonschema` library. Each database's nativ
 
 CI runs Trunk, Rust unit/integration tests, the PostgreSQL/NATS/Chromium acceptance suite, and Kubernetes/k3s recovery in separate jobs. The cluster jobs build the container, verify Pod termination, scaling and rolling updates, and inspect the live deployment dashboard. Run them locally with `bash scripts/test-cluster.sh kubernetes` and `bash scripts/test-cluster.sh k3s` after installing the browser dependencies. `CI Success` requires every job to succeed, including the Codecov upload. Use that check for branch protection. Rust coverage uses `cargo llvm-cov` with real PostgreSQL tests and uploads an explicit LCOV file through Codecov OIDC. Codecov measures `crates/` and `server/src/`; tests, migration plumbing and generated API files are excluded. Browser tests establish dashboard behavior and are not included in the Rust coverage percentage.
 
+The coverage uploader uses a pinned Codecov CLI from PyPI; see the [download outage and recovery condition](docs/operations/ci-coverage.md).
+
 Run `scripts/test-rust.sh --coverage` to produce `coverage/rust.lcov` locally (requires `cargo-llvm-cov` 0.8.7 and `llvm-tools-preview`). `scripts/check.sh` runs the full local suite. Cargo and npm lockfiles remain tracked for reproducible dependency resolution.
 
 Run `npm exec --yes --package=@usebruno/cli@3.1.3 -- scripts/test-bruno-api.sh` with the test PostgreSQL and NATS services running to verify the real HTTP API. The [Bruno collection](server/tests/bruno/README.md) covers scoped authorization, atomic update conflicts, browser login, cookies, CSRF and logout against a disposable database and the compiled server. Sanitized reports include the source revision and executable hash.
@@ -260,3 +262,7 @@ Third-party attribution for the adapted context compaction code is in [LICENSE](
 
 HTTP request logging, admission limits, SSE capacity, and the optional Prometheus
 listener are documented in [HTTP protection and observability](docs/operations/http-observability.md).
+
+## Desktop client
+
+The [Tauri 2 desktop client](desktop/README.md) bundles the shared dashboard and connects to an existing local or remote Aidash server. It supports external-browser Google sign-in and persistent OS-protected credentials.

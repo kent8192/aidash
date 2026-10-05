@@ -19,14 +19,26 @@ try {
   await page.route("**/auth/activity", (route) =>
     route.fulfill({ status: 204 }),
   );
-  await page.route("**/api/**", (route) =>
-    route.continue({
-      headers: {
-        ...route.request().headers(),
-        authorization: "Bearer acceptance-access-token",
-      },
-    }),
-  );
+  let payload;
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const headers = {
+      ...request.headers(),
+      authorization: "Bearer acceptance-access-token",
+    };
+    if (
+      request.url().endsWith("/api/conversations") &&
+      request.method() === "POST"
+    ) {
+      // Capture the real response before the UI can navigate away and Chromium
+      // discards its body. Forward the same response to the submitting UI.
+      const response = await route.fetch({ headers });
+      payload = await response.json();
+      await route.fulfill({ response });
+    } else {
+      await route.continue({ headers });
+    }
+  });
   await page.goto(process.env.AIDASH_E2E_URL ?? "http://127.0.0.1:18080");
   await page
     .getByRole("button", { name: "ゴールを作成して実行", exact: true })
@@ -49,7 +61,6 @@ try {
     .click();
   const response = await created;
   expect(response.status()).toBe(200);
-  const payload = await response.json();
   await expect(dialog).not.toBeVisible();
   await page.screenshot({
     path: ".ignore/acceptance/dashboard-goal.png",

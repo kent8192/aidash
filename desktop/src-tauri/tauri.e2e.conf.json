@@ -1,0 +1,19 @@
+{
+  "identifier": "dev.aidash.desktop.e2e",
+  "productName": "Aidash E2E",
+  "build": { "beforeBuildCommand": "" },
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "capabilities": [
+        "main",
+        {
+          "identifier": "e2e-driver",
+          "windows": ["main"],
+          "permissions": ["wdio:default"]
+        }
+      ]
+    }
+  },
+  "bundle": { "active": false }
+}

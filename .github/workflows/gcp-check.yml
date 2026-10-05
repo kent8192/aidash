@@ -16,5 +16,18 @@ jobs:
         with:
           terraform_version: 1.14.8
           terraform_wrapper: false
+      - name: Fetch observer dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if cargo fetch --locked --manifest-path infra/gcp/observer/Cargo.toml; then
+              exit 0
+            fi
+            if [[ "$attempt" == 3 ]]; then
+              exit 1
+            fi
+            sleep "$((attempt * 5))"
+          done
       - name: Test infrastructure without cloud credentials or resources
+        env:
+          CARGO_NET_OFFLINE: "true"
         run: bash infra/gcp/check.sh

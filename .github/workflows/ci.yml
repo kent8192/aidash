@@ -32,6 +32,8 @@ jobs:
       - run: npm ci --prefix web
       - run: rustup show active-toolchain
       - uses: trunk-io/trunk-action/setup@e1234e67a86010d61ddac8d8ebf4b783e2ffd2fa # v2.0.0
+      - name: Install desktop lint prerequisites
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev
       - name: Check formatting and lint
         run: '"$TRUNK_PATH" check --all --no-fix --no-progress --print-failures'
   collaboration-ui:
@@ -88,6 +90,9 @@ jobs:
         uses: codecov/codecov-action@04b047e8bb82a0c002c8312c1c880fbc6a999d45 # v5
         with:
           use_oidc: true
+          # See docs/operations/ci-coverage.md for the CLI download outage and removal condition.
+          use_pypi: true
+          version: v11.3.1
           files: coverage/rust.lcov
           flags: rust
           disable_search: true
