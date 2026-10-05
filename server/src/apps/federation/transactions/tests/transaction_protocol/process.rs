@@ -17,10 +17,18 @@ impl Server {
 	fn start(node: &Node, cut: Option<(Uuid, &str, &Path)>) -> Self {
 		let directory = temp_dir();
 		let log = File::create(directory.path().join("server.log")).unwrap();
-		let mut command = Command::new(
-			std::env::var_os("AIDASH_TEST_BINARY")
-				.unwrap_or_else(|| env!("CARGO_BIN_EXE_aidash").into()),
-		);
+		let binary = std::env::var_os("AIDASH_TEST_BINARY")
+			.unwrap_or_else(|| env!("CARGO_BIN_EXE_aidash").into());
+		// On macOS, dyld can stall before main when loading a large executable
+		// from an external target volume. The process directory owns this local
+		// snapshot and retains it until the child is killed and reaped.
+		#[cfg(target_os = "macos")]
+		let binary = {
+			let snapshot = directory.path().join("aidash");
+			std::fs::copy(&binary, &snapshot).expect("snapshot the exact process test executable");
+			snapshot
+		};
+		let mut command = Command::new(binary);
 		command
 			.args(common::native_process_args(&node.f, "server"))
 			.env_clear()
