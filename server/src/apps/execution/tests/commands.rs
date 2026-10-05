@@ -6,6 +6,33 @@ use tokio::process::Command;
 
 #[rstest::fixture]
 async fn management_process() -> tokio::sync::SemaphorePermit<'static> {
+	// Newly linked macOS executables can spend tens of seconds in first-launch
+	// validation. Warm both binaries once, then retain strict dispatch deadlines.
+	if cfg!(target_os = "macos") {
+		static WARMED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+		WARMED
+			.get_or_init(|| async {
+				let settings = tempfile::tempdir().unwrap();
+				std::fs::write(settings.path().join("base.toml"), "invalid TOML!").unwrap();
+				for binary in [env!("CARGO_BIN_EXE_aidash"), env!("CARGO_BIN_EXE_manage")] {
+					let mut command = Command::new(binary);
+					command
+						.arg("--help")
+						.env_clear()
+						.env("TOKIO_WORKER_THREADS", "2")
+						.env("REINHARDT_SETTINGS_DIR", settings.path())
+						.current_dir(settings.path())
+						.kill_on_drop(true);
+					let output =
+						tokio::time::timeout(std::time::Duration::from_secs(90), command.output())
+							.await
+							.expect("macOS must finish first-launch validation within its deadline")
+							.unwrap();
+					assert!(output.status.success());
+				}
+			})
+			.await;
+	}
 	// Bound concurrent cold starts of the same large, freshly linked binary.
 	// The permit survives through output collection and releases on timeout.
 	static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
