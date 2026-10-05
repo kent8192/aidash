@@ -45,13 +45,14 @@ Corresponding reverse SQL assets live in `sql/backward/` and are included in
 share a single SQL asset and operation; sequence/table dependency boundaries remain
 ordered. Independent sequences are created together before their tables; column
 defaults are part of typed table definitions, and ownership/identity configuration
-is grouped after the tables. This avoids the pinned `AlterColumn` inverse's missing
-default restoration. Reverse scripts drop triggers/functions in reverse order,
+is grouped after the tables. This retains the baseline's original column and
+sequence reversal order. Reverse scripts drop triggers/functions in reverse order,
 remove identity configuration, detach/drop explicit sequences, and delete only
 baseline seed rows.
 Transaction-local settings have no persistent inverse; their backward files use
-an explicit no-op DO block. The environment's backward asset drops the extension
-because the pinned `CreateExtension` variant has no native inverse. A final
+an explicit no-op DO block. The initial native migration creates `pg_jsonschema`
+with `if_not_exists: false`, establishing ownership for native extension reversal.
+It refuses to adopt an extension installed before the native baseline. A final
 context operation sets the public search path before typed reverse operations run.
 
 Reinhardt Query already provides builders for several of these statements; the
@@ -69,18 +70,23 @@ confined sibling SQL assets. Execution, inspection, and `makemigrations` use the
 original app history directly, without a project-specific expansion or child
 command adapter.
 
-The pinned revision `726a112e56d2f343161299509cd177b5781985d8` includes SQL asset
+The pinned revision `6e523bada84a38296351d373cb40684e17bb45f4` includes SQL asset
 loading [#6505](https://github.com/kent8192/reinhardt-web/issues/6505) and native
 PostgreSQL sequence/identity operations
-[#6506](https://github.com/kent8192/reinhardt-web/issues/6506). The existing physical
-baseline remains frozen so previously recorded migrations retain their original
-forward and reverse behavior. New sequence/identity changes should use the native
+[#6506](https://github.com/kent8192/reinhardt-web/issues/6506), column-default
+restoration, and typed extension reversal
+[#6516](https://github.com/kent8192/reinhardt-web/issues/6516). The existing physical
+baseline preserves the legacy physical schema; extension ownership is explicit
+before this new history is published. Subsequent applied migrations must not be
+rewritten. New sequence/identity changes should use the native
 operations and declare their model metadata; they must not rewrite applied SQL
-assets. Query-backed procedural, session, and seed operations remain tracked in
+assets. New extension migrations may use native reversal only with explicit
+migration ownership (`if_not_exists: false`); conditional creation cannot establish
+ownership for automatic rollback. Query-backed procedural, session, and seed
+operations remain tracked in
 [#6507](https://github.com/kent8192/reinhardt-web/issues/6507).
-Cross-app reverse planning and missing default/extension inverses are tracked in
-[#6515](https://github.com/kent8192/reinhardt-web/issues/6515) and
-[#6516](https://github.com/kent8192/reinhardt-web/issues/6516).
+Cross-app reverse planning remains tracked in
+[#6515](https://github.com/kent8192/reinhardt-web/issues/6515).
 
 ## Commands
 

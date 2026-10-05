@@ -52,7 +52,7 @@ reinhardt = { workspace = true, features = [
 ] }
 # Enable UUID path extraction until the facade forwards reinhardt-di/uuid.
 # Remove this direct dependency after reinhardt-web#6495 is fixed and verified.
-reinhardt-di = { git = "https://github.com/kent8192/reinhardt-web", rev = "726a112e56d2f343161299509cd177b5781985d8", default-features = false, features = [
+reinhardt-di = { git = "https://github.com/kent8192/reinhardt-web", rev = "6e523bada84a38296351d373cb40684e17bb45f4", default-features = false, features = [
   "uuid",
 ] }
 clap = { version = "4", features = ["derive"] }

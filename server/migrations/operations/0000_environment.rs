@@ -12,7 +12,7 @@ pub(super) fn migration() -> Migration {
 		})
 		.add_operation(Operation::CreateExtension {
 			name: "pg_jsonschema".to_owned(),
-			if_not_exists: true,
+			if_not_exists: false,
 			schema: Some("public".to_owned()),
 		})
 		.add_operation(Operation::RunSQL {

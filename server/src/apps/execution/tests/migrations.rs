@@ -491,6 +491,50 @@ async fn recorded_keys(connection: &BackendConnection) -> BTreeSet<(String, Stri
 }
 
 #[rstest]
+#[tokio::test]
+async fn baseline_refuses_to_adopt_a_preinstalled_extension(
+	#[future] fresh_database: MigrationFixture,
+) {
+	// Arrange: extension ownership belongs to an operator, before native history.
+	let fixture = fresh_database.await;
+	let create = reinhardt::db::migrations::Operation::CreateExtension {
+		name: "pg_jsonschema".into(),
+		if_not_exists: false,
+		schema: Some("public".into()),
+	}
+	.try_to_sql_string(reinhardt::db::backends::DatabaseType::Postgres)
+	.unwrap();
+	fixture.connection.execute(&create, vec![]).await.unwrap();
+
+	// Act
+	let error = aidash_server::bootstrap::migrations::run(&migration_context(&fixture.url))
+		.await
+		.unwrap_err();
+
+	// Assert: rejection leaves both the external extension and native history intact.
+	assert!(error.to_string().contains("already exists"), "{error}");
+	assert!(recorded_keys(&fixture.connection).await.is_empty());
+	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
+	let extensions = fixture
+		.connection
+		.fetch_all(
+			&Query::select()
+				.column(Alias::new("extname"))
+				.from((Alias::new("pg_catalog"), Alias::new("pg_extension")))
+				.and_where(Expr::col(Alias::new("extname")).eq("pg_jsonschema"))
+				.to_string(PostgresQueryBuilder),
+			vec![],
+		)
+		.await
+		.unwrap();
+	assert_eq!(extensions.len(), 1);
+	assert_eq!(
+		extensions[0].get::<String>("extname").unwrap(),
+		"pg_jsonschema"
+	);
+}
+
+#[rstest]
 #[case::zero("zero")]
 #[case::earlier("0002_tables")]
 #[case::snapshot("0006_triggers")]

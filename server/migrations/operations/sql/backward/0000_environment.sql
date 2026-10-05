@@ -1,2 +1,2 @@
--- Remove after reinhardt-web#6516 provides a native CreateExtension inverse.
-DROP EXTENSION IF EXISTS pg_jsonschema;
+-- The extension is reversed by its native migration operation.
+DO $reverse$ BEGIN NULL; END $reverse$;
