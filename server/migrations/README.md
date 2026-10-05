@@ -130,7 +130,9 @@ image does not provide its required `pg_jsonschema` extension.
 
 1. Stop new writes and request graceful shutdown of every old server and worker.
    Wait for drain, then back up their database and retain the old binaries.
-2. Provision a separate empty PostgreSQL 17 database with `pg_jsonschema` 0.3.4.
+2. Provision a separate empty PostgreSQL 17 database with the `pg_jsonschema` 0.3.4
+   library available. Let the native history create the database extension;
+   do not preinstall it in the database or its template.
    Configure all new replicas to use that database and the same pinned image.
 3. Run the native migration command once. Inspect `showmigrations` and verify
    replay, schema constraints, and configured peer/identity settings before

@@ -535,6 +535,41 @@ async fn baseline_refuses_to_adopt_a_preinstalled_extension(
 }
 
 #[rstest]
+#[tokio::test]
+async fn local_database_preparation_uses_and_replays_the_native_history(
+	#[future] fresh_database: MigrationFixture,
+) {
+	// Arrange: use the copied deployment layout, as the packaged binary does.
+	let fixture = fresh_database.await;
+	let _layout = deployment_command(&fixture.url, fixture.directory.path());
+	let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_local-dev-db"));
+	command
+		.env_clear()
+		.env("PATH", std::env::var_os("PATH").unwrap_or_default())
+		.env("AIDASH_BASE_DIR", fixture.directory.path())
+		.args([&fixture.url, &fixture.url])
+		.kill_on_drop(true);
+
+	// Act: the second preparation must reuse the same applied records.
+	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
+		.await
+		.unwrap()
+		.unwrap();
+
+	// Assert: local setup runs the shared migrator and its extension version check.
+	assert!(
+		output.status.success(),
+		"{}\n{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let stdout = String::from_utf8_lossy(&output.stdout);
+	assert!(stdout.contains("Prepared local Aidash database 1."));
+	assert!(stdout.contains("Prepared local Aidash database 2."));
+	assert_eq!(recorded_keys(&fixture.connection).await.len(), 44);
+}
+
+#[rstest]
 #[case::zero("zero")]
 #[case::earlier("0002_tables")]
 #[case::snapshot("0006_triggers")]

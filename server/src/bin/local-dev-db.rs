@@ -1,10 +1,10 @@
-//! Install and validate the local PostgreSQL JSON Schema extension.
+//! Apply the native history and validate the local PostgreSQL JSON Schema extension.
 use reinhardt::db::{backends::DatabaseConnection, orm::execution::convert_values};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, JoinType, PostgresQueryBuilder, Query, QueryStatementBuilder,
 	SimpleExpr, TableRef,
 };
-use std::{env, error::Error, io};
+use std::{env, error::Error, io, path::PathBuf};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -24,15 +24,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 async fn prepare_database(database_url: &str) -> Result<(), Box<dyn Error>> {
+	let directory = env::var_os("AIDASH_BASE_DIR")
+		.map(PathBuf::from)
+		.unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+		.join("migrations");
+	let mut context = reinhardt::commands::CommandContext::default();
+	context.set_option("database".into(), database_url.to_owned());
+	context.set_option(
+		"migrations-dir".into(),
+		directory.to_string_lossy().into_owned(),
+	);
+	aidash_server::bootstrap::migrations::run(&context).await?;
+
 	let database = DatabaseConnection::connect_postgres(database_url).await?;
-	// Query has no CREATE EXTENSION builder. This PostgreSQL extension DDL
-	// remains outside schema history and matches the production prerequisite.
-	database
-		.execute(
-			"CREATE EXTENSION IF NOT EXISTS pg_jsonschema WITH SCHEMA public",
-			vec![],
-		)
-		.await?;
 	let (sql, values) = Query::select()
 		.expr_as(
 			Expr::col((Alias::new("n"), Alias::new("nspname"))),

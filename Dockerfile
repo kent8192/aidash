@@ -48,7 +48,7 @@ COPY server/settings/base.example.toml /app/server/settings/base.toml
 RUN sed -i '/^\[core\]$/a base_dir = "/app/server"' /app/server/settings/base.toml
 WORKDIR /app/server
 USER 10001:10001
-ENV AIDASH_LISTEN=0.0.0.0:8080 REINHARDT_SETTINGS_DIR=/app/server/settings
+ENV AIDASH_LISTEN=0.0.0.0:8080 AIDASH_BASE_DIR=/app/server REINHARDT_SETTINGS_DIR=/app/server/settings
 EXPOSE 8080
 ENTRYPOINT ["aidash"]
 CMD ["serve"]
@@ -64,7 +64,7 @@ RUN sed -i '/^\[core\]$/a base_dir = "/app/server"' /app/server/settings/base.to
 COPY --from=web /build/web/dist /app/web
 WORKDIR /app/server
 USER 10001:10001
-ENV AIDASH_LISTEN=0.0.0.0:8080 AIDASH_WEB_DIR=/app/web REINHARDT_SETTINGS_DIR=/app/server/settings
+ENV AIDASH_LISTEN=0.0.0.0:8080 AIDASH_WEB_DIR=/app/web AIDASH_BASE_DIR=/app/server REINHARDT_SETTINGS_DIR=/app/server/settings
 EXPOSE 8080 8081
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["aidash"]

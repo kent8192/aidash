@@ -11,13 +11,13 @@ All packages use Rust 2024. The virtual workspace defaults to `aidash-server`;
 The generated Reinhardt CLI is available with
 `cargo run --locked -p aidash-server --bin manage -- --help`.
 
-| Package | Responsibility |
-| --- | --- |
-| `aidash-domain` | Business models, typed state, and pure invariants. |
-| `aidash-application` | Authorized use cases, agent steps, recovery, and external ports. |
-| `aidash-runtime` | Background supervision, shutdown, and worker drain. |
-| `aidash-integrations` | Inference, HTTP/MCP, NATS, Qdrant, and Kubernetes adapters. |
-| `aidash-server` | Reinhardt HTTP/ORM/settings, app repositories/migrations, and bootstrap. |
+| Package               | Responsibility                                                           |
+| --------------------- | ------------------------------------------------------------------------ |
+| `aidash-domain`       | Business models, typed state, and pure invariants.                       |
+| `aidash-application`  | Authorized use cases, agent steps, recovery, and external ports.         |
+| `aidash-runtime`      | Background supervision, shutdown, and worker drain.                      |
+| `aidash-integrations` | Inference, HTTP/MCP, NATS, Qdrant, and Kubernetes adapters.              |
+| `aidash-server`       | Reinhardt HTTP/ORM/settings, app repositories/migrations, and bootstrap. |
 
 `server/src/bootstrap.rs` assembles the concrete adapters for both HTTP and
 workers. Apps are ordinary Rust modules. Domain/application production dependency
@@ -243,6 +243,8 @@ Protocol fixtures verify transport, coordination and recovery. They do not estab
 ## Database migrations
 
 Reinhardt owns the app migration graph under `server/migrations/<app_label>/`. The native baseline supports empty PostgreSQL databases and replay of its own history; existing SeaORM or experimental migration databases are not adopted. Run `cargo run --locked -p aidash-server --bin aidash -- migrate`, or use the generated `manage` CLI. See the [migration correspondence and maintenance cutover procedure](server/migrations/README.md) before switching deployments.
+
+The PostgreSQL image supplies the `pg_jsonschema` library. Each database's native history creates and owns the extension; avoid installing it in the database template. The Compose `local-dev-db` preparation command applies this same history and validates the extension version before the backend starts.
 
 ## CI and coverage
 
