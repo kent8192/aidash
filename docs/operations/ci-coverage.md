@@ -36,6 +36,13 @@ all import failures and acceptance assertions and cleans its local archive on
 exit; the existing cluster guard owns node cleanup. No new upstream defect is
 inferred from the closed socket alone.
 
+Transaction fault cases wait for the prior server generation to terminate after
+a rollout and forward HTTP to the single current ready Pod. A successful rollout
+can leave old Pods draining; their recovery loops must stop before submitting a
+new transaction with a different fault selector. This preserves the required
+before/after durable cuts instead of allowing an older controller to complete
+the new transaction outside the selected cut.
+
 ## Download outage
 
 On 2026-10-05, [CI run 37242692329](https://github.com/kent8192/aidash/actions/runs/37242692329)

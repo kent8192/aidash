@@ -24,8 +24,15 @@ class PortForwardTests(unittest.TestCase):
         self.cluster.token = "test-token"
         self.cluster.forwards = {}
         self.cluster.forward_lock = threading.RLock()
+        self.cluster.pods = Mock(return_value=[self.pod("current")])
         self.children = []
         self.logs = []
+        self.commands = []
+
+    @staticmethod
+    def pod(name, *, terminating=False, ready=True):
+        return {"metadata": {"name": name, **({"deletionTimestamp": "2026-10-05T00:00:00Z"} if terminating else {})},
+                "status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True" if ready else "False"}]}}
 
     def tearDown(self):
         for process in self.children:
@@ -41,6 +48,7 @@ class PortForwardTests(unittest.TestCase):
         popen = subprocess.Popen
 
         def start(command, **kwargs):
+            self.commands.append(command)
             process = popen([sys.executable, "-c", script, command[-1].split(":")[0]], **kwargs)
             self.children.append(process)
             self.logs.append(kwargs["stdout"])
@@ -107,6 +115,36 @@ with socket.socket() as listener:
                 self.cluster.api(0, "/api/workspaces", {"title": "create once"})
         self.assertEqual(request.call_count, 1)
         self.assertEqual(request.call_args.args[0].get_method(), "POST")
+
+    def test_forward_targets_current_ready_pod_without_service_selection(self):
+        self.cluster.pods.return_value = [self.pod("old", terminating=True),
+                                          self.pod("starting", ready=False), self.pod("new")]
+        with self.child(self.listener(0)):
+            self.cluster.forward(0)
+        self.assertIn("pod/new", self.commands[0])
+        self.assertNotIn("service/tx-0", self.commands[0])
+
+    def test_rollout_stops_old_recovery_before_replacing_the_forward(self):
+        with self.child(self.listener(0)):
+            self.cluster.forward(0)
+            original = self.children[0]
+            self.cluster.kube = Mock()
+            self.cluster.pods.side_effect = [[self.pod("old", terminating=True), self.pod("new")],
+                                             [self.pod("new")], [self.pod("new")]]
+            self.cluster.rollout("tx-0-server")
+            self.assertNotIn(0, self.cluster.forwards)
+            self.assertIsNotNone(original.poll())
+            self.assertTrue(self.logs[0].closed)
+            self.cluster.forward(0)
+        self.assertEqual(len(self.children), 2)
+        self.assertIn("pod/new", self.commands[1])
+
+    def test_ambiguous_ready_generations_do_not_start_a_forward(self):
+        self.cluster.pods.return_value = [self.pod("old"), self.pod("new")]
+        with self.child(self.listener(0)), self.assertRaisesRegex(ConnectionError, "one current ready"):
+            self.cluster.forward(0)
+        self.assertEqual(self.children, [])
+        self.assertEqual(self.cluster.forwards, {})
 
 
 class VisibilityOracleTests(unittest.TestCase):

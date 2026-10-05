@@ -76,8 +76,14 @@ class Cluster:
         # A port-forward remains pinned to its original Pod even after Service
         # endpoints change. Never submit to a terminating Pod's old fault config.
         if name.startswith("tx-") and name.endswith("-server"):
+            node = int(name.split("-")[1])
+            # rollout status can complete while the old Pod still drains. Its
+            # recovery loop must stop before a new fault-controlled case starts.
+            self.until(lambda: not any(pod["metadata"].get("deletionTimestamp")
+                       for pod in self.pods(f"app=tx-{node},role=server")),
+                       "previous server generation termination")
             with self.forward_lock:
-                previous = self.forwards.pop(int(name.split("-")[1]), None)
+                previous = self.forwards.pop(node, None)
                 if previous:
                     previous[0].terminate()
                     previous[0].wait(timeout=10)
@@ -95,13 +101,21 @@ class Cluster:
             self.forwards.pop(node)
             previous[0].wait(timeout=10)
             previous[2].close()
+        pods = [pod for pod in self.pods(f"app=tx-{node},role=server")
+                if not pod["metadata"].get("deletionTimestamp")
+                and pod.get("status", {}).get("phase") == "Running"
+                and any(condition.get("type") == "Ready" and condition.get("status") == "True"
+                        for condition in pod.get("status", {}).get("conditions", []))]
+        if len(pods) != 1:
+            raise ConnectionError(f"Node {node} does not have one current ready server Pod")
+        pod_name = pods[0]["metadata"]["name"]
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             port = listener.getsockname()[1]
         log = (self.directory / f"forward-{node}.log").open("a")
         try:
             process = subprocess.Popen(["kubectl", "-n", self.namespace, "port-forward",
-                                        f"service/tx-{node}", f"{port}:8080"],
+                                        f"pod/{pod_name}", f"{port}:8080"],
                                        env=self.env, stdout=log, stderr=log)
         except OSError:
             log.close()
