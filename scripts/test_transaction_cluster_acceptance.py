@@ -1,4 +1,4 @@
-"""Regression tests for the cluster driver's transport and visibility oracle."""
+"""Regression tests for the cluster driver's transport and recovery oracles."""
 import os
 import pathlib
 import socket
@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import Mock, patch
 from urllib.parse import urlsplit
 
+from remote_memory_cluster_acceptance import RemoteMemory
 from transaction_cluster_acceptance import Cluster
 
 
@@ -145,6 +146,30 @@ class VisibilityOracleTests(unittest.TestCase):
         cluster.inspect.return_value = [{"revision": 0}]
         with self.assertRaisesRegex(AssertionError, "partial visibility"):
             cluster.observe(2, "transaction", ["a", "b"], [])
+
+
+class EmbeddingOracleTests(unittest.TestCase):
+    query = "Generated remote research\nFind the relevant non-keyword archive marker"
+
+    def cluster(self, inputs):
+        cluster = object.__new__(RemoteMemory)
+        cluster.provider = Mock(return_value={"errors": [], "requests": [
+            {"kind": "embedding", "body": {"input": value, "model": "home-vector"}}
+            for value in inputs
+        ]})
+        return cluster
+
+    def test_recovery_query_count_ignores_background_reindexing(self):
+        cluster = self.cluster([self.query, "Iridium archive marker: ochre falcon.",
+                                "Exact executor marker: silver fern.",
+                                "DO NOT DISCLOSE: Home Agent scope.", self.query])
+        self.assertEqual(len(cluster.captured("embedding")), 5)
+        self.assertEqual(len(cluster.captured("embedding", embedding_input=self.query)), 2)
+
+    def test_same_query_resend_remains_visible(self):
+        cluster = self.cluster([self.query, "Iridium archive marker: ochre falcon.",
+                                self.query, self.query])
+        self.assertEqual(len(cluster.captured("embedding", embedding_input=self.query)), 3)
 
 
 if __name__ == "__main__":

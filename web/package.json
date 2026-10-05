@@ -12,7 +12,8 @@
     "predev": "../scripts/generate-api.sh",
     "prebuild": "../scripts/generate-api.sh",
     "test:collaboration": "node --experimental-strip-types --test unit/collaboration.test.mjs unit/cytoscape-projection.test.mjs unit/display-labels.test.mjs unit/thread-messages.test.mjs",
-    "test:ui": "playwright test --config playwright.ui.config.ts"
+    "test:ui": "playwright test --config playwright.ui.config.ts",
+    "test:desktop": "playwright test --config playwright.desktop.config.ts"
   },
   "dependencies": {
     "@tanstack/react-form": "^1.23.0",
@@ -20,6 +21,7 @@
     "@tanstack/react-router": "^1.131.0",
     "@tanstack/react-table": "^8.21.3",
     "@tanstack/react-virtual": "^3.13.0",
+    "@tauri-apps/api": "^2.12.1",
     "cytoscape": "3.34.1",
     "exceljs": "^4.4.0",
     "lucide-react": "^0.468.0",

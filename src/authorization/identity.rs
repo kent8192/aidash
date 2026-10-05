@@ -32,6 +32,7 @@ pub(crate) struct HttpSession {
 	pub id: Uuid,
 	pub identity_id: Uuid,
 	pub idle_seconds: i64,
+	pub access_expires_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow, utoipa::ToSchema)]
@@ -332,7 +333,7 @@ impl HttpSession {
 	) -> Result<()> {
 		let mut query = Query::select();
 		query.column(Alias::new("id")).from(Alias::new("dashboard_sessions"))
-			.and_where(Expr::cust("id=$1 AND identity_id=$2 AND revoked_at IS NULL AND expires_at>clock_timestamp() AND last_activity_at>clock_timestamp()-$3::bigint*interval '1 second'"));
+			.and_where(Expr::cust("id=$1 AND identity_id=$2 AND revoked_at IS NULL AND expires_at>clock_timestamp() AND last_activity_at>clock_timestamp()-$3::bigint*interval '1 second' AND ($4::timestamptz IS NULL OR $4>clock_timestamp())"));
 		if lock {
 			query.lock(LockType::Share);
 		}
@@ -340,6 +341,7 @@ impl HttpSession {
 			.bind(self.id)
 			.bind(self.identity_id)
 			.bind(self.idle_seconds)
+			.bind(self.access_expires_at)
 			.fetch_optional(&mut **tx)
 			.await?;
 		if valid.is_none() {

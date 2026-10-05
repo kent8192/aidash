@@ -295,7 +295,10 @@ pub fn router_with_event_streams(
 		.layer(Extension(slots))
 		.layer(Extension(event_streams))
 		.with_state(f);
-	crate::http::protect(router, &settings)
+	crate::http::protect(
+		router.layer(crate::dashboard_auth::desktop::cors()),
+		&settings,
+	)
 }
 fn bearer(headers: &HeaderMap) -> Option<String> {
 	use axum_extra::headers::{Authorization, HeaderMapExt, authorization::Bearer};
@@ -334,20 +337,22 @@ async fn api_auth(
 	mut request: Request,
 	next: Next,
 ) -> Result<Response> {
-	let actor = if request
+	let token = bearer(request.headers());
+	let actor = if token
+		.as_deref()
+		.is_some_and(|token| same_secret(token, &f.config.api_token))
+	{
+		Actor::Operator
+	} else if request
 		.headers()
 		.contains_key(axum::http::header::AUTHORIZATION)
+		&& crate::dashboard_auth::desktop::access_token(request.headers()).is_none()
 	{
-		let token = bearer(request.headers()).ok_or(Error::Unauthorized)?;
-		if same_secret(&token, &f.config.api_token) {
-			Actor::Operator
-		} else {
-			Authorization {
-				pool: f.store.pool.clone(),
-			}
-			.authenticate(&token)
-			.await?
+		Authorization {
+			pool: f.store.pool.clone(),
 		}
+		.authenticate(token.as_deref().ok_or(Error::Unauthorized)?)
+		.await?
 	} else {
 		if f.config.oidc.is_none() {
 			return Err(Error::Unauthorized);

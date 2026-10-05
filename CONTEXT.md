@@ -426,3 +426,21 @@ node-wide overlay behavior remain explicit operator operations; adoption produce
 independent pending tenant copy. See
 [operations and acceptance coverage](docs/operations/marketplace-authorization.md)
 for rollout, actions, integration tests and English/Japanese dashboard checks.
+
+## Desktop access
+
+**Desktop client**:
+A desktop application through which a person uses an independently running Aidash Node. The client is not a Node and does not own agent execution.
+_Avoid_: Desktop Node, embedded server
+
+**Connection profile**:
+A named destination through which the Desktop client reaches an Aidash installation. A profile is distinct from the person's identity or permission to use that installation.
+_Avoid_: Account, tenant, authority context
+
+**Active connection**:
+The destination currently selected for the Desktop client's interactions with Aidash. Selecting it does not grant authority at that destination.
+_Avoid_: Login, operator grant
+
+**Desktop sign-in**:
+An Aidash identity's authenticated relationship with a Desktop client at one installation. It can survive an application restart and remains distinct from the identity's current authority.
+_Avoid_: Permanent permission, Google browser session

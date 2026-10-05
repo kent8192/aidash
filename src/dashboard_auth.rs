@@ -1,5 +1,7 @@
 //! Backend-owned OIDC login and opaque dashboard sessions.
 
+pub(crate) mod desktop;
+
 use crate::{
 	Error, Result,
 	authorization::{
@@ -205,11 +207,13 @@ struct Configuration {
 	enabled: bool,
 	login_url: Option<&'static str>,
 	provider: &'static str,
+	desktop_protocol: u8,
 }
 
 async fn configuration(State(f): State<Federation>) -> Json<Configuration> {
 	Json(Configuration {
 		enabled: f.config.oidc.is_some(),
+		desktop_protocol: 1,
 		provider: if f.config.oidc.as_ref().is_none_or(OidcConfig::is_google) {
 			"google"
 		} else {
@@ -742,7 +746,7 @@ pub async fn refresh_active(
 				)
 				.and_where(
 					Expr::col((table("s"), table("last_activity_at")))
-						.gt(Expr::cust("clock_timestamp()-make_interval(secs => $1)")),
+						.gt(Expr::cust("clock_timestamp()-make_interval(secs => coalesce(s.desktop_idle_seconds::double precision,$1))")),
 				)
 				.to_owned();
 			let ongoing_runs = Query::select()
@@ -1106,6 +1110,10 @@ pub struct BrowserSession {
 	pub last_activity_at: DateTime<Utc>,
 	pub expires_at: DateTime<Utc>,
 	pub revoked_at: Option<DateTime<Utc>>,
+	pub provider_sid: Option<String>,
+	pub desktop: bool,
+	pub desktop_idle_seconds: Option<i64>,
+	pub access_expires_at: Option<DateTime<Utc>>,
 }
 
 async fn session_record_from_jar(f: &Federation, jar: &CookieJar) -> Result<BrowserSession> {
@@ -1122,6 +1130,10 @@ async fn session_record_from_jar(f: &Federation, jar: &CookieJar) -> Result<Brow
 			table("last_activity_at"),
 			table("expires_at"),
 			table("revoked_at"),
+			table("provider_sid"),
+			table("desktop"),
+			table("desktop_idle_seconds"),
+			table("access_expires_at"),
 		])
 		.from(table("dashboard_sessions"))
 		.and_where(Expr::col(table("token_hash")).eq(Expr::cust("$1")))
@@ -1131,7 +1143,8 @@ async fn session_record_from_jar(f: &Federation, jar: &CookieJar) -> Result<Brow
 		.fetch_optional(&f.store.pool)
 		.await?
 		.ok_or(Error::Unauthorized)?;
-	if session.revoked_at.is_some()
+	if session.desktop
+		|| session.revoked_at.is_some()
 		|| session.expires_at <= Utc::now()
 		|| session.last_activity_at <= Utc::now() - Duration::seconds(config.session_idle_seconds)
 	{
@@ -1141,11 +1154,23 @@ async fn session_record_from_jar(f: &Federation, jar: &CookieJar) -> Result<Brow
 }
 
 pub async fn session_from_headers(f: &Federation, headers: &HeaderMap) -> Result<BrowserSession> {
-	session_from_jar(f, &CookieJar::from_headers(headers)).await
+	if let Some(token) = desktop::access_token(headers) {
+		let session = desktop::session_record(f, token).await?;
+		validate_session_identity(f, session).await
+	} else {
+		session_from_jar(f, &CookieJar::from_headers(headers)).await
+	}
 }
 
 async fn session_from_jar(f: &Federation, jar: &CookieJar) -> Result<BrowserSession> {
 	let session = session_record_from_jar(f, jar).await?;
+	validate_session_identity(f, session).await
+}
+
+async fn validate_session_identity(
+	f: &Federation,
+	session: BrowserSession,
+) -> Result<BrowserSession> {
 	let identity_query = Query::select()
 		.columns([
 			table("id"),
@@ -1179,6 +1204,9 @@ pub fn csrf_allowed(
 	session: &BrowserSession,
 	method: &Method,
 ) -> bool {
+	if session.desktop {
+		return desktop::access_token(headers).is_some();
+	}
 	if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
 		return true;
 	}
@@ -1261,7 +1289,10 @@ pub async fn actor_from_headers(
 	let http_session = identity::HttpSession {
 		id: session.id,
 		identity_id: session.identity_id,
-		idle_seconds: config.session_idle_seconds,
+		idle_seconds: session
+			.desktop_idle_seconds
+			.unwrap_or(config.session_idle_seconds),
+		access_expires_at: session.access_expires_at,
 	};
 	if !csrf_allowed(config, headers, &session, method) {
 		return Err(Error::Forbidden);
@@ -1321,7 +1352,10 @@ pub async fn actor_from_headers(
 		http_session: Some(crate::authorization::identity::HttpSession {
 			id: session.id,
 			identity_id: session.identity_id,
-			idle_seconds: config.session_idle_seconds,
+			idle_seconds: session
+				.desktop_idle_seconds
+				.unwrap_or(config.session_idle_seconds),
+			access_expires_at: session.access_expires_at,
 		}),
 		credential_id: mapping.credential_id,
 		tenant: mapping.tenant,
@@ -1359,8 +1393,11 @@ struct SessionView {
 	mappings: Vec<MappingView>,
 }
 
-async fn session_info(State(f): State<Federation>, jar: CookieJar) -> Result<Json<SessionView>> {
-	let session = session_from_jar(&f, &jar).await?;
+async fn session_info(
+	State(f): State<Federation>,
+	headers: HeaderMap,
+) -> Result<Json<SessionView>> {
+	let session = session_from_headers(&f, &headers).await?;
 	let query = Query::select()
 		.columns([table("id"), table("tenant"), table("subject")])
 		.from(table("dashboard_mappings"))
@@ -1442,9 +1479,9 @@ async fn latest_registration(f: &Federation, identity_id: Uuid) -> Result<Option
 
 async fn registration_status(
 	State(f): State<Federation>,
-	jar: CookieJar,
+	headers: HeaderMap,
 ) -> Result<Json<Option<Registration>>> {
-	let session = session_from_jar(&f, &jar).await?;
+	let session = session_from_headers(&f, &headers).await?;
 	Ok(Json(
 		latest_registration(&f, session.identity_id)
 			.await?
@@ -1455,10 +1492,9 @@ async fn registration_status(
 async fn registration_create(
 	State(f): State<Federation>,
 	headers: HeaderMap,
-	jar: CookieJar,
 ) -> Result<Json<Registration>> {
 	let config = required_config(&f)?;
-	let session = session_from_jar(&f, &jar).await?;
+	let session = session_from_headers(&f, &headers).await?;
 	if !csrf_allowed(config, &headers, &session, &Method::POST) {
 		return Err(Error::Forbidden);
 	}
@@ -2106,7 +2142,11 @@ async fn logout(
 	jar: CookieJar,
 ) -> Result<(CookieJar, axum::http::StatusCode)> {
 	let config = required_config(&f)?;
-	let session = session_record_from_jar(&f, &jar).await?;
+	let session = if let Some(token) = desktop::access_token(&headers) {
+		desktop::session_record(&f, token).await?
+	} else {
+		session_record_from_jar(&f, &jar).await?
+	};
 	if !csrf_allowed(config, &headers, &session, &Method::POST) {
 		return Err(Error::Forbidden);
 	}
@@ -2131,10 +2171,9 @@ async fn logout(
 async fn activity(
 	State(f): State<Federation>,
 	headers: HeaderMap,
-	jar: CookieJar,
 ) -> Result<axum::http::StatusCode> {
 	let config = required_config(&f)?;
-	let session = session_from_jar(&f, &jar).await?;
+	let session = session_from_headers(&f, &headers).await?;
 	if !csrf_allowed(config, &headers, &session, &Method::POST) {
 		return Err(Error::Forbidden);
 	}
@@ -2156,10 +2195,26 @@ async fn logout_all(
 	jar: CookieJar,
 ) -> Result<(CookieJar, axum::http::StatusCode)> {
 	let config = required_config(&f)?;
-	let session = session_record_from_jar(&f, &jar).await?;
+	let session = if let Some(token) = desktop::access_token(&headers) {
+		desktop::session_record(&f, token).await?
+	} else {
+		session_record_from_jar(&f, &jar).await?
+	};
 	if !csrf_allowed(config, &headers, &session, &Method::POST) {
 		return Err(Error::Forbidden);
 	}
+	let mut tx = f.store.pool.begin().await?;
+	// Serialize with desktop handoff issuance without requiring provider
+	// availability: an existing session must still be able to log out.
+	let identity_lock = Query::select()
+		.column(table("id"))
+		.from(table("dashboard_identities"))
+		.and_where(Expr::col(table("id")).eq(session.identity_id))
+		.lock(LockType::Update)
+		.to_string(PostgresQueryBuilder);
+	let _: Uuid = sqlx::query_scalar(&identity_lock)
+		.fetch_one(&mut *tx)
+		.await?;
 	let query = Query::update()
 		.table(table("dashboard_sessions"))
 		.value(
@@ -2170,8 +2225,9 @@ async fn logout_all(
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&query)
 		.bind(session.identity_id)
-		.execute(&f.store.pool)
+		.execute(&mut *tx)
 		.await?;
+	tx.commit().await?;
 	Ok((
 		cleared_session_cookies(jar, config),
 		axum::http::StatusCode::NO_CONTENT,
@@ -2292,6 +2348,28 @@ async fn backchannel_logout(
 	if sub.is_some() {
 		identities.and_where(Expr::col(table("subject")).eq(Expr::cust("$2")));
 	}
+	if let Some(sid) = sid
+		&& sub.is_none()
+	{
+		let sessions = Query::select()
+			.column(table("identity_id"))
+			.from(table("dashboard_sessions"))
+			.and_where(Expr::col(table("provider_sid")).eq(sid))
+			.to_owned();
+		identities.and_where(Expr::col(table("id")).in_subquery(sessions));
+	}
+	// Handoffs and refreshes take a shared identity lock before locking a
+	// session. Wait here first, then revoke with a fresh statement snapshot
+	// that includes any desktop session issued by the preceding handoff.
+	identities
+		.order_by(table("id"), Order::Asc)
+		.lock(LockType::Update);
+	let lock_query = identities.to_string(PostgresQueryBuilder);
+	let mut statement = sqlx::query_scalar::<_, Uuid>(&lock_query).bind(&config.issuer);
+	if let Some(sub) = sub {
+		statement = statement.bind(sub);
+	}
+	let identity_ids = statement.fetch_all(&mut *tx).await?;
 	let mut update = Query::update();
 	update
 		.table(table("dashboard_sessions"))
@@ -2299,26 +2377,20 @@ async fn backchannel_logout(
 			table("revoked_at"),
 			Expr::cust("coalesce(revoked_at,clock_timestamp())"),
 		)
-		.and_where(Expr::col(table("identity_id")).in_subquery(identities.to_owned()));
-	if sid.is_some() {
-		let sid_parameter = if sub.is_some() { "$3" } else { "$2" };
-		update.and_where(Expr::col(table("provider_sid")).eq(Expr::cust(sid_parameter)));
-	}
-	let query = update.to_string(PostgresQueryBuilder);
-	let mut statement = sqlx::query(&query).bind(&config.issuer);
-	if let Some(sub) = sub {
-		statement = statement.bind(sub);
-	}
+		.and_where(Expr::col(table("identity_id")).is_in(identity_ids));
 	if let Some(sid) = sid {
-		statement = statement.bind(sid);
+		update.and_where(Expr::col(table("provider_sid")).eq(sid));
 	}
-	statement.execute(&mut *tx).await?;
+	sqlx::query(&update.to_string(PostgresQueryBuilder))
+		.execute(&mut *tx)
+		.await?;
 	tx.commit().await?;
 	Ok(axum::http::StatusCode::OK)
 }
 
 pub fn routes() -> Router<Federation> {
 	Router::new()
+		.nest("/desktop", desktop::routes())
 		.route("/config", get(configuration))
 		.route("/login", get(login))
 		.route("/callback", get(callback))
