@@ -97,7 +97,7 @@ pub async fn share(
 	scope.set_subjects(vec![
 		recipient.owner.clone(),
 		aidash_domain::qualified_agent(
-			&scope.node_id(),
+			scope.node_id(),
 			&input.recipient.agent_id,
 			&input.recipient.agent_version,
 		),
@@ -186,7 +186,7 @@ pub async fn share(
 		"transfer_id":id,
 		"owner":recipient.owner,
 		"agent":aidash_domain::qualified_agent(
-			&scope.node_id(),
+			scope.node_id(),
 			&input.recipient.agent_id,
 			&input.recipient.agent_version,
 		),

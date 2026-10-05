@@ -30,12 +30,11 @@ impl Client {
 			Error::External("remote execution authority unavailable".into())
 		})?;
 		let status = reply.status;
-		let value = classify(reply).map_err(|error| {
-			if matches!(&error,Error::External(message) if message=="remote execution authority unavailable")
+		let value = classify(reply).inspect_err(|error| {
+			if matches!(error,Error::External(message) if message=="remote execution authority unavailable")
 			{
 				tracing::warn!(%node,%path,status,"authority request rejected");
 			}
-			error
 		})?;
 		serde_json::from_slice(&value)
 			.map_err(|_| Error::External("invalid remote authority response".into()))

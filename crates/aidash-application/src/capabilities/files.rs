@@ -334,7 +334,7 @@ pub async fn search(
 			return Err(Error::Invalid("SEARCH_TIME_LIMIT".into()));
 		}
 		let file = &files[cursor.file];
-		if serde_json::to_value(&file.scope)? != serde_json::to_value(&input.scope)?
+		if serde_json::to_value(file.scope)? != serde_json::to_value(input.scope)?
 			|| input.path.as_ref().is_some_and(|path| {
 				file.path != *path && !file.path.starts_with(&format!("{path}/"))
 			}) {

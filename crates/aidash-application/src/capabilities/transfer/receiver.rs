@@ -56,13 +56,13 @@ async fn mapped<'a>(
 		}
 		scope
 			.require(
-				&scope.resource("node", &repository.node_id(), json!({})),
+				&scope.resource("node", repository.node_id(), json!({})),
 				"file.transfer",
 			)
 			.await?;
 		let mut subjects = scope.subjects().to_vec();
 		subjects.push(aidash_domain::qualified_agent(
-			&repository.node_id(),
+			repository.node_id(),
 			&description.target.agent_id,
 			&description.target.agent_version,
 		));
@@ -74,7 +74,7 @@ async fn mapped<'a>(
 		scope.authorize(&area, "file.receive").await?;
 		scope
 			.require(
-				&scope.resource("node", &repository.node_id(), json!({})),
+				&scope.resource("node", repository.node_id(), json!({})),
 				"file.transfer",
 			)
 			.await?;
@@ -133,7 +133,7 @@ pub async fn negotiate(
 		.await?;
 	let result = scope
 		.require(
-			&scope.resource("node", &repository.node_id(), json!({})),
+			&scope.resource("node", repository.node_id(), json!({})),
 			"file.transfer",
 		)
 		.await;
@@ -294,7 +294,7 @@ pub async fn commit(
             aidash_domain::registry::rules::validate_path(&received.path)?;delivered.push(received.clone());entries.push(received);
         }
         area.manifest=json!(entries);
-        area.constraints.as_array_mut().ok_or(Error::Forbidden)?.push(json!({"kind":"received_scope","transfer_id":record.id,"owner":area.owner,"agent":aidash_domain::qualified_agent(&repository.node_id(),&description.target.agent_id,&description.target.agent_version)}));
+        area.constraints.as_array_mut().ok_or(Error::Forbidden)?.push(json!({"kind":"received_scope","transfer_id":record.id,"owner":area.owner,"agent":aidash_domain::qualified_agent(repository.node_id(),&description.target.agent_id,&description.target.agent_version)}));
         scope.publish(&mut area).await?;
         record.state="committed".into();record.expires_at=None;
         record.data["receipt"]=json!({"id":record.id,"node_id":repository.node_id(),"area_id":area.id,"revision":area.revision,"manifest_digest":description.manifest_digest,"files":delivered});
@@ -349,7 +349,7 @@ pub async fn recipient_list(
 	cursor: Option<Uuid>,
 ) -> Result<Value> {
 	scope
-		.require(&scope.resource("node", &node, json!({})), "file.transfer")
+		.require(&scope.resource("node", node, json!({})), "file.transfer")
 		.await?;
 	let rows: Vec<Area> = scope.recipient_rows(cursor).await?;
 	let next_cursor = if rows.len() == 51 {
@@ -371,7 +371,7 @@ pub async fn recipient_list(
 			let subjects = scope.subjects().to_vec();
 			let mut delegated = scope.subjects().to_vec();
 			delegated.push(aidash_domain::qualified_agent(
-				&node,
+				node,
 				&area.agent_id,
 				&version,
 			));
