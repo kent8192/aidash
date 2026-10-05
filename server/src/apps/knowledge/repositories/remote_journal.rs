@@ -199,8 +199,8 @@ impl JournalScope for Scope<'_, '_> {
 			.bind(&operation.home_node)
 			.bind(operation.grant_id)
 			.bind(operation.admission_id)
-			.bind(&digest)
-			.bind(&value)
+			.bind(digest)
+			.bind(value)
 			.execute(&mut *tx)
 			.await?;
 			Ok(())

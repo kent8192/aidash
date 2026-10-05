@@ -319,9 +319,7 @@ pub(super) async fn observe(store: &Store) -> Result<()> {
 					"date_part".into_iden(),
 					vec![
 						Expr::value("epoch").into(),
-						Expr::current_timestamp()
-							.sub(Func::min(Expr::col("due_at").into()))
-							.into(),
+						Expr::current_timestamp().sub(Func::min(Expr::col("due_at").into())),
 					],
 				),
 				Expr::value(0_f64).into(),

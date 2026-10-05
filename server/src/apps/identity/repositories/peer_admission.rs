@@ -230,7 +230,7 @@ impl PeerAdmissionScope for Owned {
 				let query_bind_5 = &access.identity.tenant;
 				let query_bind_6 = access.identity.credential_id;
 				let query_bind_7 = &access.subjects;
-				let query_bind_8 = serde_json::to_value(&description)?;
+				let query_bind_8 = serde_json::to_value(description)?;
 				sqlx::query(&format!(
 					"{} ON CONFLICT DO NOTHING",
 					reinhardt::query::Query::insert()

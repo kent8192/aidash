@@ -322,7 +322,7 @@ async fn exchange_google_identity(
 	let claims = decode::<GoogleClaims>(&tokens.id_token, &key, &validation)
 		.map_err(|_| Error::Unauthorized)?
 		.claims;
-	if !aidash_domain::configuration::same_secret(&claims.nonce, &transaction.nonce) {
+	if !aidash_domain::configuration::same_secret(&claims.nonce, transaction.nonce) {
 		return Err(Error::Unauthorized);
 	}
 	Ok((claims.sub, claims.sid))

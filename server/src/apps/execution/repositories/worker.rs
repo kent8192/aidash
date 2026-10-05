@@ -73,7 +73,7 @@ impl WorkerStep for Step {
 		classify_failure(&NativeError::from(error))
 	}
 	async fn cancel_scoped(&mut self, token: Uuid) -> Result<bool> {
-		execution::cancel_if_scoped(&self.federation.store, &mut self.run, token)
+		execution::cancel_if_scoped(&self.federation.store, &self.run, token)
 			.await
 			.map_err(Into::into)
 	}
