@@ -276,7 +276,11 @@ def database(args, name):
         "-v",
         "ON_ERROR_STOP=1",
     ]
-    checked(command, input=f'CREATE DATABASE "{name}";'.encode(), cwd=ROOT)
+    # The native history must own extension creation. Avoid inheriting extensions
+    # or application objects from a developer's customized template1 database.
+    checked(
+        command, input=f'CREATE DATABASE "{name}" TEMPLATE template0;'.encode(), cwd=ROOT
+    )
     try:
         yield
     finally:
