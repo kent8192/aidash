@@ -4,9 +4,22 @@ use serde_json::Value;
 use tempfile::TempDir;
 use tokio::process::Command;
 
+#[rstest::fixture]
+async fn management_process() -> tokio::sync::SemaphorePermit<'static> {
+	// Bound concurrent cold starts of the same large, freshly linked binary.
+	// The permit survives through output collection and releases on timeout.
+	static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+	SLOTS.acquire().await.unwrap()
+}
+
 #[rstest]
 #[tokio::test]
-async fn schema_export_is_valid_json_without_runtime_settings_or_services(temp_dir: TempDir) {
+async fn schema_export_is_valid_json_without_runtime_settings_or_services(
+	#[future(awt)]
+	#[from(management_process)]
+	_process_slot: tokio::sync::SemaphorePermit<'static>,
+	temp_dir: TempDir,
+) {
 	// Arrange: even an invalid runtime configuration must not block export.
 	std::fs::write(temp_dir.path().join("base.toml"), "not valid TOML!").unwrap();
 	// Act
@@ -14,6 +27,7 @@ async fn schema_export_is_valid_json_without_runtime_settings_or_services(temp_d
 	command
 		.arg("exportopenapi")
 		.env_clear()
+		.env("TOKIO_WORKER_THREADS", "2")
 		.env("PATH", std::env::var_os("PATH").unwrap_or_default())
 		.env("REINHARDT_SETTINGS_DIR", temp_dir.path())
 		.current_dir(temp_dir.path())
@@ -41,6 +55,10 @@ async fn schema_export_is_valid_json_without_runtime_settings_or_services(temp_d
 #[case::invalid_address("not-an-address", false, "probe address must be")]
 #[tokio::test]
 async fn worker_command_validates_arguments_before_loading_runtime_settings(
+	#[future(awt)]
+	#[from(management_process)]
+	_process_slot: tokio::sync::SemaphorePermit<'static>,
+
 	temp_dir: TempDir,
 	#[case] argument: &str,
 	#[case] success: bool,
@@ -52,6 +70,7 @@ async fn worker_command_validates_arguments_before_loading_runtime_settings(
 	command
 		.args(["runworker", argument])
 		.env_clear()
+		.env("TOKIO_WORKER_THREADS", "2")
 		.env("REINHARDT_SETTINGS_DIR", temp_dir.path())
 		.current_dir(temp_dir.path())
 		.kill_on_drop(true);
@@ -79,6 +98,10 @@ async fn worker_command_validates_arguments_before_loading_runtime_settings(
 #[case::diagnostics("diagnostics")]
 #[tokio::test]
 async fn deployment_aliases_use_reinhardt_commands_before_runtime_configuration(
+	#[future(awt)]
+	#[from(management_process)]
+	_process_slot: tokio::sync::SemaphorePermit<'static>,
+
 	temp_dir: TempDir,
 	#[case] name: &str,
 ) {
@@ -90,6 +113,7 @@ async fn deployment_aliases_use_reinhardt_commands_before_runtime_configuration(
 		command
 			.args([name, "--help"])
 			.env_clear()
+			.env("TOKIO_WORKER_THREADS", "2")
 			.env("REINHARDT_SETTINGS_DIR", temp_dir.path())
 			.current_dir(temp_dir.path())
 			.kill_on_drop(true);
@@ -114,6 +138,10 @@ async fn deployment_aliases_use_reinhardt_commands_before_runtime_configuration(
 #[case::memory("remote-memory")]
 #[tokio::test]
 async fn diagnostics_are_registered_static_commands_instead_of_example_binaries(
+	#[future(awt)]
+	#[from(management_process)]
+	_process_slot: tokio::sync::SemaphorePermit<'static>,
+
 	temp_dir: TempDir,
 	#[case] profile: &str,
 ) {
@@ -123,6 +151,7 @@ async fn diagnostics_are_registered_static_commands_instead_of_example_binaries(
 	command
 		.args(["diagnostics", profile])
 		.env_clear()
+		.env("TOKIO_WORKER_THREADS", "2")
 		.env("REINHARDT_SETTINGS_DIR", temp_dir.path())
 		.current_dir(temp_dir.path())
 		.kill_on_drop(true);
