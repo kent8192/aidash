@@ -5,6 +5,6 @@ cd "$(dirname "$0")/.."
 mkdir -p openapi
 schema=$(mktemp)
 trap 'rm -f "$schema"' EXIT
-RUSTC_WRAPPER= cargo run --locked --quiet -p aidash-server --bin aidash -- openapi > "$schema"
+RUSTC_WRAPPER='' cargo run --locked --quiet -p aidash-server --bin aidash -- openapi > "$schema"
 mv "$schema" openapi/aidash.json
 npm run generate:api --prefix web
