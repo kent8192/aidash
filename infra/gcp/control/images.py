@@ -39,7 +39,7 @@ def main():
             raise SystemExit("build checkout does not match the authorized SHA")
         if (
             args.kind == "app"
-            and "GOOGLE_OIDC_ISSUER" not in (args.source / "src/config.rs").read_text()
+            and "GOOGLE_OIDC_ISSUER" not in (args.source / "server/src/config.rs").read_text()
         ):
             raise SystemExit(
                 "Selected source does not contain the required Google login integration"
@@ -47,7 +47,7 @@ def main():
         if (
             args.kind == "app"
             and "AIDASH_AUTH_TRUSTED_PROXY_IPS"
-            not in (args.source / "src/http.rs").read_text()
+            not in (args.source / "server/src/http.rs").read_text()
         ):
             raise SystemExit(
                 "Selected source does not support trusted-proxy authentication rate limits"
