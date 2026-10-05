@@ -161,16 +161,26 @@ impl Pair {
 		// One step can include several separately bounded peer/provider calls.
 		// Allow their combined duration on loaded CI runners without changing
 		// any production timeout, retry deadline or lease.
-		tokio::time::timeout(std::time::Duration::from_secs(60), async {
+		let progress = tokio::time::timeout(std::time::Duration::from_secs(60), async {
 			loop {
-				if worker.worker_once().await.unwrap() {
+				if worker.worker_once().await.unwrap() || self.run().await.phase().is_terminal() {
+					// Reconciliation can finish a generated run before another
+					// lease is available. Callers still assert its exact final state.
 					break;
 				}
 				tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 			}
 		})
-		.await
-		.expect("scoped step must progress within its bounded retry delay");
+		.await;
+		if progress.is_err() {
+			let run = self.run().await;
+			panic!(
+				"scoped step must progress within its bounded retry delay: phase={}, control={}, state={:?}",
+				run.phase().as_str(),
+				run.control.as_str(),
+				run.state,
+			);
+		}
 	}
 }
 
