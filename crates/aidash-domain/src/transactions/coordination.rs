@@ -146,10 +146,10 @@ pub fn decision_matches(manifest: &Manifest, digest: &str, proof: &Status) -> bo
 	proof.id == manifest.id
 		&& proof.digest == digest
 		&& proof.manifest == json!(manifest)
-		&& !proof
+		&& proof
 			.decision
 			.as_deref()
-			.is_some_and(|decision| !matches!(decision, "COMMIT" | "ABORT"))
+			.is_none_or(|decision| matches!(decision, "COMMIT" | "ABORT"))
 		&& (!proof.visible || proof.decision.as_deref() == Some("COMMIT"))
 }
 
