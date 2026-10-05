@@ -45,6 +45,7 @@ pub async fn initialize(
 	connection: BackendConnection,
 ) -> Result<Federation> {
 	let config = Config::from_settings(settings)?;
+	crate::apps::execution::services::metrics::initialize_recorder()?;
 	let pool = connection
 		.into_postgres()
 		.ok_or_else(|| Error::Invalid("Aidash requires PostgreSQL".into()))?;

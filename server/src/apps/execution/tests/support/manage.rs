@@ -11,6 +11,7 @@ use tokio::process::{Child, Command};
 pub struct ManageFixture {
 	pub client: APIClient,
 	pub probes: APIClient,
+	pub metrics: APIClient,
 	pub process: Child,
 	pub database: DatabaseFixture,
 	pub directory: TempDir,
@@ -42,6 +43,8 @@ async fn start(
 	let listener = TcpListener::bind("127.0.0.1:0").unwrap();
 	let address = listener.local_addr().unwrap();
 	let probe_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+	let metrics_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+	let metrics_address = metrics_listener.local_addr().unwrap();
 	let probe_address = if worker {
 		address
 	} else {
@@ -69,6 +72,7 @@ async fn start(
 	let log = File::create(temp_dir.path().join("manage.log")).unwrap();
 	drop(listener);
 	drop(probe_listener);
+	drop(metrics_listener);
 	if worker {
 		command.args(["runworker", &address.to_string()]);
 	} else {
@@ -77,6 +81,9 @@ async fn start(
 	let process = command
 		.env("AIDASH_ENDPOINT", format!("http://{address}"))
 		.env("AIDASH_PROBE_LISTEN", probe_address.to_string())
+		.env("AIDASH_METRICS_LISTEN", metrics_address.to_string())
+		.env("AIDASH_SSE_RECONCILE_INTERVAL_MS", "2000")
+		.env("AIDASH_SSE_BACKPRESSURE_TIMEOUT_SECONDS", "7")
 		.stdin(Stdio::null())
 		.stdout(log.try_clone().unwrap())
 		.stderr(log)
@@ -85,9 +92,11 @@ async fn start(
 		.expect("start native manage process");
 	let client = api_client_from_url(&format!("http://{address}"));
 	let probes = api_client_from_url(&format!("http://{probe_address}"));
+	let metrics = api_client_from_url(&format!("http://{metrics_address}"));
 	let mut fixture = ManageFixture {
 		client,
 		probes,
+		metrics,
 		process,
 		database,
 		directory: temp_dir,
@@ -114,7 +123,12 @@ async fn start(
 					.send()
 					.await
 					.is_ok_and(|response| response.status().is_success());
-			if runtime_ready && http_ready {
+			let metrics_ready = probe
+				.get(format!("http://{metrics_address}/metrics"))
+				.send()
+				.await
+				.is_ok_and(|response| response.status().is_success());
+			if runtime_ready && http_ready && metrics_ready {
 				break;
 			}
 			tokio::time::sleep(Duration::from_millis(50)).await;

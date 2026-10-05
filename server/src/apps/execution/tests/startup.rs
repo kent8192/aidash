@@ -48,6 +48,19 @@ async fn manage_runserver_initializes_routes_authentication_and_persistence(
 		app.probes.get("/api/state").await.unwrap().status_code(),
 		404
 	);
+	let metrics = app.metrics.get("/metrics").await.unwrap();
+	assert_eq!(metrics.status_code(), 200);
+	let metrics = metrics.text();
+	assert!(
+		metrics
+			.lines()
+			.any(|line| line == "aidash_sse_reconcile_interval_seconds 2")
+	);
+	assert!(
+		metrics
+			.lines()
+			.any(|line| line == "aidash_sse_backpressure_timeout_seconds 7")
+	);
 	app.shutdown().await;
 }
 

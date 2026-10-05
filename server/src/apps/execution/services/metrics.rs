@@ -5,7 +5,19 @@ use reinhardt::di::{KeyedFactoryOutput, SelfKey};
 use reinhardt::server::{HttpServer, ShutdownCoordinator};
 use reinhardt::{InjectionContext, ServerRouter, injectable};
 use std::sync::{Arc, OnceLock};
-static RECORDER: OnceLock<PrometheusHandle> = OnceLock::new();
+static RECORDER: OnceLock<std::result::Result<PrometheusHandle, String>> = OnceLock::new();
+
+/// Install once, before constructing services that emit startup metrics.
+pub(crate) fn initialize_recorder() -> Result<PrometheusHandle> {
+	RECORDER
+		.get_or_init(|| {
+			PrometheusBuilder::new()
+				.install_recorder()
+				.map_err(|error| format!("metrics recorder: {error}"))
+		})
+		.clone()
+		.map_err(Error::External)
+}
 #[derive(Clone)]
 pub struct ProcessMetrics(pub PrometheusHandle);
 // Preserve a statement before the value until reinhardt-web#6441 is fixed.
@@ -15,20 +27,13 @@ pub async fn provide_metrics() -> ProcessMetrics {
 	ProcessMetrics(
 		RECORDER
 			.get()
+			.and_then(|result| result.as_ref().ok())
 			.expect("metrics initialized at process startup")
 			.clone(),
 	)
 }
 pub async fn run(shutdown: ShutdownCoordinator) -> Result<()> {
-	let handle = if let Some(handle) = RECORDER.get() {
-		handle.clone()
-	} else {
-		let handle = PrometheusBuilder::new()
-			.install_recorder()
-			.map_err(|error| Error::External(format!("metrics recorder: {error}")))?;
-		let _ = RECORDER.set(handle.clone());
-		handle
-	};
+	let handle = initialize_recorder()?;
 	let Ok(address) = std::env::var("AIDASH_METRICS_LISTEN") else {
 		std::future::pending::<()>().await;
 		return Ok(());
