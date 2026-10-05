@@ -10,10 +10,11 @@ pub(super) fn migration() -> Migration {
 			sql: include_str!("sql/forward/0000_environment.sql").to_owned(),
 			reverse_sql: Some(include_str!("sql/backward/0000_environment.sql").to_owned()),
 		})
-		.add_operation(Operation::CreateExtension {
-			name: "pg_jsonschema".to_owned(),
-			if_not_exists: false,
-			schema: Some("public".to_owned()),
+		// Conditional extension creation needs an ownership marker: native
+		// CreateExtension cannot reverse a borrowed administrator-owned extension.
+		.add_operation(Operation::RunSQL {
+			sql: include_str!("sql/forward/extension_ownership.sql").to_owned(),
+			reverse_sql: Some(include_str!("sql/backward/extension_ownership.sql").to_owned()),
 		})
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/baseline_reverse_context.sql").to_owned(),

@@ -406,6 +406,90 @@ fn migration_context(url: &str) -> reinhardt::commands::CommandContext {
 
 #[rstest]
 #[tokio::test]
+async fn preprovisioned_extension_allows_database_scoped_migrations(
+	#[future] fresh_database: MigrationFixture,
+) {
+	// Arrange: the administrator owns the extension, while the application can
+	// create objects only in its database and has no superuser privileges.
+	let fixture = fresh_database.await;
+	let admin = PgPool::connect(&fixture.url).await.unwrap();
+	let role = format!("scoped_{}", Uuid::new_v4().simple());
+	sqlx::query("CREATE EXTENSION pg_jsonschema WITH SCHEMA public")
+		.execute(&admin)
+		.await
+		.unwrap();
+	// Role administration has no application-schema builder; fixture ownership
+	// and its database are bounded by the Testcontainers guard, including panic.
+	sqlx::query(&format!(
+		"CREATE ROLE {role} LOGIN PASSWORD 'fixture-scoped-password'"
+	))
+	.execute(&admin)
+	.await
+	.unwrap();
+	sqlx::query(&format!("GRANT CREATE ON SCHEMA public TO {role}"))
+		.execute(&admin)
+		.await
+		.unwrap();
+	let mut url = reqwest::Url::parse(&fixture.url).unwrap();
+	url.set_username(&role).unwrap();
+	url.set_password(Some("fixture-scoped-password")).unwrap();
+	let context = migration_context(url.as_str());
+	// Act: run the exact native bootstrap twice under the scoped role.
+	aidash_server::bootstrap::migrations::run(&context)
+		.await
+		.unwrap();
+	aidash_server::bootstrap::migrations::run(&context)
+		.await
+		.unwrap();
+	// Assert: replay retains one ledger and the application owns its tables.
+	let count: i64 = sqlx::query_scalar("SELECT count(*) FROM reinhardt_migrations")
+		.fetch_one(&admin)
+		.await
+		.unwrap();
+	assert_eq!(count, 46);
+	let owner: String = sqlx::query_scalar(
+		"SELECT tableowner FROM pg_tables WHERE schemaname='public' AND tablename='workspaces'",
+	)
+	.fetch_one(&admin)
+	.await
+	.unwrap();
+	assert_eq!(owner, role);
+	let superuser: bool = sqlx::query_scalar("SELECT rolsuper FROM pg_roles WHERE rolname=$1")
+		.bind(&role)
+		.fetch_one(&admin)
+		.await
+		.unwrap();
+	assert!(!superuser);
+	// Act: the same restricted role can reverse its own graph, then replay it.
+	let mut command = deployment_command(url.as_str(), fixture.directory.path());
+	command.args(["migrate", "operations", "zero"]);
+	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
+		.await
+		.unwrap()
+		.unwrap();
+	// Assert: an administrator's extension survives without ownership transfer.
+	assert!(
+		output.status.success(),
+		"{}\n{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	assert!(recorded_keys(&fixture.connection).await.is_empty());
+	let extension_owner: String = sqlx::query_scalar(
+		"SELECT pg_get_userbyid(extowner) FROM pg_extension WHERE extname='pg_jsonschema'",
+	)
+	.fetch_one(&admin)
+	.await
+	.unwrap();
+	assert_eq!(extension_owner, "aidash");
+	aidash_server::bootstrap::migrations::run(&context)
+		.await
+		.unwrap();
+	assert_eq!(recorded_keys(&fixture.connection).await.len(), 46);
+}
+
+#[rstest]
+#[tokio::test]
 async fn concurrent_startups_serialize_the_complete_native_baseline(
 	#[future] fresh_database: MigrationFixture,
 ) {
@@ -483,7 +567,7 @@ async fn recorded_keys(connection: &BackendConnection) -> BTreeSet<(String, Stri
 
 #[rstest]
 #[tokio::test]
-async fn baseline_refuses_to_adopt_a_preinstalled_extension(
+async fn baseline_preserves_a_preinstalled_extension_during_reversal(
 	#[future] fresh_database: MigrationFixture,
 ) {
 	// Arrange: extension ownership belongs to an operator, before native history.
@@ -497,13 +581,25 @@ async fn baseline_refuses_to_adopt_a_preinstalled_extension(
 	.unwrap();
 	fixture.connection.execute(&create, vec![]).await.unwrap();
 
-	// Act
-	let error = aidash_server::bootstrap::migrations::run(&migration_context(&fixture.url))
+	// Act: applying and reversing the graph must leave borrowed infrastructure.
+	aidash_server::bootstrap::migrations::run(&migration_context(&fixture.url))
 		.await
-		.unwrap_err();
+		.unwrap();
+	assert_eq!(recorded_keys(&fixture.connection).await.len(), 46);
+	let mut command = deployment_command(&fixture.url, fixture.directory.path());
+	command.args(["migrate", "operations", "zero"]);
+	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
+		.await
+		.unwrap()
+		.unwrap();
 
-	// Assert: rejection leaves both the external extension and native history intact.
-	assert!(error.to_string().contains("already exists"), "{error}");
+	// Assert: the native graph reverses without assuming extension ownership.
+	assert!(
+		output.status.success(),
+		"{}\n{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
 	assert!(recorded_keys(&fixture.connection).await.is_empty());
 	let extensions = fixture
 		.connection

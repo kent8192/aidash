@@ -212,6 +212,10 @@ class Cluster:
             # by SeaQuery's application-schema builders. No runtime cross-DB reads.
             self.kube("exec", "-i", "postgres-0", "--", "psql", "-U", "aidash", "-d", "postgres",
                 "-v", "ON_ERROR_STOP=1", "-f", "-", value=f"CREATE ROLE tx_{node} LOGIN PASSWORD '{password}';\nCREATE DATABASE tx_{node} OWNER tx_{node};\n")
+            # The extension requires administrator privileges; application
+            # migrations and runtime access keep the database-scoped role.
+            self.kube("exec", "postgres-0", "--", "psql", "-U", "aidash", "-d", f"tx_{node}",
+                "-v", "ON_ERROR_STOP=1", "-c", "CREATE EXTENSION pg_jsonschema WITH SCHEMA public;")
             self.apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": f"tx-{node}"},
                 "stringData": {"DATABASE_URL": f"postgres://tx_{node}:{password}@postgres:5432/tx_{node}",
                 "AIDASH_API_TOKEN": self.token, **{f"AIDASH_SECRET_TRANSACTION_{peer:02}": self.peer_tokens[peer] for peer in (range(1, count) if node == 0 else [node])}}})
