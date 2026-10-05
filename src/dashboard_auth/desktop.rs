@@ -707,4 +707,91 @@ mod tests {
 	fn accepts_only_bounded_loopback_callback() {
 		assert!(callback_url("http://127.0.0.1:43157/callback").is_ok());
 	}
+
+	#[test]
+	fn desktop_policy_enforces_lifetime_bounds() {
+		const EXPECTED: &str = "AIDASH_DESKTOP_POLICY_TEST_EXPECTED";
+		if let Ok(expected) = std::env::var(EXPECTED) {
+			let actual = Policy::load().map_or_else(
+				|error| error.to_string(),
+				|policy| format!("{},{},{}", policy.access, policy.idle, policy.absolute),
+			);
+			assert_eq!(actual, expected);
+			return;
+		}
+		let cases: &[(&[(&str, &str)], &str)] = &[
+			(&[], "300,2592000,7776000"),
+			(
+				&[
+					("AIDASH_DESKTOP_ACCESS_SECONDS", "60"),
+					("AIDASH_DESKTOP_IDLE_SECONDS", "60"),
+					("AIDASH_DESKTOP_ABSOLUTE_SECONDS", "60"),
+				],
+				"60,60,60",
+			),
+			(
+				&[
+					("AIDASH_DESKTOP_ACCESS_SECONDS", "900"),
+					("AIDASH_DESKTOP_IDLE_SECONDS", "31536000"),
+					("AIDASH_DESKTOP_ABSOLUTE_SECONDS", "31536000"),
+				],
+				"900,31536000,31536000",
+			),
+			(
+				&[("AIDASH_DESKTOP_ACCESS_SECONDS", "59")],
+				"invalid AIDASH_DESKTOP_ACCESS_SECONDS",
+			),
+			(
+				&[("AIDASH_DESKTOP_ACCESS_SECONDS", "901")],
+				"invalid AIDASH_DESKTOP_ACCESS_SECONDS",
+			),
+			(
+				&[("AIDASH_DESKTOP_ACCESS_SECONDS", "not-a-number")],
+				"invalid AIDASH_DESKTOP_ACCESS_SECONDS",
+			),
+			(
+				&[("AIDASH_DESKTOP_IDLE_SECONDS", "59")],
+				"invalid AIDASH_DESKTOP_IDLE_SECONDS",
+			),
+			(
+				&[("AIDASH_DESKTOP_IDLE_SECONDS", "31536001")],
+				"invalid AIDASH_DESKTOP_IDLE_SECONDS",
+			),
+			(
+				&[("AIDASH_DESKTOP_ABSOLUTE_SECONDS", "59")],
+				"invalid AIDASH_DESKTOP_ABSOLUTE_SECONDS",
+			),
+			(
+				&[("AIDASH_DESKTOP_ABSOLUTE_SECONDS", "31536001")],
+				"invalid AIDASH_DESKTOP_ABSOLUTE_SECONDS",
+			),
+			(
+				&[
+					("AIDASH_DESKTOP_IDLE_SECONDS", "120"),
+					("AIDASH_DESKTOP_ABSOLUTE_SECONDS", "60"),
+				],
+				"desktop idle lifetime exceeds absolute lifetime",
+			),
+		];
+		for (settings, expected) in cases {
+			// Isolate each configuration without mutating the parent test environment.
+			let output = std::process::Command::new(std::env::current_exe().unwrap())
+				.args([
+					"--exact",
+					"dashboard_auth::desktop::tests::desktop_policy_enforces_lifetime_bounds",
+					"--nocapture",
+				])
+				.env_remove("AIDASH_DESKTOP_ACCESS_SECONDS")
+				.env_remove("AIDASH_DESKTOP_IDLE_SECONDS")
+				.env_remove("AIDASH_DESKTOP_ABSOLUTE_SECONDS")
+				.envs(settings.iter().copied())
+				.env(EXPECTED, expected)
+				.output()
+				.unwrap();
+			let stdout = String::from_utf8_lossy(&output.stdout);
+			let stderr = String::from_utf8_lossy(&output.stderr);
+			assert!(output.status.success(), "{settings:?}: {stdout}{stderr}");
+			assert!(stdout.contains("1 passed"));
+		}
+	}
 }

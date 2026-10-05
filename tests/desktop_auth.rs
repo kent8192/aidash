@@ -8,7 +8,7 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use common::{TestEnvironment, test_environment};
-use sea_orm::sea_query::{Alias, Expr, PostgresQueryBuilder, Query};
+use sea_orm::sea_query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
@@ -170,17 +170,30 @@ async fn setup(
 	)));
 	(f, app, url, schema)
 }
-async fn login(app: &Router) -> Value {
-	let verifier = "a".repeat(64);
-	let state = "b".repeat(64);
-	let redirect = "http://127.0.0.1:43217/callback";
-	let start=json_response(post(app,"/auth/desktop/start",json!({"state":state,"code_challenge":URL_SAFE_NO_PAD.encode(Sha256::digest(&verifier)),"redirect_uri":redirect})).await,200).await;
+fn handoff_input() -> Value {
+	json!({
+		"state": "b".repeat(64),
+		"code_challenge": URL_SAFE_NO_PAD.encode(Sha256::digest("a".repeat(64))),
+		"redirect_uri": "http://127.0.0.1:43217/callback",
+	})
+}
+async fn start_handoff(app: &Router) -> (Uuid, String) {
+	let start = json_response(post(app, "/auth/desktop/start", handoff_input()).await, 200).await;
 	let authorize = start["authorization_url"]
 		.as_str()
 		.unwrap()
 		.strip_prefix(ORIGIN)
-		.unwrap();
-	let without_cookie = request(app, "GET", authorize, &[], String::new()).await;
+		.unwrap()
+		.to_owned();
+	let id = Uuid::parse_str(authorize.split("request=").nth(1).unwrap()).unwrap();
+	(id, authorize)
+}
+async fn approved_handoff(app: &Router) -> Value {
+	let verifier = "a".repeat(64);
+	let state = "b".repeat(64);
+	let redirect = "http://127.0.0.1:43217/callback";
+	let (id, authorize) = start_handoff(app).await;
+	let without_cookie = request(app, "GET", &authorize, &[], String::new()).await;
 	assert_eq!(without_cookie.status(), StatusCode::SEE_OTHER);
 	assert!(
 		without_cookie.headers()["location"]
@@ -188,14 +201,13 @@ async fn login(app: &Router) -> Value {
 			.unwrap()
 			.starts_with("/auth/login?return_to=")
 	);
-	let consent = request(app, "GET", authorize, &[("cookie", COOKIE)], String::new()).await;
+	let consent = request(app, "GET", &authorize, &[("cookie", COOKIE)], String::new()).await;
 	assert_eq!(consent.status(), StatusCode::OK);
 	assert_eq!(consent.headers()["cache-control"], "no-store");
 	assert_eq!(
 		consent.headers()["content-security-policy"],
 		"default-src 'none'; form-action 'self' http://127.0.0.1:43217; frame-ancestors 'none'; base-uri 'none'"
 	);
-	let id = authorize.split("request=").nth(1).unwrap();
 	let body = format!("request={id}&csrf=desktop-csrf");
 	for origin in ["https://evil.example", "null"] {
 		let denied = request(
@@ -231,8 +243,10 @@ async fn login(app: &Router) -> Value {
 		.collect::<std::collections::HashMap<_, _>>();
 	assert_eq!(pairs.len(), 2, "callback must contain only code and state");
 	assert_eq!(pairs["state"], state);
-	let body =
-		json!({"code":pairs["code"],"state":state,"verifier":verifier,"redirect_uri":redirect});
+	json!({"code":pairs["code"],"state":state,"verifier":verifier,"redirect_uri":redirect})
+}
+async fn login(app: &Router) -> Value {
+	let body = approved_handoff(app).await;
 	let mut wrong = body.clone();
 	wrong["verifier"] = json!("c".repeat(64));
 	assert_eq!(
@@ -526,5 +540,467 @@ async fn desktop_expiry_and_cors_boundaries(
 			}
 		);
 	}
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn desktop_invalid_inputs_preserve_handoffs_and_sessions(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
+	for (field, value) in [
+		("state", "short".to_owned()),
+		("state", "!".repeat(64)),
+		("code_challenge", "short".to_owned()),
+		("code_challenge", "!".repeat(43)),
+	] {
+		let mut input = handoff_input();
+		input[field] = json!(value);
+		json_response(post(&app, "/auth/desktop/start", input).await, 400).await;
+	}
+	let exchange = approved_handoff(&app).await;
+	for field in ["code", "verifier"] {
+		let mut invalid = exchange.clone();
+		invalid[field] = json!("short");
+		json_response(post(&app, "/auth/desktop/exchange", invalid).await, 401).await;
+	}
+	let tokens = json_response(post(&app, "/auth/desktop/exchange", exchange).await, 200).await;
+	let next = format!("aidash_refresh_{}", "d".repeat(64));
+	for (refresh, successor) in [
+		("wrong-prefix".to_owned(), next.clone()),
+		(
+			tokens["refresh_token"].as_str().unwrap().into(),
+			"wrong-prefix".into(),
+		),
+		(
+			tokens["refresh_token"].as_str().unwrap().into(),
+			"aidash_refresh_short".into(),
+		),
+		("aidash_refresh_short".into(), next.clone()),
+		(
+			tokens["refresh_token"].as_str().unwrap().into(),
+			tokens["refresh_token"].as_str().unwrap().into(),
+		),
+	] {
+		json_response(
+			post(
+				&app,
+				"/auth/desktop/refresh",
+				json!({"refresh_token": refresh, "next_token": successor}),
+			)
+			.await,
+			401,
+		)
+		.await;
+	}
+	for _ in 0..2 {
+		assert_eq!(
+			post(
+				&app,
+				"/auth/desktop/revoke",
+				json!({"refresh_token": "unknown-credential"})
+			)
+			.await
+			.status(),
+			StatusCode::NO_CONTENT
+		);
+	}
+	assert_eq!(
+		bearer(&app, "GET", "/auth/session", &tokens["access_token"])
+			.await
+			.status(),
+		StatusCode::OK
+	);
+	json_response(
+		post(
+			&app,
+			"/auth/desktop/refresh",
+			json!({"refresh_token": tokens["refresh_token"], "next_token": next}),
+		)
+		.await,
+		200,
+	)
+	.await;
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[case("expires_at", Expr::cust("clock_timestamp()-interval '1 second'"))]
+#[case("origin", Expr::val("https://other.example").into())]
+#[case("code_hash", Expr::val(Sha256::digest(b"issued-code").to_vec()).into())]
+#[tokio::test]
+async fn desktop_authorization_rejects_expired_foreign_and_issued_handoffs(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: std::sync::Arc<TestEnvironment>,
+	#[case] column: &str,
+	#[case] value: sea_orm::sea_query::SimpleExpr,
+) {
+	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
+	let (id, authorize) = start_handoff(&app).await;
+	let update = Query::update()
+		.table(Alias::new("desktop_handoffs"))
+		.value(Alias::new(column), value)
+		.and_where(Expr::col(Alias::new("id")).eq(id))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&update).execute(&f.store.pool).await.unwrap();
+	json_response(
+		request(
+			&app,
+			"GET",
+			&authorize,
+			&[("cookie", COOKIE)],
+			String::new(),
+		)
+		.await,
+		401,
+	)
+	.await;
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn desktop_authorization_rejects_mismatched_csrf_session_and_disabled_identity(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
+	let (_, authorize) = start_handoff(&app).await;
+	json_response(
+		request(
+			&app,
+			"GET",
+			&authorize,
+			&[(
+				"cookie",
+				"aidash-session=desktop-browser-fixture; aidash-csrf=wrong",
+			)],
+			String::new(),
+		)
+		.await,
+		401,
+	)
+	.await;
+	assert_eq!(
+		request(
+			&app,
+			"GET",
+			&authorize,
+			&[("cookie", COOKIE)],
+			String::new()
+		)
+		.await
+		.status(),
+		StatusCode::OK
+	);
+	let select = Query::select()
+		.expr(Expr::val(Uuid::new_v4()))
+		.column(Alias::new("identity_id"))
+		.expr(Expr::val(Sha256::digest(b"other-browser-fixture").to_vec()))
+		.columns(["csrf_hash", "created_at", "last_activity_at", "expires_at"].map(Alias::new))
+		.from(Alias::new("dashboard_sessions"))
+		.to_owned();
+	let insert = Query::insert()
+		.into_table(Alias::new("dashboard_sessions"))
+		.columns(
+			[
+				"id",
+				"identity_id",
+				"token_hash",
+				"csrf_hash",
+				"created_at",
+				"last_activity_at",
+				"expires_at",
+			]
+			.map(Alias::new),
+		)
+		.select_from(select)
+		.unwrap()
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&insert).execute(&f.store.pool).await.unwrap();
+	json_response(
+		request(
+			&app,
+			"GET",
+			&authorize,
+			&[(
+				"cookie",
+				"aidash-session=other-browser-fixture; aidash-csrf=desktop-csrf",
+			)],
+			String::new(),
+		)
+		.await,
+		401,
+	)
+	.await;
+	// A failed rebinding must not displace the original browser's consent.
+	assert_eq!(
+		request(
+			&app,
+			"GET",
+			&authorize,
+			&[("cookie", COOKIE)],
+			String::new()
+		)
+		.await
+		.status(),
+		StatusCode::OK
+	);
+	let disable = Query::update()
+		.table(Alias::new("dashboard_identities"))
+		.value(Alias::new("disabled_at"), Expr::cust("clock_timestamp()"))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&disable).execute(&f.store.pool).await.unwrap();
+	json_response(
+		request(
+			&app,
+			"GET",
+			&authorize,
+			&[("cookie", COOKIE)],
+			String::new(),
+		)
+		.await,
+		403,
+	)
+	.await;
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn desktop_start_limits_pending_handoffs_and_prunes_expired_requests(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
+	let input = handoff_input();
+	let mut insert = Query::insert();
+	insert.into_table(Alias::new("desktop_handoffs")).columns(
+		[
+			"id",
+			"state",
+			"challenge",
+			"redirect_uri",
+			"origin",
+			"expires_at",
+		]
+		.map(Alias::new),
+	);
+	for _ in 0..10_000 {
+		insert.values_panic([
+			Expr::val(Uuid::new_v4()).into(),
+			Expr::val(input["state"].as_str().unwrap()).into(),
+			Expr::val(input["code_challenge"].as_str().unwrap()).into(),
+			Expr::val(input["redirect_uri"].as_str().unwrap()).into(),
+			Expr::val(ORIGIN).into(),
+			Expr::cust("clock_timestamp()+interval '5 minutes'"),
+		]);
+	}
+	sqlx::query(&insert.to_string(PostgresQueryBuilder))
+		.execute(&f.store.pool)
+		.await
+		.unwrap();
+	let limited = post(&app, "/auth/desktop/start", input.clone()).await;
+	assert_eq!(limited.headers()["retry-after"], "1");
+	json_response(limited, 429).await;
+	let expire = Query::update()
+		.table(Alias::new("desktop_handoffs"))
+		.value(
+			Alias::new("expires_at"),
+			Expr::cust("clock_timestamp()-interval '1 second'"),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&expire).execute(&f.store.pool).await.unwrap();
+	start_handoff(&app).await;
+	let count = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("desktop_handoffs"))
+		.to_string(PostgresQueryBuilder);
+	assert_eq!(
+		sqlx::query_scalar::<_, i64>(&count)
+			.fetch_one(&f.store.pool)
+			.await
+			.unwrap(),
+		1,
+		"expired handoffs release admission capacity"
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[case("desktop", Expr::val(true).into())]
+#[case("revoked_at", Expr::cust("clock_timestamp()"))]
+#[case("expires_at", Expr::cust("clock_timestamp()-interval '1 second'"))]
+#[case(
+	"last_activity_at",
+	Expr::cust("clock_timestamp()-interval '31 minutes'")
+)]
+#[tokio::test]
+async fn desktop_exchange_rejects_invalid_browser_sessions(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: std::sync::Arc<TestEnvironment>,
+	#[case] column: &str,
+	#[case] value: sea_orm::sea_query::SimpleExpr,
+) {
+	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
+	let exchange = approved_handoff(&app).await;
+	let update = Query::update()
+		.table(Alias::new("dashboard_sessions"))
+		.value(Alias::new(column), value)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&update).execute(&f.store.pool).await.unwrap();
+	json_response(post(&app, "/auth/desktop/exchange", exchange).await, 401).await;
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn desktop_exchange_rechecks_revocation_after_waiting_for_identity(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
+	let exchange = approved_handoff(&app).await;
+	let mut tx = f.store.pool.begin().await.unwrap();
+	let lock = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("dashboard_identities"))
+		.lock(LockType::Update)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&lock).fetch_one(&mut *tx).await.unwrap();
+	let pending = tokio::spawn({
+		let app = app.clone();
+		let exchange = exchange.clone();
+		async move { post(&app, "/auth/desktop/exchange", exchange).await }
+	});
+	let waiters = Query::select()
+		.expr(Expr::cust("count(*)"))
+		.from(Alias::new("pg_stat_activity"))
+		.and_where(Expr::col(Alias::new("application_name")).eq(&schema))
+		.and_where(Expr::col(Alias::new("wait_event_type")).eq("Lock"))
+		.and_where(Expr::col(Alias::new("query")).like("%dashboard_identities%"))
+		.to_string(PostgresQueryBuilder);
+	tokio::time::timeout(std::time::Duration::from_secs(10), async {
+		while sqlx::query_scalar::<_, i64>(&waiters)
+			.fetch_one(&f.store.pool)
+			.await
+			.unwrap() == 0
+		{
+			tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+		}
+	})
+	.await
+	.expect("exchange must reach the identity lock before revocation");
+	let revoke = Query::update()
+		.table(Alias::new("dashboard_sessions"))
+		.value(Alias::new("revoked_at"), Expr::cust("clock_timestamp()"))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&revoke).execute(&mut *tx).await.unwrap();
+	tx.commit().await.unwrap();
+	json_response(
+		tokio::time::timeout(std::time::Duration::from_secs(10), pending)
+			.await
+			.unwrap()
+			.unwrap(),
+		401,
+	)
+	.await;
+	let restore = Query::update()
+		.table(Alias::new("dashboard_sessions"))
+		.value(
+			Alias::new("revoked_at"),
+			Expr::val(Option::<chrono::DateTime<chrono::Utc>>::None),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&restore).execute(&f.store.pool).await.unwrap();
+	// Rejection rolls back consumption of the handoff instead of losing it.
+	json_response(post(&app, "/auth/desktop/exchange", exchange).await, 200).await;
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn desktop_logout_is_scoped_and_browser_logout_all_revokes_desktop_sessions(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: std::sync::Arc<TestEnvironment>,
+) {
+	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
+	let first = login(&app).await;
+	let second = login(&app).await;
+	assert_eq!(
+		bearer(&app, "POST", "/auth/logout", &first["access_token"])
+			.await
+			.status(),
+		StatusCode::NO_CONTENT
+	);
+	assert_eq!(
+		bearer(&app, "GET", "/auth/session", &first["access_token"])
+			.await
+			.status(),
+		StatusCode::UNAUTHORIZED
+	);
+	json_response(post(&app, "/auth/desktop/refresh", json!({"refresh_token": first["refresh_token"], "next_token": format!("aidash_refresh_{}", "d".repeat(64))})).await, 401).await;
+	assert_eq!(
+		bearer(&app, "GET", "/auth/session", &second["access_token"])
+			.await
+			.status(),
+		StatusCode::OK
+	);
+	assert_eq!(
+		request(
+			&app,
+			"GET",
+			"/auth/session",
+			&[("cookie", COOKIE)],
+			String::new()
+		)
+		.await
+		.status(),
+		StatusCode::OK
+	);
+	assert_eq!(
+		request(
+			&app,
+			"POST",
+			"/auth/logout-all",
+			&[
+				("cookie", COOKIE),
+				("origin", ORIGIN),
+				("x-aidash-csrf", "desktop-csrf")
+			],
+			String::new()
+		)
+		.await
+		.status(),
+		StatusCode::NO_CONTENT
+	);
+	assert_eq!(
+		bearer(&app, "GET", "/auth/session", &second["access_token"])
+			.await
+			.status(),
+		StatusCode::UNAUTHORIZED
+	);
+	json_response(post(&app, "/auth/desktop/refresh", json!({"refresh_token": second["refresh_token"], "next_token": format!("aidash_refresh_{}", "e".repeat(64))})).await, 401).await;
+	assert_eq!(
+		request(
+			&app,
+			"GET",
+			"/auth/session",
+			&[("cookie", COOKIE)],
+			String::new()
+		)
+		.await
+		.status(),
+		StatusCode::UNAUTHORIZED
+	);
 	common::cleanup(f, &url, &schema).await;
 }
