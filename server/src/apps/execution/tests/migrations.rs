@@ -4,9 +4,14 @@ mod deployment;
 use aidash_server::apps::workspaces::models::Workspace;
 use deployment::deployment_command;
 use reinhardt::db::backends::DatabaseConnection as BackendConnection;
-use reinhardt::db::migrations::{DatabaseMigrationRecorder, FilesystemSource, MigrationSource};
+use reinhardt::db::migrations::{
+	DatabaseMigrationRecorder, FilesystemSource, MigrationSource, SqlDialect,
+};
 use reinhardt::db::orm::Model;
 use reinhardt::db::orm::connection::DatabaseConnectionLease;
+use reinhardt::query::{
+	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+};
 use reinhardt::test::fixtures::temp_dir;
 #[path = "support/postgres.rs"]
 mod postgres;
@@ -502,7 +507,7 @@ async fn baseline_refuses_to_adopt_a_preinstalled_extension(
 		if_not_exists: false,
 		schema: Some("public".into()),
 	}
-	.try_to_sql_string(reinhardt::db::backends::DatabaseType::Postgres)
+	.try_to_sql(&SqlDialect::Postgres)
 	.unwrap();
 	fixture.connection.execute(&create, vec![]).await.unwrap();
 
@@ -514,7 +519,6 @@ async fn baseline_refuses_to_adopt_a_preinstalled_extension(
 	// Assert: rejection leaves both the external extension and native history intact.
 	assert!(error.to_string().contains("already exists"), "{error}");
 	assert!(recorded_keys(&fixture.connection).await.is_empty());
-	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let extensions = fixture
 		.connection
 		.fetch_all(
@@ -674,7 +678,6 @@ async fn complete_baseline_reverses_and_reapplies_through_the_management_graph(
 		String::from_utf8_lossy(&output.stderr)
 	);
 	assert!(recorded_keys(&fixture.connection).await.is_empty());
-	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let tables = fixture
 		.connection
 		.fetch_all(
@@ -790,9 +793,6 @@ pub(super) fn migration() -> Migration {
 	);
 	assert_eq!(recorded_keys(&fixture.connection).await, before);
 	let pool = fixture.connection.into_postgres().unwrap();
-	use reinhardt::query::{
-		Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
-	};
 	let query = Query::select()
 		.column(Alias::new("tablename"))
 		.from((Alias::new("pg_catalog"), Alias::new("pg_tables")))
