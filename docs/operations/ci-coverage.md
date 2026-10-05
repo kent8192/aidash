@@ -94,3 +94,21 @@ Other cluster jobs built the same backend successfully, and a fresh request to
 the `web-sys` index succeeded. Retry this job once the workflow run finishes;
 its build failure does not justify changing application behavior or weakening
 the acceptance checks.
+
+## Browser dependency mirror
+
+[The Kubernetes remote-memory job at `3d05da43`](https://github.com/kent8192/aidash/actions/runs/37337525795/job/111855957789)
+stopped before cluster assertions when Playwright's Ubuntu package installation
+reached its ten-minute deadline with exit 124. Its package URLs still used the
+Azure HTTP mirror despite the source-list rewrite. The
+[runner image configuration](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/configure-apt-sources.sh)
+resolves these URLs through `/etc/apt/apt-mirrors.txt`. The shared
+`scripts/configure-ci-apt.sh` helper rewrites the mirror list and direct entries
+for browser and desktop lint setup to the Ubuntu HTTPS archive, retaining
+priorities, timeout settings, and the installation deadline. No third-party issue
+was submitted for this observed transport failure.
+
+The ideal path is the ordinary `playwright install --with-deps chromium` against
+working runner sources. Remove the URL rewrite after unmodified hosted sources
+complete the same bounded installation reliably across the browser and cluster
+jobs; keep the deadline and required acceptance assertions.
