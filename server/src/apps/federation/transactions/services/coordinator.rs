@@ -53,13 +53,6 @@ pub(crate) async fn submit_in(
 	.map_err(Into::into)
 }
 
-pub(crate) async fn decision(f: &Federation, manifest: &Manifest) -> Result<Status> {
-	crate::bootstrap::transaction_coordinator(f)
-		.decision(manifest)
-		.await
-		.map(Into::into)
-		.map_err(Into::into)
-}
 pub async fn abort(f: &Federation, id: Uuid) -> Result<Status> {
 	crate::bootstrap::transaction_coordinator(f)
 		.abort(id)

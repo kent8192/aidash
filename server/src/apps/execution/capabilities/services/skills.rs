@@ -8,23 +8,9 @@ use crate::{
 };
 use serde_json::Value;
 use uuid::Uuid;
-pub(crate) fn validate(value: &SkillAttachment) -> Result<SkillMetadata> {
-	aidash_domain::capabilities::skills::validate(value).map_err(Into::into)
-}
-pub(crate) fn validate_config(value: &AgentConfig) -> Result<()> {
-	aidash_domain::capabilities::skills::validate_config(value).map_err(Into::into)
-}
 pub(crate) fn imported(value: crate::skill_import::ImportedSkill) -> Result<SkillAttachment> {
 	aidash_domain::capabilities::skills::imported(value.source, value.instructions, value.files)
 		.map_err(Into::into)
-}
-pub(crate) async fn context_headroom_reserve(store: &Store, run: &Run) -> Result<usize> {
-	aidash_application::capabilities::skills::context_headroom_reserve(
-		&mut crate::bootstrap::skill_headroom(store),
-		run.id,
-	)
-	.await
-	.map_err(Into::into)
 }
 pub(crate) async fn pin(
 	store: &Store,

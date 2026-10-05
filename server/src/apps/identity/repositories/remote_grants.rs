@@ -1,6 +1,5 @@
 //! Database rows are converted explicitly into portable source execution state.
-use crate::{Result, authorization::identity::SubjectIdentity};
-use aidash_domain::federation::execution::{Prepared, home};
+use aidash_domain::federation::execution::home;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use uuid::Uuid;
@@ -19,19 +18,6 @@ pub(crate) struct Grant {
 	pub(crate) expires_at: DateTime<Utc>,
 	pub(crate) revoked: bool,
 	pub(crate) semantic: Value,
-}
-impl Grant {
-	pub(crate) fn identity(&self) -> SubjectIdentity {
-		SubjectIdentity {
-			http_session: None,
-			credential_id: self.credential_id,
-			tenant: self.tenant.clone(),
-			subject: self.root_subject.clone(),
-		}
-	}
-	pub(crate) fn prepared(&self) -> Result<Prepared> {
-		Ok(home::Grant::from(self.clone()).prepared()?)
-	}
 }
 #[derive(Clone, sqlx::FromRow)]
 pub(crate) struct HomeBinding {

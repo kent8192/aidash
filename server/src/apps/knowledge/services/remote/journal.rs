@@ -1,11 +1,9 @@
 //! Native journal compatibility functions adapt to portable retry and recovery use cases.
-use super::{Binding, Failure, Operation, Receipt};
+use super::{Binding, Operation};
 pub(crate) use crate::apps::knowledge::repositories::remote_journal::Record;
 use crate::{Result, store::Store};
 #[cfg(test)]
 pub(crate) use aidash_domain::semantic::remote::journal::retry_delay;
-pub(crate) use aidash_domain::semantic::remote::journal::{Attempt, Claim};
-use serde_json::Value;
 use uuid::Uuid;
 pub(crate) async fn prepare(
 	store: &Store,
@@ -34,52 +32,6 @@ pub(crate) async fn bound(
 	.await
 	.map(Into::into)
 	.map_err(Into::into)
-}
-pub(crate) async fn claim(store: &Store, id: Uuid) -> Result<Claim> {
-	aidash_application::semantic::remote_journal::claim(
-		&crate::bootstrap::semantic_journal_repository(store),
-		id,
-	)
-	.await
-	.map_err(Into::into)
-}
-pub(crate) async fn dispatched(
-	store: &Store,
-	attempt: &Attempt,
-	reservations: &Value,
-) -> Result<()> {
-	aidash_application::semantic::remote_journal::dispatched(
-		&crate::bootstrap::semantic_journal_repository(store),
-		attempt,
-		reservations,
-	)
-	.await
-	.map_err(Into::into)
-}
-pub(crate) async fn complete(store: &Store, attempt: &Attempt, receipt: &Receipt) -> Result<()> {
-	aidash_application::semantic::remote_journal::complete(
-		&crate::bootstrap::semantic_journal_repository(store),
-		attempt,
-		receipt,
-	)
-	.await
-	.map_err(Into::into)
-}
-pub(crate) async fn failed(store: &Store, attempt: &Attempt, failure: Failure) -> Result<Failure> {
-	aidash_application::semantic::remote_journal::failed(
-		&crate::bootstrap::semantic_journal_repository(store),
-		attempt,
-		failure,
-	)
-	.await
-	.map_err(Into::into)
-}
-pub(crate) async fn expire_cached(store: &Store, id: Uuid) -> Result<()> {
-	use aidash_application::ports::semantic::remote_journal::JournalRepository as _;
-	crate::bootstrap::semantic_journal_repository(store)
-		.expire_cached(id)
-		.await
-		.map_err(Into::into)
 }
 pub(crate) async fn resume_in(
 	store: &Store,

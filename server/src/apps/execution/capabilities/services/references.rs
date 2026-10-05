@@ -5,9 +5,6 @@ pub use crate::apps::execution::capabilities::serializers::references::{
 };
 use crate::{Result, authorization::access::Access, registry::AgentConfig, store::Store};
 use uuid::Uuid;
-pub(crate) fn validate_config(value: &AgentConfig) -> Result<()> {
-	aidash_domain::capabilities::references::validate_config(value).map_err(Into::into)
-}
 pub(crate) async fn get(access: &mut Access, id: Uuid, action: &str) -> Result<Record> {
 	let mut scope = crate::bootstrap::reference_scope(None, access, None);
 	aidash_application::capabilities::references::get(&mut scope, id, action)

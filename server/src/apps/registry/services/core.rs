@@ -21,22 +21,6 @@ pub fn validate(entry: &Entry) -> Result<()> {
 		.map_err(Into::into)
 }
 
-pub(crate) fn validate_agent_prompt(
-	config: &AgentConfig,
-	entries: &[Entry],
-	context: &Value,
-) -> Result<()> {
-	agent_prompt_headroom(config, entries, context).map(|_| ())
-}
-pub(crate) fn agent_prompt_headroom(
-	config: &AgentConfig,
-	entries: &[Entry],
-	context: &Value,
-) -> Result<usize> {
-	crate::bootstrap::registry_validation()
-		.agent_prompt_headroom(config, entries, context)
-		.map_err(Into::into)
-}
 pub trait CompactorValidation {
 	fn validate(&self) -> Result<()>;
 }

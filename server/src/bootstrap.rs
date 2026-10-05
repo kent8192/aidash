@@ -1594,12 +1594,6 @@ pub(crate) fn draft_authority_scope<'a>(
 ) -> crate::apps::registry::workbench::repositories::authority::Scope<'a> {
 	crate::apps::registry::workbench::repositories::authority::Scope { tx, actor }
 }
-pub(crate) fn draft_principal(
-	actor: &crate::authorization::identity::Actor,
-) -> aidash_domain::identity::Principal {
-	crate::apps::registry::workbench::repositories::authority::principal(actor)
-}
-
 /// HTTP edits assemble the same repository used by application draft workflows.
 pub(crate) fn draft_repository(
 	runtime: &crate::federation::Federation,

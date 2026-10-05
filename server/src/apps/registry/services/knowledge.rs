@@ -5,9 +5,6 @@ use http::HeaderMap;
 use reinhardt::{db::orm::DatabaseConnection, injectable};
 use serde_json::Value;
 use uuid::Uuid;
-pub(crate) fn validate(documents: &[ReferenceDocument]) -> Result<()> {
-	aidash_domain::registry::knowledge::validate(documents).map_err(Into::into)
-}
 pub async fn load(db: &DatabaseConnection, entry: &Entry) -> Result<Value> {
 	crate::apps::registry::repositories::private_documents(db, entry).await
 }

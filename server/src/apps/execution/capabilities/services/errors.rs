@@ -4,9 +4,6 @@ impl CapabilityError {
 	pub(crate) fn message(status: u16, message: &str) -> Self {
 		aidash_domain::capabilities::errors::CapabilityError::message(status, message).into()
 	}
-	pub(crate) fn stored(value: &Value) -> Option<Self> {
-		aidash_domain::capabilities::errors::CapabilityError::stored(value).map(Into::into)
-	}
 }
 impl From<aidash_domain::capabilities::errors::CapabilityError> for CapabilityError {
 	fn from(v: aidash_domain::capabilities::errors::CapabilityError) -> Self {

@@ -20,8 +20,6 @@ pub mod approvals;
 
 pub mod configuration;
 
-pub mod service;
-
 pub mod sharing;
 
 pub mod errors;

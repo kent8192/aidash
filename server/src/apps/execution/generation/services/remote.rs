@@ -38,11 +38,3 @@ pub(crate) async fn finalize(store: &Store, usage: &Usage, result: &Finalization
 	.await
 	.map_err(Into::into)
 }
-pub(crate) fn verify_receipts(
-	expected: &[Ancestor],
-	receipts: &[Reserved],
-	usage: &Usage,
-) -> Result<()> {
-	aidash_domain::generation::remote::verify_receipts(expected, receipts, usage)
-		.map_err(Into::into)
-}

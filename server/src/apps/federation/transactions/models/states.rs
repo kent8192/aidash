@@ -99,12 +99,3 @@ impl AtomicParticipantPhase {
 		}
 	}
 }
-
-impl AtomicCoordinatorDecision {
-	pub(crate) fn as_str(&self) -> &'static str {
-		match self {
-			Self::Commit => "COMMIT",
-			Self::Abort => "ABORT",
-		}
-	}
-}

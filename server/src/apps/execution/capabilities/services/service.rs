@@ -5,22 +5,11 @@ use crate::{
 };
 use aidash_application::capabilities::files as application;
 use serde_json::Value;
-use uuid::Uuid;
 pub(crate) fn files(area: &Area) -> Result<Vec<FileEntry>> {
 	Ok(serde_json::from_value(area.manifest.clone())?)
 }
 pub(crate) fn available(area: &Area) -> Result<()> {
 	aidash_domain::capabilities::operations::available(&area.state).map_err(Into::into)
-}
-pub(crate) async fn output_file(access: &mut Access, area: &Area, id: Uuid) -> Result<FileEntry> {
-	application::output_file(
-		&mut crate::bootstrap::file_scope(None, access, None),
-		&area.into(),
-		id,
-	)
-	.await
-	.map(Into::into)
-	.map_err(Into::into)
 }
 pub(crate) async fn settings(access: &mut Access, run: &Run) -> Result<AgentConfig> {
 	application::settings(

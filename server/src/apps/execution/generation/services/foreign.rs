@@ -122,10 +122,6 @@ pub(crate) async fn require_active(
 	.map_err(Into::into)
 }
 
-pub(crate) fn check_preparation(task: &Task, generation: Option<&Value>) -> Result<()> {
-	aidash_application::generation::foreign::check_preparation(task, generation).map_err(Into::into)
-}
-
 use http::HeaderMap;
 pub(crate) async fn cancel(f: Federation, actor: Actor, (task, id): (Uuid, Uuid)) -> Result<bool> {
 	aidash_application::generation::foreign::home::cancel(

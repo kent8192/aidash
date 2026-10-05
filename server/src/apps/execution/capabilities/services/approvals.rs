@@ -6,13 +6,6 @@ pub use crate::apps::execution::capabilities::serializers::approvals::{
 use crate::{Result, authorization::access::Access, domain::Run, store::Store};
 use serde_json::Value;
 use uuid::Uuid;
-pub(crate) fn permitted_origin(store: &Store, url: &str) -> Result<(reqwest::Url, String)> {
-	aidash_domain::capabilities::outbound::permitted_origin(
-		url,
-		&store.capabilities.0.outbound_origins,
-	)
-	.map_err(Into::into)
-}
 pub(crate) async fn visible(access: &mut Access, record: &Record) -> Result<bool> {
 	let mut scope = crate::bootstrap::approval_scope(None, access, None);
 	aidash_application::capabilities::approvals::visible(
