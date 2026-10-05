@@ -634,7 +634,7 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
 			.accept_run(&task, &a.f.config.node_id, &agent.id, &agent.version)
 			.await
 			.unwrap();
-	{ let query_bind_1 = run.id; let query_bind_2 = json!({"response":{"text":"one committed result","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0}); sqlx::query(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), reinhardt::query::Expr::cust("'TOOL_CALL'")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![reinhardt::query::Expr::value(query_bind_2.to_owned()).into()])).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![reinhardt::query::Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder))
+	{ let query_bind_1 = run.id; let query_bind_2 = common::tool_pending(json!({"response":{"text":"one committed result","tool_calls":[],"input_tokens":0,"output_tokens":0},"cursor":0})); sqlx::query(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), reinhardt::query::Expr::cust("'TOOL_CALL'")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![reinhardt::query::Expr::value(query_bind_2.to_owned()).into()])).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![reinhardt::query::Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder))
         .execute(&b.f.store.pool)
         .await }
         .unwrap();
@@ -657,7 +657,7 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
 				.value_expr(
 					reinhardt::query::Alias::new("pending"),
 					SimpleExpr::CustomWithExpr(
-						"(JSONB_SET(pending, '{response,tool_calls}', ?))".to_owned(),
+						"(JSONB_SET(pending, '{data,response,tool_calls}', ?))".to_owned(),
 						vec![reinhardt::query::Expr::value(query_bind_2.to_owned()).into()],
 					),
 				)
@@ -689,7 +689,7 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
 				.value_expr(
 					reinhardt::query::Alias::new("pending"),
 					reinhardt::query::Expr::cust(
-						"JSONB_SET(pending, '{response,tool_calls}', CAST('[]' AS JSONB))",
+						"JSONB_SET(pending, '{data,response,tool_calls}', CAST('[]' AS JSONB))",
 					),
 				)
 				.and_where(SimpleExpr::CustomWithExpr(
@@ -703,9 +703,11 @@ async fn registry_workspace_task_execution_and_artifact_commit_together_once(
 	}
 	.unwrap();
 	coordinator::submit(&a.f, &manifest).await.unwrap();
+	let committed = complete(&a, manifest.id).await;
 	assert_eq!(
-		complete(&a, manifest.id).await.decision.as_deref(),
-		Some("COMMIT")
+		committed.decision.as_deref(),
+		Some("COMMIT"),
+		"{committed:?}"
 	);
 	for _ in 0..2 {
 		participant::finish(&a.f, &a.f.config.node_id, &manifest)
