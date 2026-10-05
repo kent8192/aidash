@@ -20,6 +20,8 @@ execution counts for shared source files. An absent or failed partition prevents
 the upload. `CI Success` also requires every partition and the upload separately.
 Bruno runs all 269 endpoints and 935 scenarios in its own required job; only
 sanitized source identity, executable hashes and assertion results are archived.
+Both LLVM export and Codecov exclude test directories, `tests.rs`, and sibling
+`*_tests.rs` modules so those test bodies do not contribute to application coverage.
 
 The isolated capability gate prepares the same extension-enabled PostgreSQL
 fixture before running its library and integration targets. Its Cargo cache is

@@ -42,7 +42,7 @@ if "$coverage"; then
     coverage_file=coverage/rust.lcov
     [[ "$partition" == all ]] || coverage_file="coverage/rust-$partition.lcov"
     CARGO_TARGET_DIR="$coverage_target_dir" cargo llvm-cov --locked "${test_args[@]}" --lcov \
-      --ignore-filename-regex '(/tests/|/migrations/)' --output-path "$coverage_file"
+      --ignore-filename-regex '(/tests/|/migrations/|/([^/]*_)?tests\.rs$)' --output-path "$coverage_file"
     test -s "$coverage_file"
 else
   cargo test --locked "${test_args[@]}"

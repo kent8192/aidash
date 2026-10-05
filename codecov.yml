@@ -21,6 +21,7 @@ flags:
 ignore:
   - "**/tests/**"
   - "**/tests.rs"
+  - "**/*_tests.rs"
   - "server/migrations/**"
   - "openapi/**"
   - "web/src/generated/**"
