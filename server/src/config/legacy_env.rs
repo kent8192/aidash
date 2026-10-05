@@ -89,12 +89,15 @@ fn values(read: impl Fn(&str) -> Option<String>) -> Result<IndexMap<String, Valu
 	for (key, name) in [
 		("namespace", "AIDASH_KUBERNETES_NAMESPACE"),
 		("release", "AIDASH_KUBERNETES_RELEASE"),
+		("endpoint", "AIDASH_KUBERNETES_API"),
+		("ca_file", "AIDASH_KUBERNETES_CA_FILE"),
+		("token_file", "AIDASH_KUBERNETES_TOKEN_FILE"),
 	] {
 		if let Some(value) = read(name) {
 			kubernetes.insert(key.into(), Value::String(value));
 		}
 	}
-	if !kubernetes.is_empty() {
+	if kubernetes.contains_key("namespace") || kubernetes.contains_key("release") {
 		// Helm exports these only on servers with observations enabled. Keep
 		// partial configuration visible so settings validation rejects it.
 		kubernetes.insert("enabled".into(), Value::Bool(true));
@@ -190,6 +193,60 @@ mod tests {
 			settings.validate(&Profile::Development).is_ok(),
 			!enabled || (namespace.is_some() && release.is_some())
 		);
+	}
+
+	#[rstest::rstest]
+	#[case::defaults(None, None, None, true)]
+	#[case::api(Some("https://cluster.example.test"), None, None, true)]
+	#[case::ca(None, Some("/run/fixture/ca.crt"), None, true)]
+	#[case::token(None, None, Some("/run/fixture/token"), true)]
+	#[case::custom(
+		Some("https://cluster.example.test"),
+		Some("/run/fixture/ca.crt"),
+		Some("/run/fixture/token"),
+		true
+	)]
+	#[case::transport_only(
+		Some("https://cluster.example.test"),
+		Some("/run/fixture/ca.crt"),
+		Some("/run/fixture/token"),
+		false
+	)]
+	fn kubernetes_transport_overrides_preserve_composed_defaults(
+		#[case] endpoint: Option<&str>,
+		#[case] ca_file: Option<&str>,
+		#[case] token_file: Option<&str>,
+		#[case] observations: bool,
+	) {
+		// Arrange: transport-only variables must not enable observations.
+		let data = values(|name| match name {
+			"AIDASH_KUBERNETES_NAMESPACE" => observations.then(|| "fixture".into()),
+			"AIDASH_KUBERNETES_RELEASE" => observations.then(|| "migration".into()),
+			"AIDASH_KUBERNETES_API" => endpoint.map(str::to_owned),
+			"AIDASH_KUBERNETES_CA_FILE" => ca_file.map(str::to_owned),
+			"AIDASH_KUBERNETES_TOKEN_FILE" => token_file.map(str::to_owned),
+			_ => None,
+		})
+		.unwrap();
+		// Act
+		let settings: crate::apps::operations::serializers::settings::KubernetesSettings =
+			serde_json::from_value(data["kubernetes"].clone()).unwrap();
+		// Assert: omitted transport fields retain their in-cluster defaults.
+		assert_eq!(settings.enabled, observations);
+		assert_eq!(
+			settings.endpoint,
+			endpoint.unwrap_or("https://kubernetes.default.svc")
+		);
+		assert_eq!(
+			settings.ca_file,
+			ca_file.unwrap_or("/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
+		);
+		assert_eq!(
+			settings.token_file,
+			token_file.unwrap_or("/var/run/secrets/kubernetes.io/serviceaccount/token")
+		);
+		use reinhardt::conf::settings::{fragment::SettingsValidation, profile::Profile};
+		assert!(settings.validate(&Profile::Development).is_ok());
 	}
 
 	#[rstest::rstest]
