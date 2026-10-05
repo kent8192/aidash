@@ -390,32 +390,35 @@ async fn exchange(
 		return Err(Error::Unauthorized);
 	}
 	let policy = Policy::load()?;
-	let mut tx = f.store.pool.begin().await?;
-	let take = Query::delete()
-		.from_table(table("desktop_handoffs"))
-		.and_where(Expr::col(table("code_hash")).eq(digest(&input.code)))
-		.and_where(Expr::col(table("state")).eq(&input.state))
-		.and_where(
+	let proof = Condition::all()
+		.add(Expr::col(table("code_hash")).eq(digest(&input.code)))
+		.add(Expr::col(table("state")).eq(&input.state))
+		.add(
 			Expr::col(table("challenge"))
 				.eq(URL_SAFE_NO_PAD.encode(Sha256::digest(&input.verifier))),
 		)
-		.and_where(Expr::col(table("redirect_uri")).eq(&input.redirect_uri))
-		.and_where(Expr::col(table("origin")).eq(&config.public_origin))
-		.and_where(Expr::col(table("expires_at")).gt(Expr::cust("clock_timestamp()")))
-		.returning_all()
+		.add(Expr::col(table("redirect_uri")).eq(&input.redirect_uri))
+		.add(Expr::col(table("origin")).eq(&config.public_origin))
+		.add(Expr::col(table("expires_at")).gt(Expr::cust("clock_timestamp()")));
+	let lookup = Query::select()
+		.column(table("browser_session_id"))
+		.from(table("desktop_handoffs"))
+		.cond_where(proof.clone())
 		.to_string(PostgresQueryBuilder);
-	let handoff: Handoff = sqlx::query_as(&take)
-		.fetch_optional(&mut *tx)
+	let browser_id = sqlx::query_scalar::<_, Option<Uuid>>(&lookup)
+		.fetch_optional(&f.store.pool)
 		.await?
+		.flatten()
 		.ok_or(Error::Unauthorized)?;
 	let query = Query::select()
 		.columns(SESSION_COLUMNS.map(table))
 		.from(table("dashboard_sessions"))
-		.and_where(
-			Expr::col(table("id")).eq(handoff.browser_session_id.ok_or(Error::Unauthorized)?),
-		)
+		.and_where(Expr::col(table("id")).eq(browser_id))
 		.to_string(PostgresQueryBuilder);
-	let browser: BrowserSession = sqlx::query_as(&query).fetch_one(&mut *tx).await?;
+	let browser: BrowserSession = sqlx::query_as(&query)
+		.fetch_optional(&f.store.pool)
+		.await?
+		.ok_or(Error::Unauthorized)?;
 	if browser.desktop
 		|| browser.revoked_at.is_some()
 		|| browser.expires_at <= Utc::now()
@@ -424,17 +427,38 @@ async fn exchange(
 		return Err(Error::Unauthorized);
 	}
 	let identity_id = browser.identity_id;
-	let browser_id = browser.id;
+	// Provider validation may perform pooled reads and writes. Finish it before
+	// reserving a transaction connection, even when the pool has only one slot.
 	validate_session_identity(&f, browser).await?;
+	let mut tx = f.store.pool.begin().await?;
 	lock_identity(&mut tx, identity_id, LockType::Share).await?;
+	// Consume the same proof atomically after preflight; concurrent exchanges
+	// still issue at most one session and rejection rolls back consumption.
+	let take = Query::delete()
+		.from_table(table("desktop_handoffs"))
+		.cond_where(proof)
+		.returning_all()
+		.to_string(PostgresQueryBuilder);
+	let handoff: Handoff = sqlx::query_as(&take)
+		.fetch_optional(&mut *tx)
+		.await?
+		.ok_or(Error::Unauthorized)?;
+	if handoff.browser_session_id != Some(browser_id) {
+		return Err(Error::Unauthorized);
+	}
 	let query = Query::select()
 		.columns(SESSION_COLUMNS.map(table))
 		.from(table("dashboard_sessions"))
 		.and_where(Expr::col(table("id")).eq(browser_id))
 		.lock(LockType::Share)
 		.to_string(PostgresQueryBuilder);
-	let browser: BrowserSession = sqlx::query_as(&query).fetch_one(&mut *tx).await?;
-	if browser.revoked_at.is_some()
+	let browser: BrowserSession = sqlx::query_as(&query)
+		.fetch_optional(&mut *tx)
+		.await?
+		.ok_or(Error::Unauthorized)?;
+	if browser.desktop
+		|| browser.identity_id != identity_id
+		|| browser.revoked_at.is_some()
 		|| browser.expires_at <= Utc::now()
 		|| browser.last_activity_at <= Utc::now() - Duration::seconds(config.session_idle_seconds)
 	{
@@ -543,25 +567,29 @@ async fn refresh(State(f): State<Federation>, Json(input): Json<Renewal>) -> Res
 		return Err(Error::Unauthorized);
 	}
 	let policy = Policy::load()?;
-	let mut tx = f.store.pool.begin().await?;
 	let lookup = Query::select()
 		.column(table("session_id"))
 		.from(table("desktop_refresh_credentials"))
 		.and_where(Expr::col(table("token_hash")).eq(digest(&input.refresh_token)))
 		.to_string(PostgresQueryBuilder);
 	let id: Uuid = sqlx::query_scalar(&lookup)
-		.fetch_optional(&mut *tx)
+		.fetch_optional(&f.store.pool)
 		.await?
 		.ok_or(Error::Unauthorized)?;
-	// Session first is the shared lock order for concurrent refresh operations.
+	// Preflight and provider validation use the pool without holding a
+	// transaction connection; locked revalidation follows in identity order.
 	let preflight = Query::select()
 		.columns(SESSION_COLUMNS.map(table))
 		.from(table("dashboard_sessions"))
 		.and_where(Expr::col(table("id")).eq(id))
 		.to_string(PostgresQueryBuilder);
-	let candidate: BrowserSession = sqlx::query_as(&preflight).fetch_one(&f.store.pool).await?;
+	let candidate: BrowserSession = sqlx::query_as(&preflight)
+		.fetch_optional(&f.store.pool)
+		.await?
+		.ok_or(Error::Unauthorized)?;
 	let identity_id = candidate.identity_id;
 	validate_session_identity(&f, candidate).await?;
+	let mut tx = f.store.pool.begin().await?;
 	lock_identity(&mut tx, identity_id, LockType::Share).await?;
 	let query = Query::select()
 		.columns(SESSION_COLUMNS.map(table))
@@ -569,14 +597,24 @@ async fn refresh(State(f): State<Federation>, Json(input): Json<Renewal>) -> Res
 		.and_where(Expr::col(table("id")).eq(id))
 		.lock(LockType::Update)
 		.to_string(PostgresQueryBuilder);
-	let session: BrowserSession = sqlx::query_as(&query).fetch_one(&mut *tx).await?;
+	let session: BrowserSession = sqlx::query_as(&query)
+		.fetch_optional(&mut *tx)
+		.await?
+		.ok_or(Error::Unauthorized)?;
+	if session.identity_id != identity_id {
+		return Err(Error::Unauthorized);
+	}
 	valid_session(&session, false)?;
 	let lookup = Query::select()
 		.column(table("next_hash"))
 		.from(table("desktop_refresh_credentials"))
 		.and_where(Expr::col(table("token_hash")).eq(digest(&input.refresh_token)))
+		.and_where(Expr::col(table("session_id")).eq(id))
 		.to_string(PostgresQueryBuilder);
-	let next: Option<Vec<u8>> = sqlx::query_scalar(&lookup).fetch_one(&mut *tx).await?;
+	let next: Option<Vec<u8>> = sqlx::query_scalar(&lookup)
+		.fetch_optional(&mut *tx)
+		.await?
+		.ok_or(Error::Unauthorized)?;
 	if let Some(next) = next {
 		let current = Query::select()
 			.column(table("session_id"))

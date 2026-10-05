@@ -176,7 +176,7 @@ impl Fixture {
 	}
 	async fn handoff(&self) -> Value {
 		// Seed approved consent so the regression controls the exchange's lock order.
-		let code = "c".repeat(64);
+		let code = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
 		let verifier = "v".repeat(64);
 		let state = "s".repeat(64);
 		let redirect = "http://127.0.0.1:43217/callback";
@@ -309,6 +309,113 @@ async fn logout(app: &Router, token: String) -> u16 {
 	.await
 	.status()
 	.as_u16()
+}
+
+#[rstest::rstest]
+#[case::exchange_fresh("exchange", false)]
+#[case::exchange_provider_revalidation("exchange", true)]
+#[case::exchange_remains_single_use("exchange_reuse", false)]
+#[case::refresh_fresh("refresh", false)]
+#[case::refresh_provider_revalidation("refresh", true)]
+#[tokio::test]
+async fn desktop_authentication_bursts_complete_with_one_pool_connection(
+	#[future(awt)]
+	#[from(test_environment)]
+	environment: Arc<TestEnvironment>,
+	#[case] endpoint: &str,
+	#[case] stale_identity: bool,
+) {
+	let mut fixture = Fixture::new(&environment).await;
+	let mut inputs = Vec::new();
+	if endpoint == "exchange_reuse" {
+		inputs = vec![fixture.handoff().await; 30];
+	} else if endpoint == "exchange" {
+		for _ in 0..30 {
+			inputs.push(fixture.handoff().await);
+		}
+	} else {
+		let (status, tokens) = exchange(&fixture.app(), fixture.handoff().await).await;
+		assert_eq!(status, 200, "{tokens}");
+		let input = json!({"refresh_token": tokens["refresh_token"], "next_token": format!("aidash_refresh_{}", "n".repeat(64))});
+		inputs = vec![input; 30];
+	}
+	if stale_identity {
+		let update = Query::update()
+			.table(Alias::new("dashboard_identities"))
+			.value(
+				Alias::new("last_valid_at"),
+				Expr::cust("clock_timestamp()-interval '2 minutes'"),
+			)
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&update)
+			.execute(&fixture.f.store.pool)
+			.await
+			.unwrap();
+	}
+	// Retain schema initialization but make any nested pool acquisition fail.
+	let pool = fixture
+		.f
+		.store
+		.pool
+		.options()
+		.clone()
+		.max_connections(1)
+		.min_connections(0)
+		.acquire_timeout(std::time::Duration::from_secs(3))
+		.connect_with(fixture.f.store.pool.connect_options().as_ref().clone())
+		.await
+		.unwrap();
+	let old_pool = std::mem::replace(&mut fixture.f.store.pool, pool.clone());
+	fixture.f.registry = aidash::registry::Registry::new(pool.clone(), &fixture.f.config.node_id);
+	old_pool.close().await;
+	let app = fixture.app();
+	let path = if endpoint == "exchange_reuse" {
+		"/auth/desktop/exchange".to_owned()
+	} else {
+		format!("/auth/desktop/{endpoint}")
+	};
+	let responses = tokio::time::timeout(
+		std::time::Duration::from_secs(20),
+		futures_util::future::join_all(
+			inputs
+				.into_iter()
+				.map(|input| request_json(&app, "POST", &path, input)),
+		),
+	)
+	.await
+	.expect("authentication must not deadlock on pool capacity");
+	if endpoint == "exchange_reuse" {
+		assert_eq!(
+			responses
+				.iter()
+				.filter(|(status, _)| *status == 200)
+				.count(),
+			1
+		);
+		assert_eq!(
+			responses
+				.iter()
+				.filter(|(status, _)| *status == 401)
+				.count(),
+			29
+		);
+	} else {
+		for (status, body) in responses {
+			assert_eq!(status, 200, "{endpoint}: {body}");
+		}
+	}
+	// Unrelated database work can still borrow the sole connection afterward.
+	let probe = Query::select()
+		.expr(Expr::val(1))
+		.to_string(PostgresQueryBuilder);
+	assert_eq!(
+		sqlx::query_scalar::<_, i32>(&probe)
+			.fetch_one(&pool)
+			.await
+			.unwrap(),
+		1
+	);
+	fixture.cleanup().await;
 }
 
 #[rstest::rstest]
