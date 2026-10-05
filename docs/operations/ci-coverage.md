@@ -25,6 +25,17 @@ The isolated capability gate prepares the same extension-enabled PostgreSQL
 fixture before running its library and integration targets. Its Cargo cache is
 separate from the eight instrumented coverage partitions.
 
+The k3s gate saves images to an owned temporary archive, copies it into the owned
+node, and imports it through containerd's `k8s.io` namespace. Every expected tag
+must then resolve through CRI before acceptance starts. This avoids k3d's Docker
+exec stdin transport, which failed with a closed Docker socket in the
+remote-memory job. [k3d's image import implementation](https://github.com/k3d-io/k3d/blob/v5.9.0/pkg/client/tools.go)
+uses that transport for direct imports; the same error has been reported in
+[k3d issue #1020](https://github.com/k3d-io/k3d/issues/1020). The new path retains
+all import failures and acceptance assertions and cleans its local archive on
+exit; the existing cluster guard owns node cleanup. No new upstream defect is
+inferred from the closed socket alone.
+
 ## Download outage
 
 On 2026-10-05, [CI run 37242692329](https://github.com/kent8192/aidash/actions/runs/37242692329)

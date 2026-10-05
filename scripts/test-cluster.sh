@@ -85,13 +85,7 @@ if [[ "$distribution" == kubernetes ]]; then
   kind load docker-image "${images[@]}" --name "$cluster"
   kind load docker-image "$postgres_image" --name "$cluster"
 else
-  # Avoid tools-node tarball failures, which k3d can report as a successful import.
-  k3d image import "${images[@]}" "$postgres_image" --cluster "$cluster" --mode direct
-  for image in "${images[@]}" "$postgres_image"; do
-    docker exec "k3d-$cluster-server-0" crictl \
-      --runtime-endpoint unix:///run/k3s/containerd/containerd.sock \
-      inspecti "$image" > /dev/null
-  done
+  scripts/import-cluster-images.sh "k3d-$cluster-server-0" "${images[@]}" "$postgres_image"
 fi
 if [[ "$profile" == remote-memory ]]; then
   RUSTC_WRAPPER= cargo run --locked --quiet -p aidash-server --bin manage -- diagnostics remote-memory > "$tools_dir/remote-memory-queries.json"
