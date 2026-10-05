@@ -238,11 +238,25 @@ impl Contracts {
 		document: &mut OpenApiSchema,
 		_endpoint: impl FnOnce() -> E,
 	) -> Result<()> {
+		self.request_content::<E, T>(document, "application/json")
+	}
+	pub fn form<E: EndpointInfo, T: JsonSchema>(
+		&mut self,
+		document: &mut OpenApiSchema,
+		_endpoint: impl FnOnce() -> E,
+	) -> Result<()> {
+		self.request_content::<E, T>(document, "application/x-www-form-urlencoded")
+	}
+	fn request_content<E: EndpointInfo, T: JsonSchema>(
+		&mut self,
+		document: &mut OpenApiSchema,
+		media_type: &str,
+	) -> Result<()> {
 		let schema = self.schema::<T>(false)?;
 		self.operation::<E>(document)?.request_body = Some(
 			RequestBodyBuilder::new()
 				.required(Some(Required::True))
-				.content("application/json", MediaType::new(Some(schema)))
+				.content(media_type, MediaType::new(Some(schema)))
 				.build(),
 		);
 		Ok(())

@@ -24,6 +24,41 @@ use reinhardt::rest::openapi::OpenApiSchema;
 use serde_json::Value;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
+	use super::desktop;
+	contracts.response::<_, desktop::Started>(
+		document,
+		views::desktop::start,
+		200,
+		"application/json",
+	)?;
+	contracts.request::<_, desktop::Start>(document, views::desktop::start)?;
+	contracts.response::<_, String>(document, views::desktop::authorize, 200, "text/html")?;
+	contracts.query::<_, desktop::AuthorizationRequest>(document, views::desktop::authorize)?;
+	contracts.empty(document, views::desktop::consent, 307)?;
+	contracts.response_header::<_, String>(
+		document,
+		views::desktop::consent,
+		307,
+		"Location",
+		"Bound loopback callback",
+	)?;
+	contracts.form::<_, desktop::Consent>(document, views::desktop::consent)?;
+	contracts.response::<_, desktop::Tokens>(
+		document,
+		views::desktop::exchange,
+		200,
+		"application/json",
+	)?;
+	contracts.request::<_, desktop::Exchange>(document, views::desktop::exchange)?;
+	contracts.response::<_, desktop::Tokens>(
+		document,
+		views::desktop::refresh,
+		200,
+		"application/json",
+	)?;
+	contracts.request::<_, desktop::Renewal>(document, views::desktop::refresh)?;
+	contracts.empty(document, views::desktop::revoke, 204)?;
+	contracts.request::<_, desktop::Revocation>(document, views::desktop::revoke)?;
 	contracts.response::<_, SessionResponse>(
 		document,
 		views::management::session,

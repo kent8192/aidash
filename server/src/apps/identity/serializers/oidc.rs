@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct Configuration {
 	pub(crate) enabled: bool,
+	pub(crate) desktop_protocol: u8,
 	pub(crate) provider: &'static str,
 	pub(crate) login_url: Option<&'static str>,
 }

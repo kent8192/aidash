@@ -1,6 +1,7 @@
+#[path = "../../execution/tests/support/legacy.rs"]
 mod common;
 
-use aidash::{api, config::OidcConfig, federation::Federation};
+use aidash_server::{config::OidcConfig, federation::Federation};
 use axum::{
 	Json, Router,
 	body::Body,
@@ -16,7 +17,9 @@ use openidconnect::{
 	PrivateSigningKey,
 	core::{CoreJsonWebKeySet, CoreRsaPrivateSigningKey},
 };
-use sea_orm::sea_query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
+use reinhardt::query::{
+	Alias, Expr, ExprTrait, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder,
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::sync::{
@@ -29,7 +32,10 @@ use uuid::Uuid;
 const SUBJECT: &str = "desktop-review-user";
 const SID: &str = "desktop-review-provider-session";
 const ORIGIN: &str = "http://127.0.0.1:8080";
-const PEM: &str = include_str!("fixtures/oidc/signing-test-only.pem");
+const PEM: &str = include_str!(concat!(
+	env!("CARGO_MANIFEST_DIR"),
+	"/src/apps/execution/tests/fixtures/oidc/signing-test-only.pem"
+));
 
 struct Fixture {
 	f: Federation,
@@ -117,14 +123,19 @@ impl Fixture {
 		let insert = Query::insert()
 			.into_table(Alias::new("dashboard_identities"))
 			.columns(["id", "issuer", "subject", "last_valid_at"].map(Alias::new))
-			.values_panic([
-				Expr::val(identity).into(),
-				Expr::val(issuer).into(),
-				Expr::val(SUBJECT).into(),
-				Expr::cust("clock_timestamp()"),
-			])
+			.from_subquery(
+				Query::select()
+					.expr(Expr::val(identity))
+					.expr(Expr::val(issuer))
+					.expr(Expr::val(SUBJECT))
+					.expr(Expr::cust("clock_timestamp()"))
+					.to_owned(),
+			)
 			.to_string(PostgresQueryBuilder);
-		sqlx::query(&insert).execute(&f.store.pool).await.unwrap();
+		sqlx::query(&insert)
+			.execute(f.store.pool.driver())
+			.await
+			.unwrap();
 		let insert = Query::insert()
 			.into_table(Alias::new("dashboard_sessions"))
 			.columns(
@@ -140,18 +151,23 @@ impl Fixture {
 				]
 				.map(Alias::new),
 			)
-			.values_panic([
-				Expr::val(browser).into(),
-				Expr::val(identity).into(),
-				Expr::val(Sha256::digest(b"review-browser").to_vec()).into(),
-				Expr::val(Sha256::digest(b"review-csrf").to_vec()).into(),
-				Expr::cust("clock_timestamp()"),
-				Expr::cust("clock_timestamp()"),
-				Expr::cust("clock_timestamp()+interval '12 hours'"),
-				Expr::val(SID).into(),
-			])
+			.from_subquery(
+				Query::select()
+					.expr(Expr::val(browser))
+					.expr(Expr::val(identity))
+					.expr(Expr::val(Sha256::digest(b"review-browser").to_vec()))
+					.expr(Expr::val(Sha256::digest(b"review-csrf").to_vec()))
+					.expr(Expr::cust("clock_timestamp()"))
+					.expr(Expr::cust("clock_timestamp()"))
+					.expr(Expr::cust("clock_timestamp()+interval '12 hours'"))
+					.expr(Expr::val(SID))
+					.to_owned(),
+			)
 			.to_string(PostgresQueryBuilder);
-		sqlx::query(&insert).execute(&f.store.pool).await.unwrap();
+		sqlx::query(&insert)
+			.execute(f.store.pool.driver())
+			.await
+			.unwrap();
 		Self {
 			f,
 			url,
@@ -162,18 +178,18 @@ impl Fixture {
 			server,
 		}
 	}
-	fn app(&self) -> Router {
-		api::router_with_settings(
+	async fn app(&self) -> Router {
+		common::application_with_settings(
 			self.f.clone(),
-			aidash::http::Settings {
+			aidash_server::http::Settings {
 				auth_burst: 10000,
 				..Default::default()
 			},
 		)
-		.layer(axum::Extension(axum::extract::ConnectInfo(
-			"127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
-		)))
+		.await
+		.test_transport()
 	}
+
 	async fn handoff(&self) -> Value {
 		// Seed approved consent so the regression controls the exchange's lock order.
 		let code = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
@@ -203,11 +219,11 @@ impl Fixture {
 				Expr::val(ORIGIN).into(),
 				Expr::val(self.browser).into(),
 				Expr::val(Sha256::digest(&code).to_vec()).into(),
-				Expr::cust("clock_timestamp()+interval '5 minutes'"),
+				Expr::value(chrono::Utc::now() + chrono::Duration::minutes(5)),
 			])
 			.to_string(PostgresQueryBuilder);
 		sqlx::query(&insert)
-			.execute(&self.f.store.pool)
+			.execute(self.f.store.pool.driver())
 			.await
 			.unwrap();
 		json!({"code": code, "state": state, "verifier": verifier, "redirect_uri": redirect})
@@ -242,13 +258,13 @@ impl Fixture {
 		let query = Query::select()
 			.expr(Expr::cust("count(*)"))
 			.from(Alias::new("pg_stat_activity"))
-			.and_where(Expr::col(Alias::new("application_name")).eq(&self.schema))
-			.and_where(Expr::col(Alias::new("wait_event_type")).eq("Lock"))
+			.and_where(Expr::col(Alias::new("application_name")).eq(Expr::value(&self.schema)))
+			.and_where(Expr::col(Alias::new("wait_event_type")).eq(Expr::value("Lock")))
 			.and_where(Expr::col(Alias::new("query")).like(format!("%{fragment}%")))
 			.to_string(PostgresQueryBuilder);
 		tokio::time::timeout(std::time::Duration::from_secs(10), async {
 			while sqlx::query_scalar::<_, i64>(&query)
-				.fetch_one(&self.f.store.pool)
+				.fetch_one(self.f.store.pool.driver())
 				.await
 				.unwrap() == 0
 			{
@@ -334,7 +350,7 @@ async fn desktop_authentication_bursts_complete_with_one_pool_connection(
 			inputs.push(fixture.handoff().await);
 		}
 	} else {
-		let (status, tokens) = exchange(&fixture.app(), fixture.handoff().await).await;
+		let (status, tokens) = exchange(&fixture.app().await, fixture.handoff().await).await;
 		assert_eq!(status, 200, "{tokens}");
 		let input = json!({"refresh_token": tokens["refresh_token"], "next_token": format!("aidash_refresh_{}", "n".repeat(64))});
 		inputs = vec![input; 30];
@@ -342,13 +358,13 @@ async fn desktop_authentication_bursts_complete_with_one_pool_connection(
 	if stale_identity {
 		let update = Query::update()
 			.table(Alias::new("dashboard_identities"))
-			.value(
+			.value_expr(
 				Alias::new("last_valid_at"),
 				Expr::cust("clock_timestamp()-interval '2 minutes'"),
 			)
 			.to_string(PostgresQueryBuilder);
 		sqlx::query(&update)
-			.execute(&fixture.f.store.pool)
+			.execute(fixture.f.store.pool.driver())
 			.await
 			.unwrap();
 	}
@@ -365,10 +381,11 @@ async fn desktop_authentication_bursts_complete_with_one_pool_connection(
 		.connect_with(fixture.f.store.pool.connect_options().as_ref().clone())
 		.await
 		.unwrap();
-	let old_pool = std::mem::replace(&mut fixture.f.store.pool, pool.clone());
-	fixture.f.registry = aidash::registry::Registry::new(pool.clone(), &fixture.f.config.node_id);
+	let old_pool = std::mem::replace(&mut fixture.f.store.pool, pool.clone().into());
+	fixture.f.registry =
+		aidash_server::registry::Registry::new(pool.clone(), &fixture.f.config.node_id).unwrap();
 	old_pool.close().await;
-	let app = fixture.app();
+	let app = fixture.app().await;
 	let path = if endpoint == "exchange_reuse" {
 		"/auth/desktop/exchange".to_owned()
 	} else {
@@ -433,7 +450,7 @@ async fn operator_token_with_desktop_prefix_retains_api_access(
 	if !oidc_enabled {
 		fixture.f.config.oidc = None;
 	}
-	let app = fixture.app();
+	let app = fixture.app().await;
 	let token = format!("Bearer {}", fixture.f.config.api_token);
 	let response = request(
 		&app,
@@ -483,13 +500,13 @@ async fn status_refresh_observes_each_session_idle_lifetime(
 	let fixture = Fixture::new(&environment).await;
 	let update = Query::update()
 		.table(Alias::new("dashboard_sessions"))
-		.value(Alias::new("desktop"), idle.is_some())
-		.value(Alias::new("desktop_idle_seconds"), idle)
-		.value(
+		.value_expr(Alias::new("desktop"), idle.is_some())
+		.value_expr(Alias::new("desktop_idle_seconds"), Expr::value(idle))
+		.value_expr(
 			Alias::new("last_activity_at"),
 			Expr::cust("clock_timestamp()-interval '1 hour'"),
 		)
-		.value(
+		.value_expr(
 			Alias::new("revoked_at"),
 			Expr::val(if revoked {
 				Some(chrono::Utc::now())
@@ -499,33 +516,33 @@ async fn status_refresh_observes_each_session_idle_lifetime(
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&update)
-		.execute(&fixture.f.store.pool)
+		.execute(fixture.f.store.pool.driver())
 		.await
 		.unwrap();
 	let update = Query::update()
 		.table(Alias::new("dashboard_identities"))
-		.value(
+		.value_expr(
 			Alias::new("last_valid_at"),
 			Expr::cust("clock_timestamp()-interval '16 minutes'"),
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&update)
-		.execute(&fixture.f.store.pool)
+		.execute(fixture.f.store.pool.driver())
 		.await
 		.unwrap();
 	let (stop, stopping) = tokio::sync::watch::channel(false);
 	// A queued stop still allows the first refresh pass to finish.
 	stop.send(true).unwrap();
-	aidash::dashboard_auth::refresh_active(fixture.f.clone(), stopping)
+	aidash_server::dashboard_auth::refresh_active(fixture.f.clone(), stopping)
 		.await
 		.unwrap();
 	let query = Query::select()
 		.column(Alias::new("last_valid_at"))
 		.from(Alias::new("dashboard_identities"))
-		.and_where(Expr::col(Alias::new("id")).eq(fixture.identity))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(fixture.identity)))
 		.to_string(PostgresQueryBuilder);
 	let checked: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(&query)
-		.fetch_one(&fixture.f.store.pool)
+		.fetch_one(fixture.f.store.pool.driver())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -543,47 +560,47 @@ async fn saved_desktop_session_retains_outage_grace_after_browser_idle_expiry(
 	environment: Arc<TestEnvironment>,
 ) {
 	let fixture = Fixture::new(&environment).await;
-	let app = fixture.app();
+	let app = fixture.app().await;
 	let (status, tokens) = exchange(&app, fixture.handoff().await).await;
 	assert_eq!(status, 200, "{tokens}");
 	let update = Query::update()
 		.table(Alias::new("dashboard_sessions"))
-		.value(
+		.value_expr(
 			Alias::new("last_activity_at"),
 			Expr::cust("clock_timestamp()-interval '1 hour'"),
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&update)
-		.execute(&fixture.f.store.pool)
+		.execute(fixture.f.store.pool.driver())
 		.await
 		.unwrap();
 	let update = Query::update()
 		.table(Alias::new("dashboard_identities"))
-		.value(
+		.value_expr(
 			Alias::new("last_valid_at"),
 			Expr::cust("clock_timestamp()-interval '16 minutes'"),
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&update)
-		.execute(&fixture.f.store.pool)
+		.execute(fixture.f.store.pool.driver())
 		.await
 		.unwrap();
 	let (stop, stopping) = tokio::sync::watch::channel(false);
 	stop.send(true).unwrap();
-	aidash::dashboard_auth::refresh_active(fixture.f.clone(), stopping)
+	aidash_server::dashboard_auth::refresh_active(fixture.f.clone(), stopping)
 		.await
 		.unwrap();
 	fixture.outage.store(true, Ordering::SeqCst);
 	// Advance past freshness while remaining within the existing outage grace.
 	let update = Query::update()
 		.table(Alias::new("dashboard_identities"))
-		.value(
+		.value_expr(
 			Alias::new("last_valid_at"),
 			Expr::col(Alias::new("last_valid_at")).sub(Expr::cust("interval '2 minutes'")),
 		)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&update)
-		.execute(&fixture.f.store.pool)
+		.execute(fixture.f.store.pool.driver())
 		.await
 		.unwrap();
 	let (status, body) = request_json(&app, "POST", "/auth/desktop/refresh", json!({"refresh_token": tokens["refresh_token"], "next_token": format!("aidash_refresh_{}", "n".repeat(64))})).await;
@@ -604,7 +621,7 @@ async fn backchannel_logout_revokes_a_concurrently_issued_desktop_session(
 ) {
 	let fixture = Fixture::new(&environment).await;
 	let input = fixture.handoff().await;
-	let app = fixture.app();
+	let app = fixture.app().await;
 	let other_session = Uuid::new_v4();
 	let source = Query::select()
 		.expr(Expr::val(other_session))
@@ -615,7 +632,7 @@ async fn backchannel_logout_revokes_a_concurrently_issued_desktop_session(
 		.columns(["csrf_hash", "created_at", "last_activity_at", "expires_at"].map(Alias::new))
 		.expr(Expr::val("other-provider-session"))
 		.from(Alias::new("dashboard_sessions"))
-		.and_where(Expr::col(Alias::new("id")).eq(fixture.browser))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(fixture.browser)))
 		.to_owned();
 	let insert = Query::insert()
 		.into_table(Alias::new("dashboard_sessions"))
@@ -632,19 +649,18 @@ async fn backchannel_logout_revokes_a_concurrently_issued_desktop_session(
 			]
 			.map(Alias::new),
 		)
-		.select_from(source)
-		.unwrap()
+		.from_subquery(source)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&insert)
-		.execute(&fixture.f.store.pool)
+		.execute(fixture.f.store.pool.driver())
 		.await
 		.unwrap();
-	let mut tx = fixture.f.store.pool.begin().await.unwrap();
+	let mut tx = fixture.f.store.pool.driver().begin().await.unwrap();
 	// The exchange obtains identity SHARE before waiting for this browser row.
 	let lock = Query::select()
 		.column(Alias::new("id"))
 		.from(Alias::new("dashboard_sessions"))
-		.and_where(Expr::col(Alias::new("id")).eq(fixture.browser))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(fixture.browser)))
 		.lock(LockType::Update)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&lock).fetch_one(&mut *tx).await.unwrap();
@@ -666,10 +682,10 @@ async fn backchannel_logout_revokes_a_concurrently_issued_desktop_session(
 	let select = Query::select()
 		.column(Alias::new("revoked_at"))
 		.from(Alias::new("dashboard_sessions"))
-		.and_where(Expr::col(Alias::new("id")).eq(other_session))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(other_session)))
 		.to_string(PostgresQueryBuilder);
 	let revoked: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(&select)
-		.fetch_one(&fixture.f.store.pool)
+		.fetch_one(fixture.f.store.pool.driver())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -706,12 +722,12 @@ async fn handoff_cannot_issue_after_backchannel_logout_wins_identity_lock(
 ) {
 	let fixture = Fixture::new(&environment).await;
 	let input = fixture.handoff().await;
-	let app = fixture.app();
-	let mut tx = fixture.f.store.pool.begin().await.unwrap();
+	let app = fixture.app().await;
+	let mut tx = fixture.f.store.pool.driver().begin().await.unwrap();
 	let lock = Query::select()
 		.column(Alias::new("id"))
 		.from(Alias::new("dashboard_sessions"))
-		.and_where(Expr::col(Alias::new("id")).eq(fixture.browser))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(fixture.browser)))
 		.lock(LockType::Share)
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&lock).fetch_one(&mut *tx).await.unwrap();

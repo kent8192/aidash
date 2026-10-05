@@ -40,6 +40,7 @@ pub(crate) struct HttpSession {
 	pub id: Uuid,
 	pub identity_id: Uuid,
 	pub idle_seconds: i64,
+	pub access_expires_at: Option<DateTime<Utc>>,
 }
 
 fn digest(token: &str) -> Vec<u8> {
@@ -138,6 +139,7 @@ impl SubjectIdentity {
 				session.id,
 				session.identity_id,
 				session.idle_seconds,
+				session.access_expires_at,
 			)
 			.await?;
 		}
@@ -282,6 +284,9 @@ impl HttpSession {
 		let mut query = Query::select();
 		query.column(Alias::new("id")).from(Alias::new("dashboard_sessions"))
 			.and_where(Expr::cust("id=$1 AND identity_id=$2 AND revoked_at IS NULL AND expires_at>clock_timestamp() AND last_activity_at>clock_timestamp()-$3::bigint*interval '1 second'"));
+		if let Some(expires) = self.access_expires_at {
+			query.and_where(Expr::value(expires).gt(Expr::cust("clock_timestamp()")));
+		}
 		if lock {
 			query.lock(LockType::Share);
 		}

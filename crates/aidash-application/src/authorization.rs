@@ -132,3 +132,5 @@ pub mod home;
 pub mod source;
 
 pub mod dashboard;
+
+pub mod desktop;

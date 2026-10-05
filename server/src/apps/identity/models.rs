@@ -64,3 +64,9 @@ pub use authorization_graph_operator_grants::AuthorizationGraphOperatorGrants;
 pub(crate) use authority::authority_control;
 
 pub mod byte_key;
+
+mod desktop_handoffs;
+pub use desktop_handoffs::DesktopHandoff;
+
+mod desktop_refresh_credentials;
+pub use desktop_refresh_credentials::DesktopRefreshCredential;

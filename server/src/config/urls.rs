@@ -22,6 +22,7 @@ pub fn routes() -> UnifiedRouter {
 		.mount_unified("/", registry::workbench::urls::url_patterns())
 		.mount_unified("/", execution::urls::url_patterns())
 		.with_exception_handler(Arc::new(crate::http::ApiErrors))
+		.with_middleware(identity::services::desktop_cors::DesktopCors)
 		.with_middleware(crate::http::Gateway)
 }
 

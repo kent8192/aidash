@@ -15,3 +15,5 @@ pub use core::*;
 
 pub mod boundary;
 pub(crate) mod dashboard_rules;
+
+pub(crate) mod desktop_cors;

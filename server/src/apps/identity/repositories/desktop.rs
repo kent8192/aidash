@@ -1,15 +1,28 @@
 //! Browser-bound desktop handoffs and revocable, rotating native credentials.
 //! Business authorization remains in the dashboard identity/session path.
-use super::*;
-use axum::{
-	http::StatusCode,
-	response::{Html, IntoResponse, Response},
+use crate::apps::identity::serializers::desktop::*;
+use crate::apps::identity::services::identity;
+use crate::apps::identity::services::oidc::{
+	self, BrowserSession, CSRF_COOKIE, cookie_value, digest, random_secret, required_config,
 };
-use tower_http::cors::CorsLayer;
+use crate::database::native::{Transaction, query as execute_query, query_as, query_scalar};
+use crate::{Error, Result, federation::Federation};
+use aidash_domain::identity::desktop::{ACCESS_PREFIX, REFRESH_PREFIX, Rotation};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use chrono::{DateTime, Duration, Utc};
+use http::{HeaderMap, header};
+use reinhardt::query::{
+	Alias, Condition, Expr, ExprTrait, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder,
+};
+use reinhardt::{Response, StatusCode};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+fn table(name: &str) -> Alias {
+	Alias::new(name)
+}
+const MAX_PENDING_LOGIN_TRANSACTIONS: i64 = 10_000;
 
-const ACCESS_PREFIX: &str = "aidash_desktop_";
-const REFRESH_PREFIX: &str = "aidash_refresh_";
-const SESSION_COLUMNS: [&str; 11] = [
+const SESSION_COLUMNS: [&str; 12] = [
 	"id",
 	"identity_id",
 	"csrf_hash",
@@ -21,6 +34,7 @@ const SESSION_COLUMNS: [&str; 11] = [
 	"access_expires_at",
 	"created_at",
 	"provider_sid",
+	"token_hash",
 ];
 
 struct Policy {
@@ -56,40 +70,6 @@ impl Policy {
 	}
 }
 
-pub(crate) fn cors() -> CorsLayer {
-	// These origins identify bundled UI, not trusted remote websites. Credentials
-	// are explicit Bearer headers; cross-origin browser cookies are never enabled.
-	CorsLayer::new()
-		.allow_origin(
-			[
-				"tauri://localhost",
-				"http://tauri.localhost",
-				"http://127.0.0.1:1420",
-			]
-			.map(|v| v.parse::<header::HeaderValue>().unwrap()),
-		)
-		.allow_methods([
-			Method::GET,
-			Method::HEAD,
-			Method::POST,
-			Method::PUT,
-			Method::PATCH,
-			Method::DELETE,
-			Method::OPTIONS,
-		])
-		.allow_headers([
-			header::AUTHORIZATION,
-			header::CONTENT_TYPE,
-			header::HeaderName::from_static("x-aidash-context"),
-			header::HeaderName::from_static("last-event-id"),
-			header::HeaderName::from_static("idempotency-key"),
-		])
-		.expose_headers([
-			header::HeaderName::from_static("x-aidash-event-cursor"),
-			header::HeaderName::from_static("x-aidash-next-offset"),
-		])
-}
-
 pub(crate) fn access_token(headers: &HeaderMap) -> Option<&str> {
 	let token = headers
 		.get(header::AUTHORIZATION)?
@@ -99,12 +79,6 @@ pub(crate) fn access_token(headers: &HeaderMap) -> Option<&str> {
 	token.starts_with(ACCESS_PREFIX).then_some(token)
 }
 
-fn valid_secret(value: &str) -> bool {
-	(43..=128).contains(&value.len())
-		&& value
-			.bytes()
-			.all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b))
-}
 fn callback_url(value: &str) -> Result<reqwest::Url> {
 	let url = reqwest::Url::parse(value)
 		.map_err(|_| Error::Invalid("invalid desktop callback".into()))?;
@@ -124,56 +98,24 @@ fn callback_url(value: &str) -> Result<reqwest::Url> {
 	Ok(url)
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Start {
-	redirect_uri: String,
-	state: String,
-	code_challenge: String,
-}
-#[derive(Serialize)]
-struct Started {
-	authorization_url: String,
-}
-#[derive(FromRow)]
-struct Handoff {
-	id: Uuid,
-	state: String,
-	redirect_uri: String,
-	origin: String,
-	browser_session_id: Option<Uuid>,
-	code_hash: Option<Vec<u8>>,
-	expires_at: DateTime<Utc>,
-}
-async fn start(State(f): State<Federation>, Json(input): Json<Start>) -> Result<Json<Started>> {
+pub(crate) async fn start(f: &Federation, input: Start) -> Result<Started> {
 	let config = required_config(&f)?;
-	callback_url(&input.redirect_uri)?;
-	if !valid_secret(&input.state)
-		|| input.code_challenge.len() != 43
-		|| URL_SAFE_NO_PAD
-			.decode(&input.code_challenge)
-			.map_or(true, |v| v.len() != 32)
-	{
-		return Err(Error::Invalid(
-			"invalid desktop state or S256 challenge".into(),
-		));
-	}
 	let mut tx = f.store.pool.begin().await?;
 	// Serialize bounded admission across replicas using a transaction-owned lock.
 	let lock = Query::select()
 		.expr(Expr::cust("pg_advisory_xact_lock(714234281)"))
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&lock).execute(&mut *tx).await?;
+	execute_query(&lock).execute(&mut *tx).await?;
 	let prune = Query::delete()
 		.from_table(table("desktop_handoffs"))
 		.and_where(Expr::col(table("expires_at")).lt(Expr::cust("clock_timestamp()")))
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&prune).execute(&mut *tx).await?;
+	execute_query(&prune).execute(&mut *tx).await?;
 	let count = Query::select()
 		.expr(Expr::cust("count(*)"))
 		.from(table("desktop_handoffs"))
 		.to_string(PostgresQueryBuilder);
-	let count: i64 = sqlx::query_scalar(&count).fetch_one(&mut *tx).await?;
+	let count: i64 = query_scalar(&count).scalar_one(&mut *tx).await?;
 	if count >= MAX_PENDING_LOGIN_TRANSACTIONS {
 		return Err(Error::RateLimited);
 	}
@@ -191,16 +133,18 @@ async fn start(State(f): State<Federation>, Json(input): Json<Start>) -> Result<
 			]
 			.map(table),
 		)
-		.values_panic([
-			Expr::cust("$1"),
-			Expr::cust("$2"),
-			Expr::cust("$3"),
-			Expr::cust("$4"),
-			Expr::cust("$5"),
-			Expr::cust("clock_timestamp()+interval '5 minutes'"),
-		])
+		.from_subquery(
+			Query::select()
+				.expr(Expr::cust("$1"))
+				.expr(Expr::cust("$2"))
+				.expr(Expr::cust("$3"))
+				.expr(Expr::cust("$4"))
+				.expr(Expr::cust("$5"))
+				.expr(Expr::cust("clock_timestamp()+interval '5 minutes'"))
+				.to_owned(),
+		)
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&insert)
+	execute_query(&insert)
 		.bind(id)
 		.bind(input.state)
 		.bind(input.code_challenge)
@@ -209,17 +153,24 @@ async fn start(State(f): State<Federation>, Json(input): Json<Start>) -> Result<
 		.execute(&mut *tx)
 		.await?;
 	tx.commit().await?;
-	Ok(Json(Started {
+	Ok(Started {
 		authorization_url: format!(
 			"{}/auth/desktop/authorize?request={id}",
 			config.public_origin
 		),
-	}))
+	})
 }
-#[derive(Deserialize)]
-struct AuthorizationRequest {
-	request: Uuid,
+#[derive(serde::Deserialize)]
+struct Handoff {
+	id: Uuid,
+	state: String,
+	redirect_uri: String,
+	origin: String,
+	browser_session_id: Option<Uuid>,
+	code_hash: Option<Vec<u8>>,
+	expires_at: DateTime<Utc>,
 }
+
 fn handoff_query(id: Uuid) -> String {
 	Query::select()
 		.columns(
@@ -236,16 +187,16 @@ fn handoff_query(id: Uuid) -> String {
 			.map(table),
 		)
 		.from(table("desktop_handoffs"))
-		.and_where(Expr::col(table("id")).eq(id))
+		.and_where(Expr::col(table("id")).eq(Expr::value(id)))
 		.to_string(PostgresQueryBuilder)
 }
-async fn authorize(
-	State(f): State<Federation>,
-	jar: CookieJar,
-	QueryParams(input): QueryParams<AuthorizationRequest>,
+pub(crate) async fn authorize(
+	f: &Federation,
+	headers: HeaderMap,
+	input: AuthorizationRequest,
 ) -> Result<Response> {
 	let config = required_config(&f)?;
-	let handoff: Handoff = sqlx::query_as(&handoff_query(input.request))
+	let handoff: Handoff = query_as(&handoff_query(input.request))
 		.fetch_optional(&f.store.pool)
 		.await?
 		.ok_or(Error::Unauthorized)?;
@@ -258,32 +209,33 @@ async fn authorize(
 	let callback_origin = callback_url(&handoff.redirect_uri)?
 		.origin()
 		.ascii_serialization();
-	let session = match session_from_jar(&f, &jar).await {
+	let session = match oidc::browser_session_from_headers(f, &headers).await {
 		Ok(session) => session,
 		Err(Error::Unauthorized) => {
-			return Ok(Redirect::to(&format!(
-				"/auth/login?return_to=%2Fauth%2Fdesktop%2Fauthorize%3Frequest%3D{}",
-				input.request
-			))
-			.into_response());
+			return Ok(
+				Response::new(reinhardt::StatusCode::SEE_OTHER).with_location(&format!(
+					"/auth/login?return_to=%2Fauth%2Fdesktop%2Fauthorize%3Frequest%3D{}",
+					input.request
+				)),
+			);
 		}
 		Err(error) => return Err(error),
 	};
-	let csrf = jar.get(CSRF_COOKIE).ok_or(Error::Unauthorized)?.value();
+	let csrf = cookie_value(&headers, CSRF_COOKIE).ok_or(Error::Unauthorized)?;
 	if digest(csrf) != session.csrf_hash {
 		return Err(Error::Unauthorized);
 	}
 	let bind = Query::update()
 		.table(table("desktop_handoffs"))
-		.value(table("browser_session_id"), session.id)
-		.and_where(Expr::col(table("id")).eq(handoff.id))
+		.value_expr(table("browser_session_id"), Expr::value(session.id))
+		.and_where(Expr::col(table("id")).eq(Expr::value(handoff.id)))
 		.and_where(
 			Expr::col(table("browser_session_id"))
 				.is_null()
-				.or(Expr::col(table("browser_session_id")).eq(session.id)),
+				.or(Expr::col(table("browser_session_id")).eq(Expr::value(session.id))),
 		)
 		.to_string(PostgresQueryBuilder);
-	if sqlx::query(&bind)
+	if execute_query(&bind)
 		.execute(&f.store.pool)
 		.await?
 		.rows_affected()
@@ -299,17 +251,10 @@ async fn authorize(
 		handoff.id,
 		escape(csrf)
 	);
-	Ok((
-		[(
-			header::CONTENT_SECURITY_POLICY,
-			// Chromium checks the form's redirect destination as well as its POST.
-			format!(
-				"default-src 'none'; form-action 'self' {callback_origin}; frame-ancestors 'none'; base-uri 'none'"
-			),
-		)],
-		Html(html),
-	)
-		.into_response())
+	Ok(Response::new(StatusCode::OK)
+        .with_header("Content-Type", "text/html; charset=utf-8")
+        .with_header("Content-Security-Policy", &format!("default-src 'none'; form-action 'self' {callback_origin}; frame-ancestors 'none'; base-uri 'none'"))
+        .with_body(html.into_bytes()))
 }
 fn escape(value: &str) -> String {
 	value
@@ -319,19 +264,13 @@ fn escape(value: &str) -> String {
 		.replace('"', "&quot;")
 		.replace('\'', "&#39;")
 }
-#[derive(Deserialize)]
-struct Consent {
-	request: Uuid,
-	csrf: String,
-}
-async fn consent(
-	State(f): State<Federation>,
+pub(crate) async fn consent(
+	f: &Federation,
 	headers: HeaderMap,
-	jar: CookieJar,
-	Form(input): Form<Consent>,
-) -> Result<Redirect> {
+	input: Consent,
+) -> Result<Response> {
 	let config = required_config(&f)?;
-	let session = session_from_jar(&f, &jar).await?;
+	let session = oidc::browser_session_from_headers(f, &headers).await?;
 	if headers.get(header::ORIGIN).and_then(|v| v.to_str().ok())
 		!= Some(config.public_origin.as_str())
 		|| digest(&input.csrf) != session.csrf_hash
@@ -342,19 +281,19 @@ async fn consent(
 	let code = random_secret();
 	let update = Query::update()
 		.table(table("desktop_handoffs"))
-		.value(table("code_hash"), digest(&code))
-		.value(
+		.value_expr(table("code_hash"), Expr::value(digest(&code)))
+		.value_expr(
 			table("expires_at"),
 			Expr::cust("clock_timestamp()+interval '60 seconds'"),
 		)
-		.and_where(Expr::col(table("id")).eq(input.request))
-		.and_where(Expr::col(table("browser_session_id")).eq(session.id))
+		.and_where(Expr::col(table("id")).eq(Expr::value(input.request)))
+		.and_where(Expr::col(table("browser_session_id")).eq(Expr::value(session.id)))
 		.and_where(Expr::col(table("code_hash")).is_null())
 		.and_where(Expr::col(table("expires_at")).gt(Expr::cust("clock_timestamp()")))
-		.and_where(Expr::col(table("origin")).eq(&config.public_origin))
+		.and_where(Expr::col(table("origin")).eq(Expr::value(config.public_origin.as_str())))
 		.returning_all()
 		.to_string(PostgresQueryBuilder);
-	let handoff: Handoff = sqlx::query_as(&update)
+	let handoff: Handoff = query_as(&update)
 		.fetch_optional(&mut *tx)
 		.await?
 		.ok_or(Error::Unauthorized)?;
@@ -364,58 +303,37 @@ async fn consent(
 		.append_pair("code", &code)
 		.append_pair("state", &handoff.state);
 	tx.commit().await?;
-	Ok(Redirect::to(callback.as_str()))
+	Ok(Response::new(reinhardt::StatusCode::SEE_OTHER).with_location(callback.as_str()))
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Exchange {
-	code: String,
-	state: String,
-	verifier: String,
-	redirect_uri: String,
-}
-#[derive(Serialize)]
-struct Tokens {
-	access_token: String,
-	refresh_token: String,
-	expires_in: i64,
-}
-async fn exchange(
-	State(f): State<Federation>,
-	Json(input): Json<Exchange>,
-) -> Result<Json<Tokens>> {
+pub(crate) async fn exchange(f: &Federation, input: Exchange) -> Result<Tokens> {
 	let config = required_config(&f)?;
-	if !valid_secret(&input.code) || !valid_secret(&input.verifier) {
-		return Err(Error::Unauthorized);
-	}
 	let policy = Policy::load()?;
 	let proof = Condition::all()
-		.add(Expr::col(table("code_hash")).eq(digest(&input.code)))
-		.add(Expr::col(table("state")).eq(&input.state))
-		.add(
-			Expr::col(table("challenge"))
-				.eq(URL_SAFE_NO_PAD.encode(Sha256::digest(&input.verifier))),
-		)
-		.add(Expr::col(table("redirect_uri")).eq(&input.redirect_uri))
-		.add(Expr::col(table("origin")).eq(&config.public_origin))
+		.add(Expr::col(table("code_hash")).eq(Expr::value(digest(&input.code))))
+		.add(Expr::col(table("state")).eq(Expr::value(input.state.as_str())))
+		.add(Expr::col(table("challenge")).eq(Expr::value(
+			URL_SAFE_NO_PAD.encode(Sha256::digest(&input.verifier)),
+		)))
+		.add(Expr::col(table("redirect_uri")).eq(Expr::value(input.redirect_uri.as_str())))
+		.add(Expr::col(table("origin")).eq(Expr::value(config.public_origin.as_str())))
 		.add(Expr::col(table("expires_at")).gt(Expr::cust("clock_timestamp()")));
 	let lookup = Query::select()
 		.column(table("browser_session_id"))
 		.from(table("desktop_handoffs"))
 		.cond_where(proof.clone())
 		.to_string(PostgresQueryBuilder);
-	let browser_id = sqlx::query_scalar::<_, Option<Uuid>>(&lookup)
-		.fetch_optional(&f.store.pool)
+	let browser_id = query_scalar::<Option<Uuid>>(&lookup)
+		.scalar_optional(&f.store.pool)
 		.await?
 		.flatten()
 		.ok_or(Error::Unauthorized)?;
 	let query = Query::select()
 		.columns(SESSION_COLUMNS.map(table))
 		.from(table("dashboard_sessions"))
-		.and_where(Expr::col(table("id")).eq(browser_id))
+		.and_where(Expr::col(table("id")).eq(Expr::value(browser_id)))
 		.to_string(PostgresQueryBuilder);
-	let browser: BrowserSession = sqlx::query_as(&query)
+	let browser: BrowserSession = query_as(&query)
 		.fetch_optional(&f.store.pool)
 		.await?
 		.ok_or(Error::Unauthorized)?;
@@ -426,10 +344,10 @@ async fn exchange(
 	{
 		return Err(Error::Unauthorized);
 	}
-	let identity_id = browser.identity_id;
+	let identity_id = browser.identity_id();
 	// Provider validation may perform pooled reads and writes. Finish it before
 	// reserving a transaction connection, even when the pool has only one slot.
-	validate_session_identity(&f, browser).await?;
+	oidc::validate_session_identity(f, browser).await?;
 	let mut tx = f.store.pool.begin().await?;
 	lock_identity(&mut tx, identity_id, LockType::Share).await?;
 	// Consume the same proof atomically after preflight; concurrent exchanges
@@ -439,7 +357,7 @@ async fn exchange(
 		.cond_where(proof)
 		.returning_all()
 		.to_string(PostgresQueryBuilder);
-	let handoff: Handoff = sqlx::query_as(&take)
+	let handoff: Handoff = query_as(&take)
 		.fetch_optional(&mut *tx)
 		.await?
 		.ok_or(Error::Unauthorized)?;
@@ -449,15 +367,15 @@ async fn exchange(
 	let query = Query::select()
 		.columns(SESSION_COLUMNS.map(table))
 		.from(table("dashboard_sessions"))
-		.and_where(Expr::col(table("id")).eq(browser_id))
+		.and_where(Expr::col(table("id")).eq(Expr::value(browser_id)))
 		.lock(LockType::Share)
 		.to_string(PostgresQueryBuilder);
-	let browser: BrowserSession = sqlx::query_as(&query)
+	let browser: BrowserSession = query_as(&query)
 		.fetch_optional(&mut *tx)
 		.await?
 		.ok_or(Error::Unauthorized)?;
 	if browser.desktop
-		|| browser.identity_id != identity_id
+		|| browser.identity_id() != identity_id
 		|| browser.revoked_at.is_some()
 		|| browser.expires_at <= Utc::now()
 		|| browser.last_activity_at <= Utc::now() - Duration::seconds(config.session_idle_seconds)
@@ -488,21 +406,23 @@ async fn exchange(
 			]
 			.map(table),
 		)
-		.values_panic([
-			Expr::cust("$1"),
-			Expr::cust("$2"),
-			Expr::cust("$3"),
-			Expr::cust("$4"),
-			Expr::cust("clock_timestamp()"),
-			Expr::cust("clock_timestamp()"),
-			Expr::cust("clock_timestamp()+make_interval(secs => $5)"),
-			Expr::val(true).into(),
-			Expr::cust("$6"),
-			Expr::cust("clock_timestamp()+make_interval(secs => $7)"),
-			Expr::cust("$8"),
-		])
+		.from_subquery(
+			Query::select()
+				.expr(Expr::cust("$1"))
+				.expr(Expr::cust("$2"))
+				.expr(Expr::cust("$3"))
+				.expr(Expr::cust("$4"))
+				.expr(Expr::cust("clock_timestamp()"))
+				.expr(Expr::cust("clock_timestamp()"))
+				.expr(Expr::cust("clock_timestamp()+make_interval(secs => $5)"))
+				.expr(Expr::val(true))
+				.expr(Expr::cust("$6"))
+				.expr(Expr::cust("clock_timestamp()+make_interval(secs => $7)"))
+				.expr(Expr::val(browser.provider_sid.clone()))
+				.to_owned(),
+		)
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&insert)
+	execute_query(&insert)
 		.bind(session_id)
 		.bind(identity_id)
 		.bind(digest(&tokens.access_token))
@@ -510,70 +430,55 @@ async fn exchange(
 		.bind(policy.absolute as f64)
 		.bind(policy.idle)
 		.bind(policy.access as f64)
-		.bind(browser.provider_sid)
 		.execute(&mut *tx)
 		.await?;
 	insert_refresh(&mut tx, session_id, &tokens.refresh_token).await?;
 	tx.commit().await?;
-	Ok(Json(tokens))
+	Ok(tokens)
 }
 // Identity-before-session is the shared order with revocation. In particular,
 // all-device logout must finish after a concurrent handoff or prevent its issue.
-pub(super) async fn lock_identity(
-	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-	id: Uuid,
-	lock: LockType,
-) -> Result<()> {
+pub(super) async fn lock_identity(tx: &mut Transaction, id: Uuid, lock: LockType) -> Result<()> {
 	let query = Query::select()
 		.columns(["issuer", "last_valid_at", "disabled_at"].map(table))
 		.from(table("dashboard_identities"))
-		.and_where(Expr::col(table("id")).eq(id))
+		.and_where(Expr::col(table("id")).eq(Expr::value(id)))
 		.lock(lock)
 		.to_string(PostgresQueryBuilder);
-	let validity = sqlx::query_as(&query).fetch_optional(&mut **tx).await?;
+	let validity = query_as(&query)
+		.columns(&["issuer", "last_valid_at", "disabled_at"])
+		.fetch_optional(&mut **tx)
+		.await?;
 	identity::validate_dashboard_status(validity)
 }
-async fn insert_refresh(
-	tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-	session: Uuid,
-	token: &str,
-) -> Result<()> {
+async fn insert_refresh(tx: &mut Transaction, session: Uuid, token: &str) -> Result<()> {
 	let insert = Query::insert()
 		.into_table(table("desktop_refresh_credentials"))
 		.columns(["token_hash", "session_id"].map(table))
-		.values_panic([Expr::cust("$1"), Expr::cust("$2")])
+		.from_subquery(
+			Query::select()
+				.expr(Expr::cust("$1"))
+				.expr(Expr::cust("$2"))
+				.to_owned(),
+		)
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&insert)
+	execute_query(&insert)
 		.bind(digest(token))
 		.bind(session)
 		.execute(&mut **tx)
 		.await?;
 	Ok(())
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Renewal {
-	refresh_token: String,
-	next_token: String,
-}
-async fn refresh(State(f): State<Federation>, Json(input): Json<Renewal>) -> Result<Json<Tokens>> {
+pub(crate) async fn refresh(f: &Federation, input: Renewal) -> Result<Tokens> {
 	required_config(&f)?;
-	if !input.refresh_token.starts_with(REFRESH_PREFIX)
-		|| !input.next_token.starts_with(REFRESH_PREFIX)
-		|| !valid_secret(&input.next_token)
-		|| !valid_secret(&input.refresh_token)
-		|| input.refresh_token == input.next_token
-	{
-		return Err(Error::Unauthorized);
-	}
 	let policy = Policy::load()?;
 	let lookup = Query::select()
 		.column(table("session_id"))
 		.from(table("desktop_refresh_credentials"))
-		.and_where(Expr::col(table("token_hash")).eq(digest(&input.refresh_token)))
+		.and_where(Expr::col(table("token_hash")).eq(Expr::value(digest(&input.refresh_token))))
 		.to_string(PostgresQueryBuilder);
-	let id: Uuid = sqlx::query_scalar(&lookup)
-		.fetch_optional(&f.store.pool)
+	let id: Uuid = query_scalar(&lookup)
+		.scalar_optional(&f.store.pool)
 		.await?
 		.ok_or(Error::Unauthorized)?;
 	// Preflight and provider validation use the pool without holding a
@@ -581,54 +486,57 @@ async fn refresh(State(f): State<Federation>, Json(input): Json<Renewal>) -> Res
 	let preflight = Query::select()
 		.columns(SESSION_COLUMNS.map(table))
 		.from(table("dashboard_sessions"))
-		.and_where(Expr::col(table("id")).eq(id))
+		.and_where(Expr::col(table("id")).eq(Expr::value(id)))
 		.to_string(PostgresQueryBuilder);
-	let candidate: BrowserSession = sqlx::query_as(&preflight)
+	let candidate: BrowserSession = query_as(&preflight)
 		.fetch_optional(&f.store.pool)
 		.await?
 		.ok_or(Error::Unauthorized)?;
-	let identity_id = candidate.identity_id;
-	validate_session_identity(&f, candidate).await?;
+	let identity_id = candidate.identity_id();
+	oidc::validate_session_identity(f, candidate).await?;
 	let mut tx = f.store.pool.begin().await?;
 	lock_identity(&mut tx, identity_id, LockType::Share).await?;
 	let query = Query::select()
 		.columns(SESSION_COLUMNS.map(table))
 		.from(table("dashboard_sessions"))
-		.and_where(Expr::col(table("id")).eq(id))
+		.and_where(Expr::col(table("id")).eq(Expr::value(id)))
 		.lock(LockType::Update)
 		.to_string(PostgresQueryBuilder);
-	let session: BrowserSession = sqlx::query_as(&query)
+	let session: BrowserSession = query_as(&query)
 		.fetch_optional(&mut *tx)
 		.await?
 		.ok_or(Error::Unauthorized)?;
-	if session.identity_id != identity_id {
+	if session.identity_id() != identity_id {
 		return Err(Error::Unauthorized);
 	}
 	valid_session(&session, false)?;
 	let lookup = Query::select()
 		.column(table("next_hash"))
 		.from(table("desktop_refresh_credentials"))
-		.and_where(Expr::col(table("token_hash")).eq(digest(&input.refresh_token)))
-		.and_where(Expr::col(table("session_id")).eq(id))
+		.and_where(Expr::col(table("token_hash")).eq(Expr::value(digest(&input.refresh_token))))
+		.and_where(Expr::col(table("session_id")).eq(Expr::value(id)))
 		.to_string(PostgresQueryBuilder);
-	let next: Option<Vec<u8>> = sqlx::query_scalar(&lookup)
-		.fetch_optional(&mut *tx)
+	let next: Option<Vec<u8>> = query_scalar(&lookup)
+		.scalar_optional(&mut *tx)
 		.await?
 		.ok_or(Error::Unauthorized)?;
 	if let Some(next) = next {
 		let current = Query::select()
 			.column(table("session_id"))
 			.from(table("desktop_refresh_credentials"))
-			.and_where(Expr::col(table("token_hash")).eq(digest(&input.next_token)))
+			.and_where(Expr::col(table("token_hash")).eq(Expr::value(digest(&input.next_token))))
 			.and_where(Expr::col(table("next_hash")).is_null())
-			.and_where(Expr::col(table("session_id")).eq(id))
+			.and_where(Expr::col(table("session_id")).eq(Expr::value(id)))
 			.to_string(PostgresQueryBuilder);
-		let current: Option<Uuid> = sqlx::query_scalar(&current)
-			.fetch_optional(&mut *tx)
-			.await?;
+		let current: Option<Uuid> = query_scalar(&current).scalar_optional(&mut *tx).await?;
 		// Recover a lost response only with BOTH secrets from the same prepared
 		// rotation. Reuse with any other successor revokes the complete family.
-		if next != digest(&input.next_token) || current.is_none() {
+		if aidash_domain::identity::desktop::rotation(
+			Some(&next),
+			&digest(&input.next_token),
+			current.is_some(),
+		) == Rotation::Revoke
+		{
 			revoke(&mut tx, id).await?;
 			tx.commit().await?;
 			return Err(Error::Unauthorized);
@@ -637,10 +545,10 @@ async fn refresh(State(f): State<Federation>, Json(input): Json<Renewal>) -> Res
 		insert_refresh(&mut tx, id, &input.next_token).await?;
 		let update = Query::update()
 			.table(table("desktop_refresh_credentials"))
-			.value(table("next_hash"), digest(&input.next_token))
-			.and_where(Expr::col(table("token_hash")).eq(digest(&input.refresh_token)))
+			.value_expr(table("next_hash"), Expr::value(digest(&input.next_token)))
+			.and_where(Expr::col(table("token_hash")).eq(Expr::value(digest(&input.refresh_token))))
 			.to_string(PostgresQueryBuilder);
-		sqlx::query(&update).execute(&mut *tx).await?;
+		execute_query(&update).execute(&mut *tx).await?;
 	}
 	let tokens = Tokens {
 		access_token: format!("{ACCESS_PREFIX}{}", random_secret()),
@@ -649,59 +557,55 @@ async fn refresh(State(f): State<Federation>, Json(input): Json<Renewal>) -> Res
 	};
 	let update = Query::update()
 		.table(table("dashboard_sessions"))
-		.value(table("token_hash"), digest(&tokens.access_token))
-		.value(
+		.value_expr(
+			table("token_hash"),
+			Expr::value(digest(&tokens.access_token)),
+		)
+		.value_expr(
 			table("access_expires_at"),
 			Expr::cust("clock_timestamp()+make_interval(secs => $1)"),
 		)
-		.and_where(Expr::col(table("id")).eq(id))
+		.and_where(Expr::col(table("id")).eq(Expr::value(id)))
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&update)
+	execute_query(&update)
 		.bind(policy.access as f64)
 		.execute(&mut *tx)
 		.await?;
 	tx.commit().await?;
-	Ok(Json(tokens))
+	Ok(tokens)
 }
-async fn revoke(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, id: Uuid) -> Result<()> {
+async fn revoke(tx: &mut Transaction, id: Uuid) -> Result<()> {
 	let query = Query::update()
 		.table(table("dashboard_sessions"))
-		.value(table("revoked_at"), Expr::cust("clock_timestamp()"))
-		.and_where(Expr::col(table("id")).eq(id))
+		.value_expr(table("revoked_at"), Expr::cust("clock_timestamp()"))
+		.and_where(Expr::col(table("id")).eq(Expr::value(id)))
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&query).execute(&mut **tx).await?;
+	execute_query(&query).execute(&mut **tx).await?;
 	Ok(())
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Revocation {
-	refresh_token: String,
-}
-async fn revoke_refresh(
-	State(f): State<Federation>,
-	Json(input): Json<Revocation>,
-) -> Result<StatusCode> {
+pub(crate) async fn revoke_refresh(f: &Federation, input: Revocation) -> Result<StatusCode> {
 	let lookup = Query::select()
 		.column(table("session_id"))
 		.from(table("desktop_refresh_credentials"))
-		.and_where(Expr::col(table("token_hash")).eq(digest(&input.refresh_token)))
+		.and_where(Expr::col(table("token_hash")).eq(Expr::value(digest(&input.refresh_token))))
 		.to_string(PostgresQueryBuilder);
 	let mut tx = f.store.pool.begin().await?;
-	if let Some(id) = sqlx::query_scalar(&lookup).fetch_optional(&mut *tx).await? {
+	if let Some(id) = query_scalar(&lookup).scalar_optional(&mut *tx).await? {
 		revoke(&mut tx, id).await?;
 	}
 	tx.commit().await?;
 	Ok(StatusCode::NO_CONTENT)
 }
 fn valid_session(session: &BrowserSession, access: bool) -> Result<()> {
-	if !session.desktop
-		|| session.revoked_at.is_some()
-		|| session.expires_at <= Utc::now()
-		|| session.last_activity_at
-			<= Utc::now()
-				- Duration::seconds(session.desktop_idle_seconds.ok_or(Error::Unauthorized)?)
-		|| (access && session.access_expires_at.is_none_or(|v| v <= Utc::now()))
-	{
+	let state = aidash_domain::identity::desktop::Session {
+		desktop: session.desktop,
+		revoked_at: session.revoked_at,
+		expires_at: session.expires_at,
+		last_activity_at: session.last_activity_at,
+		idle_seconds: session.desktop_idle_seconds,
+		access_expires_at: session.access_expires_at,
+	};
+	if !state.current(Utc::now(), access) {
 		return Err(Error::Unauthorized);
 	}
 	Ok(())
@@ -710,24 +614,15 @@ pub(crate) async fn session_record(f: &Federation, token: &str) -> Result<Browse
 	let query = Query::select()
 		.columns(SESSION_COLUMNS.map(table))
 		.from(table("dashboard_sessions"))
-		.and_where(Expr::col(table("token_hash")).eq(digest(token)))
+		.and_where(Expr::col(table("token_hash")).eq(Expr::value(digest(token))))
 		.to_string(PostgresQueryBuilder);
-	let session: BrowserSession = sqlx::query_as(&query)
+	let session: BrowserSession = query_as(&query)
 		.fetch_optional(&f.store.pool)
 		.await?
 		.ok_or(Error::Unauthorized)?;
 	valid_session(&session, true)?;
 	Ok(session)
 }
-pub(super) fn routes() -> Router<Federation> {
-	Router::new()
-		.route("/start", post(start))
-		.route("/authorize", get(authorize).post(consent))
-		.route("/exchange", post(exchange))
-		.route("/refresh", post(refresh))
-		.route("/revoke", post(revoke_refresh))
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -816,7 +711,7 @@ mod tests {
 			let output = std::process::Command::new(std::env::current_exe().unwrap())
 				.args([
 					"--exact",
-					"dashboard_auth::desktop::tests::desktop_policy_enforces_lifetime_bounds",
+					"apps::identity::repositories::desktop::tests::desktop_policy_enforces_lifetime_bounds",
 					"--nocapture",
 				])
 				.env_remove("AIDASH_DESKTOP_ACCESS_SECONDS")
@@ -831,5 +726,34 @@ mod tests {
 			assert!(output.status.success(), "{settings:?}: {stdout}{stderr}");
 			assert!(stdout.contains("1 passed"));
 		}
+	}
+}
+
+crate::native_record!(Handoff {
+	id,
+	state,
+	redirect_uri,
+	origin,
+	browser_session_id,
+	code_hash,
+	expires_at
+});
+
+/// Native transactions enforce the application's validated broker operation.
+pub(crate) struct Repository(pub(crate) Federation);
+#[async_trait::async_trait]
+impl aidash_application::ports::authorization::desktop::DesktopProtocol for Repository {
+	async fn start(&self, input: Start) -> aidash_application::Result<Started> {
+		Ok(start(&self.0, input).await?)
+	}
+	async fn exchange(&self, input: Exchange) -> aidash_application::Result<Tokens> {
+		Ok(exchange(&self.0, input).await?)
+	}
+	async fn refresh(&self, input: Renewal) -> aidash_application::Result<Tokens> {
+		Ok(refresh(&self.0, input).await?)
+	}
+	async fn revoke(&self, input: Revocation) -> aidash_application::Result<()> {
+		revoke_refresh(&self.0, input).await?;
+		Ok(())
 	}
 }

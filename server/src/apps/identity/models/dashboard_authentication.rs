@@ -190,7 +190,7 @@ impl DashboardIdentity {
 				)
 				.and_where(
 					Expr::col((Alias::new("s"), Alias::new("last_activity_at")))
-						.gt(Expr::value(now - Duration::seconds(idle_seconds))),
+						.gt(SimpleExpr::CustomWithExpr("clock_timestamp()-make_interval(secs => coalesce(s.desktop_idle_seconds::double precision,?))".into(), vec![Expr::value(idle_seconds as f64).into()])),
 				)
 				.to_owned();
 			let runs = Query::select()
@@ -281,6 +281,9 @@ impl DashboardSession {
 				.last_activity_at(now)
 				.expires_at(now + Duration::seconds(lifetime))
 				.revoked_at(None)
+				.desktop(false)
+				.desktop_idle_seconds(None)
+				.access_expires_at(None)
 				.finish();
 			Self::objects().create_with_conn(tx, &session).await?;
 			Ok(())
@@ -294,6 +297,15 @@ impl DashboardSession {
 		all_for_identity: bool,
 	) -> Result<()> {
 		db.atomic(async |tx| {
+			if all_for_identity {
+				let (sql, values) = Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("dashboard_identities"))
+					.and_where(Expr::col("id").eq(Expr::value(id)))
+					.lock(LockType::Update)
+					.build(PostgresQueryBuilder);
+				TransactionExecutor::fetch_one(tx, &sql, convert_values(values)).await?;
+			}
 			let now = database_time(tx).await?;
 			let mut rows = Self::objects().filter(Self::field_revoked_at().is_null());
 			rows = if all_for_identity {
@@ -314,8 +326,9 @@ impl DashboardSession {
 		id: Uuid,
 		identity: Uuid,
 		idle_seconds: i64,
+		access_expires_at: Option<DateTime<Utc>>,
 	) -> Result<()> {
-		let (sql, values) = Query::select()
+		let mut current = Query::select()
 			.column(Alias::new("id"))
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
@@ -335,7 +348,11 @@ impl DashboardSession {
 				)),
 			)
 			.lock(LockType::Share)
-			.build(PostgresQueryBuilder);
+			.to_owned();
+		if let Some(expires) = access_expires_at {
+			current.and_where(Expr::value(expires).gt(Expr::cust("clock_timestamp()")));
+		}
+		let (sql, values) = current.build(PostgresQueryBuilder);
 		if TransactionExecutor::fetch_optional(tx, &sql, convert_values(values))
 			.await?
 			.is_none()
@@ -401,6 +418,21 @@ impl DashboardLogoutToken {
 					Expr::col(Alias::new("subject")).eq(reinhardt::query::Expr::value(subject)),
 				);
 			}
+			if let Some(session_id) = sid
+				&& subject.is_none()
+			{
+				let sessions = Query::select()
+					.column(Alias::new("identity_id"))
+					.from(Alias::new("dashboard_sessions"))
+					.and_where(Expr::col("provider_sid").eq(Expr::value(session_id)))
+					.to_owned();
+				identities.and_where(Expr::col("id").in_subquery(sessions));
+			}
+			let mut lock = identities.clone();
+			lock.order_by(Alias::new("id"), reinhardt::query::Order::Asc)
+				.lock(LockType::Update);
+			let (sql, values) = lock.build(PostgresQueryBuilder);
+			TransactionExecutor::fetch_all(tx, &sql, convert_values(values)).await?;
 			let mut update = Query::update();
 			update
 				.table(Alias::new(DashboardSession::table_name()))

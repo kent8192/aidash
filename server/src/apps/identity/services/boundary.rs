@@ -84,17 +84,18 @@ impl AccessBoundary {
 			}
 			Requirement::Authenticated | Requirement::Operator => {}
 		}
-		let actor = if request.headers.contains_key(AUTHORIZATION) {
-			let token = bearer(&request.headers).ok_or(Error::Unauthorized)?;
-			if same_secret(token, &runtime.config.api_token) {
-				Actor::Operator
-			} else {
-				Authorization {
-					pool: runtime.store.pool.clone(),
-				}
-				.authenticate(token)
-				.await?
+		let token = bearer(&request.headers);
+		let actor = if token.is_some_and(|token| same_secret(token, &runtime.config.api_token)) {
+			Actor::Operator
+		} else if request.headers.contains_key(AUTHORIZATION)
+			&& crate::apps::identity::repositories::desktop::access_token(&request.headers)
+				.is_none()
+		{
+			Authorization {
+				pool: runtime.store.pool.clone(),
 			}
+			.authenticate(token.ok_or(Error::Unauthorized)?)
+			.await?
 		} else {
 			if runtime.config.oidc.is_none() {
 				return Err(Error::Unauthorized);

@@ -31,25 +31,25 @@ use uuid::Uuid;
 
 const SESSION_COOKIE: &str = "__Host-aidash-session";
 const LOGIN_COOKIE: &str = "__Host-aidash-login";
-const CSRF_COOKIE: &str = "aidash-csrf";
+pub(crate) const CSRF_COOKIE: &str = "aidash-csrf";
 static BACKCHANNEL_CAPACITY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 
-fn digest(value: &str) -> Vec<u8> {
+pub(crate) fn digest(value: &str) -> Vec<u8> {
 	Sha256::digest(value.as_bytes()).to_vec()
 }
 
-fn random_secret() -> String {
+pub(crate) fn random_secret() -> String {
 	// Two independent UUIDv4 values provide 244 random bits.
 	format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
 
-fn required_config(f: &Federation) -> Result<&OidcConfig> {
+pub(crate) fn required_config(f: &Federation) -> Result<&OidcConfig> {
 	f.config.oidc.as_ref().ok_or(Error::NotFound(
 		"dashboard sign-in is not configured".into(),
 	))
 }
 
-fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+pub(crate) fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 	headers
 		.get(header::COOKIE)?
 		.to_str()
@@ -185,7 +185,8 @@ async fn session_record_from_headers(
 		cookie_value(headers, &cookie_name(SESSION_COOKIE, config)).ok_or(Error::Unauthorized)?;
 	let lease = f.store.orm_connection()?;
 	let session = DashboardSession::from_token(&mut lease.handle(), digest(secret)).await?;
-	if session.revoked_at.is_some()
+	if session.desktop
+		|| session.revoked_at.is_some()
 		|| session.expires_at <= Utc::now()
 		|| session.last_activity_at <= Utc::now() - Duration::seconds(config.session_idle_seconds)
 	{
@@ -195,7 +196,27 @@ async fn session_record_from_headers(
 }
 
 pub async fn session_from_headers(f: &Federation, headers: &HeaderMap) -> Result<BrowserSession> {
+	let session =
+		if let Some(token) = crate::apps::identity::repositories::desktop::access_token(headers) {
+			crate::apps::identity::repositories::desktop::session_record(f, token).await?
+		} else {
+			session_record_from_headers(f, headers).await?
+		};
+	validate_session_identity(f, session).await
+}
+
+pub(crate) async fn browser_session_from_headers(
+	f: &Federation,
+	headers: &HeaderMap,
+) -> Result<BrowserSession> {
 	let session = session_record_from_headers(f, headers).await?;
+	validate_session_identity(f, session).await
+}
+
+pub(crate) async fn validate_session_identity(
+	f: &Federation,
+	session: BrowserSession,
+) -> Result<BrowserSession> {
 	let lease = f.store.orm_connection()?;
 	let identity = DashboardIdentity::find(&mut lease.handle(), session.identity_id()).await?;
 	account_valid(
@@ -216,6 +237,9 @@ pub fn csrf_allowed(
 	session: &BrowserSession,
 	method: &Method,
 ) -> bool {
+	if session.desktop {
+		return crate::apps::identity::repositories::desktop::access_token(headers).is_some();
+	}
 	if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
 		return true;
 	}
@@ -246,7 +270,10 @@ pub async fn actor_from_headers(
 	let http_session = identity::HttpSession {
 		id: session.id,
 		identity_id: session.identity_id(),
-		idle_seconds: config.session_idle_seconds,
+		idle_seconds: session
+			.desktop_idle_seconds
+			.unwrap_or(config.session_idle_seconds),
+		access_expires_at: session.access_expires_at,
 	};
 	if !csrf_allowed(config, headers, &session, method) {
 		return Err(Error::Forbidden);
@@ -341,6 +368,7 @@ impl DashboardSessions {
 		let f = self.runtime.clone();
 		Ok(Configuration {
 			enabled: f.config.oidc.is_some(),
+			desktop_protocol: 1,
 			provider: if f.config.oidc.as_ref().is_none_or(OidcConfig::is_google) {
 				"google"
 			} else {
@@ -600,7 +628,13 @@ impl DashboardSessions {
 	pub(crate) async fn logout(&self, headers: HeaderMap) -> Result<Response> {
 		let f = self.runtime.clone();
 		let config = required_config(&f)?;
-		let session = session_record_from_headers(&f, &headers).await?;
+		let session = if let Some(token) =
+			crate::apps::identity::repositories::desktop::access_token(&headers)
+		{
+			crate::apps::identity::repositories::desktop::session_record(&f, token).await?
+		} else {
+			session_record_from_headers(&f, &headers).await?
+		};
 		if !csrf_allowed(config, &headers, &session, &Method::POST) {
 			return Err(Error::Forbidden);
 		}
@@ -626,7 +660,13 @@ impl DashboardSessions {
 	pub(crate) async fn logout_all(&self, headers: HeaderMap) -> Result<Response> {
 		let f = self.runtime.clone();
 		let config = required_config(&f)?;
-		let session = session_record_from_headers(&f, &headers).await?;
+		let session = if let Some(token) =
+			crate::apps::identity::repositories::desktop::access_token(&headers)
+		{
+			crate::apps::identity::repositories::desktop::session_record(&f, token).await?
+		} else {
+			session_record_from_headers(&f, &headers).await?
+		};
 		if !csrf_allowed(config, &headers, &session, &Method::POST) {
 			return Err(Error::Forbidden);
 		}

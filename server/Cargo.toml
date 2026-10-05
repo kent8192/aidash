@@ -33,6 +33,9 @@ aidash-integrations.workspace = true
 reinhardt = { workspace = true, features = [
   "api-only",
   "uuid",
+  # Work around facade gating until reinhardt-web#6635 exposes middleware-cors.
+  "middleware",
+  "middleware-cors",
   "database",
   "db-postgres",
   "auth",
@@ -111,6 +114,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 cfg_aliases = "0.2"
 
 [dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
 axum-test = "18.7"
 axum = { version = "0.8", features = ["json", "query", "macros"] }
 reinhardt = { workspace = true, features = ["test", "testcontainers"] }
@@ -330,3 +334,11 @@ path = "src/apps/marketplace/tests/marketplace_authorization.rs"
 [[test]]
 name = "composite_keys"
 path = "src/apps/execution/tests/composite_keys.rs"
+
+[[test]]
+name = "desktop_auth"
+path = "src/apps/identity/tests/desktop_auth.rs"
+
+[[test]]
+name = "desktop_review"
+path = "src/apps/identity/tests/desktop_review.rs"

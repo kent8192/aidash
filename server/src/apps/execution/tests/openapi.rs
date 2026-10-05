@@ -61,11 +61,19 @@ fn openapi_describes_authenticated_management_routes_and_streams(document: Value
 	}
 	let mut operation_ids = BTreeSet::new();
 	for (path, operations) in paths {
-		assert!(path.starts_with("/api/") || path.starts_with("/federation/v0.1/"));
+		assert!(
+			path.starts_with("/api/")
+				|| path.starts_with("/federation/v0.1/")
+				|| path.starts_with("/auth/desktop/")
+		);
 		for operation in operations.as_object().unwrap().values() {
 			let id = operation["operationId"].as_str().expect("named operation");
 			assert!(operation_ids.insert(id), "duplicate operation {id}");
-			assert_eq!(operation["security"][0]["bearer_auth"], json!([]));
+			if path.starts_with("/auth/desktop/") {
+				assert_eq!(operation["security"], json!([{}]));
+			} else {
+				assert_eq!(operation["security"][0]["bearer_auth"], json!([]));
+			}
 		}
 	}
 	assert!(document["paths"]["/api/events/stream"]["get"]["responses"]["200"]["content"]["text/event-stream"].is_object());

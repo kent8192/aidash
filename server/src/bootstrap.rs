@@ -1986,3 +1986,10 @@ pub(crate) fn peer_authority(
 pub(crate) fn peer_credentials() -> impl aidash_application::ports::Credentials {
 	PeerCredentials
 }
+
+/// Assemble the desktop broker's native persistence behind its application port.
+pub(crate) fn desktop_protocol(
+	runtime: &Federation,
+) -> impl aidash_application::ports::authorization::desktop::DesktopProtocol {
+	crate::apps::identity::repositories::desktop::Repository(runtime.clone())
+}

@@ -17,3 +17,5 @@ pub mod commands;
 pub mod peer_mapping;
 
 pub mod dashboard;
+
+pub mod desktop;

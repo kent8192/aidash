@@ -27,3 +27,5 @@ pub mod remote_commands;
 
 pub mod provenance;
 pub mod state_management;
+
+pub mod desktop;

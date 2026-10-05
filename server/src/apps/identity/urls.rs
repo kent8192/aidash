@@ -8,6 +8,18 @@ use reinhardt::UnifiedRouter;
 pub fn url_patterns() -> UnifiedRouter {
 	UnifiedRouter::new().server(|server| {
 		server
+			.endpoint(super::views::desktop::start)
+			.with_route_middleware(AccessBoundary::public())
+			.endpoint(super::views::desktop::authorize)
+			.with_route_middleware(AccessBoundary::public())
+			.endpoint(super::views::desktop::consent)
+			.with_route_middleware(AccessBoundary::public())
+			.endpoint(super::views::desktop::exchange)
+			.with_route_middleware(AccessBoundary::public())
+			.endpoint(super::views::desktop::refresh)
+			.with_route_middleware(AccessBoundary::public())
+			.endpoint(super::views::desktop::revoke)
+			.with_route_middleware(AccessBoundary::public())
 			.endpoint(super::views::state_management::get)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::state_management::control)

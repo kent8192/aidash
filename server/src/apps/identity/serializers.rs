@@ -33,3 +33,5 @@ pub mod peer_graph;
 pub mod remote_execution;
 
 pub mod remote_execution_commands;
+
+pub(crate) mod desktop;

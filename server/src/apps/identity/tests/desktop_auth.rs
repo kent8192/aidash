@@ -1,5 +1,6 @@
+#[path = "../../execution/tests/support/legacy.rs"]
 mod common;
-use aidash::{api, config::OidcConfig, federation::Federation};
+use aidash_server::{config::OidcConfig, federation::Federation};
 use axum::{
 	Router,
 	body::{Body, to_bytes},
@@ -8,7 +9,9 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use common::{TestEnvironment, test_environment};
-use sea_orm::sea_query::{Alias, Expr, LockType, PostgresQueryBuilder, Query};
+use reinhardt::query::{
+	Alias, Expr, ExprTrait, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder,
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
@@ -43,7 +46,7 @@ async fn desktop_consent_in_chromium(
 		tokio::process::Command::new("node")
 			.arg(
 				std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-					.join("web/desktop-tests/consent-browser.mjs"),
+					.join("../web/desktop-tests/consent-browser.mjs"),
 			)
 			.arg(origin)
 			.kill_on_drop(true)
@@ -114,20 +117,28 @@ async fn setup(
 	let query = Query::insert()
 		.into_table(Alias::new("dashboard_identities"))
 		.columns(["id", "issuer", "subject", "last_valid_at"].map(Alias::new))
-		.values_panic([
-			Expr::val(identity).into(),
-			Expr::val("https://accounts.google.com").into(),
-			Expr::val("desktop-fixture").into(),
-			Expr::cust("clock_timestamp()"),
-		])
+		.from_subquery(
+			Query::select()
+				.expr(Expr::val(identity))
+				.expr(Expr::val("https://accounts.google.com"))
+				.expr(Expr::val("desktop-fixture"))
+				.expr(Expr::cust("clock_timestamp()"))
+				.to_owned(),
+		)
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&query).execute(&f.store.pool).await.unwrap();
+	sqlx::query(&query)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
 	let query = Query::insert()
 		.into_table(Alias::new("dashboard_operator_grants"))
 		.columns([Alias::new("identity_id")])
-		.values_panic([Expr::val(identity).into()])
+		.from_subquery(Query::select().expr(Expr::val(identity)).to_owned())
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&query).execute(&f.store.pool).await.unwrap();
+	sqlx::query(&query)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
 	let query = Query::insert()
 		.into_table(Alias::new("dashboard_sessions"))
 		.columns(
@@ -142,32 +153,41 @@ async fn setup(
 			]
 			.map(Alias::new),
 		)
-		.values_panic([
-			Expr::val(Uuid::new_v4()).into(),
-			Expr::val(identity).into(),
-			Expr::val(Sha256::digest(b"desktop-browser-fixture").to_vec()).into(),
-			Expr::val(Sha256::digest(b"desktop-csrf").to_vec()).into(),
-			Expr::cust("clock_timestamp()"),
-			Expr::cust("clock_timestamp()"),
-			Expr::cust("clock_timestamp()+interval '12 hours'"),
-		])
+		.from_subquery(
+			Query::select()
+				.expr(Expr::val(Uuid::new_v4()))
+				.expr(Expr::val(identity))
+				.expr(Expr::val(
+					Sha256::digest(b"desktop-browser-fixture").to_vec(),
+				))
+				.expr(Expr::val(Sha256::digest(b"desktop-csrf").to_vec()))
+				.expr(Expr::cust("clock_timestamp()"))
+				.expr(Expr::cust("clock_timestamp()"))
+				.expr(Expr::cust("clock_timestamp()+interval '12 hours'"))
+				.to_owned(),
+		)
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&query).execute(&f.store.pool).await.unwrap();
+	sqlx::query(&query)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
 	let update = Query::update()
 		.table(Alias::new("dashboard_sessions"))
-		.value(Alias::new("provider_sid"), "fixture-provider-session")
+		.value_expr(Alias::new("provider_sid"), "fixture-provider-session")
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&update).execute(&f.store.pool).await.unwrap();
-	let app = api::router_with_settings(
+	sqlx::query(&update)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
+	let app = common::application_with_settings(
 		f.clone(),
-		aidash::http::Settings {
+		aidash_server::http::Settings {
 			auth_burst: 10000,
 			..Default::default()
 		},
 	)
-	.layer(axum::Extension(axum::extract::ConnectInfo(
-		"127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
-	)));
+	.await
+	.test_transport();
 	(f, app, url, schema)
 }
 fn handoff_input() -> Value {
@@ -296,13 +316,12 @@ async fn desktop_handoff_rotation_recovery_and_revocation_preserve_web_sessions(
 	let sid_query = Query::select()
 		.column(Alias::new("provider_sid"))
 		.from(Alias::new("dashboard_sessions"))
-		.and_where(
-			Expr::col(Alias::new("id"))
-				.eq(Uuid::parse_str(session["id"].as_str().unwrap()).unwrap()),
-		)
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(
+			Uuid::parse_str(session["id"].as_str().unwrap()).unwrap(),
+		)))
 		.to_string(PostgresQueryBuilder);
 	let sid: Option<String> = sqlx::query_scalar(&sid_query)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 		.unwrap();
 	assert_eq!(
@@ -356,13 +375,12 @@ async fn desktop_handoff_rotation_recovery_and_revocation_preserve_web_sessions(
 	let activity = Query::select()
 		.column(Alias::new("last_activity_at"))
 		.from(Alias::new("dashboard_sessions"))
-		.and_where(
-			Expr::col(Alias::new("id"))
-				.eq(Uuid::parse_str(session["id"].as_str().unwrap()).unwrap()),
-		)
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(
+			Uuid::parse_str(session["id"].as_str().unwrap()).unwrap(),
+		)))
 		.to_string(PostgresQueryBuilder);
 	let before: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(&activity)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 		.unwrap();
 	let next = format!("aidash_refresh_{}", "d".repeat(64));
@@ -394,7 +412,7 @@ async fn desktop_handoff_rotation_recovery_and_revocation_preserve_web_sessions(
 		StatusCode::OK
 	);
 	let after: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(&activity)
-		.fetch_one(&f.store.pool)
+		.fetch_one(f.store.pool.driver())
 		.await
 		.unwrap();
 	assert_eq!(before, after, "refresh does not manufacture user activity");
@@ -517,13 +535,15 @@ async fn desktop_expiry_and_cors_boundaries(
 		let tokens = login(&app).await;
 		let update = Query::update()
 			.table(Alias::new("dashboard_sessions"))
-			.value(Alias::new(column), Expr::cust(value))
-			.and_where(
-				Expr::col(Alias::new("token_hash"))
-					.eq(Sha256::digest(tokens["access_token"].as_str().unwrap()).to_vec()),
-			)
+			.value_expr(Alias::new(column), Expr::cust(value))
+			.and_where(Expr::col(Alias::new("token_hash")).eq(Expr::value(
+				Sha256::digest(tokens["access_token"].as_str().unwrap()).to_vec(),
+			)))
 			.to_string(PostgresQueryBuilder);
-		sqlx::query(&update).execute(&f.store.pool).await.unwrap();
+		sqlx::query(&update)
+			.execute(f.store.pool.driver())
+			.await
+			.unwrap();
 		assert_eq!(
 			bearer(&app, "GET", "/auth/session", &tokens["access_token"])
 				.await
@@ -628,7 +648,7 @@ async fn desktop_invalid_inputs_preserve_handoffs_and_sessions(
 }
 
 #[rstest::rstest]
-#[case("expires_at", Expr::cust("clock_timestamp()-interval '1 second'"))]
+#[case("expires_at", Expr::cust("clock_timestamp()-interval '1 second'").into())]
 #[case("origin", Expr::val("https://other.example").into())]
 #[case("code_hash", Expr::val(Sha256::digest(b"issued-code").to_vec()).into())]
 #[tokio::test]
@@ -637,16 +657,19 @@ async fn desktop_authorization_rejects_expired_foreign_and_issued_handoffs(
 	#[from(test_environment)]
 	environment: std::sync::Arc<TestEnvironment>,
 	#[case] column: &str,
-	#[case] value: sea_orm::sea_query::SimpleExpr,
+	#[case] value: reinhardt::query::SimpleExpr,
 ) {
 	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
 	let (id, authorize) = start_handoff(&app).await;
 	let update = Query::update()
 		.table(Alias::new("desktop_handoffs"))
-		.value(Alias::new(column), value)
-		.and_where(Expr::col(Alias::new("id")).eq(id))
+		.value_expr(Alias::new(column), value)
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&update).execute(&f.store.pool).await.unwrap();
+	sqlx::query(&update)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
 	json_response(
 		request(
 			&app,
@@ -719,10 +742,12 @@ async fn desktop_authorization_rejects_mismatched_csrf_session_and_disabled_iden
 			]
 			.map(Alias::new),
 		)
-		.select_from(select)
-		.unwrap()
+		.from_subquery(select)
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&insert).execute(&f.store.pool).await.unwrap();
+	sqlx::query(&insert)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
 	json_response(
 		request(
 			&app,
@@ -753,9 +778,12 @@ async fn desktop_authorization_rejects_mismatched_csrf_session_and_disabled_iden
 	);
 	let disable = Query::update()
 		.table(Alias::new("dashboard_identities"))
-		.value(Alias::new("disabled_at"), Expr::cust("clock_timestamp()"))
+		.value_expr(Alias::new("disabled_at"), Expr::cust("clock_timestamp()"))
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&disable).execute(&f.store.pool).await.unwrap();
+	sqlx::query(&disable)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
 	json_response(
 		request(
 			&app,
@@ -799,11 +827,11 @@ async fn desktop_start_limits_pending_handoffs_and_prunes_expired_requests(
 			Expr::val(input["code_challenge"].as_str().unwrap()).into(),
 			Expr::val(input["redirect_uri"].as_str().unwrap()).into(),
 			Expr::val(ORIGIN).into(),
-			Expr::cust("clock_timestamp()+interval '5 minutes'"),
+			Expr::value(chrono::Utc::now() + chrono::Duration::minutes(5)),
 		]);
 	}
 	sqlx::query(&insert.to_string(PostgresQueryBuilder))
-		.execute(&f.store.pool)
+		.execute(f.store.pool.driver())
 		.await
 		.unwrap();
 	let limited = post(&app, "/auth/desktop/start", input.clone()).await;
@@ -811,12 +839,15 @@ async fn desktop_start_limits_pending_handoffs_and_prunes_expired_requests(
 	json_response(limited, 429).await;
 	let expire = Query::update()
 		.table(Alias::new("desktop_handoffs"))
-		.value(
+		.value_expr(
 			Alias::new("expires_at"),
 			Expr::cust("clock_timestamp()-interval '1 second'"),
 		)
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&expire).execute(&f.store.pool).await.unwrap();
+	sqlx::query(&expire)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
 	start_handoff(&app).await;
 	let count = Query::select()
 		.expr(Expr::cust("count(*)"))
@@ -824,7 +855,7 @@ async fn desktop_start_limits_pending_handoffs_and_prunes_expired_requests(
 		.to_string(PostgresQueryBuilder);
 	assert_eq!(
 		sqlx::query_scalar::<_, i64>(&count)
-			.fetch_one(&f.store.pool)
+			.fetch_one(f.store.pool.driver())
 			.await
 			.unwrap(),
 		1,
@@ -835,11 +866,11 @@ async fn desktop_start_limits_pending_handoffs_and_prunes_expired_requests(
 
 #[rstest::rstest]
 #[case("desktop", Expr::val(true).into())]
-#[case("revoked_at", Expr::cust("clock_timestamp()"))]
-#[case("expires_at", Expr::cust("clock_timestamp()-interval '1 second'"))]
+#[case("revoked_at", Expr::cust("clock_timestamp()").into())]
+#[case("expires_at", Expr::cust("clock_timestamp()-interval '1 second'").into())]
 #[case(
 	"last_activity_at",
-	Expr::cust("clock_timestamp()-interval '31 minutes'")
+	Expr::cust("clock_timestamp()-interval '31 minutes'").into()
 )]
 #[tokio::test]
 async fn desktop_exchange_rejects_invalid_browser_sessions(
@@ -847,15 +878,18 @@ async fn desktop_exchange_rejects_invalid_browser_sessions(
 	#[from(test_environment)]
 	environment: std::sync::Arc<TestEnvironment>,
 	#[case] column: &str,
-	#[case] value: sea_orm::sea_query::SimpleExpr,
+	#[case] value: reinhardt::query::SimpleExpr,
 ) {
 	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
 	let exchange = approved_handoff(&app).await;
 	let update = Query::update()
 		.table(Alias::new("dashboard_sessions"))
-		.value(Alias::new(column), value)
+		.value_expr(Alias::new(column), value)
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&update).execute(&f.store.pool).await.unwrap();
+	sqlx::query(&update)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
 	json_response(post(&app, "/auth/desktop/exchange", exchange).await, 401).await;
 	common::cleanup(f, &url, &schema).await;
 }
@@ -869,7 +903,7 @@ async fn desktop_exchange_rechecks_revocation_after_waiting_for_identity(
 ) {
 	let (f, app, url, schema) = setup(&environment, ORIGIN).await;
 	let exchange = approved_handoff(&app).await;
-	let mut tx = f.store.pool.begin().await.unwrap();
+	let mut tx = f.store.pool.driver().begin().await.unwrap();
 	let lock = Query::select()
 		.column(Alias::new("id"))
 		.from(Alias::new("dashboard_identities"))
@@ -884,13 +918,13 @@ async fn desktop_exchange_rechecks_revocation_after_waiting_for_identity(
 	let waiters = Query::select()
 		.expr(Expr::cust("count(*)"))
 		.from(Alias::new("pg_stat_activity"))
-		.and_where(Expr::col(Alias::new("application_name")).eq(&schema))
-		.and_where(Expr::col(Alias::new("wait_event_type")).eq("Lock"))
+		.and_where(Expr::col(Alias::new("application_name")).eq(Expr::value(&schema)))
+		.and_where(Expr::col(Alias::new("wait_event_type")).eq(Expr::value("Lock")))
 		.and_where(Expr::col(Alias::new("query")).like("%dashboard_identities%"))
 		.to_string(PostgresQueryBuilder);
 	tokio::time::timeout(std::time::Duration::from_secs(10), async {
 		while sqlx::query_scalar::<_, i64>(&waiters)
-			.fetch_one(&f.store.pool)
+			.fetch_one(f.store.pool.driver())
 			.await
 			.unwrap() == 0
 		{
@@ -901,7 +935,7 @@ async fn desktop_exchange_rechecks_revocation_after_waiting_for_identity(
 	.expect("exchange must reach the identity lock before revocation");
 	let revoke = Query::update()
 		.table(Alias::new("dashboard_sessions"))
-		.value(Alias::new("revoked_at"), Expr::cust("clock_timestamp()"))
+		.value_expr(Alias::new("revoked_at"), Expr::cust("clock_timestamp()"))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&revoke).execute(&mut *tx).await.unwrap();
 	tx.commit().await.unwrap();
@@ -915,12 +949,15 @@ async fn desktop_exchange_rechecks_revocation_after_waiting_for_identity(
 	.await;
 	let restore = Query::update()
 		.table(Alias::new("dashboard_sessions"))
-		.value(
+		.value_expr(
 			Alias::new("revoked_at"),
 			Expr::val(Option::<chrono::DateTime<chrono::Utc>>::None),
 		)
 		.to_string(PostgresQueryBuilder);
-	sqlx::query(&restore).execute(&f.store.pool).await.unwrap();
+	sqlx::query(&restore)
+		.execute(f.store.pool.driver())
+		.await
+		.unwrap();
 	// Rejection rolls back consumption of the handoff instead of losing it.
 	json_response(post(&app, "/auth/desktop/exchange", exchange).await, 200).await;
 	common::cleanup(f, &url, &schema).await;

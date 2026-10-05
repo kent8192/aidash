@@ -51,6 +51,9 @@ async fn browser_workbench(
 		.last_activity_at(now)
 		.expires_at(now + Duration::hours(12))
 		.revoked_at(None)
+		.desktop(false)
+		.desktop_idle_seconds(None)
+		.access_expires_at(None)
 		.finish();
 	let session = DashboardSession::objects()
 		.create_with_conn(&mut db, &session)

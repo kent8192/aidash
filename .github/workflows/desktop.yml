@@ -4,16 +4,14 @@ on:
     paths:
       - "desktop/**"
       - "web/**"
-      - "src/**"
+      - "crates/**"
+      - "server/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - "scripts/generate-api.sh"
       - "scripts/install-browser.sh"
       - "scripts/test-desktop-browser.sh"
-      - "tests/desktop_auth.rs"
-      - "tests/common.rs"
-      - "tests/fixtures/**"
       - ".github/workflows/desktop.yml"
   workflow_dispatch:
 permissions:

@@ -34,13 +34,13 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	// Act: load every external SQL asset through the native filesystem source.
 	let migrations = FilesystemSource::new(&root).all_migrations().await.unwrap();
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
-	assert_eq!(migrations.len(), 44);
+	assert_eq!(migrations.len(), 46);
 	assert_eq!(
 		migrations
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		8
+		9
 	);
 	let tables = migrations
 		.iter()
@@ -53,7 +53,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			)
 		})
 		.count();
-	assert_eq!(tables, 115);
+	assert_eq!(tables, 117);
 	for migration in migrations.iter().filter(|migration| !migration.state_only) {
 		assert!(migration.database_only);
 		for operation in &migration.operations {
@@ -330,7 +330,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		8
+		9
 	);
 }
 
@@ -556,7 +556,7 @@ async fn local_database_preparation_uses_and_replays_the_native_history(
 	let stdout = String::from_utf8_lossy(&output.stdout);
 	assert!(stdout.contains("Prepared local Aidash database 1."));
 	assert!(stdout.contains("Prepared local Aidash database 2."));
-	assert_eq!(recorded_keys(&fixture.connection).await.len(), 44);
+	assert_eq!(recorded_keys(&fixture.connection).await.len(), 46);
 }
 
 #[rstest]

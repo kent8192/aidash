@@ -25,6 +25,27 @@ pub struct DashboardSession {
 	pub expires_at: DateTime<Utc>,
 	#[field(null = true)]
 	pub revoked_at: Option<DateTime<Utc>>,
+	#[field(default = false)]
+	pub desktop: bool,
+	#[field(null = true)]
+	pub desktop_idle_seconds: Option<i64>,
+	#[field(null = true)]
+	pub access_expires_at: Option<DateTime<Utc>>,
 }
 
 impl DashboardSession {}
+
+crate::native_record!(DashboardSession {
+	id,
+	token_hash,
+	csrf_hash,
+	identity_id,
+	provider_sid,
+	created_at,
+	last_activity_at,
+	expires_at,
+	revoked_at,
+	desktop,
+	desktop_idle_seconds,
+	access_expires_at
+});
