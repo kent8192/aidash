@@ -27,6 +27,13 @@ The isolated capability gate prepares the same extension-enabled PostgreSQL
 fixture before running its library and integration targets. Its Cargo cache is
 separate from the eight instrumented coverage partitions.
 
+The isolated capability job has a sixty-minute limit. Its cold run at
+[`3d05da43`](https://github.com/kent8192/aidash/actions/runs/37337525795/job/111855956903)
+spent eleven minutes building, twenty-one minutes passing all 96 capability
+tests, and three minutes passing all 24 migration tests before reaching scoped
+remote authorization. The former forty-minute limit cancelled that final suite.
+The revised budget retains every target, isolation assertion, and artifact check.
+
 The k3s gate saves images to an owned temporary archive, copies it into the owned
 node, and imports it through containerd's `k8s.io` namespace. Every expected tag
 must then resolve through CRI before acceptance starts. This avoids k3d's Docker
