@@ -131,6 +131,10 @@ fn database(value: &str) -> Result<Value, SourceError> {
 			.map_err(|_| invalid())
 	};
 	let options: std::collections::BTreeMap<_, _> = url.query_pairs().into_owned().collect();
+	// Keep the path encoded while Reinhardt DatabaseConfig::to_url appends name
+	// verbatim. Decoding here reinterprets percent escapes and URL delimiters.
+	// Use a logical name once the framework encodes the database path on output:
+	// https://github.com/kent8192/reinhardt-web/issues/6645
 	Ok(json!({
 		"engine": "postgresql",
 		"name": url.path().strip_prefix('/').unwrap_or(url.path()),
@@ -145,6 +149,30 @@ fn database(value: &str) -> Result<Value, SourceError> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[rstest::rstest]
+	#[case::space("tenant%20db", "tenant db")]
+	#[case::unicode("tenant%E6%97%A5%E6%9C%AC", "tenant日本")]
+	#[case::literal_escape("tenant%252Fdb", "tenant%2Fdb")]
+	#[case::query_delimiter("tenant%3Fdb", "tenant?db")]
+	#[case::fragment_delimiter("tenant%23db", "tenant#db")]
+	fn legacy_database_names_preserve_the_postgresql_driver_target(
+		#[case] path: &str,
+		#[case] expected: &str,
+	) {
+		// Arrange: compose the same native database settings used by CLI/runtime.
+		let input = format!("postgres://fixture:p%40ss@localhost:5433/{path}?sslmode=require");
+		let composed: reinhardt::conf::settings::DatabaseConfig =
+			serde_json::from_value(database(&input).unwrap()).unwrap();
+
+		// Act: parse the exact URL returned by the framework, as the driver does.
+		let options: sqlx::postgres::PgConnectOptions = composed.to_url().parse().unwrap();
+
+		// Assert: the database identity is decoded once, including literal escapes.
+		assert_eq!(options.get_database(), Some(expected));
+		assert_eq!(options.get_username(), "fixture");
+		assert_eq!(options.get_port(), 5433);
+	}
 
 	#[rstest::rstest]
 	fn deployment_variables_preserve_database_credentials_and_options() {
