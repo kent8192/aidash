@@ -212,13 +212,13 @@ impl Fixture {
 				.map(Alias::new),
 			)
 			.values_panic([
-				Expr::val(Uuid::new_v4()).into(),
-				Expr::val(&state).into(),
-				Expr::val(URL_SAFE_NO_PAD.encode(Sha256::digest(&verifier))).into(),
-				Expr::val(redirect).into(),
-				Expr::val(ORIGIN).into(),
-				Expr::val(self.browser).into(),
-				Expr::val(Sha256::digest(&code).to_vec()).into(),
+				Expr::val(Uuid::new_v4()),
+				Expr::val(&state),
+				Expr::val(URL_SAFE_NO_PAD.encode(Sha256::digest(&verifier))),
+				Expr::val(redirect),
+				Expr::val(ORIGIN),
+				Expr::val(self.browser),
+				Expr::val(Sha256::digest(&code).to_vec()),
 				Expr::value(chrono::Utc::now() + chrono::Duration::minutes(5)),
 			])
 			.to_string(PostgresQueryBuilder);

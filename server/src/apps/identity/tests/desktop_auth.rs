@@ -822,11 +822,11 @@ async fn desktop_start_limits_pending_handoffs_and_prunes_expired_requests(
 	);
 	for _ in 0..10_000 {
 		insert.values_panic([
-			Expr::val(Uuid::new_v4()).into(),
-			Expr::val(input["state"].as_str().unwrap()).into(),
-			Expr::val(input["code_challenge"].as_str().unwrap()).into(),
-			Expr::val(input["redirect_uri"].as_str().unwrap()).into(),
-			Expr::val(ORIGIN).into(),
+			Expr::val(Uuid::new_v4()),
+			Expr::val(input["state"].as_str().unwrap()),
+			Expr::val(input["code_challenge"].as_str().unwrap()),
+			Expr::val(input["redirect_uri"].as_str().unwrap()),
+			Expr::val(ORIGIN),
 			Expr::value(chrono::Utc::now() + chrono::Duration::minutes(5)),
 		]);
 	}

@@ -99,7 +99,7 @@ fn callback_url(value: &str) -> Result<reqwest::Url> {
 }
 
 pub(crate) async fn start(f: &Federation, input: Start) -> Result<Started> {
-	let config = required_config(&f)?;
+	let config = required_config(f)?;
 	let mut tx = f.store.pool.begin().await?;
 	// Serialize bounded admission across replicas using a transaction-owned lock.
 	let lock = Query::select()
@@ -195,7 +195,7 @@ pub(crate) async fn authorize(
 	headers: HeaderMap,
 	input: AuthorizationRequest,
 ) -> Result<Response> {
-	let config = required_config(&f)?;
+	let config = required_config(f)?;
 	let handoff: Handoff = query_as(&handoff_query(input.request))
 		.fetch_optional(&f.store.pool)
 		.await?
@@ -269,7 +269,7 @@ pub(crate) async fn consent(
 	headers: HeaderMap,
 	input: Consent,
 ) -> Result<Response> {
-	let config = required_config(&f)?;
+	let config = required_config(f)?;
 	let session = oidc::browser_session_from_headers(f, &headers).await?;
 	if headers.get(header::ORIGIN).and_then(|v| v.to_str().ok())
 		!= Some(config.public_origin.as_str())
@@ -307,7 +307,7 @@ pub(crate) async fn consent(
 }
 
 pub(crate) async fn exchange(f: &Federation, input: Exchange) -> Result<Tokens> {
-	let config = required_config(&f)?;
+	let config = required_config(f)?;
 	let policy = Policy::load()?;
 	let proof = Condition::all()
 		.add(Expr::col(table("code_hash")).eq(Expr::value(digest(&input.code))))
@@ -470,7 +470,7 @@ async fn insert_refresh(tx: &mut Transaction, session: Uuid, token: &str) -> Res
 	Ok(())
 }
 pub(crate) async fn refresh(f: &Federation, input: Renewal) -> Result<Tokens> {
-	required_config(&f)?;
+	required_config(f)?;
 	let policy = Policy::load()?;
 	let lookup = Query::select()
 		.column(table("session_id"))
