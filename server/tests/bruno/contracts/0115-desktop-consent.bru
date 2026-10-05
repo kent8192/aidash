@@ -1,0 +1,29 @@
+meta {
+  name: 0115 desktop-consent - Desktop consent returns the bound callback
+  type: http
+  seq: 49
+}
+
+post {
+  url: {{base_url}}/auth/desktop/authorize
+  body: formUrlEncoded
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Cookie: {{session_cookie}}
+  Origin: {{base_url}}
+  X-Aidash-CSRF: {{csrf}}
+  Content-Type: application/x-www-form-urlencoded
+}
+
+body:form-urlencoded {
+  request: {{desktop_request}}
+  csrf: {{csrf}}
+}
+
+tests {
+  test("Exact HTTP 303", function () { expect(res.getStatus()).to.equal(303); });
+  test("Desktop consent returns the bound callback contract", function () { const callback=res.getHeader("location");expect(callback.split("?")[0]).to.equal("http://127.0.0.1:43217/callback");const params=Object.fromEntries(callback.split("?")[1].split("&").map(pair=>pair.split("=").map(decodeURIComponent)));expect(params.state).to.equal("ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss");expect(params.code).to.match(/^[0-9a-f]{64}$/);bru.setVar("desktop_code",params.code); });
+}

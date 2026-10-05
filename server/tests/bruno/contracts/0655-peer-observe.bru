@@ -1,0 +1,23 @@
+meta {
+  name: 0655 peer-observe - Peer observes only its own execution state
+  type: http
+  seq: 655
+}
+
+get {
+  url: {{base_url}}/federation/v0.1/observe
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{peer_token}}
+  X-Aidash-Node: {{peer_node}}
+  X-Aidash-Protocol: 0.1
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Peer observes only its own execution state contract", function () { expect(res.getBody()).to.be.an("object");expect(JSON.stringify(res.getBody())).not.to.include(bru.getEnvVar("operator_token")); });
+}

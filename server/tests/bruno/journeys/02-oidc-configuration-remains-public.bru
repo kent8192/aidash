@@ -20,6 +20,6 @@ tests {
   });
   test("JSON response contract", function () {
     expect(res.getHeader("content-type")).to.include("application/json");
-    expect(res.getBody()).to.eql({enabled:true,provider:"keycloak",login_url:"/auth/login"});
+    expect(res.getBody()).to.eql({enabled:true,desktop_protocol:1,provider:"keycloak",login_url:"/auth/login"});
   });
 }

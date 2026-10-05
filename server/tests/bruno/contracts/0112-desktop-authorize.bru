@@ -1,0 +1,21 @@
+meta {
+  name: 0112 desktop-authorize - Browser consent binds the handoff
+  type: http
+  seq: 46
+}
+
+get {
+  url: {{desktop_authorize_url}}
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Cookie: {{session_cookie}}
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Browser consent binds the handoff contract", function () { expect(res.getHeader("content-type")).to.include("text/html");expect(String(res.getBody())).to.include(bru.getVar("desktop_request"));expect(res.getHeader("content-security-policy")).to.include("http://127.0.0.1:43217"); });
+}

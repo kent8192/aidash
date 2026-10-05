@@ -1,0 +1,25 @@
+meta {
+  name: 0118 desktop-refresh - Rotate the desktop credential family
+  type: http
+  seq: 52
+}
+
+post {
+  url: {{base_url}}/auth/desktop/refresh
+  body: text
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Content-Type: application/json
+}
+
+body:text {
+  {"refresh_token": "{{desktop_refresh}}", "next_token": "aidash_refresh_nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn"}
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Rotate the desktop credential family contract", function () { expect(res.getBody()).to.have.all.keys("access_token","refresh_token","expires_in");expect(res.getBody().access_token).to.match(/^aidash_desktop_/);expect(res.getBody().refresh_token).to.match(/^aidash_refresh_/);expect(res.getBody().expires_in).to.equal(300);bru.setVar("desktop_access",res.getBody().access_token); });
+}

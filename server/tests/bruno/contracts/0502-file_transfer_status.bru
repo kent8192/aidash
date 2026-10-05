@@ -1,0 +1,22 @@
+meta {
+  name: 0502 file_transfer_status - Application read preserves the typed response contract
+  type: http
+  seq: 502
+}
+
+get {
+  url: {{base_url}}/api/file-transfers/11111111-1111-4111-8111-111111111111
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{contract_token}}
+}
+
+tests {
+  test("Exact HTTP 404", function () { expect(res.getStatus()).to.equal(404); });
+  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |operator_token|peer_token/); });
+  test("Application read preserves the typed response contract contract", function () { expect(res.getHeader("content-type")).to.include("application/json"); });
+}

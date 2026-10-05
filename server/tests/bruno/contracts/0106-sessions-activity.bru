@@ -1,0 +1,23 @@
+meta {
+  name: 0106 sessions-activity - Browser activity records authenticated activity
+  type: http
+  seq: 43
+}
+
+post {
+  url: {{base_url}}/auth/activity
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Cookie: {{session_cookie}}
+  Origin: {{base_url}}
+  X-Aidash-CSRF: {{csrf}}
+}
+
+tests {
+  test("Exact HTTP 204", function () { expect(res.getStatus()).to.equal(204); });
+  test("Browser activity records authenticated activity contract", function () { expect(res.getBody()).to.equal(""); });
+}

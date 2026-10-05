@@ -1,0 +1,29 @@
+meta {
+  name: 0114 desktop-consent - Desktop consent rejects foreign origin
+  type: http
+  seq: 48
+}
+
+post {
+  url: {{base_url}}/auth/desktop/authorize
+  body: formUrlEncoded
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Cookie: {{session_cookie}}
+  Origin: https://untrusted.example
+  X-Aidash-CSRF: {{csrf}}
+  Content-Type: application/x-www-form-urlencoded
+}
+
+body:form-urlencoded {
+  request: {{desktop_request}}
+  csrf: {{csrf}}
+}
+
+tests {
+  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
+}

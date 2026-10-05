@@ -1,0 +1,25 @@
+meta {
+  name: 0121 desktop-revoke - Revoke the rotating desktop credential family
+  type: http
+  seq: 58
+}
+
+post {
+  url: {{base_url}}/auth/desktop/revoke
+  body: text
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Content-Type: application/json
+}
+
+body:text {
+  {"refresh_token": "aidash_refresh_nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn"}
+}
+
+tests {
+  test("Exact HTTP 204", function () { expect(res.getStatus()).to.equal(204); });
+  test("Revoke the rotating desktop credential family contract", function () { expect(res.getBody()).to.equal(""); });
+}

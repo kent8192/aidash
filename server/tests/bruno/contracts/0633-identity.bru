@@ -1,0 +1,20 @@
+meta {
+  name: 0633 identity - Public contract
+  type: http
+  seq: 633
+}
+
+get {
+  url: {{base_url}}/.well-known/aidash
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Public contract contract", function () { expect(res.getHeader("content-type")).to.include("application/json");expect(res.getBody()).to.be.an("object");expect(res.getBody().id).to.equal(bru.getEnvVar("node_id"));expect(res.getBody().protocol_version).to.equal("0.1"); });
+}

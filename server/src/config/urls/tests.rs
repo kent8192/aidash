@@ -2,11 +2,12 @@ use rstest::rstest;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[rstest]
-fn public_http_routes_match_the_committed_api_contract() {
-	// The committed contract is the URL oracle used by the React API client.
+fn native_routes_match_the_committed_http_contract() {
+	// Use the checked-in transport catalog rather than a generated, ignored
+	// OpenAPI artifact so this contract also runs in a fresh checkout.
 	let contract: serde_json::Value = serde_json::from_str(include_str!(concat!(
 		env!("CARGO_MANIFEST_DIR"),
-		"/../openapi/aidash.json"
+		"/tests/bruno/contracts.json"
 	)))
 	.unwrap();
 	let mut registered = BTreeMap::<(String, String), usize>::new();
@@ -19,23 +20,21 @@ fn public_http_routes_match_the_committed_api_contract() {
 		}
 	}
 
-	// Every documented operation must resolve to exactly one native endpoint.
-	let mut checked = 0;
-	for (path, item) in contract["paths"].as_object().unwrap() {
-		for method in [
-			"get", "post", "put", "patch", "delete", "head", "options", "trace",
-		] {
-			if item.get(method).is_some() {
-				let key = (method.to_ascii_uppercase(), path.clone());
-				assert_eq!(registered.get(&key), Some(&1), "route {key:?}");
-				checked += 1;
-			}
-		}
+	// Every transport operation, including SSE, Federation and static HEAD,
+	// must resolve exactly once, without undocumented additional routes.
+	let mut expected = BTreeMap::new();
+	for endpoint in contract.as_array().unwrap() {
+		let key = (
+			endpoint["method"].as_str().unwrap().to_owned(),
+			endpoint["path"].as_str().unwrap().to_owned(),
+		);
+		assert!(
+			expected.insert(key, 1).is_none(),
+			"duplicate catalog endpoint"
+		);
 	}
-	assert!(
-		checked > 0,
-		"the committed API contract must contain operations"
-	);
+	assert_eq!(expected.len(), 269);
+	assert_eq!(registered, expected);
 }
 
 #[rstest]

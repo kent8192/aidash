@@ -6,6 +6,8 @@ composition, authorization, cookies, CSRF, persistence and migrations are real.
 """
 
 import argparse
+from collections import Counter
+from bruno_contracts import load_manifest, inventory
 import base64
 import contextlib
 import hashlib
@@ -279,7 +281,9 @@ def database(args, name):
     # The native history must own extension creation. Avoid inheriting extensions
     # or application objects from a developer's customized template1 database.
     checked(
-        command, input=f'CREATE DATABASE "{name}" TEMPLATE template0;'.encode(), cwd=ROOT
+        command,
+        input=f'CREATE DATABASE "{name}" TEMPLATE template0;'.encode(),
+        cwd=ROOT,
     )
     try:
         yield
@@ -311,12 +315,21 @@ def node(binary, environment, log):
                     child.wait(timeout=10)
 
 
-def wait_for_health(child, base):
+def wait_for_health(child, base, log, environment):
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         if child.poll() is not None:
+            detail = log.read_text(errors="replace")[-3000:]
+            for key, value in environment.items():
+                if (
+                    "SECRET" in key or "TOKEN" in key or key == "DATABASE_URL"
+                ) and value:
+                    detail = detail.replace(value, "<redacted>")
+            detail = re.sub(
+                r"(?:https?|postgres(?:ql)?|nats)://[^\s\"']+", "<url>", detail
+            )
             raise RuntimeError(
-                f"Aidash exited during startup with code {child.returncode}"
+                f"Aidash exited during startup with code {child.returncode}: {detail}"
             )
         try:
             with urllib.request.urlopen(base + "/health", timeout=2) as response:
@@ -328,9 +341,77 @@ def wait_for_health(child, base):
     raise RuntimeError("Aidash startup did not become healthy")
 
 
-def summarize(report, expected):
+class StreamController:
+    """Terminate only the three owned real SSE processes after response headers."""
+
+    def __init__(self, factories):
+        self.factories = factories
+        self.children = {}
+        self.timers = []
+        controller = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def do_POST(self):
+                match = re.fullmatch(r"/drain/([123])", self.path)
+                if not match:
+                    self.send_error(404)
+                    return
+                number = int(match[1]) - 1
+                if number in controller.children:
+                    self.send_error(409)
+                    return
+                # End each real process before starting the next one; ordinary
+                # PostgreSQL limits need not accommodate three idle SSE replicas.
+                for previous in controller.children.values():
+                    previous.wait(timeout=30)
+                child = controller.factories[number]()
+                controller.children[number] = child
+
+                def drain():
+                    if child.poll() is None:
+                        child.send_signal(signal.SIGTERM)
+
+                timer = threading.Timer(2, drain)
+                controller.timers.append(timer)
+                timer.start()
+                self.send_response(204)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        self.origin = f"http://127.0.0.1:{self.server.server_port}"
+        self.thread = threading.Thread(
+            target=self.server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True
+        )
+
+    def __enter__(self):
+        try:
+            self.thread.start()
+        except BaseException:
+            self.server.server_close()
+            raise
+        return self
+
+    def __exit__(self, *_):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+        for timer in self.timers:
+            timer.cancel()
+            timer.join(timeout=5)
+
+
+def summarize(report, expected, scenarios):
     """Publish only names and pass/fail evidence; never headers, URLs or bodies."""
     iterations = json.loads(report.read_text())
+    required_checks = {
+        scenario["name"]: Counter(scenario.get("required_checks", []))
+        for scenario in scenarios
+    }
     requests = []
     for iteration in iterations:
         for result in iteration.get("results", []):
@@ -353,6 +434,11 @@ def summarize(report, expected):
                 and not result.get("skipped")
                 and bool(checks)
                 and all(check["status"] == "pass" for check in checks)
+                and (
+                    not required_checks.get(result["name"])
+                    or Counter(check["name"] for check in checks)
+                    == required_checks[result["name"]]
+                )
             )
             requests.append(
                 {
@@ -362,10 +448,13 @@ def summarize(report, expected):
                     "checks": checks,
                 }
             )
-            if result.get("error"):
+            if (
+                result.get("error")
+                or result.get("response", {}).get("status") == "error"
+            ):
                 # Classify failures without retaining values from URLs, headers,
                 # exception messages or request bodies in published evidence.
-                message = str(result["error"]).lower()
+                message = str(result.get("error", "")).lower()
                 requests[-1]["error_categories"] = [
                     category
                     for category in (
@@ -381,13 +470,35 @@ def summarize(report, expected):
                         "properties",
                         "json",
                         "redirect",
+                        "fixture snapshot unavailable",
                     )
                     if category in message
                 ]
     actual = [request["name"] for request in requests]
-    complete = len(actual) == len(expected) and set(actual) == set(expected)
+    complete = Counter(actual) == Counter(expected)
+    by_name = {request["name"]: request for request in requests}
+    coverage = {}
+    for scenario in scenarios:
+        if scenario["endpoint"]:
+            item = coverage.setdefault(
+                scenario["endpoint"], {"expected": 0, "executed": 0, "passed": 0}
+            )
+            item["expected"] += 1
+            observed = by_name.get(scenario["name"])
+            item["executed"] += observed is not None
+            item["passed"] += bool(observed and observed["passed"])
+    complete = (
+        complete
+        and len(coverage) == 269
+        and all(
+            3 <= item["expected"] <= 10 and item["expected"] == item["executed"]
+            for item in coverage.values()
+        )
+    )
     return {
         "complete": complete,
+        "endpoints": coverage,
+        "endpoint_count": len(coverage),
         "passed": complete and all(request["passed"] for request in requests),
         "expected_requests": len(expected),
         "executed_requests": len(requests),
@@ -400,6 +511,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=pathlib.Path, required=True)
     parser.add_argument("--cli", default="bru")
+    parser.add_argument(
+        "--manage",
+        type=pathlib.Path,
+        help="Native management executable; defaults to the sibling manage binary",
+    )
     parser.add_argument(
         "--postgres-container",
         help="Existing fixture container; otherwise use the project's Compose postgres service",
@@ -444,10 +560,9 @@ def main():
         "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
         "cli_version": checked([cli, "--version"], text=True).stdout.strip(),
     }
-    expected = [
-        re.search(r"^  name: (.+)$", path.read_text(), re.MULTILINE).group(1)
-        for path in sorted(COLLECTION.glob("[0-9]*.bru"))
-    ]
+    routes, scenarios = load_manifest()
+    expected = [scenario["name"] for scenario in scenarios]
+    manage = (args.manage or binary.with_name("manage")).resolve(strict=True)
     (evidence / "source.json").write_text(json.dumps(source, indent=2) + "\n")
     with tempfile.TemporaryDirectory(
         prefix="aidash-bruno-", dir="/tmp"
@@ -474,6 +589,13 @@ def main():
             (settings / "local.toml").write_text("")
             web = private / "web"
             web.mkdir()
+            (web / "index.html").write_text(
+                "<!doctype html><title>Bruno frontend fixture</title><main>Bruno frontend fixture</main>\n"
+            )
+            (web / "assets").mkdir()
+            (web / "assets/probe.txt").write_text("bruno-asset\n")
+            peer_token = secrets.token_urlsafe(32)
+            peer_node = "aidash://bruno-peer-" + run_id
             environment = {
                 key: value
                 for key, value in os.environ.items()
@@ -489,7 +611,8 @@ def main():
                     "AIDASH_ENDPOINT": base,
                     "AIDASH_LISTEN": f"127.0.0.1:{port}",
                     "AIDASH_API_TOKEN": operator,
-                    "AIDASH_API_RATE_BURST": "1000",
+                    "AIDASH_API_RATE_BURST": "10000",
+                    "AIDASH_SECRET_BRUNO_PEER": peer_token,
                     "AIDASH_WEB_DIR": str(web),
                     "AIDASH_OIDC_ISSUER": provider.issuer,
                     "AIDASH_OIDC_CLIENT_ID": "aidash-bruno",
@@ -505,13 +628,90 @@ def main():
             child = resources.enter_context(
                 node(binary, environment, private / "server.log")
             )
-            wait_for_health(child, base)
+            wait_for_health(child, base, private / "server.log", environment)
+            # Peer registration verifies public identity through real HTTP.
+            # The receiver therefore owns a separate database and node identity.
+            peer_database = "aidash_bruno_" + uuid.uuid4().hex[:16]
+            resources.enter_context(database(args, peer_database))
+            with socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                peer_port = listener.getsockname()[1]
+            peer_base = f"http://127.0.0.1:{peer_port}"
+            peer_operator = secrets.token_urlsafe(32)
+            peer_environment = {
+                key: value
+                for key, value in environment.items()
+                if not key.startswith("AIDASH_OIDC_")
+            }
+            peer_environment.update(
+                DATABASE_URL=environment["DATABASE_URL"].rsplit("/", 1)[0]
+                + "/"
+                + peer_database,
+                AIDASH_NODE_ID=peer_node,
+                AIDASH_ENDPOINT=peer_base,
+                AIDASH_LISTEN=f"127.0.0.1:{peer_port}",
+                AIDASH_API_TOKEN=peer_operator,
+                AIDASH_SECRET_BRUNO_MAIN=peer_token,
+            )
+            peer_child = resources.enter_context(
+                node(binary, peer_environment, private / "peer.log")
+            )
+            wait_for_health(
+                peer_child, peer_base, private / "peer.log", peer_environment
+            )
+            urls = checked(
+                [str(manage), "showurls"],
+                cwd=ROOT / "server",
+                env=environment,
+                text=True,
+            )
+            observed = inventory(urls.stdout + urls.stderr)
+            required = Counter((route["method"], route["path"]) for route in routes)
+            if observed != required:
+                raise RuntimeError(
+                    "native showurls inventory differs from the 269-endpoint Bruno catalog"
+                )
+            stream_factories = []
+            stream_bases = []
+            for number in range(1, 4):
+                with socket.socket() as listener:
+                    listener.bind(("127.0.0.1", 0))
+                    stream_port = listener.getsockname()[1]
+                stream_base = f"http://127.0.0.1:{stream_port}"
+                stream_env = {
+                    **environment,
+                    "AIDASH_LISTEN": f"127.0.0.1:{stream_port}",
+                    "AIDASH_ENDPOINT": stream_base,
+                }
+
+                def start_stream(
+                    number=number, stream_env=stream_env, stream_base=stream_base
+                ):
+                    log = private / f"stream-{number}.log"
+                    stream_child = resources.enter_context(
+                        node(binary, stream_env, log)
+                    )
+                    wait_for_health(stream_child, stream_base, log, stream_env)
+                    return stream_child
+
+                stream_factories.append(start_stream)
+                stream_bases.append(stream_base)
+            control = resources.enter_context(StreamController(stream_factories))
             variables = {
                 "base_url": base,
                 "node_id": node_id,
                 "tenant": "bruno-" + run_id,
                 "issuer": provider.issuer,
                 "operator_token": operator,
+                "peer_node": peer_node,
+                "peer_token": peer_token,
+                "peer_base": peer_base,
+                "peer_operator_token": peer_operator,
+                "control_url": control.origin,
+                **{
+                    f"stream_base_{number}": value
+                    for number, value in enumerate(stream_bases, 1)
+                },
             }
             env_file = private / "environment.json"
             env_file.write_text(
@@ -523,7 +723,7 @@ def main():
                                 "name": key,
                                 "value": value,
                                 "enabled": True,
-                                "secret": key == "operator_token",
+                                "secret": key.endswith("_token"),
                             }
                             for key, value in variables.items()
                         ],
@@ -537,12 +737,12 @@ def main():
                     [
                         cli,
                         "run",
+                        "-r",
                         "--env-file",
                         str(env_file),
                         "--disable-cookies",
                         "--sandbox",
                         "safe",
-                        "--bail",
                         "--reporter-skip-all-headers",
                         "--reporter-json",
                         str(report),
@@ -555,10 +755,10 @@ def main():
                     },
                     stdout=output,
                     stderr=output,
-                    timeout=300,
+                    timeout=1800,
                 )
             result = (
-                summarize(report, expected)
+                summarize(report, expected, scenarios)
                 if report.exists()
                 else {
                     "complete": False,

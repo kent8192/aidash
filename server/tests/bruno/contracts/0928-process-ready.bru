@@ -1,0 +1,21 @@
+meta {
+  name: 0928 process-ready - Foreign origin receives the same public contract
+  type: http
+  seq: 928
+}
+
+get {
+  url: {{base_url}}/ready
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Origin: https://untrusted.example
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Foreign origin receives the same public contract contract", function () { expect(res.getBody()).to.equal(""); });
+}

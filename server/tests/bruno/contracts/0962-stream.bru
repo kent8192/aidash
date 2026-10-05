@@ -1,0 +1,26 @@
+meta {
+  name: 0962 stream - Last-Event-ID overrides the query cursor
+  type: http
+  seq: 10002
+}
+
+get {
+  url: {{stream_base_2}}/api/events/stream?after=0
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{contract_token}}
+  Last-Event-ID: {{resume_cursor}}
+}
+
+script:pre-request {
+await bru.sendRequest({method:"POST",url:bru.getEnvVar("control_url")+"/drain/2"});
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Last-Event-ID overrides the query cursor contract", function () { expect(res.getHeader("content-type")).to.include("text/event-stream");expect(res.getHeader("cache-control")).to.equal("no-store");const ids=String(res.getBody()).split("\n").filter(line=>line.startsWith("id: ")).map(line=>Number(line.slice(4)));expect(ids.length).to.be.greaterThan(0);expect(ids).to.eql([...ids].sort((a,b)=>a-b));expect(ids.every(id=>id>Number(bru.getVar("resume_cursor")))).to.equal(true); });
+}
