@@ -88,10 +88,10 @@ else
   scripts/import-cluster-images.sh "k3d-$cluster-server-0" "${images[@]}" "$postgres_image"
 fi
 if [[ "$profile" == remote-memory ]]; then
-  RUSTC_WRAPPER= cargo run --locked --quiet -p aidash-server --bin manage -- diagnostics remote-memory > "$tools_dir/remote-memory-queries.json"
+  docker run --rm --network none --entrypoint manage aidash:cluster-acceptance diagnostics remote-memory > "$tools_dir/remote-memory-queries.json"
   python3 scripts/remote_memory_cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --postgres-image "$postgres_image" --queries "$tools_dir/remote-memory-queries.json"
 elif [[ "$profile" == transactions ]]; then
-  RUSTC_WRAPPER= cargo run --locked --quiet -p aidash-server --bin manage -- diagnostics acceptance > "$tools_dir/transaction-queries.json"
+  docker run --rm --network none --entrypoint manage aidash:cluster-acceptance diagnostics acceptance > "$tools_dir/transaction-queries.json"
   python3 scripts/transaction_cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --postgres-image "$postgres_image" --queries "$tools_dir/transaction-queries.json"
 else
   python3 scripts/cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --frontend-image aidash-frontend:cluster-acceptance --postgres-image "$postgres_image" --dashboard

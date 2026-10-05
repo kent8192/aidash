@@ -59,6 +59,12 @@ new transaction with a different fault selector. This preserves the required
 before/after durable cuts instead of allowing an older controller to complete
 the new transaction outside the selected cut.
 
+Cluster diagnostics run the registered `manage diagnostics` command inside the
+same backend image loaded into the test nodes. The static command requires no
+runtime credentials and uses no network. This avoids compiling a second host
+executable after the Docker build and binds the diagnostic SQL to the tested
+runtime image.
+
 The required Clippy matrix checks each Cargo workspace once: the backend with
 all features, plus the existing desktop and infrastructure observer workspaces.
 Each job has its own Cargo cache and denies warnings. Trunk retains formatting
