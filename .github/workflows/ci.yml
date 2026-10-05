@@ -269,7 +269,7 @@ jobs:
       fail-fast: false
       matrix:
         distribution: [kubernetes, k3s]
-        profile: [platform, transactions, remote-memory]
+        profile: [platform, remote-memory]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -292,6 +292,29 @@ jobs:
             .ignore/platform/aidash-ops-*/
             .ignore/transaction-acceptance/*/
             .ignore/dashboard-deployment-cluster-*.png
+  transaction-cluster:
+    name: Transaction recovery (${{ matrix.distribution }}, ${{ matrix.partition }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        distribution: [kubernetes, k3s]
+        partition: [coordinator, participant, lifecycle]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain
+      - name: Test every selected durable cut and lifecycle repetition
+        run: bash scripts/test-cluster.sh '${{ matrix.distribution }}' transactions '${{ matrix.partition }}'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: transaction-evidence-${{ matrix.distribution }}-${{ matrix.partition }}
+          include-hidden-files: true
+          path: .ignore/transaction-acceptance/*/
+          if-no-files-found: error
   core-runtime:
     name: Core capability isolation and recovery
     runs-on: ubuntu-latest
@@ -331,6 +354,7 @@ jobs:
         bruno,
         acceptance,
         orchestration,
+        transaction-cluster,
         core-runtime,
       ]
     if: always()

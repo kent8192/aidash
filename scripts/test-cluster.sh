@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-distribution="${1:?Usage: scripts/test-cluster.sh kubernetes|k3s [platform|transactions|remote-memory]}"
+distribution="${1:?Usage: scripts/test-cluster.sh kubernetes|k3s [platform|transactions|remote-memory] [coordinator|participant|lifecycle]}"
 case "$distribution" in kubernetes|k3s) ;; *) exit 2 ;; esac
 profile="${2:-platform}"
 case "$profile" in platform|transactions|remote-memory) ;; *) exit 2 ;; esac
+partition="${3:-}"
+if [[ -n "$partition" ]]; then
+  [[ "$profile" == transactions ]] || exit 2
+  case "$partition" in coordinator|participant|lifecycle) ;; *) exit 2 ;; esac
+fi
 tools_dir="$PWD/.ignore/platform/cluster-tools"
 mkdir -p "$tools_dir"
 export PATH="$tools_dir:$PATH"
@@ -92,7 +97,9 @@ if [[ "$profile" == remote-memory ]]; then
   python3 scripts/remote_memory_cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --postgres-image "$postgres_image" --queries "$tools_dir/remote-memory-queries.json"
 elif [[ "$profile" == transactions ]]; then
   docker run --rm --network none --entrypoint manage aidash:cluster-acceptance diagnostics acceptance > "$tools_dir/transaction-queries.json"
-  python3 scripts/transaction_cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --postgres-image "$postgres_image" --queries "$tools_dir/transaction-queries.json"
+  selection=()
+  if [[ -n "$partition" ]]; then selection+=(--partition "$partition"); fi
+  python3 scripts/transaction_cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --postgres-image "$postgres_image" --queries "$tools_dir/transaction-queries.json" "${selection[@]}"
 else
   python3 scripts/cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --frontend-image aidash-frontend:cluster-acceptance --postgres-image "$postgres_image" --dashboard
 fi

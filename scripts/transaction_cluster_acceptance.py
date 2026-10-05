@@ -28,6 +28,36 @@ PHASES = [("coordinator.submit", False), ("coordinator.vote", False),
           ("coordinator.complete", True), ("participant.reserve", False),
           ("participant.prepare", False), ("participant.apply", False),
           ("participant.release", False), ("participant.abort", True)]
+PARTITIONS = ("coordinator", "participant", "lifecycle")
+
+
+def transaction_cases(nodes, repetitions=3, phase=None, lifecycle=None, partition=None):
+    """Keep the complete ordered inventory, or select one disjoint CI partition."""
+    if partition is not None and partition not in PARTITIONS:
+        raise ValueError(f"Unknown transaction partition: {partition}")
+    if partition and (phase or lifecycle):
+        raise ValueError("Select a partition or individual phase/lifecycle cases")
+    result = []
+    for count in nodes:
+        cases = [(name, edge, abort, None) for name, abort in PHASES
+                 for edge in ["before", "after"] if not phase or name == phase]
+        if count != 2 and not phase:
+            cases = [("coordinator.commit", "before", False, "partition"),
+                     ("coordinator.abort", "before", True, "partition")]
+        if not phase:
+            cases += [("coordinator.commit", "before", False, name) for name in ["scale", "rolling"]]
+            if count == 2:
+                cases.append(("coordinator.commit", "before", False, "peer-recovery"))
+        if lifecycle:
+            cases = [case for case in cases if case[3] in lifecycle]
+        if partition == "lifecycle":
+            cases = [case for case in cases if case[3] is not None]
+        elif partition:
+            cases = [case for case in cases if case[3] is None and case[0].startswith(partition + ".")]
+        result += [(count, name, edge, abort, repetition, action)
+                   for name, edge, abort, action in cases
+                   for repetition in range(1, repetitions + 1)]
+    return result
 
 
 def now():
@@ -198,8 +228,9 @@ class Cluster:
             "dirty": dirty, "source_inputs_sha256": identity["sha256"], "distribution": self.args.distribution, "server_version": version,
             "image": self.args.image, "namespace": self.namespace, "started_at": now(),
             "nodes": count, "repetitions": self.args.repetitions,
-            "scope": "selected cases" if self.args.phase or self.args.lifecycle else "transaction process and lifecycle cases",
+            "scope": "selected cases" if self.args.phase or self.args.lifecycle or getattr(self.args, "partition", None) else "transaction process and lifecycle cases",
             "selected_phase": self.args.phase, "selected_lifecycles": self.args.lifecycle,
+            "selected_partition": getattr(self.args, "partition", None),
             "selected_node_counts": self.args.nodes,
             "mixed_version": "not tested; requires a distinct compatible runtime pair"}, indent=2))
         postgres = {"name": "postgres", "image": self.args.postgres_image, "imagePullPolicy": "IfNotPresent",
@@ -465,29 +496,26 @@ def main():
     parser.add_argument("--repetitions", type=int, choices=[3], default=3)
     parser.add_argument("--phase", choices=[phase for phase, _ in PHASES])
     parser.add_argument("--lifecycle", nargs="+", choices=["scale", "rolling", "partition", "peer-recovery"])
+    parser.add_argument("--partition", choices=PARTITIONS)
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args()
     if args.phase and args.lifecycle:
         parser.error("select either phase or lifecycle cases")
+    if args.partition and (args.phase or args.lifecycle):
+        parser.error("select a partition or individual phase/lifecycle cases")
+    cases = transaction_cases(args.nodes, args.repetitions, args.phase, args.lifecycle, args.partition)
+    if not cases:
+        parser.error("selection contains no transaction cases")
     cluster = Cluster(args)
     print(f"Evidence: {cluster.directory}", flush=True)
     try:
+        (cluster.directory / "expected-cases.json").write_text(json.dumps({
+            "partition": args.partition,
+            "cases": [dict(zip(["nodes", "phase", "edge", "abort", "repetition", "lifecycle"], case)) for case in cases],
+        }, indent=2) + "\n")
         cluster.provision(max(args.nodes))
-        for count in args.nodes:
-            cases = [(phase, edge, abort, None) for phase, abort in PHASES
-                     for edge in ["before", "after"] if not args.phase or phase == args.phase]
-            if count != 2 and not args.phase:
-                cases = [("coordinator.commit", "before", False, "partition"),
-                         ("coordinator.abort", "before", True, "partition")]
-            if not args.phase:
-                cases += [("coordinator.commit", "before", False, lifecycle) for lifecycle in ["scale", "rolling"]]
-                if count == 2:
-                    cases.append(("coordinator.commit", "before", False, "peer-recovery"))
-            if args.lifecycle:
-                cases = [case for case in cases if case[3] in args.lifecycle]
-            for phase, edge, abort, lifecycle in cases:
-                for repetition in range(1, args.repetitions + 1):
-                    cluster.case(count, phase, edge, abort, repetition, lifecycle)
+        for case in cases:
+            cluster.case(*case)
     finally:
         cluster.close()
 

@@ -65,6 +65,23 @@ runtime credentials and uses no network. This avoids compiling a second host
 executable after the Docker build and binds the diagnostic SQL to the tested
 runtime image.
 
+Each distribution's transaction gate runs three independent partitions:
+Coordinator durable cuts (42 repetitions), Participant durable cuts (30), and
+lifecycle cases (33). Their disjoint union retains all 105 repetitions, all
+before/after cuts, COMMIT/ABORT branches, and three repetitions per case. Every
+partition provisions the same sixteen-Node topology and retains its ninety-minute
+deadline. Transaction jobs skip browser installation because they exercise the
+actual HTTP and database/process boundaries; the separate browser gates remain
+required. `CI Success` requires all six distribution/partition jobs. Each artifact
+records the expected cases and selected partition alongside actual results.
+
+At [`3621a96c`](https://github.com/kent8192/aidash/actions/runs/37343926155), the
+single k3s and Kubernetes transaction jobs reached the ninety-minute deadline
+after 104 and 98 successful repetitions respectively. No recorded assertion
+failed; remaining repetitions and cleanup could not complete. Driver regression
+tests check the new partition inventory against the complete acceptance contract,
+without reducing case counts or recovery bounds.
+
 The required Clippy matrix checks each Cargo workspace once: the backend with
 all features, plus the existing desktop and infrastructure observer workspaces.
 Each job has its own Cargo cache and denies warnings. Trunk retains formatting

@@ -1,4 +1,7 @@
 """Regression tests for the cluster driver's transport and recovery oracles."""
+import contextlib
+import io
+import json
 import os
 import pathlib
 import socket
@@ -11,7 +14,115 @@ from unittest.mock import Mock, patch
 from urllib.parse import urlsplit
 
 from remote_memory_cluster_acceptance import RemoteMemory
-from transaction_cluster_acceptance import Cluster
+from transaction_cluster_acceptance import Cluster, main, transaction_cases
+
+
+class TransactionPartitionTests(unittest.TestCase):
+    def test_complete_inventory_retains_every_durable_cut_and_lifecycle(self):
+        # Independent acceptance contract: both completion branches, both sides
+        # of every cut, and three attempts at each original topology/action.
+        cuts = [("coordinator.submit", False), ("coordinator.vote", False),
+                ("coordinator.commit", False), ("coordinator.abort", True),
+                ("coordinator.visible", False), ("coordinator.complete", False),
+                ("coordinator.complete", True), ("participant.reserve", False),
+                ("participant.prepare", False), ("participant.apply", False),
+                ("participant.release", False), ("participant.abort", True)]
+        expected = {(2, phase, edge, abort, repetition, None)
+                    for phase, abort in cuts for edge in ("before", "after")
+                    for repetition in (1, 2, 3)}
+        expected.update((count, "coordinator.commit", "before", False, repetition, action)
+                        for count in (2, 3, 16) for action in ("scale", "rolling")
+                        for repetition in (1, 2, 3))
+        expected.update((count, phase, "before", abort, repetition, "partition")
+                        for count in (3, 16)
+                        for phase, abort in (("coordinator.commit", False), ("coordinator.abort", True))
+                        for repetition in (1, 2, 3))
+        expected.update((2, "coordinator.commit", "before", False, repetition, "peer-recovery")
+                        for repetition in (1, 2, 3))
+
+        actual = transaction_cases([2, 3, 16])
+
+        self.assertEqual(len(expected), 105)
+        self.assertEqual(len(actual), 105)
+        self.assertEqual(set(actual), expected)
+
+    def test_ci_partitions_are_disjoint_complete_and_keep_case_order(self):
+        complete = transaction_cases([2, 3, 16])
+        selected = set()
+        for partition, count in (("coordinator", 42), ("participant", 30), ("lifecycle", 33)):
+            with self.subTest(partition=partition):
+                cases = transaction_cases([2, 3, 16], partition=partition)
+                self.assertEqual(len(cases), count)
+                self.assertEqual(len(set(cases)), count)
+                self.assertFalse(selected.intersection(cases))
+                self.assertEqual(cases, [case for case in complete if case in set(cases)])
+                selected.update(cases)
+        self.assertEqual(selected, set(complete))
+
+    def test_individual_selectors_preserve_both_completion_outcomes_and_peer_recovery(self):
+        completion = transaction_cases([2, 3, 16], phase="coordinator.complete")
+        self.assertEqual(len(completion), 36)
+        self.assertEqual({case[0] for case in completion}, {2, 3, 16})
+        self.assertEqual({case[2:4] for case in completion},
+                         {("before", False), ("after", False), ("before", True), ("after", True)})
+        self.assertTrue(all(case[5] is None for case in completion))
+        self.assertEqual(transaction_cases([2, 3, 16], lifecycle=["peer-recovery"]),
+                         [(2, "coordinator.commit", "before", False, repetition, "peer-recovery")
+                          for repetition in (1, 2, 3)])
+
+    def test_unknown_partitions_and_mixed_selectors_fail_closed(self):
+        for arguments in ({"partition": "missing"},
+                          {"partition": "coordinator", "phase": "coordinator.complete"},
+                          {"partition": "lifecycle", "lifecycle": ["rolling"]}):
+            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                transaction_cases([2, 3, 16], **arguments)
+
+    def test_cli_rejects_empty_or_ambiguous_selection_before_creating_resources(self):
+        required = ["driver", "--kubeconfig", "unused", "--distribution", "k3s", "--image", "unused", "--queries", "unused"]
+        for arguments, message in ((["--nodes", "3", "--lifecycle", "peer-recovery"], "no transaction cases"),
+                                   (["--partition", "lifecycle", "--phase", "coordinator.commit"], "select a partition"),
+                                   (["--partition", "participant", "--lifecycle", "rolling"], "select a partition"),
+                                   (["--phase", "coordinator.commit", "--lifecycle", "rolling"], "select either phase")):
+            errors = io.StringIO()
+            with self.subTest(arguments=arguments), patch("sys.argv", required + arguments), patch(
+                "transaction_cluster_acceptance.Cluster"
+            ) as cluster, contextlib.redirect_stderr(errors):
+                with self.assertRaises(SystemExit) as error:
+                    main()
+                self.assertEqual(error.exception.code, 2)
+                self.assertIn(message, errors.getvalue())
+                cluster.assert_not_called()
+
+    def test_partition_executes_and_records_all_expected_cases_with_full_topology(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cluster = Mock(directory=pathlib.Path(directory))
+            arguments = ["driver", "--kubeconfig", "unused", "--distribution", "k3s", "--image", "unused", "--queries", "unused",
+                         "--partition", "participant"]
+            with patch("sys.argv", arguments), patch(
+                "transaction_cluster_acceptance.Cluster", return_value=cluster
+            ), contextlib.redirect_stdout(io.StringIO()):
+                main()
+            evidence = json.loads((cluster.directory / "expected-cases.json").read_text())
+            actual = [call.args for call in cluster.case.call_args_list]
+            self.assertEqual(actual, transaction_cases([2, 3, 16], partition="participant"))
+            self.assertEqual(evidence["partition"], "participant")
+            self.assertEqual([tuple(case[key] for key in
+                                    ("nodes", "phase", "edge", "abort", "repetition", "lifecycle"))
+                              for case in evidence["cases"]], actual)
+            cluster.provision.assert_called_once_with(16)
+            cluster.close.assert_called_once_with()
+
+    def test_evidence_write_failure_closes_resources_before_provisioning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cluster = Mock(directory=pathlib.Path(directory))
+            arguments = ["driver", "--kubeconfig", "unused", "--distribution", "k3s", "--image", "unused", "--queries", "unused"]
+            with patch("sys.argv", arguments), patch(
+                "transaction_cluster_acceptance.Cluster", return_value=cluster
+            ), patch.object(pathlib.Path, "write_text", side_effect=OSError("full")), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(OSError, "full"):
+                    main()
+            cluster.provision.assert_not_called()
+            cluster.close.assert_called_once_with()
 
 
 class PortForwardTests(unittest.TestCase):
