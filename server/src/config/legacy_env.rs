@@ -85,12 +85,29 @@ fn values(read: impl Fn(&str) -> Option<String>) -> Result<IndexMap<String, Valu
 			oidc.insert(key.into(), Value::String(value));
 		}
 	}
+	let mut kubernetes = serde_json::Map::new();
+	for (key, name) in [
+		("namespace", "AIDASH_KUBERNETES_NAMESPACE"),
+		("release", "AIDASH_KUBERNETES_RELEASE"),
+	] {
+		if let Some(value) = read(name) {
+			kubernetes.insert(key.into(), Value::String(value));
+		}
+	}
+	if !kubernetes.is_empty() {
+		// Helm exports these only on servers with observations enabled. Keep
+		// partial configuration visible so settings validation rejects it.
+		kubernetes.insert("enabled".into(), Value::Bool(true));
+	}
 	let mut result = IndexMap::new();
 	if !node.is_empty() {
 		result.insert("node".into(), Value::Object(node));
 	}
 	if !core.is_empty() {
 		result.insert("core".into(), Value::Object(core));
+	}
+	if !kubernetes.is_empty() {
+		result.insert("kubernetes".into(), Value::Object(kubernetes));
 	}
 	if !oidc.is_empty() {
 		result.insert("dashboard".into(), json!({"oidc": oidc}));
@@ -141,6 +158,38 @@ mod tests {
 		assert_eq!(db["options"]["application_name"], "worker");
 		assert_eq!(data["node"]["worker_count"], "2");
 		assert!(!data.contains_key("dashboard"));
+	}
+
+	#[rstest::rstest]
+	#[case::helm(Some("aidash"), Some("production"), true)]
+	#[case::namespace_only(Some("aidash"), None, true)]
+	#[case::release_only(None, Some("production"), true)]
+	#[case::disabled(None, None, false)]
+	fn helm_observations_participate_in_settings_composition(
+		#[case] namespace: Option<&str>,
+		#[case] release: Option<&str>,
+		#[case] enabled: bool,
+	) {
+		// Arrange: use the variables rendered by the server Helm workload.
+		let data = values(|name| match name {
+			"AIDASH_KUBERNETES_NAMESPACE" => namespace.map(str::to_owned),
+			"AIDASH_KUBERNETES_RELEASE" => release.map(str::to_owned),
+			_ => None,
+		})
+		.unwrap();
+		// Act: deserialize the same fragment consumed by composed settings.
+		let settings: crate::apps::operations::serializers::settings::KubernetesSettings =
+			serde_json::from_value(data.get("kubernetes").cloned().unwrap_or(json!({}))).unwrap();
+		// Assert: absent Helm variables preserve the disabled default; partial
+		// configuration remains enabled and is rejected by fragment validation.
+		assert_eq!(settings.enabled, enabled);
+		assert_eq!(settings.namespace, namespace.unwrap_or_default());
+		assert_eq!(settings.release, release.unwrap_or_default());
+		use reinhardt::conf::settings::{fragment::SettingsValidation, profile::Profile};
+		assert_eq!(
+			settings.validate(&Profile::Development).is_ok(),
+			!enabled || (namespace.is_some() && release.is_some())
+		);
 	}
 
 	#[rstest::rstest]
