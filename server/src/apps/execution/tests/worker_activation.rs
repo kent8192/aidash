@@ -1,4 +1,4 @@
-#[path = "../../tests/support/legacy.rs"]
+#[path = "support/legacy.rs"]
 mod common;
 #[path = "worker_activation/review.rs"]
 mod review;

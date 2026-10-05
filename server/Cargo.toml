@@ -317,7 +317,7 @@ path = "src/apps/workspaces/sse/tests/sse_delivery.rs"
 
 [[test]]
 name = "worker_activation"
-path = "src/apps/execution/activation/tests/worker_activation.rs"
+path = "src/apps/execution/tests/worker_activation.rs"
 
 [[test]]
 name = "transactions"
