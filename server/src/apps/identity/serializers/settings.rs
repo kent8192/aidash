@@ -58,6 +58,16 @@ impl OidcConfig {
 		self.issuer == crate::config::GOOGLE_OIDC_ISSUER
 	}
 	pub fn normalized(&self) -> Result<Self> {
+		for (name, value) in [
+			("client_id", &self.client_id),
+			("client_secret", &self.client_secret),
+		] {
+			if value.trim().is_empty() {
+				return Err(Error::Invalid(format!(
+					"dashboard.oidc.{name} must not be blank"
+				)));
+			}
+		}
 		ValidateRules::validate(self).map_err(|error| Error::Invalid(error.to_string()))?;
 		for (name, value) in [
 			("issuer", &self.issuer),
@@ -118,5 +128,63 @@ impl SettingsValidation for DashboardSettings {
 				.map_err(|error| ValidationError::Constraint(error.to_string()))?;
 		}
 		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use rstest::{fixture, rstest};
+
+	#[fixture]
+	fn oidc_config() -> OidcConfig {
+		serde_json::from_value(serde_json::json!({
+			"client_id": "fixture-client",
+			"client_secret": "fixture-secret",
+			"public_origin": "https://dashboard.example.test",
+		}))
+		.unwrap()
+	}
+
+	#[rstest]
+	#[case::empty_id("", "fixture-secret", "client_id")]
+	#[case::spaces_id("   ", "fixture-secret", "client_id")]
+	#[case::tabs_id("\t\n", "fixture-secret", "client_id")]
+	#[case::empty_secret("fixture-client", "", "client_secret")]
+	#[case::spaces_secret("fixture-client", "   ", "client_secret")]
+	#[case::tabs_secret("fixture-client", "\t\n", "client_secret")]
+	fn blank_oidc_credentials_fail_startup_validation(
+		mut oidc_config: OidcConfig,
+		#[case] client_id: &str,
+		#[case] client_secret: &str,
+		#[case] field: &str,
+	) {
+		// Arrange
+		oidc_config.client_id = client_id.into();
+		oidc_config.client_secret = client_secret.into();
+		let dashboard = DashboardSettings {
+			oidc: Some(oidc_config),
+		};
+		// Act
+		let error = dashboard.validate(&Profile::Development).unwrap_err();
+		// Assert: fail before any provider request without exposing credentials.
+		assert!(
+			error
+				.to_string()
+				.contains(&format!("dashboard.oidc.{field} must not be blank"))
+		);
+		assert!(!error.to_string().contains("fixture-secret"));
+	}
+
+	#[rstest]
+	fn nonblank_credentials_retain_their_original_bytes(mut oidc_config: OidcConfig) {
+		// Arrange
+		oidc_config.client_id = " fixture-client ".into();
+		oidc_config.client_secret = " fixture-secret ".into();
+		// Act
+		let normalized = oidc_config.normalized().unwrap();
+		// Assert: validation must not trim significant credential bytes.
+		assert_eq!(normalized.client_id, oidc_config.client_id);
+		assert_eq!(normalized.client_secret, oidc_config.client_secret);
 	}
 }
