@@ -31,7 +31,7 @@ jobs:
     # incur compute charges if this repository's visibility changes.
     if: github.event.repository.private == false
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -41,6 +41,10 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: production-http
+      - run: rustup show active-toolchain
       - run: npm ci --prefix web
       - run: npm run build --prefix web
       - run: scripts/install-browser.sh
