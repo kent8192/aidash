@@ -198,7 +198,7 @@ impl Drop for ActiveExecution {
 }
 
 use async_trait::async_trait;
-use http::{HeaderName, HeaderValue, header};
+use http::{HeaderMap, HeaderName, HeaderValue, header};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::http::{ExceptionHandler, Handler, Middleware};
 use reinhardt::{InjectionContext, Request, injectable};
@@ -343,11 +343,10 @@ impl Middleware for Gateway {
 			HeaderName::from_static("x-request-id"),
 			HeaderValue::from_str(&id).expect("UUID header"),
 		);
-		for name in ["authorization", "cookie", "x-aidash-csrf"] {
-			if let Some(value) = request.headers.get_mut(name) {
-				value.set_sensitive(true);
-			}
-		}
+		mark_sensitive_headers(
+			&mut request.headers,
+			&["authorization", "cookie", "x-aidash-csrf"],
+		);
 		let path = request.uri.path().to_owned();
 		let private = (path.starts_with("/api") && path != "/api/openapi.json")
 			|| path.starts_with("/federation")
@@ -453,10 +452,20 @@ fn private_response(mut response: Response, id: &str, private: bool) -> Response
 			HeaderValue::from_static("no-referrer"),
 		);
 	}
-	if let Some(value) = response.headers.get_mut(header::SET_COOKIE) {
-		value.set_sensitive(true);
-	}
+	mark_sensitive_headers(&mut response.headers, &["set-cookie"]);
 	response
 }
+
+fn mark_sensitive_headers(headers: &mut HeaderMap, names: &[&str]) {
+	for (name, value) in headers.iter_mut() {
+		if names.contains(&name.as_str()) {
+			value.set_sensitive(true);
+		}
+	}
+}
+
+#[cfg(test)]
+#[path = "http/tests.rs"]
+mod tests;
 
 use reinhardt::di::DiResult;
