@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.."
 export COMPOSE_FILE="${COMPOSE_FILE:-compose.yaml}:server/src/apps/execution/tests/fixtures/acceptance.compose.yaml"
 docker compose up -d --wait
 export RUSTC_WRAPPER=
-cargo build --locked -p aidash-server --bin aidash --example acceptance_queries
+cargo build --locked -p aidash-server --bin aidash --bin manage
 npm ci --prefix web
 # prebuild generates the ignored Rust-owned OpenAPI contract and TypeScript client.
 npm run build --prefix web

@@ -277,8 +277,8 @@ def main():
     revision = runpy.run_path(str(ROOT / "scripts/core-capability-evidence.py"))["revision"]
     source = revision()
     binary_sha256 = hashlib.sha256(pathlib.Path(args.binary).read_bytes()).hexdigest()
-    query_helper = pathlib.Path(args.binary).resolve().parent / "examples" / "acceptance_queries"
-    queries = json.loads(subprocess.check_output([str(query_helper)], text=True))
+    query_helper = pathlib.Path(args.binary).resolve().parent / "manage"
+    queries = json.loads(subprocess.check_output([str(query_helper), "diagnostics", "acceptance"], text=True))
     run_id = uuid.uuid4().hex[:12]
     db_a, db_b = f"aidash_e2e_{run_id}_a", f"aidash_e2e_{run_id}_b"
     node_a, node_b = f"aidash://acceptance-{run_id}-a", f"aidash://acceptance-{run_id}-b"

@@ -19,6 +19,8 @@ use tokio::{
 };
 
 /// Assemble management adapters before any runtime settings are resolved.
+pub mod management;
+
 pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 	let mut registry = reinhardt::commands::CommandRegistry::new();
 	registry.register_capability(Box::new(
@@ -26,6 +28,12 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 	));
 	registry.register_capability(Box::new(
 		crate::apps::execution::services::schema::ApiContract,
+	));
+	for command in crate::apps::execution::services::node_commands::commands() {
+		registry.register_capability(command);
+	}
+	registry.register_capability(Box::new(
+		crate::apps::operations::services::diagnostics::Diagnostics,
 	));
 	registry
 }
