@@ -32,10 +32,48 @@ jobs:
       - run: npm ci --prefix web
       - run: rustup show active-toolchain
       - uses: trunk-io/trunk-action/setup@e1234e67a86010d61ddac8d8ebf4b783e2ffd2fa # v2.0.0
-      - name: Install desktop lint prerequisites
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev
       - name: Check formatting and lint
-        run: '"$TRUNK_PATH" check --all --no-fix --no-progress --print-failures'
+        run: '"$TRUNK_PATH" check --all --no-fix --no-progress --print-failures --exclude clippy'
+  rust-lint:
+    name: Rust Clippy (${{ matrix.workspace }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - workspace: backend
+            directory: .
+            features: --all-features
+          - workspace: desktop
+            directory: desktop/src-tauri
+            features: ""
+          - workspace: observer
+            directory: infra/gcp/observer
+            features: ""
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      RUST_MIN_STACK: "8388608"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: rust-clippy
+          key: ${{ matrix.workspace }}
+          workspaces: "${{ matrix.directory }} -> target"
+      - name: Install existing desktop system dependencies
+        if: matrix.workspace == 'desktop'
+        run: |
+          scripts/configure-ci-apt.sh
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev
+      - name: Check each Cargo workspace once with warnings denied
+        run: cargo clippy --locked --manifest-path '${{ matrix.directory }}/Cargo.toml' --workspace --all-targets ${{ matrix.features }} -- -D warnings
   collaboration-ui:
     name: Collaboration browser tests
     runs-on: ubuntu-latest
@@ -284,6 +322,7 @@ jobs:
       [
         gcp-infrastructure,
         lint,
+        rust-lint,
         collaboration-ui,
         rust-tests,
         rust-coverage,

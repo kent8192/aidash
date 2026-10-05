@@ -45,6 +45,16 @@ new transaction with a different fault selector. This preserves the required
 before/after durable cuts instead of allowing an older controller to complete
 the new transaction outside the selected cut.
 
+The required Clippy matrix checks each Cargo workspace once: the backend with
+all features, plus the existing desktop and infrastructure observer workspaces.
+Each job has its own Cargo cache and denies warnings. Trunk retains formatting
+and the other linters; it excludes Clippy in hosted CI because its nearest-package
+grouping launched repeated `--workspace` commands against the same build directory.
+[The run at `3d05da43`](https://github.com/kent8192/aidash/actions/runs/37337525795/job/111855956995)
+reported no lint findings, but two commands exceeded their ten-minute limits
+while compiling and waiting for Cargo locks. The explicit matrix avoids those
+duplicate invocations and remains a prerequisite of `CI Success`.
+
 ## Download outage
 
 On 2026-10-05, [CI run 37242692329](https://github.com/kent8192/aidash/actions/runs/37242692329)
