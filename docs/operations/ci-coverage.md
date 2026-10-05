@@ -27,6 +27,13 @@ The isolated capability gate prepares the same extension-enabled PostgreSQL
 fixture before running its library and integration targets. Its Cargo cache is
 separate from the eight instrumented coverage partitions.
 
+Before creating the isolated cluster, the gate compiles these exact Cargo targets
+and lists their tests. Every acceptance identifier must resolve to a listed test
+or its parameterized cases. This catches stale module paths and renamed migration
+tests before provisioning. The final reducer still requires successful execution,
+the unchanged source fingerprint, isolation admission, and crash recovery;
+inventory validation alone cannot pass the gate.
+
 The isolated capability job has a sixty-minute limit. Its cold run at
 [`3d05da43`](https://github.com/kent8192/aidash/actions/runs/37337525795/job/111855956903)
 spent eleven minutes building, twenty-one minutes passing all 96 capability

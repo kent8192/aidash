@@ -86,15 +86,15 @@
           "source": "server/src/apps/execution/capabilities/tests/core_capabilities/journey.rs"
         },
         {
-          "name": "capabilities::tools::tests::executable_contracts_are_derived_and_disabled_by_default",
+          "name": "apps::execution::capabilities::services::core::tools::tests::executable_contracts_are_derived_and_disabled_by_default",
           "source": "server/src/apps/execution/capabilities/services/tools.rs"
         },
         {
-          "name": "capabilities::management::tests::management_schema_has_typed_results_and_distinct_recipient_contracts",
+          "name": "apps::execution::capabilities::services::core::management::tests::management_schema_has_typed_results_and_distinct_recipient_contracts",
           "source": "server/src/apps/execution/capabilities/services/management.rs"
         },
         {
-          "name": "capabilities::tools::tests::output_envelope_schema_accepts_the_serialized_wire_contract",
+          "name": "apps::execution::capabilities::services::core::tools::tests::output_envelope_schema_accepts_the_serialized_wire_contract",
           "source": "server/src/apps/execution/capabilities/services/tools.rs"
         }
       ]
@@ -103,7 +103,7 @@
       "description": "Disabled tools are absent from the model schema and denied on direct dispatch. Missing runner/isolation support fails closed, with no host-execution fallback.",
       "tests": [
         {
-          "name": "capabilities::tools::tests::executable_contracts_are_derived_and_disabled_by_default",
+          "name": "apps::execution::capabilities::services::core::tools::tests::executable_contracts_are_derived_and_disabled_by_default",
           "source": "server/src/apps/execution/capabilities/services/tools.rs"
         },
         {
@@ -358,7 +358,7 @@
           "source": "server/src/apps/execution/capabilities/tests/core_capabilities/content_limits.rs"
         },
         {
-          "name": "capabilities::limits::tests::defaults_and_lower_content_limits_preserve_wire_ceilings",
+          "name": "apps::execution::capabilities::services::core::limits::tests::defaults_and_lower_content_limits_preserve_wire_ceilings",
           "source": "server/src/apps/execution/capabilities/services/limits.rs"
         },
         {
@@ -366,7 +366,7 @@
           "source": "server/src/apps/execution/capabilities/tests/core_capabilities/network.rs"
         },
         {
-          "name": "capabilities::limits::tests::working_quota_cannot_exceed_runner_export_ceiling",
+          "name": "apps::execution::capabilities::services::core::limits::tests::working_quota_cannot_exceed_runner_export_ceiling",
           "source": "server/src/apps/execution/capabilities/services/limits.rs"
         }
       ],
@@ -523,7 +523,7 @@
           "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
-          "name": "seaorm_migrations_round_trip_a_fresh_schema",
+          "name": "native_migrations_build_a_fresh_schema_and_preserve_records_on_replay",
           "source": "server/src/apps/execution/tests/migrations.rs"
         },
         {
@@ -574,7 +574,7 @@
           "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
-          "name": "seaorm_migrations_round_trip_a_fresh_schema",
+          "name": "native_migrations_build_a_fresh_schema_and_preserve_records_on_replay",
           "source": "server/src/apps/execution/tests/migrations.rs"
         }
       ]
