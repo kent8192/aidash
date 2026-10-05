@@ -107,20 +107,23 @@ async fn native_null_parameters_retain_timestamp_and_uuid_types(
 ) {
 	// Arrange: use real NULL parameters, not SQL literal substitution.
 	use reinhardt::db::backends::types::QueryValue;
-	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, Value};
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	};
 	let database = database.await;
-	let (sql, values) = Query::select()
+	// Query renders absent values inline; positional expressions exercise the
+	// native backend's separate parameter contract without that substitution.
+	let sql = Query::select()
 		.expr_as(
-			Expr::value(Value::Null).cast_as(Alias::new("timestamptz")),
+			Expr::cust("$1").cast_as(Alias::new("timestamptz")),
 			Alias::new("expires_at"),
 		)
 		.expr_as(
-			Expr::value(Value::Null).cast_as(Alias::new("uuid")),
+			Expr::cust("$2").cast_as(Alias::new("uuid")),
 			Alias::new("request_id"),
 		)
-		.build(PostgresQueryBuilder);
-	let parameters = reinhardt::db::orm::execution::convert_values(values);
-	assert_eq!(parameters, vec![QueryValue::Null, QueryValue::Null]);
+		.to_string(PostgresQueryBuilder);
+	let parameters = vec![QueryValue::Null, QueryValue::Null];
 	// Act: both native executor paths must infer the SQL context (#6631).
 	let rows = if transactional {
 		let mut transaction = database.connection.begin().await.unwrap();
