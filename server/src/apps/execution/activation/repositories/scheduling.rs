@@ -8,7 +8,7 @@ use aidash_domain::{Run, RunMetadata, RunState, TaskStatus, run_state::RawRun};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reinhardt::core::exception::Error as FrameworkError;
-use reinhardt::db::backends::{Row, TransactionExecutor};
+use reinhardt::db::backends::{QueryValue, Row, TransactionExecutor};
 use reinhardt::db::orm::{QueryRow, execution::convert_values};
 use reinhardt::query::{
 	Alias, ColumnRef, Condition, Expr, ExprTrait, IntoIden, LockBehavior, LockType, Order,
@@ -41,6 +41,17 @@ pub(crate) fn raw(row: Row) -> Result<RawRun> {
 		metadata: serde_json::from_value(data.clone())?,
 		context: data["context"].take(),
 		pending: data["pending"].take(),
+	})
+}
+
+fn approval(row: Row) -> Result<Approval> {
+	Ok(Approval {
+		state: row.get("state").map_err(FrameworkError::from)?,
+		expires_at: if matches!(row.data.get("expires_at"), Some(QueryValue::Null)) {
+			None
+		} else {
+			Some(row.get("expires_at").map_err(FrameworkError::from)?)
+		},
 	})
 }
 
@@ -141,12 +152,7 @@ impl<E: Executor> SchedulingScope for Scope<E> {
 			.fetch_optional(&sql, convert_values(values))
 			.await
 			.map_err(Error::from)?
-			.map(|row| {
-				Ok(Approval {
-					state: row.get("state").map_err(FrameworkError::from)?,
-					expires_at: row.get("expires_at").map_err(FrameworkError::from)?,
-				})
-			})
+			.map(approval)
 			.transpose()
 			.map_err(|e: Error| e.into())
 	}
@@ -357,3 +363,7 @@ fn worker_context() -> reinhardt::query::SimpleExpr {
 	)
 	.eq(Expr::value("true"))
 }
+
+#[cfg(test)]
+#[path = "scheduling/tests.rs"]
+mod tests;
