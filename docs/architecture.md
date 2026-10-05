@@ -122,7 +122,7 @@ source constraints apply to both HTTP and worker entry points.
 Authoritative state lives in PostgreSQL; Qdrant stores derived semantic vectors.
 Reinhardt owns the single migration graph under `server/migrations/`. Its frozen
 baseline retains PostgreSQL functions, triggers, generated columns, constraints,
-indexes, and lock/lease semantics from the 54-step development schema. State-only
+indexes, and lock/lease semantics from the 55-step development schema. State-only
 ORM snapshots support future autodetection without replacing these physical
 guarantees. Native repository operations retain the caller's transaction and
 visibility/authority scope; transaction control uses separate connection capacity.
