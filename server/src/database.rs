@@ -6,6 +6,21 @@ mod projections;
 pub use projections::query_as;
 use uuid::Uuid;
 
+/// Preserve the previous PostgreSQL driver's timestamp precision at an ORM boundary.
+/// Reinhardt's generated argument codec rejects sub-microsecond values. SQLx's
+/// PostgreSQL encoder truncates the duration from its 2000-01-01 epoch toward zero.
+pub(crate) fn postgres_timestamp(
+	value: chrono::DateTime<chrono::Utc>,
+) -> chrono::DateTime<chrono::Utc> {
+	let epoch = chrono::DateTime::from_timestamp(946_684_800, 0)
+		.expect("the PostgreSQL epoch is a valid UTC timestamp");
+	let micros = value
+		.signed_duration_since(epoch)
+		.num_microseconds()
+		.expect("Chrono timestamps fit in PostgreSQL's signed microsecond representation");
+	epoch + chrono::Duration::microseconds(micros)
+}
+
 /// Preserve PostgreSQL array element types, including empty arrays, when the
 /// selected Query release has no `IntoValue` implementation for these vectors.
 pub(crate) fn text_array(

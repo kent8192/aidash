@@ -132,6 +132,10 @@ protected writes. Typed projections name tuple columns explicitly and distinguis
 SQL NULL from JSON null. The underlying SQLx driver is confined to bootstrap pool
 configuration and independent test fixtures; it does not execute repository
 queries.
+Host timestamps used by typed ORM updates and retention predicates are reduced
+to PostgreSQL microseconds at the persistence boundary, preserving the previous
+driver's truncation relative to its 2000-01-01 epoch. Business clocks retain their
+original precision; outbox retries continue to use the database clock.
 The [migration runbook](../server/migrations/README.md) describes the supported
 empty-database boundary and maintenance cutover. Runtime queries are tested with
 real PostgreSQL; builds do not require a live database.

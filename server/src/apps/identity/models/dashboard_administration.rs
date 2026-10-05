@@ -315,6 +315,7 @@ impl DashboardIdentity {
 		id: Uuid,
 		checked_at: DateTime<Utc>,
 	) -> Result<()> {
+		let checked_at = crate::database::postgres_timestamp(checked_at);
 		let assignments: Vec<FieldAssignment> = vec![
 			(Self::field_disabled_at(), None::<DateTime<Utc>>).into(),
 			(Self::field_last_valid_at(), Some(checked_at)).into(),
@@ -330,6 +331,10 @@ impl DashboardIdentity {
 		Ok(())
 	}
 }
+
+#[cfg(test)]
+#[path = "../tests/database_timestamps.rs"]
+mod timestamp_tests;
 
 impl DashboardMapping {
 	pub(crate) async fn find<E: OrmExecutor>(db: &mut E, id: Uuid) -> Result<Option<Self>> {

@@ -26,3 +26,5 @@ pub mod generation;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::native_database as test_database;

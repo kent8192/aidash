@@ -125,7 +125,10 @@ impl AgentIncident {
 	pub(crate) async fn expired(tx: &mut dyn TransactionExecutor) -> Result<Vec<Incident>> {
 		Ok(Self::objects()
 			.filter(Self::field_status().eq("resolved"))
-			.filter(Self::field_evidence_expires_at().lte(Some(Utc::now())))
+			.filter(
+				Self::field_evidence_expires_at()
+					.lte(Some(crate::database::postgres_timestamp(Utc::now()))),
+			)
 			.filter(Self::field_evidence_expired_at().is_null())
 			.order_by(&["id"])
 			.limit(100)

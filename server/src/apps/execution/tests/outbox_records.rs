@@ -139,7 +139,7 @@ async fn retry_retains_payload_and_fences_late_publication_results(
 			&mut connection,
 			[(
 				Event::field_next_attempt_at(),
-				Utc::now() - Duration::minutes(1),
+				first.next_attempt_at - Duration::minutes(1),
 			)],
 		)
 		.await
