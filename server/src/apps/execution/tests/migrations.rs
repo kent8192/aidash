@@ -29,11 +29,8 @@ use uuid::Uuid;
 #[rstest]
 #[tokio::test]
 async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
-	// Arrange: the manifest is the frozen physical-history identity map.
+	// Arrange: the native history is the only schema identity source.
 	let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations");
-	let manifest: serde_json::Value =
-		serde_json::from_str(&std::fs::read_to_string(root.join("baseline.json")).unwrap())
-			.unwrap();
 	// Act: load every external SQL asset through the native filesystem source.
 	let migrations = FilesystemSource::new(&root).all_migrations().await.unwrap();
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
@@ -57,18 +54,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 		})
 		.count();
 	assert_eq!(tables, 115);
-	for expected in manifest["migrations"].as_array().unwrap() {
-		let migration = migrations
-			.iter()
-			.find(|migration| {
-				migration.app_label == expected["app"].as_str().unwrap()
-					&& migration.name == expected["name"].as_str().unwrap()
-			})
-			.unwrap();
-		assert_eq!(
-			migration.operations.len(),
-			expected["operations"].as_u64().unwrap() as usize
-		);
+	for migration in migrations.iter().filter(|migration| !migration.state_only) {
 		assert!(migration.database_only);
 		for operation in &migration.operations {
 			if let reinhardt::db::migrations::Operation::RunSQL { sql, reverse_sql } = operation {

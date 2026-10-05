@@ -83,7 +83,7 @@ pub async fn run(context: &CommandContext) -> Result<()> {
 		));
 	}
 	if !context.has_option("plan") && context.has_option("fake") {
-		refuse_fake_baseline_rollback(context, &applied)?;
+		refuse_fake_baseline_rollback(context, &applied, &migrations)?;
 	}
 	let mut native = context.clone();
 	native.set_option(
@@ -103,6 +103,7 @@ pub async fn run(context: &CommandContext) -> Result<()> {
 fn refuse_fake_baseline_rollback(
 	context: &CommandContext,
 	applied: &[reinhardt::db::migrations::recorder::MigrationRecord],
+	migrations: &[reinhardt::db::migrations::Migration],
 ) -> Result<()> {
 	let (Some(app), Some(target)) = (context.arg(0), context.arg(1)) else {
 		return Ok(());
@@ -122,25 +123,11 @@ fn refuse_fake_baseline_rollback(
 	let Some(first) = first else {
 		return Ok(());
 	};
-	#[derive(serde::Deserialize)]
-	struct Baseline {
-		migrations: Vec<Identity>,
-	}
-	#[derive(serde::Deserialize)]
-	struct Identity {
-		app: String,
-		name: String,
-	}
-	let baseline: Baseline = serde_json::from_str(include_str!(concat!(
-		env!("CARGO_MANIFEST_DIR"),
-		"/migrations/baseline.json"
-	)))
-	.expect("embedded frozen baseline map is valid");
-	let mut keys = HashSet::new();
-	for migration in baseline.migrations {
-		keys.insert((migration.app.clone(), "0007_model_state".to_owned()));
-		keys.insert((migration.app, migration.name));
-	}
+	let keys: HashSet<_> = migrations
+		.iter()
+		.filter(|migration| migration.database_only || migration.state_only)
+		.map(|migration| (migration.app_label.clone(), migration.name.clone()))
+		.collect();
 	if records[first..]
 		.iter()
 		.any(|record| keys.contains(&(record.app.clone(), record.name.clone())))
