@@ -11,8 +11,6 @@ use reinhardt::query::{
 };
 use std::{collections::HashSet, path::PathBuf};
 
-mod backward;
-
 /// All entry points hold the same transaction-scoped lock for the complete run,
 /// including creation of the native ledger. Dropping the transaction on errors
 /// or cancellation releases it; no session lock can leak into the pool.
@@ -86,42 +84,6 @@ pub async fn run(context: &CommandContext) -> Result<()> {
 	}
 	if !context.has_option("plan") && context.has_option("fake") {
 		refuse_fake_baseline_rollback(context, &applied)?;
-	}
-	if let (Some(app), Some(target)) = (context.arg(0), context.arg(1))
-		&& let Some(plan) = backward::plan(&migrations, &applied, app, target)
-			.map_err(|error| Error::External(error.to_string()))?
-	{
-		if context.has_option("plan") {
-			context.info(&format!(
-				"[plan] Would unapply {} migration(s):",
-				plan.len()
-			));
-			for migration in plan.iter().rev() {
-				context.info(&format!("  - {} (unapply)", migration.id()));
-			}
-		} else if context.has_option("fake") {
-			for migration in plan.iter().rev() {
-				recorder
-					.unapply(&migration.app_label, &migration.name)
-					.await
-					.map_err(|error| Error::External(error.to_string()))?;
-			}
-			context.success(&format!("Faked rollback of {} migration(s)", plan.len()));
-		} else {
-			let result = reinhardt::db::migrations::DatabaseMigrationExecutor::new(connection)
-				.rollback_migrations(&plan)
-				.await
-				.map_err(|error| Error::External(error.to_string()))?;
-			for id in &result.applied {
-				context.success(&format!("  ✓ Rolled back: {id}"));
-			}
-			context.success(&format!(
-				"Rolled back {} migration(s)",
-				result.applied.len()
-			));
-		}
-		schema_lock.commit().await?;
-		return Ok(());
 	}
 	let mut native = context.clone();
 	native.set_option(

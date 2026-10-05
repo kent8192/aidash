@@ -64,7 +64,12 @@ pub async fn serve(settings: ProjectSettings, workers: bool) -> Result<()> {
 	)
 	.await?;
 	let server = HttpServer::new(crate::routes().into_server()).with_di_context(context);
-	let serving = server.listen_on_with_shutdown(listener, coordinator.clone());
+	let serving = async {
+		server
+			.listen_on_with_shutdown(listener, coordinator.clone())
+			.await
+			.map_err(|error| Error::External(format!("HTTP listener: {error}")))
+	};
 	tokio::pin!(serving);
 	let finished = tokio::select! {
 		result = &mut serving => Some(result),
@@ -73,13 +78,12 @@ pub async fn serve(settings: ProjectSettings, workers: bool) -> Result<()> {
 	};
 	coordinator.shutdown();
 	let close_http = async {
-		let result = match finished {
+		match finished {
 			Some(result) => result,
 			None => tokio::time::timeout(Duration::from_secs(20), serving)
 				.await
 				.map_err(|_| Error::External("HTTP drain deadline reached".into()))?,
-		};
-		result.map_err(|error| Error::External(format!("HTTP listener: {error}")))
+		}
 	};
 	let close_probes = async {
 		match probes {

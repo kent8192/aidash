@@ -32,6 +32,7 @@ aidash-runtime.workspace = true
 aidash-integrations.workspace = true
 reinhardt = { workspace = true, features = [
   "api-only",
+  "uuid",
   "database",
   "db-postgres",
   "auth",
@@ -49,11 +50,6 @@ reinhardt = { workspace = true, features = [
   "client-router",
   "api",
   "commands-contract",
-] }
-# Enable UUID path extraction until the facade forwards reinhardt-di/uuid.
-# Remove this direct dependency after reinhardt-web#6495 is fixed and verified.
-reinhardt-di = { git = "https://github.com/kent8192/reinhardt-web", rev = "83a1e1702c279fdc9f054439539e5ccc693a2f4c", default-features = false, features = [
-  "uuid",
 ] }
 clap = { version = "4", features = ["derive"] }
 http = "1"

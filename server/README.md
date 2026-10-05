@@ -124,8 +124,8 @@ so the root mounts at `/` and preserves the existing API, authentication,
 Federation, SSE, and frontend URLs.
 
 The implementation follows the pinned framework's
-[unified router](https://github.com/kent8192/reinhardt-web/blob/83a1e1702c279fdc9f054439539e5ccc693a2f4c/crates/reinhardt-urls/src/routers/unified_router.rs)
-and [routing guide](https://github.com/kent8192/reinhardt-web/blob/83a1e1702c279fdc9f054439539e5ccc693a2f4c/crates/reinhardt-urls/README.md).
+[unified router](https://github.com/kent8192/reinhardt-web/blob/6e12816090b3dd4db592bfc74d0d622de4cef3d7/crates/reinhardt-urls/src/routers/unified_router.rs)
+and [routing guide](https://github.com/kent8192/reinhardt-web/blob/6e12816090b3dd4db592bfc74d0d622de4cef3d7/crates/reinhardt-urls/README.md).
 
 ## Generated with
 
