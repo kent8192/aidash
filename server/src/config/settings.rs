@@ -100,6 +100,10 @@ fn file_settings_builder(
 	base_dir: &std::path::Path,
 	settings_dir: &std::path::Path,
 ) -> SettingsBuilder {
+	let file_profile = match profile_name {
+		"development" => "local",
+		name => name,
+	};
 	// Build settings by merging sources in priority order.
 	// The composed and scoped paths use deep merging, so a
 	// single key in `production.toml` overrides only that key — sibling
@@ -121,7 +125,7 @@ fn file_settings_builder(
         .add_source(TomlFileSource::new(settings_dir.join("base.toml")))
         // Profile priority: Environment-specific TOML file
         .add_source(TomlFileSource::new(
-			settings_dir.join(format!("{profile_name}.toml")),
+			settings_dir.join(format!("{file_profile}.toml")),
 		))
 }
 
@@ -152,7 +156,9 @@ mod tests {
 	use super::*;
 
 	#[rstest::rstest]
-	fn profile_overrides_preserve_required_base_settings() {
+	#[case::local("local")]
+	#[case::development_alias("development")]
+	fn profile_overrides_preserve_required_base_settings(#[case] profile: &str) {
 		// Arrange: isolated files supply only local test credentials.
 		let directory = tempfile::tempdir().unwrap();
 		let source = include_str!("../../settings/base.example.toml")
@@ -170,8 +176,13 @@ mod tests {
 			"[core]\ndebug = true\n[node]\nworker_count = 2\n",
 		)
 		.unwrap();
+		std::fs::write(
+			directory.path().join("development.toml"),
+			"[node]\nworker_count = 9\n",
+		)
+		.unwrap();
 		// Act: exercise the same file composition used by process startup.
-		let settings = file_settings_builder("local", directory.path(), directory.path())
+		let settings = file_settings_builder(profile, directory.path(), directory.path())
 			.build_pending_composed::<ProjectSettings>()
 			.unwrap()
 			.resolve()
