@@ -4,6 +4,7 @@ use aidash_domain::{
 	context::{self, Context, ContextEvent},
 	entities::*,
 	model::ModelConfig,
+	tool::{Continuation, ResultFitting, ToolContract, ToolUseMode, builtin_contract},
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -100,6 +101,17 @@ pub fn request_context_window(window: usize, minimum_request: usize) -> usize {
 }
 
 pub fn message_read_range(event: &ContextEvent) -> Option<(Uuid, usize, usize, usize)> {
+	let ContextEvent::Tool { call, .. } = event else {
+		return None;
+	};
+	let contract = builtin_contract(&call.name)?;
+	message_read_range_for(&contract, event)
+}
+
+pub fn message_read_range_for(
+	contract: &ToolContract,
+	event: &ContextEvent,
+) -> Option<(Uuid, usize, usize, usize)> {
 	let ContextEvent::Tool {
 		call,
 		result: output,
@@ -107,7 +119,7 @@ pub fn message_read_range(event: &ContextEvent) -> Option<(Uuid, usize, usize, u
 	else {
 		return None;
 	};
-	if call.name != "workspace_read"
+	if contract.behavior.fitting != Some(ResultFitting::WorkspaceRecord)
 		|| call.arguments["kind"] != "message"
 		|| output["kind"] != "message"
 		|| output["encoding"] != "json"
@@ -131,6 +143,26 @@ pub fn record_message_read_in(
 	let Some((id, start, end, total)) = message_read_range(event) else {
 		return;
 	};
+	merge_message_read(coverage_by_id, id, start, end, total);
+}
+
+pub fn record_message_read_for(
+	coverage: &mut BTreeMap<Uuid, context::MessageReadCoverage>,
+	contract: &ToolContract,
+	event: &ContextEvent,
+) {
+	if let Some((id, start, end, total)) = message_read_range_for(contract, event) {
+		merge_message_read(coverage, id, start, end, total);
+	}
+}
+
+fn merge_message_read(
+	coverage_by_id: &mut BTreeMap<Uuid, context::MessageReadCoverage>,
+	id: Uuid,
+	start: usize,
+	end: usize,
+	total: usize,
+) {
 	let coverage = coverage_by_id.entry(id).or_default();
 	if coverage.total_chars != total {
 		coverage.total_chars = total;
@@ -191,7 +223,20 @@ pub fn is_required_message_read(
 	required_reads: &[Uuid],
 	context: &Context,
 ) -> bool {
-	if call.name != "workspace_read" || call.arguments["kind"] != "message" {
+	let Some(contract) = builtin_contract(&call.name) else {
+		return false;
+	};
+	is_required_message_read_for(&contract, call, required_reads, context)
+}
+pub fn is_required_message_read_for(
+	contract: &ToolContract,
+	call: &aidash_domain::provider::ToolCall,
+	required_reads: &[Uuid],
+	context: &Context,
+) -> bool {
+	if contract.behavior.fitting != Some(ResultFitting::WorkspaceRecord)
+		|| call.arguments["kind"] != "message"
+	{
 		return false;
 	}
 	let Some(id) = call.arguments["id"]
@@ -251,13 +296,7 @@ pub fn workspace_read_plan_result(
 	cursor: usize,
 	pending: &ToolCallState,
 ) -> Result<(WorkspaceReadRange, Option<Value>)> {
-	let range = workspace_read_range(call)?;
-	let saved_result = pending
-		.workspace_read_plan
-		.as_ref()
-		.filter(|p| p.step == step && p.cursor == cursor && &p.call == call)
-		.map(|p| p.result.clone());
-	Ok((range, saved_result))
+	tool_result_plan(pending, ResultFitting::WorkspaceRecord, call, step, cursor)
 }
 
 pub fn fit_workspace_read_chars(
@@ -266,39 +305,62 @@ pub fn fit_workspace_read_chars(
 	output: &Value,
 	budget: WorkspaceReadFitBudget,
 ) -> Result<Option<usize>> {
-	let WorkspaceReadFitBudget {
-		requested,
-		offset,
-		request_tokens,
-		request_window,
-		remaining_calls,
-	} = budget;
-	let reserve = remaining_calls.saturating_mul(TOOL_EVENT_RESERVE);
-	let maximum_request = request_window.saturating_sub(reserve);
-	let fits = |chars: usize| -> Result<bool> {
-		let mut bounded_call = call.clone();
-		bounded_call.arguments["max_chars"] = json!(chars);
-		let bounded_output = workspace_read_result(output, requested, offset, chars);
-		let event = ContextEvent::tool(bounded_call, bounded_output);
-		Ok(
-			request_tokens.saturating_add(context::tool_event_growth(context, &event))
-				<= maximum_request,
-		)
-	};
-	if !fits(0)? {
-		return Ok(None);
+	Ok(fit_tool_result(
+		context,
+		call,
+		"max_chars",
+		budget,
+		0,
+		|chars| workspace_read_result(output, budget.requested, budget.offset, chars),
+	))
+}
+
+/// Measure the complete call/result envelope, reserving space for remaining calls.
+pub fn tool_result_fits(
+	context: &Context,
+	call: &aidash_domain::provider::ToolCall,
+	parameter: &str,
+	size: usize,
+	output: Value,
+	budget: WorkspaceReadFitBudget,
+) -> bool {
+	let mut bounded = call.clone();
+	bounded.arguments[parameter] = json!(size);
+	let event = ContextEvent::tool(bounded, output);
+	let maximum = budget
+		.request_window
+		.saturating_sub(budget.remaining_calls.saturating_mul(TOOL_EVENT_RESERVE));
+	budget
+		.request_tokens
+		.saturating_add(context::tool_event_growth(context, &event))
+		<= maximum
+}
+
+/// Shared quota search preserves each adapter's minimum viable result size.
+pub fn fit_tool_result(
+	context: &Context,
+	call: &aidash_domain::provider::ToolCall,
+	parameter: &str,
+	budget: WorkspaceReadFitBudget,
+	minimum: usize,
+	result: impl Fn(usize) -> Value,
+) -> Option<usize> {
+	let fits = |size| tool_result_fits(context, call, parameter, size, result(size), budget);
+	let minimum = minimum.min(budget.requested);
+	if !fits(minimum) {
+		return (minimum > 0 && fits(0)).then_some(0);
 	}
-	let mut low = 0;
-	let mut high = requested;
+	let mut low = minimum;
+	let mut high = budget.requested;
 	while low < high {
 		let middle = low + (high - low).div_ceil(2);
-		if fits(middle)? {
+		if fits(middle) {
 			low = middle;
 		} else {
 			high = middle - 1;
 		}
 	}
-	Ok(Some(low))
+	Some(low)
 }
 
 pub fn workspace_read_result(
@@ -357,16 +419,17 @@ pub fn skill_read_range(call: &aidash_domain::provider::ToolCall) -> Result<Work
 	Ok(WorkspaceReadRange { offset, requested })
 }
 
-pub fn skill_read_result(output: &Value, bytes: usize) -> Value {
+pub fn skill_read_result(output: &Value, chars: usize) -> Value {
 	let mut result = output.clone();
 	let original = output["text"].as_str().unwrap_or_default();
-	let end = bounded_utf8_end(original, 0, bytes);
+	let text: String = original.chars().take(chars).collect();
+	let end = text.chars().count();
 	let offset = output["offset"].as_u64().unwrap_or(0) as usize;
 	let total = output["total_chars"].as_u64().unwrap_or(0) as usize;
 	let next = offset.saturating_add(end);
-	result["text"] = json!(&original[..end]);
+	result["text"] = json!(text);
 	result["next_offset"] = (next < total).then_some(json!(next)).unwrap_or(Value::Null);
-	result["budget_limited"] = json!(end < original.len());
+	result["budget_limited"] = json!(end < original.chars().count());
 	if end == 0 && !original.is_empty() {
 		result["deferred"] = json!(true);
 		result["message"] = json!(
@@ -382,45 +445,9 @@ pub fn fit_skill_read_chars(
 	output: &Value,
 	budget: WorkspaceReadFitBudget,
 ) -> Option<usize> {
-	let maximum_request = budget
-		.request_window
-		.saturating_sub(budget.remaining_calls.saturating_mul(TOOL_EVENT_RESERVE));
-	let fits = |bytes: usize| {
-		let mut bounded_call = call.clone();
-		bounded_call.arguments["max_chars"] = json!(bytes);
-		let event = ContextEvent::tool(bounded_call, skill_read_result(output, bytes));
-		budget
-			.request_tokens
-			.saturating_add(context::tool_event_growth(context, &event))
-			<= maximum_request
-	};
-	let minimum = if budget.requested > 0 {
-		output["text"]
-			.as_str()
-			.and_then(|text| text.chars().next())
-			.map(char::len_utf8)
-			.unwrap_or(0)
-	} else {
-		0
-	};
-	let mut low = minimum;
-	let mut high = budget.requested.max(minimum);
-	if minimum > 0 {
-		if !fits(minimum) {
-			return fits(0).then_some(0);
-		}
-	} else if !fits(0) {
-		return None;
-	}
-	while low < high {
-		let middle = low + (high - low).div_ceil(2);
-		if fits(middle) {
-			low = middle;
-		} else {
-			high = middle - 1;
-		}
-	}
-	Some(low)
+	fit_tool_result(context, call, "max_chars", budget, 1, |chars| {
+		skill_read_result(output, chars)
+	})
 }
 
 pub fn force_workspace_read_compaction_window(window: usize, minimum_request: usize) -> usize {
@@ -452,6 +479,75 @@ pub fn deferred_workspace_observation(
 	})
 }
 
+/// Named durable slots are views of one prepared-result protocol.
+pub fn tool_result_plan(
+	pending: &ToolCallState,
+	fitting: ResultFitting,
+	call: &aidash_domain::provider::ToolCall,
+	step: i32,
+	cursor: usize,
+) -> Result<(WorkspaceReadRange, Option<Value>)> {
+	let range = match fitting {
+		ResultFitting::WorkspaceRecord => workspace_read_range(call)?,
+		ResultFitting::SkillText => skill_read_range(call)?,
+		ResultFitting::Observation => WorkspaceReadRange {
+			offset: call.arguments["offset"].as_u64().unwrap_or(0) as usize,
+			requested: call.arguments["limit"]
+				.as_u64()
+				.unwrap_or(context::observation::DEFAULT_LIMIT as u64) as usize,
+		},
+	};
+	let saved = result_plan(pending, fitting)
+		.as_ref()
+		.filter(|plan| plan.step == step && plan.cursor == cursor && &plan.call == call)
+		.map(|plan| plan.result.clone());
+	Ok((range, saved))
+}
+
+pub fn result_plan(pending: &ToolCallState, fitting: ResultFitting) -> &Option<ReadPlan> {
+	match fitting {
+		ResultFitting::WorkspaceRecord => &pending.workspace_read_plan,
+		ResultFitting::SkillText => &pending.skill_read_plan,
+		ResultFitting::Observation => &pending.workspace_observation_plan,
+	}
+}
+pub fn result_plan_mut(
+	pending: &mut ToolCallState,
+	fitting: ResultFitting,
+) -> &mut Option<ReadPlan> {
+	match fitting {
+		ResultFitting::WorkspaceRecord => &mut pending.workspace_read_plan,
+		ResultFitting::SkillText => &mut pending.skill_read_plan,
+		ResultFitting::Observation => &mut pending.workspace_observation_plan,
+	}
+}
+pub fn defer_result(
+	fitting: ResultFitting,
+	call: &aidash_domain::provider::ToolCall,
+	selected_media: Vec<aidash_domain::media::Selection>,
+) -> (ThinkingState, &'static str) {
+	let mut state = ThinkingState {
+		force_workspace_read_compaction: true,
+		selected_media,
+		..Default::default()
+	};
+	let event = match fitting {
+		ResultFitting::WorkspaceRecord => {
+			state.deferred_workspace_read = Some(deferred_workspace_read(call));
+			"run.read_deferred"
+		}
+		ResultFitting::SkillText => {
+			state.deferred_skill_read = Some(deferred_skill_read(call));
+			"run.skill_read_deferred"
+		}
+		ResultFitting::Observation => {
+			state.deferred_workspace_observation = Some(deferred_workspace_observation(call));
+			"run.observation_deferred"
+		}
+	};
+	(state, event)
+}
+
 pub fn workspace_observation_event_fits(
 	context: &Context,
 	call: &aidash_domain::provider::ToolCall,
@@ -461,12 +557,20 @@ pub fn workspace_observation_event_fits(
 	request_window: usize,
 	remaining_calls: usize,
 ) -> bool {
-	let mut bounded_call = call.clone();
-	bounded_call.arguments["limit"] = json!(limit);
-	let event = ContextEvent::tool(bounded_call, output.clone());
-	let maximum_request =
-		request_window.saturating_sub(remaining_calls.saturating_mul(TOOL_EVENT_RESERVE));
-	request_tokens.saturating_add(context::tool_event_growth(context, &event)) <= maximum_request
+	tool_result_fits(
+		context,
+		call,
+		"limit",
+		limit,
+		output.clone(),
+		WorkspaceReadFitBudget {
+			requested: limit,
+			offset: 0,
+			request_tokens,
+			request_window,
+			remaining_calls,
+		},
+	)
 }
 
 pub fn result_artifact_name(title: &str) -> String {
@@ -540,15 +644,8 @@ pub fn encoded_run_message_reservation(messages: &[Value]) -> usize {
 }
 
 pub fn read_only_after_model_media_selection(name: &str) -> bool {
-	matches!(
-		name,
-		"file_read"
-			| "file_search"
-			| "workspace_read"
-			| "workspace_observe"
-			| "skill_list"
-			| "skill_read"
-	)
+	builtin_contract(name)
+		.is_some_and(|contract| contract.behavior.permits(ToolUseMode::MediaPending))
 }
 
 pub fn pending_selected_media(pending: &ToolCallState) -> Vec<aidash_domain::media::Selection> {
@@ -645,7 +742,7 @@ pub enum FrameworkResult {
 }
 
 impl FrameworkResult {
-	pub fn decode(call: &aidash_domain::provider::ToolCall, output: &Value) -> Result<Self> {
+	pub fn decode(contract: &ToolContract, output: &Value) -> Result<Self> {
 		#[derive(serde::Deserialize)]
 		struct ApprovalView {
 			approval_id: Uuid,
@@ -674,12 +771,12 @@ impl FrameworkResult {
 				.map_err(|_| Error::Invalid("approval result is missing a valid ID".into()))?;
 			return Ok(Self::Approval(view.approval_id));
 		}
-		match call.name.as_str() {
-			"human_request" => {
+		match contract.behavior.continuation {
+			Continuation::Human => {
 				let view: HumanView = serde_json::from_value(output.clone())?;
 				Ok(view.human_request_id.map_or(Self::Ordinary, Self::Human))
 			}
-			"workspace_wait" => {
+			Continuation::Wait => {
 				let view: WaitView = serde_json::from_value(output.clone())?;
 				Ok(view.wait_seconds.map_or(Self::Ordinary, Self::Wait))
 			}

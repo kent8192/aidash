@@ -33,8 +33,10 @@ pub struct SkillRead {
 	pub skill_id: Uuid,
 	pub digest: String,
 	pub path: String,
+	/// Zero-based Unicode scalar-value position in the text file.
 	pub offset: Option<usize>,
-	pub max_bytes: Option<usize>,
+	/// Maximum scalar values; encoded-byte resource limits apply independently.
+	pub max_chars: Option<usize>,
 }
 
 use uuid::Uuid;

@@ -33,6 +33,12 @@ unknown file path is returned as a recoverable tool error. Bundled scripts remai
 text and are not run. Configure the tools a Skill needs separately; do not infer
 tool permissions from `allowed-tools`.
 
+Workspace and Skill text reads count Unicode scalar values in `offset`,
+`max_chars`, `next_offset`, and `total_chars` wherever those fields are present.
+Japanese characters and emoji each count as one scalar value; a combining mark
+counts separately. Pinned Skill reads accept `max_chars`. Encoded-byte resource
+limits still cap the returned text independently of that character quota.
+
 Format reference: <https://agentskills.io/specification>.
 Sources: <https://github.com/anthropics/skills>, <https://github.com/openai/skills>.
 

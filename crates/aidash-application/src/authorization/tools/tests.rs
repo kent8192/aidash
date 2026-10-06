@@ -8,6 +8,158 @@ use chrono::Utc;
 use rstest::{fixture, rstest};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
+
+#[rstest]
+#[tokio::test]
+async fn renamed_builtin_keeps_its_grant_resource_and_agent_flag(
+	repository: Repository,
+	run: RunMetadata,
+	mut agent: AgentConfig,
+) {
+	let contract = aidash_domain::tool::builtin_contract("task_create").unwrap();
+	let input = call("make_work", json!({}));
+	super::authorize(&repository, &run, &agent, &input, &contract)
+		.await
+		.unwrap();
+	assert_eq!(
+		repository.calls(),
+		vec![
+			"lease".to_owned(),
+			"require:builtin:task_create:tool.invoke".to_owned(),
+			format!("require:{}:task.create", run.workspace_id),
+			"release".to_owned()
+		]
+	);
+	agent.allow_task_creation = Some(false);
+	let before = repository.calls();
+	assert!(matches!(
+		super::authorize(&repository, &run, &agent, &input, &contract).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(repository.calls(), before);
+}
+
+#[rstest]
+#[tokio::test]
+async fn renamed_registry_alias_uses_exact_reference(
+	repository: Repository,
+	run: RunMetadata,
+	agent: AgentConfig,
+) {
+	let contract = ToolContract::registry(
+		reference(),
+		&ToolConfig::Native {
+			operation: "echo".into(),
+			allowed_hosts: vec![],
+		},
+	);
+	super::authorize(
+		&repository,
+		&run,
+		&agent,
+		&call("no_index_here", json!({})),
+		&contract,
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		repository.calls(),
+		["lease", "catalog:configured:tool.invoke", "release"]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn remote_visibility_uses_contracts_after_aliases_change(
+	mut repository: Repository,
+	agent: AgentConfig,
+) {
+	repository.remote = true;
+	let mut tools = BTreeMap::from([
+		(
+			"create_alias".into(),
+			aidash_domain::tool::builtin_contract("task_create").unwrap(),
+		),
+		(
+			"external_alias".into(),
+			aidash_domain::tool::builtin_contract("outbound_get").unwrap(),
+		),
+		(
+			"registered_alias".into(),
+			ToolContract::registry(
+				reference(),
+				&ToolConfig::Native {
+					operation: "echo".into(),
+					allowed_hosts: vec![],
+				},
+			),
+		),
+	]);
+	super::filter(&repository, &agent, &mut tools, Clone::clone)
+		.await
+		.unwrap();
+	assert_eq!(
+		tools.keys().map(String::as_str).collect::<Vec<_>>(),
+		["create_alias", "registered_alias"]
+	);
+}
+
+// Fixtures assemble contracts just as the native tool composition does.
+async fn authorize(
+	repository: &Repository,
+	run: &RunMetadata,
+	config: &AgentConfig,
+	call: &ToolCall,
+) -> Result<()> {
+	let contract = aidash_domain::tool::builtin_contract(&call.name).or_else(|| {
+		config
+			.tools
+			.iter()
+			.enumerate()
+			.find(|(index, _)| call.name == format!("plugin_{index}"))
+			.map(|(_, reference)| {
+				ToolContract::registry(
+					reference.clone(),
+					&ToolConfig::Native {
+						operation: "echo".into(),
+						allowed_hosts: vec![],
+					},
+				)
+			})
+	});
+	let Some(contract) = contract else {
+		refresh(repository).await?;
+		return Err(Error::Forbidden);
+	};
+	super::authorize(repository, run, config, call, &contract).await
+}
+async fn filter<T: Send + Clone>(
+	repository: &Repository,
+	config: &AgentConfig,
+	tools: &mut BTreeMap<String, T>,
+) -> Result<()> {
+	let mut assembled = tools
+		.iter()
+		.map(|(name, value)| {
+			let contract = aidash_domain::tool::builtin_contract(name).unwrap_or_else(|| {
+				ToolContract::registry(
+					reference(),
+					&serde_json::from_value(repository.catalog.config.clone()).unwrap(),
+				)
+			});
+			(name.clone(), (value.clone(), contract))
+		})
+		.collect();
+	let result = super::filter(repository, config, &mut assembled, |(_, contract)| {
+		contract.clone()
+	})
+	.await;
+	*tools = assembled
+		.into_iter()
+		.map(|(name, (value, _))| (name, value))
+		.collect();
+	result
+}
 fn id(value: u128) -> Uuid {
 	Uuid::from_u128(value)
 }
@@ -428,10 +580,7 @@ async fn unknown_builtin_is_denied_after_its_invoke_decision(
 		authorize(&repository, &run, &agent, &call("unknown", json!({}))).await,
 		Err(Error::Forbidden)
 	));
-	assert_eq!(
-		repository.calls(),
-		vec!["lease", "require:builtin:unknown:tool.invoke", "release"]
-	);
+	assert_eq!(repository.calls(), Vec::<&str>::new());
 }
 #[rstest]
 #[tokio::test]
@@ -450,10 +599,10 @@ async fn native_plugin_requires_the_pinned_catalog_without_a_builtin_decision(
 	assert!(repository.decisions().is_empty());
 }
 #[rstest]
-#[case::missing_index("plugin_9",vec!["lease","release"])]
-#[case::malformed_index("plugin_bad",vec!["lease","require:builtin:plugin_bad:tool.invoke","release"])]
+#[case::missing_index("plugin_9",vec![])]
+#[case::malformed_index("plugin_bad",vec![])]
 #[tokio::test]
-async fn unavailable_plugin_indexes_keep_their_original_resolution_path(
+async fn unavailable_aliases_are_rejected_before_tool_authorization(
 	repository: Repository,
 	run: RunMetadata,
 	agent: AgentConfig,
