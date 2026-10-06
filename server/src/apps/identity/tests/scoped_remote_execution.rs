@@ -4184,6 +4184,8 @@ async fn remote_compaction_without_explicit_recipient_pauses_without_environment
 struct ScopedWorkerProcess {
 	child: std::process::Child,
 	_settings_directory: tempfile::TempDir,
+	#[cfg(target_os = "macos")]
+	_binary_directory: tempfile::TempDir,
 }
 impl ScopedWorkerProcess {
 	fn start(p: &Pair) -> Self {
@@ -4192,7 +4194,22 @@ impl ScopedWorkerProcess {
 		database
 			.query_pairs_mut()
 			.append_pair("options", &format!("-c application_name={}", p.bschema));
-		let child = std::process::Command::new(env!("CARGO_BIN_EXE_aidash"))
+		let binary = env!("CARGO_BIN_EXE_aidash");
+		// Own the exact local executable until the child is reaped. macOS dyld
+		// can stall on the external build volume before the worker starts; the
+		// 30-second provider-arrival deadline must measure worker behavior.
+		#[cfg(target_os = "macos")]
+		let binary_directory = tempfile::Builder::new()
+			.prefix("aidash-scoped-worker-binary-")
+			.tempdir_in("/tmp")
+			.unwrap();
+		#[cfg(target_os = "macos")]
+		let binary = {
+			let snapshot = binary_directory.path().join("aidash");
+			std::fs::copy(binary, &snapshot).expect("snapshot the exact scoped worker executable");
+			snapshot
+		};
+		let child = std::process::Command::new(binary)
 			.args(common::native_process_args(&p.b, "worker"))
 			.envs(common::native_process_environment(
 				&p.b,
@@ -4210,6 +4227,8 @@ impl ScopedWorkerProcess {
 		Self {
 			child,
 			_settings_directory: directory,
+			#[cfg(target_os = "macos")]
+			_binary_directory: binary_directory,
 		}
 	}
 }
