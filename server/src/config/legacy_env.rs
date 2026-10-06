@@ -4,11 +4,19 @@ use reinhardt::conf::settings::sources::{ConfigSource, ScopedSource, SourceError
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-pub struct LegacyEnvironment;
+pub struct LegacyEnvironment {
+	oidc_configured: bool,
+}
+
+impl LegacyEnvironment {
+	pub fn new(oidc_configured: bool) -> Self {
+		Self { oidc_configured }
+	}
+}
 
 impl ConfigSource for LegacyEnvironment {
 	fn load(&self) -> Result<IndexMap<String, Value>, SourceError> {
-		values(|name| std::env::var(name).ok())
+		values_with_oidc(|name| std::env::var(name).ok(), self.oidc_configured)
 	}
 
 	fn load_scoped(&self) -> Result<ScopedSource, SourceError> {
@@ -27,7 +35,10 @@ impl ConfigSource for LegacyEnvironment {
 	}
 }
 
-fn values(read: impl Fn(&str) -> Option<String>) -> Result<IndexMap<String, Value>, SourceError> {
+fn values_with_oidc(
+	read: impl Fn(&str) -> Option<String>,
+	oidc_configured: bool,
+) -> Result<IndexMap<String, Value>, SourceError> {
 	let mut node = serde_json::Map::new();
 	for (key, name) in [
 		("node_id", "AIDASH_NODE_ID"),
@@ -75,14 +86,23 @@ fn values(read: impl Fn(&str) -> Option<String>) -> Result<IndexMap<String, Valu
 		("keycloak_admin_url", "AIDASH_OIDC_KEYCLOAK_ADMIN_URL"),
 		("status_client_id", "AIDASH_OIDC_STATUS_CLIENT_ID"),
 		("status_client_secret", "AIDASH_OIDC_STATUS_CLIENT_SECRET"),
-		(
-			"session_absolute_seconds",
-			"AIDASH_OIDC_SESSION_ABSOLUTE_SECONDS",
-		),
-		("session_idle_seconds", "AIDASH_OIDC_SESSION_IDLE_SECONDS"),
 	] {
 		if let Some(value) = read(name) {
 			oidc.insert(key.into(), Value::String(value));
+		}
+	}
+	// Lifetime tuning must not enable an otherwise absent OIDC provider.
+	if oidc_configured || !oidc.is_empty() {
+		for (key, name) in [
+			(
+				"session_absolute_seconds",
+				"AIDASH_OIDC_SESSION_ABSOLUTE_SECONDS",
+			),
+			("session_idle_seconds", "AIDASH_OIDC_SESSION_IDLE_SECONDS"),
+		] {
+			if let Some(value) = read(name) {
+				oidc.insert(key.into(), Value::String(value));
+			}
 		}
 	}
 	let mut kubernetes = serde_json::Map::new();
@@ -118,6 +138,11 @@ fn values(read: impl Fn(&str) -> Option<String>) -> Result<IndexMap<String, Valu
 	Ok(result)
 }
 
+#[cfg(test)]
+fn values(read: impl Fn(&str) -> Option<String>) -> Result<IndexMap<String, Value>, SourceError> {
+	values_with_oidc(read, false)
+}
+
 fn database(value: &str) -> Result<Value, SourceError> {
 	let invalid = || SourceError::Parse("DATABASE_URL must be a PostgreSQL URL".into());
 	let url = reqwest::Url::parse(value).map_err(|_| invalid())?;
@@ -149,6 +174,110 @@ fn database(value: &str) -> Result<Value, SourceError> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::apps::identity::serializers::settings::DashboardSettings;
+	use reinhardt::conf::settings::{
+		builder::SettingsBuilder, scoped::ScopedSettings, sources::DefaultSource,
+	};
+
+	fn composed_dashboard(data: IndexMap<String, Value>, dashboard: Value) -> ScopedSettings {
+		let mut legacy = DefaultSource::new();
+		for (name, value) in data {
+			legacy = legacy.with_value(&name, value);
+		}
+		SettingsBuilder::new()
+			.add_source(DefaultSource::new().with_value("dashboard", dashboard))
+			.add_source(legacy)
+			.build_scoped()
+			.unwrap()
+	}
+
+	#[rstest::rstest]
+	#[case::absolute("AIDASH_OIDC_SESSION_ABSOLUTE_SECONDS")]
+	#[case::idle("AIDASH_OIDC_SESSION_IDLE_SECONDS")]
+	fn session_tuning_does_not_enable_dashboard_oidc(#[case] tuning: &str) {
+		// Arrange: an installation without a provider retains its optional OIDC node.
+		let data = values(|name| (name == tuning).then(|| "3600".into())).unwrap();
+		// Act and Assert: tuning alone must not create incomplete provider settings.
+		assert!(!data.contains_key("dashboard"));
+		let settings = composed_dashboard(data, json!({}));
+		assert!(
+			settings
+				.require_path::<DashboardSettings>(&["dashboard"])
+				.unwrap()
+				.oidc
+				.is_none()
+		);
+	}
+
+	#[rstest::rstest]
+	#[case::issuer("AIDASH_OIDC_ISSUER")]
+	#[case::client("AIDASH_OIDC_CLIENT_ID")]
+	#[case::secret("AIDASH_OIDC_CLIENT_SECRET")]
+	#[case::origin("AIDASH_OIDC_PUBLIC_ORIGIN")]
+	#[case::admin("AIDASH_OIDC_KEYCLOAK_ADMIN_URL")]
+	#[case::status_client("AIDASH_OIDC_STATUS_CLIENT_ID")]
+	#[case::status_secret("AIDASH_OIDC_STATUS_CLIENT_SECRET")]
+	fn provider_variables_retain_session_tuning_and_partial_validation(#[case] provider: &str) {
+		// Arrange: every legacy provider field still activates normal validation.
+		let data = values(|name| match name {
+			"AIDASH_OIDC_SESSION_ABSOLUTE_SECONDS" => Some("3600".into()),
+			"AIDASH_OIDC_SESSION_IDLE_SECONDS" => Some("900".into()),
+			name if name == provider => Some("provider-fixture".into()),
+			_ => None,
+		})
+		.unwrap();
+		// Assert: lifetimes are retained without supplying absent credentials.
+		assert_eq!(
+			data["dashboard"]["oidc"]["session_absolute_seconds"],
+			"3600"
+		);
+		assert_eq!(data["dashboard"]["oidc"]["session_idle_seconds"], "900");
+		assert_eq!(data["dashboard"]["oidc"].as_object().unwrap().len(), 3);
+		let settings = composed_dashboard(data, json!({}));
+		assert!(settings.has_path(&["dashboard", "oidc"]));
+		assert!(
+			settings
+				.require_path::<DashboardSettings>(&["dashboard"])
+				.is_err()
+		);
+	}
+
+	#[rstest::rstest]
+	fn configured_oidc_accepts_lifetime_overrides_without_legacy_provider_variables() {
+		// Arrange: files or native settings already supplied the provider.
+		let data = values_with_oidc(
+			|name| match name {
+				"AIDASH_OIDC_SESSION_ABSOLUTE_SECONDS" => Some("3600".into()),
+				"AIDASH_OIDC_SESSION_IDLE_SECONDS" => Some("900".into()),
+				_ => None,
+			},
+			true,
+		)
+		.unwrap();
+		// Assert: deep composition can override lifetimes while retaining credentials.
+		assert_eq!(
+			data["dashboard"]["oidc"],
+			json!({
+				"session_absolute_seconds": "3600", "session_idle_seconds": "900"
+			})
+		);
+		let settings = composed_dashboard(
+			data,
+			json!({"oidc": {
+				"client_id":"configured-client", "client_secret":"fixture-secret",
+				"public_origin":"https://dashboard.example.test"
+			}}),
+		);
+		let oidc = settings
+			.require_path::<DashboardSettings>(&["dashboard"])
+			.unwrap()
+			.oidc
+			.unwrap();
+		assert_eq!(oidc.client_id, "configured-client");
+		assert_eq!(oidc.client_secret, "fixture-secret");
+		assert_eq!(oidc.session_absolute_seconds, 3600);
+		assert_eq!(oidc.session_idle_seconds, 900);
+	}
 
 	#[rstest::rstest]
 	#[case::space("tenant%20db", "tenant db")]

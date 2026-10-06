@@ -73,15 +73,15 @@ pub struct ProjectSettings;
 ///
 /// Returns an error when a settings source cannot be loaded or parsed.
 pub fn get_settings() -> Result<PendingSettings<ProjectSettings>, BuildError> {
-	settings_builder().build_pending_composed::<ProjectSettings>()
+	settings_builder()?.build_pending_composed::<ProjectSettings>()
 }
 
 /// Merge settings without expanding unselected runtime secrets.
 pub fn get_scoped_settings() -> Result<ScopedSettings, BuildError> {
-	settings_builder().build_scoped()
+	settings_builder()?.build_scoped()
 }
 
-fn settings_builder() -> SettingsBuilder {
+fn settings_builder() -> Result<SettingsBuilder, BuildError> {
 	let profile_str = env::var("REINHARDT_ENV").unwrap_or_else(|_| "local".to_string());
 
 	// Resolve the managed project root independently of the caller's working directory.
@@ -90,9 +90,16 @@ fn settings_builder() -> SettingsBuilder {
 		.map(std::path::PathBuf::from)
 		.unwrap_or_else(|| base_dir.join("settings"));
 
-	file_settings_builder(&profile_str, &base_dir, &settings_dir)
-		.add_source(super::legacy_env::LegacyEnvironment)
+	// Presence inspection does not interpolate unselected runtime credentials.
+	let configured = file_settings_builder(&profile_str, &base_dir, &settings_dir)
 		.add_source(HighPriorityEnvSource::new().with_prefix("REINHARDT_"))
+		.build_scoped()?
+		.has_path(&["dashboard", "oidc"]);
+	Ok(
+		file_settings_builder(&profile_str, &base_dir, &settings_dir)
+			.add_source(super::legacy_env::LegacyEnvironment::new(configured))
+			.add_source(HighPriorityEnvSource::new().with_prefix("REINHARDT_")),
+	)
 }
 
 fn file_settings_builder(
@@ -203,5 +210,26 @@ mod tests {
 			settings.settings().core.installed_apps,
 			super::super::apps::APP_LABELS
 		);
+	}
+
+	#[rstest::rstest]
+	fn oidc_presence_does_not_resolve_unselected_credentials() {
+		// Arrange: management operations may only need to inspect provider presence.
+		let directory = tempfile::tempdir().unwrap();
+		std::fs::write(
+			directory.path().join("base.toml"),
+			concat!(
+				"[dashboard.oidc]\n",
+				"client_id = 'configured-client'\n",
+				"client_secret = '${AIDASH_UNSELECTED_OIDC_REGRESSION_SECRET}'\n",
+			),
+		)
+		.unwrap();
+		// Act: inspect the same scoped settings graph before adding legacy tuning.
+		let settings = file_settings_builder("local", directory.path(), directory.path())
+			.build_scoped()
+			.unwrap();
+		// Assert: no interpolation or required-field validation is needed for presence.
+		assert!(settings.has_path(&["dashboard", "oidc"]));
 	}
 }
