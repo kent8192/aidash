@@ -240,7 +240,11 @@ impl ExecutionAuthority for Backend {
 			Ok(())
 		}
 	}
-	async fn tool(&self, call: &ToolCall) -> Result<()> {
+	async fn tool(
+		&self,
+		call: &ToolCall,
+		_contract: &aidash_domain::tool::ToolContract,
+	) -> Result<()> {
 		let _ = call;
 		unexpected("ExecutionAuthority.tool")
 	}

@@ -1948,7 +1948,7 @@ async fn skill_reads_fit_the_pending_request_budget_before_recording(
 	let text = result["text"].as_str().unwrap();
 	assert!(!text.is_empty() && text.len() < 8000);
 	assert_eq!(result["budget_limited"], true);
-	assert_eq!(result["next_offset"], text.len());
+	assert_eq!(result["next_offset"], text.chars().count());
 	assert!(json!(run.state)["data"]["request_tokens"].as_u64().unwrap() <= 10000);
 	cleanup(store, &url, &schema).await;
 }

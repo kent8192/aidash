@@ -3,6 +3,52 @@ use super::*;
 use aidash_domain::capabilities::skills::SkillMetadata;
 
 #[rstest::rstest]
+#[case("abc")]
+#[case("日本語")]
+#[case("A😀B")]
+#[case("e\u{301}界")]
+fn text_pages_reconstruct_using_scalar_cursors(#[case] text: &str) {
+	let mut offset = 0;
+	let mut reconstructed = String::new();
+	loop {
+		let (chunk, next) = text_chunk(text, offset, 1, 4).unwrap();
+		assert_eq!(chunk.chars().count(), 1);
+		assert!(chunk.len() <= 4);
+		reconstructed.push_str(chunk);
+		let Some(next) = next else {
+			break;
+		};
+		assert_eq!(next, offset + 1);
+		offset = next;
+	}
+	assert_eq!(reconstructed, text);
+}
+
+#[rstest::rstest]
+fn scalar_quota_and_encoded_byte_cap_are_independent() {
+	assert_eq!(text_chunk("😀界a", 0, 100, 4).unwrap(), ("😀", Some(1)));
+	assert_eq!(text_chunk("😀界a", 1, 100, 4).unwrap(), ("界a", None));
+	assert!(
+		matches!(text_chunk("😀", 0, 1, 3), Err(Error::Invalid(ref code)) if code == "READ_BUDGET")
+	);
+	assert_eq!(text_chunk("😀", 1, 1, 1).unwrap(), ("", None));
+	assert!(
+		matches!(text_chunk("😀", 2, 1, 4), Err(Error::Invalid(ref code)) if code == "INVALID_READ_RANGE")
+	);
+}
+
+#[rstest::rstest]
+fn skill_read_schema_accepts_chars_and_rejects_old_byte_input() {
+	let request = json!({"skill_id":Uuid::nil(), "digest":"digest", "path":"guide.md", "offset":1, "max_chars":2});
+	let parsed: SkillRead = serde_json::from_value(request.clone()).unwrap();
+	assert_eq!(parsed.max_chars, Some(2));
+	let mut old = request;
+	old.as_object_mut().unwrap().remove("max_chars");
+	old["max_bytes"] = json!(2);
+	assert!(serde_json::from_value::<SkillRead>(old).is_err());
+}
+
+#[rstest::rstest]
 fn loaded_skill_reserve_matches_the_escaped_system_prompt() {
 	let instructions = "---\nname: check\n---\nA quoted \"line\" and a newline\n";
 	let metadata = SkillMetadata {

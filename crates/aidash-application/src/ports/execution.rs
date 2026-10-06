@@ -123,6 +123,7 @@ pub trait ExecutionHome: Send + Sync {
 #[async_trait]
 pub trait ExecutionTool: Send + Sync {
 	fn specification(&self) -> ToolSpec;
+	fn contract(&self) -> aidash_domain::tool::ToolContract;
 	fn replay_safe(&self) -> bool;
 	async fn invoke(&self, run: &Run, input: Value, key: &str) -> Result<Value>;
 }
@@ -135,7 +136,11 @@ pub trait ExecutionAuthority: Send + Sync {
 	fn is_remote(&self) -> bool;
 	async fn action(&self, action: &str, kind: &str, id: Uuid) -> Result<()>;
 	async fn inference(&self) -> Result<()>;
-	async fn tool(&self, call: &ToolCall) -> Result<()>;
+	async fn tool(
+		&self,
+		call: &ToolCall,
+		contract: &aidash_domain::tool::ToolContract,
+	) -> Result<()>;
 	async fn human_read(&self, id: Uuid) -> Result<()>;
 	async fn model_media(&self, selections: &[Selection]) -> Result<Vec<ContentPart>>;
 	async fn human_message_media(

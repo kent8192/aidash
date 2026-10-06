@@ -1,5 +1,4 @@
 //! Tool validation, skill reads, and delegated task execution.
-use crate::execution::bounded_utf8_end;
 use crate::{
 	Error, Result,
 	ports::tools::{ToolOperations, ToolTransport},
@@ -40,12 +39,19 @@ impl Plugin {
 	pub fn specification(&self) -> ToolSpec {
 		plugin_specification(&self.entry, &self.alias)
 	}
-	pub fn replay_safe(&self) -> bool {
-		match &self.config {
-			ToolConfig::Http { replay, .. } | ToolConfig::Mcp { replay, .. } => replay != "unsafe",
-			_ => true,
-		}
+	pub fn contract(&self) -> aidash_domain::tool::ToolContract {
+		aidash_domain::tool::ToolContract::registry(
+			EntityRef {
+				id: self.entry.id.clone(),
+				version: self.entry.version.clone(),
+			},
+			&self.config,
+		)
 	}
+	pub fn replay_safe(&self) -> bool {
+		self.contract().replay_safe()
+	}
+
 	pub async fn invoke(
 		&self,
 		ctx: &ToolContext<'_>,
@@ -104,6 +110,7 @@ fn validate_arguments(schema: &Value, input: &Value) -> Result<()> {
 
 pub struct Builtin {
 	pub name: &'static str,
+	contract: aidash_domain::tool::ToolContract,
 	pub description: &'static str,
 	pub schema: Value,
 }
@@ -115,9 +122,13 @@ impl Builtin {
 			parameters: self.schema.clone(),
 		}
 	}
-	pub fn replay_safe(&self) -> bool {
-		true
+	pub fn contract(&self) -> aidash_domain::tool::ToolContract {
+		self.contract.clone()
 	}
+	pub fn replay_safe(&self) -> bool {
+		self.contract().replay_safe()
+	}
+
 	pub async fn invoke(&self, ctx: &ToolContext<'_>, input: Value, key: &str) -> Result<Value> {
 		jsonschema::validator_for(&self.schema)
 			.map_err(|e| Error::Invalid(e.to_string()))?
@@ -145,13 +156,12 @@ impl Builtin {
 					.ok_or_else(|| Error::Invalid(format!("Skill file not found: {path}")))?;
 				let offset = input["offset"].as_u64().unwrap_or(0) as usize;
 				let max_chars = input["max_chars"].as_u64().unwrap_or(8000).min(16000) as usize;
-				let mut start = offset.min(file.content.len());
-				while !file.content.is_char_boundary(start) {
-					start -= 1;
-				}
-				let end = bounded_utf8_end(&file.content, start, max_chars);
+				let total = file.content.chars().count();
+				let start = offset.min(total);
+				let text: String = file.content.chars().skip(start).take(max_chars).collect();
+				let end = start + text.chars().count();
 				Ok(
-					json!({"path":path,"text":&file.content[start..end],"encoding":file.encoding.as_deref().unwrap_or("utf8"),"offset":start,"total_chars":file.content.len(),"next_offset":if end < file.content.len() { Some(end) } else { None }}),
+					json!({"path":path,"text":text,"encoding":file.encoding.as_deref().unwrap_or("utf8"),"offset":start,"total_chars":total,"next_offset":if end < total { Some(end) } else { None }}),
 				)
 			}
 			"agent_discover" => Ok(json!(
@@ -256,61 +266,85 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 	let entries = vec![
 		Builtin {
 			name: "skill_read",
+			contract: aidash_domain::tool::builtin_contract("skill_read")
+				.expect("declared builtin"),
 			description: "Read a file bundled with one of this agent's registered Skills. Use the exact Skill id/version and relative path listed in the Skill instructions; continue from next_offset when present. Binary files are returned as base64 text with an encoding field. The returned chunk is capped to fit the active request budget; if deferred is true, continue on a later turn.",
 			schema: json!({"type":"object","required":["skill","path"],"properties":{"skill":entity_ref,"path":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "agent_discover",
+			contract: aidash_domain::tool::builtin_contract("agent_discover")
+				.expect("declared builtin"),
 			description: "Find local and federated agents by capability, skill, tag, language or model. Choose an exact node_id, entity id and version from these results.",
 			schema: json!({"type":"object","properties":{"capability":string,"language":string,"skill":string,"tag":string,"model":string,"query":string},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "task_create",
+			contract: aidash_domain::tool::builtin_contract("task_create")
+				.expect("declared builtin"),
 			description: "Decompose a goal or task. Create a subtask in this workspace; returns its ID. Delegate it next.",
 			schema: json!({"type":"object","required":["title","description"],"properties":{"title":string,"description":string,"requirements":{"type":"object"},"dependencies":{"type":"array","items":string},"parent_id":string},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "task_assign",
+			contract: aidash_domain::tool::builtin_contract("task_assign")
+				.expect("declared builtin"),
 			description: "Assign a workspace task to an approved existing agent, or request a generated specialist using an explicitly named generation policy. Generation may wait for human approval. Requires a tenant-scoped execution identity.",
 			schema: json!({"type":"object","required":["task_id","policy_id","reason"],"properties":{"task_id":string,"policy_id":string,"reason":string},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "task_delegate",
+			contract: aidash_domain::tool::builtin_contract("task_delegate")
+				.expect("declared builtin"),
 			description: "Offer an existing workspace task to the explicitly selected local or remote agent.",
 			schema: json!({"type":"object","required":["task_id","node_id","agent"],"properties":{"task_id":string,"node_id":string,"agent":entity_ref},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "artifact_publish",
+			contract: aidash_domain::tool::builtin_contract("artifact_publish")
+				.expect("declared builtin"),
 			description: "Publish an intermediate artifact to the shared workspace.",
 			schema: json!({"type":"object","required":["kind","name","content"],"properties":{"kind":{"enum":["text","json","file_reference","code","structured_result"]},"name":string,"content":{}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_message",
+			contract: aidash_domain::tool::builtin_contract("workspace_message")
+				.expect("declared builtin"),
 			description: "Send a message to the human and other agents sharing this workspace.",
 			schema: json!({"type":"object","required":["content"],"properties":{"content":string},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_observe",
+			contract: aidash_domain::tool::builtin_contract("workspace_observe")
+				.expect("declared builtin"),
 			description: "Read a bounded summary of goal, tasks, artifact references, messages and recent event metadata. Use workspace_read for full records. Collections have separate totals and next_offset; events/messages are newest first. Refresh pagination if the workspace changes.",
 			schema: json!({"type":"object","properties":{"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_read",
+			contract: aidash_domain::tool::builtin_contract("workspace_read")
+				.expect("declared builtin"),
 			description: "Read one accessible workspace record by kind and exact ID. Returns a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.",
 			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event"]},"id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_wait",
+			contract: aidash_domain::tool::builtin_contract("workspace_wait")
+				.expect("declared builtin"),
 			description: "Wait without inference until peers have made progress. Recheck workspace tasks on the next turn.",
 			schema: json!({"type":"object","required":["seconds"],"properties":{"seconds":{"type":"integer","minimum":1,"maximum":60}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "memory_write",
+			contract: aidash_domain::tool::builtin_contract("memory_write")
+				.expect("declared builtin"),
 			description: "Replace this agent's persistent memory for the current workspace with this JSON object.",
 			schema: json!({"type":"object"}),
 		},
 		Builtin {
 			name: "human_request",
+			contract: aidash_domain::tool::builtin_contract("human_request")
+				.expect("declared builtin"),
 			description: "Ask the human for input and wait for a response. Approval requests do not grant permission until answered.",
 			schema: json!({"type":"object","required":["kind","prompt"],"properties":{"kind":{"enum":["QUESTION","APPROVAL_REQUIRED","CONFIRMATION","INFORMATION_REQUEST"]},"prompt":string},"additionalProperties":false}),
 		},

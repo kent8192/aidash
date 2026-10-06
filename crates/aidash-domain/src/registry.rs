@@ -168,15 +168,9 @@ fn max_steps() -> i32 {
 
 impl AgentConfig {
 	pub fn permits_builtin(&self, name: &str) -> bool {
-		match name {
-			"task_create" => self.allow_task_creation != Some(false),
-			"task_assign" | "task_delegate" => self.allow_task_delegation != Some(false),
-			"memory_write" => self.allow_memory_write != Some(false),
-			"workspace_read" | "workspace_observe" | "workspace_wait" => {
-				self.allow_workspace_retrieval != Some(false)
-			}
-			_ => true,
-		}
+		crate::tool::builtin_contract(name)
+			.and_then(|contract| contract.authorization.flag)
+			.is_none_or(|flag| flag.permitted(self))
 	}
 }
 

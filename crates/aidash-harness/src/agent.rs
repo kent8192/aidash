@@ -5,7 +5,7 @@ use aidash_domain::{
 	media::Selection,
 	model::ModelConfig,
 	semantic::{Failure, InputRead},
-	tool::ToolConfig,
+	tool::{ResultFitting, ToolIdentity, ToolUseMode},
 	*,
 };
 use serde_json::{Value, json};
@@ -252,7 +252,7 @@ impl<'a> Executor<'a> {
 				let documents =
 					self.environment.documents(&entry).await?;
 				let mut context = run.context.clone();
-				capture_message_read_coverage(&mut context);
+				capture_declared_coverage(&mut context, &tools, false);
 				let observation = home
 					.observation(0, context::observation::DEFAULT_LIMIT)
 					.await?;
@@ -337,7 +337,7 @@ impl<'a> Executor<'a> {
 				}
 				let mut specifications = tools
 					.iter()
-					.filter(|(name, _)| !run_message_catchup || name.as_str() == "workspace_read")
+					.filter(|(_, tool)| !run_message_catchup || tool.contract().behavior.permits(ToolUseMode::MessageCatchUp))
 					.map(|(_, tool)| tool)
 					.map(|t| t.specification())
 					.collect::<Vec<_>>();
@@ -551,7 +551,7 @@ impl<'a> Executor<'a> {
 				}
 				// Count only tool content that survived compaction and was present
 				// in a successful provider request, not every completed read.
-				capture_message_inference_coverage(&mut context);
+				capture_declared_coverage(&mut context, &tools, true);
 				if let Some(seq) = media.through_seq {
 					context.media_inferred_seq = context.media_inferred_seq.max(seq);
 				}
@@ -688,17 +688,18 @@ impl<'a> Executor<'a> {
 					store.save_run(run, token, "run.media_deferred").await?;
 					return Ok(());
 				}
+				let tools = self.environment.tools(run, &entry).await?;
 				let run_message_catchup = run.state.tool()?.run_message_catchup;
 				if run_message_catchup {
 					// A provider response cannot execute task tools during catch-up,
 					// even if it returns calls that were not in the advertised tool set.
 					result
 						.tool_calls
-						.retain(|call| call.name == "workspace_read");
+						.retain(|call| tools.get(&call.name).is_some_and(|tool| tool.contract().behavior.permits(ToolUseMode::MessageCatchUp)));
 				}
 				let required_reads = run.state.tool()?.required_run_message_reads.clone();
 				let mut context = run.context.clone();
-				capture_message_read_coverage(&mut context);
+				capture_declared_coverage(&mut context, &tools, false);
 				run.context = context.clone();
 				let references_read = required_reads
 					.iter()
@@ -713,7 +714,7 @@ impl<'a> Executor<'a> {
 				let cursor = run.state.tool()?.cursor;
 				if !informed_response
 					&& let Some(call) = result.tool_calls.get(cursor)
-					&& !is_required_message_read(call, &required_reads, &context)
+					&& !tools.get(&call.name).is_some_and(|tool| is_required_message_read_for(&tool.contract(), call, &required_reads, &context))
 				{
 					context.history.push(ContextEvent::RunMessageReadRequired {
 						message_ids: required_reads.clone(),
@@ -800,7 +801,7 @@ impl<'a> Executor<'a> {
 						.copied()
 						.collect::<std::collections::BTreeSet<_>>();
 					context.history.retain(|event| {
-						message_read_range(event)
+						declared_message_read_range(&tools, event)
 							.is_none_or(|(id, _, _, _)| !summarized_ids.contains(&id))
 					});
 					for id in &required_reads {
@@ -918,306 +919,117 @@ impl<'a> Executor<'a> {
 					return Ok(());
 				}
 				let mut context = run.context.clone();
-				capture_message_read_coverage(&mut context);
+				capture_declared_coverage(&mut context, &tools, false);
 				let mut call = result.tool_calls[cursor].clone();
-				if !pending_selected_media(run.state.tool()?).is_empty()
-					&& !read_only_after_model_media_selection(&call.name)
-				{
-					return self
-						.tool_error(
-							run,
-							token,
-							&call,
-							cursor,
-							"selected model media must be inferred before this tool call; retry it after the next model response".into(),
-						)
-						.await;
+				let Some(tool) = tools.get(&call.name) else {
+					return self.tool_error(run, token, &call, cursor, format!("unavailable tool {}", call.name)).await;
+				};
+				let contract = tool.contract();
+				if !pending_selected_media(run.state.tool()?).is_empty() && !contract.behavior.permits(ToolUseMode::MediaPending) {
+					return self.tool_error(run, token, &call, cursor, "selected model media must be inferred before this tool call; retry it after the next model response".into()).await;
+				}
+				// Retrieval must have current authority before any resource is fetched.
+				if let Some(guard) = guard {
+					match guard.tool(&call, &contract).await {
+						Ok(()) => {},
+						Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => return self.tool_error(run, token, &call, cursor, message).await,
+						Err(error) => return Err(error),
+					}
 				}
 				let mut prepared_result = None;
-				if call.name == "workspace_read" {
-					let (read_range, saved_read) = match workspace_read_plan_result(
-						&call,
-						run.step,
-						cursor,
-						run.state.tool()?,
-					) {
+				if let Some(fitting) = contract.behavior.fitting_for(&call.arguments) {
+					let (range, saved) = match tool_result_plan(run.state.tool()?, fitting, &call, run.step, cursor) {
 						Ok(plan) => plan,
-						Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => {
-							return self.tool_error(run, token, &call, cursor, message).await;
-						}
+						Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => return self.tool_error(run, token, &call, cursor, message).await,
 						Err(error) => return Err(error),
 					};
-					if let Some(output) = saved_read {
-						prepared_result = Some(output.clone());
-					} else {
-						let request_tokens = run.state.tool()?.request_tokens;
-						let request_window = run.state.tool()?.request_window;
-						match cap_workspace_read(
-							home.as_ref(),
-							&context,
-							&call,
-							read_range,
-							request_tokens,
-							request_window,
-							result.tool_calls.len().saturating_sub(cursor + 1),
-						)
-						.await
-						{
-							Ok(WorkspaceReadFit::Skip) => {}
-							Ok(WorkspaceReadFit::NoEnvelopeRoom) => {
-								// Start a new inference turn without appending an error event:
-								// even that envelope could exceed the smaller forced-compaction
-								// quota on the next request.
-
-								if !run_message_catchup {
-									run.step += 1;
-								}
-								run.state = RunState::Thinking(ThinkingState {
-									force_workspace_read_compaction: true,
-									deferred_workspace_read: Some(deferred_workspace_read(&call)),
-									selected_media: pending_selected_media(run.state.tool()?),
-									..Default::default()
-								});
-								store.save_run(run, token, "run.read_deferred").await?;
+					if let Some(output) = saved { prepared_result = Some(output); }
+					else {
+						let budget = WorkspaceReadFitBudget {
+							offset: range.offset,
+							requested: range.requested,
+							request_tokens: run.state.tool()?.request_tokens,
+							request_window: run.state.tool()?.request_window,
+							remaining_calls: result.tool_calls.len().saturating_sub(cursor + 1),
+						};
+						let fitted = prepare_tool_result(home.as_ref(), tool.as_ref(), run, &context, &call, fitting, budget).await;
+						match fitted {
+							Ok(PreparedResult::Skip) => {},
+							Ok(PreparedResult::NoEnvelopeRoom) => {
+								if !run_message_catchup || !contract.behavior.catch_up { run.step += 1; }
+								let (next, event) = defer_result(fitting, &call, pending_selected_media(run.state.tool()?));
+								run.state = RunState::Thinking(next);
+								store.save_run(run, token, event).await?;
 								return Ok(());
-							}
-							Ok(WorkspaceReadFit::Fitted {
-								call: bounded,
-								result: output,
-							}) => {
+							},
+							Ok(PreparedResult::Fitted { call: bounded, result: output }) => {
 								call = bounded;
 								result.tool_calls[cursor] = call.clone();
 								run.state.tool_mut()?.response = result.clone();
-								run.state.tool_mut()?.workspace_read_plan = Some(ReadPlan {
-									step: run.step,
-									cursor,
-									call: call.clone(),
-									result: output.clone(),
-								});
+								let plan = ReadPlan { step: run.step, cursor, call: call.clone(), result: output.clone() };
+								*result_plan_mut(run.state.tool_mut()?, fitting) = Some(plan);
 								prepared_result = Some(output);
-							}
-							Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => {
-								return self.tool_error(run, token, &call, cursor, message).await;
-							}
+							},
+							Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => return self.tool_error(run, token, &call, cursor, message).await,
 							Err(error) => return Err(error),
 						}
-					}
-				}
-				if call.name == "skill_read" && call.arguments.get("skill").is_some() {
-					let range = match skill_read_range(&call) {
-						Ok(range) => range,
-						Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => {
-							return self.tool_error(run, token, &call, cursor, message).await;
-						}
-						Err(error) => return Err(error),
-					};
-					let saved_output = run
-						.state
-						.tool()?
-						.skill_read_plan
-						.as_ref()
-						.filter(|p| p.step == run.step && p.cursor == cursor && p.call == call)
-						.map(|p| p.result.clone());
-					if let Some(output) = saved_output {
-						prepared_result = Some(output);
-					} else {
-						let output = match self.environment.builtins(run).await?
-							.get("skill_read")
-							.ok_or_else(|| Error::Invalid("skill_read builtin unavailable".into()))?
-							.invoke(run, call.arguments.clone(), "")
-							.await
-						{
-							Ok(output) => output,
-							Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => {
-								return self.tool_error(run, token, &call, cursor, message).await;
-							}
-							Err(error) => return Err(error),
-						};
-						let request_tokens = run.state.tool()?.request_tokens;
-						let request_window = run.state.tool()?.request_window;
-						let budget = WorkspaceReadFitBudget {
-							requested: range.requested,
-							offset: range.offset,
-							request_tokens,
-							request_window,
-							remaining_calls: result.tool_calls.len().saturating_sub(cursor + 1),
-						};
-						let Some(chars) = fit_skill_read_chars(&context, &call, &output, budget)
-						else {
-							run.step += 1;
-							run.state = RunState::Thinking(ThinkingState {
-								force_workspace_read_compaction: true,
-								deferred_skill_read: Some(deferred_skill_read(&call)),
-								selected_media: pending_selected_media(run.state.tool()?),
-								..Default::default()
-							});
-							store
-								.save_run(run, token, "run.skill_read_deferred")
-								.await?;
-							return Ok(());
-						};
-						call.arguments["max_chars"] = json!(chars);
-						result.tool_calls[cursor] = call.clone();
-						run.state.tool_mut()?.response = result.clone();
-						let bounded = skill_read_result(&output, chars);
-						run.state.tool_mut()?.skill_read_plan = Some(ReadPlan {
-							step: run.step,
-							cursor,
-							call: call.clone(),
-							result: bounded.clone(),
-						});
-						prepared_result = Some(bounded);
-					}
-				}
-				if call.name == "workspace_observe" {
-					let saved_output = run
-						.state
-						.tool()?
-						.workspace_observation_plan
-						.as_ref()
-						.filter(|p| p.step == run.step && p.cursor == cursor && p.call == call)
-						.map(|p| p.result.clone());
-					if let Some(output) = saved_output {
-						prepared_result = Some(output);
-					} else {
-						let offset = call.arguments["offset"].as_u64().unwrap_or(0) as usize;
-						let requested = call.arguments["limit"]
-							.as_u64()
-							.unwrap_or(context::observation::DEFAULT_LIMIT as u64)
-							as usize;
-						let request_tokens = run.state.tool()?.request_tokens;
-						let request_window = run.state.tool()?.request_window;
-						let remaining_calls = result.tool_calls.len().saturating_sub(cursor + 1);
-						let fitted = home
-							.observation_fitted(offset, requested, &|limit, output| {
-								Ok(workspace_observation_event_fits(
-									&context,
-									&call,
-									limit,
-									output,
-									request_tokens,
-									request_window,
-									remaining_calls,
-								))
-							})
-							.await?;
-						let Some((limit, output)) = fitted else {
-							// Retry after compaction without appending an observation event
-							// that cannot fit in the next request quota.
-
-							run.step += 1;
-							run.state = RunState::Thinking(ThinkingState {
-								force_workspace_read_compaction: true,
-								deferred_workspace_observation: Some(
-									deferred_workspace_observation(&call),
-								),
-								selected_media: pending_selected_media(run.state.tool()?),
-								..Default::default()
-							});
-							store
-								.save_run(run, token, "run.observation_deferred")
-								.await?;
-							return Ok(());
-						};
-						call.arguments["limit"] = json!(limit);
-						result.tool_calls[cursor] = call.clone();
-						run.state.tool_mut()?.response = result.clone();
-						run.state.tool_mut()?.workspace_observation_plan = Some(ReadPlan {
-							step: run.step,
-							cursor,
-							call: call.clone(),
-							result: output.clone(),
-						});
-						prepared_result = Some(output);
 					}
 				}
 				let call = &call;
-				let tools = self.environment.tools(run, &entry).await?;
-				let Some(tool) = tools.get(&call.name) else {
-					return self
-						.tool_error(
-							run,
-							token,
-							call,
-							cursor,
-							format!("unavailable tool {}", call.name),
-						)
-						.await;
-				};
-				if let Some(guard) = guard {
-					match guard.tool(call).await {
-						Ok(()) => {}
-						Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => {
-							return self.tool_error(run, token, call, cursor, message).await;
-						}
-						Err(error) => return Err(error),
-					}
-				}
 				let response_epoch = run.state.tool()?.response_epoch;
 				let key = format!("{}:{}:{}", run.id, response_epoch, cursor);
 				// New workbench versions require an explicit, one-call approval for
 				// external writes. Legacy versions have no behavior flags and keep
 				// their existing execution contract.
 				if agent.allow_task_creation.is_some()
-					&& let Some(index) = call
-						.name
-						.strip_prefix("plugin_")
-						.and_then(|value| value.parse::<usize>().ok())
-					&& let Some(reference) = agent.tools.get(index)
+					&& contract.behavior.workbench_approval
+					&& let ToolIdentity::Registry(reference) = &contract.identity
 				{
-					let entry = self
-						.environment
-						.catalog().get_for_run(&*run, &reference.id, &reference.version)
-						.await?;
-					let config: ToolConfig = serde_json::from_value(entry.config)?;
-					let writes = matches!(config, ToolConfig::Http { ref replay, .. } | ToolConfig::Mcp { ref replay, .. } if replay != "read_only");
-					if writes {
-						if let Some(decision) = run
-							.state
-							.tool()?
-							.workbench_approval_result
-							.as_ref()
-							.filter(|d| d.key == key && d.call == *call)
-						{
-							if !decision.approved || decision.expires_at <= chrono::Utc::now() {
-								return self
-									.tool_error(
-										run,
-										token,
-										call,
-										cursor,
-										"external write approval was denied or expired".into(),
-									)
-									.await;
-							}
-						} else {
-							let prompt = format!(
-								"Approve this exact external tool action once? Tool: {}@{}; call: {}",
-								reference.id,
-								reference.version,
-								serde_json::to_string(call)?
-							);
-							let request = store
-								.human_request(
+					if let Some(decision) = run
+						.state
+						.tool()?
+						.workbench_approval_result
+						.as_ref()
+						.filter(|d| d.key == key && d.call == *call)
+					{
+						if !decision.approved || decision.expires_at <= chrono::Utc::now() {
+							return self
+								.tool_error(
 									run,
-									"APPROVAL_REQUIRED",
-									&prompt,
-									&format!("{key}:workbench-approval"),
+									token,
+									call,
+									cursor,
+									"external write approval was denied or expired".into(),
 								)
-								.await?;
-							run.state =
-								RunState::Waiting(Box::new(WaitingState::ExternalApproval {
-									request_id: request.id,
-									key: key.clone(),
-									call: call.clone(),
-									expires_at: request.created_at + chrono::Duration::minutes(15),
-									resume: Box::new(run.state.tool()?.clone()),
-								}));
-							store
-								.save_run(run, token, "run.waiting_for_tool_approval")
-								.await?;
-							return Ok(());
+								.await;
 						}
+					} else {
+						let prompt = format!(
+							"Approve this exact external tool action once? Tool: {}@{}; call: {}",
+							reference.id,
+							reference.version,
+							serde_json::to_string(call)?
+						);
+						let request = store
+							.human_request(
+								run,
+								"APPROVAL_REQUIRED",
+								&prompt,
+								&format!("{key}:workbench-approval"),
+							)
+							.await?;
+						run.state =
+							RunState::Waiting(Box::new(WaitingState::ExternalApproval {
+								request_id: request.id,
+								key: key.clone(),
+								call: call.clone(),
+								expires_at: request.created_at + chrono::Duration::minutes(15),
+								resume: Box::new(run.state.tool()?.clone()),
+							}));
+						store
+							.save_run(run, token, "run.waiting_for_tool_approval")
+							.await?;
+						return Ok(());
 					}
 				}
 				let invocation = store
@@ -1227,7 +1039,7 @@ impl<'a> Executor<'a> {
 						&key,
 						&call.name,
 						&call.arguments,
-						tool.replay_safe(),
+						contract.replay_safe(),
 					)
 					.await?;
 				if invocation.status == "UNCERTAIN" {
@@ -1252,10 +1064,7 @@ impl<'a> Executor<'a> {
 						Err(e) => return Err(e),
 					}
 				};
-				if call.name == "file_read"
-					&& call.arguments["representation"] == "model_input"
-					&& output["status"] == "completed"
-					&& output["metadata"]["file_id"] == call.arguments["file_id"]
+				if contract.behavior.model_media_result(&call.arguments, &output)
 				{
 					let selection: Selection =
 						serde_json::from_value(
@@ -1335,7 +1144,7 @@ impl<'a> Executor<'a> {
 					store.invocation_finish(run, token, &key, &output).await?;
 				}
 				let event = ContextEvent::tool(call.clone(), output.clone());
-				record_message_read(&mut context, &event);
+				record_message_read_for(&mut context.message_read_coverage, &contract, &event);
 				let growth = context::tool_event_growth(&context, &event);
 				context.history.push(event);
 				run.state.tool_mut()?.request_tokens =
@@ -1346,7 +1155,7 @@ impl<'a> Executor<'a> {
 				progress.skill_read_plan = None;
 				progress.workspace_observation_plan = None;
 				progress.cursor = cursor + 1;
-				match FrameworkResult::decode(call, &output)? {
+				match FrameworkResult::decode(&contract, &output)? {
 					FrameworkResult::Approval(approval_id) => {
 						run.step += 1;
 						run.state = RunState::Waiting(Box::new(WaitingState::CoreApproval {
@@ -1458,43 +1267,97 @@ impl<'a> Executor<'a> {
 		Ok(())
 	}
 }
-async fn cap_workspace_read(
+fn declared_message_read_range(
+	tools: &Tools,
+	event: &ContextEvent,
+) -> Option<(Uuid, usize, usize, usize)> {
+	let ContextEvent::Tool { call, .. } = event else {
+		return None;
+	};
+	message_read_range_for(&tools.get(&call.name)?.contract(), event)
+}
+fn capture_declared_coverage(context: &mut Context, tools: &Tools, inference: bool) {
+	for event in context.history.clone() {
+		if let ContextEvent::Tool { call, .. } = &event
+			&& let Some(tool) = tools.get(&call.name)
+		{
+			let coverage = if inference {
+				&mut context.message_inference_coverage
+			} else {
+				&mut context.message_read_coverage
+			};
+			record_message_read_for(coverage, &tool.contract(), &event);
+		}
+	}
+}
+
+/// Source-specific adapters share fitting, prepared-state reuse and deferral.
+async fn prepare_tool_result(
 	home: &dyn ExecutionHome,
+	tool: &dyn ExecutionTool,
+	run: &Run,
 	context: &Context,
 	call: &aidash_domain::provider::ToolCall,
-	range: WorkspaceReadRange,
-	request_tokens: usize,
-	request_window: usize,
-	remaining_calls: usize,
-) -> Result<WorkspaceReadFit> {
-	let WorkspaceReadRange { offset, requested } = range;
-	let (Some(kind), Some(id)) = (
-		call.arguments["kind"].as_str(),
-		call.arguments["id"].as_str(),
-	) else {
-		return Ok(WorkspaceReadFit::Skip);
+	fitting: ResultFitting,
+	budget: WorkspaceReadFitBudget,
+) -> Result<PreparedResult> {
+	let (parameter, fitted) = match fitting {
+		ResultFitting::WorkspaceRecord => {
+			let (Some(kind), Some(id)) = (
+				call.arguments["kind"].as_str(),
+				call.arguments["id"].as_str(),
+			) else {
+				return Ok(PreparedResult::Skip);
+			};
+			let output = home
+				.read_record_chunk(kind, id, budget.offset, budget.requested)
+				.await?;
+			let size = fit_tool_result(context, call, "max_chars", budget, 0, |chars| {
+				workspace_read_result(&output, budget.requested, budget.offset, chars)
+			});
+			(
+				"max_chars",
+				size.map(|chars| {
+					(
+						chars,
+						workspace_read_result(&output, budget.requested, budget.offset, chars),
+					)
+				}),
+			)
+		}
+		ResultFitting::SkillText => {
+			let output = tool.invoke(run, call.arguments.clone(), "").await?;
+			let size = fit_tool_result(context, call, "max_chars", budget, 1, |chars| {
+				skill_read_result(&output, chars)
+			});
+			(
+				"max_chars",
+				size.map(|chars| (chars, skill_read_result(&output, chars))),
+			)
+		}
+		ResultFitting::Observation => (
+			"limit",
+			home.observation_fitted(budget.offset, budget.requested, &|limit, output| {
+				Ok(tool_result_fits(
+					context,
+					call,
+					"limit",
+					limit,
+					output.clone(),
+					budget,
+				))
+			})
+			.await?,
+		),
 	};
-	let output = home.read_record_chunk(kind, id, offset, requested).await?;
-	let Some(bounded) = fit_workspace_read_chars(
-		context,
-		call,
-		&output,
-		WorkspaceReadFitBudget {
-			requested,
-			offset,
-			request_tokens,
-			request_window,
-			remaining_calls,
-		},
-	)?
-	else {
-		return Ok(WorkspaceReadFit::NoEnvelopeRoom);
+	let Some((size, result)) = fitted else {
+		return Ok(PreparedResult::NoEnvelopeRoom);
 	};
-	let mut bounded_call = call.clone();
-	bounded_call.arguments["max_chars"] = json!(bounded);
-	Ok(WorkspaceReadFit::Fitted {
-		call: bounded_call,
-		result: workspace_read_result(&output, requested, offset, bounded),
+	let mut bounded = call.clone();
+	bounded.arguments[parameter] = json!(size);
+	Ok(PreparedResult::Fitted {
+		call: bounded,
+		result,
 	})
 }
 async fn resolve_model_input_media(
@@ -1563,7 +1426,7 @@ struct ResolvedMedia {
 	defer_selected: bool,
 	defer_human: bool,
 }
-enum WorkspaceReadFit {
+enum PreparedResult {
 	Skip,
 	NoEnvelopeRoom,
 	Fitted {

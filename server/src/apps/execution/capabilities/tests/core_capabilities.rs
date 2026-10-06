@@ -763,10 +763,10 @@ async fn direct_skills_are_pinned_and_loaded_progressively(
 			.contains("Load this only")
 	);
 	assert_eq!(loaded["skill"]["license"], "MIT");
-	let (status,read)=request(&c.app,&c.token,"POST",&format!("{base}/read"),json!({"skill_id":skill["skill_id"],"digest":skill["digest"],"path":"references/guide.md","max_bytes":4})).await;
+	let (status,read)=request(&c.app,&c.token,"POST",&format!("{base}/read"),json!({"skill_id":skill["skill_id"],"digest":skill["digest"],"path":"references/guide.md","max_chars":1})).await;
 	assert_eq!(status, 200, "{read}");
 	assert_eq!(read["content"], "東");
-	assert_eq!(read["next_offset"], 3);
+	assert_eq!(read["next_offset"], 1);
 	for (path, digest, expected) in [
 		("references/guide.md", "stale", 409),
 		(

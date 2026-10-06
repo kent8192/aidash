@@ -372,7 +372,7 @@ fn skill_read_fits_utf8_chunks_to_the_remaining_request_budget() {
 		arguments: serde_json::json!({"skill":{"id":"research","version":"1.0.0"},"path":"references/guide.md","offset":0,"max_chars":16000}),
 	};
 	let context = aidash_domain::context::Context::default();
-	let output = serde_json::json!({"path":"references/guide.md","text":"界".repeat(5000),"encoding":"utf8","offset":0,"total_chars":15000,"next_offset":null});
+	let output = serde_json::json!({"path":"references/guide.md","text":"界".repeat(5000),"encoding":"utf8","offset":0,"total_chars":5000,"next_offset":null});
 	let full_event = typed_event(
 		serde_json::json!({"kind":"tool","call":call,"result":super::skill_read_result(&output, 16000)}),
 	);
@@ -391,15 +391,14 @@ fn skill_read_fits_utf8_chunks_to_the_remaining_request_budget() {
 		request_window,
 		remaining_calls: 0,
 	};
-	let bytes = super::fit_skill_read_chars(&context, &call, &output, budget).unwrap();
-	assert!(bytes > 0 && bytes < 15000);
-	let result = super::skill_read_result(&output, bytes);
+	let chars = super::fit_skill_read_chars(&context, &call, &output, budget).unwrap();
+	assert!(chars > 0 && chars < 5000);
+	let result = super::skill_read_result(&output, chars);
 	let end = result["next_offset"].as_u64().unwrap() as usize;
-	assert_eq!(end, result["text"].as_str().unwrap().len());
-	assert_eq!(end % 3, 0);
+	assert_eq!(end, result["text"].as_str().unwrap().chars().count());
 	assert_eq!(result["budget_limited"], true);
 	let mut bounded_call = call.clone();
-	bounded_call.arguments["max_chars"] = serde_json::json!(bytes);
+	bounded_call.arguments["max_chars"] = serde_json::json!(chars);
 	let event = typed_event(serde_json::json!({"kind":"tool","call":bounded_call,"result":result}));
 	assert!(
 		request_tokens + aidash_domain::context::tool_event_growth(&context, &event)
@@ -429,26 +428,26 @@ fn skill_read_can_fit_one_character_when_the_deferred_envelope_cannot_fit() {
 		arguments: serde_json::json!({"skill":{"id":"research","version":"1.0.0"},"path":"references/guide.md","offset":0,"max_chars":1}),
 	};
 	let context = aidash_domain::context::Context::default();
-	let output = serde_json::json!({"path":"references/guide.md","text":"界more","encoding":"utf8","offset":0,"total_chars":7,"next_offset":null});
-	let event_growth = |bytes| {
+	let output = serde_json::json!({"path":"references/guide.md","text":"界more","encoding":"utf8","offset":0,"total_chars":5,"next_offset":null});
+	let event_growth = |chars| {
 		let mut bounded_call = call.clone();
-		bounded_call.arguments["max_chars"] = serde_json::json!(bytes);
+		bounded_call.arguments["max_chars"] = serde_json::json!(chars);
 		let event = typed_event(serde_json::json!({
 			"kind":"tool",
 			"call":bounded_call,
-			"result":super::skill_read_result(&output, bytes)
+			"result":super::skill_read_result(&output, chars)
 		}));
 		aidash_domain::context::tool_event_growth(&context, &event)
 	};
 	let deferred_growth = event_growth(0);
-	let one_character_growth = event_growth(3);
+	let one_character_growth = event_growth(1);
 	assert_eq!(super::skill_read_result(&output, 1)["text"], "界");
 	assert!(deferred_growth > one_character_growth);
 
 	let request_window = 10_000;
 	let request_tokens = request_window - one_character_growth;
 	assert!(request_tokens + deferred_growth > request_window);
-	let bytes = super::fit_skill_read_chars(
+	let chars = super::fit_skill_read_chars(
 		&context,
 		&call,
 		&output,
@@ -461,8 +460,8 @@ fn skill_read_can_fit_one_character_when_the_deferred_envelope_cannot_fit() {
 		},
 	)
 	.unwrap();
-	assert_eq!(bytes, 3);
-	assert_eq!(super::skill_read_result(&output, bytes)["text"], "界");
+	assert_eq!(chars, 1);
+	assert_eq!(super::skill_read_result(&output, chars)["text"], "界");
 }
 
 #[rstest::rstest]
@@ -682,6 +681,67 @@ fn cached_workspace_read_plans_still_validate_the_original_call() {
 }
 
 #[rstest::rstest]
+fn prepared_result_views_share_fences_and_deferral() {
+	use aidash_domain::{ReadPlan, ToolCallState, tool::ResultFitting};
+	let call = aidash_domain::provider::ToolCall {
+		id: "read".into(),
+		name: "arbitrary_alias".into(),
+		arguments: json!({"offset":0, "max_chars":3}),
+	};
+	for fitting in [
+		ResultFitting::WorkspaceRecord,
+		ResultFitting::SkillText,
+		ResultFitting::Observation,
+	] {
+		let mut pending = ToolCallState::default();
+		*super::result_plan_mut(&mut pending, fitting) = Some(ReadPlan {
+			step: 4,
+			cursor: 2,
+			call: call.clone(),
+			result: json!({"content":"saved"}),
+		});
+		assert_eq!(
+			super::tool_result_plan(&pending, fitting, &call, 4, 2)
+				.unwrap()
+				.1,
+			Some(json!({"content":"saved"}))
+		);
+		assert_eq!(
+			super::tool_result_plan(&pending, fitting, &call, 5, 2)
+				.unwrap()
+				.1,
+			None
+		);
+		assert_eq!(
+			super::tool_result_plan(&pending, fitting, &call, 4, 3)
+				.unwrap()
+				.1,
+			None
+		);
+		let mut changed = call.clone();
+		changed.arguments["offset"] = json!(1);
+		assert_eq!(
+			super::tool_result_plan(&pending, fitting, &changed, 4, 2)
+				.unwrap()
+				.1,
+			None
+		);
+		let (next, event) = super::defer_result(fitting, &call, vec![]);
+		assert!(next.force_workspace_read_compaction);
+		let (deferred, expected_event) = match fitting {
+			ResultFitting::WorkspaceRecord => (next.deferred_workspace_read, "run.read_deferred"),
+			ResultFitting::SkillText => (next.deferred_skill_read, "run.skill_read_deferred"),
+			ResultFitting::Observation => (
+				next.deferred_workspace_observation,
+				"run.observation_deferred",
+			),
+		};
+		assert_eq!(event, expected_event);
+		assert_eq!(deferred.unwrap().call, call);
+	}
+}
+
+#[rstest::rstest]
 
 fn zero_length_envelope_is_checked_before_deferring_a_read() {
 	let call = aidash_domain::provider::ToolCall {
@@ -779,4 +839,58 @@ fn result_names_fit_for_ascii_and_multibyte_titles() {
 		assert!(name.len() <= 64_000);
 		assert!(name.ends_with(" result"));
 	}
+}
+#[rstest::rstest]
+fn declared_continuations_keep_approval_precedence() {
+	let human = aidash_domain::tool::builtin_contract("human_request").unwrap();
+	let wait = aidash_domain::tool::builtin_contract("workspace_wait").unwrap();
+	let approval = uuid::Uuid::from_u128(17);
+	let request = uuid::Uuid::from_u128(18);
+	assert!(
+		matches!(super::FrameworkResult::decode(&human, &serde_json::json!({"human_request_id":request})).unwrap(), super::FrameworkResult::Human(id) if id == request)
+	);
+	assert!(matches!(
+		super::FrameworkResult::decode(&wait, &serde_json::json!({"wait_seconds":7})).unwrap(),
+		super::FrameworkResult::Wait(7)
+	));
+	for contract in [&human, &wait] {
+		assert!(
+			matches!(super::FrameworkResult::decode(contract, &serde_json::json!({"status":"approval_required", "approval_id":approval, "human_request_id":request, "wait_seconds":7})).unwrap(), super::FrameworkResult::Approval(id) if id == approval)
+		);
+		assert!(
+			super::FrameworkResult::decode(
+				contract,
+				&serde_json::json!({"status":"approval_required"})
+			)
+			.is_err()
+		);
+	}
+}
+
+#[rstest::rstest]
+fn renamed_record_tool_retains_message_coverage_and_required_read_behavior() {
+	let contract = aidash_domain::tool::builtin_contract("workspace_read").unwrap();
+	let id = uuid::Uuid::from_u128(1);
+	let call = aidash_domain::provider::ToolCall {
+		id: "read".into(),
+		name: "renamed_reader".into(),
+		arguments: serde_json::json!({"kind":"message", "id":id, "offset":0}),
+	};
+	let mut context = aidash_domain::context::Context::default();
+	assert!(super::is_required_message_read_for(
+		&contract,
+		&call,
+		&[id],
+		&context
+	));
+	let event = aidash_domain::context::ContextEvent::tool(
+		call,
+		serde_json::json!({"kind":"message", "id":id, "encoding":"json", "offset":0, "content":"😀界", "total_chars":2, "next_offset":null}),
+	);
+	assert_eq!(
+		super::message_read_range_for(&contract, &event),
+		Some((id, 0, 2, 2))
+	);
+	super::record_message_read_for(&mut context.message_read_coverage, &contract, &event);
+	assert!(super::referenced_message_read(&context, id));
 }

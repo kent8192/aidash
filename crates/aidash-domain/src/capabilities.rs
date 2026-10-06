@@ -20,16 +20,9 @@ impl CoreCapabilities {
 	}
 
 	pub fn permits(&self, name: &str) -> bool {
-		match name {
-			"file_search" | "file_read" => self.files,
-			"shell" | "shell_poll" | "shell_cancel" => self.shell,
-			"code_interpreter" | "python_install" | "python_poll" | "python_cancel" => self.python,
-			"apply_patch" => self.patch,
-			"skill_list" | "skill_load" | "skill_read" => self.skills,
-			"file_share" => self.sharing,
-			"outbound_get" => self.shell || self.python,
-			_ => false,
-		}
+		crate::tool::builtin_contract(name)
+			.and_then(|contract| contract.authorization.core)
+			.is_some_and(|permission| permission.permitted(self))
 	}
 }
 
