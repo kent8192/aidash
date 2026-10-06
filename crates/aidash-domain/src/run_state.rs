@@ -389,6 +389,30 @@ pub fn decode(phase: RunPhase, pending: Value) -> Result<(RunState, RecoveryStat
 	Ok((state, pending.recovery))
 }
 impl Run {
+	/// Native admission persists this context in the same transaction as Run
+	/// insertion. An existing graph can only be reused byte-for-byte.
+	pub fn bind(&mut self, snapshot: crate::registry::bindings::BindingSnapshot) -> Result<()> {
+		snapshot.validate()?;
+		if snapshot.agent.id != self.agent_id || snapshot.agent.version != self.agent_version {
+			return Err(Error::Invalid(
+				"Binding snapshot belongs to a different Agent".into(),
+			));
+		}
+		if let Some(saved) = &self.context.binding_snapshot {
+			return if **saved == snapshot {
+				Ok(())
+			} else {
+				Err(Error::Conflict("Run Bindings are immutable".into()))
+			};
+		}
+		if self.step != 0 || !matches!(self.state, RunState::Ready(_)) {
+			return Err(Error::Conflict(
+				"Bindings must be admitted before Run activation".into(),
+			));
+		}
+		self.context.binding_snapshot = Some(Box::new(snapshot));
+		Ok(())
+	}
 	pub fn phase(&self) -> RunPhase {
 		self.state.phase()
 	}

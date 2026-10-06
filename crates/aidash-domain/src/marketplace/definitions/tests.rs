@@ -5,7 +5,7 @@ use serde_json::json;
 use std::collections::BTreeSet;
 
 fn entry() -> Entry {
-	serde_json::from_value(json!({"id":"source","version":"1.0.0","kind":"tool","name":{"en":"Source"},"description":{"en":"Fixture"},"config":{"transport":"agent","node_id":"local","agent":{"id":"agent","version":"1.0.0"}}})).unwrap()
+	serde_json::from_value(json!({"id":"source","version":"1.0.0","kind":"tool","name":{"en":"Source"},"description":{"en":"Fixture"},"config":{"registry_node":"aidash://local","provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":"aidash://local","agent":{"id":"agent","version":"1.0.0"}}}})).unwrap()
 }
 fn version() -> Version {
 	let package = Package {
@@ -56,13 +56,13 @@ fn content_identity_excludes_local_alias_and_installation_projection() {
 		revision: 1,
 	});
 	assert_eq!(content(&original), content(&local));
-	local.config["node_id"] = json!("other");
+	local.config["transport"]["node_id"] = json!("other");
 	assert_ne!(content(&original), content(&local));
 }
 #[rstest]
 fn executable_reference_rewrite_preserves_other_configuration() {
 	let mut entity = entry();
-	let original_node = entity.config["node_id"].clone();
+	let original_node = entity.config["transport"]["node_id"].clone();
 	rewrite(
 		&mut entity,
 		&[DependencyBinding {
@@ -78,8 +78,8 @@ fn executable_reference_rewrite_preserves_other_configuration() {
 	)
 	.unwrap();
 	assert_eq!(
-		entity.config["agent"],
+		entity.config["transport"]["agent"],
 		json!({"id":"installed-agent","version":"4.0.0"})
 	);
-	assert_eq!(entity.config["node_id"], original_node);
+	assert_eq!(entity.config["transport"]["node_id"], original_node);
 }

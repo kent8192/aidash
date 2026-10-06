@@ -54,6 +54,8 @@ pub async fn prepare(
 	)?;
 	let tenant = scope.tenant().to_owned();
 	let stored = scope.catalog(&input.source, "registry.read").await?;
+	crate::registry::system::reject_distribution(&stored)?;
+	crate::registry::system::reject_owner_definition(&stored)?;
 	scope.require_export(&stored).await?;
 	definitions::private_context(scope, &stored).await?;
 	let (entity, mut lineage, dependencies) = if let Some(p) = &stored.installation {
@@ -89,7 +91,7 @@ pub async fn prepare(
 			definitions::publication_graph(scope, &stored, &input.dependencies, node).await?;
 		(stored.clone(), BTreeSet::new(), deps)
 	};
-	if !matches!(entity.kind.as_str(), "agent" | "tool" | "skill") {
+	if !matches!(entity.kind.as_str(), "agent" | "tool" | "skill" | "bundle") {
 		return Err(Error::Invalid(
 			"only agent, tool and skill packages can be published".into(),
 		));

@@ -44,6 +44,7 @@ impl Node {
 			api_token: format!("graph-operator-{suffix}"),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
+			default_host_packages: vec![],
 			oidc: None,
 		};
 		let f = Federation {

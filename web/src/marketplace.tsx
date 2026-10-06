@@ -32,6 +32,7 @@ import {
 import { useI18n, Panel, Field } from "./ui";
 import { RecordView } from "./record-view";
 import { marketplaceCopy } from "./marketplace-copy";
+import { HostPackages } from "./host-packages";
 
 const json = (text: string): Record<string, unknown> => {
   const value: unknown = JSON.parse(text);
@@ -700,6 +701,16 @@ export function MarketplaceAdministration() {
         </button>
         <p>{copy.pinned}</p>
         {installs.isError && <p role="alert">{copy.unavailable}</p>}
+        {tenant && !installs.isError && (
+          <HostPackages
+            key={tenant}
+            tenant={tenant}
+            revisions={installs.data?.items ?? []}
+            onSaved={async () => {
+              await cache.invalidateQueries({ queryKey: ["marketplace"] });
+            }}
+          />
+        )}
         {installs.data && !installs.isError && (
           <PageControls
             offsets={revisionOffsets}

@@ -105,7 +105,7 @@ fn graph() -> Fixture {
 				entry(
 					"tool",
 					"tool",
-					json!({"transport":"agent","node_id":"local","agent":r("agent")}),
+					json!({"registry_node":"aidash://local","provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":"local","agent":r("agent")}}),
 				),
 			),
 			("model".into(), entry("model", "model", json!({}))),
@@ -200,7 +200,7 @@ fn remote_agent_tool_is_not_resolved_from_same_named_local_content() {
 	let tool = entry(
 		"remote-tool",
 		"tool",
-		json!({"transport":"agent","node_id":"remote","agent":r("agent")}),
+		json!({"registry_node":"aidash://remote","provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":"remote","agent":r("agent")}}),
 	);
 	assert!(matches!(refs(&tool, "local"), Err(Error::Forbidden)));
 }

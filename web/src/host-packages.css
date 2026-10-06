@@ -1,0 +1,40 @@
+.host-packages {
+  padding: 18px;
+  min-width: 0;
+}
+
+.host-package-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.host-package-groups label,
+.host-package-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.host-packages input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+
+.host-package-review {
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+
+.host-package-review p {
+  overflow-wrap: anywhere;
+}
+
+.host-package-selection {
+  max-height: 24rem;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}

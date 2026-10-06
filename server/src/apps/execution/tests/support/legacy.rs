@@ -135,6 +135,7 @@ pub fn setup(
 				api_token: "operator-execution-fixture".into(),
 				web_dir: "web/dist".into(),
 				lease_seconds: 30,
+				default_host_packages: vec![],
 				oidc: None,
 			},
 			client: reqwest::Client::new(),

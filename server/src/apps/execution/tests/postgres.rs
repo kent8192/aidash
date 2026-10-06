@@ -351,6 +351,7 @@ async fn registry_installation_versions_and_authenticated_api(
 		api_token: "test-access-token".into(),
 		web_dir: "web/dist".into(),
 		lease_seconds: 30,
+		default_host_packages: vec![],
 		oidc: None,
 	};
 	let f = Federation {
@@ -424,6 +425,7 @@ async fn human_requests_controls_and_cancellation_before_dependencies_finish(
 		api_token: "test-access-token".into(),
 		web_dir: "web/dist".into(),
 		lease_seconds: 30,
+		default_host_packages: vec![],
 		oidc: None,
 	};
 	let federation = Federation {
@@ -556,6 +558,7 @@ fn federation_for(store: &Store) -> Federation {
 			api_token: "test-access-token".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
+			default_host_packages: vec![],
 			oidc: None,
 		},
 		client: reqwest::Client::builder()

@@ -14,6 +14,9 @@ use reinhardt::query::{
 use serde_json::Value;
 pub(crate) struct NativeCatalog<'a>(pub(crate) &'a mut Access);
 async fn document(access: &mut Access, reference: &EntityRef) -> Result<Option<Value>> {
+	if aidash_application::registry::system::builtin_reference(reference) {
+		return system_document(access, reference).await.map(Some);
+	}
 	let query = if access.inherited_lease {
 		Query::select()
 			.column((Alias::new("r"), Alias::new("metadata")))
@@ -202,12 +205,51 @@ async fn documents(access: &mut Access) -> Result<Vec<Value>> {
 			.lock_tables([Alias::new("c")])
 			.to_string(PostgresQueryBuilder)
 	};
-	let documents: Vec<Value> = crate::database::native::query_scalar(&query)
+	let mut documents: Vec<Value> = crate::database::native::query_scalar(&query)
 		.bind(&access.identity.tenant)
 		.scalar_all(&mut **access.tx)
 		.await?;
 
+	for entry in aidash_application::registry::system::entries(
+		&crate::bootstrap::registry_validation(),
+		&access.node_id,
+	)? {
+		let reference = EntityRef {
+			id: entry.id,
+			version: entry.version,
+		};
+		let document = system_document(access, &reference).await?;
+		if !documents.iter().any(|existing| {
+			existing["id"] == document["id"] && existing["version"] == document["version"]
+		}) {
+			documents.push(document);
+		}
+	}
 	Ok(documents)
+}
+
+/// Reserved spelling alone is insufficient: persisted bytes must match Node composition.
+async fn system_document(access: &mut Access, reference: &EntityRef) -> Result<Value> {
+	let expected = aidash_application::registry::system::entries(
+		&crate::bootstrap::registry_validation(),
+		&access.node_id,
+	)?
+	.into_iter()
+	.find(|entry| entry.id == reference.id && entry.version == reference.version)
+	.ok_or(crate::Error::Forbidden)?;
+	let stored = crate::apps::registry::models::transaction_records::definition(
+		&mut **access.tx,
+		&reference.id,
+		&reference.version,
+	)
+	.await?;
+	let entry: Entry = serde_json::from_value(stored.metadata.0)?;
+	if entry != expected {
+		return Err(crate::Error::Conflict(
+			"system declaration bytes differ from admitted Node composition".into(),
+		));
+	}
+	Ok(serde_json::to_value(entry)?)
 }
 #[async_trait]
 impl CatalogScope for NativeCatalog<'_> {

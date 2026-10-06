@@ -307,3 +307,6 @@ pub async fn administration(
 mod tests;
 
 pub use crate::authorization::require_operator;
+
+pub mod approval_set;
+pub mod host_packages;

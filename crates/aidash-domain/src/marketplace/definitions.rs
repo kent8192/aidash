@@ -46,9 +46,29 @@ pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding]) -> Result<()> 
 			entry.config = serde_json::to_value(c)?;
 		}
 		"tool" => {
-			let mut c: ToolConfig = serde_json::from_value(entry.config.clone())?;
-			if let ToolConfig::Agent { agent, .. } = &mut c {
+			let mut c: crate::tool::providers::ToolDescriptor =
+				serde_json::from_value(entry.config.clone())?;
+			if let Some(ToolConfig::Agent { agent, .. }) = &mut c.transport {
 				bind(agent, bindings);
+			}
+			if let Some(lifecycle) = &mut c.lifecycle {
+				for reference in [&mut lifecycle.poll, &mut lifecycle.cancel] {
+					let mut local = reference.local();
+					bind(&mut local, bindings);
+					reference.id = local.id;
+					reference.version = local.version;
+				}
+			}
+			entry.config = serde_json::to_value(c)?;
+		}
+		"bundle" => {
+			let mut c: crate::registry::bindings::BundleConfig =
+				serde_json::from_value(entry.config.clone())?;
+			for reference in &mut c.members {
+				let mut local = reference.local();
+				bind(&mut local, bindings);
+				reference.id = local.id;
+				reference.version = local.version;
 			}
 			entry.config = serde_json::to_value(c)?;
 		}

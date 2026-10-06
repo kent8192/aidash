@@ -19,8 +19,20 @@ pub fn refs(entry: &Entry, node: &str) -> Result<Vec<(EntityRef, String)>> {
 			refs.extend(config.cluster.into_iter().map(|r| (r, "cluster".into())));
 		}
 		"tool" => {
-			if let aidash_domain::tool::ToolConfig::Agent { node_id, agent } =
-				serde_json::from_value(entry.config.clone())?
+			let descriptor: aidash_domain::tool::providers::ToolDescriptor =
+				serde_json::from_value(entry.config.clone())?;
+			if let Some(lifecycle) = descriptor.lifecycle {
+				if lifecycle.poll.registry_node != node || lifecycle.cancel.registry_node != node {
+					return Err(Error::Forbidden);
+				}
+				refs.extend(
+					[lifecycle.poll, lifecycle.cancel]
+						.into_iter()
+						.map(|r| (r.local(), "tool".into())),
+				);
+			}
+			if let Some(aidash_domain::tool::ToolConfig::Agent { node_id, agent }) =
+				descriptor.transport
 			{
 				// A remote reference is verified by the existing peer protocol, never
 				// guessed from a same-named local row. Distribution has no remote fetch.
@@ -29,6 +41,24 @@ pub fn refs(entry: &Entry, node: &str) -> Result<Vec<(EntityRef, String)>> {
 				}
 				refs.push((agent, "agent".into()));
 			}
+		}
+		"bundle" => {
+			let bundle: aidash_domain::registry::bindings::BundleConfig =
+				serde_json::from_value(entry.config.clone())?;
+			bundle.validate()?;
+			if bundle
+				.members
+				.iter()
+				.any(|reference| reference.registry_node != node)
+			{
+				return Err(Error::Forbidden);
+			}
+			refs.extend(
+				bundle
+					.members
+					.into_iter()
+					.map(|r| (r.local(), String::new())),
+			);
 		}
 		"cluster" => {
 			let c: ClusterConfig = serde_json::from_value(entry.config.clone())?;
@@ -154,7 +184,14 @@ pub async fn resolve(
 	// pass through the exact dependency bindings below (including tool kind).
 	let protected: &[&str] = match entry.kind.as_str() {
 		"agent" => &["model", "tools", "skills", "cluster"],
-		"tool" => &["transport", "node_id", "agent"],
+		"tool" => &[
+			"registry_node",
+			"provider",
+			"operation",
+			"transport",
+			"lifecycle",
+		],
+		"bundle" => &["members"],
 		"cluster" => &["coordinator"],
 		_ => &[],
 	};

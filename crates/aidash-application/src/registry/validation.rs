@@ -1,7 +1,7 @@
 //! Definition admission resolves local credentials only through the injected port.
 use crate::{
 	Error, Result,
-	ports::{Credentials, registry::CoreToolCatalog},
+	ports::{Credentials, bindings::ProviderCatalog, registry::CoreToolCatalog},
 };
 use aidash_domain::registry::rules::skill_instructions;
 use aidash_domain::{
@@ -24,6 +24,25 @@ impl DefinitionValidation {
 			credentials,
 			core_tools,
 		}
+	}
+	pub fn node_specifications(
+		&self,
+	) -> std::collections::BTreeMap<String, aidash_domain::provider::ToolSpec> {
+		let mut specifications = crate::tools::builtins()
+			.into_iter()
+			.map(|(name, tool)| (name, tool.specification()))
+			.collect::<std::collections::BTreeMap<_, _>>();
+		specifications.extend(self.core_tools.specifications(
+			&aidash_domain::capabilities::CoreCapabilities {
+				files: true,
+				shell: true,
+				python: true,
+				patch: true,
+				skills: true,
+				sharing: true,
+			},
+		));
+		specifications
 	}
 	pub fn validate_in(&self, e: &Entry, local: bool) -> Result<()> {
 		aidash_domain::registry::rules::validate_metadata(e, local)?;
@@ -115,8 +134,35 @@ impl DefinitionValidation {
 					));
 				}
 			}
-			"tool" => self.validate_tool(&e.config, local)?,
+			"tool" => {
+				let descriptor: aidash_domain::tool::providers::ToolDescriptor =
+					serde_json::from_value(e.config.clone())?;
+				self.contract(
+					&descriptor,
+					&aidash_domain::registry::bindings::QualifiedRef {
+						registry_node: descriptor.registry_node.clone(),
+						id: e.id.clone(),
+						version: e.version.clone(),
+					},
+				)?;
+				if let Some(transport) = &descriptor.transport {
+					self.validate_tool(&serde_json::to_value(transport)?, local)?;
+				}
+				if local {
+					self.core_tools.provider_available(&descriptor)?;
+				}
+			}
+			"bundle" => {
+				let bundle: aidash_domain::registry::bindings::BundleConfig =
+					serde_json::from_value(e.config.clone())?;
+				bundle.validate()?;
+			}
 			"skill" => aidash_domain::registry::rules::validate_skill(e)?,
+			"memory" | "source" => {
+				let descriptor: aidash_domain::registry::bindings::sources::NativeContext =
+					serde_json::from_value(e.config.clone())?;
+				descriptor.validate(&e.kind)?;
+			}
 			_ => {}
 		}
 		Ok(())
@@ -297,5 +343,26 @@ impl DefinitionValidation {
 			private_context,
 		)
 		.map_err(Into::into)
+	}
+}
+
+impl crate::ports::bindings::ProviderCatalog for DefinitionValidation {
+	fn contract(
+		&self,
+		descriptor: &aidash_domain::tool::providers::ToolDescriptor,
+		identity: &aidash_domain::registry::bindings::QualifiedRef,
+	) -> Result<aidash_domain::tool::ToolContract> {
+		Ok(descriptor.declared_contract(identity.clone())?)
+	}
+	fn implementation(
+		&self,
+		descriptor: &aidash_domain::tool::providers::ToolDescriptor,
+	) -> Result<String> {
+		self.core_tools.provider_available(descriptor)?;
+		Ok(format!(
+			"{}:aidash-{}",
+			descriptor.provider,
+			env!("CARGO_PKG_VERSION")
+		))
 	}
 }

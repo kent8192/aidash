@@ -62,6 +62,22 @@ pub(crate) async fn entry(
 }
 
 pub(crate) fn resource(access: &Access, entry: &Entry) -> super::policy::Resource {
+	if entry.kind == "tool"
+		&& let Ok(descriptor) = serde_json::from_value::<
+			aidash_domain::tool::providers::ToolDescriptor,
+		>(entry.config.clone())
+	{
+		let identity = aidash_domain::registry::bindings::QualifiedRef {
+			registry_node: descriptor.registry_node,
+			id: entry.id.clone(),
+			version: entry.version.clone(),
+		};
+		return access.resource(
+			"tool",
+			&identity.resource_id(),
+			aidash_application::authorization::catalog::attributes(entry),
+		);
+	}
 	access.resource(
 		&entry.kind,
 		&entry.id,
