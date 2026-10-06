@@ -11,6 +11,7 @@ use uuid::Uuid;
 struct Operations {
 	task: Task,
 	skills: Vec<EntityRef>,
+	skill_text: String,
 	calls: Mutex<Vec<&'static str>>,
 	inputs: Mutex<Vec<(String, Value)>>,
 }
@@ -30,7 +31,7 @@ impl ToolOperations for Operations {
 		assert!(self.skills.contains(reference));
 		Ok(vec![SkillFile {
 			path: "SKILL.md".into(),
-			content: "界ab".into(),
+			content: self.skill_text.clone(),
 			encoding: None,
 		}])
 	}
@@ -147,6 +148,7 @@ fn fixture() -> Fixture {
 	};
 	Fixture {
 		operations: Operations {
+			skill_text: "界ab".into(),
 			task,
 			skills: vec![],
 			calls: Mutex::new(vec![]),
@@ -294,7 +296,7 @@ async fn unregistered_skill_is_rejected_before_its_contents_are_read(fixture: Fi
 }
 #[rstest]
 #[tokio::test]
-async fn authorized_skill_chunks_preserve_utf8_offsets(mut fixture: Fixture) {
+async fn authorized_skill_chunks_use_scalar_offsets(mut fixture: Fixture) {
 	// Arrange
 	fixture.operations.skills.push(EntityRef {
 		id: "skill".into(),
@@ -320,6 +322,51 @@ async fn authorized_skill_chunks_preserve_utf8_offsets(mut fixture: Fixture) {
 	);
 	assert_eq!(
 		output,
-		json!({"path":"SKILL.md","text":"界","encoding":"utf8","offset":0,"total_chars":5,"next_offset":3})
+		json!({"path":"SKILL.md","text":"a","encoding":"utf8","offset":1,"total_chars":3,"next_offset":2})
 	);
+}
+
+#[rstest]
+#[case("abc")]
+#[case("日本語")]
+#[case("A😀B")]
+#[case("e\u{301}界")]
+#[tokio::test]
+async fn legacy_skill_pages_reconstruct_with_scalar_positions(
+	mut fixture: Fixture,
+	#[case] text: &str,
+) {
+	let reference = EntityRef {
+		id: "skill".into(),
+		version: "1.0.0".into(),
+	};
+	fixture.operations.skills.push(reference.clone());
+	fixture.operations.skill_text = text.into();
+	let tool = builtins().remove("skill_read").unwrap();
+	let mut offset = 0;
+	let mut combined = String::new();
+	loop {
+		let output = tool
+			.invoke(
+				&ToolContext {
+					operations: &fixture.operations,
+					run: &fixture.run,
+				},
+				json!({"skill":reference,"path":"SKILL.md","offset":offset,"max_chars":1}),
+				"read",
+			)
+			.await
+			.unwrap();
+		assert_eq!(output["offset"], offset);
+		assert_eq!(output["total_chars"], text.chars().count());
+		let chunk = output["text"].as_str().unwrap();
+		assert_eq!(chunk.chars().count(), 1);
+		combined.push_str(chunk);
+		let Some(next) = output["next_offset"].as_u64() else {
+			break;
+		};
+		assert_eq!(next as usize, offset + 1);
+		offset = next as usize;
+	}
+	assert_eq!(combined, text);
 }

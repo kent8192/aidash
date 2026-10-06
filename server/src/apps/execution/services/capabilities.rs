@@ -14,6 +14,7 @@ pub struct ToolContext {
 #[async_trait]
 pub trait Tool: Send + Sync {
 	fn specification(&self) -> ToolSpec;
+	fn contract(&self) -> aidash_domain::tool::ToolContract;
 	fn replay_safe(&self) -> bool;
 	async fn invoke(&self, context: &ToolContext, input: Value, key: &str) -> Result<Value>;
 }
@@ -43,6 +44,9 @@ impl PluginTool {
 }
 #[async_trait]
 impl Tool for PluginTool {
+	fn contract(&self) -> aidash_domain::tool::ToolContract {
+		self.application().contract()
+	}
 	fn specification(&self) -> ToolSpec {
 		self.application().specification()
 	}
@@ -69,6 +73,9 @@ impl Tool for PluginTool {
 struct Builtin(aidash_application::tools::Builtin);
 #[async_trait]
 impl Tool for Builtin {
+	fn contract(&self) -> aidash_domain::tool::ToolContract {
+		self.0.contract()
+	}
 	fn specification(&self) -> ToolSpec {
 		self.0.specification()
 	}

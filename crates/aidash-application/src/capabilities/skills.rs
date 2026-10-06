@@ -212,7 +212,7 @@ pub async fn invoke(
 			p.digest,
 			p.path,
 			p.offset.unwrap_or(0),
-			p.max_bytes.unwrap_or(scope.limits()?.read_bytes),
+			p.max_chars.unwrap_or(scope.limits()?.read_bytes),
 		)
 	};
 	let skill = pinned
@@ -239,23 +239,44 @@ pub async fn invoke(
 	} else {
 		scope.limits()?.read_bytes
 	};
-	if limit == 0 || limit > maximum || offset > text.len() || !text.is_char_boundary(offset) {
-		return Err(Error::Invalid("INVALID_READ_RANGE".into()));
-	}
-	let mut end = (offset + limit).min(text.len());
-	while !text.is_char_boundary(end) {
-		end -= 1;
-	}
-	if end == offset && offset < text.len() {
-		return Err(Error::Invalid("READ_BUDGET".into()));
-	}
-	let result = json!({"skill":skill.metadata,"path":path,"content":&text[offset..end],"digest":file.digest,"next_offset":(end<text.len()).then_some(end),"truncated":end<text.len(),"files":if name=="skill_load"{json!(skill.files.iter().map(|f|json!({"path":f.path,"digest":f.digest,"size":f.size})).collect::<Vec<_>>())}else{Value::Null}});
+	let (content, next) = text_chunk(text, offset, limit, maximum)?;
+	let result = json!({"skill":skill.metadata,"path":path,"content":content,"digest":file.digest,"next_offset":next,"truncated":next.is_some(),"files":if name=="skill_load"{json!(skill.files.iter().map(|f|json!({"path":f.path,"digest":f.digest,"size":f.size})).collect::<Vec<_>>())}else{Value::Null}});
 	if name == "skill_load" {
 		skill.loaded = true;
 		record.data = json!(pinned);
 		scope.update_skills(&mut record).await?;
 	}
 	Ok(result)
+}
+/// Scalar-value cursors are independent of the encoded-byte resource cap.
+fn text_chunk(
+	text: &str,
+	offset: usize,
+	max_chars: usize,
+	byte_limit: usize,
+) -> Result<(&str, Option<usize>)> {
+	let total = text.chars().count();
+	if max_chars == 0 || offset > total {
+		return Err(Error::Invalid("INVALID_READ_RANGE".into()));
+	}
+	let start = text
+		.char_indices()
+		.nth(offset)
+		.map_or(text.len(), |(index, _)| index);
+	let mut end = start;
+	let mut count = 0;
+	for character in text[start..].chars().take(max_chars) {
+		if end - start + character.len_utf8() > byte_limit {
+			break;
+		}
+		end += character.len_utf8();
+		count += 1;
+	}
+	if count == 0 && offset < total {
+		return Err(Error::Invalid("READ_BUDGET".into()));
+	}
+	let next = offset + count;
+	Ok((&text[start..end], (next < total).then_some(next)))
 }
 pub async fn context(scope: &mut dyn SkillScope, run: &RunMetadata) -> Result<String> {
 	scope.context_authority(run).await?;

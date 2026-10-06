@@ -351,7 +351,7 @@ fn job(model: Arc<Model>) -> Job {
 			fixtures: BTreeMap::new(),
 		},
 		profile: None,
-		tool_references: vec![],
+		tool_references: Default::default(),
 		limits: TestLimits {
 			tenant: "tenant".into(),
 			max_input_bytes: 65536,

@@ -217,6 +217,9 @@ struct NativeTool {
 }
 #[async_trait]
 impl ExecutionTool for NativeTool {
+	fn contract(&self) -> aidash_domain::tool::ToolContract {
+		self.tool.contract()
+	}
 	fn specification(&self) -> ToolSpec {
 		self.tool.specification()
 	}
@@ -282,8 +285,15 @@ impl ExecutionAuthority for Authority<'_> {
 	async fn inference(&self) -> Result<()> {
 		self.guard.inference().await.map_err(Into::into)
 	}
-	async fn tool(&self, call: &ToolCall) -> Result<()> {
-		self.guard.tool(call).await.map_err(Into::into)
+	async fn tool(
+		&self,
+		call: &ToolCall,
+		contract: &aidash_domain::tool::ToolContract,
+	) -> Result<()> {
+		self.guard
+			.tool_contract(call, contract)
+			.await
+			.map_err(Into::into)
 	}
 	async fn human_read(&self, id: Uuid) -> Result<()> {
 		self.guard.human_read(id).await.map_err(Into::into)

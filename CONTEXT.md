@@ -80,6 +80,46 @@ _Avoid_: Core capability
 The effective authorization and resource constraints governing a Run's capabilities and actions.
 _Avoid_: Agent preference, Skill instruction
 
+**Tool contract**:
+The complete declared identity, execution characteristics and authority requirements of a Tool offered to a Run. A contract is distinct from a Registry entry or permission to invoke the Tool.
+_Avoid_: Execution grant, Tool behavior alone
+
+**Tool behavior**:
+The declared execution characteristics of a Tool, including its effect, bounded retrieval, continuations and outputs. A behavior declaration is distinct from permission to invoke the Tool.
+_Avoid_: Execution policy, execution grant
+
+**Tool authorization**:
+The authority requirements for a particular Tool invocation and the resources it addresses. Declaring these requirements does not satisfy them or grant permission.
+_Avoid_: Tool behavior, capability enablement
+
+**Tool disclosure boundary**:
+The boundary across which a Tool may pass information. It is distinct from permission to disclose particular information and from availability to a Remote Run.
+_Avoid_: Disclosure permission, remote tool exposure
+
+**Remote tool exposure**:
+The availability of a Tool to a Remote Run. Availability is distinct from the Run's authority to invoke it or disclose information through it.
+_Avoid_: Tool disclosure boundary, execution grant
+
+**Tool effect**:
+The classification of a Tool's resource changes and the safety of repeating its invocation. An effect class is distinct from the approval required for a particular action.
+_Avoid_: Approval requirement, impact score
+
+**Tool-use mode**:
+The execution circumstance under which a Run may use a Tool, such as ordinary work, message catch-up or awaiting inference over selected media. A mode is distinct from the Run's durable lifecycle phase and does not grant authority.
+_Avoid_: Run phase, execution grant
+
+**Read-only tool**:
+A Tool that does not change the user resources it addresses. Recording an observation or audit of its invocation does not make it a writing Tool.
+_Avoid_: No recorded activity, automatically authorized Tool
+
+**Idempotent tool**:
+A Tool whose resource changes are safe to repeat under the same invocation key without duplicating their effect. Idempotence does not establish permission to perform the change.
+_Avoid_: Read-only tool, approved Tool
+
+**Unsafe tool**:
+A Tool for which safe repetition of an invocation cannot be guaranteed. This class describes replay safety rather than the severity of the action.
+_Avoid_: High-impact Tool, automatically forbidden Tool
+
 **Agent definition**:
 A versioned description of an Agent's instructions and capabilities. Multiple logical Agents may use the same definition.
 _Avoid_: Participant, worker

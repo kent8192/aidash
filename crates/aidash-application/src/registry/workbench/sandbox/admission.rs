@@ -104,7 +104,12 @@ pub async fn admit(admission: &Admission<'_>, id: Uuid, input: TestInput) -> Res
 		Vec::new()
 	};
 	conversation.push(json!({"role":"user","content":input.message}));
-	let tool_references = config.tools.clone();
+	let tool_references = config
+		.tools
+		.iter()
+		.enumerate()
+		.map(|(index, reference)| (format!("plugin_{index}"), reference.clone()))
+		.collect();
 	let mut instructions = aidash_domain::context::agent_instructions("");
 	if input.mode == "real" {
 		instructions.push_str("\n\nSandbox: only tools in the selected test connection profile can reach its isolated endpoint. Other tools need an explicit fixture; never claim an unprovided result.\n");

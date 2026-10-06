@@ -542,12 +542,17 @@ impl Guard {
 		.map_err(Into::into)
 	}
 
-	pub async fn tool(&self, call: &ToolCall) -> Result<()> {
+	pub async fn tool_contract(
+		&self,
+		call: &ToolCall,
+		contract: &aidash_domain::tool::ToolContract,
+	) -> Result<()> {
 		aidash_application::authorization::tools::authorize(
 			&crate::bootstrap::agent_tool_repository(self.remote.as_ref(), &self.access, &self.run),
 			&self.run.metadata(),
 			&self.agent,
 			call,
+			contract,
 		)
 		.await
 		.map_err(Into::into)
@@ -561,6 +566,7 @@ impl Guard {
 			&crate::bootstrap::agent_tool_repository(self.remote.as_ref(), &self.access, &self.run),
 			&self.agent,
 			tools,
+			|tool| tool.contract(),
 		)
 		.await
 		.map_err(Into::into)

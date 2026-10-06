@@ -8,11 +8,15 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 struct CoreTool {
 	name: &'static str,
+	contract: aidash_domain::tool::ToolContract,
 	schema: Value,
 	description: &'static str,
 }
 #[async_trait::async_trait]
 impl Tool for CoreTool {
+	fn contract(&self) -> aidash_domain::tool::ToolContract {
+		self.contract.clone()
+	}
 	fn specification(&self) -> ToolSpec {
 		ToolSpec {
 			name: self.name.into(),
@@ -21,7 +25,7 @@ impl Tool for CoreTool {
 		}
 	}
 	fn replay_safe(&self) -> bool {
-		true
+		self.contract().replay_safe()
 	}
 	async fn invoke(&self, ctx: &ToolContext, input: Value, key: &str) -> Result<Value> {
 		if self.name == "skill_read" && input.get("skill").is_some() {
@@ -149,6 +153,7 @@ pub(crate) fn add(tools: &mut BTreeMap<String, Arc<dyn Tool>>, config: &CoreCapa
 			name.into(),
 			Arc::new(CoreTool {
 				name,
+				contract: aidash_domain::tool::builtin_contract(name).expect("declared core tool"),
 				description,
 				schema: parameters,
 			}),

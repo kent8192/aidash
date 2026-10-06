@@ -33,7 +33,7 @@ pub struct Execution {
 pub struct Job {
 	pub input: TestInput,
 	pub profile: Option<ProfilePin>,
-	pub tool_references: Vec<EntityRef>,
+	pub tool_references: std::collections::BTreeMap<String, EntityRef>,
 	pub limits: TestLimits,
 	pub context_window: usize,
 	pub agent_max_steps: i32,
@@ -139,17 +139,9 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 				break;
 			}
 			let real_rule = profile.as_ref().and_then(|pin| {
-				call.name
-					.strip_prefix("plugin_")
-					.and_then(|index| index.parse::<usize>().ok())
-					.and_then(|index| {
-						request
-							.tools
-							.iter()
-							.find(|tool| tool.name == call.name)
-							.map(|_| index)
-					})
-					.and_then(|index| tool_references.get(index))
+				tool_references
+					.get(&call.name)
+					.filter(|_| request.tools.iter().any(|tool| tool.name == call.name))
 					.and_then(|selected| pin.rules.iter().find(|rule| selected == &rule.tool))
 			});
 			let fixture = input.fixtures.get(&call.name);
