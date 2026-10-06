@@ -22,11 +22,12 @@ pub(crate) fn scoped(f: &Federation, actor: Actor) -> Option<Workspaces> {
 	}
 }
 pub(crate) fn bearer(headers: &HeaderMap) -> Option<&str> {
-	headers
+	let (scheme, token) = headers
 		.get("authorization")?
 		.to_str()
 		.ok()?
-		.strip_prefix("Bearer ")
+		.split_once(' ')?;
+	scheme.eq_ignore_ascii_case("Bearer").then_some(token)
 }
 pub(crate) fn browser_operator_allowed(method: &Method, path: &str) -> bool {
 	if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {

@@ -3,12 +3,23 @@ use reinhardt::test::fixtures::api_client_from_url;
 use rstest::rstest;
 
 #[rstest]
+#[case::canonical("Bearer")]
+#[case::lowercase("bearer")]
+#[case::mixed_case("bEaReR")]
 #[tokio::test]
 async fn bearer_authentication_is_request_scoped_and_operator_routes_reject_subjects(
 	#[future] endpoint: EndpointFixture,
+	#[case] scheme: &str,
 ) {
 	// Arrange
 	let app = endpoint.await;
+	app.operator
+		.set_header(
+			"Authorization",
+			&format!("{scheme} {}", app.runtime.config.api_token),
+		)
+		.await
+		.unwrap();
 	let alice = subject(&app, "alice").await;
 	let invalid = api_client_from_url(&app.server.url);
 	invalid
