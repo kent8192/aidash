@@ -1,1 +1,1 @@
-DELETE FROM public.atomic_gate WHERE singleton = true;
+DELETE FROM "public"."atomic_gate" WHERE "singleton" = TRUE;

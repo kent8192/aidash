@@ -4,6 +4,7 @@ mod distribution;
 pub(crate) mod events;
 pub(crate) mod installations;
 pub(crate) mod management;
+pub(crate) mod migration_seed;
 pub(crate) mod storage;
 
 pub(crate) use installations::{active, propagate_provenance};

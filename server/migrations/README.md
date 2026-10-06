@@ -61,7 +61,7 @@ whole supported CREATE/ALTER statements must not be passed to `RunSQL`.
 Historical DDL assets live in each app's `sql/forward/` directory and are loaded
 with `include_str!` into `Operation::RunSQL`: procedural functions/triggers/DO
 blocks, the frozen sequence and ALWAYS identity definitions, transaction-local
-session settings, extension ownership markers, and the two baseline seed inserts. Every
+session settings and extension ownership markers. Every
 physical migration sets `search_path` to `public, pg_catalog` locally because the
 pinned typed operations accept unqualified names; this preserves the frozen
 public schema even with a custom connection search path.
@@ -81,6 +81,20 @@ administrator may provision this extension in an empty database before the
 application migrates using its scoped role. Reversal preserves borrowed
 extensions and drops only extensions created by this history.
 A final context operation sets the public search path before typed reverse operations run.
+
+The two baseline seed mutations and their inverses are built with Reinhardt Query
+in the owning federation and marketplace apps. `manage migrationseeds --check`
+compares their rendered PostgreSQL statements with the four canonical SQL assets.
+`manage migrationseeds --write` regenerates only those assets without reading
+runtime credentials or opening a database. Regeneration is for an **unapplied**
+history; never rewrite an applied migration. The native filesystem source parses
+static Rust syntax without executing arbitrary function calls, so these generated
+assets remain literal `include_str!` payloads in the native graph. This is
+materialized Query output, not a handwritten DML exception or a second migration
+engine. The sole raw statement in the forward seed assets is the transaction-local
+search-path setting. Regression checks load the exact generated SQL through
+`FilesystemSource` and verify both initial gate values after migration and after
+complete reversal/reapplication.
 
 Reinhardt Query already provides builders for several of these statements; the
 remaining gap is their integration into migration operations and filesystem
@@ -127,7 +141,7 @@ rewritten. New sequence/identity changes should use the native
 operations and declare their model metadata; they must not rewrite applied SQL
 assets. New extension migrations may use native reversal only with explicit
 migration ownership (`if_not_exists: false`); conditional creation cannot establish
-ownership for automatic rollback. Query-backed procedural, session, and seed
+ownership for automatic rollback. First-class procedural, session, and seed
 operations remain tracked in
 [#6507](https://github.com/kent8192/reinhardt-web/issues/6507).
 Cross-app reverse planning uses the native command implementation from
@@ -141,6 +155,7 @@ From the repository root, apply or inspect the native history:
 cargo run --locked -p aidash-server --bin manage -- migrate
 cargo run --locked -p aidash-server --bin manage -- migrate --plan
 cargo run --locked -p aidash-server --bin manage -- showmigrations
+cargo run --locked -p aidash-server --bin manage -- migrationseeds --check
 (cd server && cargo run --locked --bin manage -- makemigrations --state-source files)
 (cd server && cargo run --locked --bin manage -- makemigrations --state-source files --dry-run --check)
 ```

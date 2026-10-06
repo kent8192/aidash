@@ -331,3 +331,70 @@ async fn diagnostics_are_registered_static_commands_instead_of_example_binaries(
 			.is_some_and(|query| query.contains("SELECT") || query.contains("UPDATE"))
 	}));
 }
+
+#[rstest]
+#[tokio::test]
+async fn migration_seed_command_detects_drift_and_regenerates_only_owned_assets(
+	#[future(awt)]
+	#[from(management_process)]
+	_process_slot: tokio::sync::SemaphorePermit<'static>,
+	temp_dir: TempDir,
+) {
+	// Arrange: command selection must not deserialize unrelated invalid settings.
+	std::fs::write(temp_dir.path().join("base.toml"), "invalid TOML!").unwrap();
+	let root = temp_dir.path().join("migrations");
+	let paths = ["federation", "marketplace"]
+		.into_iter()
+		.flat_map(|app| {
+			["forward", "backward"]
+				.into_iter()
+				.map(move |direction| format!("{app}/sql/{direction}/0005_seed.sql"))
+		})
+		.collect::<Vec<_>>();
+	for path in &paths {
+		let path = root.join(path);
+		std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+		std::fs::write(path, "seed drift").unwrap();
+	}
+	let untouched = root.join("other-history.rs");
+	std::fs::write(&untouched, "unrelated history").unwrap();
+	// Act: checking is read-only; regeneration is an explicit credential-free command.
+	for (mode, success) in [("--check", false), ("--write", true), ("--check", true)] {
+		let mut command = Command::new(env!("CARGO_BIN_EXE_manage"));
+		command
+			.args(["migrationseeds", mode, "--migration-dir"])
+			.arg(&root)
+			.env_clear()
+			.env("TOKIO_WORKER_THREADS", "2")
+			.env("REINHARDT_SETTINGS_DIR", temp_dir.path())
+			.current_dir(temp_dir.path())
+			.kill_on_drop(true);
+		let output = tokio::time::timeout(std::time::Duration::from_secs(10), command.output())
+			.await
+			.unwrap()
+			.unwrap();
+		// Assert: only the requested generated assets can change.
+		assert_eq!(
+			output.status.success(),
+			success,
+			"{}",
+			String::from_utf8_lossy(&output.stderr)
+		);
+		assert_eq!(
+			std::fs::read_to_string(&untouched).unwrap(),
+			"unrelated history"
+		);
+		if !success {
+			assert!(
+				String::from_utf8_lossy(&output.stderr)
+					.contains("differs from its Reinhardt Query builder")
+			);
+			for path in &paths {
+				assert_eq!(
+					std::fs::read_to_string(root.join(path)).unwrap(),
+					"seed drift"
+				);
+			}
+		}
+	}
+}

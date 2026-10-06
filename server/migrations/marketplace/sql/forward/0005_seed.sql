@@ -1,3 +1,3 @@
 SET LOCAL search_path = public, pg_catalog;
 
-INSERT INTO public.marketplace_gate VALUES ('v1', '{"enabled": false, "contract": 1, "revision": 1}');
+INSERT INTO "public"."marketplace_gate" ("key", "document") VALUES ('v1', '{"contract":1,"enabled":false,"revision":1}');

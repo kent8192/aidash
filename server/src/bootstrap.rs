@@ -35,6 +35,9 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 	registry.register_capability(Box::new(
 		crate::apps::operations::services::diagnostics::Diagnostics,
 	));
+	registry.register_capability(Box::new(
+		crate::apps::operations::services::migration_seeds::MigrationSeeds,
+	));
 	registry
 }
 

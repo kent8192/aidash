@@ -6,3 +6,4 @@ pub mod core;
 pub use core::*;
 
 pub mod diagnostics;
+pub mod migration_seeds;

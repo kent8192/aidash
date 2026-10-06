@@ -901,6 +901,7 @@ async fn complete_baseline_reverses_and_reapplies_through_the_management_graph(
 	// Arrange
 	let fixture = fresh_database.await;
 	fixture.migrate().await;
+	assert_baseline_seed_data(&fixture.connection).await;
 	let before = recorded_keys(&fixture.connection).await;
 	let mut command = deployment_command(&fixture.url, fixture.directory.path());
 	command.args(["migrate", "operations", "zero"]);
@@ -950,6 +951,48 @@ async fn complete_baseline_reverses_and_reapplies_through_the_management_graph(
 	assert!(extensions.is_empty());
 	fixture.migrate().await;
 	assert_eq!(recorded_keys(&fixture.connection).await, before);
+	assert_baseline_seed_data(&fixture.connection).await;
+}
+
+async fn assert_baseline_seed_data(connection: &BackendConnection) {
+	let barrier = connection
+		.fetch_all(
+			&Query::select()
+				.column(Alias::new("singleton"))
+				.expr_as(
+					Expr::col(Alias::new("transaction_id")).is_null(),
+					Alias::new("unlocked"),
+				)
+				.column(Alias::new("commit_epoch"))
+				.from((Alias::new("public"), Alias::new("atomic_gate")))
+				.to_string(PostgresQueryBuilder),
+			vec![],
+		)
+		.await
+		.unwrap();
+	assert_eq!(barrier.len(), 1);
+	assert!(barrier[0].get::<bool>("singleton").unwrap());
+	assert!(barrier[0].get::<bool>("unlocked").unwrap());
+	assert_eq!(barrier[0].get::<i64>("commit_epoch").unwrap(), 0);
+	let gate = connection
+		.fetch_all(
+			&Query::select()
+				.column(Alias::new("key"))
+				.expr_as(
+					Expr::col(Alias::new("document")).cast_as(Alias::new("text")),
+					Alias::new("document"),
+				)
+				.from((Alias::new("public"), Alias::new("marketplace_gate")))
+				.to_string(PostgresQueryBuilder),
+			vec![],
+		)
+		.await
+		.unwrap();
+	assert_eq!(gate.len(), 1);
+	assert_eq!(gate[0].get::<String>("key").unwrap(), "v1");
+	let document: serde_json::Value =
+		serde_json::from_str(&gate[0].get::<String>("document").unwrap()).unwrap();
+	assert_eq!(document, json!({"enabled":false,"contract":1,"revision":1}));
 }
 
 #[rstest]
