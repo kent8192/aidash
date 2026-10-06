@@ -18,7 +18,7 @@ PERSISTENCE = {
 }
 
 
-def inventory(metadata):
+def inventory(metadata, root=ROOT):
     partitions = {name: [] for name in PARTITIONS}
     members = set(metadata["workspace_members"])
     for package in metadata["packages"]:
@@ -32,7 +32,7 @@ def inventory(metadata):
             elif target["kind"] in (["lib"], ["bin"]):
                 partition = "server-unit"
             elif target["kind"] == ["test"]:
-                source = Path(target["src_path"]).relative_to(ROOT / "server/src/apps")
+                source = Path(target["src_path"]).relative_to(root / "server/src/apps")
                 app = source.parts[0]
                 partition = {
                     "identity": "identity", "registry": "collaboration",
@@ -60,6 +60,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--partition", choices=PARTITIONS)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--coverage", action="store_true")
     args = parser.parse_args()
     metadata = json.loads(subprocess.check_output(
         ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"], cwd=ROOT,
@@ -67,15 +68,31 @@ def main():
     partitions = inventory(metadata)
     if args.check or args.partition is None:
         print(json.dumps(partitions, indent=2))
-    elif args.partition == "foundation":
-        print("\n".join(["--workspace", "--exclude", "aidash-server", "--all-targets"]))
-    elif args.partition == "server-unit":
-        print("\n".join(["-p", "aidash-server", "--lib", "--bins"]))
+    else:
+        print("\n".join(command_arguments(metadata, partitions, args.partition, args.coverage)))
+
+
+def command_arguments(metadata, partitions, partition, coverage=False):
+    selected = {item["package"] for item in partitions[partition]}
+    if coverage:
+        # Instrument every workspace crate, including libraries called by server tests.
+        # Only test execution is restricted; --exclude would also erase its coverage.
+        members = set(metadata["workspace_members"])
+        arguments = ["--workspace"]
+        for package in sorted(metadata["packages"], key=lambda item: item["name"]):
+            if package["id"] in members and package["name"] not in selected:
+                arguments += ["--exclude-from-test", package["name"]]
+    elif partition == "foundation":
+        arguments = ["--workspace", "--exclude", "aidash-server"]
     else:
         arguments = ["-p", "aidash-server"]
-        for item in sorted(partitions[args.partition], key=lambda item: item["target"]):
-            arguments += ["--test", item["target"]]
-        print("\n".join(arguments))
+    if partition == "foundation":
+        return [*arguments, "--all-targets"]
+    if partition == "server-unit":
+        return [*arguments, "--lib", "--bins"]
+    for item in sorted(partitions[partition], key=lambda item: item["target"]):
+        arguments += ["--test", item["target"]]
+    return arguments
 
 
 if __name__ == "__main__":

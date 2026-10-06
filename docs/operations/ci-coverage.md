@@ -18,6 +18,18 @@ The uploader waits for all eight jobs and checks the exact set of nonempty LCOV
 artifacts. It submits all reports together with `flags: rust`; Codecov combines
 execution counts for shared source files. An absent or failed partition prevents
 the upload. `CI Success` also requires every partition and the upload separately.
+
+Coverage commands select `--workspace` and restrict execution with
+`--exclude-from-test`, while ordinary test commands retain their package selection.
+This instruments shared application and harness code called by server integration
+tests without repeating their unit suites. With package-only coverage, the
+successful reports at `b0a14cad` contained application code only in foundation:
+peer admissions and desktop protocol use cases incorrectly had zero hits even
+though server tests exercised them. The all-workspace reports retain those hits
+when merged. Existing thresholds, exclusions and required partitions are unchanged.
+An instrumented two-crate regression checks that server tests contribute coverage
+to a dependency while its unit tests remain excluded from that partition.
+
 Bruno runs all 269 endpoints and 935 scenarios in its own required job; only
 sanitized source identity, executable hashes and assertion results are archived.
 Both LLVM export and Codecov exclude test directories, `tests.rs`, and sibling

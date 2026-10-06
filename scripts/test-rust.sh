@@ -27,9 +27,11 @@ done
 test_args=(--workspace --all-targets)
 if [[ "$partition" != all ]]; then
   test_args=()
+  partition_args=(--partition "$partition")
+  "$coverage" && partition_args+=(--coverage)
   while IFS= read -r argument; do
     test_args+=("$argument")
-  done < <(python3 scripts/rust-test-partitions.py --partition "$partition")
+  done < <(python3 scripts/rust-test-partitions.py "${partition_args[@]}")
   # A process-substitution failure must never fall back to unscoped cargo test.
   ((${#test_args[@]})) || exit 2
 fi
