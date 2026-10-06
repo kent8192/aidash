@@ -4,6 +4,18 @@ Aidash coordinates Agents and their durable work. This glossary records the shar
 
 ## Language
 
+**Workspace**:
+A shared scope in which people and Agents pursue a goal through Tasks, messages and artifacts.
+_Avoid_: Task, Run
+
+**Task**:
+A unit of work within a Workspace, with its own requirements, ownership and lifecycle. A Task is distinct from a Run that attempts to carry it out.
+_Avoid_: Run, model request
+
+**Registry**:
+The catalog of immutable, versioned entity definitions used to discover and configure Agents and their capabilities.
+_Avoid_: Run history, execution journal
+
 **Harness**:
 The runtime responsible for advancing Runs and governing the capabilities available to Agents.
 _Avoid_: Model, Agent
@@ -223,6 +235,10 @@ _Avoid_: Home node, Workspace owner
 **Subject chain**:
 The originating subject and the Agents on whose behalf work is delegated. Delegation is constrained by every member's authority.
 _Avoid_: Peer identity, Agent version
+
+**Task origin**:
+The Run that first created a Task and the subjects on whose authority it was created. Retrying that creation does not establish a new origin.
+_Avoid_: Current Task owner, latest Run
 
 **Remote grant**:
 The Home node's recorded, time-bounded authorization for a specified remote Task, subject chain and executor. It is distinct from the receiving Node's consent to perform the work.

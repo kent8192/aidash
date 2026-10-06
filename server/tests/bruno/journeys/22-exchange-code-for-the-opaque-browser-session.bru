@@ -1,0 +1,41 @@
+meta {
+  name: Exchange code for the opaque browser session
+  type: http
+  seq: 22
+}
+
+get {
+  url: {{callback_url}}
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Cookie: {{login_cookie}}
+}
+
+tests {
+  const header = res.getHeader("set-cookie");
+  const values = (Array.isArray(header) ? header : [header]).filter(value => typeof value === "string");
+  const session = values.find(value => value.startsWith("aidash-session="));
+  const csrf = values.find(value => value.startsWith("aidash-csrf="));
+
+  test("HTTP 303", function () {
+    expect(res.getStatus()).to.equal(303);
+  });
+  test("Login sets the opaque session and CSRF cookie names", function () {
+    expect(values.map(value => value.split("=")[0])).to.include.members(["aidash-session", "aidash-csrf"]);
+  });
+  test("Session cookies keep their security attributes", function () {
+    expect(Boolean(session && session.includes("HttpOnly") && session.includes("SameSite=Lax"))).to.equal(true);
+    expect(res.getHeader("cache-control")).to.include("no-store");
+  });
+
+  if (res.getStatus() === 303 && session && csrf) {
+    const sessionValue = session.split(";")[0];
+    const csrfValue = csrf.split(";")[0];
+    bru.setVar("session_cookie", sessionValue + "; " + csrfValue);
+    bru.setVar("csrf", csrfValue.substring(csrfValue.indexOf("=") + 1));
+  }
+}

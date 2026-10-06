@@ -1,0 +1,23 @@
+meta {
+  name: 0105 sessions-activity - Browser activity rejects foreign origin
+  type: http
+  seq: 42
+}
+
+post {
+  url: {{base_url}}/auth/activity
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Cookie: {{session_cookie}}
+  Origin: https://untrusted.example
+  X-Aidash-CSRF: {{csrf}}
+}
+
+tests {
+  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
+}

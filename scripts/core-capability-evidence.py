@@ -42,6 +42,34 @@ def capture(directory):
     write(directory / 'source.json', dict(revision(), started_at=datetime.datetime.now(datetime.timezone.utc).isoformat()))
 
 
+def acceptance_results(mapping, outcomes):
+    results, errors = {}, []
+    for case, entry in mapping['acceptance'].items():
+        assertions = []
+        for test in entry['tests']:
+            matches = {name: value for name, value in outcomes.items() if name == test['name'] or name.startswith(test['name'] + '::')}
+            passed = bool(matches) and all(value == 'ok' for value in matches.values())
+            assertions.append(dict(test, passed=passed, observed=matches))
+            if not passed:
+                errors.append(f'{case}: missing or failed {test["name"]}')
+        results[case] = {'passed': all(test['passed'] for test in assertions), 'assertions': assertions}
+    return results, errors
+
+
+def check_inventory(directory):
+    mapping = json.loads(MAPPING.read_text())
+    raw = (directory / 'tests.list').read_text()
+    log = re.sub(r'\x1b\[[0-9;]*m', '', raw)
+    names = re.findall(r'^(\S+): test$', log, re.M)
+    _, errors = acceptance_results(mapping, dict.fromkeys(names, 'ok'))
+    write(directory / 'inventory-result.json', {
+        'schema': 'aidash-core-inventory/1', 'test_names': names,
+        'errors': errors, 'valid': not errors,
+    })
+    print(f'Core inventory: {len(names)} available tests; {len(errors)} missing assertions.')
+    return 1 if errors else 0
+
+
 def finish(directory, exit_code):
     mapping = json.loads(MAPPING.read_text())
     errors = []
@@ -59,16 +87,8 @@ def finish(directory, exit_code):
     raw = (directory / 'runtime.log').read_text() if (directory / 'runtime.log').exists() else ''
     log = re.sub(r'\x1b\[[0-9;]*m', '', raw)
     outcomes = dict(re.findall(r'^test (\S+) \.\.\. (ok|FAILED|ignored)$', log, re.M))
-    results = {}
-    for case, entry in mapping['acceptance'].items():
-        assertions = []
-        for test in entry['tests']:
-            matches = {name: value for name, value in outcomes.items() if name == test['name'] or name.startswith(test['name'] + '::')}
-            passed = bool(matches) and all(value == 'ok' for value in matches.values())
-            assertions.append(dict(test, passed=passed, observed=matches))
-            if not passed:
-                errors.append(f'{case}: missing or failed {test["name"]}')
-        results[case] = {'passed': all(test['passed'] for test in assertions), 'assertions': assertions}
+    results, assertion_errors = acceptance_results(mapping, outcomes)
+    errors.extend(assertion_errors)
     report = {
         'schema': 'aidash-core-result/1', 'source': source, 'runtime': admission, 'controller_recovery': recovery,
         'command': mapping['commands']['runtime'], 'exit_code': exit_code,
@@ -102,13 +122,15 @@ def browser(directory):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['capture', 'finish', 'browser'])
+    parser.add_argument('action', choices=['capture', 'inventory', 'finish', 'browser'])
     parser.add_argument('directory', type=Path)
     parser.add_argument('--exit-code', type=int, default=0)
     arguments = parser.parse_args()
     if arguments.action == 'capture':
         capture(arguments.directory)
         return 0
+    if arguments.action == 'inventory':
+        return check_inventory(arguments.directory)
     if arguments.action == 'browser':
         return browser(arguments.directory)
     return finish(arguments.directory, arguments.exit_code)

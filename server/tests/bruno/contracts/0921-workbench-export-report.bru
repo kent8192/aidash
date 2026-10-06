@@ -1,0 +1,21 @@
+meta {
+  name: 0921 workbench-export-report - Malformed bearer syntax is rejected
+  type: http
+  seq: 921
+}
+
+get {
+  url: {{base_url}}/api/workbench/versions/__bruno_missing__/__bruno_missing__/report
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Basic invalid
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+}

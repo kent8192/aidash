@@ -1,0 +1,29 @@
+meta {
+  name: Snapshot retains the committed state
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{base_url}}/api/workspaces/{{workspace_id}}
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{owner_token}}
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("JSON response contract", function () {
+    expect(res.getHeader("content-type")).to.include("application/json");
+    expect(res.getBody().workspace.id).to.equal(bru.getVar("workspace_id"));
+    expect(res.getBody().workspace.revision).to.equal(1);
+    expect(res.getBody().workspace.state).to.eql({bruno:true});
+    expect(res.getBody().tasks).to.eql([]);
+  });
+}

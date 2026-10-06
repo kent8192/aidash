@@ -277,8 +277,8 @@ def main():
     revision = runpy.run_path(str(ROOT / "scripts/core-capability-evidence.py"))["revision"]
     source = revision()
     binary_sha256 = hashlib.sha256(pathlib.Path(args.binary).read_bytes()).hexdigest()
-    query_helper = pathlib.Path(args.binary).resolve().parent / "examples" / "acceptance_queries"
-    queries = json.loads(subprocess.check_output([str(query_helper)], text=True))
+    query_helper = pathlib.Path(args.binary).resolve().parent / "manage"
+    queries = json.loads(subprocess.check_output([str(query_helper), "diagnostics", "acceptance"], text=True))
     run_id = uuid.uuid4().hex[:12]
     db_a, db_b = f"aidash_e2e_{run_id}_a", f"aidash_e2e_{run_id}_b"
     node_a, node_b = f"aidash://acceptance-{run_id}-a", f"aidash://acceptance-{run_id}-b"
@@ -319,12 +319,10 @@ def main():
             pass
 
     try:
-        # SeaQuery has no CREATE/DROP DATABASE builder; fixture isolation DDL only.
-        psql("aidash_a", f"CREATE DATABASE {db_a}")
-        psql("aidash_a", f"CREATE DATABASE {db_b}")
-        # Extensions are database-local, and SeaQuery has no CREATE EXTENSION builder.
-        psql(db_a, "CREATE EXTENSION IF NOT EXISTS pg_jsonschema WITH SCHEMA public")
-        psql(db_b, "CREATE EXTENSION IF NOT EXISTS pg_jsonschema WITH SCHEMA public")
+        # Create isolated databases; application schema belongs to the native history.
+        psql("aidash_a", f"CREATE DATABASE {db_a} TEMPLATE template0")
+        psql("aidash_a", f"CREATE DATABASE {db_b} TEMPLATE template0")
+        # Each server applies the native history, including its owned extension.
         launch(node_a, db_a, port_a, "server")
         launch(node_b, db_b, port_b, "server")
         wait_for(lambda: api_request(base_a, "/health"), label="Node A")

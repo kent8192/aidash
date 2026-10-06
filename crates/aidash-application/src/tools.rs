@@ -1,0 +1,325 @@
+//! Tool validation, skill reads, and delegated task execution.
+use crate::execution::bounded_utf8_end;
+use crate::{
+	Error, Result,
+	ports::tools::{ToolOperations, ToolTransport},
+};
+use aidash_domain::{
+	ArtifactInput, NewTask, Run,
+	provider::ToolSpec,
+	registry::{EntityRef, Entry, Search},
+	tool::ToolConfig,
+};
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
+
+pub struct ToolContext<'a> {
+	pub operations: &'a dyn ToolOperations,
+	pub run: &'a Run,
+}
+pub fn plugin_specification(entry: &Entry, alias: &str) -> ToolSpec {
+	ToolSpec {
+		name: alias.into(),
+		description: entry
+			.description
+			.values()
+			.cloned()
+			.collect::<Vec<_>>()
+			.join(" / "),
+		parameters: entry.schema.clone(),
+	}
+}
+
+/// The same schema and replay policy apply to HTTP, MCP, and agent tools.
+pub struct Plugin {
+	pub entry: Entry,
+	pub alias: String,
+	pub config: ToolConfig,
+}
+impl Plugin {
+	pub fn specification(&self) -> ToolSpec {
+		plugin_specification(&self.entry, &self.alias)
+	}
+	pub fn replay_safe(&self) -> bool {
+		match &self.config {
+			ToolConfig::Http { replay, .. } | ToolConfig::Mcp { replay, .. } => replay != "unsafe",
+			_ => true,
+		}
+	}
+	pub async fn invoke(
+		&self,
+		ctx: &ToolContext<'_>,
+		transport: &dyn ToolTransport,
+		input: Value,
+		key: &str,
+	) -> Result<Value> {
+		validate_arguments(&self.entry.schema, &input)?;
+		match &self.config {
+			ToolConfig::Native { operation, .. } if operation == "echo" => Ok(input),
+			ToolConfig::Native {
+				operation,
+				allowed_hosts,
+			} if operation == "http_get" => {
+				let url = url::Url::parse(required(&input, "url")?)
+					.map_err(|_| Error::Invalid("invalid URL".into()))?;
+				if !matches!(url.scheme(), "https" | "http")
+					|| !allowed_hosts
+						.iter()
+						.any(|host| Some(host.as_str()) == url.host_str())
+					|| !url.username().is_empty()
+					|| url.password().is_some()
+				{
+					return Err(Error::Invalid(
+						"URL is outside the tool's configured hosts".into(),
+					));
+				}
+				transport.invoke(&self.config, input, key).await
+			}
+			ToolConfig::Native { .. } => Err(Error::Invalid("unknown native tool".into())),
+			ToolConfig::Http { .. } | ToolConfig::Mcp { .. } => {
+				transport.invoke(&self.config, input, key).await
+			}
+			ToolConfig::Agent { node_id, agent } => {
+				let mut input: NewTask =
+					serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
+				input.parent_id.get_or_insert(ctx.run.task_id);
+				let task = ctx
+					.operations
+					.create_task(&format!("{key}:task"), &input)
+					.await?;
+				let delegation_key = format!("{key}:delegate");
+				Ok(
+					json!({"task":task,"delegation":ctx.operations.delegate_with_key(&delegation_key,task.id,node_id,agent).await?}),
+				)
+			}
+		}
+	}
+}
+fn validate_arguments(schema: &Value, input: &Value) -> Result<()> {
+	jsonschema::validator_for(schema)
+		.map_err(|e| Error::Invalid(e.to_string()))?
+		.validate(input)
+		.map_err(|e| Error::Invalid(e.to_string()))
+}
+
+pub struct Builtin {
+	pub name: &'static str,
+	pub description: &'static str,
+	pub schema: Value,
+}
+impl Builtin {
+	pub fn specification(&self) -> ToolSpec {
+		ToolSpec {
+			name: self.name.into(),
+			description: self.description.into(),
+			parameters: self.schema.clone(),
+		}
+	}
+	pub fn replay_safe(&self) -> bool {
+		true
+	}
+	pub async fn invoke(&self, ctx: &ToolContext<'_>, input: Value, key: &str) -> Result<Value> {
+		jsonschema::validator_for(&self.schema)
+			.map_err(|e| Error::Invalid(e.to_string()))?
+			.validate(&input)
+			.map_err(|e| Error::Invalid(e.to_string()))?;
+		match self.name {
+			"skill_read" => {
+				let reference: EntityRef = serde_json::from_value(input["skill"].clone())
+					.map_err(|error| Error::Invalid(error.to_string()))?;
+				let path = required(&input, "path")?;
+				if !ctx
+					.operations
+					.registered_skills()
+					.await?
+					.contains(&reference)
+				{
+					return Err(Error::Forbidden);
+				}
+				let file = ctx
+					.operations
+					.skill_files(&reference)
+					.await?
+					.into_iter()
+					.find(|file| file.path == path)
+					.ok_or_else(|| Error::Invalid(format!("Skill file not found: {path}")))?;
+				let offset = input["offset"].as_u64().unwrap_or(0) as usize;
+				let max_chars = input["max_chars"].as_u64().unwrap_or(8000).min(16000) as usize;
+				let mut start = offset.min(file.content.len());
+				while !file.content.is_char_boundary(start) {
+					start -= 1;
+				}
+				let end = bounded_utf8_end(&file.content, start, max_chars);
+				Ok(
+					json!({"path":path,"text":&file.content[start..end],"encoding":file.encoding.as_deref().unwrap_or("utf8"),"offset":start,"total_chars":file.content.len(),"next_offset":if end < file.content.len() { Some(end) } else { None }}),
+				)
+			}
+			"agent_discover" => Ok(json!(
+				ctx.operations
+					.discover(&serde_json::from_value::<Search>(input)?)
+					.await?
+			)),
+			"task_create" => {
+				let mut task: NewTask =
+					serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
+				if task.parent_id.is_none() {
+					task.parent_id = Some(ctx.run.task_id);
+				}
+				Ok(json!(ctx.operations.create_task(key, &task).await?))
+			}
+			"task_assign" => {
+				let id = required(&input, "task_id")?
+					.parse()
+					.map_err(|_| Error::Invalid("invalid task id".into()))?;
+				Ok(json!(
+					ctx.operations
+						.assign(
+							id,
+							required(&input, "policy_id")?,
+							required(&input, "reason")?
+						)
+						.await?
+				))
+			}
+			"task_delegate" => {
+				let id = required(&input, "task_id")?
+					.parse()
+					.map_err(|_| Error::Invalid("invalid task id".into()))?;
+				let agent: EntityRef = serde_json::from_value(input["agent"].clone())
+					.map_err(|e| Error::Invalid(e.to_string()))?;
+				Ok(json!(
+					ctx.operations
+						.delegate_with_key(key, id, required(&input, "node_id")?, &agent)
+						.await?
+				))
+			}
+			"artifact_publish" => Ok(json!(
+				ctx.operations
+					.artifact(key, &serde_json::from_value::<ArtifactInput>(input)?)
+					.await?
+			)),
+			"workspace_message" => {
+				ctx.operations
+					.message(key, required(&input, "content")?)
+					.await?;
+				Ok(json!({"sent":true}))
+			}
+			"workspace_observe" => {
+				ctx.operations
+					.observation(
+						input["offset"].as_u64().unwrap_or(0) as usize,
+						input["limit"]
+							.as_u64()
+							.unwrap_or(aidash_domain::context::observation::DEFAULT_LIMIT as u64)
+							as usize,
+					)
+					.await
+			}
+			"workspace_read" => {
+				let kind = required(&input, "kind")?;
+				let id = required(&input, "id")?;
+				ctx.operations
+					.read_record_chunk(
+						kind,
+						id,
+						input["offset"].as_u64().unwrap_or(0) as usize,
+						input["max_chars"].as_u64().unwrap_or(8000) as usize,
+					)
+					.await
+			}
+			"workspace_wait" => {
+				Ok(json!({"wait_seconds":input["seconds"].as_u64().unwrap_or(2).clamp(1,60)}))
+			}
+			"memory_write" => {
+				ctx.operations.remember(&input).await?;
+				Ok(json!({"saved":true}))
+			}
+			"human_request" => {
+				let request = ctx
+					.operations
+					.human_request(required(&input, "kind")?, required(&input, "prompt")?, key)
+					.await?;
+				Ok(json!({"human_request_id":request.id}))
+			}
+			_ => Err(Error::Invalid("unknown tool".into())),
+		}
+	}
+}
+pub fn required<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
+	v[key]
+		.as_str()
+		.ok_or_else(|| Error::Invalid(format!("{key} must be a string")))
+}
+pub fn builtins() -> BTreeMap<String, Builtin> {
+	let string = json!({"type":"string"});
+	let entity_ref = json!({"type":"object","required":["id","version"],"properties":{"id":string,"version":string},"additionalProperties":false});
+	let entries = vec![
+		Builtin {
+			name: "skill_read",
+			description: "Read a file bundled with one of this agent's registered Skills. Use the exact Skill id/version and relative path listed in the Skill instructions; continue from next_offset when present. Binary files are returned as base64 text with an encoding field. The returned chunk is capped to fit the active request budget; if deferred is true, continue on a later turn.",
+			schema: json!({"type":"object","required":["skill","path"],"properties":{"skill":entity_ref,"path":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "agent_discover",
+			description: "Find local and federated agents by capability, skill, tag, language or model. Choose an exact node_id, entity id and version from these results.",
+			schema: json!({"type":"object","properties":{"capability":string,"language":string,"skill":string,"tag":string,"model":string,"query":string},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "task_create",
+			description: "Decompose a goal or task. Create a subtask in this workspace; returns its ID. Delegate it next.",
+			schema: json!({"type":"object","required":["title","description"],"properties":{"title":string,"description":string,"requirements":{"type":"object"},"dependencies":{"type":"array","items":string},"parent_id":string},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "task_assign",
+			description: "Assign a workspace task to an approved existing agent, or request a generated specialist using an explicitly named generation policy. Generation may wait for human approval. Requires a tenant-scoped execution identity.",
+			schema: json!({"type":"object","required":["task_id","policy_id","reason"],"properties":{"task_id":string,"policy_id":string,"reason":string},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "task_delegate",
+			description: "Offer an existing workspace task to the explicitly selected local or remote agent.",
+			schema: json!({"type":"object","required":["task_id","node_id","agent"],"properties":{"task_id":string,"node_id":string,"agent":entity_ref},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "artifact_publish",
+			description: "Publish an intermediate artifact to the shared workspace.",
+			schema: json!({"type":"object","required":["kind","name","content"],"properties":{"kind":{"enum":["text","json","file_reference","code","structured_result"]},"name":string,"content":{}},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "workspace_message",
+			description: "Send a message to the human and other agents sharing this workspace.",
+			schema: json!({"type":"object","required":["content"],"properties":{"content":string},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "workspace_observe",
+			description: "Read a bounded summary of goal, tasks, artifact references, messages and recent event metadata. Use workspace_read for full records. Collections have separate totals and next_offset; events/messages are newest first. Refresh pagination if the workspace changes.",
+			schema: json!({"type":"object","properties":{"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "workspace_read",
+			description: "Read one accessible workspace record by kind and exact ID. Returns a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.",
+			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event"]},"id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "workspace_wait",
+			description: "Wait without inference until peers have made progress. Recheck workspace tasks on the next turn.",
+			schema: json!({"type":"object","required":["seconds"],"properties":{"seconds":{"type":"integer","minimum":1,"maximum":60}},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "memory_write",
+			description: "Replace this agent's persistent memory for the current workspace with this JSON object.",
+			schema: json!({"type":"object"}),
+		},
+		Builtin {
+			name: "human_request",
+			description: "Ask the human for input and wait for a response. Approval requests do not grant permission until answered.",
+			schema: json!({"type":"object","required":["kind","prompt"],"properties":{"kind":{"enum":["QUESTION","APPROVAL_REQUIRED","CONFIRMATION","INFORMATION_REQUEST"]},"prompt":string},"additionalProperties":false}),
+		},
+	];
+	entries
+		.into_iter()
+		.map(|t| (t.name.to_owned(), t))
+		.collect()
+}
+
+#[cfg(test)]
+mod tests;

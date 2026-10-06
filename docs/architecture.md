@@ -4,7 +4,148 @@ This document describes the current implementation and its boundaries. Scoped re
 
 ## Current implementation
 
-The implementation is a Rust node executable, with independent control server and worker modes, and a React/TypeScript dashboard. Authoritative state lives in PostgreSQL; Qdrant stores derived semantic vectors. SeaORM owns schema migrations and registry CRUD, and SeaQuery constructs application and test queries, including transactional task transitions, execution journals, and the event outbox. SQLx executes those constructed statements. PostgreSQL trigger functions, triggers and ALTER CHECK operations that SeaQuery cannot represent remain explicit SeaORM migration DDL. They share the application data pool; transaction control and visibility leases use separate connection capacity. Runtime queries are exercised against real PostgreSQL so builds do not require a live database.
+The implementation is a Rust 2024 Cargo workspace, with independent control server
+and worker modes and a React/TypeScript dashboard. Domain models and pure rules
+live in `aidash-domain`; application use cases and external ports live in
+`aidash-application`; `aidash-harness` owns agent execution and worker lifecycle;
+`aidash-runtime` supervises process-wide background work; and
+`aidash-integrations` implements external connections. `aidash-server` owns
+Reinhardt HTTP, ORM repositories, settings, migrations, and dependency assembly.
+HTTP requests and workers use the same bootstrap and persistence implementations.
+
+The harness executes agent steps and owns worker activation, lease renewal,
+cancellation, execution recovery and terminal delivery. Shared execution ports,
+failure classifications and helpers remain in application/domain so those
+crates never import the harness. Runtime's generic `Supervisor` accepts worker
+futures without importing the harness; server composes both with native adapters.
+
+Worker entry, inference admission, scoped command replay and capability operation
+admission use application ports. Transaction manifests and monotonic coordinator
+decisions are domain rules; transaction authority completes inherited subject
+chains before checking mutations and recipient disclosure. Native scopes retain
+the caller's transaction and lock order. Authority withdrawal reloads the Area
+before the operation under row locks, keeps cancellation possible after
+revocation, and retains possible effects for dispatched writers.
+
+Coordinator advancement, decision verification, operator abort and recovery
+batches use application ports. Domain rules select participant votes and bind
+acknowledgements to the immutable manifest and exact phase. Native repositories
+retain the recovery advisory lease across participant I/O, update each vote and
+clear its error atomically, and commit immutable decisions with their audit
+history under the same row lock. Operator abort competes for that decision
+without waiting for the recovery lease.
+Runtime schedules active and aborted recovery independently; bootstrap supplies
+their separate connection capacity before the supervisor starts the loops.
+Manifest admission uses a borrowed application scope over the caller's existing
+transaction. Immutable replay checks the bound origin before accepting the
+manifest; new admission checks the deadline and peer trust before persisting
+the coordinator, votes, history and origin binding.
+Participant reserve, prepare, finish and recovery also use application scopes.
+Durable reservations precede live authorization rechecks. Native scopes retain
+serializable transactions, speculative validation savepoints, mutation context,
+visibility barriers and authority auditing. Commit application and visibility
+release remain separate durable transitions; abort tombstones reject delayed
+reservation replay.
+Participant recovery is also scheduled by runtime under the drain supervisor;
+server services compose the same application workflow for explicit recovery.
+Application also orders manifest mutations, task child/delegation checks, paired
+task and Run completion, provenance recording and their unchanged event payloads.
+Domain rules check task and Run preconditions before execution-state decoding.
+Native mutation ports retain row locks, database-clock lease checks, selective
+updates and event persistence inside the participant's existing transaction;
+speculative preparation runs this same workflow under its rollback-only savepoint.
+Transaction HTTP replies are decoded in integrations. Current peer lookup,
+response headers and the complete body share the original ten-second deadline;
+the four-MiB limit, rotating credentials and recovery error classification remain
+unchanged for coordinator and authority RPCs.
+Authorized subject aborts also arbitrate and inspect the immutable decision
+through application ports inside the retained authority transaction. A concurrent
+commit remains irrevocable, and fault cuts retain their before/after commit order.
+Transaction management uses application disclosure and trust workflows. Ordered
+keyset pages retain eight concurrent live-authority checks and the 200-visible-row
+limit. Native adapters keep votes/audit on the same connection and retain trust
+registration through the post-commit pending scan; HTTP services only compose
+authentication metadata and unchanged response contracts.
+
+Durable worker activation uses application scheduling and handoff ports. Targeted
+notifications and recovery share database-clock eligibility, malformed-state
+repair and revision/lease fencing. Native repositories retain Run-before-obligation
+lock ordering and commit execution responsibility before any acknowledgement.
+An ACK failure still advances the committed lease; invalid references enter
+durable quarantine before TERM. Harness owns reconnect backoff, bounded publication,
+finite single-message pulls, recovery cadence and drain. Integrations owns JetStream
+stream/consumer validation, credential decoding and transport acknowledgements;
+bootstrap supplies the same ports to server and listener-free worker modes.
+
+Worker admission and terminal delivery use application scopes that retain fresh
+authority through their effects. Runtime owns lease heartbeats, transient renewal
+backoff, cancellation observations and terminal-outbox polling. A lost lease
+cancels the current operation without recovery or settlement; a completed step
+resumes ordinary visibility before recovery reads its committed state. Native
+adapters project only the committed run identifier or control for observations
+and preserve the existing failure-delivery transaction and lease fence.
+
+Remote run-message admission, reconciliation, Home reservation recovery and
+observed-input acknowledgements share an application ledger scope. History import
+and new-input acceptance remain one native transaction. A late connection error
+checks the committed input before promoting or releasing its Home fence. Domain
+rules bind delivered records to the original node, task, workspace and content;
+typed native RPC adapters retain the preceding Federation 0.1 peer fallback and
+its bounded history/snapshot behavior.
+
+Dashboard account validity and status recovery are application use cases shared
+by browser sessions and ongoing runs. Runtime drives bounded refresh passes;
+integration adapters own OIDC discovery, JWKS caches and account lookups. Native
+repositories retain conditional status writes, atomic session revocation and the
+original Subject authority through resumed-run commits. Provider latency does
+not extend validity: successful checks record their start time. Backchannel
+logout verifies its signed envelope before applying domain lifetime and replay
+identity rules and atomically consuming the logout identity with revocation.
+
+Peer identity registration, bearer rotation checks and delegation authorization
+use shared application rules. Native registration and trust restoration recheck
+distinct credentials while retaining the same advisory lock, row locks and audit
+transaction. Graph repositories retain projection queries and current viewer
+leases; application checks workspace permission before record disclosure.
+
+Scoped commands authorize effects, track disclosed outputs, journal mutation
+results, and recheck the source lease through the application use case. A claim
+binds the complete inspected agent definition. Operation reconciliation owns one
+authority scope through commit or rollback, records attempted dispatch before
+contacting the runner, and publishes outputs atomically before advancing its
+revision. Runner HTTP lives in integrations; its transport restrictions,
+credential rotation, timeout and verified deployment ceilings retain the existing
+execution contract.
+
+Capability sessions, explicit retention and restoration, reference extraction,
+approval decisions, Python lifecycle, file operations and Skill loading use
+application ports over the same native authority transaction. Patch publication
+checks every preimage before exposing the new manifest. Reference and cleanup
+workers require a confirmed writer stop before reclaiming bytes; runtime owns
+their scheduling and drain loops. Outbound HTTP records an attempt before the
+integration transport contacts the remote service. Current subject chains and
+source constraints apply to both HTTP and worker entry points.
+
+Authoritative state lives in PostgreSQL; Qdrant stores derived semantic vectors.
+Reinhardt owns the single migration graph under `server/migrations/`. Its frozen
+baseline retains PostgreSQL functions, triggers, generated columns, constraints,
+indexes, and lock/lease semantics from the 55-step development schema. State-only
+ORM snapshots support future autodetection without replacing these physical
+guarantees. Native repository operations retain the caller's transaction and
+visibility/authority scope; transaction control uses separate connection capacity.
+Repository queries and transactions execute through Reinhardt's database
+connection and transaction executors, including authorization leases and their
+protected writes. Typed projections name tuple columns explicitly and distinguish
+SQL NULL from JSON null. The underlying SQLx driver is confined to bootstrap pool
+configuration and independent test fixtures; it does not execute repository
+queries.
+Host timestamps used by typed ORM updates and retention predicates are reduced
+to PostgreSQL microseconds at the persistence boundary, preserving the previous
+driver's truncation relative to its 2000-01-01 epoch. Business clocks retain their
+original precision; outbox retries continue to use the database clock.
+The [migration runbook](../server/migrations/README.md) describes the supported
+empty-database boundary and maintenance cutover. Runtime queries are tested with
+real PostgreSQL; builds do not require a live database.
 
 The workspace's home node owns its task revisions, messages and artifacts. Remote agents claim and mutate these resources through the versioned HTTP federation protocol. They never connect to the home database. Each executing node persists its own run journal. Peer trust is explicitly configured on both nodes with environment-based credential references. Public identity contains no secrets. Registry versions are immutable and model selection is explicit.
 

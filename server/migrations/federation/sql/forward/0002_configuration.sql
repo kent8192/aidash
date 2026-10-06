@@ -1,0 +1,3 @@
+ALTER SEQUENCE public.atomic_history_sequence_seq OWNED BY public.atomic_history.sequence;
+
+ALTER SEQUENCE public.authorization_peer_mapping_history_sequence_seq OWNED BY public.authorization_peer_mapping_history.sequence;

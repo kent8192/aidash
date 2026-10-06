@@ -1,0 +1,27 @@
+meta {
+  name: Anonymous task reads are unauthorized
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{base_url}}/api/tasks
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+}
+
+tests {
+  test("HTTP 401", function () {
+    expect(res.getStatus()).to.equal(401);
+  });
+  test("JSON response contract", function () {
+    expect(res.getHeader("content-type")).to.include("application/json");
+    expect(res.getBody()).to.have.all.keys("error");
+    expect(res.getBody().error).to.be.a("string");
+
+  });
+}

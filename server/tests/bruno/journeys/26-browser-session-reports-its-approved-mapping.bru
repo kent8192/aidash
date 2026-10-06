@@ -1,0 +1,32 @@
+meta {
+  name: Browser session reports its approved mapping
+  type: http
+  seq: 26
+}
+
+get {
+  url: {{base_url}}/auth/session
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Cookie: {{session_cookie}}
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("JSON response contract", function () {
+    expect(res.getHeader("content-type")).to.include("application/json");
+    expect(res.getBody().operator).to.equal(false);
+    expect(res.getBody().mappings.map(mapping => mapping.tenant)).to.eql([bru.getEnvVar("tenant")]);
+    expect(res.getBody().mappings[0].subject).to.equal("alice");
+  });
+
+  if (res.getStatus() === 200 && res.getBody().mappings.length === 1) {
+    bru.setVar("browser_context", "mapping:" + res.getBody().mappings[0].id);
+  }
+}

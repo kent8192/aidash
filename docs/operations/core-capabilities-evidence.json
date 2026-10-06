@@ -83,19 +83,19 @@
       "tests": [
         {
           "name": "journey_tests::harness_journey_keeps_core_names_state_and_integration_secrets_separate",
-          "source": "tests/core_capabilities/journey.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/journey.rs"
         },
         {
-          "name": "capabilities::tools::tests::executable_contracts_are_derived_and_disabled_by_default",
-          "source": "src/capabilities/tools.rs"
+          "name": "apps::execution::capabilities::services::core::tools::tests::executable_contracts_are_derived_and_disabled_by_default",
+          "source": "server/src/apps/execution/capabilities/services/tools.rs"
         },
         {
-          "name": "capabilities::management::tests::management_schema_has_typed_results_and_distinct_recipient_contracts",
-          "source": "src/capabilities/management.rs"
+          "name": "apps::execution::capabilities::services::core::management::tests::management_schema_has_typed_results_and_distinct_recipient_contracts",
+          "source": "server/src/apps/execution/capabilities/services/management.rs"
         },
         {
-          "name": "capabilities::tools::tests::output_envelope_schema_accepts_the_serialized_wire_contract",
-          "source": "src/capabilities/tools.rs"
+          "name": "apps::execution::capabilities::services::core::tools::tests::output_envelope_schema_accepts_the_serialized_wire_contract",
+          "source": "server/src/apps/execution/capabilities/services/tools.rs"
         }
       ]
     },
@@ -103,16 +103,16 @@
       "description": "Disabled tools are absent from the model schema and denied on direct dispatch. Missing runner/isolation support fails closed, with no host-execution fallback.",
       "tests": [
         {
-          "name": "capabilities::tools::tests::executable_contracts_are_derived_and_disabled_by_default",
-          "source": "src/capabilities/tools.rs"
+          "name": "apps::execution::capabilities::services::core::tools::tests::executable_contracts_are_derived_and_disabled_by_default",
+          "source": "server/src/apps/execution/capabilities/services/tools.rs"
         },
         {
           "name": "shell_never_falls_back_to_the_host",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "configuration_tests::subject_configuration_creates_an_immutable_version_without_catalog_grants",
-          "source": "tests/core_capabilities/configuration.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/configuration.rs"
         }
       ]
     },
@@ -121,15 +121,15 @@
       "tests": [
         {
           "name": "queued_runs_keep_order_and_cancellation_bypasses_queue",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "session_boundary_tests::same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runnable",
-          "source": "tests/core_capabilities/session_boundaries.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/session_boundaries.rs"
         },
         {
           "name": "subject_session_tests::same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_scoped",
-          "source": "tests/core_capabilities/subject_sessions.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/subject_sessions.rs"
         }
       ]
     },
@@ -138,19 +138,19 @@
       "tests": [
         {
           "name": "files_preserve_unicode_revision_and_source_authority",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "reference_original_is_private_located_and_unchanged_by_python",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "session_boundary_tests::same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runnable",
-          "source": "tests/core_capabilities/session_boundaries.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/session_boundaries.rs"
         },
         {
           "name": "subject_session_tests::completed_run_cannot_materialize_into_its_successor_but_current_run_can",
-          "source": "tests/core_capabilities/subject_sessions.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/subject_sessions.rs"
         }
       ]
     },
@@ -159,11 +159,11 @@
       "tests": [
         {
           "name": "isolated_python_preserves_heap_and_requires_reset_acknowledgement",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "runtime_fault_tests::idle_heap_is_physically_stopped_without_deleting_saved_files",
-          "source": "tests/core_capabilities/runtime_faults.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/runtime_faults.rs"
         }
       ]
     },
@@ -172,15 +172,15 @@
       "tests": [
         {
           "name": "isolated_shell_survives_worker_restart_and_confirms_descendant_cancellation",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "isolated_python_preserves_heap_and_requires_reset_acknowledgement",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "runtime_fault_tests::python_timeout_exports_prior_files_and_requires_new_memory_ack",
-          "source": "tests/core_capabilities/runtime_faults.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/runtime_faults.rs"
         }
       ]
     },
@@ -189,15 +189,15 @@
       "tests": [
         {
           "name": "lifecycle_tests::deleted_thread_retains_files_and_restores_only_into_a_new_authorized_thread",
-          "source": "tests/core_capabilities/lifecycle.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/lifecycle.rs"
         },
         {
           "name": "runtime_fault_tests::idle_heap_is_physically_stopped_without_deleting_saved_files",
-          "source": "tests/core_capabilities/runtime_faults.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/runtime_faults.rs"
         },
         {
           "name": "subject_session_tests::same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_scoped",
-          "source": "tests/core_capabilities/subject_sessions.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/subject_sessions.rs"
         }
       ]
     },
@@ -206,19 +206,19 @@
       "tests": [
         {
           "name": "cleanup_restores_exact_bytes_and_fences_old_runs_and_confirmations",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "lifecycle_tests::failed_snapshot_preserves_active_files_and_interrupted_delete_is_reconcilable",
-          "source": "tests/core_capabilities/lifecycle.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/lifecycle.rs"
         },
         {
           "name": "retention_boundary_tests::keep_converts_the_existing_recovery_snapshot_to_retained_storage",
-          "source": "tests/core_capabilities/retention_boundaries.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/retention_boundaries.rs"
         },
         {
           "name": "retention_boundary_tests::restore_rechecks_current_quota_and_administrator_policy",
-          "source": "tests/core_capabilities/retention_boundaries.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/retention_boundaries.rs"
         }
       ]
     },
@@ -227,15 +227,15 @@
       "tests": [
         {
           "name": "runtime_fault_tests::cleanup_waits_for_proven_shell_stop_and_fences_delayed_writes",
-          "source": "tests/core_capabilities/runtime_faults.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/runtime_faults.rs"
         },
         {
           "name": "lifecycle_tests::failed_snapshot_preserves_active_files_and_interrupted_delete_is_reconcilable",
-          "source": "tests/core_capabilities/lifecycle.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/lifecycle.rs"
         },
         {
           "name": "journey_tests::harness_journey_keeps_core_names_state_and_integration_secrets_separate",
-          "source": "tests/core_capabilities/journey.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/journey.rs"
         }
       ]
     },
@@ -244,11 +244,11 @@
       "tests": [
         {
           "name": "approvals_bind_invocations_and_never_override_upper_denials",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "session_boundary_tests::designated_approver_is_rechecked_and_preserves_the_original_requester",
-          "source": "tests/core_capabilities/session_boundaries.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/session_boundaries.rs"
         }
       ]
     },
@@ -257,11 +257,11 @@
       "tests": [
         {
           "name": "reusable_grants_require_explicit_scope_and_revocation_withdraws_reuse",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "approvals_bind_invocations_and_never_override_upper_denials",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         }
       ]
     },
@@ -270,11 +270,11 @@
       "tests": [
         {
           "name": "network_tests::revocation_withdraws_a_real_pending_https_channel_and_does_not_replay_it",
-          "source": "tests/core_capabilities/network.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/network.rs"
         },
         {
           "name": "runtime_fault_tests::disabled_admission_stops_live_work_and_keeps_files_for_explicit_restart",
-          "source": "tests/core_capabilities/runtime_faults.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/runtime_faults.rs"
         }
       ]
     },
@@ -283,7 +283,7 @@
       "tests": [
         {
           "name": "direct_skills_are_pinned_and_loaded_progressively",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         }
       ]
     },
@@ -292,7 +292,7 @@
       "tests": [
         {
           "name": "direct_skills_are_pinned_and_loaded_progressively",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         }
       ]
     },
@@ -301,23 +301,23 @@
       "tests": [
         {
           "name": "files_preserve_unicode_revision_and_source_authority",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "reference_limit_tests::isolated_extraction_reports_limits_without_losing_authorized_original",
-          "source": "tests/core_capabilities/reference_limits.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/reference_limits.rs"
         },
         {
           "name": "content_limit_tests::lowered_content_limits_bound_reads_search_patches_uploads_and_shares",
-          "source": "tests/core_capabilities/content_limits.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/content_limits.rs"
         },
         {
           "name": "content_limit_tests::oversized_search_matches_fail_explicitly_instead_of_repeating_an_empty_cursor",
-          "source": "tests/core_capabilities/content_limits.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/content_limits.rs"
         },
         {
           "name": "content_limit_tests::binary_search_reports_unavailable_text_while_path_search_remains_usable",
-          "source": "tests/core_capabilities/content_limits.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/content_limits.rs"
         }
       ]
     },
@@ -326,15 +326,15 @@
       "tests": [
         {
           "name": "patches_publish_all_files_or_keep_the_previous_revision",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "lifecycle_tests::interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_objects",
-          "source": "tests/core_capabilities/lifecycle.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/lifecycle.rs"
         },
         {
           "name": "publication_storage_tests::unchanged_exports_reuse_objects_and_superseded_working_bytes_are_reclaimed",
-          "source": "tests/core_capabilities/publication_storage.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/publication_storage.rs"
         }
       ]
     },
@@ -343,31 +343,31 @@
       "tests": [
         {
           "name": "runtime_fault_tests::sandbox_cpu_and_memory_limits_are_enforced_under_load",
-          "source": "tests/core_capabilities/runtime_faults.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/runtime_faults.rs"
         },
         {
           "name": "isolated_shell_survives_worker_restart_and_confirms_descendant_cancellation",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "runtime_fault_tests::shell_output_saturation_is_bounded_and_control_stays_usable",
-          "source": "tests/core_capabilities/runtime_faults.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/runtime_faults.rs"
         },
         {
           "name": "content_limit_tests::lowered_content_limits_bound_reads_search_patches_uploads_and_shares",
-          "source": "tests/core_capabilities/content_limits.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/content_limits.rs"
         },
         {
-          "name": "capabilities::limits::tests::defaults_and_lower_content_limits_preserve_wire_ceilings",
-          "source": "src/capabilities/limits.rs"
+          "name": "apps::execution::capabilities::services::core::limits::tests::defaults_and_lower_content_limits_preserve_wire_ceilings",
+          "source": "server/src/apps/execution/capabilities/services/limits.rs"
         },
         {
           "name": "network_tests::broker_response_budget_uses_the_operator_profile_and_retains_no_partial_artifact",
-          "source": "tests/core_capabilities/network.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/network.rs"
         },
         {
-          "name": "capabilities::limits::tests::working_quota_cannot_exceed_runner_export_ceiling",
-          "source": "src/capabilities/limits.rs"
+          "name": "apps::execution::capabilities::services::core::limits::tests::working_quota_cannot_exceed_runner_export_ceiling",
+          "source": "server/src/apps/execution/capabilities/services/limits.rs"
         }
       ],
       "admission_probe": "runner/probe.py and runner/node_guard.py: executed in the pinned gVisor image; verify direct egress, metadata, host sockets, filesystem, non-root, resource ceilings and physical writer freeze/termination."
@@ -377,15 +377,15 @@
       "tests": [
         {
           "name": "journey_tests::harness_journey_keeps_core_names_state_and_integration_secrets_separate",
-          "source": "tests/core_capabilities/journey.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/journey.rs"
         },
         {
           "name": "package_tests::approved_wheel_installs_offline_with_hashes_and_explicit_memory_reset",
-          "source": "tests/core_capabilities/packages.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/packages.rs"
         },
         {
           "name": "network_tests::real_https_redirects_stay_inside_the_grant_and_private_dns_is_denied",
-          "source": "tests/core_capabilities/network.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/network.rs"
         }
       ],
       "admission_probe": "runner/probe.py and runner/node_guard.py: executed in the pinned gVisor image; verify direct egress, metadata, host sockets, filesystem, non-root, resource ceilings and physical writer freeze/termination."
@@ -395,27 +395,27 @@
       "tests": [
         {
           "name": "local_shares_are_fixed_recipient_owned_copies",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "transfer_tests::transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible",
-          "source": "tests/core_capabilities/transfer.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/transfer.rs"
         },
         {
           "name": "retention_boundary_tests::local_share_requires_the_version_admitted_in_the_current_generation",
-          "source": "tests/core_capabilities/retention_boundaries.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/retention_boundaries.rs"
         },
         {
           "name": "retention_boundary_tests::rollback_blocks_new_local_and_remote_shares_without_losing_receipts",
-          "source": "tests/core_capabilities/retention_boundaries.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/retention_boundaries.rs"
         },
         {
           "name": "retention_boundary_tests::completed_sender_cannot_disclose_successor_files_locally_or_remotely",
-          "source": "tests/core_capabilities/retention_boundaries.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/retention_boundaries.rs"
         },
         {
           "name": "retention_boundary_tests::local_received_files_remain_bound_to_the_exact_recipient_version",
-          "source": "tests/core_capabilities/retention_boundaries.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/retention_boundaries.rs"
         }
       ]
     },
@@ -424,11 +424,11 @@
       "tests": [
         {
           "name": "local_shares_are_fixed_recipient_owned_copies",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "journey_tests::harness_journey_keeps_core_names_state_and_integration_secrets_separate",
-          "source": "tests/core_capabilities/journey.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/journey.rs"
         }
       ]
     },
@@ -437,15 +437,15 @@
       "tests": [
         {
           "name": "transfer_tests::remote_snapshot_survives_source_edit_and_lost_final_receipt",
-          "source": "tests/core_capabilities/transfer.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/transfer.rs"
         },
         {
           "name": "transfer_tests::corrupted_first_chunk_and_quota_exhaustion_never_publish_files",
-          "source": "tests/core_capabilities/transfer.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/transfer.rs"
         },
         {
           "name": "scoped_remote_worker_finishes_at_home_and_retries_keep_one_execution",
-          "source": "tests/scoped_remote_execution.rs"
+          "source": "server/src/apps/identity/tests/scoped_remote_execution.rs"
         }
       ]
     },
@@ -454,23 +454,23 @@
       "tests": [
         {
           "name": "transfer_tests::chunks_resume_out_of_order_after_both_servers_restart_without_duplicate_visibility",
-          "source": "tests/core_capabilities/transfer.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/transfer.rs"
         },
         {
           "name": "transfer_tests::transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible",
-          "source": "tests/core_capabilities/transfer.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/transfer.rs"
         },
         {
           "name": "transfer_tests::remote_snapshot_survives_source_edit_and_lost_final_receipt",
-          "source": "tests/core_capabilities/transfer.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/transfer.rs"
         },
         {
           "name": "peer_outage_and_both_node_restarts_reconcile_one_scoped_execution",
-          "source": "tests/scoped_remote_execution.rs"
+          "source": "server/src/apps/identity/tests/scoped_remote_execution.rs"
         },
         {
           "name": "lost_home_effect_reply_reconciles_without_duplicate_effects",
-          "source": "tests/scoped_remote_execution.rs"
+          "source": "server/src/apps/identity/tests/scoped_remote_execution.rs"
         }
       ]
     },
@@ -479,35 +479,35 @@
       "tests": [
         {
           "name": "reference_original_is_private_located_and_unchanged_by_python",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "reference_limit_tests::isolated_extraction_reports_limits_without_losing_authorized_original",
-          "source": "tests/core_capabilities/reference_limits.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/reference_limits.rs"
         },
         {
           "name": "content_limit_tests::lowered_content_limits_bound_reads_search_patches_uploads_and_shares",
-          "source": "tests/core_capabilities/content_limits.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/content_limits.rs"
         },
         {
           "name": "reference_limit_tests::reference_configuration_enforces_aggregate_and_lowered_limits_without_rewriting_versions",
-          "source": "tests/core_capabilities/reference_limits.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/reference_limits.rs"
         },
         {
           "name": "extraction_lifecycle_tests::extraction_releases_terminal_runner_payloads_and_rollback_starts_no_new_parser",
-          "source": "tests/core_capabilities/extraction_lifecycle.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/extraction_lifecycle.rs"
         },
         {
           "name": "upload_bound_tests::tiny_upload_chunks_allocate_nothing_and_full_chunks_remain_idempotent",
-          "source": "tests/core_capabilities/upload_bounds.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/upload_bounds.rs"
         },
         {
           "name": "upload_bound_tests::reference_names_cannot_create_dot_segment_mounts",
-          "source": "tests/core_capabilities/upload_bounds.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/upload_bounds.rs"
         },
         {
           "name": "reference_dispatch_tests::extraction_requires_current_runner_limits_and_respects_lower_output_budget",
-          "source": "tests/core_capabilities/reference_dispatch.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/reference_dispatch.rs"
         }
       ]
     },
@@ -516,19 +516,19 @@
       "tests": [
         {
           "name": "working_files_require_explicit_agent_settings",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "reference_original_is_private_located_and_unchanged_by_python",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
-          "name": "seaorm_migrations_round_trip_a_fresh_schema",
-          "source": "tests/migrations.rs"
+          "name": "native_migrations_build_a_fresh_schema_and_preserve_records_on_replay",
+          "source": "server/src/apps/execution/tests/migrations.rs"
         },
         {
           "name": "reference_limit_tests::reference_configuration_enforces_aggregate_and_lowered_limits_without_rewriting_versions",
-          "source": "tests/core_capabilities/reference_limits.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/reference_limits.rs"
         }
       ]
     },
@@ -537,11 +537,11 @@
       "tests": [
         {
           "name": "package_tests::approved_wheel_installs_offline_with_hashes_and_explicit_memory_reset",
-          "source": "tests/core_capabilities/packages.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/packages.rs"
         },
         {
           "name": "package_tests::package_overlay_publication_survives_process_death_before_swap_and_during_cleanup",
-          "source": "tests/core_capabilities/packages.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/packages.rs"
         }
       ]
     },
@@ -550,7 +550,7 @@
       "tests": [
         {
           "name": "journey_tests::harness_journey_keeps_core_names_state_and_integration_secrets_separate",
-          "source": "tests/core_capabilities/journey.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/journey.rs"
         }
       ]
     },
@@ -559,23 +559,23 @@
       "tests": [
         {
           "name": "journey_tests::harness_journey_keeps_core_names_state_and_integration_secrets_separate",
-          "source": "tests/core_capabilities/journey.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/journey.rs"
         },
         {
           "name": "direct_skills_are_pinned_and_loaded_progressively",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "configuration_tests::subject_configuration_creates_an_immutable_version_without_catalog_grants",
-          "source": "tests/core_capabilities/configuration.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/configuration.rs"
         },
         {
           "name": "working_files_require_explicit_agent_settings",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
-          "name": "seaorm_migrations_round_trip_a_fresh_schema",
-          "source": "tests/migrations.rs"
+          "name": "native_migrations_build_a_fresh_schema_and_preserve_records_on_replay",
+          "source": "server/src/apps/execution/tests/migrations.rs"
         }
       ]
     },
@@ -584,19 +584,19 @@
       "tests": [
         {
           "name": "isolated_shell_survives_worker_restart_and_confirms_descendant_cancellation",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "runtime_fault_tests::cleanup_waits_for_proven_shell_stop_and_fences_delayed_writes",
-          "source": "tests/core_capabilities/runtime_faults.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/runtime_faults.rs"
         },
         {
           "name": "lifecycle_tests::interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_objects",
-          "source": "tests/core_capabilities/lifecycle.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/lifecycle.rs"
         },
         {
           "name": "publication_storage_tests::stale_and_rejected_receipts_cannot_starve_new_terminal_payload_acknowledgement",
-          "source": "tests/core_capabilities/publication_storage.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/publication_storage.rs"
         }
       ]
     },
@@ -605,15 +605,15 @@
       "tests": [
         {
           "name": "queued_runs_keep_order_and_cancellation_bypasses_queue",
-          "source": "tests/core_capabilities.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities.rs"
         },
         {
           "name": "session_boundary_tests::same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runnable",
-          "source": "tests/core_capabilities/session_boundaries.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/session_boundaries.rs"
         },
         {
           "name": "runtime_fault_tests::shell_output_saturation_is_bounded_and_control_stays_usable",
-          "source": "tests/core_capabilities/runtime_faults.rs"
+          "source": "server/src/apps/execution/capabilities/tests/core_capabilities/runtime_faults.rs"
         }
       ]
     }

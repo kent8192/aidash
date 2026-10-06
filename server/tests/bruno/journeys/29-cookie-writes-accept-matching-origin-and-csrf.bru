@@ -1,0 +1,41 @@
+meta {
+  name: Cookie writes accept matching origin and CSRF
+  type: http
+  seq: 29
+}
+
+post {
+  url: {{base_url}}/api/workspaces
+  body: json
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Content-Type: application/json
+  Cookie: {{session_cookie}}
+  X-Aidash-Context: {{browser_context}}
+  Origin: {{base_url}}
+  X-Aidash-CSRF: {{csrf}}
+}
+
+body:json {
+  {
+    "title": "Bruno browser workspace",
+    "goal": "Verify approved dashboard authority"
+  }
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("JSON response contract", function () {
+    expect(res.getHeader("content-type")).to.include("application/json");
+    expect(res.getBody().revision).to.equal(0);
+  });
+
+  if (res.getStatus() === 200) {
+    bru.setVar("browser_workspace_id",res.getBody().id);
+  }
+}

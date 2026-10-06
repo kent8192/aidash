@@ -1,0 +1,38 @@
+meta {
+  name: 0897 workbench-create-incident - Malformed JSON cannot reach the use case
+  type: http
+  seq: 897
+}
+
+post {
+  url: {{base_url}}/api/workbench/versions/__bruno_missing__/__bruno_missing__/incidents
+  body: file
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{operator_token}}
+  Content-Type: application/json
+}
+
+body:file {
+  file1: @file(fixtures/malformed-json.txt) @contentType(application/json)
+}
+
+script:pre-request {
+
+const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getEnvVar("operator_token")}}); if(snapshot.status!==200 || !Number.isInteger(snapshot.data.workspace.revision)) throw new Error("fixture snapshot unavailable"); bru.setVar("beforeWorkspace",JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state}));
+
+}
+
+script:post-response {
+
+const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getEnvVar("operator_token")}}); test("Rejected input preserves committed workspace state", function(){expect(snapshot.status).to.equal(200);expect(JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state})).to.equal(bru.getVar("beforeWorkspace"));});
+
+}
+
+tests {
+  test("Exact HTTP 400", function () { expect(res.getStatus()).to.equal(400); });
+  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |operator_token|peer_token/); });
+}

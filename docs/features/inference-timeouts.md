@@ -79,7 +79,7 @@ configured limits, the default deadline, unchanged non-inference deadlines, and
 configuration validation and legacy deserialization.
 
 Run `scripts/test-rust.sh --coverage` for the full suite with disposable services.
-This includes the PostgreSQL tests in `tests/inference_cancellation.rs` and
-`tests/provider_timeout_persistence.rs`: cancellation before headers and during
+This includes the PostgreSQL tests in the [inference cancellation suite](../../server/src/apps/execution/tests/inference_cancellation.rs) and
+[provider timeout suite](../../server/src/apps/registry/tests/provider_timeout_persistence.rs): cancellation before headers and during
 body reads, API registration, persisted overrides, invalid values, migration
 upgrades, and safe downgrade behavior.

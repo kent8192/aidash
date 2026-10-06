@@ -1,0 +1,10 @@
+DROP TRIGGER marketplace_immutable ON public.marketplace_versions;
+DROP TRIGGER marketplace_immutable ON public.marketplace_revisions;
+DROP TRIGGER atomic_write_guard ON public.marketplace_versions;
+DROP TRIGGER atomic_write_guard ON public.marketplace_revisions;
+DROP TRIGGER atomic_write_guard ON public.marketplace_requests;
+DROP TRIGGER atomic_write_guard ON public.marketplace_provenance;
+DROP TRIGGER atomic_write_guard ON public.marketplace_installations;
+DROP TRIGGER atomic_write_guard ON public.marketplace_gate;
+DROP TRIGGER atomic_write_guard ON public.marketplace_consents;
+DROP TRIGGER atomic_write_guard ON public.marketplace_audiences;

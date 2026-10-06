@@ -1,0 +1,20 @@
+meta {
+  name: 0929 openapi - Public contract
+  type: http
+  seq: 929
+}
+
+get {
+  url: {{base_url}}/api/openapi.json
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Public contract contract", function () { expect(res.getHeader("content-type")).to.include("application/json");expect(res.getBody()).to.be.an("object");expect(res.getBody().openapi).to.match(/^3\./);expect(res.getBody().paths["/api/workspaces"]).to.have.property("post");expect(JSON.stringify(res.getBody())).not.to.include(bru.getEnvVar("operator_token")); });
+}

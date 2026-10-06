@@ -4,6 +4,44 @@ Aidash 0.1 is a self-hosted federated agent mesh. Register an explicitly selecte
 
 The current implementation includes a federated mesh, scoped remote Worker activation and Home commands, scoped authorization, policy-driven local agent generation, a recoverable cross-node transaction protocol, persistent semantic memory, Creator and Trust workbenches, and Kubernetes/k3s deployment. See [architecture](docs/architecture.md), [authorization](docs/authorization.md), [generation](docs/generation.md), [distributed transactions](docs/transactions.md), [semantic memory](docs/semantic-memory.md), [orchestration](docs/orchestration.md), and [protocol and recovery contracts](docs/protocol.md). Source and focused test coverage for these paths do not close the full scoped federation (#38), transaction (#40), A2A (#39), or combined release acceptance gates.
 
+## Cargo workspace
+
+All packages use Rust 2024. The virtual workspace defaults to `aidash-server`;
+Reinhardt's `manage` CLI provides the standard management operations and Aidash's
+registered custom commands, including `serve`, `server`, and `worker`:
+
+```sh
+cargo run --locked -p aidash-server --bin manage -- serve
+cargo run --locked -p aidash-server --bin manage -- server
+cargo run --locked -p aidash-server --bin manage -- worker
+cargo run --locked -p aidash-server --bin manage -- --help
+```
+
+The `aidash` binary delegates to the same command registry and only preserves
+the existing executable name and default `serve` behavior. Existing
+`cargo run --locked -- serve`, `server`, and `worker` invocations remain valid.
+
+| Package               | Responsibility                                                           |
+| --------------------- | ------------------------------------------------------------------------ |
+| `aidash-domain`       | Business models, typed state, and pure invariants.                       |
+| `aidash-application`  | Authorized use cases, shared execution contracts, and external ports.    |
+| `aidash-harness`      | Agent steps, worker activation, leases, cancellation, and recovery.      |
+| `aidash-runtime`      | Background supervision, shutdown, and worker drain.                      |
+| `aidash-integrations` | Inference, HTTP/MCP, NATS, Qdrant, and Kubernetes adapters.              |
+| `aidash-server`       | Reinhardt HTTP/ORM/settings, app repositories/migrations, and bootstrap. |
+
+`server/src/bootstrap.rs` assembles the concrete adapters for both HTTP and
+workers. Apps are ordinary Rust modules. The harness depends on application/domain
+contracts; application/domain do not depend on the harness. Domain/application/harness
+production dependency closures exclude runtime, integrations, the server, Reinhardt,
+Axum, SQLx, SeaORM, and reqwest; CI checks these boundaries against locked Cargo metadata.
+The React dashboard remains in
+`web/` and uses the existing URL, JSON, authentication, and SSE contracts.
+
+Reinhardt is pinned to development revision
+`a068ecbdc03ff01653f80c9c4ab36e15a27f2bd7` in the manifests and lockfile. The initial
+project and app scaffolds were generated with the Reinhardt CLI.
+
 ## Run locally
 
 ### One-command Kubernetes start
@@ -112,7 +150,7 @@ cargo run --locked -- serve
 
 Configure a peer on **both** nodes in Settings. Each peer record contains the other node's identity and endpoint, protocol `0.1`, and the name of a pair-specific `AIDASH_SECRET_*` credential. Each enabled peer must resolve to a different credential; configure the same pair credential at its two endpoints. Peer credentials must contain at least 32 printable ASCII characters and eight distinct characters; use a randomly generated token. Register at least one research agent on each node. Registry discovery exchanges metadata over the federation API; no remote database access is needed. Each workspace retains an authoritative home node.
 
-`aidash server` runs the API, outbox publisher and domain-event consumer. All roles publish durable Run activations, while only `aidash worker` and `aidash serve` pull from the shared activation consumer. Workers have four execution slots by default (`AIDASH_WORKER_SLOTS`, 1–4) without the management HTTP listener. Set `AIDASH_PROBE_LISTEN` to enable the separate health probe listener. `aidash serve` runs both roles. Provision the activation stream once with `aidash activation-provision` using operator credentials and the same Node/namespace settings; runtime credentials do not create it by default. Broker outages retain database recovery. See [worker activation operations](docs/operations/worker-activation.md) for permissions, deadlines, diagnostics and verification. To exercise recovery, stop a **worker** process while leaving its server, PostgreSQL and NATS running, then restart it with the same configuration. The lease expires after 30 seconds. Task and run IDs remain stable.
+`manage server` runs the API, outbox publisher and domain-event consumer. All roles publish durable Run activations, while only `manage worker` and `manage serve` pull from the shared activation consumer. Workers have four execution slots by default (`AIDASH_WORKER_SLOTS`, 1–4) without the management HTTP listener. Set `AIDASH_PROBE_LISTEN` to enable the separate health probe listener. `manage serve` runs both roles. Provision the activation stream once with `aidash activation-provision` using operator credentials and the same Node/namespace settings; runtime credentials do not create it by default. Broker outages retain database recovery. See [worker activation operations](docs/operations/worker-activation.md) for permissions, deadlines, diagnostics and verification. To exercise recovery, stop a **worker** process while leaving its server, PostgreSQL and NATS running, then restart it with the same configuration. The lease expires after 30 seconds. Task and run IDs remain stable.
 
 ## Tools and coordination
 
@@ -172,7 +210,7 @@ Jev decides whether to keep each old tool call and its full result. Aidash keeps
 
 ## Generated API client
 
-Axum management routes and Rust request/response types define the OpenAPI contract through `utoipa` and `utoipa-axum`. The public `/api/openapi.json` endpoint and `aidash openapi` command export the same document; the command needs no database, broker, or credentials. Other `/api` routes require a bearer token or an authorized dashboard session and selected context.
+Reinhardt management routes and the existing Rust request/response schema types define the OpenAPI contract. The public `/api/openapi.json` endpoint and `manage openapi` command export the same document; the command needs no database, broker, or credentials. Other `/api` routes require a bearer token or an authorized dashboard session and selected context.
 
 After changing an API route or type, run `scripts/generate-api.sh`. It exports `openapi/aidash.json` and runs the pinned Orval generator to update `web/src/generated/`. These outputs are ignored by Git, lint and coverage. The dashboard predev and prebuild scripts regenerate them automatically. Dashboard requests and types use these generated files; `transport.ts` supplies authentication/error handling, while `api.ts` reads and reconnects the SSE stream. The Orval transformer exposes unbounded `text/event-stream` responses as `Response`, so the browser can read frames without buffering the entire stream. Do not edit generated files by hand. CI generates them from a clean checkout before building and testing the UI.
 
@@ -186,19 +224,25 @@ scripts/check.sh
 
 Trunk owns formatting and linting: rustfmt, Clippy, Prettier, ESLint, Ruff and Taplo. The Rust edition and linter versions are pinned. React Compiler is not enabled, so its incompatible-library diagnostic is disabled for the intentionally mutable TanStack Table/Virtual interfaces; the hook correctness and accessibility rules remain enabled.
 
+PostgreSQL integration tests use `aidash-orm-test-postgres:17-pg-jsonschema-0.3.4`,
+built by `scripts/build-test-postgres.sh` from the Dockerfile's `test` target.
+The multi-node Compose fixture uses `aidash-compose-postgres:17-pg-jsonschema-0.3.4`
+from its `runtime` target with separate database initialization. The distinct tags
+keep Compose rebuilds from replacing the image used by isolated ORM fixtures.
+
 `check.sh` runs Rust unit and PostgreSQL integration tests, builds the dashboard, and executes the two-node acceptance scenario starting from a real Chromium dashboard. It also verifies remote human controls, all four tool transports, and the browser scenarios. The scenario starts real Aidash processes, PostgreSQL and NATS with a deterministic OpenRouter-compatible protocol fixture. The same checks and Trunk lint run in GitHub Actions. Both nodes and workers start with NATS unavailable; the scenario verifies queued events drain after the broker connection is restored. It kills Node B's worker after an external effect but before its result is persisted, restarts the worker, and checks the same run completes with no duplicate effect. Reports are written to `.ignore/acceptance/report.json`.
 
 Golden Path also requires subject-scoped remote execution on these real Node processes. Separate source and receiver tenants, credentials, catalog approvals and peer mappings authorize the work. It kills the receiver Worker after a Home message or task completion commits but before its response is delivered, checks recovery of the same admission and Run without duplicate effects, and repeats recovery with a peer outage and with a grant revoked while the Worker is stopped. Cross-tenant/workspace access, disabled Agents, unauthorized dependencies and legacy admission are rejected. The `scoped_remote_execution` report records each scenario, the Worker process IDs and persistent execution IDs without credentials. A successful legacy scenario alone cannot pass this gate.
 
 Use `scripts/test-acceptance.sh` to build the current checkout's binary and frontend before running the full gate. The report includes the Git revision, dirty status, source fingerprint and binary digest; changing the source or binary while the gate runs fails verification. The browser authentication fixture exercises real Bearer-authenticated APIs; it does not establish an OIDC provider login flow.
 
-The script adds `tests/fixtures/acceptance.compose.yaml` to give its disposable PostgreSQL service 400 connections for the two API processes and two workers. When running Golden Path directly, start Compose with `COMPOSE_FILE=compose.yaml:tests/fixtures/acceptance.compose.yaml` so those independent pools have the same capacity.
+The script adds `server/src/apps/execution/tests/fixtures/acceptance.compose.yaml` to give its disposable PostgreSQL service 400 connections for the two API processes and two workers. When running Golden Path directly, start Compose with `COMPOSE_FILE=compose.yaml:server/src/apps/execution/tests/fixtures/acceptance.compose.yaml` so those independent pools have the same capacity.
 
 For browser tests, keep that completed fixture environment running in one terminal:
 
 ```sh
-cargo build --locked --bin aidash --example acceptance_queries
-python3 scripts/golden_path.py --binary "$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"] + "/debug/aidash")')" --keep
+cargo build --locked -p aidash-server --bin manage
+python3 scripts/golden_path.py --binary "$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"] + "/debug/manage")')" --keep
 ```
 
 In another terminal:
@@ -212,15 +256,19 @@ Protocol fixtures verify transport, coordination and recovery. They do not estab
 
 ## Database migrations
 
-Schema changes live in the SeaORM migration crate. Create the next migration with `sea-orm-cli migrate generate <name>`, then implement its `up` and `down` methods. Run it with `sea-orm-cli migrate up`; application startup uses the same migrator. Migrations use the SeaORM migration ledger directly; legacy SQLx migration ledgers are not supported.
+Reinhardt owns the app migration graph under `server/migrations/<app_label>/`. The native baseline supports empty PostgreSQL databases and replay of its own history; existing SeaORM or experimental migration databases are not adopted. Run `cargo run --locked -p aidash-server --bin manage -- migrate` through the native management CLI. See the [migration correspondence and maintenance cutover procedure](server/migrations/README.md) before switching deployments.
+
+The PostgreSQL image supplies the `pg_jsonschema` library. Native history creates and owns an absent extension. For a database-scoped, non-superuser application role, an administrator provisions the extension first; rollback preserves that borrowed extension. Use an empty database template. The Compose `local-dev-db` preparation command applies this same history and validates the extension version before the backend starts.
 
 ## CI and coverage
 
-CI runs Trunk, Rust unit/integration tests, the PostgreSQL/NATS/Chromium acceptance suite, and Kubernetes/k3s recovery in separate jobs. The cluster jobs build the container, verify Pod termination, scaling and rolling updates, and inspect the live deployment dashboard. Run them locally with `bash scripts/test-cluster.sh kubernetes` and `bash scripts/test-cluster.sh k3s` after installing the browser dependencies. `CI Success` requires every job to succeed, including the Codecov upload. Use that check for branch protection. Rust coverage uses `cargo llvm-cov` with real PostgreSQL tests and uploads an explicit LCOV file through Codecov OIDC. Codecov measures `src/`; tests, migration plumbing and generated API files are excluded. Browser tests establish dashboard behavior and are not included in the Rust coverage percentage.
+CI runs Trunk, eight Rust test partitions, a separate coverage upload, Bruno API contracts, the PostgreSQL/NATS/Chromium acceptance suite, and Kubernetes/k3s recovery in separate jobs. Each Cargo test target belongs to exactly one partition; the inventory is derived from locked Cargo metadata and validated before execution. Dependency caches are isolated by partition. All eight LCOV reports are required and uploaded together under the same Rust coverage flag. The cluster jobs build the container, verify Pod termination, scaling and rolling updates, and inspect the live deployment dashboard. Run them locally with `bash scripts/test-cluster.sh kubernetes` and `bash scripts/test-cluster.sh k3s` after installing the browser dependencies. `CI Success` requires every job to succeed, including the Codecov upload. Use that check for branch protection. Rust coverage uses `cargo llvm-cov` with real PostgreSQL tests and uploads an explicit LCOV file through Codecov OIDC. Codecov measures `crates/` and `server/src/`; tests, migration plumbing and generated API files are excluded. Browser tests establish dashboard behavior and are not included in the Rust coverage percentage.
 
 The coverage uploader uses a pinned Codecov CLI from PyPI; see the [download outage and recovery condition](docs/operations/ci-coverage.md).
 
-Run `scripts/test-rust.sh --coverage` to produce `coverage/rust.lcov` locally (requires `cargo-llvm-cov` 0.8.7 and `llvm-tools-preview`). `scripts/check.sh` runs the full local suite. Cargo and npm lockfiles remain tracked for reproducible dependency resolution.
+Run `scripts/test-rust.sh --partition identity` for one partition, or `python3 scripts/rust-test-partitions.py --check` to inspect the complete inventory. Run `scripts/test-rust.sh --coverage` to produce `coverage/rust.lcov` locally (requires `cargo-llvm-cov` 0.8.7 and `llvm-tools-preview`). `scripts/check.sh` runs the full local suite. Cargo and npm lockfiles remain tracked for reproducible dependency resolution.
+
+Run `npm exec --yes --package=@usebruno/cli@3.1.3 -- scripts/test-bruno-api.sh` with the test PostgreSQL and NATS services running to verify the real HTTP API. The [Bruno collection](server/tests/bruno/README.md) checks all 269 native endpoints with 3–10 scenarios each, including scoped authorization, input rejection, state changes, browser cookies/CSRF, finite SSE replay and frontend caching against a disposable database and the compiled server. Sanitized reports include the source revision and executable hash.
 
 Package installation overlays the supplied node-local configuration onto the entity configuration, validates it, and publishes the effective immutable Registry version atomically with the installation record. Changing an installed configuration requires a new version.
 

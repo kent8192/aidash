@@ -1,4 +1,4 @@
-FROM postgres:17-bookworm
+FROM postgres:17-bookworm AS extensions
 
 ARG PG_JSONSCHEMA_VERSION=0.3.4
 
@@ -21,4 +21,8 @@ RUN set -eux; \
     apt-get purge -y --auto-remove curl; \
     rm -rf /var/lib/apt/lists/*
 
+# Integration fixtures create their own databases and execute the migration graph.
+FROM extensions AS test
+
+FROM extensions AS runtime
 COPY scripts/init-db.sql /docker-entrypoint-initdb.d/01-databases.sql

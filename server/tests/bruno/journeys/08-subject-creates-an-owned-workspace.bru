@@ -1,0 +1,39 @@
+meta {
+  name: Subject creates an owned workspace
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{base_url}}/api/workspaces
+  body: json
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Content-Type: application/json
+  Authorization: Bearer {{owner_token}}
+}
+
+body:json {
+  {
+    "title": "Bruno real API workspace",
+    "goal": "Verify scoped contracts against the running server"
+  }
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("JSON response contract", function () {
+    expect(res.getHeader("content-type")).to.include("application/json");
+    expect(res.getBody().revision).to.equal(0);
+    expect(res.getBody().state).to.eql({});
+  });
+
+  if (res.getStatus() === 200) {
+    bru.setVar("workspace_id", res.getBody().id);
+  }
+}

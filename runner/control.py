@@ -357,10 +357,10 @@ class Runner:
 
     def execution_limits(self, record):
         limits = {k: self.config[k] for k in ('cpu', 'memory_bytes', 'processes', 'temporary_bytes')}
-        # tmpfs capacity is rounded up to a physical page after admission has
-        # proved that at least one writable byte remains.
-        page = os.sysconf('SC_PAGE_SIZE')
-        limits['working_bytes'] = max(page, ((self.writable_bytes(record) + page - 1) // page) * page)
+        # Keep the logical size requested by the Pod manifest. The trusted
+        # node adapter rounds to its own physical pages; a remote controller
+        # can have a different page size from the Linux execution node.
+        limits['working_bytes'] = self.writable_bytes(record)
         return limits
 
     def manifest(self, record):

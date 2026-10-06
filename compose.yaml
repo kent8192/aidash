@@ -97,9 +97,9 @@ services:
     develop:
       watch:
         - action: rebuild
-          path: ./src
+          path: ./server
         - action: rebuild
-          path: ./migration
+          path: ./crates
         - action: rebuild
           path: ./Cargo.toml
         - action: rebuild
@@ -148,7 +148,9 @@ services:
         - action: rebuild
           path: ./web/vite.config.ts
         - action: rebuild
-          path: ./src
+          path: ./server
+        - action: rebuild
+          path: ./crates
 volumes:
   postgres:
   nats:

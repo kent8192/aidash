@@ -1,0 +1,21 @@
+meta {
+  name: 0924 process-live - Untrusted bearer does not restrict public reads
+  type: http
+  seq: 924
+}
+
+get {
+  url: {{base_url}}/live
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer invalid
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Untrusted bearer does not restrict public reads contract", function () { expect(res.getBody()).to.equal(""); });
+}

@@ -1,0 +1,28 @@
+meta {
+  name: Anonymous SSE reconnects are unauthorized
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{base_url}}/api/events/stream
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Last-Event-ID: 1
+}
+
+tests {
+  test("HTTP 401", function () {
+    expect(res.getStatus()).to.equal(401);
+  });
+  test("JSON response contract", function () {
+    expect(res.getHeader("content-type")).to.include("application/json");
+    expect(res.getBody()).to.have.all.keys("error");
+    expect(res.getBody().error).to.be.a("string");
+
+  });
+}

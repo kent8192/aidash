@@ -1,0 +1,23 @@
+meta {
+  name: 0110 sessions-logout-all - All-session logout clears the browser authority
+  type: http
+  seq: 62
+}
+
+post {
+  url: {{base_url}}/auth/logout-all
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Cookie: {{session_cookie}}
+  Origin: {{base_url}}
+  X-Aidash-CSRF: {{csrf}}
+}
+
+tests {
+  test("Exact HTTP 204", function () { expect(res.getStatus()).to.equal(204); });
+  test("All-session logout clears the browser authority contract", function () { expect(res.getHeader("cache-control")).to.include("no-store"); });
+}

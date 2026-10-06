@@ -3,6 +3,8 @@
 .trunk
 .env
 .env.*
+server/settings/*.toml
+!server/settings/*.example.toml
 target
 coverage
 openapi

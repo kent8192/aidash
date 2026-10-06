@@ -1,0 +1,20 @@
+meta {
+  name: 0923 process-live - Public contract
+  type: http
+  seq: 923
+}
+
+get {
+  url: {{base_url}}/live
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Public contract contract", function () { expect(res.getBody()).to.equal(""); });
+}

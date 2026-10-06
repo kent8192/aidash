@@ -1,6 +1,6 @@
 # Tenant Marketplace operations
 
-Issue [#74](https://github.com/kent8192/aidash/issues/74) adds tenant-owned distribution alongside the original operator Marketplace. The accepted [design contract](../design/2026-09-30-marketplace-authorization-contract.md) defines the policy boundary. Application behavior is covered by `tests/marketplace_authorization.rs`; the dashboard scenarios are in `web/tests/marketplace.spec.ts`.
+Issue [#74](https://github.com/kent8192/aidash/issues/74) adds tenant-owned distribution alongside the original operator Marketplace. The accepted [design contract](https://github.com/kent8192/aidash/blob/4347688473f4be3fa1a6bad5b83cc2315e07f954/docs/design/2026-09-30-marketplace-authorization-contract.md) defines the policy boundary. Application behavior is covered by the [Marketplace authorization suite](../../server/src/apps/marketplace/tests/marketplace_authorization.rs); the dashboard scenarios are in `web/tests/marketplace.spec.ts`.
 
 ## Enable a compatible deployment
 

@@ -22,6 +22,12 @@ cleanup() {
 }
 trap cleanup EXIT
 python3 scripts/core-capability-evidence.py capture "$evidence"
+# Reject stale acceptance identifiers before provisioning the isolated cluster.
+# Listing tests compiles the same targets but does not execute their fixtures.
+RUSTC_WRAPPER= cargo test --locked --features capability-runtime-tests --lib \
+  --test core_capabilities --test scoped_remote_execution --test migrations \
+  -- --list > "$evidence/tests.list" 2>&1
+python3 scripts/core-capability-evidence.py inventory "$evidence"
 python3 scripts/test-capability-controller.py > "$evidence/controller-tests.log" 2>&1
 python3 - "$tools_dir" <<'PY'
 import hashlib, io, pathlib, platform, sys, tarfile, urllib.request

@@ -1,0 +1,3 @@
+DROP SEQUENCE public.authorization_peer_mapping_history_sequence_seq;
+
+DROP SEQUENCE public.atomic_history_sequence_seq;

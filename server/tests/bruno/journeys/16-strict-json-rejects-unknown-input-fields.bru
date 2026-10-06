@@ -1,0 +1,37 @@
+meta {
+  name: Strict JSON rejects unknown input fields
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{base_url}}/api/workspaces
+  body: json
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Content-Type: application/json
+  Authorization: Bearer {{owner_token}}
+}
+
+body:json {
+  {
+    "title": "Unexpected field",
+    "goal": "Should not persist",
+    "unknown": true
+  }
+}
+
+tests {
+  test("HTTP 422", function () {
+    expect(res.getStatus()).to.equal(422);
+  });
+  test("JSON response contract", function () {
+    expect(res.getHeader("content-type")).to.include("application/json");
+    expect(res.getBody()).to.have.all.keys("error");
+    expect(res.getBody().error).to.be.a("string");
+
+  });
+}

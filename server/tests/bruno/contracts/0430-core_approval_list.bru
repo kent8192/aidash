@@ -1,0 +1,20 @@
+meta {
+  name: 0430 core_approval_list - Anonymous request is rejected
+  type: http
+  seq: 430
+}
+
+get {
+  url: {{base_url}}/api/capabilities/approvals
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:{"code": "UNAUTHORIZED", "message": "unauthorized", "retryable": false}}); });
+}

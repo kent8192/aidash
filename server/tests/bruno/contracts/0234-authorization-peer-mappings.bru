@@ -1,0 +1,21 @@
+meta {
+  name: 0234 authorization-peer-mappings - Paging rejects nonnumeric or malformed cursors
+  type: http
+  seq: 234
+}
+
+get {
+  url: {{base_url}}/api/authorization/{{tenant}}/peer-mappings?limit=invalid
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{operator_token}}
+}
+
+tests {
+  test("Exact HTTP 400", function () { expect(res.getStatus()).to.equal(400); });
+  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |operator_token|peer_token/); });
+}

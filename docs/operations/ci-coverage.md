@@ -1,8 +1,108 @@
 # CI coverage uploader
 
-The Rust coverage job installs Codecov CLI 11.3.1 from PyPI through the pinned
+The Rust coverage upload job installs Codecov CLI 11.3.1 from PyPI through the pinned
 `codecov/codecov-action`'s official `use_pypi` input. OIDC authentication,
 the explicit LCOV input and `fail_ci_if_error: true` remain required.
+
+## Partitioned execution
+
+Eight independent jobs execute the locked Cargo targets: foundation, server unit
+and binaries, identity, execution, persistence, collaboration, federation, and
+knowledge/marketplace. `scripts/rust-test-partitions.py` inventories the actual
+workspace; new integration targets are assigned by their owning application.
+Unsupported target kinds fail the inventory instead of silently losing coverage.
+`scripts/test-rust.sh --coverage --partition NAME` builds the extension-enabled
+PostgreSQL image when required and writes `coverage/rust-NAME.lcov`.
+
+The uploader waits for all eight jobs and checks the exact set of nonempty LCOV
+artifacts. It submits all reports together with `flags: rust`; Codecov combines
+execution counts for shared source files. An absent or failed partition prevents
+the upload. `CI Success` also requires every partition and the upload separately.
+
+Coverage commands select `--workspace` and restrict execution with
+`--exclude-from-test`, while ordinary test commands retain their package selection.
+This instruments shared application and harness code called by server integration
+tests without repeating their unit suites. With package-only coverage, the
+successful reports at `b0a14cad` contained application code only in foundation:
+peer admissions and desktop protocol use cases incorrectly had zero hits even
+though server tests exercised them. The all-workspace reports retain those hits
+when merged. Existing thresholds, exclusions and required partitions are unchanged.
+An instrumented two-crate regression checks that server tests contribute coverage
+to a dependency while its unit tests remain excluded from that partition.
+
+Bruno runs all 269 endpoints and 935 scenarios in its own required job; only
+sanitized source identity, executable hashes and assertion results are archived.
+Both LLVM export and Codecov exclude test directories, `tests.rs`, and sibling
+`*_tests.rs` modules so those test bodies do not contribute to application coverage.
+
+The isolated capability gate prepares the same extension-enabled PostgreSQL
+fixture before running its library and integration targets. Its Cargo cache is
+separate from the eight instrumented coverage partitions.
+
+Before creating the isolated cluster, the gate compiles these exact Cargo targets
+and lists their tests. Every acceptance identifier must resolve to a listed test
+or its parameterized cases. This catches stale module paths and renamed migration
+tests before provisioning. The final reducer still requires successful execution,
+the unchanged source fingerprint, isolation admission, and crash recovery;
+inventory validation alone cannot pass the gate.
+
+The isolated capability job has a sixty-minute limit. Its cold run at
+[`3d05da43`](https://github.com/kent8192/aidash/actions/runs/37337525795/job/111855956903)
+spent eleven minutes building, twenty-one minutes passing all 96 capability
+tests, and three minutes passing all 24 migration tests before reaching scoped
+remote authorization. The former forty-minute limit cancelled that final suite.
+The revised budget retains every target, isolation assertion, and artifact check.
+
+The k3s gate saves images to an owned temporary archive, copies it into the owned
+node, and imports it through containerd's `k8s.io` namespace. Every expected tag
+must then resolve through CRI before acceptance starts. This avoids k3d's Docker
+exec stdin transport, which failed with a closed Docker socket in the
+remote-memory job. [k3d's image import implementation](https://github.com/k3d-io/k3d/blob/v5.9.0/pkg/client/tools.go)
+uses that transport for direct imports; the same error has been reported in
+[k3d issue #1020](https://github.com/k3d-io/k3d/issues/1020). The new path retains
+all import failures and acceptance assertions and cleans its local archive on
+exit; the existing cluster guard owns node cleanup. No new upstream defect is
+inferred from the closed socket alone.
+
+Transaction fault cases wait for the prior server generation to terminate after
+a rollout and forward HTTP to the single current ready Pod. A successful rollout
+can leave old Pods draining; their recovery loops must stop before submitting a
+new transaction with a different fault selector. This preserves the required
+before/after durable cuts instead of allowing an older controller to complete
+the new transaction outside the selected cut.
+
+Cluster diagnostics run the registered `manage diagnostics` command inside the
+same backend image loaded into the test nodes. The static command requires no
+runtime credentials and uses no network. This avoids compiling a second host
+executable after the Docker build and binds the diagnostic SQL to the tested
+runtime image.
+
+Each distribution's transaction gate runs three independent partitions:
+Coordinator durable cuts (42 repetitions), Participant durable cuts (30), and
+lifecycle cases (33). Their disjoint union retains all 105 repetitions, all
+before/after cuts, COMMIT/ABORT branches, and three repetitions per case. Every
+partition provisions the same sixteen-Node topology and retains its ninety-minute
+deadline. Transaction jobs skip browser installation because they exercise the
+actual HTTP and database/process boundaries; the separate browser gates remain
+required. `CI Success` requires all six distribution/partition jobs. Each artifact
+records the expected cases and selected partition alongside actual results.
+
+At [`3621a96c`](https://github.com/kent8192/aidash/actions/runs/37343926155), the
+single k3s and Kubernetes transaction jobs reached the ninety-minute deadline
+after 104 and 98 successful repetitions respectively. No recorded assertion
+failed; remaining repetitions and cleanup could not complete. Driver regression
+tests check the new partition inventory against the complete acceptance contract,
+without reducing case counts or recovery bounds.
+
+The required Clippy matrix checks each Cargo workspace once: the backend with
+all features, plus the existing desktop and infrastructure observer workspaces.
+Each job has its own Cargo cache and denies warnings. Trunk retains formatting
+and the other linters; it excludes Clippy in hosted CI because its nearest-package
+grouping launched repeated `--workspace` commands against the same build directory.
+[The run at `3d05da43`](https://github.com/kent8192/aidash/actions/runs/37337525795/job/111855956995)
+reported no lint findings, but two commands exceeded their ten-minute limits
+while compiling and waiting for Cargo locks. The explicit matrix avoids those
+duplicate invocations and remains a prerequisite of `CI Success`.
 
 ## Download outage
 
@@ -53,3 +153,21 @@ Other cluster jobs built the same backend successfully, and a fresh request to
 the `web-sys` index succeeded. Retry this job once the workflow run finishes;
 its build failure does not justify changing application behavior or weakening
 the acceptance checks.
+
+## Browser dependency mirror
+
+[The Kubernetes remote-memory job at `3d05da43`](https://github.com/kent8192/aidash/actions/runs/37337525795/job/111855957789)
+stopped before cluster assertions when Playwright's Ubuntu package installation
+reached its ten-minute deadline with exit 124. Its package URLs still used the
+Azure HTTP mirror despite the source-list rewrite. The
+[runner image configuration](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/configure-apt-sources.sh)
+resolves these URLs through `/etc/apt/apt-mirrors.txt`. The shared
+`scripts/configure-ci-apt.sh` helper rewrites the mirror list and direct entries
+for browser and desktop lint setup to the Ubuntu HTTPS archive, retaining
+priorities, timeout settings, and the installation deadline. No third-party issue
+was submitted for this observed transport failure.
+
+The ideal path is the ordinary `playwright install --with-deps chromium` against
+working runner sources. Remove the URL rewrite after unmodified hosted sources
+complete the same bounded installation reliably across the browser and cluster
+jobs; keep the deadline and required acceptance assertions.

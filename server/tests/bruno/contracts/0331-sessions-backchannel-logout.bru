@@ -1,0 +1,25 @@
+meta {
+  name: 0331 sessions-backchannel-logout - Missing logout token is rejected
+  type: http
+  seq: 331
+}
+
+post {
+  url: {{base_url}}/auth/backchannel-logout
+  body: formUrlEncoded
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Content-Type: application/x-www-form-urlencoded
+}
+
+body:form-urlencoded {
+  unused: value
+}
+
+tests {
+  test("Exact HTTP 400", function () { expect(res.getStatus()).to.equal(400); });
+  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |operator_token|peer_token/); });
+}

@@ -1,0 +1,31 @@
+meta {
+  name: Fresh session: Start the browser login
+  type: http
+  seq: 36
+}
+
+get {
+  url: {{base_url}}/auth/login
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+}
+
+tests {
+  test("HTTP 307", function () {
+    expect(res.getStatus()).to.equal(307);
+  });
+  test("Bound browser login redirect", function () {
+    expect(res.getHeader("location").startsWith(bru.getEnvVar("issuer"))).to.equal(true);
+  });
+
+  if (res.getStatus() === 307) {
+    const cookies = res.getHeader("set-cookie");
+    const values = Array.isArray(cookies) ? cookies : [cookies];
+    bru.setVar("login_cookie", values.find(value => value.startsWith("aidash-login=")).split(";")[0]);
+    bru.setVar("authorization_url", res.getHeader("location"));
+  }
+}

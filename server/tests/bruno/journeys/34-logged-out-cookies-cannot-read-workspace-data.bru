@@ -1,0 +1,29 @@
+meta {
+  name: Logged out cookies cannot read workspace data
+  type: http
+  seq: 34
+}
+
+get {
+  url: {{base_url}}/api/workspaces/{{browser_workspace_id}}
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Cookie: {{session_cookie}}
+  X-Aidash-Context: {{browser_context}}
+}
+
+tests {
+  test("HTTP 401", function () {
+    expect(res.getStatus()).to.equal(401);
+  });
+  test("JSON response contract", function () {
+    expect(res.getHeader("content-type")).to.include("application/json");
+    expect(res.getBody()).to.have.all.keys("error");
+    expect(res.getBody().error).to.be.a("string");
+
+  });
+}

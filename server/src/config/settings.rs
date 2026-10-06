@@ -1,0 +1,235 @@
+//! Settings module for server
+//!
+//! This module provides environment-specific settings configuration using TOML files.
+//!
+//! ## Configuration Structure
+//!
+//! Settings are loaded from TOML files in the `settings/` directory:
+//! - `base.toml` - Common settings across all environments
+//! - `local.toml` - Local development settings
+//! - `staging.toml` - Staging environment settings
+//! - `production.toml` - Production environment settings
+//!
+//! ## Priority Order
+//!
+//! Settings are merged with the following priority (highest to lowest):
+//! 1. Environment variables with `REINHARDT_` prefix
+//! 2. Environment-specific TOML file (e.g., `production.toml`)
+//! 3. Base TOML file (`base.toml`)
+//! 4. Default values
+//!
+//! ## Environment Selection
+//!
+//! The environment is determined by the `REINHARDT_ENV` environment variable:
+//! - `local` or `development` → loads `local.toml`
+//! - `staging` → loads `staging.toml`
+//! - `production` → loads `production.toml`
+//!
+//! If `REINHARDT_ENV` is not set, it defaults to `local`.
+//!
+//! ## Environment Variable Interpolation
+//!
+//! `TomlFileSource` interpolates `${VAR}` syntax inside TOML string values
+//! by default (since reinhardt-web v0.1.0-rc.27). The `${...}` syntax is
+//! not valid in non-string TOML literals. Supported forms:
+//!
+//! - `${VAR}` — required; settings load fails if `VAR` is unset
+//! - `${VAR:-default}` — falls back to `default` when `VAR` is unset
+//! - `${VAR:?message}` — settings load fails with `message` when `VAR` is unset
+//!
+//! Interpolated strings are typed-coerced at deserialization time, so
+//! `pool_size = "${DB_POOL_SIZE:-10}"` resolves directly to the field's
+//! declared Rust type (e.g. `u16`) without manual parsing.
+
+use crate::apps::federation::remote::serializers::settings::NodeSettings;
+use crate::apps::identity::serializers::settings::DashboardSettings;
+use crate::apps::operations::serializers::settings::KubernetesSettings;
+use reinhardt::conf::settings::PendingSettings;
+use reinhardt::conf::settings::builder::{BuildError, SettingsBuilder};
+use reinhardt::conf::settings::profile::Profile;
+use reinhardt::conf::settings::scoped::ScopedSettings;
+use reinhardt::conf::settings::sources::{DefaultSource, HighPriorityEnvSource, TomlFileSource};
+use reinhardt::settings;
+use std::env;
+
+// Add fragments to extend settings: e.g. `#[settings(core: CoreSettings | cache: CacheSettings)]`
+#[settings(core: CoreSettings | contacts: ContactSettings | migrations: MigrationSettings | node: NodeSettings | dashboard: DashboardSettings | kubernetes: KubernetesSettings)]
+pub struct ProjectSettings;
+
+/// Get settings based on environment variable
+///
+/// Reads the REINHARDT_ENV environment variable to determine which settings to load.
+/// Defaults to "local" if not set.
+///
+/// # Examples
+///
+/// ```no_run
+/// use aidash_server::config::settings::get_settings;
+///
+/// let settings = get_settings().expect("settings sources should load");
+/// ```
+///
+/// # Errors
+///
+/// Returns an error when a settings source cannot be loaded or parsed.
+pub fn get_settings() -> Result<PendingSettings<ProjectSettings>, BuildError> {
+	settings_builder()?.build_pending_composed::<ProjectSettings>()
+}
+
+/// Merge settings without expanding unselected runtime secrets.
+pub fn get_scoped_settings() -> Result<ScopedSettings, BuildError> {
+	settings_builder()?.build_scoped()
+}
+
+fn settings_builder() -> Result<SettingsBuilder, BuildError> {
+	let profile_str = env::var("REINHARDT_ENV").unwrap_or_else(|_| "local".to_string());
+
+	// Resolve the managed project root independently of the caller's working directory.
+	let base_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+	let settings_dir = env::var_os("REINHARDT_SETTINGS_DIR")
+		.map(std::path::PathBuf::from)
+		.unwrap_or_else(|| base_dir.join("settings"));
+
+	// Presence inspection does not interpolate unselected runtime credentials.
+	let configured = file_settings_builder(&profile_str, &base_dir, &settings_dir)
+		.add_source(HighPriorityEnvSource::new().with_prefix("REINHARDT_"))
+		.build_scoped()?
+		.has_path(&["dashboard", "oidc"]);
+	Ok(
+		file_settings_builder(&profile_str, &base_dir, &settings_dir)
+			.add_source(super::legacy_env::LegacyEnvironment::new(configured))
+			.add_source(HighPriorityEnvSource::new().with_prefix("REINHARDT_")),
+	)
+}
+
+fn file_settings_builder(
+	profile_name: &str,
+	base_dir: &std::path::Path,
+	settings_dir: &std::path::Path,
+) -> SettingsBuilder {
+	let file_profile = match profile_name {
+		"development" => "local",
+		name => name,
+	};
+	// Build settings by merging sources in priority order.
+	// The composed and scoped paths use deep merging, so a
+	// single key in `production.toml` overrides only that key — sibling
+	// entries inside the same nested table inherit from `base.toml`.
+	SettingsBuilder::new()
+		.profile(Profile::parse(profile_name))
+        // Lowest priority: Default values
+        .add_source(
+            DefaultSource::new()
+                .with_value("core", serde_json::json!({ "base_dir": base_dir, "installed_apps": super::apps::APP_LABELS }))
+                // Initialize the standard REST scaffold contact defaults.
+                .with_value("contacts", serde_json::json!({}))
+                // Initialize optional Aidash fragments without enabling OIDC or Kubernetes.
+                .with_value("dashboard", serde_json::json!({}))
+                .with_value("kubernetes", serde_json::json!({}))
+                .with_value("migrations", serde_json::json!({})),
+        )
+        // Medium priority: Base TOML file
+        .add_source(TomlFileSource::new(settings_dir.join("base.toml")))
+        // Profile priority: Environment-specific TOML file
+        .add_source(TomlFileSource::new(
+			settings_dir.join(format!("{file_profile}.toml")),
+		))
+}
+
+/// Return plain project settings for consumers whose evaluator type is `ProjectSettings`.
+pub fn get_shell_settings() -> ProjectSettings {
+	get_settings()
+		.expect("Failed to build settings")
+		.resolve()
+		.expect("Failed to resolve settings")
+		.into_parts()
+		.0
+}
+
+use async_trait::async_trait;
+use reinhardt::{DiError, DiResult, Injectable, InjectionContext};
+#[async_trait]
+impl Injectable for ProjectSettings {
+	async fn inject(context: &InjectionContext) -> DiResult<Self> {
+		context
+			.get_singleton::<Self>()
+			.map(|settings| (*settings).clone())
+			.ok_or_else(|| DiError::NotFound("Aidash project settings".into()))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[rstest::rstest]
+	#[case::local("local")]
+	#[case::development_alias("development")]
+	fn profile_overrides_preserve_required_base_settings(#[case] profile: &str) {
+		// Arrange: isolated files supply only local test credentials.
+		let directory = tempfile::tempdir().unwrap();
+		let source = include_str!("../../settings/base.example.toml")
+			.replace(
+				"[core]\n",
+				"[core]\nsecret_key = \"isolated-settings-test-secret-0123456789\"\n",
+			)
+			.replace(
+				"[node]\n",
+				"[node]\napi_token = \"isolated-settings-test-operator-0123456789\"\n",
+			);
+		std::fs::write(directory.path().join("base.toml"), source).unwrap();
+		std::fs::write(
+			directory.path().join("local.toml"),
+			"[core]\ndebug = true\n[node]\nworker_count = 2\n",
+		)
+		.unwrap();
+		std::fs::write(
+			directory.path().join("development.toml"),
+			"[node]\nworker_count = 9\n",
+		)
+		.unwrap();
+		// Act: exercise the same file composition used by process startup.
+		let settings = file_settings_builder(profile, directory.path(), directory.path())
+			.build_pending_composed::<ProjectSettings>()
+			.unwrap()
+			.resolve()
+			.unwrap();
+		// Assert: an override keeps sibling values and the installed app registry.
+		assert_eq!(
+			settings.settings().core.secret_key,
+			"isolated-settings-test-secret-0123456789"
+		);
+		assert!(settings.settings().core.debug);
+		assert_eq!(settings.settings().node.worker_count, 2);
+		assert_eq!(settings.settings().node.node_id, "aidash://local");
+		assert!(settings.settings().contacts.admins.is_empty());
+		assert!(settings.settings().contacts.managers.is_empty());
+		assert!(settings.settings().dashboard.oidc.is_none());
+		assert!(!settings.settings().kubernetes.enabled);
+		assert_eq!(
+			settings.settings().core.installed_apps,
+			super::super::apps::APP_LABELS
+		);
+	}
+
+	#[rstest::rstest]
+	fn oidc_presence_does_not_resolve_unselected_credentials() {
+		// Arrange: management operations may only need to inspect provider presence.
+		let directory = tempfile::tempdir().unwrap();
+		std::fs::write(
+			directory.path().join("base.toml"),
+			concat!(
+				"[dashboard.oidc]\n",
+				"client_id = 'configured-client'\n",
+				"client_secret = '${AIDASH_UNSELECTED_OIDC_REGRESSION_SECRET}'\n",
+			),
+		)
+		.unwrap();
+		// Act: inspect the same scoped settings graph before adding legacy tuning.
+		let settings = file_settings_builder("local", directory.path(), directory.path())
+			.build_scoped()
+			.unwrap();
+		// Assert: no interpolation or required-field validation is needed for presence.
+		assert!(settings.has_path(&["dashboard", "oidc"]));
+	}
+}

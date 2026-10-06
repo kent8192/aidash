@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-distribution="${1:?Usage: scripts/test-cluster.sh kubernetes|k3s [platform|transactions|remote-memory]}"
+distribution="${1:?Usage: scripts/test-cluster.sh kubernetes|k3s [platform|transactions|remote-memory] [coordinator|participant|lifecycle]}"
 case "$distribution" in kubernetes|k3s) ;; *) exit 2 ;; esac
 profile="${2:-platform}"
 case "$profile" in platform|transactions|remote-memory) ;; *) exit 2 ;; esac
+partition="${3:-}"
+if [[ -n "$partition" ]]; then
+  [[ "$profile" == transactions ]] || exit 2
+  case "$partition" in coordinator|participant|lifecycle) ;; *) exit 2 ;; esac
+fi
 tools_dir="$PWD/.ignore/platform/cluster-tools"
 mkdir -p "$tools_dir"
 export PATH="$tools_dir:$PATH"
@@ -85,20 +90,16 @@ if [[ "$distribution" == kubernetes ]]; then
   kind load docker-image "${images[@]}" --name "$cluster"
   kind load docker-image "$postgres_image" --name "$cluster"
 else
-  # Avoid tools-node tarball failures, which k3d can report as a successful import.
-  k3d image import "${images[@]}" "$postgres_image" --cluster "$cluster" --mode direct
-  for image in "${images[@]}" "$postgres_image"; do
-    docker exec "k3d-$cluster-server-0" crictl \
-      --runtime-endpoint unix:///run/k3s/containerd/containerd.sock \
-      inspecti "$image" > /dev/null
-  done
+  scripts/import-cluster-images.sh "k3d-$cluster-server-0" "${images[@]}" "$postgres_image"
 fi
 if [[ "$profile" == remote-memory ]]; then
-  RUSTC_WRAPPER= cargo run --locked --quiet --example remote_memory_queries > "$tools_dir/remote-memory-queries.json"
+  docker run --rm --network none --entrypoint manage aidash:cluster-acceptance diagnostics remote-memory > "$tools_dir/remote-memory-queries.json"
   python3 scripts/remote_memory_cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --postgres-image "$postgres_image" --queries "$tools_dir/remote-memory-queries.json"
 elif [[ "$profile" == transactions ]]; then
-  RUSTC_WRAPPER= cargo run --locked --quiet --example acceptance_queries > "$tools_dir/transaction-queries.json"
-  python3 scripts/transaction_cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --postgres-image "$postgres_image" --queries "$tools_dir/transaction-queries.json"
+  docker run --rm --network none --entrypoint manage aidash:cluster-acceptance diagnostics acceptance > "$tools_dir/transaction-queries.json"
+  selection=()
+  if [[ -n "$partition" ]]; then selection+=(--partition "$partition"); fi
+  python3 scripts/transaction_cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --postgres-image "$postgres_image" --queries "$tools_dir/transaction-queries.json" "${selection[@]}"
 else
   python3 scripts/cluster_acceptance.py --kubeconfig "$KUBECONFIG" --distribution "$distribution" --image aidash:cluster-acceptance --frontend-image aidash-frontend:cluster-acceptance --postgres-image "$postgres_image" --dashboard
 fi

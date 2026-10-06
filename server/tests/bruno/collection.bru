@@ -1,0 +1,13 @@
+meta {
+  name: Aidash real API contracts
+}
+
+script:pre-request {
+  req.setMaxRedirects(0);
+  req.setTimeout(30000);
+  // Keep authorization assertions independent of the production IP rate limit.
+  // The default bucket replenishes one request every two seconds.
+  if (req.getUrl().includes("/auth/")) {
+    await bru.sleep(2100);
+  }
+}

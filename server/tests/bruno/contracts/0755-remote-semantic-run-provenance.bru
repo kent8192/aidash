@@ -1,0 +1,21 @@
+meta {
+  name: 0755 remote-semantic-run-provenance - Missing scoped authority cannot disclose application data
+  type: http
+  seq: 755
+}
+
+get {
+  url: {{base_url}}/api/runs/11111111-1111-4111-8111-111111111111/semantic
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{operator_token}}
+}
+
+tests {
+  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
+}

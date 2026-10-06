@@ -1,0 +1,21 @@
+meta {
+  name: 0107 sessions-registration-status - Approved registration remains visible
+  type: http
+  seq: 44
+}
+
+get {
+  url: {{base_url}}/auth/registration
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Cookie: {{session_cookie}}
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Approved registration remains visible contract", function () { expect(res.getBody().status).to.equal("approved");expect(res.getBody().id).to.equal(bru.getVar("registration_id")); });
+}

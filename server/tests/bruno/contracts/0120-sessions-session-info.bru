@@ -1,0 +1,21 @@
+meta {
+  name: 0120 sessions-session-info - Desktop bearer resolves the OIDC identity
+  type: http
+  seq: 54
+}
+
+get {
+  url: {{base_url}}/auth/session
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Bearer {{desktop_access}}
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Desktop bearer resolves the OIDC identity contract", function () { expect(res.getBody().mappings).to.be.an("array").that.is.not.empty;expect(res.getBody().id).to.be.a("string"); });
+}

@@ -1,0 +1,20 @@
+meta {
+  name: 0372 run_working_area - Anonymous request is rejected
+  type: http
+  seq: 372
+}
+
+get {
+  url: {{base_url}}/api/runs/11111111-1111-4111-8111-111111111111/working-area
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:{"code": "UNAUTHORIZED", "message": "unauthorized", "retryable": false}}); });
+}

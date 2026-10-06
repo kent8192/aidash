@@ -1,0 +1,25 @@
+meta {
+  name: 0116 desktop-exchange - Exchange consumes the bound proof once
+  type: http
+  seq: 50
+}
+
+post {
+  url: {{base_url}}/auth/desktop/exchange
+  body: text
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Content-Type: application/json
+}
+
+body:text {
+  {"code": "{{desktop_code}}", "state": "ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss", "verifier": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "redirect_uri": "http://127.0.0.1:43217/callback"}
+}
+
+tests {
+  test("Exact HTTP 200", function () { expect(res.getStatus()).to.equal(200); });
+  test("Exchange consumes the bound proof once contract", function () { expect(res.getBody()).to.have.all.keys("access_token","refresh_token","expires_in");expect(res.getBody().access_token).to.match(/^aidash_desktop_/);expect(res.getBody().refresh_token).to.match(/^aidash_refresh_/);expect(res.getBody().expires_in).to.equal(300);bru.setVar("desktop_access",res.getBody().access_token);bru.setVar("desktop_refresh",res.getBody().refresh_token); });
+}
