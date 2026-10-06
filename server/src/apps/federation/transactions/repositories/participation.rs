@@ -153,11 +153,12 @@ impl ParticipantScope for Scope {
 		}
 	}
 	async fn rollback(self: Box<Self>) -> Result<()> {
-		let tx = match self.transaction {
-			Transaction::Standalone(tx) => tx,
-			Transaction::Admitted(access) => access.tx,
-		};
-		tx.rollback().await.map_err(Error::from).map_err(Into::into)
+		match self.transaction {
+			Transaction::Standalone(tx) => {
+				tx.rollback().await.map_err(Error::from).map_err(Into::into)
+			}
+			Transaction::Admitted(access) => access.rollback().await.map_err(Into::into),
+		}
 	}
 }
 

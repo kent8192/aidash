@@ -4,6 +4,7 @@ mod completion;
 mod inspection;
 mod invocation_records;
 mod run_progress;
+pub(crate) mod task_evidence;
 
 mod events;
 pub use events::Event;
@@ -17,8 +18,6 @@ pub use inbox::Inbox;
 mod invocations;
 pub(crate) mod journals;
 pub use invocations::Invocation;
-mod memory;
-pub use memory::Memory;
 mod input_ledger;
 mod run_inputs;
 pub use run_inputs::RunInput;

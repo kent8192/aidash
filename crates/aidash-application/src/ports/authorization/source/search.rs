@@ -46,6 +46,31 @@ pub trait SemanticSearchScope: Send {
 		prepared: PreparedSearch,
 		vector: &[f32],
 	) -> Result<SearchResult>;
+	async fn native_stamp(
+		&mut self,
+		binding: &aidash_domain::semantic::remote::Binding,
+	) -> Result<Option<String>> {
+		if binding.native().is_some() {
+			return Err(crate::Error::RemoteSemantic(
+				aidash_domain::semantic::Failure::Configuration,
+			));
+		}
+		Ok(None)
+	}
+	async fn native_context(
+		&mut self,
+		_: &str,
+		binding: &aidash_domain::semantic::remote::Binding,
+		_: &Operation,
+		_: usize,
+	) -> Result<Option<aidash_domain::semantic::remote::NativeContext>> {
+		if binding.native().is_some() {
+			return Err(crate::Error::RemoteSemantic(
+				aidash_domain::semantic::Failure::Configuration,
+			));
+		}
+		Ok(None)
+	}
 	/// Finish the original credential transaction and durable audit before a fresh authority lease.
 	async fn finish(self, result: Result<Receipt>) -> Result<Receipt>;
 }

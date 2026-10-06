@@ -74,6 +74,7 @@ struct State {
 	visible: bool,
 	subjects: Vec<String>,
 	phase: Option<String>,
+	completion_ready: bool,
 	fail: Option<(&'static str, Failure)>,
 	pause: Option<&'static str>,
 	calls: Vec<String>,
@@ -108,6 +109,7 @@ fn repository() -> Repository {
 		visible: true,
 		subjects: vec![],
 		phase: None,
+		completion_ready: true,
 		fail: None,
 		pause: None,
 		calls: vec![],
@@ -245,6 +247,43 @@ impl GenerationProvisioning for Repository {
 		point(&self.0, "terminal_authority").await?;
 		Ok(Box::new(session))
 	}
+	async fn completion_ready(&self, _: &Request) -> Result<bool> {
+		Ok(self.0.lock().unwrap().completion_ready)
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn completion_work_defers_retirement_without_extending_the_original_expiry(
+	repository: Repository,
+) {
+	let job = {
+		let mut state = repository.0.lock().unwrap();
+		state.job.status = "ACTIVE".into();
+		state.phase = Some("COMPLETED".into());
+		state.completion_ready = false;
+		state.job.clone()
+	};
+	terminal(&repository, &job, "FAILED", "completed run")
+		.await
+		.unwrap();
+	assert_eq!(repository.0.lock().unwrap().job.status, "ACTIVE");
+	assert!(repository.0.lock().unwrap().committed.is_empty());
+	assert!(
+		!repository
+			.0
+			.lock()
+			.unwrap()
+			.calls
+			.iter()
+			.any(|call| call == "terminal_begin")
+	);
+	// Expiry bypasses the drain even when a crashed claim or human review waits.
+	repository.0.lock().unwrap().now = job.expires_at;
+	terminal(&repository, &job, "EXPIRED", "lifetime elapsed")
+		.await
+		.unwrap();
+	assert_eq!(repository.0.lock().unwrap().job.status, "COMPLETED");
 }
 #[async_trait]
 impl GenerationPublication for Session {

@@ -39,7 +39,7 @@ pub(crate) struct Repository<'a> {
 	pub(crate) journal: Journal<'a>,
 	pub(crate) dispatch: NativeDispatch,
 	pub(crate) settlement: NativeSettlement,
-	pub(crate) transport: aidash_integrations::semantic::SemanticClient,
+	pub(crate) transport: crate::apps::knowledge::repositories::postgres_vector::Transport,
 }
 pub(crate) struct Scope {
 	runtime: Federation,
@@ -160,7 +160,7 @@ impl SemanticSearchScope for Scope {
 	) -> Result<SearchResult> {
 		let store = self.runtime.store.clone();
 		aidash_application::semantic::retrieval::finish(
-			&crate::bootstrap::semantic_transport(store.semantic_client.clone()),
+			&crate::bootstrap::semantic_transport(&store),
 			&mut crate::bootstrap::semantic_retrieval_scope(&store, &mut self.lease),
 			prepared,
 			vector,
@@ -173,5 +173,45 @@ impl SemanticSearchScope for Scope {
 			.finish(result.map_err(Into::into))
 			.await
 			.map_err(Into::into)
+	}
+	async fn native_stamp(
+		&mut self,
+		binding: &aidash_domain::semantic::remote::Binding,
+	) -> Result<Option<String>> {
+		if let Some(native) = binding.native() {
+			Ok(Some(
+				crate::apps::knowledge::services::remote_memory::stamp(
+					&self.runtime.store,
+					&mut self.lease,
+					native,
+				)
+				.await?,
+			))
+		} else {
+			Ok(None)
+		}
+	}
+	async fn native_context(
+		&mut self,
+		node: &str,
+		binding: &aidash_domain::semantic::remote::Binding,
+		operation: &Operation,
+		budget: usize,
+	) -> Result<Option<aidash_domain::semantic::remote::NativeContext>> {
+		if let Some(native) = binding.native() {
+			Ok(Some(
+				crate::apps::knowledge::services::remote_memory::retrieve(
+					&self.runtime,
+					&mut self.lease,
+					node,
+					native,
+					operation,
+					budget,
+				)
+				.await?,
+			))
+		} else {
+			Ok(None)
+		}
 	}
 }

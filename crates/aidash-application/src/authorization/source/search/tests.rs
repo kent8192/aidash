@@ -179,6 +179,7 @@ fn operation() -> Operation {
 }
 fn binding() -> Binding {
 	Binding::RequiredHome {
+		native: None,
 		home_lineage: vec![],
 		execution_lineage: vec![],
 		version: 1,
@@ -221,7 +222,7 @@ fn spec() -> IndexingSpec {
 			dimensions: 2,
 		},
 		vector: VectorConfig {
-			provider: "qdrant".into(),
+			provider: "postgres".into(),
 			endpoint: "https://vector.invalid".into(),
 			credential_env: None,
 		},
@@ -245,6 +246,7 @@ fn index() -> Index {
 }
 fn cached_receipt(candidate_digest: &str) -> Receipt {
 	Receipt {
+		memory: None,
 		operation_id: operation().id,
 		operation_digest: operation().digest().unwrap(),
 		home_node: operation().home_node,

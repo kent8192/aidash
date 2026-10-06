@@ -45,6 +45,9 @@ export function RemoteRunManagement({ id }: { id: string }) {
       {state.semantic_reason && (
         <p role="status">{reasons[state.semantic_reason][ja ? 1 : 0]}</p>
       )}
+      {state.memory_cleanup && (
+        <CleanupMessage state={state.memory_cleanup.state} />
+      )}
       {!terminal && (
         <div className="button-row">
           {state.control === "ACTIVE" && (
@@ -66,6 +69,22 @@ export function RemoteRunManagement({ id }: { id: string }) {
       )}
       {error && <p role="alert">{error}</p>}
     </section>
+  );
+}
+
+function CleanupMessage({ state }: { state: string }) {
+  const { locale } = useI18n();
+  const ja = locale === "ja-JP";
+  const labels: Record<string, [string, string]> = {
+    pending: ["Scheduled", "予定済み"],
+    purged: ["Removed", "除去済み"],
+    failed: ["Failed", "失敗"],
+  };
+  return (
+    <p role="status">
+      {ja ? "受信コピーの清掃" : "Receiver copy cleanup"}:{" "}
+      {labels[state]?.[ja ? 1 : 0] ?? state}
+    </p>
   );
 }
 
@@ -118,6 +137,7 @@ const states: Record<string, [string, string]> = {
   paused: ["Paused", "一時停止"],
   invalidated: ["Sources changed", "参照元が変更済み"],
   cancelled: ["Cancelled", "中止済み"],
+  no_space: ["No space in the context budget", "コンテキスト予算に収まらない"],
 };
 
 export function RemoteMemoryStatus({
@@ -135,6 +155,7 @@ export function RemoteMemoryStatus({
       <h4>{ja ? "Home の記憶" : "Home memory"}</h4>
       <p>{states[status.state]?.[language] ?? status.state}</p>
       {status.reason && <p role="status">{reasons[status.reason][language]}</p>}
+      {status.body_cleanup && <CleanupMessage state={status.body_cleanup} />}
       {status.retry_count > 0 && (
         <p>
           {ja ? "自動再試行" : "Automatic retries"}: {status.retry_count}/5
@@ -227,6 +248,53 @@ export function RemoteMemoryProvenance({ url }: { url: string }) {
               ))}
             </ul>
           </dd>
+          {(receipt.memory ?? []).map((bank) => (
+            <dd key={JSON.stringify(bank.bank)}>
+              <p>
+                {bank.bank.participant
+                  ? ja
+                    ? "Homeの私有記憶"
+                    : "Private Home memory"
+                  : ja
+                    ? "Homeの共有記憶"
+                    : "Shared Home memory"}{" "}
+                · {states[bank.state]?.[ja ? 1 : 0] ?? bank.state}
+              </p>
+              <code>{bank.bank.participant ?? bank.bank.workspace}</code> ·{" "}
+              {bank.provider.id}@{bank.provider.version}
+              <ul>
+                {bank.units.map((unit) => (
+                  <li key={unit.id}>
+                    <code>{unit.id}</code> · r{unit.revision} · {unit.kind}
+                    <p>
+                      {unit.verification === "unverified"
+                        ? ja
+                          ? "未検証"
+                          : "Unverified"
+                        : unit.verification === "supported"
+                          ? ja
+                            ? "参照元の裏付けあり"
+                            : "Supported by sources"
+                          : ja
+                            ? "矛盾あり"
+                            : "Contradicted"}
+                    </p>
+                    <code>{unit.content_digest}</code>
+                    <ul>
+                      {unit.evidence.map((source, index) => (
+                        <li key={index}>
+                          <code>
+                            {source.kind}: {source.id}
+                          </code>{" "}
+                          · r{source.revision}
+                        </li>
+                      ))}
+                    </ul>
+                  </li>
+                ))}
+              </ul>
+            </dd>
+          ))}
           {receipt.allowances?.length > 0 && (
             <>
               <dt>

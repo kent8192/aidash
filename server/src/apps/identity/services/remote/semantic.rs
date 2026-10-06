@@ -56,6 +56,7 @@ pub(crate) async fn search(
 
 impl Access {
 	pub(crate) async fn remote_semantic_sources(&mut self, grant: Uuid) -> Result<()> {
+		crate::apps::knowledge::repositories::remote_memory_reads::visible(self, grant).await?;
 		aidash_application::authorization::source::provenance::verify(
 			&mut crate::bootstrap::source_semantic_provenance_scope(self),
 			grant,

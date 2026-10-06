@@ -64,9 +64,7 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
       .fill("semantic-fixture");
     await page.getByLabel("Model version", { exact: true }).fill("v1");
     await page.getByLabel("Vector dimensions", { exact: true }).fill("3");
-    await page
-      .getByLabel("Qdrant endpoint", { exact: true })
-      .fill(process.env.AIDASH_TEST_QDRANT_URL ?? "http://127.0.0.1:63370");
+
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await page
@@ -225,21 +223,18 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
     );
-    // Delete only this fixture's current collection. Old generations are
-    // retired by the running service and retried if acknowledgement was lost.
+    // The Workspace index owns its PostgreSQL vectors. Disable its generation
+    // through the authorized API so the durable janitor retires those rows.
     const indexResponse = await request.get(`${root}/index`, { headers });
     if (indexResponse.ok()) {
       const index = await indexResponse.json();
-      await request.delete(
-        `${index.spec.vector.endpoint}/collections/${index.collection}`,
-        {
-          headers: {
-            "api-key":
-              process.env.AIDASH_SECRET_TEST_QDRANT ??
-              "local-semantic-vector-fixture-key-0123456789",
-          },
+      await request.post(`${root}/index`, {
+        headers,
+        data: {
+          expected_revision: index.revision,
+          spec: { ...index.spec, enabled: false },
         },
-      );
+      });
     }
   }
 });

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Two real HTTP Nodes, separate PostgreSQL databases and persistent Qdrant.
+"""Two real HTTP Nodes, separate PostgreSQL databases and native PostgreSQL search.
 
 Run only against an explicit disposable Kubernetes/k3s cluster. The ordinary
 case kills the inference worker. The generated case kills Home during embedding,
-holds a link outage, and restarts both servers, the worker and Qdrant. Provider
+holds a link outage, and restarts both servers, the worker and PostgreSQL. Provider
 requests, durable cuts, image IDs and failures are retained as synthetic evidence.
 """
 import argparse
@@ -118,19 +118,9 @@ class RemoteMemory(Cluster):
                     "command": ["python3", "/fixture/fixture.py"], "volumeMounts": [{"name": "fixture", "mountPath": "/fixture"}]}],
                     "volumes": [{"name": "fixture", "configMap": {"name": "provider"}}]}}}})
         self.service("provider", 8080, {"app": "provider"})
-        self.apply({"apiVersion": "apps/v1", "kind": "StatefulSet", "metadata": {"name": "qdrant"}, "spec": {
-            "serviceName": "qdrant", "replicas": 1, "selector": {"matchLabels": {"app": "qdrant"}}, "template": {
-                "metadata": {"labels": {"app": "qdrant"}}, "spec": {"containers": [{"name": "qdrant", "image": "qdrant/qdrant:v1.19.1",
-                    "env": [{"name": "QDRANT__SERVICE__API_KEY", "value": "remote-memory-fixture-only"}],
-                    "volumeMounts": [{"name": "data", "mountPath": "/qdrant/storage"}],
-                    "readinessProbe": {"tcpSocket": {"port": 6333}, "periodSeconds": 1}}]}},
-            "volumeClaimTemplates": [{"metadata": {"name": "data"}, "spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": "1Gi"}}}}]}})
-        self.service("qdrant", 6333, {"app": "qdrant"})
         self.rollout("provider")
-        self.rollout("qdrant", "statefulset")
         for node in range(2):
             for role in ("server", "worker"):
-                self.kube("set", "env", f"deployment/tx-{node}-{role}", "AIDASH_SECRET_TEST_QDRANT=remote-memory-fixture-only")
                 if node == 0:
                     self.kube("set", "env", f"deployment/tx-{node}-{role}", "AIDASH_SECRET_TEST_REMOTE_EMBEDDING=fixture-embedding-initial")
             self.rollout(f"tx-{node}-server")
@@ -165,7 +155,7 @@ class RemoteMemory(Cluster):
     def workspace(self):
         workspace = self.ok(self.user(0, "/api/workspaces", {"title": "Remote memory acceptance", "goal": "Search the approved archive"}))["id"]
         self.ok(self.api(0, f"/api/workspaces/{workspace}/semantic/index", {"expected_revision": 0, "spec": {
-            "embedding": self.embedding, "vector": {"provider": "qdrant", "endpoint": "http://qdrant:6333", "credential_env": "AIDASH_SECRET_TEST_QDRANT"},
+            "embedding": self.embedding, "vector": {"provider": "postgres", "endpoint": "local", "credential_env": None},
             "enabled": True, "auto_context": True, "max_sources": 100, "max_results": 10, "max_result_tokens": 4096, "max_input_bytes": 32768}}))
         entries = []
         for key, owner, text in [("shared", None, "Iridium archive marker: ochre falcon."),
@@ -283,17 +273,20 @@ class RemoteMemory(Cluster):
         record["recovered"] = self.snapshot(task, run)
         record["result"] = "passed"
 
-    def generated_task(self, workspace):
+    def generated_task(self, workspace, policy_suffix=""):
+        parent_policy = "remote-parent" + policy_suffix
+        child_policy = "remote-child" + policy_suffix
+        capability = "unique-parent-specialist" + policy_suffix
         common = {"enabled": True, "permissions": {"roles": [], "groups": [], "attributes": {}}, "approval_required": False,
                   "limits": {"max_agents": 4, "max_concurrent": 4, "max_depth": 4, "token_budget": 4000000, "tokens_per_agent": 800000, "lifetime_seconds": 3600}}
         parent = copy.deepcopy(common)
         parent["template"] = copy.deepcopy(self.entries[0]["research"])
-        parent["template"]["capabilities"] = ["unique-parent-specialist"]
+        parent["template"]["capabilities"] = [capability]
         parent["embedding"] = {"provider": {"id": "home-embedding", "version": "1.0.0"}, "calls_per_agent": 10, "call_budget": 40}
         parent["remote"] = {"inference": [self.descriptor(1, "model")]}
-        self.ok(self.api(0, "/api/generation/acme/policies/remote-parent", {"expected_revision": 0, "spec": parent}))
-        parent_task = self.ok(self.user(0, f"/api/workspaces/{workspace}/tasks", {"title": "Generated origin", "description": "Delegate scoped memory research", "requirements": {"capability": "unique-parent-specialist"}}))["id"]
-        assigned = self.ok(self.user(0, f"/api/generation/acme/tasks/{parent_task}/assign", {"policy_id": "remote-parent", "reason": "Generated ancestor acceptance"}))
+        self.ok(self.api(0, f"/api/generation/acme/policies/{parent_policy}", {"expected_revision": 0, "spec": parent}))
+        parent_task = self.ok(self.user(0, f"/api/workspaces/{workspace}/tasks", {"title": "Generated origin", "description": "Delegate scoped memory research", "requirements": {"capability": capability}}))["id"]
+        assigned = self.ok(self.user(0, f"/api/generation/acme/tasks/{parent_task}/assign", {"policy_id": parent_policy, "reason": "Generated ancestor acceptance"}))
         assert assigned["kind"] == "generated", assigned
         self.scale(0, "worker", 1)
         def waiting():
@@ -310,8 +303,8 @@ class RemoteMemory(Cluster):
         child_spec = copy.deepcopy(common)
         child_spec.update(template=self.entries[1]["research"], approval_required=True,
             remote={"embedding": {"provider": self.descriptor(0, "home-embedding"), "calls_per_agent": 10, "call_budget": 40}})
-        self.ok(self.api(1, "/api/generation/acme/policies/remote-child", {"expected_revision": 0, "spec": child_spec}))
-        intent = {"id": str(uuid.uuid4()), "node_id": "aidash://tx-01", "policy_id": "remote-child", "policy_revision": 1, "ttl_seconds": 1800, "reason": "Foreign generated child acceptance"}
+        self.ok(self.api(1, f"/api/generation/acme/policies/{child_policy}", {"expected_revision": 0, "spec": child_spec}))
+        intent = {"id": str(uuid.uuid4()), "node_id": "aidash://tx-01", "policy_id": child_policy, "policy_revision": 1, "ttl_seconds": 1800, "reason": "Foreign generated child acceptance"}
         route = f"/api/tasks/{child}/remote-generation"
         pending = self.ok(self.user(0, route, intent))
         assert pending["status"] == "PENDING_APPROVAL" and not pending["prepared"], pending
@@ -332,7 +325,7 @@ class RemoteMemory(Cluster):
         workspace, source = self.workspace()
         child, agent, parent = self.generated_task(workspace)
         task = child["id"]
-        # Qdrant restarts can legitimately trigger background source reindexing.
+        # PostgreSQL restarts can legitimately trigger background source reindexing.
         # Count this task's query input so those calls cannot imitate a resend.
         embedding_input = f"{child['title']}\n{child['description']}"
         grant, run = self.activate(task, agent)
@@ -360,8 +353,8 @@ class RemoteMemory(Cluster):
         record["during_outage"] = during
         record["killed_worker"] = self.kill(1, "worker")
         record["killed_receiver"] = self.kill(1, "server")
-        self.kube("delete", "pod", "qdrant-0", "--grace-period=0", "--force", "--wait=true")
-        self.rollout("qdrant", "statefulset")
+        self.kube("delete", "pod", "postgres-0", "--grace-period=0", "--force", "--wait=true")
+        self.rollout("postgres", "statefulset")
         self.scale(0, "server", 1)
         self.scale(1, "server", 1)
         self.peers_ready()
@@ -410,6 +403,9 @@ class RemoteMemory(Cluster):
             (self.directory / "capture-error.txt").write_text(type(error).__name__)
         for node in range(2):
             for role in ("server", "worker"):
+                if not self.pods(f"app=tx-{node},role={role}"):
+                    (self.directory / f"node-{node}-{role}.log").write_text("Deployment scaled to zero; no live pod log.\n")
+                    continue
                 log = self.kube("logs", f"deployment/tx-{node}-{role}", "--tail=300", check=False)
                 (self.directory / f"node-{node}-{role}.log").write_text(log.stdout + log.stderr)
 

@@ -165,6 +165,7 @@ pub mod catalog;
 
 pub mod generation;
 
+pub mod memory;
 pub mod semantic;
 
 pub mod authorization;

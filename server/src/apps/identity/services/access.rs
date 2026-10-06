@@ -22,7 +22,7 @@ impl AccessTransaction {
 		Self(Some(transaction))
 	}
 
-	pub(in crate::apps::identity) fn is_active(&self) -> bool {
+	pub(crate) fn is_active(&self) -> bool {
 		self.0.is_some()
 	}
 
@@ -81,6 +81,46 @@ pub(crate) struct Access {
 	pub(super) environment: Value,
 }
 
+/// All identity-sensitive caches are isolated across selected-disclosure checks.
+pub(crate) struct PublicationContext {
+	identity: SubjectIdentity,
+	subjects: Vec<String>,
+	context: Value,
+	environment: Value,
+	read_run: Option<Uuid>,
+	read_grant: Option<Uuid>,
+	approved_catalog: std::collections::BTreeSet<(String, String)>,
+	cached_runs: std::collections::BTreeMap<(Uuid, Uuid), bool>,
+	cached_humans: std::collections::BTreeMap<Uuid, bool>,
+	remote_read_cache: std::collections::BTreeMap<(Uuid, String), bool>,
+	checking_reads: aidash_application::authorization::visits::ReadVisits,
+	dependency_frontier: Option<Vec<super::peer::dependencies::Reference>>,
+}
+
+/// Drop restores identity even when a caller cancels a publication check.
+pub(crate) struct PublicationView<'a> {
+	access: &'a mut Access,
+	old: Option<PublicationContext>,
+}
+impl Deref for PublicationView<'_> {
+	type Target = Access;
+	fn deref(&self) -> &Access {
+		self.access
+	}
+}
+impl DerefMut for PublicationView<'_> {
+	fn deref_mut(&mut self) -> &mut Access {
+		self.access
+	}
+}
+impl Drop for PublicationView<'_> {
+	fn drop(&mut self) {
+		if let Some(old) = self.old.take() {
+			self.access.leave_publisher(old);
+		}
+	}
+}
+
 impl Access {
 	/// Native ports may update transport facts only after completing current authority checks.
 	pub(crate) fn environment_mut(&mut self) -> &mut Value {
@@ -111,17 +151,48 @@ impl Access {
 		identity: &SubjectIdentity,
 		exclusive: bool,
 	) -> Result<Self> {
-		let mut tx = crate::database::native::begin(&store.pool).await?;
+		Self::begin_on(
+			&store.pool,
+			&store.node_id,
+			store.semantic_client.clone(),
+			identity,
+			exclusive,
+		)
+		.await
+	}
+
+	/// Revalidate another saved disclosure authority using existing pool capacity.
+	pub(crate) async fn begin_on(
+		pool: &Pool,
+		node: &str,
+		client: reqwest::Client,
+		identity: &SubjectIdentity,
+		exclusive: bool,
+	) -> Result<Self> {
+		let mut tx = crate::database::native::begin(pool).await?;
 		let snapshot = identity.lock_with_mode(&mut tx, exclusive).await?;
-		Ok(Self {
+		Ok(Self::from_transaction(
+			tx, pool, node, client, identity, snapshot,
+		))
+	}
+
+	pub(crate) fn from_transaction(
+		tx: crate::database::native::Transaction,
+		pool: &Pool,
+		node: &str,
+		client: reqwest::Client,
+		identity: &SubjectIdentity,
+		snapshot: Snapshot,
+	) -> Self {
+		Self {
 			marketplace_audit: None,
 			core_gc_complete: false,
 			remote_read_cache: Default::default(),
 			unavailable_peers: Default::default(),
 			checking_reads: Default::default(),
 			dependency_frontier: None,
-			peer_client: store.semantic_client.clone(),
-			node_id: store.node_id.clone(),
+			peer_client: client,
+			node_id: node.to_owned(),
 			tx: AccessTransaction::new(tx),
 			identity: identity.clone(),
 			snapshot,
@@ -134,51 +205,90 @@ impl Access {
 			cached_runs: Default::default(),
 			cached_humans: Default::default(),
 			pending_decisions: vec![],
-			pool: store.pool.clone(),
+			pool: pool.clone(),
 			read_run: None,
 			read_grant: None,
-			environment: json!({"node_id":store.node_id,"transport":"api"}),
+			environment: json!({"node_id":node,"transport":"api"}),
+		}
+	}
+	pub(crate) async fn flush_audit(&mut self) -> Result<()> {
+		for (input, decision) in &self.pending_decisions {
+			Authorization::record(&mut self.tx, &self.identity.tenant, input, decision).await?;
+		}
+		self.pending_decisions.clear();
+		Ok(())
+	}
+	pub(crate) fn return_transaction(&mut self) -> crate::database::native::Transaction {
+		self.tx.take().expect("active publication transaction")
+	}
+	/// Scope publisher checks on this physical transaction, preserving the reader's context.
+	pub(crate) async fn enter_publisher(
+		&mut self,
+		identity: SubjectIdentity,
+		subjects: Vec<String>,
+	) -> Result<PublicationContext> {
+		if identity.tenant != self.identity.tenant
+			|| !subjects.contains(&identity.subject)
+			|| subjects
+				.iter()
+				.any(|s| !super::identity::enabled(&self.snapshot, s))
+		{
+			return Err(Error::Forbidden);
+		}
+		if identity.credential_id != self.identity.credential_id {
+			identity.lock_credential(&mut self.tx).await?;
+		}
+		let old = PublicationContext {
+			identity: std::mem::replace(&mut self.identity, identity),
+			subjects: std::mem::replace(&mut self.subjects, subjects),
+			context: std::mem::replace(&mut self.context, json!({})),
+			environment: self.environment.clone(),
+			read_run: self.read_run.take(),
+			read_grant: self.read_grant.take(),
+			approved_catalog: std::mem::take(&mut self.approved_catalog),
+			cached_runs: std::mem::take(&mut self.cached_runs),
+			cached_humans: std::mem::take(&mut self.cached_humans),
+			remote_read_cache: std::mem::take(&mut self.remote_read_cache),
+			checking_reads: std::mem::take(&mut self.checking_reads),
+			dependency_frontier: self.dependency_frontier.take(),
+		};
+		self.worker();
+		Ok(old)
+	}
+	pub(crate) async fn publisher_view(
+		&mut self,
+		identity: SubjectIdentity,
+		subjects: Vec<String>,
+	) -> Result<PublicationView<'_>> {
+		let old = self.enter_publisher(identity, subjects).await?;
+		Ok(PublicationView {
+			access: self,
+			old: Some(old),
 		})
 	}
 
-	fn with_snapshot(
-		store: &Store,
-		identity: &SubjectIdentity,
-		snapshot: Snapshot,
-		tx: AccessTransaction,
-	) -> Self {
-		Self {
-			dependency_frontier: None,
-			marketplace_audit: None,
-			core_gc_complete: false,
-			remote_read_cache: Default::default(),
-			unavailable_peers: Default::default(),
-			checking_reads: Default::default(),
-			peer_client: store.semantic_client.clone(),
-			node_id: store.node_id.clone(),
-			tx,
-			identity: identity.clone(),
-			snapshot,
-			subjects: vec![identity.subject.clone()],
-			durable_audit: false,
-			audit: true,
-			context: json!({}),
-			inherited_lease: false,
-			approved_catalog: Default::default(),
-			cached_runs: Default::default(),
-			cached_humans: Default::default(),
-			pending_decisions: vec![],
-			pool: store.pool.clone(),
-			read_run: None,
-			read_grant: None,
-			environment: json!({"node_id":store.node_id,"transport":"api"}),
-		}
+	pub(crate) fn leave_publisher(&mut self, old: PublicationContext) {
+		self.identity = old.identity;
+		self.subjects = old.subjects;
+		self.context = old.context;
+		self.environment = old.environment;
+		self.read_run = old.read_run;
+		self.read_grant = old.read_grant;
+		self.approved_catalog = old.approved_catalog;
+		self.cached_runs = old.cached_runs;
+		self.cached_humans = old.cached_humans;
+		self.remote_read_cache = old.remote_read_cache;
+		self.checking_reads = old.checking_reads;
+		self.dependency_frontier = old.dependency_frontier;
 	}
 
 	// The caller retains the outer Access until this mutation commits. Reusing
 	// its locks avoids queuing a second shared lock behind a waiting revoker.
 	pub async fn under_lease(lease: &Self) -> Result<Self> {
-		let tx = crate::database::native::begin(&lease.pool).await?;
+		Self::under_lease_on(lease, &lease.pool).await
+	}
+	pub(crate) async fn under_lease_on(lease: &Self, pool: &Pool) -> Result<Self> {
+		let tx = crate::database::native::begin(pool).await?;
 		Ok(Self {
 			marketplace_audit: None,
 			core_gc_complete: false,
@@ -200,11 +310,22 @@ impl Access {
 			cached_runs: Default::default(),
 			cached_humans: Default::default(),
 			pending_decisions: vec![],
-			pool: lease.pool.clone(),
+			pool: pool.clone(),
 			read_run: lease.read_run,
 			read_grant: lease.read_grant,
 			environment: lease.environment.clone(),
 		})
+	}
+
+	pub(crate) async fn resume_inherited(&mut self) -> Result<()> {
+		if !self.inherited_lease {
+			return Err(Error::Forbidden);
+		}
+		if !self.tx.is_active() {
+			self.tx
+				.install(crate::database::native::begin(&self.pool).await?);
+		}
+		Ok(())
 	}
 
 	/// Commit the completed authorization checks and release their row locks
@@ -314,7 +435,7 @@ impl Access {
 			let mut audit: Box<dyn TransactionExecutor> =
 				crate::database::native::begin(&self.pool)
 					.await?
-					.into_executor();
+					.into_executor()?;
 			for (input, decision) in records {
 				AuthorizationDecision::append(
 					audit.as_mut(),
@@ -340,24 +461,22 @@ impl Access {
 	}
 
 	pub async fn finish<T>(mut self, result: Result<T>) -> Result<T> {
-		let tx = self
-			.tx
-			.take()
-			.map(|tx| tx.into_executor() as Box<dyn TransactionExecutor>);
+		if result.is_err() && self.tx.is_active() {
+			self.tx.discard_memory_fences();
+		}
+		let tx = self.tx.take().map(|tx| tx.into_executor()).transpose()?;
 		self.complete(tx, result).await
 	}
 
 	/// Keep the policy and credential locks while transferring the same physical
 	/// transaction to Reinhardt for the protected mutation and its audit.
-	pub fn into_native(mut self) -> Result<NativeAccess> {
-		let transaction = self
-			.tx
-			.take()
-			.ok_or_else(|| Error::Conflict("authorization transaction is suspended".into()))?;
-		Ok(NativeAccess {
-			tx: transaction.into_executor(),
-			access: self,
-		})
+	pub fn into_native(self) -> Result<NativeAccess> {
+		if !self.tx.is_active() {
+			return Err(Error::Conflict(
+				"authorization transaction is suspended".into(),
+			));
+		}
+		Ok(NativeAccess { access: self })
 	}
 
 	async fn complete<T>(
@@ -382,7 +501,7 @@ impl Access {
 				let mut audit: Box<dyn TransactionExecutor> =
 					crate::database::native::begin(&self.pool)
 						.await?
-						.into_executor();
+						.into_executor()?;
 				for (input, decision) in &self.pending_decisions {
 					AuthorizationDecision::append(
 						audit.as_mut(),
@@ -400,8 +519,20 @@ impl Access {
 }
 
 pub(crate) struct NativeAccess {
-	pub tx: Box<dyn TransactionExecutor>,
 	access: Access,
+}
+// Native ORM readers and memory proofs share the same physical transaction.
+// Keeping one owner also lets publication proofs retain the caller's locks.
+impl std::ops::Deref for NativeAccess {
+	type Target = Access;
+	fn deref(&self) -> &Access {
+		&self.access
+	}
+}
+impl std::ops::DerefMut for NativeAccess {
+	fn deref_mut(&mut self) -> &mut Access {
+		&mut self.access
+	}
 }
 
 impl NativeAccess {
@@ -417,14 +548,7 @@ impl NativeAccess {
 		self.access.context = context;
 	}
 	pub async fn begin(store: &Store, identity: &SubjectIdentity) -> Result<Self> {
-		let mut tx: Box<dyn TransactionExecutor> = crate::database::native::begin(&store.pool)
-			.await?
-			.into_executor();
-		let snapshot = identity.lock_native(tx.as_mut(), false).await?;
-		Ok(Self {
-			tx,
-			access: Access::with_snapshot(store, identity, snapshot, AccessTransaction(None)),
-		})
+		Access::begin(store, identity).await?.into_native()
 	}
 
 	pub fn resource(&self, kind: &str, id: impl ToString, attributes: Value) -> Resource {
@@ -436,7 +560,15 @@ impl NativeAccess {
 	}
 
 	pub async fn finish<T>(self, result: Result<T>) -> Result<T> {
-		self.access.complete(Some(self.tx), result).await
+		self.access.finish(result).await
+	}
+	pub(crate) async fn rollback(mut self) -> Result<()> {
+		self.access
+			.tx
+			.take()
+			.ok_or_else(|| Error::Conflict("authorization transaction is suspended".into()))?
+			.rollback()
+			.await
 	}
 }
 
@@ -455,7 +587,7 @@ impl Access {
 
 impl NativeAccess {
 	pub(crate) fn tenant_transaction(&mut self) -> (&mut dyn TransactionExecutor, &str) {
-		(self.tx.as_mut(), &self.access.identity.tenant)
+		(self.access.tx.as_mut(), &self.access.identity.tenant)
 	}
 	pub(crate) fn catalog_approved(&self, reference: &crate::registry::EntityRef) -> bool {
 		self.access

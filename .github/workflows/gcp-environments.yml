@@ -108,7 +108,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [app, postgres, sandbox, observer, nats, qdrant]
+        image: [app, postgres, sandbox, observer, nats]
     permissions:
       contents: read
     steps:

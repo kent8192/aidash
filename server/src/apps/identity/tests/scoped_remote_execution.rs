@@ -1,5 +1,7 @@
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
+#[path = "scoped_remote_execution/native_memory.rs"]
+mod native_memory;
 use aidash_server::{
 	domain::{NewTask, qualified_agent},
 	federation::{Federation, Home},
@@ -36,7 +38,7 @@ struct ModelScript {
 	compactions: Arc<Mutex<Vec<Value>>>,
 	compaction_status: Arc<AtomicUsize>,
 	compaction_reservations: Arc<Mutex<Option<ReservationCheck>>>,
-	force_memory_write: Arc<AtomicBool>,
+	force_memory_mutate: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -49,24 +51,23 @@ struct ReservationCheck {
 }
 impl ReservationCheck {
 	async fn before_http(&self) {
+		let purposes = if self.purpose == "retrieval" {
+			vec!["embedding", "memory"]
+		} else {
+			vec![self.purpose]
+		};
 		for pool in &self.pools {
 			let count: i64 = {
 				let query_bind_1 = self.grant;
 				let query_bind_2 = self.admission;
-				let query_bind_3 = self.purpose;
 				sqlx::query_scalar(
 					&Query::select()
 						.expr(Expr::cust("COUNT(*)"))
 						.from(Alias::new("generation_remote_usage"))
-						.and_where(SimpleExpr::CustomWithExpr(
-							"(grant_id=? AND admission_id=? AND purpose=? AND state='RESERVED')"
-								.to_owned(),
-							vec![
-								Expr::value(query_bind_1.to_owned()).into(),
-								Expr::value(query_bind_2.to_owned()).into(),
-								Expr::value(query_bind_3.to_owned()).into(),
-							],
-						))
+						.and_where(Expr::col("grant_id").eq(Expr::value(query_bind_1)))
+						.and_where(Expr::col("admission_id").eq(Expr::value(query_bind_2)))
+						.and_where(Expr::col("purpose").is_in(purposes.clone()))
+						.and_where(Expr::col("state").eq("RESERVED"))
 						.to_string(PostgresQueryBuilder),
 				)
 				.fetch_one(pool)
@@ -80,19 +81,15 @@ impl ReservationCheck {
 		}
 		let count: i64 = {
 			let query_bind_1 = self.grant.to_string();
-			let query_bind_2 = self.purpose;
 			sqlx::query_scalar(
 				&Query::select()
 					.expr(Expr::cust("COUNT(*)"))
 					.from(Alias::new("generation_remote_dispatches"))
 					.and_where(SimpleExpr::CustomWithExpr(
-						"(usage->>'grant_id'=? AND usage->>'purpose'=? AND state='DISPATCHED')"
-							.to_owned(),
-						vec![
-							Expr::value(query_bind_1.to_owned()).into(),
-							Expr::value(query_bind_2.to_owned()).into(),
-						],
+						"(usage->>'grant_id'=? AND state='DISPATCHED')".to_owned(),
+						vec![Expr::value(query_bind_1.to_owned()).into()],
 					))
+					.and_where(Expr::cust("usage->>'purpose'").is_in(purposes))
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_one(&self.dispatcher)
@@ -127,7 +124,9 @@ struct Pair {
 	aschema: String,
 	bschema: String,
 	semantic: Option<SemanticFixture>,
+	native: Option<Value>,
 	generation: Option<(Value, Value)>,
+	_memory_recovery_directories: Vec<tempfile::TempDir>,
 }
 struct SemanticFixture {
 	requests: Arc<Mutex<Vec<Value>>>,
@@ -255,6 +254,7 @@ async fn scoped_pair(
 	#[default(false)] generated: bool,
 	#[default(false)] approval: bool,
 	#[default(false)] compactor: bool,
+	#[default(false)] native: bool,
 	#[future(awt)] test_environment: Arc<TestEnvironment>,
 ) -> Pair {
 	let _ = tracing_subscriber::fmt()
@@ -265,6 +265,19 @@ async fn scoped_pair(
 	let (mut b, bu, bschema) = setup(&test_environment).await;
 	b.config.node_id = "aidash://scoped-receiver".into();
 	b.store.node_id = b.config.node_id.clone();
+	let mut memory_recovery_directories = Vec::new();
+	if native {
+		for node in [&mut a, &mut b] {
+			let directory = tempfile::tempdir().unwrap();
+			node.store = aidash_server::semantic::services::memory_recovery::initialize(
+				&node.store,
+				directory.path().to_owned(),
+			)
+			.await
+			.unwrap();
+			memory_recovery_directories.push(directory);
+		}
+	}
 	let model = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", model.local_addr().unwrap());
 	let model_state = ModelScript::default();
@@ -274,7 +287,7 @@ async fn scoped_pair(
         if let Some(check)=check {check.before_http().await;}
         let mut calls=script.requests.lock().await;
         calls.push(input);
-        let count=calls.len(); drop(calls); script.entered.notify_one(); if script.hold.load(Ordering::Acquire) {script.release.notified().await;} let message=if count==1 && script.force_memory_write.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":"forbidden-write","type":"function","function":{"name":"memory_write","arguments":"{\"data\":{\"forbidden\":true}}"}}]})} else if count==1 {json!({"role":"assistant","content":null,"tool_calls":[{"id":"note","type":"function","function":{"name":"workspace_message","arguments":"{\"content\":\"Scoped remote progress\"}"}}]})} else {json!({"role":"assistant","content":"Scoped remote result"})};
+        let count=calls.len(); drop(calls); script.entered.notify_one(); if script.hold.load(Ordering::Acquire) {script.release.notified().await;} let message=if count==1 && script.force_memory_mutate.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":"forbidden-write","type":"function","function":{"name":"memory_mutate","arguments":"{\"data\":{\"forbidden\":true}}"}}]})} else if count==1 {json!({"role":"assistant","content":null,"tool_calls":[{"id":"note","type":"function","function":{"name":"workspace_message","arguments":"{\"content\":\"Scoped remote progress\"}"}}]})} else {json!({"role":"assistant","content":"Scoped remote result"})};
         Json(json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
     })).route("/systemone", post(|State(script):State<ModelScript>,Json(input):Json<Value>|async move {
 		if let Some(check)=script.compaction_reservations.lock().await.clone() {check.before_http().await;}
@@ -402,17 +415,29 @@ async fn scoped_pair(
 	let mut servers = vec![model_server, aserver, bserver];
 	let semantic = if semantic {
 		let workspace = a.store.task(task).await.unwrap().workspace_id;
-		let (fixture, server) = semantic_fixture(
-			&a,
-			&aa,
-			&token,
-			workspace,
-			&b.config.node_id,
-			&test_environment.qdrant_url,
-		)
-		.await;
+		let (fixture, server) =
+			semantic_fixture(&a, &aa, &token, workspace, &b.config.node_id, native).await;
 		servers.push(server);
 		Some(fixture)
+	} else {
+		None
+	};
+	let native = if native {
+		assert!(semantic.is_some());
+		let workspace = a.store.task(task).await.unwrap().workspace_id;
+		let data = native_remote_fixture(&a, &b, &aa, &ba, &token, workspace).await;
+		source_policy["subjects"][qualified_agent(&b.config.node_id, "research-native", "1.0.0")] =
+			json!({"kind":"agent"});
+		let (status, body) = request(
+			&aa,
+			&a.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":2,"bundle":source_policy}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		Some(data)
 	} else {
 		None
 	};
@@ -424,7 +449,7 @@ async fn scoped_pair(
 			&ba,
 			&token,
 			task,
-			(approval, semantic.is_some()),
+			(approval, semantic.is_some(), native.is_some()),
 		)
 		.await;
 		task = created;
@@ -433,7 +458,7 @@ async fn scoped_pair(
 		None
 	};
 	let agent = generation.as_ref().map_or_else(
-		|| json!({"id":"research","version":"1.0.0"}),
+		|| json!({"id":if native.is_some() { "research-native" } else { "research" },"version":"1.0.0"}),
 		|(_, prepared)| prepared["agent"].clone(),
 	);
 	let grant = Uuid::new_v4();
@@ -442,6 +467,9 @@ async fn scoped_pair(
 	} else {
 		json!({"mode":"disabled"})
 	};
+	if let Some(native) = &native {
+		mode["native"] = native["selection"].clone();
+	}
 	if compactor {
 		mode["compactor"] = json!({"id":"remote-compactor","version":"1.0.0"});
 	}
@@ -490,8 +518,189 @@ async fn scoped_pair(
 		aschema,
 		bschema,
 		semantic,
+		native,
 		generation,
+		_memory_recovery_directories: memory_recovery_directories,
 	}
+}
+
+async fn native_remote_fixture(
+	a: &Federation,
+	b: &Federation,
+	aa: &common::TestApplication,
+	ba: &common::TestApplication,
+	token: &str,
+	workspace: Uuid,
+) -> Value {
+	let (_, home_agent) = request(
+		aa,
+		&a.config.api_token,
+		"GET",
+		"/api/registry/research/1.0.0",
+		Value::Null,
+	)
+	.await;
+	let (_, embedding) = request(
+		aa,
+		&a.config.api_token,
+		"GET",
+		"/api/registry/home-embedding/1.0.0",
+		Value::Null,
+	)
+	.await;
+	let reference = |id: &str| json!({"id":id,"version":"1.0.0"});
+	let zero = json!({"input_per_million":0,"output_per_million":0});
+	let provider = reference("native-memory");
+	let policy = json!({"engine":"hindsight_rust","policy":{
+        "extraction":home_agent["config"]["model"],"derivation":home_agent["config"]["model"],"reflection":home_agent["config"]["model"],
+        "embedding":reference("home-embedding"),"reranker":reference("native-reranker"),"tokenizer":reference("native-tokenizer"),
+        "prices":{"extraction":zero,"derivation":zero,"reflection":zero,"embedding":zero,"reranker":zero},
+        "retention":{"unit_max_age_days":null,"candidate_days":7,"history_days":30,"history_versions":16,"model_result_days":7,"backup_days":7,"purge_after_seconds":60,"purge_batch":32,"max_unit_records":128,"max_model_operations":1024},
+        "bounds":{"max_unit_bytes":8192,"max_input_bytes":8192,"max_units":16,"max_candidates":8,"max_entities":8,"max_evidence":8,"max_links":8,"max_graph_hops":3,"max_graph_visits":32,"max_results":4,"max_context_tokens":8192,"max_model_calls":4,"max_model_tokens":8192,"max_cost_micros":10000,"max_retries":2,"max_call_seconds":30},
+        "semantic_link_min_similarity_millionths":700000,"learn_from_runs":false,"maintain_observations":false,"refresh_mental_models":false}});
+	for (runtime, app) in [(a, aa), (b, ba)] {
+		let mut roles = vec![
+			("reranker", "native-reranker", json!({"provider":"rrf"})),
+			(
+				"tokenizer",
+				"native-tokenizer",
+				json!({"provider":"utf8_upper_bound"}),
+			),
+			("memory", "native-memory", policy.clone()),
+			(
+				"source",
+				"native-shared",
+				json!({"memory":provider,"scope":"workspace","max_tokens":8192}),
+			),
+		];
+		if runtime.config.node_id == b.config.node_id {
+			roles.insert(
+				0,
+				("embedding", "home-embedding", embedding["config"].clone()),
+			);
+		}
+		for (kind, id, config) in roles {
+			let (status,body)=request(app,&runtime.config.api_token,"POST","/api/registry",json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id,"ja":id},"description":{"en":"Native remote fixture"},"config":config})).await;
+			assert_eq!(status, 200, "{body}");
+			let (status, body) = request(
+				app,
+				&runtime.config.api_token,
+				"POST",
+				"/api/authorization/acme/catalog",
+				json!({"entry":reference(id),"expected_revision":0,"enabled":true}),
+			)
+			.await;
+			assert_eq!(status, 200, "{body}");
+		}
+		let (_, mut agent) = request(
+			app,
+			&runtime.config.api_token,
+			"GET",
+			"/api/registry/research/1.0.0",
+			Value::Null,
+		)
+		.await;
+		agent["id"] = json!(if runtime.config.node_id == a.config.node_id {
+			"home-native"
+		} else {
+			"research-native"
+		});
+		agent["config"]["memory"] = provider.clone();
+		agent["config"]["sources"] = json!([reference("native-shared")]);
+		let id = agent["id"].as_str().unwrap().to_owned();
+		let (status, body) = request(
+			app,
+			&runtime.config.api_token,
+			"POST",
+			"/api/registry",
+			agent,
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		let (status, body) = request(
+			app,
+			&runtime.config.api_token,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"entry":reference(&id),"expected_revision":0,"enabled":true}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		if runtime.config.node_id == b.config.node_id {
+			let (_, mut policy) = request(
+				app,
+				&runtime.config.api_token,
+				"GET",
+				"/api/authorization/acme",
+				Value::Null,
+			)
+			.await;
+			let revision = policy["revision"].clone();
+			policy["bundle"]["subjects"]
+				[qualified_agent(&b.config.node_id, "research-native", "1.0.0")] = json!({"kind":"agent"});
+			let (status, body) = request(
+				app,
+				&runtime.config.api_token,
+				"POST",
+				"/api/authorization/acme",
+				json!({"expected_revision":revision,"bundle":policy["bundle"]}),
+			)
+			.await;
+			assert_eq!(status, 200, "{body}");
+		}
+	}
+	let (status, participant) = request(
+		aa,
+		token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/memory/participants"),
+		json!({"agent":reference("home-native")}),
+	)
+	.await;
+	assert_eq!(status, 200, "{participant}");
+	let private = Uuid::new_v4();
+	let shared = Uuid::new_v4();
+	for (id, bank, text) in [
+		(
+			private,
+			participant["bank"].clone(),
+			"Native private claim: 日本の研究手順 is durably attributed.",
+		),
+		(
+			shared,
+			json!({"home":a.config.node_id,"tenant":"acme","workspace":workspace,"participant":null}),
+			"Native shared claim: 自転車の設計 uses reciprocal rank fusion.",
+		),
+	] {
+		if id == shared {
+			let (status,body)=request(aa,token,"POST",&format!("/api/workspaces/{workspace}/memory/operate"),json!({"operation_id":Uuid::new_v4(),"provider":provider,"bank":bank,"action":{"action":"configure_bank","expected_revision":0}})).await;
+			assert_eq!(status, 200, "{body}");
+		}
+		let (status,body)=request(aa,token,"POST",&format!("/api/workspaces/{workspace}/memory/units/mutate"),json!({"operation_id":Uuid::new_v4(),"provider":provider,"bank":bank,"changes":[{"operation":"add","id":id,"content":{"text":text,"kind":"world","learning":"fact","verification":"unverified","occurred":null,"entities":[],"evidence":[],"links":[]}}]})).await;
+		assert_eq!(status, 200, "{body}");
+	}
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+	loop {
+		aidash_server::semantic::worker::sweep(&a.store)
+			.await
+			.unwrap();
+		let ready: Vec<String> = sqlx::query_scalar(
+			&Query::select()
+				.column(Alias::new("state"))
+				.from(Alias::new("semantic_entries"))
+				.and_where(Expr::col("id").is_in([private, shared].map(Expr::value)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_all(a.store.pool.driver())
+		.await
+		.unwrap();
+		if ready == vec!["READY".to_string(); 2] {
+			break;
+		}
+		assert!(tokio::time::Instant::now() < deadline, "{ready:?}");
+		tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+	}
+	json!({"selection":{"participant":participant["id"],"expected_revision":participant["revision"],"provider":provider},"bank":participant["bank"],"provider":provider,"private":private,"shared":shared})
 }
 
 async fn semantic_fixture(
@@ -500,7 +709,7 @@ async fn semantic_fixture(
 	token: &str,
 	workspace: Uuid,
 	executor: &str,
-	qdrant: &str,
+	native: bool,
 ) -> (SemanticFixture, tokio::task::JoinHandle<()>) {
 	let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
 	let failing = Arc::new(AtomicBool::new(false));
@@ -539,8 +748,8 @@ async fn semantic_fixture(
 	.await;
 	assert_eq!(status, 200, "{body}");
 	let (status, body) = request(app, &a.config.api_token, "POST", &format!("/api/workspaces/{workspace}/semantic/index"), json!({"expected_revision":0,"spec":{
-		"embedding":embedding,"vector":{"provider":"qdrant","endpoint":qdrant,"credential_env":"AIDASH_SECRET_TEST_QDRANT"},
-		"enabled":true,"auto_context":true,"max_sources":100,"max_results":10,"max_result_tokens":4096,"max_input_bytes":32768
+		"embedding":embedding,"vector":{"provider":"postgres","endpoint":"local","credential_env":null},
+		"enabled":true,"auto_context":!native,"max_sources":100,"max_results":10,"max_result_tokens":if native {32768} else {4096},"max_input_bytes":32768
 	}})).await;
 	assert_eq!(status, 200, "{body}");
 	let mut first = Uuid::nil();
@@ -602,7 +811,7 @@ async fn remote_semantic_context_reaches_actual_model_with_home_scope_and_receip
 			.as_array()
 			.unwrap()
 			.iter()
-			.all(|tool| tool["function"]["name"] != "memory_write")
+			.all(|tool| tool["function"]["name"] != "memory_mutate")
 	);
 	let context: Value =
 		serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
@@ -2025,7 +2234,7 @@ async fn prepare_generated_pair(
 	ba: &common::TestApplication,
 	token: &str,
 	task: Uuid,
-	(approval, semantic): (bool, bool),
+	(approval, semantic, native): (bool, bool, bool),
 ) -> (Uuid, Value, Value) {
 	let workspace = a.store.task(task).await.unwrap().workspace_id;
 	let (_, mut parent_template) = request(
@@ -2040,7 +2249,11 @@ async fn prepare_generated_pair(
 		ba,
 		&b.config.api_token,
 		"GET",
-		"/api/registry/research/1.0.0",
+		if native {
+			"/api/registry/research-native/1.0.0"
+		} else {
+			"/api/registry/research/1.0.0"
+		},
 		Value::Null,
 	)
 	.await;
@@ -2089,7 +2302,7 @@ async fn prepare_generated_pair(
 	if semantic {
 		parent_spec["embedding"] = json!({"provider":{"id":"home-embedding","version":"1.0.0"},"calls_per_agent":10,"call_budget":40});
 	}
-	parent_spec["remote"] = json!({"inference":[model_descriptor],"compaction":{"provider":compactor_descriptor,"calls_per_agent":2,"call_budget":8}});
+	parent_spec["remote"] = json!({"inference":[model_descriptor],"compaction":{"provider":compactor_descriptor,"calls_per_agent":2,"call_budget":8},"memory":if native {vec![embedding_descriptor.clone().unwrap()]} else {vec![]}});
 	let (status, body) = request(
 		aa,
 		&a.config.api_token,
@@ -2199,7 +2412,7 @@ async fn prepare_generated_pair(
 	child_spec["template"] = child_template;
 	child_spec["compaction"] = json!({"provider":{"id":"remote-compactor","version":"1.0.0"},"calls_per_agent":2,"call_budget":8});
 	if let Some(embedding_descriptor) = embedding_descriptor {
-		child_spec["remote"] = json!({"embedding":{"provider":embedding_descriptor,"calls_per_agent":10,"call_budget":40}});
+		child_spec["remote"] = json!({"embedding":{"provider":embedding_descriptor,"calls_per_agent":10,"call_budget":40},"memory":if native {vec![embedding_descriptor.clone()]} else {vec![]}});
 	}
 	let (status, body) = request(
 		ba,
@@ -3279,7 +3492,7 @@ async fn generated_foreign_terminal_runs_retain_reads_with_current_dependency_au
 	);
 	assert_eq!(view["run"]["id"], json!(p.admission));
 	assert_eq!(view["run"]["phase"], phase);
-	assert_eq!(view["memory"], json!(p.b.store.memory(&run).await.unwrap()));
+	assert_eq!(view["memory"], Value::Null);
 	let home_path = format!("/api/workspaces/{}", run.workspace_id);
 	let (status, output) = request(&p.aa, &p.token, "GET", &home_path, Value::Null).await;
 	assert_eq!(status, 200, "{output}");
@@ -4557,13 +4770,13 @@ async fn generated_remote_prerequisites_stop_before_embedding_dispatch(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn remote_memory_write_is_not_advertised_and_cannot_write_a_receiver_substitute(
+async fn remote_memory_mutate_is_not_advertised_and_cannot_write_a_receiver_substitute(
 	#[future(awt)]
 	#[with(true)]
 	scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
-	p.model.force_memory_write.store(true, Ordering::Release);
+	p.model.force_memory_mutate.store(true, Ordering::Release);
 	p.step().await;
 	p.step().await;
 	p.step().await;
@@ -4571,14 +4784,14 @@ async fn remote_memory_write_is_not_advertised_and_cannot_write_a_receiver_subst
 	let run = p.run().await;
 	assert_eq!(
 		serde_json::to_value(&run.context).unwrap()["history"][0]["result"]["error"],
-		"unavailable tool memory_write",
+		"unavailable tool memory_mutate",
 		"unsupported remote writes must return an explicit tool error"
 	);
 	for node in [&p.a, &p.b] {
 		let count: i64 = sqlx::query_scalar(
 			&Query::select()
 				.expr(Expr::cust("COUNT(*)"))
-				.from(Alias::new("memory"))
+				.from(Alias::new("memory_units"))
 				.to_string(PostgresQueryBuilder),
 		)
 		.fetch_one(node.store.pool.driver())

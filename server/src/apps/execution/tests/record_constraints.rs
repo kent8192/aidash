@@ -1762,7 +1762,7 @@ async fn requirements_constraints_and_strict_run_codec_reject_wrong_shapes(
 
 fn index_spec() -> Value {
 	json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9999/v1","model":"embedding","model_version":"1","dimensions":3},
-        "vector":{"provider":"qdrant","endpoint":"http://localhost:6333"},
+        "vector":{"provider":"postgres","endpoint":"local"},
         "enabled":true,"auto_context":false,"max_sources":64,"max_results":10,"max_result_tokens":4096,"max_input_bytes":8192})
 }
 

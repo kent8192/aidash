@@ -163,12 +163,26 @@ impl Store {
 	}
 
 	pub async fn from_pool(pool: sqlx::PgPool, node_id: String) -> Result<Self> {
+		let data_pool: Pool = pool.clone().into();
+		crate::semantic::repositories::discard::legacy(&data_pool).await?;
 		let control_pool = pool
 			.options()
 			.clone()
 			.max_connections(16)
 			.connect_with(pool.connect_options().as_ref().clone())
 			.await?;
+		let memory_recovery = std::env::var_os("AIDASH_MEMORY_RECOVERY_DIR")
+			.map(|directory| {
+				crate::semantic::repositories::recovery::FileRecovery::new(
+					directory.into(),
+					node_id.clone(),
+				)
+			})
+			.transpose()?
+			.map(|recovery| {
+				std::sync::Arc::new(recovery)
+					as std::sync::Arc<dyn aidash_application::ports::memory::MemoryRecovery>
+			});
 		Ok(Self {
 			pool: pool.into(),
 			control_pool: control_pool.into(),
@@ -176,7 +190,17 @@ impl Store {
 			semantic_client: crate::semantic::backend::client()?,
 			recovery_cursors: Default::default(),
 			capabilities: crate::capabilities::Runtime::from_env()?,
-		})
+		}
+		.with_memory_recovery(memory_recovery))
+	}
+
+	pub(crate) fn with_memory_recovery(
+		mut self,
+		recovery: Option<std::sync::Arc<dyn aidash_application::ports::memory::MemoryRecovery>>,
+	) -> Self {
+		self.pool = self.pool.with_memory_recovery(recovery.clone());
+		self.control_pool = self.control_pool.with_memory_recovery(recovery);
+		self
 	}
 
 	/// Share the database and connection settings without sharing pool capacity.
@@ -191,6 +215,9 @@ impl Store {
 			.connect_with(self.control_pool.connect_options().as_ref().clone())
 			.await?
 			.into();
+		store.control_pool = store
+			.control_pool
+			.with_memory_recovery(self.control_pool.memory_recovery());
 		Ok(store)
 	}
 
@@ -206,7 +233,7 @@ impl Store {
 			.connect_with(self.pool.connect_options().as_ref().clone())
 			.await?;
 		Ok(Self {
-			pool: pool.into(),
+			pool: Pool::from(pool).with_memory_recovery(self.pool.memory_recovery()),
 			control_pool: self.control_pool.clone(),
 			node_id: self.node_id.clone(),
 			semantic_client: self.semantic_client.clone(),
@@ -237,8 +264,8 @@ impl Store {
 			.await?
 			.into();
 		Ok(Self {
-			pool: pool.into(),
-			control_pool,
+			pool: Pool::from(pool).with_memory_recovery(self.pool.memory_recovery()),
+			control_pool: control_pool.with_memory_recovery(self.control_pool.memory_recovery()),
 			node_id: self.node_id.clone(),
 			semantic_client: self.semantic_client.clone(),
 			recovery_cursors: self.recovery_cursors.clone(),
@@ -696,6 +723,13 @@ impl Store {
 		let claimed = self
 			.claim_in(&mut tx, &task, revision, owner, agent)
 			.await?;
+		crate::semantic::repositories::bindings::claimed(
+			self,
+			&mut crate::semantic::service::Lease::BorrowedOperator(&mut tx),
+			task.id,
+			agent,
+		)
+		.await?;
 		tx.commit().await?;
 		Ok(claimed)
 	}
@@ -2464,6 +2498,21 @@ impl Store {
 				r
 			}
 		};
+		if home_node == self.node_id {
+			let entry = crate::apps::registry::models::Definition::read_in(
+				&mut *tx,
+				agent_id,
+				agent_version,
+			)
+			.await?;
+			crate::semantic::repositories::bindings::admit(
+				self,
+				&mut crate::semantic::service::Lease::BorrowedOperator(&mut tx),
+				&run.metadata(),
+				&entry,
+			)
+			.await?;
+		}
 		tx.commit().await?;
 		Ok(run)
 	}
@@ -3172,82 +3221,6 @@ impl Store {
 	}
 	// The empty namespace preserves pre-federation local memory. Peer node IDs
 	// are validated nonempty, so no remote home can address this namespace.
-	pub(crate) fn memory_home<'a>(&self, run: &'a RunMetadata) -> &'a str {
-		if run.home_node == self.node_id {
-			""
-		} else {
-			&run.home_node
-		}
-	}
-	pub async fn remember(&self, run: &Run, data: &Value) -> Result<()> {
-		let mut tx = crate::database::native::begin(&self.pool).await?;
-		self.remember_in(&mut tx, run, data).await?;
-		tx.commit().await?;
-		Ok(())
-	}
-	pub(crate) async fn remember_in(
-		&self,
-		tx: &mut crate::database::native::Transaction,
-		run: &Run,
-		data: &Value,
-	) -> Result<()> {
-		{
-			let query_bind_1 = &run.agent_id;
-			let query_bind_2 = &run.agent_version;
-			let query_bind_3 = run.workspace_id;
-			let query_bind_4 = data;
-			let query_bind_5 = self.memory_home(&run.metadata()).to_owned();
-			crate::database::native::query(
-				&reinhardt::query::Query::insert()
-					.into_table(reinhardt::query::Alias::new("memory"))
-					.columns([
-						reinhardt::query::Alias::new("agent_id"),
-						reinhardt::query::Alias::new("agent_version"),
-						reinhardt::query::Alias::new("workspace_id"),
-						reinhardt::query::Alias::new("data"),
-						reinhardt::query::Alias::new("home_node"),
-					])
-					.from_subquery(
-						reinhardt::query::Query::select()
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_3.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_4.to_owned()).into()],
-							))
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_5.to_owned()).into()],
-							))
-							.to_owned(),
-					)
-					.on_conflict(
-						reinhardt::query::OnConflict::columns([
-							reinhardt::query::Alias::new("agent_id"),
-							reinhardt::query::Alias::new("agent_version"),
-							reinhardt::query::Alias::new("workspace_id"),
-							reinhardt::query::Alias::new("home_node"),
-						])
-						.update_columns([reinhardt::query::Alias::new("data")])
-						.to_owned(),
-					)
-					.to_string(reinhardt::query::PostgresQueryBuilder),
-			)
-			.execute(&mut **tx)
-			.await?
-		};
-		Ok(())
-	}
 	pub(crate) async fn peer_observation(&self, home: &str) -> Result<PeerObservation> {
 		let lease = self.orm_connection()?;
 		crate::apps::execution::models::journals::observe(&mut lease.handle(), &self.node_id, home)
@@ -3260,14 +3233,7 @@ impl Store {
 		offset: u64,
 	) -> Result<RunDetails> {
 		let invocations = InvocationRecord::page(tx, run.id, offset).await?;
-		let memory = crate::apps::execution::models::Memory::for_run(
-			tx,
-			&run.agent_id,
-			&run.agent_version,
-			run.workspace_id,
-			self.memory_home(&run.metadata()),
-		)
-		.await?;
+		let memory = crate::semantic::repositories::bindings::load(tx, &run.metadata()).await?;
 		Ok(RunDetails {
 			media_input_routes: Vec::new(),
 			run: run.into(),
@@ -3290,19 +3256,6 @@ impl Store {
 				self.run_details_in(tx, run.try_into()?, offset).await
 			})
 			.await
-	}
-	pub async fn memory(&self, run: impl Into<RunMetadata>) -> Result<Value> {
-		let run = run.into();
-		Ok({ let query_bind_1 = &run.agent_id; let query_bind_2 = &run.agent_version; let query_bind_3 = run.workspace_id; let query_bind_4 = self.memory_home(&run); crate::database::native::query_scalar(&reinhardt::query::Query::select()
-				.expr(reinhardt::query::SimpleExpr::from(
-					reinhardt::query::Expr::col(reinhardt::query::Alias::new("data")),
-				))
-				.from(reinhardt::query::Alias::new("memory"))
-				.and_where(SimpleExpr::CustomWithExpr("(agent_id = ? AND agent_version = ? AND workspace_id = ? AND home_node = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()]))
-				.to_string(reinhardt::query::PostgresQueryBuilder))
-		.scalar_optional(&self.pool)
-		.await? }
-		.unwrap_or_else(empty_object))
 	}
 	#[allow(clippy::too_many_arguments)]
 	pub(crate) async fn transition_remote_terminal_in(

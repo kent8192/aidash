@@ -14,6 +14,14 @@ use serde_json::Value;
 use uuid::Uuid;
 #[async_trait]
 impl SemanticDisclosureScope for NativeReads<'_> {
+	async fn unit(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<String>> {
+		let mut lease = crate::semantic::service::Lease::Inherited(self.access);
+		match crate::apps::knowledge::repositories::units::text(&mut lease, id, workspace).await {
+			Err(crate::Error::Forbidden | crate::Error::Conflict(_)) => Ok(None),
+			result => result.map_err(Into::into),
+		}
+	}
+
 	fn scoped(&self) -> bool {
 		true
 	}
@@ -32,14 +40,6 @@ impl SemanticDisclosureScope for NativeReads<'_> {
 			.decide(resource, action)
 			.await
 			.map_err(Into::into)
-	}
-	async fn managed_memory(&mut self, id: Uuid) -> Result<Option<(String, String)>> {
-		crate::apps::knowledge::models::SemanticAgentMemory::identity_in(
-			self.access.tx.as_mut(),
-			id,
-		)
-		.await
-		.map_err(Into::into)
 	}
 	async fn artifact(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Artifact>> {
 		crate::apps::workspaces::models::Artifact::read_in(
@@ -74,6 +74,14 @@ impl SemanticDisclosureScope for NativeReads<'_> {
 }
 #[async_trait]
 impl SemanticMemoryReadSession for NativeReads<'_> {
+	async fn native_reads_visible(&mut self, run: Uuid) -> Result<bool> {
+		crate::apps::knowledge::repositories::memory_reads::visible(
+			&mut crate::semantic::service::Lease::Inherited(self.access),
+			run,
+		)
+		.await
+		.map_err(Into::into)
+	}
 	async fn permits(&mut self, entry: &Entry, action: &str) -> Result<bool> {
 		aidash_application::semantic::visibility::permits(self, entry, action).await
 	}

@@ -14,7 +14,6 @@ for transaction_peer in $(seq 1 15); do
   transaction_key=$(printf 'AIDASH_SECRET_TRANSACTION_%02d' "$transaction_peer")
   export "$transaction_key=transaction-acceptance-test-peer-$transaction_peer-only"
 done
-export AIDASH_SECRET_TEST_QDRANT=local-semantic-vector-fixture-key-0123456789
 coverage=false
 partition=all
 while (($#)); do

@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 #[fixture]
 fn binding() -> Binding {
 	Binding::RequiredHome {
+		native: None,
 		home_lineage: vec![],
 		execution_lineage: vec![],
 		version: 1,
@@ -31,6 +32,7 @@ fn binding() -> Binding {
 fn receipt(binding: Binding) -> Receipt {
 	let entry = Uuid::from_u128(1);
 	Receipt {
+		memory: None,
 		operation_id: Uuid::from_u128(2),
 		operation_digest: "operation-digest".into(),
 		home_node: "home".into(),
@@ -173,4 +175,76 @@ fn provenance_keeps_identity_and_digests_without_source_or_result_text(receipt: 
 fn malformed_ready_receipt_remains_a_contract_error(binding: Binding, mut record: Record) {
 	record.receipt = Some(json!({"invalid":"receipt"}));
 	assert!(project(&binding, None, Some(record)).is_err());
+}
+#[rstest]
+#[case(false, "empty")]
+#[case(true, "no_space")]
+fn native_summary_distinguishes_empty_and_no_space(
+	binding: Binding,
+	mut receipt: Receipt,
+	mut record: Record,
+	#[case] no_space: bool,
+	#[case] expected: &str,
+) {
+	receipt.result.matches.clear();
+	receipt.sources.clear();
+	receipt.memory = Some(super::super::NativeContext {
+		banks: vec![super::super::NativeRecall {
+			bank: crate::memory::Bank {
+				home: receipt.home_node.clone(),
+				tenant: receipt.tenant.clone(),
+				workspace: receipt.workspace_id,
+				participant: None,
+			},
+			provider: EntityRef {
+				id: "native".into(),
+				version: "1.0.0".into(),
+			},
+			recall: if no_space {
+				crate::memory::Recall::NoSpace
+			} else {
+				crate::memory::Recall::Empty
+			},
+		}],
+	});
+	record.receipt = Some(json!(receipt));
+	let status = project(&binding, None, Some(record)).unwrap();
+	assert_eq!(status.state, expected);
+	assert_eq!(status.result_count, Some(0));
+}
+#[rstest]
+fn native_provenance_retains_exact_support_without_claim_bodies(mut receipt: Receipt) {
+	let bank = crate::memory::Bank {
+		home: receipt.home_node.clone(),
+		tenant: receipt.tenant.clone(),
+		workspace: receipt.workspace_id,
+		participant: None,
+	};
+	let unit: crate::memory::Unit = serde_json::from_value(json!({"id":Uuid::from_u128(100),"bank":bank,"revision":7,
+        "content":{"text":"private native claim","kind":"world","learning":"fact","verification":"unverified","mental_model":null,"occurred":null,"entities":[],"evidence":[{"kind":"artifact","id":Uuid::from_u128(101),"revision":2,"digest":"source-digest"}],"links":[]},
+        "learned_at":receipt.retrieved_at,"updated_at":receipt.retrieved_at,"deleted":false,"stale":false})).unwrap();
+	let digest = crate::registry::rules::digest(&json!(unit.content));
+	receipt.memory = Some(super::super::NativeContext {
+		banks: vec![super::super::NativeRecall {
+			bank,
+			provider: EntityRef {
+				id: "native".into(),
+				version: "1.0.0".into(),
+			},
+			recall: crate::memory::Recall::Ready { units: vec![unit] },
+		}],
+	});
+	let provenance = Provenance::from(receipt);
+	assert_eq!(provenance.memory[0].units[0].revision, 7);
+	assert_eq!(
+		provenance.memory[0].units[0].verification,
+		crate::memory::Verification::Unverified
+	);
+	assert_eq!(provenance.memory[0].units[0].evidence.len(), 1);
+	assert_eq!(provenance.memory[0].units[0].content_digest, digest);
+	assert!(
+		!json!(provenance)
+			.to_string()
+			.contains("private native claim")
+	);
 }

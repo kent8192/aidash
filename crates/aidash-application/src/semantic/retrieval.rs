@@ -78,7 +78,10 @@ pub async fn prepare(
 	for entry in rows {
 		let source: Source = serde_json::from_value(entry.source.clone())?;
 		if agent_controls.is_some_and(|agent| match &source {
-			Source::Memory { .. } => agent.allow_cross_conversation_memory == Some(false),
+			Source::Unit { .. } => true,
+			Source::Memory { .. } => {
+				agent.memory.is_some() || agent.allow_cross_conversation_memory == Some(false)
+			}
 			Source::Artifact { .. } | Source::Message { .. } => {
 				agent.allow_workspace_retrieval == Some(false)
 			}

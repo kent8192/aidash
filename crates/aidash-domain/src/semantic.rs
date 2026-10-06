@@ -120,9 +120,19 @@ pub mod results;
 #[schemars(rename = "SemanticSource")]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Source {
-	Memory { text: String },
-	Artifact { id: Uuid },
-	Message { id: Uuid },
+	/// Canonical text and authority are resolved from a native memory unit.
+	Unit {
+		id: Uuid,
+	},
+	Memory {
+		text: String,
+	},
+	Artifact {
+		id: Uuid,
+	},
+	Message {
+		id: Uuid,
+	},
 }
 
 impl Source {

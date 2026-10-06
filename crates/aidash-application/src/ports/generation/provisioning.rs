@@ -65,6 +65,11 @@ pub trait GenerationProvisioning: Send + Sync {
 	async fn begin_read(&self) -> Result<Box<dyn GenerationProvisionRead>>;
 	async fn begin_activation(&self, job: &Request)
 	-> Result<Box<dyn GenerationActivationSession>>;
+	/// Drain explicitly opted-in completion work under the original live allowance.
+	/// False defers natural retirement only; expiry and explicit controls still win.
+	async fn completion_ready(&self, _job: &Request) -> Result<bool> {
+		Ok(true)
+	}
 	/// Acquire the exclusive authority lock before reloading the request.
 	async fn begin_terminal(&self, job: &Request) -> Result<Box<dyn GenerationTerminalSession>>;
 }

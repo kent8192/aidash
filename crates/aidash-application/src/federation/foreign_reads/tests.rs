@@ -522,6 +522,7 @@ async fn required_home_semantics_recheck_the_source_workspace_permission(
 	run: RunMetadata,
 ) {
 	scope.record.as_mut().unwrap().description.semantic = Binding::RequiredHome {
+		native: None,
 		home_lineage: vec![],
 		execution_lineage: vec![],
 		version: 1,

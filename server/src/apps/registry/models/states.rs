@@ -31,6 +31,18 @@ pub enum DefinitionKind {
 	#[model_enum(value = "embedding")]
 	#[serde(rename = "embedding")]
 	Embedding,
+	#[model_enum(value = "memory")]
+	#[serde(rename = "memory")]
+	Memory,
+	#[model_enum(value = "source")]
+	#[serde(rename = "source")]
+	Source,
+	#[model_enum(value = "reranker")]
+	#[serde(rename = "reranker")]
+	Reranker,
+	#[model_enum(value = "tokenizer")]
+	#[serde(rename = "tokenizer")]
+	Tokenizer,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ModelEnum)]

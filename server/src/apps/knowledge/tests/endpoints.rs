@@ -16,7 +16,7 @@ use cleanup_fixture::{CleanupBackend, cleanup_backend};
 
 #[fixture]
 fn index_spec() -> Value {
-	json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","credential_env":null,"model":"fixture","model_version":"1","dimensions":8},"vector":{"provider":"qdrant","endpoint":"http://localhost:9","credential_env":null},"enabled":true,"auto_context":false,"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256})
+	json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","credential_env":null,"model":"fixture","model_version":"1","dimensions":8},"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,"max_sources":10,"max_results":5,"max_result_tokens":128,"max_input_bytes":256})
 }
 
 #[rstest]

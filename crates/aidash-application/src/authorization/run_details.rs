@@ -3,7 +3,6 @@ use crate::{
 	Error, Result,
 	ports::authorization::run_details::{RunDetails, RunDetailsRepository, RunDetailsScope},
 };
-use serde_json::json;
 use uuid::Uuid;
 pub async fn inspect(
 	repository: &dyn RunDetailsRepository,
@@ -35,7 +34,7 @@ pub async fn inspect_in(
 	Ok(RunDetails {
 		run,
 		invocations,
-		memory: memory.unwrap_or_else(|| json!({})),
+		memory,
 		media_input_routes,
 	})
 }

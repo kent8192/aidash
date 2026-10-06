@@ -15,7 +15,7 @@ No production environment or always-running management VM is created.
 
 Each environment owns a VPC, service account, Secret Manager secret, VM,
 10 GiB boot disk and 20 GiB data disk. The initial host is `e2-standard-4` in
-`us-central1-a`. PostgreSQL 17, NATS, Qdrant, web/API/workers, K3s and the existing
+`us-central1-a`. PostgreSQL 17 with pgvector/PGroonga, NATS, web/API/workers, K3s and the existing
 gVisor Runner run on that host. Execution uses disposable Pods without a new
 global Python/Shell queue. The existing runtime still controls physical writer
 freeze, termination proof and uncertain-operation recovery.
@@ -65,8 +65,7 @@ write-collaborator authorization for that exact SHA; a retained approval covers
 resuming the same SHA, never a later commit. Actions/comments require repository
 write, maintain or admin permission. No workflow posts PR comments.
 
-All six service images are digest-addressed in the private registry. NATS and
-Qdrant use reviewed upstream linux/amd64 digests in `control/images.py`, pass
+All five service images are digest-addressed in the private registry. NATS uses a reviewed upstream linux/amd64 digest in `control/images.py`, passes
 through the same build-archive/publisher boundary and appear in the release
 manifest. Retried workflows re-emit a pending build for the accepted SHA and
 generation; newer stop/destroy requests still fence it. Attempt-specific publish

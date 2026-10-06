@@ -332,8 +332,6 @@
   "semanticModel": "埋め込みモデル",
   "semanticModelVersion": "モデルの版",
   "semanticDimensions": "ベクトルの次元数",
-  "semanticVectorEndpoint": "QdrantのURL",
-  "semanticVectorSecret": "Qdrantの認証変数名",
   "semanticEnabled": "索引を有効化",
   "semanticKey": "元データのキー",
   "semanticSourceKind": "元データの種類",

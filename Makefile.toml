@@ -12,7 +12,7 @@ command = "docker"
 args = ["compose", "--profile", "dev", "down"]
 
 [tasks.k8s-up]
-description = "Build and start Aidash with PostgreSQL, NATS, and Qdrant in a local kind cluster"
+description = "Build and start Aidash with PostgreSQL and NATS in a local kind cluster"
 dependencies = [
   "k8s-prepare",
   "k8s-apply-config",
@@ -22,10 +22,8 @@ dependencies = [
   "k8s-load",
   "k8s-apply-infra",
   "k8s-restart-postgres",
-  "k8s-restart-qdrant",
   "k8s-wait-postgres",
   "k8s-wait-nats",
-  "k8s-wait-qdrant",
   "k8s-helm",
   "k8s-restart-server",
   "k8s-restart-worker",
@@ -125,19 +123,6 @@ args = [
   "statefulset/postgres",
 ]
 
-[tasks.k8s-restart-qdrant]
-private = true
-command = "kubectl"
-args = [
-  "--kubeconfig",
-  ".ignore/local-k8s/kubeconfig",
-  "-n",
-  "aidash-local",
-  "rollout",
-  "restart",
-  "statefulset/qdrant",
-]
-
 [tasks.k8s-wait-postgres]
 private = true
 command = "kubectl"
@@ -163,20 +148,6 @@ args = [
   "rollout",
   "status",
   "statefulset/nats",
-  "--timeout=300s",
-]
-
-[tasks.k8s-wait-qdrant]
-private = true
-command = "kubectl"
-args = [
-  "--kubeconfig",
-  ".ignore/local-k8s/kubeconfig",
-  "-n",
-  "aidash-local",
-  "rollout",
-  "status",
-  "statefulset/qdrant",
   "--timeout=300s",
 ]
 

@@ -16,7 +16,6 @@ KINDS = IMAGE_KINDS
 # publication path as source builds and never pull mutable tags on a host.
 AUXILIARY_IMAGES = {
     "nats": "nats:2.12.15-alpine@sha256:e01e9f09c03f60a8ded4785444ec4c5b2fd18a773b8b874daeefeff559119316",
-    "qdrant": "qdrant/qdrant:v1.19.1@sha256:0699e7733a6fa7fa7f6b95dcbed84ebb04584110da525cdfdef9f305c4f57738",
 }
 
 

@@ -570,16 +570,6 @@ async fn scoped_run_details_keep_memory_home_namespace(
 		200
 	);
 	let run = f.store.runs().await.unwrap().remove(0);
-	let mut remote = run.clone();
-	remote.home_node = "aidash://another-home".into();
-	f.store
-		.remember(&remote, &json!({"secret":"remote-only"}))
-		.await
-		.unwrap();
-	f.store
-		.remember(&run, &json!({"local":"expected"}))
-		.await
-		.unwrap();
 	let (status, details) = request(
 		&app,
 		&token,
@@ -589,7 +579,10 @@ async fn scoped_run_details_keep_memory_home_namespace(
 	)
 	.await;
 	assert_eq!(status, 200, "{details}");
-	assert_eq!(details["memory"], json!({"local":"expected"}));
+	assert!(
+		details["memory"].is_null(),
+		"an Agent without a memory provider has no bank binding"
+	);
 	cleanup(f, &url, &schema).await;
 }
 

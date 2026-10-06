@@ -25,7 +25,7 @@ struct BindingScope {
 impl BindingScope {
 	fn new() -> Self {
 		let embedding = json!({"provider":"openai","endpoint":"https://embedding.invalid","credential_env":"EMBEDDING","model":"embed","model_version":"1","dimensions":3});
-		let spec:IndexingSpec=serde_json::from_value(json!({"embedding":embedding,"vector":{"provider":"qdrant","endpoint":"https://vector.invalid","credential_env":null},"enabled":true,"auto_context":true,"max_sources":100,"max_results":4,"max_result_tokens":1024,"max_input_bytes":32768})).unwrap();
+		let spec:IndexingSpec=serde_json::from_value(json!({"embedding":embedding,"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":true,"max_sources":100,"max_results":4,"max_result_tokens":1024,"max_input_bytes":32768})).unwrap();
 		let mut entry = entry("embedding");
 		entry.config = embedding;
 		Self {
@@ -103,6 +103,41 @@ impl SemanticBindingScope for BindingScope {
 		self.reads.push("lineage");
 		Ok(vec![])
 	}
+	async fn native_binding(
+		&mut self,
+		workspace: Uuid,
+		request: &aidash_domain::semantic::remote::NativeRequest,
+		_: Option<&aidash_domain::semantic::remote::NativeOrigin>,
+	) -> Result<aidash_domain::semantic::remote::NativeBinding> {
+		use aidash_domain::semantic::remote::{NativeBinding, Provider};
+		self.reads.push("native");
+		let agent = EntityRef {
+			id: "agent".into(),
+			version: "1.0.0".into(),
+		};
+		Ok(NativeBinding {
+			selection: request.clone(),
+			generation: None,
+			participant: aidash_domain::memory::Binding {
+				bank: aidash_domain::memory::Bank {
+					home: self.home_node_id().into(),
+					tenant: self.binding_tenant().into(),
+					workspace,
+					participant: Some(request.participant),
+				},
+				participant_revision: request.expected_revision,
+				agent: agent.clone(),
+				provider: request.provider.clone(),
+			},
+			agent: Provider {
+				node_id: self.home_node_id().into(),
+				entry: agent,
+				digest: "agent".into(),
+				configuration_digest: "agent-config".into(),
+			},
+			banks: vec![],
+		})
+	}
 }
 fn remote_inspection() -> Inspection {
 	let mut value = inspection("model");
@@ -112,12 +147,97 @@ fn remote_inspection() -> Inspection {
 }
 fn request() -> Request {
 	Request::RequiredHome {
+		native: None,
 		embedding: EntityRef {
 			id: "embedding".into(),
 			version: "1.0.0".into(),
 		},
 		compactor: None,
 	}
+}
+
+#[rstest]
+#[case::enabled(false, true)]
+#[case::disabled(false, false)]
+#[case::generic_enabled(true, true)]
+#[tokio::test]
+async fn explicit_native_home_selection_is_independent_of_generic_auto_context(
+	#[case] auto_context: bool,
+	#[case] enabled: bool,
+) {
+	let mut scope = BindingScope::new();
+	scope.spec.auto_context = auto_context;
+	scope.spec.enabled = enabled;
+	scope.index.spec = serde_json::to_value(&scope.spec).unwrap();
+	let mut inspection = remote_inspection();
+	inspection.agent.config["memory"] = json!({"id":"native","version":"1.0.0"});
+	let mut input = request();
+	if let Request::RequiredHome { native, .. } = &mut input {
+		*native = Some(Box::new(aidash_domain::semantic::remote::NativeRequest {
+			participant: Uuid::from_u128(50),
+			expected_revision: 3,
+			provider: EntityRef {
+				id: "native".into(),
+				version: "1.0.0".into(),
+			},
+		}));
+	}
+	let result = use_case::binding(
+		&mut scope,
+		&task(),
+		"aidash://receiver",
+		&inspection,
+		&input,
+	)
+	.await;
+	if enabled {
+		let Binding::RequiredHome {
+			native,
+			index_revision,
+			..
+		} = result.unwrap()
+		else {
+			panic!("native binding required")
+		};
+		assert_eq!(index_revision, 0);
+		assert_eq!(native.unwrap().participant.participant_revision, 3);
+		assert!(scope.reads.contains(&"native"));
+	} else {
+		assert!(matches!(
+			result,
+			Err(Error::RemoteSemantic(Failure::Configuration))
+		));
+		assert_eq!(scope.reads, vec!["index"]);
+	}
+}
+#[rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn native_memory_cannot_be_silently_disabled_or_mapped_by_name(#[case] required: bool) {
+	let mut scope = BindingScope::new();
+	let mut inspection = remote_inspection();
+	inspection.agent.config["memory"] = json!({"id":"native","version":"1.0.0"});
+	let input = if required {
+		request()
+	} else {
+		Request::Disabled {}
+	};
+	assert!(matches!(
+		use_case::binding(
+			&mut scope,
+			&task(),
+			"aidash://receiver",
+			&inspection,
+			&input
+		)
+		.await,
+		Err(Error::RemoteSemantic(Failure::Configuration))
+	));
+	assert!(
+		scope.reads.is_empty(),
+		"reject before touching Home index or provider"
+	);
 }
 #[rstest]
 #[tokio::test]
@@ -128,7 +248,7 @@ async fn disabled_binding_does_not_read_or_disclose_home_state() {
 			&mut scope,
 			&task(),
 			"aidash://receiver",
-			&inspection("model"),
+			&remote_inspection(),
 			&Request::Disabled {}
 		)
 		.await
@@ -303,6 +423,7 @@ async fn compactor_binding_requires_the_pinned_remote_definition() {
 	};
 	inspection.compactor = Some(compactor.clone());
 	let request = Request::RequiredHome {
+		native: None,
 		embedding: EntityRef {
 			id: "embedding".into(),
 			version: "1.0.0".into(),

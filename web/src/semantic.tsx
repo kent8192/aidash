@@ -1,3 +1,4 @@
+import { MemoryWorkspace } from "./memory";
 import { RecordView, useRecordLabels } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
 import { useRef, useState, type FormEvent } from "react";
@@ -57,7 +58,6 @@ const semanticMessages: Record<string, string> = {
   "vector write acknowledged": "semanticWriteAcknowledged",
   "indexing failed; durable retry scheduled": "semanticRetryScheduled",
   "indexing authority unavailable": "semanticCredentialRevoked",
-  "agent memory slots are updated through memory_write": "semanticManagedSlot",
   "deleted semantic keys cannot be reused": "semanticDeletedKey",
   "semantic source revision changed": "semanticRevisionChanged",
   "semantic source revision changed or deleted": "semanticRevisionChanged",
@@ -84,12 +84,19 @@ export function SemanticPage({ data }: { data: State }) {
         </select>
       </Field>
       {workspace ? (
-        <SemanticWorkspace
-          key={workspace}
-          workspace={workspace}
-          data={data}
-          operator={data.access.kind === "operator"}
-        />
+        <>
+          <MemoryWorkspace
+            key={`memory:${workspace}`}
+            workspace={workspace}
+            data={data}
+          />
+          <SemanticWorkspace
+            key={workspace}
+            workspace={workspace}
+            data={data}
+            operator={data.access.kind === "operator"}
+          />
+        </>
       ) : (
         <Empty />
       )}
@@ -514,9 +521,9 @@ function IndexForm({
             dimensions: Number(values.get("dimensions")),
           },
           vector: {
-            provider: "qdrant",
-            endpoint: String(values.get("vector")),
-            credential_env: String(values.get("vectorSecret")) || null,
+            provider: "postgres",
+            endpoint: "local",
+            credential_env: null,
           },
           enabled: values.has("enabled"),
           auto_context: values.has("auto"),
@@ -566,22 +573,6 @@ function IndexForm({
           max={8192}
           required
           defaultValue={previous?.embedding.dimensions ?? 1536}
-        />
-      </Field>
-      <Field label={t("semanticVectorEndpoint")}>
-        <input
-          name="vector"
-          type="url"
-          required
-          defaultValue={previous?.vector.endpoint ?? "http://127.0.0.1:63370"}
-        />
-      </Field>
-      <Field label={t("semanticVectorSecret")}>
-        <input
-          name="vectorSecret"
-          defaultValue={
-            previous?.vector.credential_env ?? "AIDASH_SECRET_TEST_QDRANT"
-          }
         />
       </Field>
       <label>

@@ -1,5 +1,5 @@
 //! Durable semantic dependency reads on the enclosing authority transaction.
-use super::{SemanticAgentMemory, SemanticEntry, SemanticPoint, SemanticRunRead};
+use super::{SemanticEntry, SemanticPoint, SemanticRunRead};
 use crate::Result;
 use crate::apps::knowledge::serializers::contracts::Entry;
 use reinhardt::core::exception::Error as FrameworkError;
@@ -43,21 +43,6 @@ impl SemanticRunRead {
 			.into_iter()
 			.map(|row| (row.entry_id(), row.revision))
 			.collect())
-	}
-}
-
-impl SemanticAgentMemory {
-	pub(crate) async fn identity_in(
-		tx: &mut dyn TransactionExecutor,
-		entry: Uuid,
-	) -> Result<Option<(String, String)>> {
-		Ok(Self::objects()
-			.filter(Self::field_entry_id().eq(entry))
-			.all_with_executor(tx)
-			.await
-			.map_err(FrameworkError::from)?
-			.pop()
-			.map(|row| (row.agent_id, row.agent_version)))
 	}
 }
 

@@ -191,7 +191,7 @@ impl Lease {
 	pub(crate) fn into_native(self) -> Result<NativeLease> {
 		match self {
 			Self::Scoped(access) => Ok(NativeLease::Scoped(Box::new((*access).into_native()?))),
-			Self::Operator(tx) => Ok(NativeLease::Operator(tx.into_executor())),
+			Self::Operator(tx) => Ok(NativeLease::Operator(tx.into_executor()?)),
 		}
 	}
 }

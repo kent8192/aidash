@@ -5,6 +5,9 @@ use native_database::{DatabaseFixture, database};
 #[path = "../../knowledge/tests/database_limits.rs"]
 mod semantic_limits;
 
+#[path = "../../knowledge/tests/native_memory.rs"]
+mod native_memory;
+
 #[path = "../../federation/transactions/tests/database_decisions.rs"]
 mod decisions;
 

@@ -79,24 +79,64 @@ impl ToolOperations for Operations {
 			.map_err(Into::into)
 	}
 
-	async fn remember(&self, input: &Value) -> Result<()> {
+	async fn memory_mutate(
+		&self,
+		key: &str,
+		changes: &[aidash_domain::memory::Change],
+	) -> Result<Vec<aidash_domain::memory::Unit>> {
 		let ctx = &self.0;
+		if ctx.run.home_node != ctx.store.node_id {
+			return Err(aidash_application::Error::Forbidden);
+		}
 		if let Some(authority) = &ctx.home.authority {
-			authority.remember(&ctx.store, &ctx.run, input).await?;
+			authority
+				.memory_mutate(&ctx.store, &ctx.run, key, changes)
+				.await
+				.map_err(Into::into)
 		} else if ctx.home.local() {
 			let mut lease = crate::semantic::service::Lease::begin(
 				&ctx.store,
 				&crate::authorization::identity::Actor::Operator,
 			)
 			.await?;
-			let result =
-				crate::semantic::service::remember_in(&ctx.store, &mut lease, &ctx.run, input)
-					.await;
-			lease.finish(result).await?;
+			let result = crate::semantic::native_memory::run_mutate(
+				&ctx.store, &mut lease, &ctx.run, key, changes,
+			)
+			.await;
+			lease.finish(result).await.map_err(Into::into)
 		} else {
-			ctx.store.remember(&ctx.run, input).await?;
+			Err(aidash_application::Error::Forbidden)
 		}
-		Ok(())
+	}
+	async fn memory_recall(
+		&self,
+		key: &str,
+		query: &aidash_domain::memory::RecallQuery,
+		reflect: bool,
+	) -> Result<Value> {
+		let ctx = &self.0;
+		if let Some(authority) = &ctx.home.authority {
+			return Ok(json!(
+				authority
+					.memory_recall(&ctx.store, &ctx.run, key, query.clone(), reflect)
+					.await?
+			));
+		}
+		let mut lease = crate::semantic::service::Lease::begin(
+			&ctx.store,
+			&crate::authorization::identity::Actor::Operator,
+		)
+		.await?;
+		let result = crate::semantic::native_memory::run_recall(
+			&ctx.store,
+			&mut lease,
+			&ctx.run,
+			key,
+			query.clone(),
+			reflect,
+		)
+		.await;
+		Ok(json!(lease.finish(result).await?))
 	}
 	async fn human_request(&self, kind: &str, prompt: &str, key: &str) -> Result<HumanRequest> {
 		self.0

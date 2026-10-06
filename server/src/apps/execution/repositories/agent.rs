@@ -40,9 +40,6 @@ impl ExecutionStore for Store {
 	async fn run_inputs(&self, run: Uuid) -> Result<Vec<aidash_domain::run_input::RunInput>> {
 		Store::run_inputs(self, run).await.map_err(Into::into)
 	}
-	async fn memory(&self, run: &RunMetadata) -> Result<Value> {
-		Store::memory(self, run).await.map_err(Into::into)
-	}
 	async fn begin_final_completion(&self, run: &Run, token: Uuid) -> Result<bool> {
 		Store::begin_final_completion(self, run, token)
 			.await
@@ -509,22 +506,40 @@ impl ExecutionEnvironment for Environment<'_> {
 			&crate::authorization::identity::Actor::Operator,
 		)
 		.await?;
-		let result = crate::semantic::service::context_in(
+		let mut query = format!("{}\n{}", task.title, task.description);
+		for (_, text) in inputs {
+			query.push('\n');
+			query.push_str(text);
+		}
+		let semantic = crate::semantic::service::context_in(
 			&self.federation.store,
 			&mut lease,
 			run,
-			&format!("{}\n{}", task.title, task.description),
+			&query,
 			budget,
 			&agent,
 		)
 		.await;
-		lease
-			.finish(result)
-			.await?
-			.map(serde_json::to_value)
-			.transpose()
-			.map_err(Into::into)
+		let result = async {
+			let semantic = semantic?.map(serde_json::to_value).transpose()?;
+			let reserved =
+				serde_json::to_vec(&serde_json::json!({"workspace":semantic,"memory":null}))?.len();
+			let memory = crate::semantic::services::memory_context::retrieve(
+				&self.federation.store,
+				&mut lease,
+				run,
+				task,
+				inputs,
+				budget.saturating_sub(reserved),
+				&agent,
+			)
+			.await?;
+			crate::semantic::services::memory_context::combine(semantic, memory, budget)
+		}
+		.await;
+		lease.finish(result).await.map_err(Into::into)
 	}
+
 	async fn run_message_limit(&self, run: &Run) -> Result<usize> {
 		self.federation
 			.run_message_limit(run)

@@ -158,6 +158,7 @@ fn world() -> World {
 		},
 		expires_at: DateTime::from_timestamp(2000, 0).unwrap(),
 		semantic: Binding::RequiredHome {
+			native: None,
 			home_lineage: vec![owner("aidash://home", 11)],
 			execution_lineage: vec![owner("aidash://executor", 22)],
 			version: 1,

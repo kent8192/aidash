@@ -93,6 +93,14 @@ impl GenerationProvisioning for NativeProvisioning {
 			transaction,
 		}))
 	}
+	async fn completion_ready(&self, job: &Request) -> aidash_application::Result<bool> {
+		crate::apps::knowledge::repositories::engine_jobs::completion_ready(
+			&self.runtime.store,
+			job,
+		)
+		.await
+		.map_err(Into::into)
+	}
 }
 
 #[async_trait]

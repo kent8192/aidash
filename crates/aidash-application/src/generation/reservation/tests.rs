@@ -87,6 +87,7 @@ fn world(usage: Usage) -> World {
 		call_budget: 4,
 	};
 	spec.remote = Some(Approvals {
+		memory: vec![],
 		inference: vec![usage.provider.clone()],
 		embedding: Some(allowance.clone()),
 		compaction: Some(allowance),

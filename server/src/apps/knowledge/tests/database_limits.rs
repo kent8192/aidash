@@ -111,8 +111,8 @@ fn spec() -> IndexSpec {
 			dimensions: 8,
 		},
 		vector: VectorConfig {
-			provider: "qdrant".into(),
-			endpoint: "http://localhost:9".into(),
+			provider: "postgres".into(),
+			endpoint: "local".into(),
 			credential_env: None,
 		},
 		enabled: true,

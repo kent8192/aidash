@@ -126,7 +126,16 @@ their scheduling and drain loops. Outbound HTTP records an attempt before the
 integration transport contacts the remote service. Current subject chains and
 source constraints apply to both HTTP and worker entry points.
 
-Authoritative state lives in PostgreSQL; Qdrant stores derived semantic vectors.
+Authoritative state and derived memory search projections live in PostgreSQL.
+pgvector performs semantic ranking; PGroonga provides multilingual keyword retrieval.
+
+Issue #125's [accepted memory design](design/2026-10-06-hindsight-memory-requirements.md)
+targets a native Rust Hindsight engine with unified PostgreSQL/pgvector/PGroonga
+and Logical Agent private ownership. Its design decisions are resolved, with
+final shared-understanding confirmation pending; implementation is not claimed
+here. Existing JSON memory is discarded, with no legacy migration workflow.
+The persistence description below records the current implementation baseline.
+
 Reinhardt owns the single migration graph under `server/migrations/`. Its frozen
 baseline retains PostgreSQL functions, triggers, generated columns, constraints,
 indexes, and lock/lease semantics from the 55-step development schema. State-only
@@ -167,4 +176,4 @@ The marketplace is a self-hosted, versioned manifest repository exposed by the n
 
 The v0.1.0 acceptance must cover orchestration without losing durable node/run identity, policy-controlled agent creation, shared RBAC/ABAC enforcement, a recoverable atomic transaction protocol between participating nodes, authorized semantic retrieval and an A2A v1.0.0 client/server boundary. Keep explicit model selection, independently operated node databases and the existing durable tool-effect contract. Cross-node transactions communicate through participating node APIs instead of accessing remote databases directly.
 
-The scoped remote activation and Home-command path does not by itself satisfy every FR-AUTH-001 acceptance case; see [authorization](authorization.md) and #38. The [distributed transaction protocol](transactions.md) implements durable prepare/commit/abort and cross-node visibility barriers; its full FR-TX-001 authorization and failure-acceptance gate remains open. [Semantic memory](semantic-memory.md) adds Qdrant indexing, authorized retrieval and provenance in local Agent context and explicitly admitted Home-owned remote context. [Kubernetes/k3s orchestration](orchestration.md) adds independently scalable roles, graceful shutdown and deployment observations. Their cross-capability acceptance remains a separate release gate. Aidash federation endpoints do not establish A2A compatibility.
+The scoped remote activation and Home-command path does not by itself satisfy every FR-AUTH-001 acceptance case; see [authorization](authorization.md) and #38. The [distributed transaction protocol](transactions.md) implements durable prepare/commit/abort and cross-node visibility barriers; its full FR-TX-001 authorization and failure-acceptance gate remains open. [Semantic memory](semantic-memory.md) adds PostgreSQL indexing, authorized retrieval and provenance in local Agent context and explicitly admitted Home-owned remote context. [Kubernetes/k3s orchestration](orchestration.md) adds independently scalable roles, graceful shutdown and deployment observations. Their cross-capability acceptance remains a separate release gate. Aidash federation endpoints do not establish A2A compatibility.

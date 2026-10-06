@@ -102,7 +102,7 @@ pub(crate) async fn search_in(
 ) -> Result<SearchResult> {
 	aidash_application::semantic::retrieval::search(
 		&mut crate::bootstrap::semantic_retrieval_scope(store, lease),
-		&crate::bootstrap::semantic_transport(store.semantic_client.clone()),
+		&crate::bootstrap::semantic_transport(store),
 		workspace,
 		&(&input).into(),
 		run,
@@ -136,7 +136,7 @@ pub(crate) async fn context_in(
 ) -> Result<Option<SearchResult>> {
 	aidash_application::semantic::retrieval::context(
 		&mut crate::bootstrap::semantic_retrieval_scope(store, lease),
-		&crate::bootstrap::semantic_transport(store.semantic_client.clone()),
+		&crate::bootstrap::semantic_transport(store),
 		run,
 		query,
 		budget,
@@ -157,21 +157,6 @@ impl Access {
 	}
 }
 
-pub(crate) async fn remember_in(
-	store: &Store,
-	lease: &mut Lease<'_>,
-	run: &crate::domain::Run,
-	data: &serde_json::Value,
-) -> Result<()> {
-	aidash_application::semantic::memory::remember(
-		&mut crate::bootstrap::semantic_memory_write_scope(store, lease),
-		run,
-		data,
-	)
-	.await
-	.map_err(Into::into)
-}
-
 /// Keep the authority lease through reservation, provider I/O and settlement.
 pub(crate) async fn embed(
 	store: &Store,
@@ -183,7 +168,7 @@ pub(crate) async fn embed(
 ) -> Result<Vec<f32>> {
 	aidash_application::semantic::embedding::invoke(
 		&mut crate::bootstrap::semantic_embedding_scope(store, lease),
-		&crate::bootstrap::semantic_transport(store.semantic_client.clone()),
+		&crate::bootstrap::semantic_transport(store),
 		workspace,
 		config,
 		text,

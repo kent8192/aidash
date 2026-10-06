@@ -332,8 +332,6 @@
   "semanticModel": "Embedding model",
   "semanticModelVersion": "Model version",
   "semanticDimensions": "Vector dimensions",
-  "semanticVectorEndpoint": "Qdrant endpoint",
-  "semanticVectorSecret": "Qdrant credential reference",
   "semanticEnabled": "Enable index",
   "semanticKey": "Source key",
   "semanticSourceKind": "Source type",

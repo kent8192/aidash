@@ -79,14 +79,19 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 		let result: NativeResult<Applied> = async {
 			let store = &self.runtime.store;
 			let (value, output_id) = match effect {
-				Effect::Claim { revision, agent } => (
-					json!(
-						store
-							.claim_in(&mut self.access.tx, task, revision, owner, agent)
-							.await?
-					),
-					None,
-				),
+				Effect::Claim { revision, agent } => {
+					let claimed = store
+						.claim_in(&mut self.access.tx, task, revision, owner, agent)
+						.await?;
+					crate::apps::knowledge::repositories::bindings::claimed(
+						store,
+						&mut crate::semantic::service::Lease::Inherited(self.access),
+						task.id,
+						agent,
+					)
+					.await?;
+					(json!(claimed), None)
+				}
 				Effect::Transition {
 					revision,
 					next,

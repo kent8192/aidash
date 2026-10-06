@@ -299,7 +299,7 @@ def main():
     nats_proxy = NatsProxy()
 
     def launch(node, database, port, mode):
-        env = {**os.environ, "DATABASE_URL": f"postgres://aidash:aidash-local@127.0.0.1:{os.environ.get('AIDASH_POSTGRES_PORT', '54370')}/{database}", "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_NODE_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN, "AIDASH_SECRET_COMPACTION_FIXTURE": "local-compaction-fixture-key", "AIDASH_SECRET_TRANSACTION_FIXTURE": "local-transaction-fixture-key-0123456789", "AIDASH_SECRET_TEST_QDRANT": os.environ.get("AIDASH_SECRET_TEST_QDRANT", "local-semantic-vector-fixture-key-0123456789"), "AIDASH_WEB_DIR": str(ROOT / "web/dist")}
+        env = {**os.environ, "DATABASE_URL": f"postgres://aidash:aidash-local@127.0.0.1:{os.environ.get('AIDASH_POSTGRES_PORT', '54370')}/{database}", "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_NODE_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_SECRET_PEER": PEER_TOKEN, "AIDASH_SECRET_COMPACTION_FIXTURE": "local-compaction-fixture-key", "AIDASH_SECRET_TRANSACTION_FIXTURE": "local-transaction-fixture-key-0123456789", "AIDASH_WEB_DIR": str(ROOT / "web/dist")}
         # Browser fixtures create audit/history pages in bursts alongside UI polling.
         env["AIDASH_API_RATE_BURST"] = os.environ.get("AIDASH_API_RATE_BURST", "1000")
         log = open(logs / f"{database}-{mode}-{len(children)}.log", "w")

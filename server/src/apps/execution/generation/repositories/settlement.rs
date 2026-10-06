@@ -338,6 +338,6 @@ pub(crate) fn counter(purpose: Purpose) -> Option<(&'static str, &'static str)> 
 	match purpose {
 		Purpose::Embedding => Some(("embedding_calls", "embedding_call_limit")),
 		Purpose::Compaction => Some(("compaction_calls", "compaction_call_limit")),
-		Purpose::Inference => None,
+		Purpose::Inference | Purpose::Memory => None,
 	}
 }

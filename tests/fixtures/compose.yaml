@@ -11,7 +11,7 @@ services:
         "-c",
         "max_connections=600",
         "-c",
-        "shared_preload_libraries=pg_stat_statements",
+        "shared_preload_libraries=pg_stat_statements,pgroonga_crash_safer",
       ]
     build:
       context: ../..
@@ -28,12 +28,6 @@ services:
       interval: 1s
       timeout: 5s
       retries: 60
-  qdrant:
-    image: qdrant/qdrant:v1.19.1
-    environment:
-      QDRANT__SERVICE__API_KEY: local-semantic-vector-fixture-key-0123456789
-    ports:
-      - "127.0.0.1::6333"
   nats:
     image: nats:2.12-alpine
     command: ["-js", "-sd", "/data"]

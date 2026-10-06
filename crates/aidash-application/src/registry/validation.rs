@@ -28,6 +28,39 @@ impl DefinitionValidation {
 	pub fn validate_in(&self, e: &Entry, local: bool) -> Result<()> {
 		aidash_domain::registry::rules::validate_metadata(e, local)?;
 		match e.kind.as_str() {
+			"memory" => {
+				serde_json::from_value::<aidash_domain::memory::ProviderConfig>(e.config.clone())?
+					.policy
+					.validate()?
+			}
+			"source" => {
+				let config: aidash_domain::memory::SourceConfig =
+					serde_json::from_value(e.config.clone())?;
+				if config.max_tokens == 0
+					|| config.max_tokens > i32::MAX as usize
+					|| config.memory.id.is_empty()
+					|| semver::Version::parse(&config.memory.version).is_err()
+				{
+					return Err(Error::Invalid(
+						"memory source requires a versioned provider and positive context cap"
+							.into(),
+					));
+				}
+			}
+			"reranker" => {
+				let config: aidash_domain::memory::RerankerConfig =
+					serde_json::from_value(e.config.clone())?;
+				if let aidash_domain::memory::RerankerConfig::Model { model } = config
+					&& (model.id.is_empty() || semver::Version::parse(&model.version).is_err())
+				{
+					return Err(Error::Invalid(
+						"reranker requires an exact model version".into(),
+					));
+				}
+			}
+			"tokenizer" => {
+				serde_json::from_value::<aidash_domain::memory::TokenizerConfig>(e.config.clone())?;
+			}
 			"embedding" => self.validate_embedding(
 				&serde_json::from_value(e.config.clone())
 					.map_err(|e| Error::Invalid(e.to_string()))?,
@@ -94,6 +127,7 @@ impl DefinitionValidation {
 					&& a.skills.is_empty()
 					&& a.skill_attachments.is_empty()
 					&& a.skill_roots.is_empty())
+					|| a.sources.len() > 32
 					|| !(1..=1000).contains(&a.max_steps)
 				{
 					return Err(Error::Invalid(

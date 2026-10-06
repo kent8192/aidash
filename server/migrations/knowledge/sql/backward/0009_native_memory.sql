@@ -1,0 +1,10 @@
+DROP INDEX IF EXISTS memory_units_full_text;
+DROP INDEX IF EXISTS memory_bank_scope;
+DROP TRIGGER IF EXISTS atomic_write_guard ON memory_participants;
+DROP TRIGGER IF EXISTS atomic_write_guard ON memory_banks;
+DROP TRIGGER IF EXISTS atomic_write_guard ON memory_units;
+DROP TRIGGER IF EXISTS atomic_write_guard ON memory_history;
+DROP TRIGGER IF EXISTS atomic_write_guard ON memory_receipts;
+DROP TRIGGER IF EXISTS atomic_write_guard ON memory_dependencies;
+DROP TRIGGER IF EXISTS atomic_write_guard ON memory_candidates;
+DROP TRIGGER IF EXISTS atomic_write_guard ON memory_run_bindings;

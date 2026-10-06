@@ -38,6 +38,9 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 	registry.register_capability(Box::new(
 		crate::apps::operations::services::migration_seeds::MigrationSeeds,
 	));
+	registry.register_capability(Box::new(
+		crate::semantic::services::memory_recovery::Command,
+	));
 	registry
 }
 
@@ -346,11 +349,14 @@ pub fn compaction_transport(
 
 /// Semantic transports share rotating credentials with inference and compaction.
 pub fn semantic_transport(
-	client: reqwest::Client,
-) -> aidash_integrations::semantic::SemanticClient {
-	aidash_integrations::semantic::SemanticClient {
-		client,
-		credentials: Arc::new(EnvironmentCredentials),
+	store: &Store,
+) -> crate::apps::knowledge::repositories::postgres_vector::Transport {
+	crate::apps::knowledge::repositories::postgres_vector::Transport {
+		pool: store.pool.clone(),
+		embedding: aidash_integrations::semantic::SemanticClient {
+			client: store.semantic_client.clone(),
+			credentials: Arc::new(EnvironmentCredentials),
+		},
 	}
 }
 
@@ -940,17 +946,6 @@ pub(crate) fn semantic_memory_scope<'a, 'scope>(
 ) -> crate::apps::knowledge::repositories::memory::Memory<'a, 'scope> {
 	crate::apps::knowledge::repositories::memory::Memory {
 		entries: crate::apps::knowledge::repositories::mutations::Entries { lease },
-	}
-}
-
-/// Both memory representations commit together under the same authority lease.
-pub(crate) fn semantic_memory_write_scope<'a, 'scope>(
-	store: &Store,
-	lease: &'a mut crate::semantic::service::Lease<'scope>,
-) -> crate::apps::knowledge::repositories::memory::MemoryWriter<'a, 'scope> {
-	crate::apps::knowledge::repositories::memory::MemoryWriter {
-		inner: semantic_memory_scope(lease),
-		store: store.clone(),
 	}
 }
 
@@ -1697,7 +1692,7 @@ pub(crate) fn source_semantic_search_repository(
 		settlement: crate::apps::execution::generation::repositories::dispatch::NativeSettlement {
 			runtime: runtime.clone(),
 		},
-		transport: semantic_transport(runtime.store.semantic_client.clone()),
+		transport: semantic_transport(&runtime.store),
 	}
 }
 

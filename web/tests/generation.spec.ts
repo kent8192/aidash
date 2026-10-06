@@ -14,6 +14,8 @@ test("generation dashboard manages policy, approval, completion and retained his
   test.setTimeout(90000);
   let embeddingCalls = 0;
   const semanticContexts: unknown[] = [];
+  let semanticRoot = "";
+  const cleanupHeaders = { authorization: "Bearer acceptance-access-token" };
   let semanticIndex:
     | { collection: string; spec: { vector: { endpoint: string } } }
     | undefined;
@@ -285,16 +287,15 @@ test("generation dashboard manages policy, approval, completion and retained his
     const workspace = workspaces.find(
       (item: { title: string }) => item.title === id,
     );
-    const semanticRoot = `/api/workspaces/${workspace.id}/semantic`;
+    semanticRoot = `/api/workspaces/${workspace.id}/semantic`;
     semanticIndex = await api(`${semanticRoot}/index`, {
       expected_revision: 0,
       spec: {
         embedding: embeddingConfig,
         vector: {
-          provider: "qdrant",
-          endpoint:
-            process.env.AIDASH_TEST_QDRANT_URL ?? "http://127.0.0.1:63370",
-          credential_env: "AIDASH_SECRET_TEST_QDRANT",
+          provider: "postgres",
+          endpoint: "local",
+          credential_env: null,
         },
         enabled: true,
         auto_context: true,
@@ -505,17 +506,20 @@ test("generation dashboard manages policy, approval, completion and retained his
       provider.close((error) => (error ? reject(error) : resolve())),
     );
     if (semanticIndex) {
-      const response = await request.delete(
-        `${semanticIndex.spec.vector.endpoint}/collections/${semanticIndex.collection}`,
-        {
-          headers: {
-            "api-key":
-              process.env.AIDASH_SECRET_TEST_QDRANT ??
-              "local-semantic-vector-fixture-key-0123456789",
+      const current = await request.get(`${semanticRoot}/index`, {
+        headers: cleanupHeaders,
+      });
+      if (current.ok()) {
+        const index = await current.json();
+        const response = await request.post(`${semanticRoot}/index`, {
+          headers: cleanupHeaders,
+          data: {
+            expected_revision: index.revision,
+            spec: { ...index.spec, enabled: false },
           },
-        },
-      );
-      expect(response.ok()).toBe(true);
+        });
+        expect(response.ok()).toBe(true);
+      }
     }
   }
 });

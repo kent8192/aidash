@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 
 /// Only constructed from authenticated in-process identities; never accepted
 /// from API input. Persisted jobs retain the initiator and delegation chain.
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub(crate) struct SavedAuthority {
 	pub(crate) credential: Option<Uuid>,
 	pub(crate) tenant: String,

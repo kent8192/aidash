@@ -27,7 +27,7 @@ the existing executable name and default `serve` behavior. Existing
 | `aidash-application`  | Authorized use cases, shared execution contracts, and external ports.    |
 | `aidash-harness`      | Agent steps, worker activation, leases, cancellation, and recovery.      |
 | `aidash-runtime`      | Background supervision, shutdown, and worker drain.                      |
-| `aidash-integrations` | Inference, HTTP/MCP, NATS, Qdrant, and Kubernetes adapters.              |
+| `aidash-integrations` | Inference, HTTP/MCP, NATS and Kubernetes adapters.                       |
 | `aidash-server`       | Reinhardt HTTP/ORM/settings, app repositories/migrations, and bootstrap. |
 
 `server/src/bootstrap.rs` assembles the concrete adapters for both HTTP and
@@ -54,7 +54,7 @@ cargo make k8s-up
 
 This creates a dedicated `aidash-local` kind cluster, builds and imports the
 Aidash backend, frontend, and PostgreSQL images (including `pg_jsonschema`),
-starts persistent PostgreSQL, JetStream NATS and Qdrant, deploys the server,
+starts persistent PostgreSQL with pgvector/PGroonga and JetStream NATS, deploys the server,
 worker, and frontend with Helm, and exposes the dashboard at
 <http://127.0.0.1:8080>. The frontend Service serves the dashboard and proxies
 API, authentication, federation, and health requests to the internal backend Service.
@@ -83,7 +83,7 @@ PostgreSQL password, recreate it with `cargo make k8s-down` followed by
 
 Prerequisites: `cargo-make` and Docker Compose v2.24 or later. Rust 1.96
 and Node.js 22 run inside the development images. Start PostgreSQL, NATS,
-Qdrant, the backend, and Vite in detached mode:
+the backend and Vite in detached mode:
 
 ```sh
 cargo make dev
@@ -154,7 +154,7 @@ Configure a peer on **both** nodes in Settings. Each peer record contains the ot
 
 ## Tools and coordination
 
-Every agent receives these workspace tools: `agent_discover`, `task_create`, `task_delegate`, `artifact_publish`, `workspace_message`, `workspace_observe`, `workspace_wait`, `memory_write`, and `human_request`. The model's final text completes its task and publishes a final artifact. A coordinator must wait for its subtasks and synthesize their artifacts. If a child fails, is blocked, or is cancelled, open its task details and explicitly abandon it with a reason; then answer the parent's human request to resume synthesis. Abandonment is audited and never turns a failed child into a successful result.
+Agents receive permitted workspace tools: `agent_discover`, `task_create`, `task_delegate`, `artifact_publish`, `workspace_message`, `workspace_observe`, `workspace_wait`, and `human_request`. Agents with an explicit memory definition can use `memory_recall` and `memory_reflect`; explicit memory write permission additionally enables `memory_mutate`. The model's final text completes its task and publishes a final artifact. A coordinator must wait for its subtasks and synthesize their artifacts. If a child fails, is blocked, or is cancelled, open its task details and explicitly abandon it with a reason; then answer the parent's human request to resume synthesis. Abandonment is audited and never turns a failed child into a successful result.
 
 Additional tools are versioned Registry entities. Their JSON Schema validates arguments. Agents reference exact tool versions; provider-safe aliases `plugin_0`, `plugin_1`, etc. follow the order of those references. Supported configurations:
 

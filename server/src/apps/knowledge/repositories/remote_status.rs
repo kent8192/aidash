@@ -160,6 +160,11 @@ impl StatusScope for Scope<'_> {
 	}
 	async fn receipt(&mut self, id: Uuid) -> Result<Option<Value>> {
 		let result: NativeResult<Option<Value>> = async {
+			if !super::receiver_caches::readable(&mut self.access.tx, id).await? {
+				return Err(NativeError::RemoteSemantic(
+					aidash_domain::semantic::Failure::Invalidated,
+				));
+			}
 			Ok({
 				let query_bind_1 = id;
 				crate::database::native::query_scalar(

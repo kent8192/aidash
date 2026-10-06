@@ -348,7 +348,7 @@ impl OperatorConversationTransaction for NativeOperatorTransaction {
 				.into());
 			}
 		};
-		let mut native = tx.into_executor();
+		let mut native = tx.into_executor()?;
 		let result = self
 			.federation
 			.delegate_in(

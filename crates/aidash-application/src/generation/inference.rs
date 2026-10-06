@@ -61,7 +61,24 @@ pub async fn reserve(
 	window: usize,
 	output: u32,
 ) -> Result<Option<Reservation>> {
-	let requests = scope.requests(repository.node_id()).await?;
+	reserve_many(&mut [scope], repository, run, attempt, window, output).await
+}
+
+/// One provider call charges the union of every contributing origin's ancestors.
+/// Shared ancestors occur once and every charge commits or rolls back together.
+pub async fn reserve_many(
+	scopes: &mut [&mut dyn GenerationInferenceAuthority],
+	repository: Arc<dyn GenerationInferenceRepository>,
+	run: Uuid,
+	attempt: Uuid,
+	window: usize,
+	output: u32,
+) -> Result<Option<Reservation>> {
+	let mut requests = std::collections::BTreeSet::new();
+	for scope in scopes {
+		requests.extend(scope.requests(repository.node_id()).await?);
+	}
+	let requests: Vec<_> = requests.into_iter().collect();
 	if requests.is_empty() {
 		return Ok(None);
 	}

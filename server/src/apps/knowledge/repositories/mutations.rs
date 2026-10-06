@@ -22,7 +22,7 @@ use reinhardt::query::{
 	Alias, ColumnRef, Expr, ExprTrait as _, LockType, OnConflict, Order, PostgresQueryBuilder,
 	Query, QueryStatementBuilder as _, SimpleExpr,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use uuid::Uuid;
 
 pub(crate) struct NativeConfiguration {
@@ -462,80 +462,6 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 		let lease = &mut *self.lease;
 
 		let result: NativeResult<bool>=async { let value: bool={ let query_bind_1 = id; let query_bind_2 = revision; crate::database::native::query_scalar(&Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM semantic_history WHERE entry_id = ? AND revision = ? AND state = 'PENDING' AND detail = 'reindex requested'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()])).to_string(PostgresQueryBuilder)).scalar_one(&mut **lease.tx()).await? }; Ok(value) }.await;
-		result.map_err(Into::into)
-	}
-
-	async fn managed_memory(&mut self, id: Uuid) -> Result<Option<(String, String, String)>> {
-		let lease = &mut *self.lease;
-
-		let result: NativeResult<Option<(String, String, String)>> = async {
-			let value: Option<(String, String, String)> = {
-				let query_bind_1 = id;
-				crate::database::native::query_as(
-					&Query::select()
-						.expr(SimpleExpr::from(Expr::col(Alias::new("agent_id"))))
-						.expr(SimpleExpr::from(Expr::col(Alias::new("agent_version"))))
-						.expr(SimpleExpr::from(Expr::col(Alias::new("home_node"))))
-						.from(Alias::new("semantic_agent_memory"))
-						.and_where(SimpleExpr::CustomWithExpr(
-							"(entry_id = ?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.to_string(PostgresQueryBuilder),
-				)
-				.columns(&["agent_id", "agent_version", "home_node"])
-				.fetch_optional(&mut **lease.tx())
-				.await?
-			};
-			Ok(value)
-		}
-		.await;
-		result.map_err(Into::into)
-	}
-
-	async fn require_memory_write(
-		&mut self,
-		workspace: Uuid,
-		agent: &str,
-		version: &str,
-	) -> Result<()> {
-		let result: NativeResult<()> = async {
-			if let Some(access) = self.lease.access() {
-				let workspace = access.workspace(workspace).await?;
-				let mut attributes = workspace.attributes;
-				attributes["created_by"] = json!(crate::domain::qualified_agent(
-					&access.node_id,
-					agent,
-					version
-				));
-				attributes["version"] = json!(version);
-				let resource = access.resource("memory", agent, attributes);
-				access.require(&resource, "memory.write").await?;
-			}
-			Ok(())
-		}
-		.await;
-		result.map_err(Into::into)
-	}
-
-	async fn delete_memory(
-		&mut self,
-		workspace: Uuid,
-		agent: String,
-		version: String,
-		home: String,
-	) -> Result<()> {
-		let lease = &mut *self.lease;
-		let agent_id = agent;
-		let agent_version = version;
-		let result: NativeResult<()> = async {
-			let query_bind_1 = workspace;
-			let query_bind_2 = agent_id;
-			let query_bind_3 = agent_version;
-			let query_bind_4 = home;
-			crate::database::native::query(&Query::delete().from_table(Alias::new("memory")).and_where(SimpleExpr::CustomWithExpr("(workspace_id = ? AND agent_id = ? AND agent_version = ? AND home_node = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()])).to_string(PostgresQueryBuilder)).execute(&mut **lease.tx()).await?;
-			Ok(())
-		}.await;
 		result.map_err(Into::into)
 	}
 

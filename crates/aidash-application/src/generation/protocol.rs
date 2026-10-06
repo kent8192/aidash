@@ -25,6 +25,29 @@ use uuid::Uuid;
 
 fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 	match usage.purpose {
+		Purpose::Memory => {
+			let native = description
+				.semantic
+				.native()
+				.ok_or(Error::RemoteSemantic(Failure::Configuration))?;
+			if usage.dispatcher_node != description.source_node
+				|| usage.provider.node_id != description.source_node
+				|| !native
+					.banks
+					.iter()
+					.any(|bank| bank.roles.contains(&usage.provider))
+			{
+				return Err(Error::Forbidden);
+			}
+			if !native.banks.iter().any(|bank| {
+				bank.roles.contains(&usage.provider)
+					&& usage.reserved_tokens > 0
+					&& usize::try_from(usage.reserved_tokens)
+						.is_ok_and(|amount| amount <= bank.max_model_tokens)
+			}) {
+				return Err(Error::RemoteSemantic(Failure::Allowance));
+			}
+		}
 		Purpose::Embedding => {
 			let Binding::RequiredHome { embedding, .. } = &description.semantic else {
 				return Err(Error::RemoteSemantic(Failure::Configuration));
@@ -99,7 +122,7 @@ pub async fn reserve(
 	if source != input.usage.dispatcher_node {
 		return Err(Error::Forbidden);
 	}
-	let mut lease = if input.usage.purpose == Purpose::Embedding {
+	let mut lease = if matches!(input.usage.purpose, Purpose::Embedding | Purpose::Memory) {
 		authority
 			.leaf(source, input.usage.grant_id, input.usage.admission_id)
 			.await?
@@ -109,7 +132,7 @@ pub async fn reserve(
 	let result = async {
 		let description = lease.description().clone();
 		exact_provider(&description, &input.usage)?;
-		if input.usage.purpose == Purpose::Embedding {
+		if matches!(input.usage.purpose, Purpose::Embedding | Purpose::Memory) {
 			let operation: Operation = serde_json::from_value(input.boundary.clone())?;
 			operation.validate()?;
 			if operation.id != input.usage.operation_id
@@ -117,7 +140,8 @@ pub async fn reserve(
 				|| operation.grant_id != input.usage.grant_id
 				|| operation.admission_id != input.usage.admission_id
 				|| operation.home_node != source
-				|| input.usage.reserved_tokens != (operation.query.len() + 1024) as i64
+				|| (input.usage.purpose == Purpose::Embedding
+					&& input.usage.reserved_tokens != (operation.query.len() + 1024) as i64)
 			{
 				return Err(Error::Forbidden);
 			}
@@ -146,7 +170,7 @@ pub async fn verify(
 	input: Input,
 ) -> Result<bool> {
 	if input.usage.dispatcher_node != authority.node_id()
-		|| input.usage.purpose == Purpose::Embedding
+		|| matches!(input.usage.purpose, Purpose::Embedding | Purpose::Memory)
 	{
 		return Err(Error::Forbidden);
 	}
@@ -236,7 +260,7 @@ pub async fn admit(
 			} => (**provider).clone(),
 			_ => return Err(Error::RemoteSemantic(Failure::ContextBudget)),
 		},
-		Purpose::Embedding => return Err(Error::Forbidden),
+		Purpose::Embedding | Purpose::Memory => return Err(Error::Forbidden),
 	};
 	let input = Input {
 		usage: Usage {

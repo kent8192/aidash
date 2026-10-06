@@ -36,7 +36,7 @@ pub async fn postgres_container() -> (ContainerAsync<GenericImage>, Arc<PgPool>,
 				.await
 			{
 				Ok(pool) => break pool,
-				Err(sqlx::Error::Io(_) | sqlx::Error::PoolTimedOut) => {}
+				Err(sqlx::Error::Io(_) | sqlx::Error::PoolTimedOut | sqlx::Error::Protocol(_)) => {}
 				Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("57P03") => {}
 				Err(error) => panic!("fixture PostgreSQL connection failed: {error}"),
 			}

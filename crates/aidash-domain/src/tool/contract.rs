@@ -44,16 +44,20 @@ pub enum AgentFlag {
 	TaskCreation,
 	Delegation,
 	MemoryWrite,
+	MemoryRead,
 	WorkspaceRetrieval,
 }
 impl AgentFlag {
 	pub fn permitted(self, config: &AgentConfig) -> bool {
-		(match self {
-			Self::TaskCreation => config.allow_task_creation,
-			Self::Delegation => config.allow_task_delegation,
-			Self::MemoryWrite => config.allow_memory_write,
-			Self::WorkspaceRetrieval => config.allow_workspace_retrieval,
-		}) != Some(false)
+		match self {
+			Self::TaskCreation => config.allow_task_creation != Some(false),
+			Self::Delegation => config.allow_task_delegation != Some(false),
+			Self::MemoryWrite => config.memory.is_some() && config.allow_memory_write == Some(true),
+			Self::MemoryRead => {
+				config.memory.is_some() && config.allow_cross_conversation_memory != Some(false)
+			}
+			Self::WorkspaceRetrieval => config.allow_workspace_retrieval != Some(false),
+		}
 	}
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -269,10 +273,23 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 				.push(resource("message.create", "workspace", Workspace));
 			contract.remote_exposure = true;
 		}
-		"memory_write" => {
+		"memory_mutate" => {
 			auth.flag = Some(AgentFlag::MemoryWrite);
 			auth.requirements
 				.push(resource("memory.write", "memory", Agent));
+		}
+		"memory_recall" | "memory_reflect" => {
+			auth.flag = Some(AgentFlag::MemoryRead);
+			auth.requirements.push(resource(
+				if name == "memory_recall" {
+					"memory.read"
+				} else {
+					"memory.reflect"
+				},
+				"memory",
+				Agent,
+			));
+			behavior.effect = ToolEffect::ReadOnly;
 		}
 		"human_request" => {
 			auth.requirements
@@ -349,6 +366,45 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 mod tests {
 	use super::*;
 	#[test]
+	fn native_memory_contracts_require_explicit_policy_and_stay_at_home() {
+		let mut config: AgentConfig = serde_json::from_value(serde_json::json!({
+			"model": {"id":"model", "version":"1"}
+		}))
+		.unwrap();
+		assert!(!AgentFlag::MemoryWrite.permitted(&config));
+		assert!(!AgentFlag::MemoryRead.permitted(&config));
+		config.memory = Some(EntityRef {
+			id: "memory".into(),
+			version: "1".into(),
+		});
+		assert!(AgentFlag::MemoryRead.permitted(&config));
+		assert!(!AgentFlag::MemoryWrite.permitted(&config));
+		config.allow_memory_write = Some(true);
+		assert!(AgentFlag::MemoryWrite.permitted(&config));
+		config.allow_cross_conversation_memory = Some(false);
+		assert!(!AgentFlag::MemoryRead.permitted(&config));
+		for (name, action, effect) in [
+			("memory_mutate", "memory.write", ToolEffect::Idempotent),
+			("memory_recall", "memory.read", ToolEffect::ReadOnly),
+			("memory_reflect", "memory.reflect", ToolEffect::ReadOnly),
+		] {
+			let contract = builtin_contract(name).unwrap();
+			assert_eq!(contract.disclosure, DisclosureBoundary::Home);
+			assert!(!contract.remote_exposure);
+			assert!(contract.replay_safe());
+			assert_eq!(contract.behavior.effect, effect);
+			assert_eq!(
+				contract.authorization.requirements,
+				vec![AuthorizationRequirement::Resource {
+					action,
+					kind: "memory",
+					target: ResourceTarget::Agent
+				}]
+			);
+		}
+		assert!(builtin_contract("memory_write").is_none());
+	}
+	#[test]
 	fn modes_and_remote_exposure_are_explicit_sets() {
 		let names = [
 			"task_create",
@@ -356,7 +412,9 @@ mod tests {
 			"task_delegate",
 			"artifact_publish",
 			"workspace_message",
-			"memory_write",
+			"memory_mutate",
+			"memory_recall",
+			"memory_reflect",
 			"human_request",
 			"agent_discover",
 			"workspace_read",

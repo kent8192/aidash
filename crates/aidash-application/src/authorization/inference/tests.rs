@@ -18,7 +18,7 @@ fn reference(key: &str) -> EntityRef {
 fn agent() -> AgentConfig {
 	serde_json::from_value(
 		json!({"model":reference("model"),"skills":[reference("first"),reference("second")],
-        "tools":[],"core_capabilities":{"files":true},"allow_cross_conversation_memory":true}),
+        "tools":[],"memory":reference("memory"),"core_capabilities":{"files":true},"allow_cross_conversation_memory":true}),
 	)
 	.unwrap()
 }

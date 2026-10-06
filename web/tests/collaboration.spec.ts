@@ -2,83 +2,131 @@ import { expect, test } from "@playwright/test";
 import { setup } from "./collaboration-fixture";
 
 for (const locale of ["en-US", "ja-JP"] as const) {
-  test(`remote assignment pins the selected memory providers in ${locale}`, async ({
-    page,
-  }) => {
-    const ja = locale === "ja-JP";
-    const { errors } = await setup(page, {
-      subject: true,
-      locale,
-      openTask: true,
-      remoteAssignment: true,
-    });
-    const grants: Record<string, unknown>[] = [];
-    await page.route("**/api/tasks/task-0/remote-grants**", async (route) => {
-      if (new URL(route.request().url()).pathname.endsWith("/remote-grants")) {
-        grants.push(route.request().postDataJSON());
-        return route.fulfill({ json: { id: grants.at(-1)!.id } });
+  for (const native of [false, true]) {
+    test(`remote assignment pins the selected ${native ? "native" : "semantic"} memory providers in ${locale}`, async ({
+      page,
+    }) => {
+      const ja = locale === "ja-JP";
+      const { errors } = await setup(page, {
+        subject: true,
+        locale,
+        openTask: true,
+        remoteAssignment: true,
+        nativeMemory: native,
+      });
+      const grants: Record<string, unknown>[] = [];
+      let attempts = 0;
+      await page.route("**/api/tasks/task-0/remote-grants**", async (route) => {
+        if (
+          new URL(route.request().url()).pathname.endsWith("/remote-grants")
+        ) {
+          grants.push(route.request().postDataJSON());
+          return route.fulfill({ json: { id: grants.at(-1)!.id } });
+        }
+        if (native && ++attempts === 1)
+          return route.fulfill({
+            status: 503,
+            json: { error: { message: "Temporary response loss" } },
+          });
+        return route.fulfill({
+          json: {
+            admission_id: "remote-run",
+            phase: "RECEIVED",
+            control: "ACTIVE",
+          },
+        });
+      });
+      await page.goto("/collaboration?channel=workspace-one");
+      await page
+        .getByRole("button", {
+          name: ja ? "タスクと成果物" : "Tasks and results",
+          exact: true,
+        })
+        .click();
+      await page
+        .locator(".collab-channel .collab-task")
+        .filter({ hasText: "Collect evidence" })
+        .click();
+      await page
+        .getByRole("button", {
+          name: ja ? "担当を割り当て" : "Assign agent",
+          exact: true,
+        })
+        .click();
+      const dialog = page.getByRole("dialog");
+      await dialog
+        .locator("select[name=agent]")
+        .selectOption(
+          JSON.stringify(["aidash://remote", "researcher", "1.0.0"]),
+        );
+      const enabled = dialog.getByLabel(
+        ja
+          ? "各推論の前に Home の記憶を検索する"
+          : "Require Home memory before each inference",
+      );
+      if (native) {
+        await expect(enabled).toBeChecked();
+        await expect(enabled).toBeDisabled();
+        await dialog
+          .getByLabel(ja ? "Homeの論理Agent" : "Home logical Agent", {
+            exact: true,
+          })
+          .selectOption("home-logical-agent");
+      } else {
+        await expect(enabled).not.toBeChecked();
+        await enabled.check();
       }
-      return route.fulfill({
-        json: {
-          admission_id: "remote-run",
-          phase: "RECEIVED",
-          control: "ACTIVE",
+      await dialog
+        .locator("select[name=embedding]")
+        .selectOption("home-embedding@1.0.0");
+      await dialog
+        .locator("input[name=compactor]")
+        .fill("approved-compactor@2.0.0");
+      await dialog
+        .getByRole("button", {
+          name: ja ? "担当を割り当て" : "Assign agent",
+          exact: true,
+        })
+        .click();
+      if (native) {
+        await expect(dialog.getByRole("alert")).toContainText(
+          "Temporary response loss",
+        );
+        await expect(dialog.locator("select[name=agent]")).toBeDisabled();
+        await expect(dialog.locator("select[name=embedding]")).toBeDisabled();
+        await dialog
+          .getByRole("button", {
+            name: ja
+              ? "同じ実行許可を再試行"
+              : "Retry the same execution grant",
+            exact: true,
+          })
+          .click();
+        expect(grants[1]).toEqual(grants[0]);
+      }
+      await expect(dialog).toHaveCount(0);
+      expect(grants).toHaveLength(native ? 2 : 1);
+      expect(grants[0]).toMatchObject({
+        node_id: "aidash://remote",
+        agent: { id: "researcher", version: "1.0.0" },
+        semantic: {
+          mode: "required_home",
+          embedding: { id: "home-embedding", version: "1.0.0" },
+          compactor: { id: "approved-compactor", version: "2.0.0" },
+          ...(native
+            ? {
+                native: {
+                  participant: "home-logical-agent",
+                  expected_revision: 7,
+                  provider: { id: "native-memory", version: "1.0.0" },
+                },
+              }
+            : {}),
         },
       });
+      expect(errors).toEqual([]);
     });
-    await page.goto("/collaboration?channel=workspace-one");
-    await page
-      .getByRole("button", {
-        name: ja ? "タスクと成果物" : "Tasks and results",
-        exact: true,
-      })
-      .click();
-    await page
-      .locator(".collab-channel .collab-task")
-      .filter({ hasText: "Collect evidence" })
-      .click();
-    await page
-      .getByRole("button", {
-        name: ja ? "担当を割り当て" : "Assign agent",
-        exact: true,
-      })
-      .click();
-    const dialog = page.getByRole("dialog");
-    await dialog
-      .locator("select[name=agent]")
-      .selectOption(JSON.stringify(["aidash://remote", "researcher", "1.0.0"]));
-    const enabled = dialog.getByLabel(
-      ja
-        ? "各推論の前に Home の記憶を検索する"
-        : "Require Home memory before each inference",
-    );
-    await expect(enabled).not.toBeChecked();
-    await enabled.check();
-    await dialog
-      .locator("select[name=embedding]")
-      .selectOption("home-embedding@1.0.0");
-    await dialog
-      .locator("input[name=compactor]")
-      .fill("approved-compactor@2.0.0");
-    await dialog
-      .getByRole("button", {
-        name: ja ? "担当を割り当て" : "Assign agent",
-        exact: true,
-      })
-      .click();
-    await expect(dialog).toHaveCount(0);
-    expect(grants).toHaveLength(1);
-    expect(grants[0]).toMatchObject({
-      node_id: "aidash://remote",
-      agent: { id: "researcher", version: "1.0.0" },
-      semantic: {
-        mode: "required_home",
-        embedding: { id: "home-embedding", version: "1.0.0" },
-        compactor: { id: "approved-compactor", version: "2.0.0" },
-      },
-    });
-    expect(errors).toEqual([]);
-  });
+  }
 
   test(`hidden run retains only stop controls in ${locale}`, async ({
     page,
@@ -99,6 +147,15 @@ for (const locale of ["en-US", "ja-JP"] as const) {
             phase: "THINKING",
             control,
             semantic_reason: "invalidated",
+            memory_cleanup: {
+              state: "failed",
+              invalidated: true,
+              expires_at: "2026-10-06T00:00:00Z",
+              attempts: 2,
+              max_attempts: 2,
+              next_attempt: "2026-10-06T00:00:00Z",
+              last_error: "receiver_storage_unavailable",
+            },
           },
         });
       }
@@ -122,6 +179,9 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     });
     await expect(panel).toContainText(
       ja ? "参照済みのソース" : "A consumed source changed",
+    );
+    await expect(panel).toContainText(
+      ja ? "受信コピーの清掃: 失敗" : "Receiver copy cleanup: Failed",
     );
     await expect(
       page
@@ -147,6 +207,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       subject: true,
       locale,
       openTask: true,
+      nativeMemory: true,
     });
     const intents: Record<string, unknown>[] = [];
     const grants: Record<string, unknown>[] = [];
@@ -297,6 +358,24 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         exact: true,
       })
       .fill("home-embedding@1.0.0");
+    await form
+      .getByLabel(
+        ja
+          ? "Homeの私有・共有記憶を参照する"
+          : "Use private and shared memory at Home",
+      )
+      .check();
+    await form
+      .getByLabel(
+        ja
+          ? "Homeの記憶設定テンプレート"
+          : "Home memory configuration template",
+        { exact: true },
+      )
+      .selectOption("home-logical-agent");
+    await expect(form).toContainText(
+      ja ? "私有記憶を空で開始" : "empty private memory",
+    );
     const activate = form.getByRole("button", {
       name: ja ? "許可して実行" : "Authorize and execute",
       exact: true,
@@ -305,7 +384,13 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     await expect(dialog.getByRole("alert")).toContainText(
       "Temporary response loss",
     );
-    await activate.click();
+    await expect(form.locator("input[name=lifetime]")).toBeDisabled();
+    await form
+      .getByRole("button", {
+        name: ja ? "同じ実行許可を再試行" : "Retry the same execution grant",
+        exact: true,
+      })
+      .click();
     await expect(dialog).toHaveCount(0);
     expect(activationAttempts).toBe(2);
     expect(grants).toHaveLength(2);
@@ -316,6 +401,11 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       semantic: {
         mode: "required_home",
         embedding: { id: "home-embedding", version: "1.0.0" },
+        native: {
+          participant: "home-logical-agent",
+          expected_revision: 7,
+          provider: { id: "native-memory", version: "1.0.0" },
+        },
       },
     });
     expect(errors).toEqual([]);
@@ -396,6 +486,35 @@ for (const locale of ["en-US", "ja-JP"] as const) {
                     agent: null,
                   },
                 ],
+                memory: [
+                  {
+                    bank: {
+                      home: "aidash://home",
+                      tenant: "acme",
+                      workspace: "workspace-one",
+                      participant: "home-logical-agent",
+                    },
+                    provider: { id: "native-memory", version: "1.0.0" },
+                    state: "ready",
+                    units: [
+                      {
+                        id: "canonical-memory-unit",
+                        revision: 7,
+                        kind: "world",
+                        verification: "unverified",
+                        evidence: [
+                          {
+                            kind: "artifact",
+                            id: "supporting-artifact",
+                            revision: 2,
+                            digest: "sha256:source",
+                          },
+                        ],
+                        content_digest: "sha256:unit",
+                      },
+                    ],
+                  },
+                ],
               },
             });
       if (path.endsWith("/follow-up")) {
@@ -436,10 +555,17 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       panel.getByText("origin-allowance", { exact: true }),
     ).toBeVisible();
     await expect(panel).toContainText("1,234 / 800,000");
+    await expect(
+      panel.getByText("canonical-memory-unit", { exact: true }),
+    ).toBeVisible();
+    await expect(panel).toContainText(ja ? "未検証" : "Unverified");
     denied = true;
     await expect(
       panel.getByText("verified-source", { exact: true }),
     ).toHaveCount(0, { timeout: 12000 });
+    await expect(
+      panel.getByText("canonical-memory-unit", { exact: true }),
+    ).toHaveCount(0);
     await expect(panel.getByRole("status")).toContainText(
       ja ? "現在の権限" : "current authority",
     );

@@ -40,7 +40,39 @@ pub(crate) async fn run_receipt(
 	)
 	.await
 	.map_err(Into::into);
-	access.finish(result).await
+	let result = access.finish(result).await;
+	if matches!(&result, Err(Error::Forbidden | Error::RemoteSemantic(_))) {
+		// A denied reader cannot erase another subject's valid cache. Recheck the
+		// original worker authority after releasing the reader's transaction.
+		if let Ok(run) = f.store.run(id).await {
+			match crate::apps::identity::services::peer::admission::worker_lease(
+				&f,
+				&run.metadata(),
+			)
+			.await
+			{
+				Ok(Some((access, _))) => {
+					access.finish(Ok(())).await?;
+				}
+				Ok(None) => {}
+				Err(Error::RemoteSemantic(Failure::Invalidated)) => {
+					// worker_lease has durably scheduled and attempted erasure.
+				}
+				Err(_) => {}
+			}
+			if matches!(&result, Err(Error::RemoteSemantic(Failure::Invalidated)))
+				&& crate::apps::knowledge::repositories::remote_memory_reads::erase_receiver(
+					&f.store,
+					&run.metadata(),
+				)
+				.await
+				.is_err()
+			{
+				tracing::warn!(run = %id, "receiver quotation cleanup remains pending or failed");
+			}
+		}
+	}
+	result
 }
 pub(crate) async fn load(
 	store: &Store,
@@ -48,12 +80,31 @@ pub(crate) async fn load(
 	binding: &Binding,
 	reason: Option<Failure>,
 ) -> Result<Status> {
-	aidash_application::semantic::remote_status::load(
+	let mut status = aidash_application::semantic::remote_status::load(
 		&crate::bootstrap::semantic_status_repository(store),
 		grant,
 		binding,
 		reason,
 	)
 	.await
-	.map_err(Into::into)
+	.map_err(crate::Error::from)?;
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	};
+	let admissions = Query::select()
+		.column(Alias::new("admission_id"))
+		.from(Alias::new("semantic_remote_operations"))
+		.and_where(Expr::col("grant_id").eq(Expr::value(grant)))
+		.to_owned();
+	status.body_cleanup = crate::database::native::query_scalar(
+		&Query::select()
+			.column(Alias::new("state"))
+			.from(Alias::new("memory_receiver_caches"))
+			.and_where(Expr::col("run_id").in_subquery(admissions))
+			.limit(1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_optional(&store.pool)
+	.await?;
+	Ok(status)
 }

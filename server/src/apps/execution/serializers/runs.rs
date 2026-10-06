@@ -5,13 +5,12 @@ use crate::{
 };
 use schemars::JsonSchema;
 use serde::Serialize;
-use serde_json::Value;
 
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct RunDetails {
 	pub run: crate::domain::RunInspection,
 	pub invocations: Vec<Invocation>,
-	pub memory: Value,
+	pub memory: Option<aidash_domain::memory::Binding>,
 	/// Each current route lists MIME types accepted together by the run model.
 	pub media_input_routes: Vec<Vec<String>>,
 }

@@ -98,6 +98,9 @@ pub async fn receiver_lease<R: PeerAdmissionRepository>(
 			};
 			scope.require(&workspace, "semantic.use").await?
 		};
+		if description.semantic.native().is_some() {
+			scope.require(&workspace, "memory.use").await?;
+		}
 		let task = scope.resource(
 			"task",
 			&format!("{source}/tasks/{}", description.task.id),

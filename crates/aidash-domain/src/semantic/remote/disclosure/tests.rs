@@ -10,6 +10,7 @@ use serde_json::json;
 use uuid::Uuid;
 fn receipt(matches: usize) -> Receipt {
 	Receipt {
+		memory: None,
 		operation_id: Uuid::from_u128(1),
 		operation_digest: "digest".into(),
 		home_node: "aidash://home".into(),

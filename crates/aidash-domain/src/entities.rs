@@ -146,7 +146,7 @@ pub struct Workspace {
 	pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Task {
 	pub id: Uuid,
 	pub workspace_id: Uuid,

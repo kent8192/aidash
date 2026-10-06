@@ -4,7 +4,6 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${AIDASH_CAPABILITY_PROFILE:?Set AIDASH_CAPABILITY_PROFILE to the verified isolated execution profile.}"
 export AIDASH_SECRET_TEST_PEER=local-peer-regression-test-token-0123456789
-export AIDASH_SECRET_TEST_QDRANT=local-semantic-vector-fixture-key-0123456789
 export RUSTC_WRAPPER=
 scripts/build-test-postgres.sh
 # Each case owns up to two independent twelve-connection pools.
