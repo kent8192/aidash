@@ -35,10 +35,11 @@ explicit `bytea` field annotation; see
 native typed `FieldType::Bytea` columns, original column order, named unique key,
 cascading session references, and two lookup indexes. This follows the baseline's
 existing state/database split and remains one graph and one ledger. The physical
-migration precedes its state snapshot: the pinned file-state replay currently
-includes database-only operations when comparing models; see
+migration precedes its state snapshot. File-state replay excludes database-only
+operations from logical model reconstruction while retaining their dependencies;
+the pinned revision incorporates
 [#6638](https://github.com/kent8192/reinhardt-web/issues/6638). The final snapshot
-restores the registered model metadata. These migrations extend the original table definitions and preserve their SQL
+records the registered model metadata. These migrations extend the original table definitions and preserve their SQL
 assets. The environment migration additionally records conditional extension
 ownership before this new native history is published. The complete native graph contains 46
 records and describes 117 models.
@@ -91,11 +92,12 @@ vertical tab, form feed, or carriage return characters. PostgreSQL escape string
 literals preserve the existing Unicode whitespace set in nonblank CHECKs
 without putting special line terminators in source files.
 
-The native `FilesystemSource` resolves literal `include_str!` references within
-confined sibling SQL assets. Execution, inspection, and `makemigrations --dry-run --check` read the original
-app history directly. At the pinned revision, writing a nonempty migration can
-fail during the repository's duplicate check because that read path omits the
-SQL asset context; this is tracked in
+The native `FilesystemSource` and `FilesystemRepository` resolve literal
+`include_str!` references within confined sibling SQL assets. Execution,
+inspection, file-state reconstruction and nonempty `makemigrations` writes read
+the original app history directly. Repository reads and save-time duplicate
+checks carry the same SQL asset context through source validation and metadata
+extraction; the pinned revision incorporates
 [#6636](https://github.com/kent8192/reinhardt-web/issues/6636).
 
 For the one-time generation of `0009_desktop_sessions`, the native
@@ -104,11 +106,13 @@ For the one-time generation of `0009_desktop_sessions`, the native
 The real `manage makemigrations identity --state-source files --name desktop_sessions`
 then generated the new file against that temporary directory. Only the new file
 was copied into canonical history; all original files retained their SHA256 hashes.
-There is no second persisted history or migration engine. Future nonempty writes
-should use the upstream context fix once the independent repository get/save and
-real command reproductions pass; dry-run inspection remains available meanwhile.
+There is no second persisted history or migration engine. New migrations use the
+canonical history directly; the temporary resolved-copy generation procedure is
+no longer needed. The CLI regression copies the complete history, introduces one
+logical field difference, and verifies a nonempty save, unchanged input assets,
+the expected dependency, and a subsequent `--dry-run --check` with no changes.
 
-The pinned revision `eda370db6f09e4e0ba93327508a653250395fa08` includes SQL asset
+The pinned revision `a068ecbdc03ff01653f80c9c4ab36e15a27f2bd7` includes SQL asset
 loading [#6505](https://github.com/kent8192/reinhardt-web/issues/6505) and native
 PostgreSQL sequence/identity operations
 [#6506](https://github.com/kent8192/reinhardt-web/issues/6506), column-default

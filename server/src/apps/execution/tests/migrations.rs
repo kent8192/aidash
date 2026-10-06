@@ -6,6 +6,7 @@ use deployment::deployment_command;
 use reinhardt::db::backends::DatabaseConnection as BackendConnection;
 use reinhardt::db::migrations::{
 	DatabaseMigrationRecorder, FilesystemSource, MigrationSource, SqlDialect,
+	build_state_from_files,
 };
 use reinhardt::db::orm::Model;
 use reinhardt::db::orm::connection::DatabaseConnectionLease;
@@ -230,6 +231,163 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 		vec![("execution".to_owned(), "0007_model_state".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
+	#[future] fresh_database: MigrationFixture,
+) {
+	// Arrange: change one logical field in a disposable copy of the full history.
+	let fixture = fresh_database.await;
+	let mut command = deployment_command(&fixture.url, fixture.directory.path());
+	let root = fixture.directory.path().join("migrations");
+	let history = root.join("workspaces/0007_model_state.rs");
+	let original = std::fs::read_to_string(&history).unwrap();
+	let field = concat!(
+		"name: \"artifacts\".to_string(),\n",
+		"\t\t\tcolumns: vec![\n",
+		"\t\t\t\tColumnDefinition::new(\"content\", FieldType::Jsonb)\n",
+		"\t\t\t\t\t.with_not_null(true)",
+	);
+	assert_eq!(original.matches(field).count(), 1);
+	let edited = original.replacen(
+		field,
+		&field.replace(".with_not_null(true)", ".with_not_null(false)"),
+		1,
+	);
+	std::fs::write(&history, &edited).unwrap();
+	let before = FilesystemSource::new(&root).all_migrations().await.unwrap();
+	assert_eq!(before.len(), 46);
+	let predecessor = build_state_from_files(&FilesystemSource::new(&root))
+		.await
+		.unwrap();
+	assert!(predecessor.find_model_by_table("artifacts").unwrap().fields["content"].nullable);
+	let mut input_files = Vec::new();
+	let mut directories = vec![root.clone()];
+	while let Some(directory) = directories.pop() {
+		for entry in std::fs::read_dir(directory).unwrap() {
+			let path = entry.unwrap().path();
+			if path.is_dir() {
+				directories.push(path);
+			} else {
+				input_files.push((path.clone(), std::fs::read(path).unwrap()));
+			}
+		}
+	}
+	let bin = fixture.directory.path().join("src/bin");
+	std::fs::create_dir_all(&bin).unwrap();
+	std::fs::copy(
+		PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/bin/manage.rs"),
+		bin.join("manage.rs"),
+	)
+	.unwrap();
+	command
+		.args([
+			"makemigrations",
+			"workspaces",
+			"--state-source",
+			"files",
+			"--name",
+			"content_probe",
+		])
+		.stdin(Stdio::null());
+
+	// Act: save through the native repository against existing include_str! DDL.
+	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
+		.await
+		.expect("nonempty migration generation must complete")
+		.unwrap();
+
+	// Assert: exactly one field repair is generated, with the existing dependency.
+	assert!(
+		output.status.success(),
+		"{}\n{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let after = FilesystemSource::new(&root).all_migrations().await.unwrap();
+	assert_eq!(after.len(), 47);
+	for migration in &before {
+		let retained = after
+			.iter()
+			.find(|item| item.app_label == migration.app_label && item.name == migration.name)
+			.unwrap();
+		assert_eq!(
+			serde_json::to_value(retained).unwrap(),
+			serde_json::to_value(migration).unwrap()
+		);
+	}
+	assert_eq!(std::fs::read_to_string(history).unwrap(), edited);
+	let generated = after
+		.iter()
+		.find(|migration| {
+			migration.app_label == "workspaces" && migration.name == "0008_content_probe"
+		})
+		.unwrap();
+	assert_eq!(
+		generated.dependencies,
+		vec![("workspaces".to_owned(), "0007_model_state".to_owned())]
+	);
+	assert_eq!(generated.operations.len(), 1);
+	let reinhardt::db::migrations::Operation::AlterColumn {
+		table,
+		column,
+		new_definition,
+		..
+	} = &generated.operations[0]
+	else {
+		panic!("the generated migration must repair one column");
+	};
+	assert_eq!(table, "artifacts");
+	assert_eq!(column, "content");
+	assert!(new_definition.not_null);
+	assert_eq!(
+		new_definition.type_definition,
+		reinhardt::db::migrations::FieldType::Jsonb
+	);
+
+	// Replay the same edited history plus the saved repair through the real CLI.
+	let mut check = tokio::process::Command::new(env!("CARGO_BIN_EXE_manage"));
+	check
+		.env_clear()
+		.envs(
+			command
+				.as_std()
+				.get_envs()
+				.filter_map(|(key, value)| value.map(|value| (key, value))),
+		)
+		.current_dir(fixture.directory.path())
+		.args([
+			"makemigrations",
+			"--state-source",
+			"files",
+			"--dry-run",
+			"--check",
+		])
+		.stdin(Stdio::null())
+		.kill_on_drop(true);
+	let output = tokio::time::timeout(Duration::from_secs(35), check.output())
+		.await
+		.expect("the saved logical repair must replay")
+		.unwrap();
+	assert!(
+		output.status.success(),
+		"{}\n{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	assert!(String::from_utf8_lossy(&output.stdout).contains("No changes detected"));
+	for (path, content) in input_files {
+		assert_eq!(std::fs::read(&path).unwrap(), content, "{}", path.display());
+	}
+	assert!(
+		DatabaseMigrationRecorder::new(fixture.connection)
+			.get_applied_migrations_if_present()
+			.await
+			.unwrap()
+			.is_empty()
+	);
 }
 
 impl MigrationFixture {

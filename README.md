@@ -39,7 +39,7 @@ The React dashboard remains in
 `web/` and uses the existing URL, JSON, authentication, and SSE contracts.
 
 Reinhardt is pinned to development revision
-`eda370db6f09e4e0ba93327508a653250395fa08` in the manifests and lockfile. The initial
+`a068ecbdc03ff01653f80c9c4ab36e15a27f2bd7` in the manifests and lockfile. The initial
 project and app scaffolds were generated with the Reinhardt CLI.
 
 ## Run locally
