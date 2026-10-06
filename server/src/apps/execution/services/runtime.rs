@@ -11,7 +11,7 @@ impl Harness {
 	pub async fn worker_once(&self) -> Result<bool> {
 		let leases = crate::bootstrap::worker_leases(&self.federation.store);
 		let terminal = crate::bootstrap::terminal_repository(&self.federation);
-		if aidash_runtime::execution::failure_once(
+		if aidash_harness::execution::failure_once(
 			&terminal,
 			&leases,
 			self.federation.config.lease_seconds,
@@ -20,7 +20,7 @@ impl Harness {
 		{
 			return Ok(true);
 		}
-		if aidash_application::execution::terminal::pending(&terminal).await? {
+		if aidash_harness::execution::terminal::pending(&terminal).await? {
 			return Ok(true);
 		}
 		let visibility =
@@ -46,7 +46,7 @@ impl Harness {
 	) -> Result<bool> {
 		let scope = crate::bootstrap::worker_step(&self.federation, run, visibility);
 		let leases = crate::bootstrap::worker_leases(&self.federation.store);
-		aidash_runtime::execution::advance(
+		aidash_harness::execution::advance(
 			scope,
 			&leases,
 			token,
@@ -60,7 +60,7 @@ impl Harness {
 		&self,
 		stopping: tokio::sync::watch::Receiver<bool>,
 	) -> Result<()> {
-		aidash_runtime::execution::deliver_terminal_until(
+		aidash_harness::execution::deliver_terminal_until(
 			Arc::new(crate::bootstrap::terminal_repository(&self.federation)),
 			Arc::new(crate::bootstrap::worker_leases(&self.federation.store)),
 			self.federation.config.lease_seconds,
@@ -85,7 +85,7 @@ impl Harness {
 			crate::activation::Settings::from_env()?,
 			true,
 		);
-		aidash_runtime::execution::run_worker(
+		aidash_harness::execution::run_worker(
 			activation,
 			Arc::new(crate::bootstrap::activation_repository(self.clone())),
 			Arc::new(crate::bootstrap::terminal_repository(&self.federation)),
@@ -102,7 +102,7 @@ pub(crate) async fn wait_for_inference_cancellation(
 	store: &crate::store::Store,
 	id: Uuid,
 ) -> Result<()> {
-	aidash_runtime::execution::wait_for_cancellation(&crate::bootstrap::worker_leases(store), id)
+	aidash_harness::execution::wait_for_cancellation(&crate::bootstrap::worker_leases(store), id)
 		.await
 		.map_err(Into::into)
 }

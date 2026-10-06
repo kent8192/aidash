@@ -28,6 +28,7 @@ path = "src/bin/local-dev-db.rs"
 [dependencies]
 aidash-domain.workspace = true
 aidash-application.workspace = true
+aidash-harness.workspace = true
 aidash-runtime.workspace = true
 aidash-integrations.workspace = true
 reinhardt = { workspace = true, features = [

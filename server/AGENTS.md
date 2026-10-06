@@ -31,7 +31,7 @@ Read the relevant instruction before changing the matching surface:
 - Import framework APIs through the `reinhardt` facade.
 - Add applications with `cargo run --bin manage startapp <name>` so generated registries stay synchronized.
 - Use this extraction test for every feature: "Could this feature be extracted and moved to another project?" If not, reduce project-level coupling until the feature can live inside an app created with `startapp`.
-- Keep feature-owned persistence models, repositories, serializers, views, and routes inside the app. Business models and rules belong to `aidash-domain`; use cases and authorization belong to `aidash-application`. App services only adapt those use cases.
+- Keep feature-owned persistence models, repositories, serializers, views, and routes inside the app. Business models and rules belong to `aidash-domain`; shared use cases, execution ports, and authorization belong to `aidash-application`; agent execution and worker lifecycle belong to `aidash-harness`. App services compose those implementations through native adapters.
 - Keep project-level route composition in `src/config/urls.rs`; endpoint implementations belong to app-local modules.
 - Keep installed-app registration in `src/config/apps.rs` and module declarations in `src/apps.rs`.
 - Prefer endpoint macros, route helpers, typed serializers, and framework builders over parallel local infrastructure.

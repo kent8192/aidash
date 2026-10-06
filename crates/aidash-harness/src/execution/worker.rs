@@ -1,5 +1,5 @@
 //! Revoked scoped cancellation precedes fresh worker admission and agent effects.
-use crate::{
+use aidash_application::{
 	Result,
 	ports::execution::worker::{WorkerLeases, WorkerStep},
 };

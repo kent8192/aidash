@@ -1854,7 +1854,7 @@ pub(crate) fn activation_driver(
 	mut federation: Federation,
 	settings: crate::activation::Settings,
 	worker: bool,
-) -> Arc<aidash_runtime::activation::Runtime> {
+) -> Arc<aidash_harness::activation::Runtime> {
 	if let Ok(url) = std::env::var("AIDASH_ACTIVATION_NATS_URL") {
 		federation.config.nats_url = url;
 	}
@@ -1864,10 +1864,10 @@ pub(crate) fn activation_driver(
 		activation_broker_configuration(&settings),
 		worker,
 	);
-	aidash_runtime::activation::Runtime::new(
+	aidash_harness::activation::Runtime::new(
 		Arc::new(activation_repository(Harness { federation })),
 		Arc::new(connector),
-		aidash_runtime::activation::Settings {
+		aidash_harness::activation::Settings {
 			recovery: settings.recovery,
 			fallback: settings.fallback,
 			test_pause_file: settings.test_pause_file,

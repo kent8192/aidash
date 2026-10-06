@@ -1,5 +1,5 @@
 //! Live admission and terminal outcomes are shared by background and explicit delivery.
-use crate::{Error, Result, ports::execution::terminal::*};
+use aidash_application::{Error, Result, ports::execution::terminal::*};
 use aidash_domain::{RunControl, TaskStatus};
 
 /// Receiver cancellation after revocation must not require reaching its Home node.

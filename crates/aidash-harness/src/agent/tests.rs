@@ -1,6 +1,6 @@
 //! Agent lifecycle and inference authority are tested without a database or HTTP.
 use super::*;
-use crate::ports::{CompactionClassifier, CompactionQuestions, ModelProvider};
+use aidash_application::ports::{CompactionClassifier, CompactionQuestions, ModelProvider};
 use aidash_domain::provider::{ContentPart, ModelRequest, ModelResponse, ToolCall};
 use aidash_domain::registry::{EntityRef, Entry};
 use async_trait::async_trait;

@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Error, ports::ExecutionRecoveryStore, recovery::ExecutionFailure};
+use aidash_application::{Error, ports::ExecutionRecoveryStore, recovery::ExecutionFailure};
 use aidash_domain::{Run, RunMetadata, RunPhase};
 use async_trait::async_trait;
 use rstest::{fixture, rstest};

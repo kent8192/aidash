@@ -10,7 +10,7 @@ def violations(metadata, root):
     packages = {package["id"]: package for package in metadata["packages"]}
     members = {packages[member]["name"]: member for member in metadata["workspace_members"]}
     errors = []
-    expected = {"aidash-domain", "aidash-application", "aidash-runtime", "aidash-integrations", "aidash-server"}
+    expected = {"aidash-domain", "aidash-application", "aidash-harness", "aidash-runtime", "aidash-integrations", "aidash-server"}
     if set(members) != expected:
         errors.append(f"workspace packages must be {sorted(expected)}, found {sorted(members)}")
     for name, member in members.items():
@@ -35,7 +35,12 @@ def violations(metadata, root):
             if any(kind["kind"] != "dev" for kind in dependency["dep_kinds"])
         ] for node in metadata["resolve"]["nodes"]
     }
-    for layer in ("aidash-domain", "aidash-application"):
+    portable_layers = {
+        "aidash-domain": set(),
+        "aidash-application": {"aidash-domain"},
+        "aidash-harness": {"aidash-domain", "aidash-application"},
+    }
+    for layer, allowed in portable_layers.items():
         if layer not in members:
             continue
         visited = set()
@@ -46,7 +51,8 @@ def violations(metadata, root):
                 continue
             visited.add(package)
             name = packages[package]["name"]
-            if name == "aidash-server" or name == "reqwest" or name.startswith(("reinhardt", "axum", "sqlx", "sea-orm")):
+            forbidden_layer = package != members[layer] and name in members and name not in allowed
+            if forbidden_layer or name == "reqwest" or name.startswith(("reinhardt", "axum", "sqlx", "sea-orm")):
                 errors.append("forbidden production dependency: " + " -> ".join(path))
             pending.extend((dependency, [*path, packages[dependency]["name"]]) for dependency in graph.get(package, []))
     for directory in (root / "crates", root / "server"):

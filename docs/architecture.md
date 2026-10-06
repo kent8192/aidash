@@ -7,10 +7,17 @@ This document describes the current implementation and its boundaries. Scoped re
 The implementation is a Rust 2024 Cargo workspace, with independent control server
 and worker modes and a React/TypeScript dashboard. Domain models and pure rules
 live in `aidash-domain`; application use cases and external ports live in
-`aidash-application`; `aidash-runtime` supervises background work; and
+`aidash-application`; `aidash-harness` owns agent execution and worker lifecycle;
+`aidash-runtime` supervises process-wide background work; and
 `aidash-integrations` implements external connections. `aidash-server` owns
 Reinhardt HTTP, ORM repositories, settings, migrations, and dependency assembly.
 HTTP requests and workers use the same bootstrap and persistence implementations.
+
+The harness executes agent steps and owns worker activation, lease renewal,
+cancellation, execution recovery and terminal delivery. Shared execution ports,
+failure classifications and helpers remain in application/domain so those
+crates never import the harness. Runtime's generic `Supervisor` accepts worker
+futures without importing the harness; server composes both with native adapters.
 
 Worker entry, inference admission, scoped command replay and capability operation
 admission use application ports. Transaction manifests and monotonic coordinator
@@ -65,7 +72,7 @@ notifications and recovery share database-clock eligibility, malformed-state
 repair and revision/lease fencing. Native repositories retain Run-before-obligation
 lock ordering and commit execution responsibility before any acknowledgement.
 An ACK failure still advances the committed lease; invalid references enter
-durable quarantine before TERM. Runtime owns reconnect backoff, bounded publication,
+durable quarantine before TERM. Harness owns reconnect backoff, bounded publication,
 finite single-message pulls, recovery cadence and drain. Integrations owns JetStream
 stream/consumer validation, credential decoding and transport acknowledgements;
 bootstrap supplies the same ports to server and listener-free worker modes.

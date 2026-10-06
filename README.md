@@ -24,15 +24,18 @@ the existing executable name and default `serve` behavior. Existing
 | Package               | Responsibility                                                           |
 | --------------------- | ------------------------------------------------------------------------ |
 | `aidash-domain`       | Business models, typed state, and pure invariants.                       |
-| `aidash-application`  | Authorized use cases, agent steps, recovery, and external ports.         |
+| `aidash-application`  | Authorized use cases, shared execution contracts, and external ports.    |
+| `aidash-harness`      | Agent steps, worker activation, leases, cancellation, and recovery.      |
 | `aidash-runtime`      | Background supervision, shutdown, and worker drain.                      |
 | `aidash-integrations` | Inference, HTTP/MCP, NATS, Qdrant, and Kubernetes adapters.              |
 | `aidash-server`       | Reinhardt HTTP/ORM/settings, app repositories/migrations, and bootstrap. |
 
 `server/src/bootstrap.rs` assembles the concrete adapters for both HTTP and
-workers. Apps are ordinary Rust modules. Domain/application production dependency
-closures exclude the server, Reinhardt, Axum, SQLx, SeaORM, and reqwest; CI checks
-these boundaries against locked Cargo metadata. The React dashboard remains in
+workers. Apps are ordinary Rust modules. The harness depends on application/domain
+contracts; application/domain do not depend on the harness. Domain/application/harness
+production dependency closures exclude runtime, integrations, the server, Reinhardt,
+Axum, SQLx, SeaORM, and reqwest; CI checks these boundaries against locked Cargo metadata.
+The React dashboard remains in
 `web/` and uses the existing URL, JSON, authentication, and SSE contracts.
 
 Reinhardt is pinned to development revision

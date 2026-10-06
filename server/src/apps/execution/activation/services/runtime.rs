@@ -4,7 +4,7 @@ use crate::{Result, federation::Federation, harness::Harness};
 use std::sync::Arc;
 use tokio::sync::watch;
 pub struct Runtime {
-	driver: Arc<aidash_runtime::activation::Runtime>,
+	driver: Arc<aidash_harness::activation::Runtime>,
 }
 impl Runtime {
 	pub fn new(federation: Federation, settings: Settings, worker: bool) -> Arc<Self> {

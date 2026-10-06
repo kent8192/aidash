@@ -121,6 +121,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "aidash-harness"
+version = "0.1.0"
+dependencies = [
+ "aidash-application",
+ "aidash-domain",
+ "async-trait",
+ "chrono",
+ "metrics",
+ "rstest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "aidash-integrations"
 version = "0.1.0"
 dependencies = [
@@ -172,6 +189,7 @@ version = "0.1.0"
 dependencies = [
  "aidash-application",
  "aidash-domain",
+ "aidash-harness",
  "aidash-integrations",
  "aidash-runtime",
  "async-nats",

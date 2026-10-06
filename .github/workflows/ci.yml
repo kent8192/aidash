@@ -141,6 +141,9 @@ jobs:
         run: |
           cargo metadata --locked --format-version 1 | python3 scripts/check-workspace-boundaries.py
           python3 scripts/rust-test-partitions.py --check
+      - name: Test portable workspace dependency rules
+        if: matrix.partition == 'foundation'
+        run: python3 scripts/test_workspace_boundaries.py
       - name: Test the selected partition with disposable services and collect LCOV
         run: scripts/test-rust.sh --coverage --partition '${{ matrix.partition }}'
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

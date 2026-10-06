@@ -91,7 +91,7 @@ impl WorkerStep for Step {
 			visibility: &mut self.visibility,
 			store: &self.federation.store,
 		};
-		aidash_application::agent::Executor::new(&environment)
+		aidash_harness::agent::Executor::new(&environment)
 			.advance(&mut self.run, token, &mut visibility)
 			.await
 	}

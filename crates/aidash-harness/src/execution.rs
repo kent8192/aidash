@@ -1,7 +1,6 @@
 //! Lease supervision and terminal-outbox polling share the listener-free worker driver.
 use aidash_application::{
 	Result,
-	execution::{terminal, worker},
 	ports::{
 		activation::ActivationRepository,
 		execution::{
@@ -92,13 +91,8 @@ pub async fn advance(
 		let metadata = scope.metadata();
 		tracing::warn!(run = %metadata.id, phase = metadata.phase().as_str(), error = ?error, "worker step requires recovery");
 		let failure = scope.classify_failure(error);
-		if aidash_application::recovery::recover(
-			scope.recovery_store(),
-			token,
-			failure,
-			chrono::Utc::now(),
-		)
-		.await?
+		if crate::recovery::recover(scope.recovery_store(), token, failure, chrono::Utc::now())
+			.await?
 		{
 			metrics::counter!("aidash_worker_retries_total").increment(1);
 		}
@@ -211,3 +205,6 @@ async fn stopped(receiver: &mut watch::Receiver<bool>) {
 
 #[cfg(test)]
 mod tests;
+
+pub mod terminal;
+pub mod worker;

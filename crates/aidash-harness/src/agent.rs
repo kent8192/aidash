@@ -1,5 +1,5 @@
 //! Durable agent execution use case. All effects cross application ports.
-use crate::{Error, Result, execution::*, ports::execution::*};
+use aidash_application::{Error, Result, execution::*, ports::execution::*};
 use aidash_domain::{
 	context::{self, Context, ContextEvent, ContextUsage},
 	media::Selection,
@@ -1579,13 +1579,13 @@ fn is_invalid(error: &Error) -> bool {
 }
 async fn compact_execution(
 	context: &mut Context,
-	classifier: &dyn crate::ports::CompactionClassifier,
+	classifier: &dyn aidash_application::ports::CompactionClassifier,
 	budget: &context::RequestBudget<'_>,
 	pinned: &Value,
 ) -> Result<()> {
 	let mut candidate = context.clone();
 	context::observation::normalize_history(&mut candidate.history);
-	crate::context::compact(&mut candidate, classifier, budget, pinned).await?;
+	aidash_application::context::compact(&mut candidate, classifier, budget, pinned).await?;
 	*context = candidate;
 	Ok(())
 }

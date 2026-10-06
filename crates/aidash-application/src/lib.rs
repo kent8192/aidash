@@ -48,8 +48,6 @@ pub enum Error {
 	Port(Box<dyn std::error::Error + Send + Sync>),
 }
 
-pub mod agent;
-
 pub mod events;
 
 pub mod tools;
