@@ -859,7 +859,12 @@ async fn fence_dependents(
 	Ok(())
 }
 
-pub(crate) async fn list(lease: &mut Lease<'_>, bank: &Bank, limit: usize) -> Result<Vec<Unit>> {
+pub(crate) async fn list(
+	lease: &mut Lease<'_>,
+	bank: &Bank,
+	limit: usize,
+	max_graph_visits: usize,
+) -> Result<Vec<Unit>> {
 	lock_workspace(lease, bank.workspace, false).await?;
 	units::authorize(lease, bank, "memory.read").await?;
 	let Some(bank_id) = bank_id(lease, bank, false).await? else {
@@ -891,7 +896,13 @@ pub(crate) async fn list(lease: &mut Lease<'_>, bank: &Bank, limit: usize) -> Re
 			.ok_or(Error::Forbidden)?;
 		let current = async {
 			units::unexpired(lease, &unit).await?;
-			units::current(lease, bank.workspace, &unit.content.evidence, limit).await
+			units::current(
+				lease,
+				bank.workspace,
+				&unit.content.evidence,
+				max_graph_visits,
+			)
+			.await
 		}
 		.await;
 		match current {

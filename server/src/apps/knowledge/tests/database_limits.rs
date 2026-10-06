@@ -288,3 +288,59 @@ async fn concurrent_memory_write_and_limit_reduction_preserve_the_limit(
 		assert!(text.len() <= limit);
 	}
 }
+
+#[rstest]
+#[tokio::test]
+async fn operator_vectors_accept_empty_tenants_and_remain_workspace_scoped(
+	#[future] database: DatabaseFixture,
+	spec: IndexSpec,
+) {
+	use aidash_application::ports::VectorIndex;
+	use aidash_domain::semantic::VectorFilter;
+	use uuid::Uuid;
+	let database = database.await;
+	let store = Store::from_pool(
+		database.connection.into_postgres().unwrap(),
+		"aidash://vectors".into(),
+	)
+	.await
+	.unwrap();
+	let workspace = store
+		.create_workspace("Operator vectors", "Empty tenant remains scoped")
+		.await
+		.unwrap();
+	let transport = aidash_server::bootstrap::semantic_transport(&store);
+	let point = Uuid::now_v7();
+	let values = vec![1.0; spec.embedding.dimensions];
+	transport
+		.ensure_collection(&spec.vector, "operator-fixture", values.len())
+		.await
+		.unwrap();
+	transport
+		.upsert(
+			&spec.vector,
+			"operator-fixture",
+			point,
+			&values,
+			json!({"workspace_id":workspace.id,"tenant":""}),
+		)
+		.await
+		.unwrap();
+	for (scope, expected) in [(workspace.id, 1), (Uuid::now_v7(), 0)] {
+		let found = transport
+			.query(
+				&spec.vector,
+				"operator-fixture",
+				&values,
+				VectorFilter {
+					allowed: &[point],
+					workspace: scope,
+					tenant: "",
+				},
+				1,
+			)
+			.await
+			.unwrap();
+		assert_eq!(found.len(), expected);
+	}
+}

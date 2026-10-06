@@ -178,6 +178,7 @@ impl MemoryScope for Scope {
 }
 struct Models {
 	invented: bool,
+	followup: Option<RecallQuery>,
 }
 #[async_trait]
 impl MemoryModels for Models {
@@ -268,19 +269,25 @@ impl MemoryModels for Models {
 		_: Allowance,
 	) -> Result<Produced<ReflectStep>> {
 		Ok(Produced {
-			output: ReflectStep::Answer {
-				reflection: Reflection {
-					text: "Tokyo".into(),
-					evidence: vec![if self.invented {
-						Evidence::Unit {
-							bank: unit().bank,
-							id: Uuid::from_u128(9),
-							revision: 1,
-						}
-					} else {
-						context[0].evidence()
-					}],
-				},
+			output: if let Some(query) = &self.followup {
+				ReflectStep::Recall {
+					query: query.clone(),
+				}
+			} else {
+				ReflectStep::Answer {
+					reflection: Reflection {
+						text: "Tokyo".into(),
+						evidence: vec![if self.invented {
+							Evidence::Unit {
+								bank: unit().bank,
+								id: Uuid::from_u128(9),
+								revision: 1,
+							}
+						} else {
+							context[0].evidence()
+						}],
+					},
+				}
 			},
 			usage: Usage {
 				tokens: 1,
@@ -310,7 +317,10 @@ async fn semantic_consolidation_shares_its_synthesis_budget_and_rechecks_sources
 	trigger.id = Uuid::from_u128(2);
 	trigger.content.text = "アリスは東京で働く".into();
 	let snapshot = vec![first.clone(), trigger.clone()];
-	let models = Models { invented: false };
+	let models = Models {
+		invented: false,
+		followup: None,
+	};
 	let engine = Engine {
 		provider: &p.extraction,
 		policy: &p,
@@ -341,7 +351,10 @@ async fn semantic_consolidation_shares_its_synthesis_budget_and_rechecks_sources
 		Err(Error::Invalid(_))
 	));
 	scope.foreign = false;
-	let invented = Models { invented: true };
+	let invented = Models {
+		invented: true,
+		followup: None,
+	};
 	let unsafe_engine = Engine {
 		models: &invented,
 		..engine
@@ -366,7 +379,10 @@ async fn semantic_consolidation_shares_its_synthesis_budget_and_rechecks_sources
 #[tokio::test]
 async fn recall_refuses_foreign_candidates_and_stale_delivery() {
 	let p = policy();
-	let models = Models { invented: false };
+	let models = Models {
+		invented: false,
+		followup: None,
+	};
 	let engine = Engine {
 		provider: &p.extraction,
 		policy: &p,
@@ -397,7 +413,10 @@ async fn recall_refuses_foreign_candidates_and_stale_delivery() {
 #[tokio::test]
 async fn recall_counts_the_complete_envelope_and_distinguishes_no_space() {
 	let p = policy();
-	let models = Models { invented: false };
+	let models = Models {
+		invented: false,
+		followup: None,
+	};
 	let engine = Engine {
 		provider: &p.extraction,
 		policy: &p,
@@ -426,7 +445,10 @@ async fn recall_counts_the_complete_envelope_and_distinguishes_no_space() {
 #[tokio::test]
 async fn reflection_rejects_invented_citations() {
 	let p = policy();
-	let models = Models { invented: true };
+	let models = Models {
+		invented: true,
+		followup: None,
+	};
 	let engine = Engine {
 		provider: &p.extraction,
 		policy: &p,
@@ -462,7 +484,10 @@ async fn maintenance_cannot_claim_verification_from_synthesis() {
 		}],
 	};
 	for invented in [false, true] {
-		let models = Models { invented };
+		let models = Models {
+			invented,
+			followup: None,
+		};
 		let engine = Engine {
 			provider: &p.extraction,
 			policy: &p,
@@ -496,4 +521,27 @@ async fn maintenance_cannot_claim_verification_from_synthesis() {
 			);
 		}
 	}
+}
+
+#[tokio::test]
+async fn reflection_followup_cannot_expand_the_callers_context_budget() {
+	let p = policy();
+	let models = Models {
+		invented: false,
+		followup: Some(query(4096)),
+	};
+	let engine = Engine {
+		provider: &p.extraction,
+		policy: &p,
+		models: &models,
+	};
+	let mut scope = Scope {
+		stale: false,
+		foreign: false,
+		delivered: false,
+	};
+	assert!(
+		matches!(engine.reflect(&mut scope, &unit().bank, &query(1024)).await,
+		Err(Error::Invalid(message)) if message == "reflection context budget exhausted")
+	);
 }

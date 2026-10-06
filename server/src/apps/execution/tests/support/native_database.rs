@@ -1,5 +1,4 @@
 use reinhardt::db::backends::DatabaseConnection as BackendConnection;
-use reinhardt::db::migrations::executor::DatabaseMigrationExecutor;
 use reinhardt::db::migrations::{FilesystemSource, MigrationSource};
 use reinhardt::db::orm::connection::DatabaseConnectionLease;
 #[path = "postgres.rs"]
@@ -80,20 +79,17 @@ pub async fn database(
 	let owner = BackendConnection::connect_postgres_with_pool_size(&url, Some(12))
 		.await
 		.expect("connect Reinhardt to the isolated test database");
-	let mut executor = DatabaseMigrationExecutor::new(owner.clone());
 	let migrations =
 		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
 			.all_migrations()
 			.await
 			.expect("load generated migration sources");
-	executor
-		.apply_migrations(&migrations)
-		.await
-		.expect("apply fresh migration graph");
-	let repeated = executor
-		.apply_migrations(&migrations)
-		.await
-		.expect("migrations are idempotent");
+	postgres::apply_migrations(owner.clone(), &migrations).await;
+	let repeated =
+		reinhardt::db::migrations::executor::DatabaseMigrationExecutor::new(owner.clone())
+			.apply_migrations(&migrations)
+			.await
+			.expect("migrations are idempotent");
 	assert!(repeated.applied.is_empty());
 	DatabaseFixture {
 		lease: DatabaseConnectionLease::register(owner.clone()).unwrap(),

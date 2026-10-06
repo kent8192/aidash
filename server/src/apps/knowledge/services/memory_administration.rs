@@ -89,7 +89,13 @@ pub(crate) async fn reindex(
 		policy.retention.max_model_operations,
 	)
 	.await?;
-	let selected = repository::list(lease, &input.bank, policy.bounds.max_units).await?;
+	let selected = repository::list(
+		lease,
+		&input.bank,
+		policy.bounds.max_units,
+		policy.bounds.max_graph_visits,
+	)
+	.await?;
 	let actor = lease.saved()?["subject"]
 		.as_str()
 		.ok_or(Error::Forbidden)?

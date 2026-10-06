@@ -260,7 +260,7 @@ class Cluster:
             # The extension requires administrator privileges; application
             # migrations and runtime access keep the database-scoped role.
             self.kube("exec", "postgres-0", "--", "psql", "-U", "aidash", "-d", f"tx_{node}",
-                "-v", "ON_ERROR_STOP=1", "-c", "CREATE EXTENSION pg_jsonschema WITH SCHEMA public;")
+                "-v", "ON_ERROR_STOP=1", "-c", "CREATE EXTENSION pg_jsonschema WITH SCHEMA public; CREATE EXTENSION vector; CREATE EXTENSION pgroonga;")
             self.apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": f"tx-{node}"},
                 "stringData": {"DATABASE_URL": f"postgres://tx_{node}:{password}@postgres:5432/tx_{node}",
                 "AIDASH_API_TOKEN": self.token, **{f"AIDASH_SECRET_TRANSACTION_{peer:02}": self.peer_tokens[peer] for peer in (range(1, count) if node == 0 else [node])}}})

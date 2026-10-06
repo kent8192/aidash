@@ -1,5 +1,5 @@
 #[path = "postgres.rs"]
-mod postgres;
+pub(super) mod postgres;
 use postgres::postgres_container;
 use reinhardt::test::testcontainers::{
 	ContainerAsync, GenericImage, ImageExt,

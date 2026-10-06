@@ -852,3 +852,29 @@ async fn malformed_automatic_context_configuration_retains_storage_error_identit
 	));
 	assert_eq!(*calls.lock().unwrap(), ["configured"]);
 }
+
+#[tokio::test]
+async fn disabled_auto_context_does_not_read_or_embed_ordinary_candidates() {
+	let (calls, mut scope, vector) = fixture();
+	let mut configuration = spec();
+	configuration.auto_context = false;
+	scope.index.spec = json!(configuration);
+	let mut agent = controls(true, true);
+	agent.memory = Some(aidash_domain::registry::EntityRef {
+		id: "native".into(),
+		version: "1.0.0".into(),
+	});
+	let result = search(
+		&mut scope,
+		&vector,
+		index().workspace_id,
+		&input(),
+		None,
+		Some(&agent),
+	)
+	.await
+	.unwrap();
+	assert!(result.matches.is_empty());
+	assert_eq!(scope.embedded, None);
+	assert_eq!(*calls.lock().unwrap(), ["workspace", "index"]);
+}

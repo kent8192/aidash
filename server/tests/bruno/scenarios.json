@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 269,
+  "endpoint_count": 277,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -10741,6 +10741,373 @@
       "required_checks": [
         "Exact HTTP 204",
         "Unknown refresh revocation remains idempotent contract"
+      ]
+    },
+    {
+      "name": "0999 memory-operate - Anonymous request is rejected",
+      "file": "contracts/0999-memory-operate.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/operate",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1000 memory-operate - Wrong JSON media type is rejected",
+      "file": "contracts/1000-memory-operate.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/operate",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1001 memory-operate - Malformed JSON cannot reach the use case",
+      "file": "contracts/1001-memory-operate.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/operate",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1002 memory-operate - Incomplete native memory envelope is rejected",
+      "file": "contracts/1002-memory-operate.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/operate",
+      "scenario": "Incomplete native memory envelope is rejected",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1003 memory-participant-upgrade - Anonymous request is rejected",
+      "file": "contracts/1003-memory-participant-upgrade.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/participants/{participant}/upgrade",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1004 memory-participant-upgrade - Wrong JSON media type is rejected",
+      "file": "contracts/1004-memory-participant-upgrade.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/participants/{participant}/upgrade",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1005 memory-participant-upgrade - Malformed JSON cannot reach the use case",
+      "file": "contracts/1005-memory-participant-upgrade.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/participants/{participant}/upgrade",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1006 memory-participant-upgrade - Incomplete native memory envelope is rejected",
+      "file": "contracts/1006-memory-participant-upgrade.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/participants/{participant}/upgrade",
+      "scenario": "Incomplete native memory envelope is rejected",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1007 memory-units - Anonymous request is rejected",
+      "file": "contracts/1007-memory-units.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/units/query",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1008 memory-units - Wrong JSON media type is rejected",
+      "file": "contracts/1008-memory-units.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/units/query",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1009 memory-units - Malformed JSON cannot reach the use case",
+      "file": "contracts/1009-memory-units.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/units/query",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1010 memory-units - Incomplete native memory envelope is rejected",
+      "file": "contracts/1010-memory-units.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/units/query",
+      "scenario": "Incomplete native memory envelope is rejected",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1011 memory-mutate - Anonymous request is rejected",
+      "file": "contracts/1011-memory-mutate.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/units/mutate",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1012 memory-mutate - Wrong JSON media type is rejected",
+      "file": "contracts/1012-memory-mutate.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/units/mutate",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1013 memory-mutate - Malformed JSON cannot reach the use case",
+      "file": "contracts/1013-memory-mutate.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/units/mutate",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1014 memory-mutate - Incomplete native memory envelope is rejected",
+      "file": "contracts/1014-memory-mutate.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/units/mutate",
+      "scenario": "Incomplete native memory envelope is rejected",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1015 memory-participant - Anonymous request is rejected",
+      "file": "contracts/1015-memory-participant.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/participants",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1016 memory-participant - Wrong JSON media type is rejected",
+      "file": "contracts/1016-memory-participant.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/participants",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1017 memory-participant - Malformed JSON cannot reach the use case",
+      "file": "contracts/1017-memory-participant.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/participants",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1018 memory-participant - Incomplete native memory envelope is rejected",
+      "file": "contracts/1018-memory-participant.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/memory/participants",
+      "scenario": "Incomplete native memory envelope is rejected",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1019 memory-participants - Anonymous request is rejected",
+      "file": "contracts/1019-memory-participants.bru",
+      "endpoint": "GET /api/workspaces/{workspace}/memory/participants",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1020 memory-participants - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1020-memory-participants.bru",
+      "endpoint": "GET /api/workspaces/{workspace}/memory/participants",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1021 memory-participants - Application read preserves the typed response contract",
+      "file": "contracts/1021-memory-participants.bru",
+      "endpoint": "GET /api/workspaces/{workspace}/memory/participants",
+      "scenario": "Application read preserves the typed response contract",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Application read preserves the typed response contract contract"
+      ]
+    },
+    {
+      "name": "1022 memory-participants - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1022-memory-participants.bru",
+      "endpoint": "GET /api/workspaces/{workspace}/memory/participants",
+      "scenario": "Paging rejects nonnumeric or malformed cursors",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1023 memory-participant-assignment - Anonymous request is rejected",
+      "file": "contracts/1023-memory-participant-assignment.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/tasks/{task}/memory-participant",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1024 memory-participant-assignment - Wrong JSON media type is rejected",
+      "file": "contracts/1024-memory-participant-assignment.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/tasks/{task}/memory-participant",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1025 memory-participant-assignment - Malformed JSON cannot reach the use case",
+      "file": "contracts/1025-memory-participant-assignment.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/tasks/{task}/memory-participant",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1026 memory-participant-assignment - Incomplete native memory envelope is rejected",
+      "file": "contracts/1026-memory-participant-assignment.bru",
+      "endpoint": "POST /api/workspaces/{workspace}/tasks/{task}/memory-participant",
+      "scenario": "Incomplete native memory envelope is rejected",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1027 memory-participant-current - Anonymous request is rejected",
+      "file": "contracts/1027-memory-participant-current.bru",
+      "endpoint": "GET /api/workspaces/{workspace}/tasks/{task}/memory-participant",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1028 memory-participant-current - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1028-memory-participant-current.bru",
+      "endpoint": "GET /api/workspaces/{workspace}/tasks/{task}/memory-participant",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1029 memory-participant-current - Application read preserves the typed response contract",
+      "file": "contracts/1029-memory-participant-current.bru",
+      "endpoint": "GET /api/workspaces/{workspace}/tasks/{task}/memory-participant",
+      "scenario": "Application read preserves the typed response contract",
+      "status": 404,
+      "required_checks": [
+        "Exact HTTP 404",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Application read preserves the typed response contract contract"
       ]
     }
   ]

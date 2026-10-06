@@ -10,6 +10,10 @@ use std::{sync::Arc, time::Duration};
 
 #[fixture]
 pub async fn postgres_container() -> (ContainerAsync<GenericImage>, Arc<PgPool>, u16, String) {
+	// Keep an explicit mapping across stop/start; Docker may reallocate an
+	// automatically assigned port while live stores still use the old URL.
+	let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+	let host_port = reservation.local_addr().unwrap().port();
 	let image = GenericImage::new("aidash-orm-test-postgres", "17-pg-jsonschema-0.3.4")
 		.with_exposed_port(5432.tcp())
 		// The initialization server only accepts Unix sockets. Wait for the final
@@ -20,8 +24,10 @@ pub async fn postgres_container() -> (ContainerAsync<GenericImage>, Arc<PgPool>,
 		.with_env_var("POSTGRES_USER", "aidash")
 		.with_env_var("POSTGRES_PASSWORD", "fixture-password")
 		.with_env_var("POSTGRES_DB", "aidash")
+		.with_mapped_port(host_port, 5432.tcp())
 		.with_cmd(["postgres", "-c", "max_connections=400"])
 		.with_startup_timeout(Duration::from_secs(120));
+	drop(reservation);
 	let container = image.start().await.expect("build the test target of deploy/postgres/Dockerfile as aidash-orm-test-postgres:17-pg-jsonschema-0.3.4 before database tests");
 	let port = container.get_host_port_ipv4(5432).await.unwrap();
 	// The fixture has no TLS listener; avoid negotiating through an initializing
@@ -46,4 +52,33 @@ pub async fn postgres_container() -> (ContainerAsync<GenericImage>, Arc<PgPool>,
 	.await
 	.expect("fixture PostgreSQL must accept TCP connections within 30 seconds");
 	(container, Arc::new(pool), port, url)
+}
+
+/// PGroonga's per-database crash-safe worker starts asynchronously on first use.
+/// Only its documented preparing state is retryable; permanent errors surface.
+#[allow(dead_code)] // Shared integration binaries use different migration constructors.
+pub async fn apply_migrations(
+	connection: reinhardt::db::backends::DatabaseConnection,
+	migrations: &[reinhardt::db::migrations::Migration],
+) {
+	let started = std::time::Instant::now();
+	loop {
+		match reinhardt::db::migrations::executor::DatabaseMigrationExecutor::new(
+			connection.clone(),
+		)
+		.apply_migrations(migrations)
+		.await
+		{
+			Ok(_) => return,
+			Err(error)
+				if error
+					.to_string()
+					.contains("pgroonga_crash_safer is preparing")
+					&& started.elapsed() < Duration::from_secs(30) =>
+			{
+				tokio::time::sleep(Duration::from_millis(100)).await;
+			}
+			Err(error) => panic!("apply native migrations to the isolated database: {error}"),
+		}
+	}
 }

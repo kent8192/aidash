@@ -232,3 +232,8 @@ ownership/settings are compared. The only normalization is the three visible
 defaults and constraints must still match. Counts alone never establish parity.
 The script removes only its own target database and writes catalog differences,
 command exit codes, source state and executable hashes under `.ignore/schema-parity/`.
+
+The native memory additions end with generated state-only ORM metadata checkpoints
+for execution, knowledge, and registry. These reconcile composite-key and field
+metadata and exclude procedural checks and references from the ORM snapshot, while
+retaining the physical constraints established by the preceding migrations.

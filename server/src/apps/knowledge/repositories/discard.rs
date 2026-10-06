@@ -12,7 +12,17 @@ pub(crate) async fn legacy(pool: &native::Pool) -> Result<()> {
 		.column(Alias::new("id"))
 		.from(Alias::new("semantic_entries"))
 		.and_where(Expr::col("key").like("agent-memory:%"))
+		.and_where(Expr::col("deleted").eq(false))
 		.to_owned();
+	// Statement-level atomic guards fire even for zero-row updates. Restart
+	// must remain possible while durable transaction recovery owns the gate.
+	if native::query(&ids.clone().limit(1).to_string(PostgresQueryBuilder))
+		.fetch_optional(&mut *tx)
+		.await?
+		.is_none()
+	{
+		return tx.commit().await;
+	}
 	// Keep revision tombstones and read dependencies so old consumers remain invalidated.
 	native::query(
 		&Query::update()

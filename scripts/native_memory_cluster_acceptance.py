@@ -58,14 +58,6 @@ class NativeMemory(RemoteMemory):
                 container["env"].append({"name": "AIDASH_MEMORY_RECOVERY_DIR", "value": "/var/lib/aidash/memory-recovery"})
         super().apply(value)
 
-    def kube(self, *args, **kwargs):
-        result = super().kube(*args, **kwargs)
-        if args and args[-1] == "CREATE EXTENSION pg_jsonschema WITH SCHEMA public;":
-            # Extension installation is administrator-only fixture DDL. The
-            # application's typed migrations and runtime retain scoped roles.
-            super().kube(*args[:-1], "CREATE EXTENSION vector; CREATE EXTENSION pgroonga;")
-        return result
-
     def provision(self, count):
         super().provision(count)
         for node in range(count):

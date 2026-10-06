@@ -92,6 +92,18 @@ pub async fn initialize(store: &Store, directory: PathBuf) -> Result<Store> {
 	attach(store.clone(), directory)
 }
 
+/// Explicit deployment bootstrap preserves every existing epoch and closed gate.
+/// Partial or corrupt state requires recovery; it is never replaced.
+pub async fn initialize_if_missing(store: &Store, directory: PathBuf) -> Result<Store> {
+	let recovery = external(store, &directory)?;
+	if directory.join("epoch.cbor").exists() || directory.join("ledger.cbor").exists() {
+		recovery.load()?;
+		attach(store.clone(), directory)
+	} else {
+		initialize(store, directory).await
+	}
+}
+
 async fn selected(lease: &mut Lease<'_>, bank: &Bank, limit: usize) -> Result<Vec<Unit>> {
 	let bank_id = repository::bank_id(lease, bank, false)
 		.await?
@@ -676,6 +688,7 @@ impl reinhardt::commands::CapabilityCommand for Command {
 				clap::Arg::new("action")
 					.value_parser([
 						"init",
+						"init-if-missing",
 						"backup",
 						"restore",
 						"prepare-restore",
@@ -743,6 +756,10 @@ impl reinhardt::commands::CapabilityCommand for Command {
 				Some("init") => {
 					initialize(&store, directory.clone()).await?;
 					println!("initialized new-format memory ledger");
+				}
+				Some("init-if-missing") => {
+					initialize_if_missing(&store, directory.clone()).await?;
+					println!("verified new-format memory ledger");
 				}
 				Some("backup") => {
 					let bank = Bank {

@@ -39,12 +39,18 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 			{
 				return Err(Error::Forbidden);
 			}
-			if !native.banks.iter().any(|bank| {
-				bank.roles.contains(&usage.provider)
-					&& usage.reserved_tokens > 0
-					&& usize::try_from(usage.reserved_tokens)
-						.is_ok_and(|amount| amount <= bank.max_model_tokens)
-			}) {
+			// The signed operation does not identify a bank. Enforce every
+			// matching bank's cap until that boundary carries an exact bank.
+			let cap = native
+				.banks
+				.iter()
+				.filter(|bank| bank.roles.contains(&usage.provider))
+				.map(|bank| bank.max_model_tokens)
+				.min()
+				.ok_or(Error::Forbidden)?;
+			if usage.reserved_tokens <= 0
+				|| !usize::try_from(usage.reserved_tokens).is_ok_and(|amount| amount <= cap)
+			{
 				return Err(Error::RemoteSemantic(Failure::Allowance));
 			}
 		}

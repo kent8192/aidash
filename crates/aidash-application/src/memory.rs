@@ -613,6 +613,9 @@ impl Engine<'_> {
 					return Ok(reflection);
 				}
 				ReflectStep::Recall { query: followup } => {
+					if followup.max_tokens > query.max_tokens {
+						return Err(Error::Invalid("reflection context budget exhausted".into()));
+					}
 					let recall = self.recall_in(scope, bank, &followup, &mut budget).await?;
 					if let Recall::Ready { units } = recall {
 						context = units;

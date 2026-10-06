@@ -630,7 +630,13 @@ pub async fn list(store: &Store, actor: &Actor, input: ReadBank) -> Result<Vec<U
 		scope(store, &mut lease, &input.bank, "memory.read").await?;
 		bank_provider(&mut lease, &input.bank, &input.provider).await?;
 		let policy = policy(&mut lease, &input.provider).await?;
-		repository::list(&mut lease, &input.bank, policy.bounds.max_units).await
+		repository::list(
+			&mut lease,
+			&input.bank,
+			policy.bounds.max_units,
+			policy.bounds.max_graph_visits,
+		)
+		.await
 	}
 	.await;
 	lease.finish(result).await

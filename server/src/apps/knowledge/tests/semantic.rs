@@ -176,7 +176,7 @@ async fn automatic_semantic_context_respects_each_agent_behavior_control(
 		"run: {:?}",
 		fixture.f.store.runs().await.unwrap()[0]
 	);
-	let semantic = &contexts[0]["current"]["semantic_memory"];
+	let semantic = &contexts[0]["current"]["semantic_memory"]["workspace"];
 	if !memory && !workspace_retrieval {
 		assert!(semantic.is_null(), "disabled retrieval: {semantic}");
 	} else {
@@ -745,10 +745,13 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	assert_eq!(run.phase().as_str(), "TOOL_CALL", "{:?}", run.error);
 	let context = captured.lock().unwrap()[0].clone();
 	assert_eq!(
-		context["current"]["semantic_memory"]["matches"][0]["entry_id"],
+		context["current"]["semantic_memory"]["workspace"]["matches"][0]["entry_id"],
 		cars["id"]
 	);
-	assert_eq!(context["current"]["semantic_memory"]["model_version"], "1");
+	assert_eq!(
+		context["current"]["semantic_memory"]["workspace"]["model_version"],
+		"1"
+	);
 	let count: i64 = {
 		let query_bind_1 = run.id;
 		sqlx::query_scalar(

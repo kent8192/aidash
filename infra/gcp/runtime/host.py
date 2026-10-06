@@ -366,6 +366,7 @@ def configuration(host):
         AIDASH_OIDC_ISSUER="https://accounts.google.com",
         AIDASH_OIDC_PUBLIC_ORIGIN="https://" + host["hostname"],
         AIDASH_CAPABILITY_PROFILE=str(ROOT / "profile.json"),
+        AIDASH_MEMORY_RECOVERY_DIR=str(ROOT / "memory-recovery"),
         AIDASH_CORE_RUNNER_TOKEN=identity["runner"],
     )
     private(RUN / "app.env", environment_file(result))
@@ -576,11 +577,16 @@ WantedBy=multi-user.target
         ):
             break
         time.sleep(2)
+    memory = ROOT / "memory-recovery"
+    memory.mkdir(mode=0o700, exist_ok=True)
+    command("chown", "10001:10001", memory)
     mount = [
         "--env-file",
         str(RUN / "app.env"),
         "-v",
         f"{ROOT}/objects:{ROOT}/objects",
+        "-v",
+        f"{memory}:{memory}",
         "-v",
         f"{ROOT}/profile.json:{ROOT}/profile.json:ro",
     ]
@@ -595,6 +601,11 @@ WantedBy=multi-user.target
         release["images"]["app"],
         "migrate",
         timeout=300,
+    )
+    command(
+        "docker", "run", "--rm", "--network", "host", *mount,
+        release["images"]["app"], "memory-recovery", "init-if-missing",
+        "--directory", str(memory), timeout=300,
     )
     replace_container(
         "aidash-app", release["images"]["app"], mount, ["serve"], restart="on-failure:3"

@@ -69,7 +69,13 @@ pub async fn prepare(
 		return Err(Error::Conflict("semantic index is disabled".into()));
 	}
 	input.validate(&spec)?;
-	let rows = scope.candidates(workspace).await?;
+	// Agent context follows the index's ordinary disclosure switch.
+	// Native memory is retrieved separately under its bank policy.
+	let rows = if agent_controls.is_some() && !spec.auto_context {
+		Vec::new()
+	} else {
+		scope.candidates(workspace).await?
+	};
 	if rows.len() > spec.max_sources {
 		return Err(Error::Conflict("semantic source quota exceeded".into()));
 	}

@@ -614,7 +614,13 @@ async fn execute(
 				{
 					return Err(Error::Conflict("observation source changed".into()));
 				}
-				let snapshot = repository::list(scope.lease, bank, policy.bounds.max_units).await?;
+				let snapshot = repository::list(
+					scope.lease,
+					bank,
+					policy.bounds.max_units,
+					policy.bounds.max_graph_visits,
+				)
+				.await?;
 				let consolidated = engine
 					.consolidate(&mut scope, &source_unit, &snapshot)
 					.await?;

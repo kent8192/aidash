@@ -131,7 +131,6 @@ impl VectorIndex for Transport {
 			let workspace: Uuid = serde_json::from_value(payload["workspace_id"].clone())?;
 			let tenant = payload["tenant"]
 				.as_str()
-				.filter(|s| !s.is_empty())
 				.ok_or_else(|| Error::Invalid("missing vector tenant".into()))?;
 			let mut tx = self.pool.begin().await?;
 			let width: i32 = native::query_scalar(

@@ -2499,19 +2499,28 @@ impl Store {
 			}
 		};
 		if home_node == self.node_id {
-			let entry = crate::apps::registry::models::Definition::read_in(
+			// Legacy journals may name an Agent absent from this Registry.
+			// Such runs have no native-memory configuration to bind; known
+			// scoped/generated Agents are still rejected by require_legacy_agent.
+			match crate::apps::registry::models::Definition::read_in(
 				&mut *tx,
 				agent_id,
 				agent_version,
 			)
-			.await?;
-			crate::semantic::repositories::bindings::admit(
-				self,
-				&mut crate::semantic::service::Lease::BorrowedOperator(&mut tx),
-				&run.metadata(),
-				&entry,
-			)
-			.await?;
+			.await
+			{
+				Ok(entry) => {
+					crate::semantic::repositories::bindings::admit(
+						self,
+						&mut crate::semantic::service::Lease::BorrowedOperator(&mut tx),
+						&run.metadata(),
+						&entry,
+					)
+					.await?;
+				}
+				Err(Error::NotFound(_)) => {}
+				Err(error) => return Err(error),
+			}
 		}
 		tx.commit().await?;
 		Ok(run)

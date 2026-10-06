@@ -187,7 +187,13 @@ impl MemoryScope for Scope<'_, '_> {
 		bank: &Bank,
 		limit: usize,
 	) -> aidash_application::Result<Snapshot> {
-		let units = repository::list(self.lease, bank, limit).await?;
+		let units = repository::list(
+			self.lease,
+			bank,
+			limit,
+			self.models.policy.bounds.max_graph_visits,
+		)
+		.await?;
 		let embedding: EmbeddingConfig = serde_json::from_value(
 			self.models
 				.role(&self.models.policy.embedding, "embedding")?

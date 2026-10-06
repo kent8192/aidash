@@ -1167,7 +1167,10 @@ async fn memory_restore_gate_survives_reopen_and_missing_external_state_never_in
 	let reopened = Store::from_pool(store.pool.driver().clone(), store.node_id.clone())
 		.await
 		.unwrap();
-	let reopened = recovery::attach(reopened, directory.to_owned()).unwrap();
+	let reopened = recovery::initialize_if_missing(&reopened, directory.to_owned())
+		.await
+		.unwrap();
+
 	assert!(matches!(
 		memory::operate(&reopened, &Actor::Operator, query()).await,
 		Err(aidash_server::Error::SemanticUnavailable)
@@ -1190,9 +1193,19 @@ async fn memory_restore_gate_survives_reopen_and_missing_external_state_never_in
 			.await
 			.is_err()
 	);
+	assert!(
+		recovery::initialize_if_missing(&reopened, directory.to_owned())
+			.await
+			.is_err()
+	);
 	std::fs::remove_file(directory.join("ledger.cbor")).unwrap();
 	assert!(
 		recovery::initialize(&reopened, directory.to_owned())
+			.await
+			.is_err()
+	);
+	assert!(
+		recovery::initialize_if_missing(&reopened, directory.to_owned())
 			.await
 			.is_err()
 	);
@@ -3377,4 +3390,78 @@ async fn observation_consolidation_keeps_conflicts_and_recomputes_surviving_evid
 		"completed repair jobs do not repeat synthesis"
 	);
 	server.abort();
+}
+
+#[rstest]
+#[tokio::test]
+async fn listing_uses_the_provenance_budget_separately_from_bank_unit_count(
+	#[future] database: DatabaseFixture,
+	mut bounds: Bounds,
+) {
+	let database = database.await;
+	bounds.max_units = 2;
+	bounds.max_graph_visits = 8;
+	let (store, _, workspace) = setup(&database, bounds).await;
+	let private = memory::create_participant(
+		&store,
+		&Actor::Operator,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap()
+	.bank;
+	let shared = Bank {
+		participant: None,
+		..private.clone()
+	};
+	let mut previous = None;
+	for _ in 0..3 {
+		let mut value = content("Shared evidence chain");
+		if let Some(evidence) = previous {
+			value.kind = Kind::Observation;
+			value.evidence = vec![evidence];
+		}
+		let units = memory::mutate(
+			&store,
+			&Actor::Operator,
+			mutation(
+				&shared,
+				Change::Add {
+					id: Uuid::now_v7(),
+					content: value,
+				},
+			),
+		)
+		.await
+		.unwrap();
+		previous = Some(units[0].evidence());
+	}
+	let id = Uuid::now_v7();
+	let mut value = content("Private observation with three evidence ancestors");
+	value.kind = Kind::Observation;
+	value.evidence = vec![previous.unwrap()];
+	memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(&private, Change::Add { id, content: value }),
+	)
+	.await
+	.unwrap();
+	let units = memory::list(
+		&store,
+		&Actor::Operator,
+		memory::ReadBank {
+			provider: reference("p"),
+			bank: private,
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		units.iter().map(|unit| unit.id).collect::<Vec<_>>(),
+		vec![id]
+	);
 }

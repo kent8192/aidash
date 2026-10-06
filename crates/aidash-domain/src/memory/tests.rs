@@ -440,7 +440,8 @@ fn manual_observations_do_not_merge_other_source_categories_into_automatic_group
 	];
 	let snapshot = vec![world.clone(), experience, manual, primary];
 	assert_eq!(
-		consolidation::preserve_observations(&[world.clone()], &snapshot, &bounds()).unwrap(),
+		consolidation::preserve_observations(std::slice::from_ref(&world), &snapshot, &bounds())
+			.unwrap(),
 		vec![world]
 	);
 }

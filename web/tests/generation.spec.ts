@@ -36,7 +36,7 @@ test("generation dashboard manages policy, approval, completion and retained his
       return;
     }
     semanticContexts.push(
-      JSON.parse(input.messages[1].content).current.semantic_memory,
+      JSON.parse(input.messages[1].content).current.semantic_memory.workspace,
     );
     res.end(
       JSON.stringify({

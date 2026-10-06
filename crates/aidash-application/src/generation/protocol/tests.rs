@@ -894,3 +894,64 @@ async fn cancellation_during_home_rpc_leaves_recoverable_preparation(world: Worl
 			.any(|event| event == "worker" || event == "dispatch.finalize")
 	);
 }
+
+#[rstest]
+#[case(1024, true)]
+#[case(1025, false)]
+fn shared_memory_role_uses_the_smallest_bank_allowance(
+	world: World,
+	#[case] amount: i64,
+	#[case] accepted: bool,
+) {
+	use aidash_domain::semantic::remote::{NativeBank, NativeBinding, NativeRequest};
+	let state = world.0.lock().unwrap();
+	let mut description = state.description.clone();
+	let Binding::RequiredHome {
+		embedding, native, ..
+	} = &mut description.semantic
+	else {
+		unreachable!()
+	};
+	let provider = (**embedding).clone();
+	let bank = aidash_domain::memory::Bank {
+		home: description.source_node.clone(),
+		tenant: "tenant".into(),
+		workspace: state.run.workspace_id,
+		participant: Some(Uuid::from_u128(501)),
+	};
+	let policy = reference("memory-policy");
+	let lower = NativeBank {
+		bank: bank.clone(),
+		provider: provider.clone(),
+		roles: vec![provider.clone()],
+		max_model_tokens: 1024,
+		max_context_tokens: 1024,
+		cache_max_age_seconds: 60,
+		cache_max_attempts: 2,
+	};
+	let mut higher = lower.clone();
+	higher.bank.participant = None;
+	higher.max_model_tokens = 8192;
+	*native = Some(Box::new(NativeBinding {
+		selection: NativeRequest {
+			participant: bank.participant.unwrap(),
+			expected_revision: 1,
+			provider: policy.clone(),
+		},
+		generation: None,
+		participant: aidash_domain::memory::Binding {
+			bank,
+			participant_revision: 1,
+			agent: reference("agent"),
+			provider: policy,
+		},
+		agent: provider.clone(),
+		banks: vec![higher, lower],
+	}));
+	let mut usage = state.input.usage.clone();
+	usage.purpose = Purpose::Memory;
+	usage.provider = provider;
+	usage.dispatcher_node = description.source_node.clone();
+	usage.reserved_tokens = amount;
+	assert_eq!(exact_provider(&description, &usage).is_ok(), accepted);
+}

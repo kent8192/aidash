@@ -103,7 +103,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 	for row in rows {
 		let id = row.try_get("unit_id")?;
 		let attempts: i32 = row.try_get("attempts")?;
-		let mut max_retries = 0;
+		let mut max_retries = None;
 		let bank: uuid::Uuid = row.try_get("bank_id")?;
 		let mut lease =
 			Lease::begin(store, &crate::authorization::identity::Actor::Operator).await?;
@@ -146,7 +146,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 				.ok_or(Error::Forbidden)?;
 			let policy =
 				crate::semantic::native_memory::policy(&mut lease, &settings.provider).await?;
-			max_retries = policy.bounds.max_retries;
+			max_retries = Some(policy.bounds.max_retries);
 			let affected_banks =
 				dependencies::erase(&mut lease, &unit, bank, &policy.bounds).await?;
 			// A model result can quote several units. Clearing the bank's result
@@ -206,8 +206,13 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 					Error::Conflict(_) => "purge_dependency_limit_or_fence",
 					_ => "purge_storage_unavailable",
 				};
-				let attempt = attempts.saturating_add(1);
-				let state = if attempt as usize <= max_retries {
+				// Do not consume a retry before its policy could be loaded.
+				let attempt = if max_retries.is_some() {
+					attempts.saturating_add(1)
+				} else {
+					attempts
+				};
+				let state = if max_retries.is_none_or(|limit| attempt as usize <= limit) {
 					"pending"
 				} else {
 					"failed"

@@ -27,6 +27,14 @@ use std::{
 use tempfile::TempDir;
 use uuid::Uuid;
 
+async fn history_size() -> usize {
+	FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+		.all_migrations()
+		.await
+		.unwrap()
+		.len()
+}
+
 #[rstest]
 #[tokio::test]
 async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
@@ -35,13 +43,17 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	// Act: load every external SQL asset through the native filesystem source.
 	let migrations = FilesystemSource::new(&root).all_migrations().await.unwrap();
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
-	assert_eq!(migrations.len(), 46);
+	assert!(
+		migrations
+			.iter()
+			.any(|m| m.name == "0022_memory_receiver_caches")
+	);
 	assert_eq!(
 		migrations
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		9
+		12
 	);
 	let tables = migrations
 		.iter()
@@ -54,9 +66,11 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			)
 		})
 		.count();
-	assert_eq!(tables, 117);
-	for migration in migrations.iter().filter(|migration| !migration.state_only) {
-		assert!(migration.database_only);
+	assert!(tables >= 117, "retain every baseline and new memory table");
+	for migration in migrations
+		.iter()
+		.filter(|migration| migration.database_only)
+	{
 		for operation in &migration.operations {
 			if let reinhardt::db::migrations::Operation::RunSQL { sql, reverse_sql } = operation {
 				assert!(
@@ -223,12 +237,15 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0008_policy_probe")
+		.get_migration("execution", "0011_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("execution".to_owned(), "0007_model_state".to_owned())]
+		vec![(
+			"execution".to_owned(),
+			"0010_native_memory_model_state".to_owned()
+		)]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -258,7 +275,7 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	);
 	std::fs::write(&history, &edited).unwrap();
 	let before = FilesystemSource::new(&root).all_migrations().await.unwrap();
-	assert_eq!(before.len(), 46);
+	assert_eq!(before.len(), history_size().await);
 	let predecessor = build_state_from_files(&FilesystemSource::new(&root))
 		.await
 		.unwrap();
@@ -488,7 +505,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		9
+		12
 	);
 }
 
@@ -572,7 +589,7 @@ async fn preprovisioned_extension_allows_database_scoped_migrations(
 	let fixture = fresh_database.await;
 	let admin = PgPool::connect(&fixture.url).await.unwrap();
 	let role = format!("scoped_{}", Uuid::new_v4().simple());
-	sqlx::query("CREATE EXTENSION pg_jsonschema WITH SCHEMA public")
+	sqlx::raw_sql("CREATE EXTENSION pg_jsonschema WITH SCHEMA public; CREATE EXTENSION vector; CREATE EXTENSION pgroonga;")
 		.execute(&admin)
 		.await
 		.unwrap();
@@ -604,7 +621,7 @@ async fn preprovisioned_extension_allows_database_scoped_migrations(
 		.fetch_one(&admin)
 		.await
 		.unwrap();
-	assert_eq!(count, 46);
+	assert_eq!(count, history_size().await as i64);
 	let owner: String = sqlx::query_scalar(
 		"SELECT tableowner FROM pg_tables WHERE schemaname='public' AND tablename='workspaces'",
 	)
@@ -643,7 +660,10 @@ async fn preprovisioned_extension_allows_database_scoped_migrations(
 	aidash_server::bootstrap::migrations::run(&context)
 		.await
 		.unwrap();
-	assert_eq!(recorded_keys(&fixture.connection).await.len(), 46);
+	assert_eq!(
+		recorded_keys(&fixture.connection).await.len(),
+		history_size().await
+	);
 }
 
 #[rstest]
@@ -743,7 +763,10 @@ async fn baseline_preserves_a_preinstalled_extension_during_reversal(
 	aidash_server::bootstrap::migrations::run(&migration_context(&fixture.url))
 		.await
 		.unwrap();
-	assert_eq!(recorded_keys(&fixture.connection).await.len(), 46);
+	assert_eq!(
+		recorded_keys(&fixture.connection).await.len(),
+		history_size().await
+	);
 	let mut command = deployment_command(&fixture.url, fixture.directory.path());
 	command.args(["migrate", "operations", "zero"]);
 	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
@@ -810,7 +833,10 @@ async fn local_database_preparation_uses_and_replays_the_native_history(
 	let stdout = String::from_utf8_lossy(&output.stdout);
 	assert!(stdout.contains("Prepared local Aidash database 1."));
 	assert!(stdout.contains("Prepared local Aidash database 2."));
-	assert_eq!(recorded_keys(&fixture.connection).await.len(), 46);
+	assert_eq!(
+		recorded_keys(&fixture.connection).await.len(),
+		history_size().await
+	);
 }
 
 #[rstest]

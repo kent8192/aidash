@@ -51,6 +51,28 @@ services:
       - "127.0.0.1:18099:8080"
     volumes:
       - keycloak:/opt/keycloak/data
+  memory-recovery-init:
+    profiles: [dev]
+    build:
+      context: .
+      target: dev-backend
+      args:
+        CARGO_PROFILE: dev
+    environment:
+      DATABASE_URL: postgres://aidash:aidash-local@postgres:5432/aidash_a
+      AIDASH_NODE_ID: ${AIDASH_NODE_ID:-aidash://node-a}
+    command:
+      [
+        "memory-recovery",
+        "init-if-missing",
+        "--directory",
+        "/var/lib/aidash/memory-recovery",
+      ]
+    volumes:
+      - memory-recovery:/var/lib/aidash/memory-recovery
+    depends_on:
+      postgres-extensions:
+        condition: service_completed_successfully
   backend:
     profiles: [dev]
     build:
@@ -76,7 +98,7 @@ services:
     ports:
       - "127.0.0.1:${AIDASH_BACKEND_PORT:-18080}:8080"
     depends_on:
-      postgres-extensions:
+      memory-recovery-init:
         condition: service_completed_successfully
       nats:
         condition: service_started

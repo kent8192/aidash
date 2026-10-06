@@ -3,7 +3,6 @@ use aidash_server::{
 	store::Store,
 };
 use reinhardt::db::backends::{DatabaseConnection, dialect::PostgresBackend};
-use reinhardt::db::migrations::executor::DatabaseMigrationExecutor;
 use reinhardt::db::migrations::{FilesystemSource, MigrationSource};
 use reinhardt::test::fixtures::http_client;
 use serde_json::{Value, json};
@@ -19,6 +18,7 @@ use uuid::Uuid;
 mod environment;
 #[allow(unused_imports)] // Sixteen-Node acceptance cases need a separate connection budget.
 pub use environment::isolated_test_environment;
+use environment::postgres;
 pub use environment::{TestEnvironment, test_environment};
 #[path = "application.rs"]
 mod application;
@@ -116,10 +116,7 @@ pub fn setup(
 				.all_migrations()
 				.await
 				.expect("load the native migration graph");
-		DatabaseMigrationExecutor::new(connection)
-			.apply_migrations(&migrations)
-			.await
-			.expect("apply native migrations to the isolated database");
+		postgres::apply_migrations(connection, &migrations).await;
 		let store = Store::from_pool(pool.clone(), "aidash://execution-test".into())
 			.await
 			.unwrap();
@@ -327,10 +324,7 @@ pub async fn native_store(database_url: &str, node: &str) -> Store {
 			.all_migrations()
 			.await
 			.unwrap();
-	DatabaseMigrationExecutor::new(connection)
-		.apply_migrations(&migrations)
-		.await
-		.unwrap();
+	postgres::apply_migrations(connection, &migrations).await;
 	Store::from_pool(pool, node.to_owned()).await.unwrap()
 }
 

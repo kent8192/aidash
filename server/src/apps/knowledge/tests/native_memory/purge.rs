@@ -98,6 +98,18 @@ async fn physical_purge_failure_is_bounded_fair_and_survives_adapter_recreation(
 		tx.commit().await.unwrap();
 	}
 	due(&store).await;
+	// A ledger outage before policy loading must not exhaust the retry budget.
+	let ledger_path = database.recovery_directory.path().join("ledger.cbor");
+	let original_ledger = std::fs::read(&ledger_path).unwrap();
+	let mut ledger: aidash_domain::memory::recovery::Ledger =
+		ciborium::de::from_reader(&original_ledger[40..]).unwrap();
+	ledger.units.remove(&protected);
+	write_fixture_archive(&ledger_path, &ledger);
+	aidash_server::semantic::worker::sweep(&store)
+		.await
+		.unwrap();
+	std::fs::write(&ledger_path, original_ledger).unwrap();
+	due(&store).await;
 	aidash_server::semantic::worker::sweep(&store)
 		.await
 		.unwrap();

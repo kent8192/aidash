@@ -21,6 +21,12 @@ cargo run -p aidash-server --bin aidash -- memory-recovery init \
   --directory /absolute/persistent/home-memory-recovery
 ```
 
+Compose and the GCP host installer run `memory-recovery init-if-missing` after
+migrations and before starting the app. This explicit bootstrap initializes only
+an empty new-format Home with no ledger or epoch anchor. It validates existing
+state and preserves a closed serving gate. Partial, corrupt or mismatched state
+fails deployment bootstrap and requires recovery; it never replaces an epoch.
+
 Set `AIDASH_MEMORY_RECOVERY_DIR` to that same absolute path when starting the
 Home HTTP server and workers. Missing, corrupt, mismatched or closed external
 state makes native memory unavailable; primary execution and management remain
