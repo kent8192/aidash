@@ -10,6 +10,7 @@ import {
   taskProgress,
   senderLabel,
   primaryDestinations,
+  visibleSettingsSections,
 } from "../src/collaboration/model.ts";
 const workspaces = [
   { id: "one", title: "First" },
@@ -59,6 +60,47 @@ test("management deep links resolve under settings", () => {
   assert.equal(r.section, "settings");
   assert.equal(r.settings, "agents");
   assert.equal(r.legacy, true);
+});
+test("undocumented views open their existing contextual owner", () => {
+  const migrations = [
+    ["workingFiles", "collaboration", "files", "node"],
+    ["generation", "creator", "generation", "node"],
+    ["authorization", "trust", "authorization", "node"],
+    ["semantic", "settings", "semantic", "registry"],
+    ["transactions", "collaboration", "progress", "node"],
+  ];
+  for (const [view, section, integration, settings] of migrations) {
+    for (const path of [
+      `/${view}?channel=one`,
+      `/settings?view=${view}&channel=one`,
+    ]) {
+      const [pathname, search] = path.split("?");
+      const resolved = resolveLocation(pathname, `?${search}`);
+      assert.equal(resolved.section, section);
+      assert.equal(resolved.integration, integration);
+      assert.equal(resolved.settings, settings);
+      assert.equal(resolved.channel, "one");
+      assert.equal(resolved.legacy, true);
+      const canonical = destination(section, {
+        channel: "one",
+        settings,
+        integration,
+        focus: integration === "semantic" ? "semantic" : undefined,
+      });
+      const [nextPath, nextSearch] = canonical.split("?");
+      const next = resolveLocation(nextPath, `?${nextSearch}`);
+      assert.equal(next.legacy, false);
+      assert.equal(next.integration, integration);
+    }
+  }
+  assert.deepEqual(visibleSettingsSections, [
+    "node",
+    "agents",
+    "registry",
+    "clusters",
+    "deployment",
+    "marketplace",
+  ]);
 });
 test("legacy conversation and workspaces routes lead to collaboration", () => {
   for (const route of [

@@ -1,3 +1,4 @@
+import { Button } from "../components/ui/button";
 import { useState, type CSSProperties } from "react";
 import { ArrowUpRight, X } from "lucide-react";
 import type { State } from "../types";
@@ -147,7 +148,8 @@ export function MeshInspector({
         });
   };
   const nodeLink = (n: MeshNode) => (
-    <button
+    <Button
+      variant="outline"
       type="button"
       className="mesh-connected-node"
       key={n.id}
@@ -164,7 +166,7 @@ export function MeshInspector({
       ) : (
         <small>{copy.kinds[n.kind]}</small>
       )}
-    </button>
+    </Button>
   );
   const eventList = (limit: number) =>
     events.length ? (
@@ -215,9 +217,14 @@ export function MeshInspector({
           <MeshIcon kind={node.kind} size={12} />
           {copy.kinds[node.kind]}
         </span>
-        <button type="button" aria-label={copy.close} onClick={close}>
+        <Button
+          variant="outline"
+          type="button"
+          aria-label={copy.close}
+          onClick={close}
+        >
           <X size={16} />
-        </button>
+        </Button>
       </div>
       <header className="mesh-inspector-title">
         <div className="mesh-inspector-symbol">
@@ -241,7 +248,8 @@ export function MeshInspector({
         aria-label={copy.select}
       >
         {(["overview", "tasks", "events", "config"] as const).map((name) => (
-          <button
+          <Button
+            variant="outline"
             type="button"
             key={name}
             aria-pressed={tab === name}
@@ -254,7 +262,7 @@ export function MeshInspector({
             {name === "events" && events.length > 0 && (
               <small>{events.length}</small>
             )}
-          </button>
+          </Button>
         ))}
       </div>
       <div className="mesh-inspector-content">
@@ -357,13 +365,14 @@ export function MeshInspector({
             <section>
               <h3>
                 {copy.recent}
-                <button
+                <Button
+                  variant="outline"
                   type="button"
                   onClick={() => setTab("events")}
                   aria-label={copy.events}
                 >
                   <ArrowUpRight size={13} />
-                </button>
+                </Button>
               </h3>
               {eventList(5)}
             </section>
@@ -439,14 +448,15 @@ export function MeshInspector({
             <section>
               <h3>{copy.related}</h3>
               {related.map((w) => (
-                <button
+                <Button
+                  variant="outline"
                   type="button"
                   className="collab-channel-link"
                   key={w.id}
                   onClick={() => visitChannel(w.id)}
                 >
                   # {w.title}
-                </button>
+                </Button>
               ))}
             </section>
           </>
@@ -454,7 +464,8 @@ export function MeshInspector({
       </div>
       {(entity || task || workspace) && (
         <footer className="mesh-inspector-footer">
-          <button
+          <Button
+            variant="outline"
             type="button"
             onClick={() => {
               if (entity) open({ kind: "entityDetail", entity });
@@ -464,7 +475,7 @@ export function MeshInspector({
           >
             {entity || task ? copy.open : copy.channel}
             <ArrowUpRight size={14} />
-          </button>
+          </Button>
         </footer>
       )}
     </aside>

@@ -557,11 +557,7 @@ impl Engine<'_> {
 				.await?;
 			return Ok(Recall::NoSpace);
 		}
-		let evidence: Vec<_> = selected
-			.iter()
-			.map(Unit::evidence)
-			.chain(selected.iter().flat_map(|u| u.content.evidence.clone()))
-			.collect();
+		let evidence: Vec<_> = selected.iter().map(Unit::evidence).collect();
 		scope
 			.deliver(bank, &snapshot.authority_revision, &evidence)
 			.await?;

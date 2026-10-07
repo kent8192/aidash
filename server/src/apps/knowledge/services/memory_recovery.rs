@@ -405,10 +405,17 @@ async fn finish(
 			Lease::begin(store, &crate::authorization::identity::Actor::Operator).await?;
 		let contents = selected(&mut lease, bank, policy.retention.max_unit_records).await?;
 		lease.finish(Ok(())).await?;
+		let mut ledger = recovery.load()?;
 		let mut changed = false;
 		for mut unit in contents.into_iter().filter(Unit::visible) {
 			let ttl = policy.retention.unit_expired(unit.learned_at, Utc::now());
-			let fenced = recovery.load()?.current(&unit)?;
+			// The pass snapshot is already validated. Check only this fence so
+			// Ledger validation does not rescan every Home identity per unit.
+			let mut selected = aidash_domain::memory::recovery::Ledger::new(bank.home.clone());
+			if let Some(fence) = ledger.units.get(&unit.id) {
+				selected.units.insert(unit.id, fence.clone());
+			}
+			let fenced = selected.current(&unit)?;
 			if !ttl && fenced {
 				match validate_writer(store, &unit, policy).await {
 					Ok(()) => continue,
@@ -431,6 +438,7 @@ async fn finish(
 			unit.updated_at = Utc::now();
 			clear(&mut unit);
 			recovery.advance_restore(epoch, &unit)?;
+			ledger.observe(&unit)?;
 			let mut lease =
 				Lease::begin(store, &crate::authorization::identity::Actor::Operator).await?;
 			repository::lock_workspace(&mut lease, bank.workspace, true).await?;

@@ -1,3 +1,4 @@
+import { Button } from "../components/ui/button";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -51,13 +52,21 @@ export function RemoteRunManagement({ id }: { id: string }) {
       {!terminal && (
         <div className="button-row">
           {state.control === "ACTIVE" && (
-            <button disabled={busy} onClick={() => act("pause")}>
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => act("pause")}
+            >
               {ja ? "一時停止" : "Pause"}
-            </button>
+            </Button>
           )}
-          <button disabled={busy} onClick={() => act("cancel")}>
+          <Button
+            variant="outline"
+            disabled={busy}
+            onClick={() => act("cancel")}
+          >
             {ja ? "実行を中止" : "Cancel execution"}
-          </button>
+          </Button>
         </div>
       )}
       {state.control === "PAUSED" && !terminal && (
@@ -196,7 +205,8 @@ export function RemoteMemoryProvenance({ url }: { url: string }) {
     open && !query.isFetching && !query.isError ? query.data : undefined;
   return (
     <div>
-      <button
+      <Button
+        variant="outline"
         type="button"
         onClick={() => {
           if (open) setInspection((value) => value + 1);
@@ -210,7 +220,7 @@ export function RemoteMemoryProvenance({ url }: { url: string }) {
           : ja
             ? "参照情報を確認"
             : "Inspect provenance"}
-      </button>
+      </Button>
       {open && query.isError && (
         <p role="status">
           {ja
@@ -355,9 +365,9 @@ export function RemoteFollowUp({
   const [key, setKey] = useState(() => crypto.randomUUID());
   return (
     <div>
-      <button type="button" onClick={() => setOpen(!open)}>
+      <Button variant="outline" type="button" onClick={() => setOpen(!open)}>
         {ja ? "Follow-up Task を作成" : "Create follow-up task"}
-      </button>
+      </Button>
       {open && (
         <form
           onSubmit={(event) => {
@@ -422,7 +432,9 @@ export function RemoteFollowUp({
             />
           </label>
           {error && <p role="alert">{error}</p>}
-          <button disabled={busy}>{ja ? "作成" : "Create"}</button>
+          <Button variant="outline" disabled={busy}>
+            {ja ? "作成" : "Create"}
+          </Button>
         </form>
       )}
     </div>

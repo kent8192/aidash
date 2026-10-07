@@ -79,6 +79,13 @@ async fn index_configuration_preserves_every_pinned_bank_embedding(
 	let before = service::get_index(&store, &Actor::Operator, workspace)
 		.await
 		.unwrap();
+	let mut disabled = before.configuration().unwrap();
+	disabled.enabled = false;
+	assert!(
+		matches!(service::configure(&store, workspace, aidash_server::semantic::ConfigureIndex {
+		expected_revision: before.revision, spec: disabled }).await,
+		Err(aidash_server::Error::Conflict(message)) if message.contains("remain enabled"))
+	);
 	let mut spec = before.configuration().unwrap();
 	spec.embedding.model = "incompatible-model".into();
 	assert!(

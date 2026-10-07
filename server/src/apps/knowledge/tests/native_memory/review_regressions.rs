@@ -85,6 +85,36 @@ async fn derived_corrections_preserve_kind_and_require_derive_authority(
 	.unwrap() else {
 		panic!("derived unit");
 	};
+	let candidate = super::review_delivery::candidate(&store, &bank).await;
+	let mut reviewed = content("Reviewed replacement");
+	reviewed.kind = replacement;
+	let reviewed = mutation(
+		&bank,
+		Change::Correct {
+			id,
+			expected_revision: 1,
+			content: reviewed,
+		},
+	);
+	let result = memory::operate(
+		&store,
+		&Actor::Operator,
+		memory::Operation {
+			operation_id: reviewed.operation_id,
+			provider: reference("p"),
+			bank: bank.clone(),
+			action: memory::Action::Review {
+				id: candidate,
+				expected_revision: 1,
+				mutation: Some(reviewed),
+			},
+		},
+	)
+	.await;
+	assert!(
+		matches!(result, Err(aidash_server::Error::Invalid(ref message)) if message.contains("derive operation")),
+		"{result:?}"
+	);
 	let authorization = aidash_server::authorization::Authorization {
 		pool: store.pool.clone(),
 	};

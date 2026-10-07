@@ -1,13 +1,12 @@
 @import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500;550;600;650;700&family=Noto+Sans+JP:wght@400;500;600;700&display=swap");
 :root {
   font-family: "DM Sans", "Noto Sans JP", sans-serif;
-  color: #243b32;
-  background: #f5f7f3;
+  color: var(--foreground);
+  background: var(--background);
   font-synthesis: none;
   font-size: 14px;
-  --green: #194f40;
-  --line: #e1e7df;
-  --muted: #7a8a7f;
+  --green: var(--primary);
+  --line: var(--border);
 }
 * {
   box-sizing: border-box;
@@ -41,7 +40,7 @@ button {
   color: inherit;
 }
 button:hover {
-  border-color: #97b4a1;
+  border-color: var(--input);
   background: #f4f8f3;
 }
 button:disabled {
@@ -50,7 +49,7 @@ button:disabled {
 }
 button:focus-visible,
 a:focus-visible {
-  outline: 3px solid #99c8a2;
+  outline: 3px solid var(--ring);
   outline-offset: 3px;
 }
 a {
@@ -93,7 +92,7 @@ small {
   font-size: 11px;
 }
 .muted {
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 .mono,
 code {
@@ -109,7 +108,7 @@ code {
   white-space: nowrap;
 }
 .primary:hover {
-  background: #27634f;
+  background: var(--primary);
   color: white;
 }
 .danger {
@@ -124,7 +123,7 @@ code {
   inset: 0 auto 0 0;
   width: 220px;
   border-right: 1px solid var(--line);
-  background: #fbfcf9;
+  background: var(--card);
   display: flex;
   flex-direction: column;
   padding: 27px 17px 18px;
@@ -174,7 +173,7 @@ code {
   border-radius: 4px;
   padding: 2px 5px;
   margin-left: 1px;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 .nav-label {
   font-size: 9px;
@@ -232,7 +231,7 @@ code {
 .sidebar-bottom span:not(.status-dot) {
   display: block;
   font-size: 9px;
-  color: var(--muted);
+  color: var(--muted-foreground);
   margin-top: 4px;
 }
 .node-icon {
@@ -254,7 +253,7 @@ code {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: #fbfcf9;
+  background: var(--card);
   border-bottom: 1px solid var(--line);
 }
 .breadcrumb {
@@ -331,7 +330,7 @@ code {
 }
 .page-heading p {
   font-size: 11px;
-  color: var(--muted);
+  color: var(--muted-foreground);
   margin: 0;
 }
 .stats {
@@ -487,7 +486,7 @@ code {
   overflow: hidden;
 }
 .request-card small {
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 .badge {
   display: inline-block;
@@ -837,7 +836,7 @@ tbody tr:hover {
 .loading {
   padding: 80px;
   text-align: center;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 dialog {
   border: 1px solid var(--line);
@@ -951,7 +950,7 @@ fieldset {
 }
 legend {
   font-size: 11px;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 .json {
   font-family: ui-monospace, SFMono-Regular, monospace;
@@ -971,7 +970,7 @@ legend {
   display: block;
   overflow-wrap: anywhere;
   margin: 18px 0;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 dl {
   display: grid;
@@ -1004,7 +1003,7 @@ dd {
   padding: 16px;
 }
 .run-list button > span:nth-of-type(2) {
-  color: var(--muted);
+  color: var(--muted-foreground);
   margin-left: auto;
 }
 .run-dot {
@@ -1038,7 +1037,7 @@ dd {
 }
 .call-detail h5 {
   font-size: 10px;
-  color: var(--muted);
+  color: var(--muted-foreground);
   margin: 16px 0 3px;
 }
 details > summary {
@@ -1060,7 +1059,7 @@ details > summary {
 }
 .peer-row p {
   font-size: 11px;
-  color: var(--muted);
+  color: var(--muted-foreground);
   margin: 5px 0 0;
 }
 .peer-row .badge {
@@ -1127,7 +1126,7 @@ details > summary {
 }
 .login-brand > span:last-child {
   font-size: 10px;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 .login-card {
   width: min(430px, 90vw);
@@ -1142,7 +1141,7 @@ details > summary {
 }
 .login-card p {
   font-size: 11px;
-  color: var(--muted);
+  color: var(--muted-foreground);
   margin-bottom: 25px;
 }
 .login-card .primary {
@@ -1349,10 +1348,10 @@ details > summary {
 }
 .generation-request p {
   margin: 5px 0;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 .generation-request small {
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 .generation-fieldset {
   border: 0;
@@ -1398,7 +1397,7 @@ details > summary {
 .generation-history time {
   display: block;
   font-size: 11px;
-  color: var(--muted);
+  color: var(--muted-foreground);
   margin: 8px 0;
 }
 .generation-history p {
@@ -1622,7 +1621,7 @@ details > summary {
   font-weight: 600;
 }
 .auth-summary dt {
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 .auth-row {
   display: flex;
@@ -1638,7 +1637,7 @@ details > summary {
 }
 .auth-row small {
   display: block;
-  color: var(--muted);
+  color: var(--muted-foreground);
   margin-top: 5px;
 }
 .auth-fields {
@@ -1686,7 +1685,7 @@ details > summary {
 }
 .auth-history time {
   display: block;
-  color: var(--muted);
+  color: var(--muted-foreground);
   font-size: 12px;
   margin: 5px 0;
 }

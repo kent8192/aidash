@@ -15,7 +15,7 @@ mod consolidation;
 mod discovery;
 pub(crate) use completion::completion_ready;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Input {
 	Learn {
@@ -65,17 +65,47 @@ async fn enqueue(
 	let bank_id = repository::bank_id(lease, bank, false)
 		.await?
 		.ok_or(Error::Forbidden)?;
-	if native::query(
+	if let Some(existing) = native::query(
 		&Query::select()
-			.column(Alias::new("id"))
+			.column(ColumnRef::Asterisk)
 			.from(Alias::new("memory_engine_jobs"))
 			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.lock(LockType::Update)
 			.to_string(PostgresQueryBuilder),
 	)
 	.fetch_optional(&mut **lease.tx())
 	.await?
-	.is_some()
 	{
+		if existing.try_get::<Uuid>("bank_id")? != bank_id
+			|| existing.try_get::<String>("provider_id")? != provider.id
+			|| existing.try_get::<String>("provider_version")? != provider.version
+		{
+			return Err(Error::Conflict("engine job scope changed".into()));
+		}
+		let previous: Input = serde_json::from_value(existing.try_get("input")?)?;
+		if matches!(input, Input::MentalModel { .. })
+			&& previous != input
+			&& existing.try_get::<String>("state")? != "complete"
+		{
+			// Revoke any obsolete claim. A source revision changes the work identity
+			// even when the already-stale question's revision stays the same.
+			native::query(
+				&Query::update()
+					.table(Alias::new("memory_engine_jobs"))
+					.value(Alias::new("input"), serde_json::to_value(&input)?)
+					.value(Alias::new("authority"), lease.saved()?)
+					.value(Alias::new("state"), state)
+					.value(Alias::new("claim"), None::<Uuid>)
+					.value(Alias::new("attempts"), 0_i32)
+					.value(Alias::new("next_attempt"), Utc::now())
+					.value(Alias::new("last_error"), error)
+					.value(Alias::new("updated_at"), Utc::now())
+					.and_where(Expr::col("id").eq(Expr::value(id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut **lease.tx())
+			.await?;
+		}
 		return Ok(());
 	}
 	repository::record_capacity(
@@ -499,9 +529,16 @@ async fn execute(
 		}
 		crate::semantic::native_memory::bank_provider(&mut lease, bank, provider).await?;
 		let policy = crate::semantic::native_memory::policy(&mut lease, provider).await?;
-		let operation = crate::semantic::native_memory::request_id(id, "engine-operation")?;
 		let digest =
 			aidash_domain::semantic::indexing::content_digest(&serde_json::to_string(input)?);
+		let operation = crate::semantic::native_memory::request_id(
+			id,
+			&if matches!(input, Input::MentalModel { .. }) {
+				format!("engine-operation:{digest}")
+			} else {
+				"engine-operation".into()
+			},
+		)?;
 		let run_id = input.origin_run();
 		if let Some(run) = run_id {
 			let record: aidash_domain::Run = crate::database::query_as(

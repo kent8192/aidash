@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { setup } from "./collaboration-fixture";
+import type { ChannelMessagePage } from "../src/generated/models";
 
 for (const locale of ["en-US", "ja-JP"] as const) {
   for (const { native, failure } of [
@@ -780,7 +781,7 @@ for (const viewport of [
   });
 }
 
-test("collaboration is the landing view, with two primary destinations and secondary settings", async ({
+test("conversation is the landing view, with contextual progress and account settings", async ({
   page,
 }) => {
   const { errors } = await setup(page);
@@ -788,17 +789,50 @@ test("collaboration is the landing view, with two primary destinations and secon
   await expect(
     page.getByRole("heading", { name: "# Research", exact: true }),
   ).toBeVisible();
-  const primary = page.locator(".collab-rail nav").first();
-  await expect(primary.getByRole("link")).toHaveCount(2);
+  await expect(page.locator(".collab-rail")).toHaveCount(0);
   await expect(
-    primary.getByRole("link", { name: "Collaboration", exact: true }),
+    page.getByRole("button", { name: "New request", exact: true }),
   ).toBeVisible();
   await expect(
-    primary.getByRole("link", { name: "Graph View", exact: true }),
+    page.getByRole("button", { name: "View in graph", exact: true }),
   ).toBeVisible();
+  await page.getByLabel("Account settings", { exact: true }).click();
   await expect(
-    page.locator(".collab-secondary").getByRole("link", { name: "Settings" }),
+    page
+      .locator(".intent-account-links")
+      .getByRole("button", { name: "Settings", exact: true }),
   ).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("new request preserves the Japanese conversation creation contract", async ({
+  page,
+}) => {
+  const { errors } = await setup(page, { locale: "ja-JP" });
+  let payload: unknown;
+  await page.route("**/api/conversations", (route) => {
+    payload = route.request().postDataJSON();
+    return route.fulfill({ json: { workspace: { id: "workspace-two" } } });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "新しい依頼", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("タイトル", { exact: true }).fill("競合調査");
+  await dialog
+    .getByLabel("ゴール", { exact: true })
+    .fill("Rustフレームワークを比較して");
+  await dialog.getByRole("combobox").selectOption("researcher@1.0.0");
+  await dialog
+    .getByRole("button", { name: "新しいゴール", exact: true })
+    .click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page).toHaveURL(/channel=workspace-two/);
+  expect(payload).toEqual({
+    title: "競合調査",
+    goal: "Rustフレームワークを比較して",
+    target: { id: "researcher", version: "1.0.0" },
+    target_kind: "agent",
+  });
   expect(errors).toEqual([]);
 });
 
@@ -858,6 +892,7 @@ test("preparing a channel does not invoke agent execution", async ({
 }) => {
   const { submissions, errors } = await setup(page);
   await page.goto("/");
+  await page.getByLabel("Account settings", { exact: true }).click();
   await page
     .getByRole("button", { name: "Prepare a channel", exact: true })
     .click();
@@ -898,7 +933,7 @@ test("graph renders with Cytoscape and offers current related channel first", as
   expect(errors).toEqual([]);
 });
 
-test("graph focus survives selection, links, reload, and history", async ({
+test("graph focus survives contextual selection, reload, and history", async ({
   page,
 }) => {
   const { errors } = await setup(page, { extraGraphAgent: true });
@@ -930,12 +965,6 @@ test("graph focus survives selection, links, reload, and history", async ({
   await expect(selector).toHaveValue(focused);
   await expect(page.locator(".collab-cytoscape canvas").first()).toBeVisible();
   expect(new URL(page.url()).searchParams.get("focus")).toBe(focused);
-  const graphLink = await page
-    .getByRole("link", { name: "Graph View", exact: true })
-    .getAttribute("href");
-  expect(new URL(graphLink!, page.url()).searchParams.get("focus")).toBe(
-    focused,
-  );
 
   await page.reload();
   await expect(selector).toHaveValue(focused);
@@ -1166,7 +1195,7 @@ test("local run details retain execution memory", async ({ page }) => {
   await page.locator(".collab-channel .collab-task").click();
   await page.getByText("Memory", { exact: true }).click();
   await expect(
-    page.locator("dialog details").filter({ hasText: "Memory" }),
+    page.getByRole("dialog").locator("details").filter({ hasText: "Memory" }),
   ).toContainText("Retained execution memory.");
   expect(errors).toEqual([]);
 });
@@ -1261,19 +1290,22 @@ test("run media picker follows the effective model route before uploads", async 
   expect(errors).toEqual([]);
 });
 
-test("the mobile channel toggle is absent outside Collaboration", async ({
+test("mobile history remains reachable from graph and settings", async ({
   page,
 }) => {
   await setup(page);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/graph");
-  await expect(
-    page.getByRole("button", { name: "Channels", exact: true }),
-  ).toHaveCount(0);
-  await page.goto("/settings?view=agents");
-  await expect(
-    page.getByRole("button", { name: "Channels", exact: true }),
-  ).toHaveCount(0);
+  for (const url of ["/graph", "/settings?view=agents"]) {
+    await page.goto(url);
+    await page.getByRole("button", { name: "Channels", exact: true }).click();
+    await expect(
+      page.getByRole("link", { name: "# Research", exact: true }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Close history", exact: true })
+      .click();
+    await expect(page.locator(".intent-sidebar")).toBeHidden();
+  }
 });
 
 test("a same-length refreshed page follows a new latest message", async ({
@@ -1293,17 +1325,181 @@ test("a same-length refreshed page follows a new latest message", async ({
   await expect(page.locator(".collab-message")).toHaveCount(40);
   await expect
     .poll(async () =>
-      page
-        .locator(".collab-messages")
-        .evaluate(
-          (element) =>
-            element.scrollHeight - element.scrollTop - element.clientHeight <
-            80,
-        ),
+      page.locator(".collab-messages").evaluate((element) => {
+        const messages = element.querySelectorAll(".collab-message");
+        const latest = messages[messages.length - 1];
+        return (
+          Math.abs(
+            latest.getBoundingClientRect().bottom -
+              element.getBoundingClientRect().bottom,
+          ) < 5
+        );
+      }),
     )
     .toBe(true);
   expect(errors).toEqual([]);
 });
+
+test("message following keeps context after the latest message and respects reading older history", async ({
+  page,
+}) => {
+  const { errors } = await setup(page, { olderMessages: 39 });
+  await page.goto("/collaboration?channel=workspace-one");
+  const feed = page.locator(".collab-messages");
+  await expect(feed.locator(".collab-message")).toHaveCount(40);
+  await expect
+    .poll(() =>
+      feed.evaluate((element) => {
+        const latest = element.querySelectorAll(".collab-message")[39];
+        const bottom = element.getBoundingClientRect().bottom;
+        return (
+          Math.abs(latest.getBoundingClientRect().bottom - bottom) < 5 &&
+          element.scrollHeight - element.scrollTop - element.clientHeight > 80
+        );
+      }),
+    )
+    .toBe(true);
+  const history: ChannelMessagePage = await page.evaluate(() =>
+    fetch("/api/workspaces/workspace-one/message-history").then((response) =>
+      response.json(),
+    ),
+  );
+  await page.route(
+    "**/api/workspaces/workspace-one/message-history**",
+    (route) => route.fulfill({ json: history }),
+  );
+  await feed.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  const latest = history.messages.at(-1)!;
+  latest.message = {
+    ...latest.message,
+    id: "manual-reading-update",
+    content: "Update while reading older history.",
+  };
+  await expect(feed.locator("#message-manual-reading-update")).toBeAttached();
+  expect(await feed.evaluate((element) => element.scrollTop)).toBeLessThan(10);
+  await page
+    .getByRole("button", { name: "Jump to latest messages", exact: true })
+    .click();
+  latest.message = {
+    ...latest.message,
+    id: "following-update",
+    content: "Update after resuming following.",
+  };
+  await expect(feed.locator("#message-following-update")).toBeAttached();
+  await expect
+    .poll(() =>
+      feed.evaluate((element) => {
+        const latest = element.querySelector("#message-following-update")!;
+        return (
+          Math.abs(
+            latest.getBoundingClientRect().bottom -
+              element.getBoundingClientRect().bottom,
+          ) < 5
+        );
+      }),
+    )
+    .toBe(true);
+  await expect(
+    page.getByRole("button", { name: "Jump to latest messages", exact: true }),
+  ).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+for (const locale of ["en-US", "ja-JP"] as const) {
+  test(`progress overview remains reachable after every detail tab in ${locale}`, async ({
+    page,
+  }) => {
+    const ja = locale === "ja-JP";
+    if (ja) await page.setViewportSize({ width: 390, height: 1000 });
+    const { errors } = await setup(page, { locale });
+    await page.goto("/collaboration?channel=workspace-one");
+    const open = page.getByRole("button", {
+      name: ja ? "状況を表示" : "Show channel status",
+      exact: true,
+    });
+    await open.click();
+    const sheet = page.locator(".intent-progress-sheet");
+    const nav = sheet.locator(".intent-progress-nav");
+    const pause = sheet.getByRole("button", {
+      name: ja
+        ? "このチャンネルの実行を一時停止"
+        : "Pause runs in this channel",
+      exact: true,
+    });
+    await expect(pause).toBeVisible();
+    for (const name of ja
+      ? ["タスクと成果物", "成果物", "実行履歴"]
+      : ["Tasks and results", "Artifacts", "Execution history"]) {
+      await nav.getByRole("button", { name, exact: true }).click();
+      await expect(pause).toHaveCount(0);
+      await nav
+        .getByRole("button", { name: ja ? "概要" : "Overview", exact: true })
+        .click();
+      await expect(pause).toBeVisible();
+    }
+    await nav
+      .getByRole("button", {
+        name: ja ? "タスクと成果物" : "Tasks and results",
+        exact: true,
+      })
+      .click();
+    await sheet
+      .getByRole("button", { name: ja ? "閉じる" : "Close", exact: true })
+      .click();
+    await expect(sheet).toHaveCount(0);
+    await open.click();
+    await expect(pause).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+}
+
+for (const action of ["task", "participant", "new task"] as const) {
+  test(`overview ${action} replaces the progress sheet with one dismissible dialog`, async ({
+    page,
+  }) => {
+    const { errors } = await setup(page);
+    await page.goto("/collaboration?channel=workspace-one");
+    const open = page.getByRole("button", {
+      name: "Show channel status",
+      exact: true,
+    });
+    await open.click();
+    const sheet = page.locator(".intent-progress-sheet");
+    if (action === "task")
+      await sheet.locator(".workspace-task-row").first().click();
+    else if (action === "participant")
+      await sheet.locator(".workspace-participant").first().click();
+    else
+      await sheet
+        .getByRole("button", { name: "Assign a task", exact: true })
+        .click();
+    await expect(sheet).toHaveCount(0);
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toHaveCount(1);
+    if (action === "task")
+      await expect(
+        dialog.getByRole("heading", { name: "Collect evidence", exact: true }),
+      ).toBeVisible();
+    else if (action === "participant")
+      await expect(dialog).toContainText("Thinking");
+    else {
+      await expect(dialog.getByLabel("Title", { exact: true })).toHaveValue("");
+      await expect(dialog.getByLabel("Workspace", { exact: true })).toHaveValue(
+        "workspace-one",
+      );
+    }
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await open.click();
+    await expect(sheet).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+}
 
 test("revoking a thread read hides cached replies without exposing another conversation", async ({
   page,
@@ -1411,6 +1607,9 @@ test("channel controls scope run changes and persist approval responses", async 
   const { submissions, errors } = await setup(page, { approval: true });
   await page.goto("/");
   await page
+    .getByRole("button", { name: "Show channel status", exact: true })
+    .click();
+  await page
     .getByRole("button", { name: "Pause runs in this channel", exact: true })
     .click();
   await expect(
@@ -1427,6 +1626,7 @@ test("channel controls scope run changes and persist approval responses", async 
   await expect(
     page.getByRole("button", { name: "Pause runs in this channel" }),
   ).toBeEnabled();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
   await page.getByRole("button", { name: "Approve", exact: true }).click();
   await expect(page.locator(".workspace-approval")).toHaveCount(0);
   expect(
@@ -1441,24 +1641,29 @@ test("search, notifications, thread navigation and persisted theme work", async 
   const { errors } = await setup(page);
   await page.goto("/");
   await page
-    .getByRole("searchbox", { name: "Search channels" })
+    .getByRole("searchbox", { name: "Search history" })
     .fill("next release");
   await expect(
-    page
-      .locator(".collab-channel-sidebar")
-      .getByRole("link", { name: "# Research" }),
+    page.locator(".intent-sidebar").getByRole("link", { name: "# Research" }),
   ).toHaveCount(0);
   await expect(page.getByRole("link", { name: "# Planning" })).toBeVisible();
-  await page.getByRole("searchbox", { name: "Search channels" }).fill("");
+  await page.getByRole("searchbox", { name: "Search history" }).fill("");
   await page
-    .getByLabel("Requests awaiting your input", { exact: true })
+    .getByRole("button", { name: "Notifications", exact: true })
     .click();
   await page
-    .locator(".workspace-popover-body")
-    .getByRole("button", { name: "Which market should I examine?" })
+    .locator(".intent-notifications")
+    .getByRole("button", { name: /Which market should I examine\?/ })
     .click();
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await page.keyboard.press("Escape");
+  await expect(page.locator(".intent-notifications")).toHaveCount(0);
+  await expect(
+    page.getByRole("dialog", { name: "Human input", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Close", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.getByLabel("Account settings", { exact: true }).click();
   await page.getByRole("button", { name: "Dark theme", exact: true }).click();
   await expect(page.locator(".collab-app")).toHaveAttribute(
@@ -1471,11 +1676,17 @@ test("search, notifications, thread navigation and persisted theme work", async 
     "dark",
   );
   await page
-    .getByRole("button", { name: "Threads in this channel", exact: true })
+    .getByRole("button", { name: "Request actions", exact: true })
+    .click();
+  await page
+    .getByRole("menuitem", { name: "Threads in this channel", exact: true })
     .click();
   await expect(
     page.getByText("No threads in the loaded history."),
   ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Show channel status", exact: true })
+    .click();
   await page
     .getByRole("button", { name: "Tasks and results", exact: true })
     .click();
@@ -1555,6 +1766,7 @@ test("workspace reference renders light, dark and thread layouts", async ({
   });
   await page.goto("/");
   await expect(page.locator(".workspace-approval")).toBeVisible();
+  await page.getByRole("button", { name: "状況を表示", exact: true }).click();
   await expect(
     page.locator(".workspace-mini-graph canvas").first(),
   ).toBeVisible();
@@ -1562,13 +1774,17 @@ test("workspace reference renders light, dark and thread layouts", async ({
   await page.locator(".workspace-status").screenshot({
     path: testInfo.outputPath("workspace-status.png"),
   });
+  await page.keyboard.press("Escape");
   await page.locator(".collab-composer").screenshot({
     path: testInfo.outputPath("workspace-composer.png"),
   });
   await page.getByLabel("アカウント設定", { exact: true }).click();
   await page.getByRole("button", { name: "ダークテーマ", exact: true }).click();
   await page.getByLabel("アカウント設定", { exact: true }).click();
-  await page.screenshot({ path: testInfo.outputPath("workspace-dark.png") });
+  await page.screenshot({
+    path: testInfo.outputPath("workspace-dark.png"),
+    animations: "disabled",
+  });
   await page
     .locator("#message-message-one")
     .getByRole("button", { name: "スレッドで返信" })
@@ -1589,7 +1805,7 @@ test("shared files can be inspected without leaving the workspace", async ({
 }) => {
   const { errors } = await setup(page, { messageAttachment: true });
   await page.goto("/");
-  await page.getByRole("button", { name: "Artifacts", exact: true }).click();
+  await page.getByRole("button", { name: "Files", exact: true }).click();
   const files = page.locator(".workspace-file-gallery");
   await expect(
     files.getByRole("button", { name: "Download attachment: evidence.txt" }),
@@ -1600,6 +1816,8 @@ test("shared files can be inspected without leaving the workspace", async ({
     dialog.getByRole("heading", { name: "evidence.txt" }),
   ).toBeVisible();
   await expect(dialog.locator("pre")).toHaveText("Source evidence");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(1);
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
   expect(errors).toEqual([]);
@@ -1798,6 +2016,9 @@ test("channel controls resume a validated failure delivery with an invalid Conte
     failureDeliveryRun: true,
   });
   await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Show channel status", exact: true })
+    .click();
   const resume = page.getByRole("button", {
     name: "Resume runs in this channel",
     exact: true,

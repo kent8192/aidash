@@ -308,22 +308,38 @@ impl MemoryScope for Scope<'_, '_> {
 				"memory authority snapshot changed".into(),
 			));
 		}
-		self.current(bank, evidence).await?;
-		if let Some(run) = self.run {
-			let mut selected = Vec::new();
-			for source in evidence {
-				if let Evidence::Unit { id, revision, .. } = source {
-					let unit = units::load(self.lease, *id, false)
-						.await?
-						.ok_or(Error::Forbidden)?;
-					if unit.revision != *revision {
-						return Err(aidash_application::Error::Conflict(
-							"memory source changed before journal commit".into(),
-						));
-					}
-					selected.push(unit);
-				}
+		let mut selected = Vec::with_capacity(evidence.len());
+		for source in evidence {
+			let Evidence::Unit {
+				bank: origin,
+				id,
+				revision,
+			} = source
+			else {
+				return Err(aidash_application::Error::Invalid(
+					"memory delivery requires selected Unit roots".into(),
+				));
+			};
+			let unit = units::load(self.lease, *id, false)
+				.await?
+				.ok_or(Error::Forbidden)?;
+			if origin != bank || unit.bank != *bank || unit.revision != *revision || !unit.visible()
+			{
+				return Err(aidash_application::Error::Conflict(
+					"memory source changed before delivery".into(),
+				));
 			}
+			units::unexpired(self.lease, &unit).await?;
+			units::current(
+				self.lease,
+				bank.workspace,
+				&unit.content.evidence,
+				self.models.policy.bounds.max_graph_visits,
+			)
+			.await?;
+			selected.push(unit);
+		}
+		if let Some(run) = self.run {
 			super::memory_reads::record(self.store, run, &selected).await?;
 		}
 		Ok(())

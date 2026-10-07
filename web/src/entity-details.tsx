@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { ArrowUpRight } from "lucide-react";
 import type { Entry, Run, State, Task } from "./types";
 import { Badge, useI18n } from "./ui";
@@ -72,7 +73,8 @@ export function EntityDetails({
               run.agent_version === current.version,
           )
           .map((run) => (
-            <button
+            <Button
+              variant="outline"
               className="run-choice"
               key={run.id}
               onClick={() => open({ kind: "run", run, node: data.node.id })}
@@ -81,7 +83,7 @@ export function EntityDetails({
               {data.tasks.find((task) => task.id === run.task_id)?.title ||
                 t("task")}
               <ArrowUpRight size={15} />
-            </button>
+            </Button>
           ))}
       <h4>{t("metadata")}</h4>
       <RecordView value={current} />

@@ -2,6 +2,9 @@
 use super::*;
 
 #[rstest]
+#[case("workspace_same", true)]
+#[case("workspace_foreign", true)]
+#[case("workspace_version", true)]
 #[case("same", true)]
 #[case("participant_same", true)]
 #[case("participant_foreign", true)]
@@ -25,7 +28,10 @@ async fn agent_memory_sources_require_the_same_embedding_configuration(
 	scope.put(definition("model", "model", json!({"provider":"openai","model_id":"fixture","endpoint":"https://model.example.test","credential_env":null,"context_window":32768,"modalities":["text"],"cost":{}})));
 	let embedding = json!({"provider":"openai","endpoint":"https://embedding.example.test","credential_env":null,"model":"text","model_version":"1","dimensions":3});
 	let mut other = embedding.clone();
-	if !changed.starts_with("participant_") && changed != "same" {
+	if !changed.starts_with("participant_")
+		&& !changed.starts_with("workspace_")
+		&& changed != "same"
+	{
 		other[changed] = match changed {
 			"dimensions" => json!(4),
 			"credential_env" => json!("AIDASH_SECRET_OTHER"),
@@ -50,13 +56,35 @@ async fn agent_memory_sources_require_the_same_embedding_configuration(
 			json!({"scope":if changed.starts_with("participant_") {"participant"} else {"workspace"},"memory":reference(name),"max_tokens":512}),
 		));
 	}
+	if changed.starts_with("workspace_") {
+		let mut source = scope.entries["source-memory-b@1.0.0"].clone();
+		source.config["memory"] = match changed {
+			"workspace_same" => reference("memory-a"),
+			"workspace_version" => json!({"id":"memory-a","version":"1.0.1"}),
+			_ => reference("memory-b"),
+		};
+		scope.put(source);
+		let mut provider = scope.entries["memory-a@1.0.0"].clone();
+		provider.version = "1.0.1".into();
+		scope.put(provider);
+	}
 	let agent = definition(
 		"agent",
 		"agent",
-		json!({"model":reference("model"),"instructions":"Use current memory","memory":private.then(||reference("memory-a")),"sources":if private {vec![reference(if changed == "participant_same" {"source-memory-a"} else {"source-memory-b"})]} else {vec![reference("source-memory-a"),reference("source-memory-b")]}}),
+		json!({"model":reference("model"),"instructions":"Use current memory","memory":private.then(||reference("memory-a")),"sources":if changed.starts_with("workspace_") {vec![reference("source-memory-a"),reference("source-memory-b")]} else if private {vec![reference(if changed == "participant_same" {"source-memory-a"} else {"source-memory-b"})]} else {vec![reference("source-memory-a"),reference("source-memory-b")]}}),
 	);
 	let result = register_definition(&mut scope, &validation, &agent, "aidash://home").await;
-	if changed == "same" || changed == "participant_same" {
+	if !private {
+		assert!(
+			matches!(result, Err(Error::Invalid(message)) if message == "Agent Sources require a primary memory provider")
+		);
+		assert!(!scope.entries.contains_key("agent@1.0.0"));
+	} else if changed == "workspace_foreign" || changed == "workspace_version" {
+		assert!(
+			matches!(result, Err(Error::Invalid(message)) if message == "workspace Sources require one exact memory provider version")
+		);
+		assert!(!scope.entries.contains_key("agent@1.0.0"));
+	} else if changed == "same" || changed == "participant_same" || changed == "workspace_same" {
 		assert!(result.unwrap());
 		assert!(scope.entries.contains_key("agent@1.0.0"));
 	} else if changed == "participant_foreign" {

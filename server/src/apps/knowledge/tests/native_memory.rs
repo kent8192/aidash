@@ -31,6 +31,8 @@ mod purge;
 mod recovery_deployment;
 #[path = "native_memory/review_capacity.rs"]
 mod review_capacity;
+#[path = "native_memory/review_delivery.rs"]
+mod review_delivery;
 #[path = "native_memory/review_regressions.rs"]
 mod review_regressions;
 
@@ -2451,10 +2453,15 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 }
 
 #[rstest]
+#[case("pending")]
+#[case("running")]
+#[case("blocked")]
+#[case("failed")]
 #[tokio::test]
 async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources(
 	#[future] database: DatabaseFixture,
 	bounds: Bounds,
+	#[case] queued_state: &str,
 ) {
 	use axum::{Json, Router, routing::post};
 	use std::sync::{
@@ -2572,6 +2579,64 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 	)
 	.await
 	.unwrap();
+	use aidash_server::database::native;
+	let job: Uuid = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("memory_engine_jobs"))
+			.and_where(Expr::col("kind").eq("mental_model"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&store.pool)
+	.await
+	.unwrap();
+	let mut tx = native::begin(&store.pool).await.unwrap();
+	native::query(
+		&Query::update()
+			.table(Alias::new("memory_engine_jobs"))
+			.value(Alias::new("state"), queued_state)
+			.value(Alias::new("attempts"), 1_i32)
+			.value(Alias::new("claim"), Some(Uuid::now_v7()))
+			.and_where(Expr::col("id").eq(Expr::value(job)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&bank,
+			Change::Correct {
+				id,
+				expected_revision: 2,
+				content: content("東京では自転車を使う。 Cycle in Tokyo."),
+			},
+		),
+	)
+	.await
+	.unwrap();
+	let queued = native::query(
+		&Query::select()
+			.column(reinhardt::query::ColumnRef::Asterisk)
+			.from(Alias::new("memory_engine_jobs"))
+			.and_where(Expr::col("id").eq(Expr::value(job)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&store.pool)
+	.await
+	.unwrap();
+	assert_eq!(queued.try_get::<String>("state").unwrap(), "pending");
+	assert_eq!(queued.try_get::<i32>("attempts").unwrap(), 0);
+	assert_eq!(queued.try_get::<Option<Uuid>>("claim").unwrap(), None);
+	let input: serde_json::Value = queued.try_get("input").unwrap();
+	assert_eq!(
+		input["revision"], 2,
+		"the stale question still has its original queued revision"
+	);
+	assert_eq!(input["sources"][0]["revision"], 3);
 	aidash_server::semantic::worker::sweep(&store)
 		.await
 		.unwrap();
@@ -2590,7 +2655,7 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 		model.revision, 3,
 		"source invalidation and refreshed answer each have a canonical revision"
 	);
-	assert!(model.content.text.contains("歩く"));
+	assert!(model.content.text.contains("自転車"));
 	assert_eq!(model.content.verification, Verification::Unverified);
 	let refreshed_calls = calls.load(Ordering::SeqCst);
 	aidash_server::semantic::worker::sweep(&store)
@@ -2608,7 +2673,7 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 			&bank,
 			Change::Delete {
 				id,
-				expected_revision: 2,
+				expected_revision: 3,
 			},
 		),
 	)
@@ -2646,11 +2711,26 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 	.unwrap() else {
 		panic!()
 	};
-	assert!(jobs.items.iter().all(|j| j.state == "complete"));
 	assert_eq!(
 		jobs.items.len(),
-		4,
-		"the source correction also records an idempotent repair trigger"
+		6,
+		"each source correction records its bounded observation and repair triggers"
+	);
+	assert_eq!(
+		jobs.items.iter().filter(|j| j.state == "complete").count(),
+		4
+	);
+	let obsolete: Vec<_> = jobs.items.iter().filter(|j| j.state == "blocked").collect();
+	assert_eq!(
+		obsolete.len(),
+		2,
+		"superseded observation inputs are safely blocked"
+	);
+	assert!(obsolete.iter().all(|j| j.kind == "observation"
+		&& j.last_error.as_deref() == Some("authority_or_source_changed")));
+	assert_eq!(
+		jobs.items.iter().find(|j| j.id == job).unwrap().state,
+		"complete"
 	);
 	server.abort();
 }

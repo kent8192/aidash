@@ -114,6 +114,11 @@ impl SemanticConfigurationSession for Configuration {
 				break;
 			}
 			for row in rows {
+				if !proposed.enabled {
+					return Err(aidash_application::Error::Conflict(
+						"Workspace index must remain enabled for pinned memory banks".into(),
+					));
+				}
 				after = row.try_get("bank_id")?;
 				let reference = (
 					row.try_get::<String>("provider_id")?,

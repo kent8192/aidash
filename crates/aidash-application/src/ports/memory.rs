@@ -76,7 +76,9 @@ pub trait MemoryScope: Send {
 		allowed: &[Uuid],
 		limit: usize,
 	) -> Result<Vec<Uuid>>;
-	/// Revalidate authorization snapshot before delivery; a policy change is a retry, not partial success.
+	/// Revalidate authorization and each selected Unit's exact revision and content provenance.
+	/// Evidence contains selected Unit roots only; validate each root's content with its
+	/// admitted graph bound, then journal those roots. A policy change requires a retry.
 	async fn deliver(
 		&mut self,
 		bank: &Bank,

@@ -1,0 +1,74 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root {
+  --background: #fafafa;
+  --foreground: #18201f;
+  --card: #ffffff;
+  --card-foreground: #18201f;
+  --popover: #ffffff;
+  --popover-foreground: #18201f;
+  --primary: #c74730;
+  --primary-foreground: #ffffff;
+  --secondary: #f0f1f2;
+  --secondary-foreground: #18201f;
+  --muted: #f0f1f2;
+  --muted-foreground: #616766;
+  --accent: #fbece8;
+  --accent-foreground: #a33824;
+  --destructive: #b3342f;
+  --destructive-foreground: #ffffff;
+  --border: #e3e5e6;
+  --input: #d9dcdd;
+  --ring: #c74730;
+  --radius: 0.5rem;
+}
+[data-theme="dark"] {
+  color-scheme: dark;
+  --background: #171a1c;
+  --foreground: #eef0f1;
+  --card: #202427;
+  --card-foreground: #eef0f1;
+  --popover: #202427;
+  --popover-foreground: #eef0f1;
+  --primary: #f58b74;
+  --primary-foreground: #251710;
+  --secondary: #282d30;
+  --secondary-foreground: #eef0f1;
+  --muted: #282d30;
+  --muted-foreground: #afb6ba;
+  --accent: #3a2925;
+  --accent-foreground: #f6ae9c;
+  --destructive: #f19590;
+  --destructive-foreground: #251710;
+  --border: #383e42;
+  --input: #4b5359;
+  --ring: #f58b74;
+}
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}

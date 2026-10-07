@@ -1,3 +1,4 @@
+import { Button } from "../components/ui/button";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { apiFetch } from "../transport";
@@ -64,7 +65,8 @@ export function TransferHistory({ area }: { area: string }) {
             )}
             {item.error && <p role="alert">{item.error.message}</p>}
             {item.status === "uncertain" && (
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 onClick={async () => {
                   try {
@@ -78,14 +80,18 @@ export function TransferHistory({ area }: { area: string }) {
                 }}
               >
                 {ja ? "同じ転送を照会・再開" : "Reconcile this transfer"}
-              </button>
+              </Button>
             )}
           </article>
         ))}
       {query.hasNextPage && (
-        <button type="button" onClick={() => void query.fetchNextPage()}>
+        <Button
+          variant="outline"
+          type="button"
+          onClick={() => void query.fetchNextPage()}
+        >
           {ja ? "さらに表示" : "Load more"}
-        </button>
+        </Button>
       )}
       {(error || query.error) && (
         <p role="alert">{error || query.error?.message}</p>

@@ -140,6 +140,12 @@ pub async fn validate_references(
 			}
 			references.push(referenced);
 		}
+		if config.memory.is_none() && !config.sources.is_empty() {
+			return Err(Error::Invalid(
+				"Agent Sources require a primary memory provider".into(),
+			));
+		}
+		let mut workspace_provider = None;
 		let mut providers: Vec<_> = config.memory.iter().cloned().collect();
 		for source in references.iter().filter(|entry| entry.kind == "source") {
 			let source: aidash_domain::memory::SourceConfig =
@@ -150,6 +156,17 @@ pub async fn validate_references(
 				return Err(Error::Invalid(
 					"participant Sources require the Agent's exact primary memory provider".into(),
 				));
+			}
+			if source.scope == aidash_domain::memory::SourceScope::Workspace {
+				if workspace_provider
+					.as_ref()
+					.is_some_and(|provider| provider != &source.memory)
+				{
+					return Err(Error::Invalid(
+						"workspace Sources require one exact memory provider version".into(),
+					));
+				}
+				workspace_provider = Some(source.memory.clone());
 			}
 			providers.push(source.memory);
 		}

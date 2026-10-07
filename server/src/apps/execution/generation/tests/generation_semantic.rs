@@ -550,7 +550,7 @@ async fn generated_embedding_catalog_policy_and_provider_changes_cannot_increase
 	_test_environment: std::sync::Arc<TestEnvironment>,
 ) {
 	for reason in ["catalog", "policy", "index"] {
-		let mut fixture = Fixture::new(&_test_environment, Some(2), Some(2)).await;
+		let fixture = Fixture::new(&_test_environment, Some(2), Some(2)).await;
 		if reason == "catalog" {
 			assert_eq!(
 				request(
@@ -591,9 +591,23 @@ async fn generated_embedding_catalog_policy_and_provider_changes_cannot_increase
 				json!({"expected_revision":1,"spec":spec}),
 			)
 			.await;
-			assert_eq!(status, 200, "{index}");
-			fixture.index = index;
-			semantic::worker::sweep(&fixture.f.store).await.unwrap();
+			assert_eq!(status, 409, "{index}");
+			assert_eq!(
+				index["error"],
+				"Workspace index embedding differs from a pinned memory bank policy"
+			);
+			let (_, unchanged) = request(
+				&fixture.app,
+				&fixture.f.config.api_token,
+				"GET",
+				&format!("/api/workspaces/{}/semantic/index", fixture.workspace),
+				Value::Null,
+			)
+			.await;
+			assert_eq!(unchanged["revision"], fixture.index["revision"]);
+			assert_eq!(unchanged["spec"], fixture.index["spec"]);
+			fixture.dispose().await;
+			continue;
 		}
 		let before = fixture.embeddings.load(Ordering::SeqCst);
 		fixture.drive().await;

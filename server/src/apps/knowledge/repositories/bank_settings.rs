@@ -83,7 +83,13 @@ pub(crate) async fn set(
 				.await?;
 		let embedding: aidash_domain::semantic::EmbeddingConfig =
 			serde_json::from_value(embedding.config)?;
-		if index.configuration()?.embedding != embedding {
+		let configuration = index.configuration()?;
+		if !configuration.enabled {
+			return Err(Error::Conflict(
+				"memory banks require an enabled Workspace index".into(),
+			));
+		}
+		if configuration.embedding != embedding {
 			return Err(Error::Conflict(
 				"memory bank embedding differs from its Workspace index".into(),
 			));
@@ -99,6 +105,21 @@ pub(crate) async fn set(
 		),
 		(
 			"memory_model_operations",
+			false,
+			policy.retention.max_model_operations,
+		),
+		(
+			"memory_candidates",
+			false,
+			policy.retention.max_model_operations,
+		),
+		(
+			"memory_candidate_reviews",
+			false,
+			policy.retention.max_model_operations,
+		),
+		(
+			"memory_engine_jobs",
 			false,
 			policy.retention.max_model_operations,
 		),

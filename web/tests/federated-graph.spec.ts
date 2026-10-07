@@ -306,9 +306,12 @@ test("subject expands only direct authorized peers and clears remote details on 
     .click();
   const inspector = page.getByRole("complementary", { name: "Node details" });
   await expect(inspector).toContainText(goal);
-  await page.getByRole("searchbox").fill("unique search phrase");
+  await page
+    .getByRole("banner")
+    .getByRole("searchbox")
+    .fill("unique search phrase");
   await expect(list).toContainText("Full authorized Goal body.");
-  await page.getByRole("searchbox").fill("");
+  await page.getByRole("banner").getByRole("searchbox").fill("");
   await list.getByRole("button", { name: "B Task" }).click();
   await expect(inspector).not.toContainText("LOCAL-ONLY-DESCRIPTION");
   await expect(inspector).toContainText("task.started");

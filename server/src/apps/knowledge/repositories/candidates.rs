@@ -378,6 +378,19 @@ pub(crate) async fn review(
 				"review admits one unit in the candidate bank".into(),
 			));
 		}
+		if let Change::Correct { id, .. } = &mutation.changes[0] {
+			let target = units::load(lease, *id, false)
+				.await?
+				.ok_or(Error::Forbidden)?;
+			if target.bank != *bank {
+				return Err(Error::Forbidden);
+			}
+			if target.content.kind.derived() {
+				return Err(Error::Invalid(
+					"candidate review cannot change a derived memory kind; use the derive operation".into(),
+				));
+			}
+		}
 		let content = match &mutation.changes[0] {
 			Change::Add { content, .. } | Change::Correct { content, .. } => content,
 			Change::Delete { .. } => {
