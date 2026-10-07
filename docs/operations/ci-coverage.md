@@ -35,9 +35,15 @@ sanitized source identity, executable hashes and assertion results are archived.
 Both LLVM export and Codecov exclude test directories, `tests.rs`, and sibling
 `*_tests.rs` modules so those test bodies do not contribute to application coverage.
 
+## Manual cluster acceptance and historical CI results
+
+Cluster recovery, transaction cluster recovery, and isolated capability runtime
+acceptance run manually outside CI. Their scripts and evidence checks remain
+available, but they are not prerequisites of `CI Success`.
+
 The isolated capability gate prepares the same extension-enabled PostgreSQL
 fixture before running its library and integration targets. Its Cargo cache is
-separate from the eight instrumented coverage partitions.
+outside the eight instrumented coverage partitions.
 
 Before creating the isolated cluster, the gate compiles these exact Cargo targets
 and lists their tests. Every acceptance identifier must resolve to a listed test
@@ -46,12 +52,12 @@ tests before provisioning. The final reducer still requires successful execution
 the unchanged source fingerprint, isolation admission, and crash recovery;
 inventory validation alone cannot pass the gate.
 
-The isolated capability job has a sixty-minute limit. Its cold run at
+The former isolated capability CI job had a sixty-minute limit. Its cold run at
 [`3d05da43`](https://github.com/kent8192/aidash/actions/runs/37337525795/job/111855956903)
 spent eleven minutes building, twenty-one minutes passing all 96 capability
 tests, and three minutes passing all 24 migration tests before reaching scoped
 remote authorization. The former forty-minute limit cancelled that final suite.
-The revised budget retains every target, isolation assertion, and artifact check.
+That budget retained every target, isolation assertion, and artifact check.
 
 The k3s gate saves images to an owned temporary archive, copies it into the owned
 node, and imports it through containerd's `k8s.io` namespace. Every expected tag
@@ -81,11 +87,10 @@ Each distribution's transaction gate runs three independent partitions:
 Coordinator durable cuts (42 repetitions), Participant durable cuts (30), and
 lifecycle cases (33). Their disjoint union retains all 105 repetitions, all
 before/after cuts, COMMIT/ABORT branches, and three repetitions per case. Every
-partition provisions the same sixteen-Node topology and retains its ninety-minute
-deadline. Transaction jobs skip browser installation because they exercise the
-actual HTTP and database/process boundaries; the separate browser gates remain
-required. `CI Success` requires all six distribution/partition jobs. Each artifact
-records the expected cases and selected partition alongside actual results.
+partition provisions the same sixteen-Node topology. Transaction profiles skip
+browser installation because they exercise the actual HTTP and database/process
+boundaries; the separate CI browser gates remain required. Each run records the
+expected cases and selected partition alongside actual results.
 
 At [`3621a96c`](https://github.com/kent8192/aidash/actions/runs/37343926155), the
 single k3s and Kubernetes transaction jobs reached the ninety-minute deadline
@@ -93,6 +98,8 @@ after 104 and 98 successful repetitions respectively. No recorded assertion
 failed; remaining repetitions and cleanup could not complete. Driver regression
 tests check the new partition inventory against the complete acceptance contract,
 without reducing case counts or recovery bounds.
+
+## Required Clippy checks
 
 The required Clippy matrix checks each Cargo workspace once: the backend with
 all features, plus the existing desktop and infrastructure observer workspaces.

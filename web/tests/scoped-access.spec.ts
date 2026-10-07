@@ -156,9 +156,7 @@ test("subject dashboard completes a conversation and clears revoked access", asy
       page.locator('.collab-settings-select option[value="authorization"]'),
     ).toHaveCount(0);
     await page.goto("/collaboration");
-    await page
-      .getByRole("button", { name: "ゴールを作成して実行", exact: true })
-      .click();
+    await page.getByRole("button", { name: "新しい依頼", exact: true }).click();
     const dialog = page.getByRole("dialog");
     await dialog.getByLabel("タイトル", { exact: true }).fill(id);
     await dialog

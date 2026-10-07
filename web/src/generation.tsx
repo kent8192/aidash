@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { RemoteGenerationAssignForm } from "./remote-generation";
 import { RecordView } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
@@ -167,7 +168,7 @@ export function GenerationPage({ data }: { data: State }) {
           <Field label={t("tenant")}>
             <input name="tenant" required maxLength={256} />
           </Field>
-          <button>{t("open")}</button>
+          <Button variant="outline">{t("open")}</Button>
         </form>
       ) : (
         <p className="muted">
@@ -190,7 +191,8 @@ export function GenerationPage({ data }: { data: State }) {
           <Panel
             title={t("generationPolicies")}
             action={
-              <button
+              <Button
+                variant="outline"
                 disabled={
                   busy || (subjectTenant === null && !catalog.isSuccess)
                 }
@@ -201,7 +203,7 @@ export function GenerationPage({ data }: { data: State }) {
               >
                 <Plus size={16} />
                 {t("newGenerationPolicy")}
-              </button>
+              </Button>
             }
           >
             {policies.isPending ? (
@@ -246,7 +248,8 @@ export function GenerationPage({ data }: { data: State }) {
                         </dd>
                       </dl>
                       <div className="generation-actions">
-                        <button
+                        <Button
+                          variant="outline"
                           disabled={busy}
                           onClick={() => {
                             setError("");
@@ -254,8 +257,9 @@ export function GenerationPage({ data }: { data: State }) {
                           }}
                         >
                           {t("editPolicy")}
-                        </button>
-                        <button
+                        </Button>
+                        <Button
+                          variant="outline"
                           disabled={busy}
                           onClick={() =>
                             void mutate(
@@ -280,7 +284,7 @@ export function GenerationPage({ data }: { data: State }) {
                               ? "disableGeneration"
                               : "enableGeneration",
                           )}
-                        </button>
+                        </Button>
                       </div>
                     </article>
                   ))}
@@ -305,7 +309,8 @@ export function GenerationPage({ data }: { data: State }) {
                     <p className="muted">{t("generationNoRequests")}</p>
                   )}
                   {requests.data?.map((request) => (
-                    <button
+                    <Button
+                      variant="outline"
                       className="generation-request"
                       key={request.id}
                       onClick={() => {
@@ -333,7 +338,7 @@ export function GenerationPage({ data }: { data: State }) {
                       </div>
                       <Badge value={request.status} />
                       <ArrowUpRight size={16} />
-                    </button>
+                    </Button>
                   ))}
                 </div>
               )
@@ -924,9 +929,13 @@ function PolicyEditor({
           />
         </Field>
       </details>
-      <button className="primary" disabled={!models.length && !model}>
+      <Button
+        variant="outline"
+        className="primary"
+        disabled={!models.length && !model}
+      >
         {t("save")}
-      </button>
+      </Button>
     </form>
   );
 }
@@ -1100,22 +1109,27 @@ function RequestDetail({
             <div className="generation-actions">
               {request.status === "PENDING_APPROVAL" && (
                 <>
-                  <button
+                  <Button
+                    variant="outline"
                     className="primary"
                     value="approve"
                     disabled={!pinned.isSuccess}
                   >
                     {t("generationApprove")}
-                  </button>
-                  <button value="deny">{t("generationDeny")}</button>
+                  </Button>
+                  <Button variant="outline" value="deny">
+                    {t("generationDeny")}
+                  </Button>
                 </>
               )}
               {active(request.status) ? (
-                <button className="danger" value="stop">
+                <Button variant="outline" className="danger" value="stop">
                   {t("generationStop")}
-                </button>
+                </Button>
               ) : (
-                <button value="delete">{t("generationDelete")}</button>
+                <Button variant="outline" value="delete">
+                  {t("generationDelete")}
+                </Button>
               )}
             </div>
           </fieldset>
@@ -1199,9 +1213,13 @@ export function GenerationAssignForm({
         <Field label={t("generationRequestReason")}>
           <textarea name="reason" required maxLength={4096} rows={3} />
         </Field>
-        <button className="primary" disabled={!choices.length}>
+        <Button
+          variant="outline"
+          className="primary"
+          disabled={!choices.length}
+        >
           {t("generationAssign")}
-        </button>
+        </Button>
       </form>
       <RemoteGenerationAssignForm task={task.id} submit={submit} />
     </>

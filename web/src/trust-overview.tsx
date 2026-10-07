@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import type { ReactNode } from "react";
 import {
   ArrowRight,
@@ -64,10 +65,14 @@ export function TrustOverview({
     <span className={`trust-badge ${tone}`}>{value}</span>
   );
   const link = (tab: Tab, caption = text("View details", "詳細を見る")) => (
-    <button className="trust-link" onClick={() => navigate(tab)}>
+    <Button
+      variant="outline"
+      className="trust-link"
+      onClick={() => navigate(tab)}
+    >
       {caption}
       <ArrowRight size={13} />
-    </button>
+    </Button>
   );
   const card = (
     name: string,

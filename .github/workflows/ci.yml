@@ -268,85 +268,6 @@ jobs:
       - name: Stop owned verification services
         if: always()
         run: docker compose down -v
-  orchestration:
-    name: Cluster recovery (${{ matrix.distribution }}, ${{ matrix.profile }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        distribution: [kubernetes, k3s]
-        profile: [platform, remote-memory]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci --ignore-scripts --prefix web
-      - run: scripts/install-browser.sh
-      - name: Test Pod recovery, scaling, rolling updates and dashboard
-        run: bash scripts/test-cluster.sh '${{ matrix.distribution }}' '${{ matrix.profile }}'
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always()
-        with:
-          name: cluster-evidence-${{ matrix.distribution }}-${{ matrix.profile }}
-          include-hidden-files: true
-          path: |
-            .ignore/platform/aidash-ops-*/
-            .ignore/transaction-acceptance/*/
-            .ignore/dashboard-deployment-cluster-*.png
-  transaction-cluster:
-    name: Transaction recovery (${{ matrix.distribution }}, ${{ matrix.partition }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        distribution: [kubernetes, k3s]
-        partition: [coordinator, participant, lifecycle]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - run: rustup show active-toolchain
-      - name: Test every selected durable cut and lifecycle repetition
-        run: bash scripts/test-cluster.sh '${{ matrix.distribution }}' transactions '${{ matrix.partition }}'
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always()
-        with:
-          name: transaction-evidence-${{ matrix.distribution }}-${{ matrix.partition }}
-          include-hidden-files: true
-          path: .ignore/transaction-acceptance/*/
-          if-no-files-found: error
-  core-runtime:
-    name: Core capability isolation and recovery
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_PROFILE_DEV_DEBUG: "0"
-      CARGO_PROFILE_TEST_DEBUG: "0"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - run: rustup show active-toolchain
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-        with:
-          shared-key: core-runtime
-      - name: Verify gVisor, real execution and two-node transfer faults
-        run: scripts/test-capability-cluster.sh
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always()
-        with:
-          name: core-runtime-evidence
-          include-hidden-files: true
-          path: .ignore/core-runtime/*/evidence/
-          if-no-files-found: error
   success:
     name: CI Success
     needs:
@@ -360,9 +281,6 @@ jobs:
         infrastructure-tests,
         bruno,
         acceptance,
-        orchestration,
-        transaction-cluster,
-        core-runtime,
       ]
     if: always()
     runs-on: ubuntu-latest

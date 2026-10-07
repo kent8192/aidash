@@ -12,8 +12,8 @@
   margin-top: 5px;
 }
 .wb-trust-page .wb-hero-icon {
-  background: #e7eee4;
-  border-color: #d5e3d7;
+  background: var(--secondary);
+  border-color: var(--border);
 }
 .wb-trust-page .wb-picker {
   margin: 8px 0 14px;
@@ -173,8 +173,8 @@
   padding: 3px 8px;
   font-size: 10px;
   white-space: nowrap;
-  color: #43594b;
-  background: #e7eee4;
+  color: var(--muted-foreground);
+  background: var(--secondary);
 }
 .trust-badge.success {
   color: #24613b;
@@ -325,7 +325,7 @@
   overflow-wrap: anywhere;
 }
 .trust-detail-main .wb-policy th {
-  background: #edf3e9;
+  background: var(--secondary);
   padding: 12px 8px;
 }
 .trust-detail-main .wb-policy > button {
@@ -347,7 +347,7 @@
   border: 1px solid var(--wb-line);
   border-radius: 8px;
   padding: 14px;
-  background: #fbfcf9;
+  background: var(--card);
 }
 .trust-detail-main .wb-incidents article button {
   margin: 12px 6px 0 0;
@@ -382,7 +382,7 @@
   font-size: 13px;
 }
 .trust-detail-main .wb-audit details {
-  background: #fbfcf9;
+  background: var(--card);
   padding: 10px;
   border: 1px solid var(--wb-line);
   border-radius: 7px;
@@ -479,7 +479,7 @@
   padding: 16px;
   border: 1px solid var(--wb-line);
   border-radius: 50%;
-  background: #e7eee4;
+  background: var(--secondary);
 }
 .trust-panel-heading {
   display: flex;
@@ -508,8 +508,8 @@
   text-align: left;
 }
 .trust-timeline button[aria-pressed="true"] {
-  border-color: #99c8a2;
-  background: #e7eee4;
+  border-color: var(--ring);
+  background: var(--secondary);
 }
 .trust-event-title {
   display: flex;
@@ -520,7 +520,7 @@
   color: var(--wb-accent);
 }
 .trust-event-details pre {
-  background: #fbfcf9;
+  background: var(--card);
   border: 1px solid var(--wb-line);
   border-radius: 8px;
   padding: 16px;
@@ -639,7 +639,7 @@
 
 .collab-workspace.wide .collab-main:has(.wb-trust-page) {
   padding: 0;
-  background: #f5f7f3;
+  background: var(--background);
 }
 
 .wb-trust-page .wb-picker label {
@@ -672,7 +672,7 @@
   color: var(--wb-text);
 }
 .wb-trust-page .wb-policy tbody tr:hover td {
-  background: #edf3e9;
+  background: var(--secondary);
 }
 .wb-trust-page .wb-policy th,
 .wb-trust-page .wb-policy td {

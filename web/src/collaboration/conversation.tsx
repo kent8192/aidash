@@ -1,5 +1,13 @@
+import { Button } from "../components/ui/button";
 import { ThreadCapabilities } from "../capabilities/thread";
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -35,11 +43,22 @@ import {
 } from "./conversation-model";
 import { Avatar } from "./avatar";
 import "./threads.css";
+import { Textarea } from "../components/ui/textarea";
 
 type DraftFile = { key: string; file: File; uploaded?: ChannelAttachment };
 type Draft = { text: string; files: DraftFile[] };
 type Drafts = Record<string, Draft>;
 const emptyDraft: Draft = { text: "", files: [] };
+
+function latestMessageTop(scroll: HTMLElement, message: HTMLElement | null) {
+  if (!message) return 0;
+  const end =
+    message.getBoundingClientRect().bottom -
+    scroll.getBoundingClientRect().top +
+    scroll.scrollTop -
+    scroll.clientTop;
+  return Math.max(0, end - scroll.clientHeight);
+}
 
 /** Only inline composer syntax is interpreted. React escapes all other content. */
 export function MessageText({ text }: { text: string }) {
@@ -74,6 +93,7 @@ type ConversationProps = {
   visible: boolean;
   threadList?: boolean;
   requests?: ReactNode;
+  progress?: ReactNode;
   thread: string | null;
   selectThread: (id: string | null) => void;
 };
@@ -121,6 +141,7 @@ function ConversationFeed({
   discovery,
   threadList = false,
   requests,
+  progress,
   thread,
   selectThread,
   drafts,
@@ -151,6 +172,7 @@ function ConversationFeed({
   const [error, setError] = useState(""),
     [sent, setSent] = useState(false);
   const scroll = useRef<HTMLDivElement>(null),
+    latest = useRef<HTMLElement>(null),
     textarea = useRef<HTMLTextAreaElement>(null),
     fileInput = useRef<HTMLInputElement>(null);
   const follow = useRef(true);
@@ -176,14 +198,13 @@ function ConversationFeed({
       ? allMessages.filter((message) => message.thread_id !== null)
       : allMessages;
   const latestMessageId = messages.at(-1)?.message.id;
-  function scrollToLatest() {
+  const scrollToLatest = useCallback(() => {
     const element = scroll.current;
-    if (element) element.scrollTop = element.scrollHeight;
-  }
+    if (element) element.scrollTop = latestMessageTop(element, latest.current);
+  }, []);
   useEffect(() => {
-    if (visible && follow.current && scroll.current)
-      scroll.current.scrollTop = scroll.current.scrollHeight;
-  }, [latestMessageId, thread, visible]);
+    if (visible && follow.current) scrollToLatest();
+  }, [latestMessageId, thread, visible, scrollToLatest]);
 
   async function openThread(message: ChannelMessage) {
     if (inFlight.current) return;
@@ -333,14 +354,15 @@ function ConversationFeed({
             <h3>{threads.thread}</h3>
             <small># {title}</small>
           </div>
-          <button
+          <Button
+            variant="outline"
             type="button"
             disabled={sending || opening}
             aria-label={threads.back}
             onClick={() => selectThread(null)}
           >
             <X size={18} />
-          </button>
+          </Button>
         </div>
       ) : (
         threadList && (
@@ -351,9 +373,13 @@ function ConversationFeed({
         <div className="error" role="alert">
           <p>{copy.unavailable}</p>
           <p>{query.error.message}</p>
-          <button type="button" onClick={() => void query.refetch()}>
+          <Button
+            variant="outline"
+            type="button"
+            onClick={() => void query.refetch()}
+          >
             {copy.retry}
-          </button>
+          </Button>
         </div>
       ) : (
         <>
@@ -365,22 +391,23 @@ function ConversationFeed({
               const element = scroll.current;
               if (element) {
                 follow.current =
-                  element.scrollHeight -
-                    element.scrollTop -
-                    element.clientHeight <
-                  80;
+                  Math.abs(
+                    latestMessageTop(element, latest.current) -
+                      element.scrollTop,
+                  ) < 80;
                 setNearBottom(follow.current);
               }
             }}
           >
             {query.hasNextPage && (
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 disabled={query.isFetchingNextPage}
                 onClick={() => void loadOlder()}
               >
                 {threads.older}
-              </button>
+              </Button>
             )}
             {query.isPending && <p role="status">{copy.processing}</p>}
             {!query.isPending && messages.length === 0 && (
@@ -428,6 +455,7 @@ function ConversationFeed({
                     </div>
                   )}
                   <article
+                    ref={index === messages.length - 1 ? latest : undefined}
                     className={`collab-message ${sender.kind}`}
                     id={`${thread ? "thread-" : ""}message-${message.id}`}
                   >
@@ -476,7 +504,8 @@ function ConversationFeed({
                         </ul>
                       )}
                       {!thread && (
-                        <button
+                        <Button
+                          variant="outline"
                           className="collab-thread-action"
                           type="button"
                           disabled={sending || opening}
@@ -484,17 +513,19 @@ function ConversationFeed({
                         >
                           <MessageSquare size={12} />
                           {entry.thread_id ? threads.open : threads.reply}
-                        </button>
+                        </Button>
                       )}
                     </div>
                   </article>
                 </Fragment>
               );
             })}
+            {!thread && !threadList && progress}
             {!thread && !threadList && requests}
           </div>
           {!nearBottom && (
-            <button
+            <Button
+              variant="outline"
               className="collab-latest"
               type="button"
               onClick={() => {
@@ -504,7 +535,7 @@ function ConversationFeed({
               }}
             >
               {copy.newMessages}
-            </button>
+            </Button>
           )}
           {opening && <p role="status">{threads.opening}</p>}
           {(!threadList || thread) && (
@@ -518,7 +549,7 @@ function ConversationFeed({
               <label className="sr-only" htmlFor={`channel-message-${target}`}>
                 {thread ? threads.replyMessage : copy.message}
               </label>
-              <textarea
+              <Textarea
                 ref={textarea}
                 id={`channel-message-${target}`}
                 value={draft.text}
@@ -527,7 +558,9 @@ function ConversationFeed({
                 placeholder={
                   thread
                     ? threads.replyMessage
-                    : `# ${title} — ${copy.placeholder}`
+                    : locale === "ja-JP"
+                      ? "やりたいことや、続けてほしいことを入力…"
+                      : "Describe what you want to do or continue…"
                 }
                 disabled={busy}
                 onChange={(event) => {
@@ -553,7 +586,8 @@ function ConversationFeed({
                     <li key={entry.key}>
                       <FileText size={14} />
                       <span>{entry.file.name}</span>
-                      <button
+                      <Button
+                        variant="outline"
                         type="button"
                         disabled={busy}
                         aria-label={`${words.removeAttachment}: ${entry.file.name}`}
@@ -567,7 +601,7 @@ function ConversationFeed({
                         }
                       >
                         <X size={12} />
-                      </button>
+                      </Button>
                     </li>
                   ))}
                 </ul>
@@ -586,7 +620,8 @@ function ConversationFeed({
                       event.target.value = "";
                     }}
                   />
-                  <button
+                  <Button
+                    variant="outline"
                     type="button"
                     disabled={busy}
                     aria-label={words.attach}
@@ -594,31 +629,34 @@ function ConversationFeed({
                     onClick={() => fileInput.current?.click()}
                   >
                     <Paperclip size={16} />
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="outline"
                     type="button"
                     disabled={busy}
                     aria-label={words.bold}
                     onClick={() => insert("**", "**")}
                   >
                     <Bold size={14} />
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="outline"
                     type="button"
                     disabled={busy}
                     aria-label={words.italic}
                     onClick={() => insert("_", "_")}
                   >
                     <Italic size={14} />
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="outline"
                     type="button"
                     disabled={busy}
                     aria-label={words.code}
                     onClick={() => insert("`", "`")}
                   >
                     <Code2 size={15} />
-                  </button>
+                  </Button>
                   <details className="workspace-mention-picker">
                     <summary aria-label={words.mention}>
                       <AtSign size={15} />
@@ -628,7 +666,8 @@ function ConversationFeed({
                       {data.registry
                         .filter((entry) => entry.kind === "agent")
                         .map((entry) => (
-                          <button
+                          <Button
+                            variant="outline"
                             type="button"
                             disabled={busy}
                             key={`${entry.id}@${entry.version}`}
@@ -640,12 +679,13 @@ function ConversationFeed({
                             }}
                           >
                             {agentLabel(data.node.id, entry)}
-                          </button>
+                          </Button>
                         ))}
                     </div>
                   </details>
                 </div>
-                <button
+                <Button
+                  variant="outline"
                   className="primary"
                   aria-label={thread ? threads.sendReply : copy.send}
                   disabled={
@@ -656,7 +696,7 @@ function ConversationFeed({
                   {sending && (
                     <span>{uploading ? words.uploading : copy.sending}</span>
                   )}
-                </button>
+                </Button>
               </div>
             </form>
           )}

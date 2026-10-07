@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Button } from "./components/ui/button";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useBlocker } from "@tanstack/react-router";
 import {
   Award,
@@ -498,12 +499,14 @@ export function Workbench({
   focus,
   select,
   switchMode,
+  integratedTools,
 }: {
   mode: Mode;
   data: State;
   focus: string;
   select: (focus: string) => void;
   switchMode: (mode: Mode, focus: string) => void;
+  integratedTools?: ReactNode;
 }) {
   const { locale } = useI18n();
   const t = text[locale];
@@ -1549,7 +1552,8 @@ export function Workbench({
               ? "新しい会話"
               : "New conversation"}
         </small>
-        <button
+        <Button
+          variant="outline"
           type="button"
           disabled={!!pendingTestId}
           onClick={() => {
@@ -1559,7 +1563,7 @@ export function Workbench({
           }}
         >
           {locale === "ja-JP" ? "会話をリセット" : "Reset conversation"}
-        </button>
+        </Button>
       </div>
       <div className="wb-test-space">
         <div className="wb-test-log">
@@ -1587,15 +1591,17 @@ export function Workbench({
                     {new Date(session.created_at).toLocaleString(locale)}
                   </time>
                   {session.status === "running" && (
-                    <button
+                    <Button
+                      variant="outline"
                       type="button"
                       onClick={() => void stopTest(session)}
                     >
                       {locale === "ja-JP" ? "停止" : "Stop"}
-                    </button>
+                    </Button>
                   )}
                   {session.status === "completed" && !session.expired_at && (
-                    <button
+                    <Button
+                      variant="outline"
                       type="button"
                       disabled={!!pendingTestId}
                       onClick={() => {
@@ -1613,7 +1619,7 @@ export function Workbench({
                       }}
                     >
                       {locale === "ja-JP" ? "ここから継続" : "Continue here"}
-                    </button>
+                    </Button>
                   )}
                 </header>
                 {session.expired_at ? (
@@ -1665,7 +1671,8 @@ export function Workbench({
           }
           onChange={(event) => setTestInput(event.target.value)}
         />
-        <button
+        <Button
+          variant="outline"
           className="wb-primary"
           type="button"
           disabled={
@@ -1681,7 +1688,7 @@ export function Workbench({
           onClick={() => void runTest()}
         >
           {dirty ? `${t.save} + ${t.test}` : t.test}
-        </button>
+        </Button>
       </div>
     </section>
   );
@@ -2037,7 +2044,8 @@ export function Workbench({
                   }}
                 />
               </label>
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 onClick={() => {
                   setDocuments((previous) =>
@@ -2047,7 +2055,7 @@ export function Workbench({
                 }}
               >
                 ×
-              </button>
+              </Button>
               <label className="wb-span">
                 {t.docText}
                 <textarea
@@ -2067,7 +2075,8 @@ export function Workbench({
               </label>
             </div>
           ))}
-          <button
+          <Button
+            variant="outline"
             type="button"
             onClick={() => {
               setDocuments((previous) => [
@@ -2078,7 +2087,7 @@ export function Workbench({
             }}
           >
             ＋ {t.docs}
-          </button>
+          </Button>
         </section>
       </div>
     );
@@ -2184,7 +2193,8 @@ export function Workbench({
                   </li>
                 ))}
               </ul>
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 disabled={busy}
                 onClick={() =>
@@ -2202,8 +2212,9 @@ export function Workbench({
                   : locale === "ja-JP"
                     ? "解決済みにする"
                     : "Resolve"}
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="outline"
                 type="button"
                 disabled={busy}
                 onClick={() =>
@@ -2221,7 +2232,7 @@ export function Workbench({
                   : locale === "ja-JP"
                     ? "アーカイブ"
                     : "Archive"}
-              </button>
+              </Button>
             </article>
           ))
         ) : (
@@ -2321,7 +2332,8 @@ export function Workbench({
             </p>
           )}
         </details>
-        <button
+        <Button
+          variant="outline"
           type="button"
           className="wb-primary"
           disabled={
@@ -2332,7 +2344,7 @@ export function Workbench({
           onClick={() => void createIncident()}
         >
           {locale === "ja-JP" ? "報告を記録" : "Record incident"}
-        </button>
+        </Button>
       </section>
     </div>
   );
@@ -2403,13 +2415,14 @@ export function Workbench({
             />
           </label>
         </div>
-        <button
+        <Button
+          variant="outline"
           type="button"
           disabled={busy || !policyTenant || !policySubject}
           onClick={() => void evaluatePermissions()}
         >
           {locale === "ja-JP" ? "この条件で権限を確認" : "Check this context"}
-        </button>
+        </Button>
       </section>
       <section className="wb-card wb-policy">
         <h2>
@@ -2602,45 +2615,62 @@ export function Workbench({
               <span className={`wb-status ${dirty ? "dirty" : ""}`}>
                 {dirty ? t.dirty : t.saved}
               </span>
-              <button type="button" disabled={busy} onClick={() => void save()}>
+              <Button
+                variant="outline"
+                type="button"
+                disabled={busy}
+                onClick={() => void save()}
+              >
                 {busy ? t.saving : t.save}
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="outline"
                 type="button"
                 disabled={busy}
                 onClick={() => void act("validate")}
               >
                 {dirty ? `${t.save} + ${t.validate}` : t.validate}
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="outline"
                 className="wb-primary"
                 type="button"
                 disabled={busy}
                 onClick={() => setCreatorTab("register")}
               >
                 {locale === "ja-JP" ? "登録内容を確認" : "Review registration"}
-              </button>
+              </Button>
             </>
           )}
           {mode === "trust" && selectedAgent && (
             <>
-              <button type="button" onClick={() => void exportReport("json")}>
+              <Button
+                variant="outline"
+                type="button"
+                onClick={() => void exportReport("json")}
+              >
                 <Download size={15} />{" "}
                 {locale === "ja-JP" ? "レポート JSON" : "Export JSON"}
-              </button>
-              <button type="button" onClick={() => void exportReport("html")}>
+              </Button>
+              <Button
+                variant="outline"
+                type="button"
+                onClick={() => void exportReport("html")}
+              >
                 <Download size={15} /> HTML / PDF
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="outline"
                 type="button"
                 onClick={() => switchMode("creator", focus)}
               >
                 {t.creator}
-              </button>
+              </Button>
             </>
           )}
         </div>
       </div>
+      {integratedTools}
       {error && (
         <p className="wb-alert" role="alert">
           <CircleAlert size={16} />
@@ -2700,16 +2730,21 @@ export function Workbench({
                   </label>
                 </>
               )}
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 disabled={busy || !models.length}
                 onClick={() => void create()}
               >
                 {t.create}
-              </button>
-              <button type="button" onClick={() => void reload()}>
+              </Button>
+              <Button
+                variant="outline"
+                type="button"
+                onClick={() => void reload()}
+              >
                 {t.refresh}
-              </button>
+              </Button>
             </div>
             {isOperator && agents.length > 0 && (
               <div className="wb-picker">
@@ -2732,7 +2767,8 @@ export function Workbench({
                     ))}
                   </select>
                 </label>
-                <button
+                <Button
+                  variant="outline"
                   type="button"
                   disabled={busy || !adoptRef || !tenant || !owner}
                   onClick={() => void adoptLegacy()}
@@ -2740,7 +2776,7 @@ export function Workbench({
                   {locale === "ja-JP"
                     ? "Creatorに割り当て"
                     : "Assign to Creator"}
-                </button>
+                </Button>
               </div>
             )}
           </details>
@@ -2756,41 +2792,46 @@ export function Workbench({
           ) : (
             <>
               <nav className="wb-tabs" aria-label="Creator">
-                <button
+                <Button
+                  variant="outline"
                   aria-current={creatorTab === "overview" ? "page" : undefined}
                   className={creatorTab === "overview" ? "active" : ""}
                   onClick={() => setCreatorTab("overview")}
                 >
                   <FileText size={15} /> {t.overview}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
                   aria-current={creatorTab === "build" ? "page" : undefined}
                   className={creatorTab === "build" ? "active" : ""}
                   onClick={() => setCreatorTab("build")}
                 >
                   <Settings2 size={15} /> {t.build}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
                   aria-current={creatorTab === "test" ? "page" : undefined}
                   className={creatorTab === "test" ? "active" : ""}
                   onClick={() => setCreatorTab("test")}
                 >
                   <FlaskConical size={15} /> {t.test}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
                   aria-current={creatorTab === "versions" ? "page" : undefined}
                   className={creatorTab === "versions" ? "active" : ""}
                   onClick={() => setCreatorTab("versions")}
                 >
                   <History size={15} /> {t.versions}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
                   aria-current={creatorTab === "register" ? "page" : undefined}
                   className={creatorTab === "register" ? "active" : ""}
                   onClick={() => setCreatorTab("register")}
                 >
                   <Boxes size={15} /> {t.register}
-                </button>
+                </Button>
               </nav>
               <div
                 className={`wb-layout ${creatorTab === "overview" ? "overview" : "single"} wb-tab-${creatorTab}`}
@@ -2884,7 +2925,8 @@ export function Workbench({
                             {t.versions}
                           </h2>
                           {registeredVersions.map((version) => (
-                            <button
+                            <Button
+                              variant="outline"
                               key={version.entry.version}
                               type="button"
                               aria-pressed={
@@ -2901,7 +2943,7 @@ export function Workbench({
                                   ? "既存版"
                                   : "Legacy"
                                 : `r${version.draft_revision}`}
-                            </button>
+                            </Button>
                           ))}
                           {!registeredVersions.length && <p>{t.noVersions}</p>}
                         </section>
@@ -3072,7 +3114,8 @@ export function Workbench({
                                 ).join(", ") ||
                                   (locale === "ja-JP" ? "なし" : "None")}
                               </p>
-                              <button
+                              <Button
+                                variant="outline"
                                 type="button"
                                 onClick={() =>
                                   switchMode(
@@ -3082,7 +3125,7 @@ export function Workbench({
                                 }
                               >
                                 {t.trust}
-                              </button>
+                              </Button>
                             </div>
                           )}
                           {!selectedRegisteredVersion && (
@@ -3092,7 +3135,8 @@ export function Workbench({
                                 : "No version selected."}
                             </p>
                           )}
-                          <button
+                          <Button
+                            variant="outline"
                             type="button"
                             disabled={busy}
                             onClick={() => void duplicateDraft()}
@@ -3100,7 +3144,7 @@ export function Workbench({
                             {locale === "ja-JP"
                               ? "新しいIDに複製"
                               : "Duplicate with new ID"}
-                          </button>
+                          </Button>
                           <p>
                             {locale === "ja-JP"
                               ? "同じIDの新しい版は「Registryに登録」で版番号を変更して作成します。"
@@ -3136,7 +3180,8 @@ export function Workbench({
                                       : "Documents changed; re-share required"}
                                   </strong>
                                 )}{" "}
-                                <button
+                                <Button
+                                  variant="outline"
                                   type="button"
                                   disabled={busy || dirty}
                                   onClick={() =>
@@ -3148,7 +3193,7 @@ export function Workbench({
                                   }
                                 >
                                   {locale === "ja-JP" ? "解除" : "Remove"}
-                                </button>
+                                </Button>
                               </li>
                             ))}
                           </ul>
@@ -3191,7 +3236,8 @@ export function Workbench({
                                 : "Acknowledge sharing private documents"}
                             </label>
                           )}
-                          <button
+                          <Button
+                            variant="outline"
                             type="button"
                             disabled={busy || dirty || !shareSubject.trim()}
                             onClick={() =>
@@ -3199,7 +3245,7 @@ export function Workbench({
                             }
                           >
                             {locale === "ja-JP" ? "共有" : "Share"}
-                          </button>
+                          </Button>
                           <label>
                             {locale === "ja-JP" ? "新しい所有者" : "New owner"}
                             <input
@@ -3209,7 +3255,8 @@ export function Workbench({
                               }
                             />
                           </label>
-                          <button
+                          <Button
+                            variant="outline"
                             type="button"
                             disabled={busy || dirty || !transferOwner.trim()}
                             onClick={() => void changeOwner()}
@@ -3217,8 +3264,9 @@ export function Workbench({
                             {locale === "ja-JP"
                               ? "所有権を移す"
                               : "Transfer ownership"}
-                          </button>
-                          <button
+                          </Button>
+                          <Button
+                            variant="outline"
                             type="button"
                             disabled={busy || dirty}
                             onClick={() => void toggleArchive()}
@@ -3230,7 +3278,7 @@ export function Workbench({
                               : locale === "ja-JP"
                                 ? "下書きをアーカイブ"
                                 : "Archive draft"}
-                          </button>
+                          </Button>
                         </section>
                       )}
                     </div>
@@ -3265,14 +3313,15 @@ export function Workbench({
                           />
                         </label>
                         <p>{t.permission}</p>
-                        <button
+                        <Button
+                          variant="outline"
                           className="wb-primary"
                           type="button"
                           disabled={busy}
                           onClick={() => void act("register")}
                         >
                           {dirty ? `${t.save} + ${t.register}` : t.register}
-                        </button>
+                        </Button>
                       </section>
                       <section className="wb-card">
                         <h2>
@@ -3340,13 +3389,14 @@ export function Workbench({
                   creatorTab === "build" ||
                   creatorTab === "register") && (
                   <aside className={`wb-sidebar ${details ? "open" : ""}`}>
-                    <button
+                    <Button
+                      variant="outline"
                       type="button"
                       className="wb-details-toggle"
                       onClick={() => setDetails((value) => !value)}
                     >
                       {details ? t.hideDetails : t.showDetails}
-                    </button>
+                    </Button>
                     <div className="wb-side-content">
                       <section className="wb-card">
                         <h2>
@@ -3369,13 +3419,14 @@ export function Workbench({
                                 : "This draft has not been validated."}
                           </p>
                         </div>
-                        <button
+                        <Button
+                          variant="outline"
                           type="button"
                           disabled={busy}
                           onClick={() => void act("validate")}
                         >
                           {t.validate}
-                        </button>
+                        </Button>
                       </section>
                       <section className="wb-card">
                         <h2>
@@ -3452,12 +3503,13 @@ export function Workbench({
                                 : "A completed test run exists for this revision."
                               : t.noTests}
                           </p>
-                          <button
+                          <Button
+                            variant="outline"
                             type="button"
                             onClick={() => setCreatorTab("test")}
                           >
                             {t.test}
-                          </button>
+                          </Button>
                           <p>{t.noAssessment}</p>
                         </section>
                       )}
@@ -3551,28 +3603,32 @@ export function Workbench({
           ) : (
             <>
               <nav className="wb-tabs" aria-label="Trust">
-                <button
+                <Button
+                  variant="outline"
                   aria-current={trustTab === "overview" ? "page" : undefined}
                   className={trustTab === "overview" ? "active" : ""}
                   onClick={() => setTrustTab("overview")}
                 >
                   <FileText size={15} /> {t.overview}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
                   aria-current={trustTab === "policies" ? "page" : undefined}
                   className={trustTab === "policies" ? "active" : ""}
                   onClick={() => setTrustTab("policies")}
                 >
                   <ShieldCheck size={15} /> {t.policies}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
                   aria-current={trustTab === "audit" ? "page" : undefined}
                   className={trustTab === "audit" ? "active" : ""}
                   onClick={() => setTrustTab("audit")}
                 >
                   <History size={15} /> {t.audit}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
                   aria-current={
                     trustTab === "certifications" ? "page" : undefined
                   }
@@ -3580,14 +3636,15 @@ export function Workbench({
                   onClick={() => setTrustTab("certifications")}
                 >
                   <Award size={15} /> {t.certifications}
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="outline"
                   aria-current={trustTab === "incidents" ? "page" : undefined}
                   className={trustTab === "incidents" ? "active" : ""}
                   onClick={() => setTrustTab("incidents")}
                 >
                   <CircleAlert size={15} /> {t.incidents}
-                </button>
+                </Button>
               </nav>
               {trustTab === "overview" ? (
                 <TrustOverview

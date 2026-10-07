@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -71,18 +72,20 @@ function PageControls({
 }) {
   return (
     <div className="actions">
-      <button
+      <Button
+        variant="outline"
         disabled={busy || offsets.length === 1}
         onClick={() => setOffsets(offsets.slice(0, -1))}
       >
         {previous}
-      </button>
-      <button
+      </Button>
+      <Button
+        variant="outline"
         disabled={busy || next === undefined}
         onClick={() => setOffsets([...offsets, next!])}
       >
         {forward}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -250,14 +253,15 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
     return (
       <Panel title={copy.packages}>
         <p role="alert">{copy.unavailable}</p>
-        <button
+        <Button
+          variant="outline"
           onClick={() => {
             setDenied(false);
             setMessage("");
           }}
         >
           {copy.retry}
-        </button>
+        </Button>
       </Panel>
     );
   return (
@@ -287,7 +291,8 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
               </small>
               <p>{item.capabilities.join(", ")}</p>
               {item.actions.includes("read") ? (
-                <button
+                <Button
+                  variant="outline"
                   onClick={() => {
                     setSelected(item.key);
                     setAudience(undefined);
@@ -297,7 +302,7 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
                   }}
                 >
                   {copy.details}
-                </button>
+                </Button>
               ) : (
                 <p>{copy.unavailable}</p>
               )}
@@ -328,7 +333,8 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
             />
           </Field>
           {detail.data.summary.actions.includes("install") && (
-            <button
+            <Button
+              variant="outline"
               disabled={busy}
               onClick={() =>
                 void run(async () => {
@@ -344,7 +350,7 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
               }
             >
               {copy.install}
-            </button>
+            </Button>
           )}
           {detail.data.summary.actions.includes("share") && (
             <>
@@ -354,7 +360,8 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
                   onChange={(e) => setAudience(e.target.value)}
                 />
               </Field>
-              <button
+              <Button
+                variant="outline"
                 disabled={busy}
                 onClick={() =>
                   void run(() =>
@@ -374,7 +381,7 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
                 }
               >
                 {copy.share}
-              </button>
+              </Button>
             </>
           )}
           {detail.data.summary.actions.includes("consent") && (
@@ -413,7 +420,8 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
                   }
                 />
               </Field>
-              <button
+              <Button
+                variant="outline"
                 disabled={busy || !redistributor || !consent}
                 onClick={() =>
                   void run(async () => {
@@ -425,10 +433,12 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
                 }
               >
                 {copy.consent}
-              </button>
+              </Button>
             </details>
           )}
-          <button onClick={() => setSelected(undefined)}>{copy.close}</button>
+          <Button variant="outline" onClick={() => setSelected(undefined)}>
+            {copy.close}
+          </Button>
         </Panel>
       )}
       <Panel title={copy.installations}>
@@ -454,7 +464,8 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
             </p>
             {item.installation.active_revision &&
               item.installation.active_revision !== item.revision && (
-                <button
+                <Button
+                  variant="outline"
                   onClick={() =>
                     void run(async () => {
                       const active = await marketplaceInstallation(
@@ -468,10 +479,11 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
                   }
                 >
                   {copy.active}
-                </button>
+                </Button>
               )}
             {item.actions.includes("configure") && (
-              <button
+              <Button
+                variant="outline"
                 onClick={() => {
                   setEditing(item);
                   setSelected(undefined);
@@ -480,7 +492,7 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
                 }}
               >
                 {copy.configure}
-              </button>
+              </Button>
             )}
           </article>
         ))}
@@ -503,7 +515,8 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
               />
             </Field>
             {editingView.actions.includes("configure") && (
-              <button
+              <Button
+                variant="outline"
                 disabled={busy}
                 onClick={() =>
                   void run(async () => {
@@ -522,9 +535,11 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
                 }
               >
                 {copy.configure}
-              </button>
+              </Button>
             )}
-            <button onClick={() => setEditing(undefined)}>{copy.close}</button>
+            <Button variant="outline" onClick={() => setEditing(undefined)}>
+              {copy.close}
+            </Button>
           </div>
         )}
       </Panel>
@@ -586,7 +601,8 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
               </p>
             )}
             {canPublish.data?.allowed && (
-              <button
+              <Button
+                variant="outline"
                 disabled={busy || !source || !packageId || !author}
                 onClick={() =>
                   void run(async () => {
@@ -603,7 +619,7 @@ export function ScopedMarketplace({ identity }: { identity: string }) {
                 }
               >
                 {copy.publish}
-              </button>
+              </Button>
             )}
             {canPublish.data?.allowed === false && (
               <p>{copy.operationUnavailable}</p>
@@ -668,7 +684,8 @@ export function MarketplaceAdministration() {
             />
             {copy.compatible}
           </label>
-          <button
+          <Button
+            variant="outline"
             disabled={!gate.data.enabled && !confirmed}
             onClick={() =>
               void run(() =>
@@ -681,14 +698,15 @@ export function MarketplaceAdministration() {
             }
           >
             {gate.data.enabled ? copy.disable : copy.enable}
-          </button>
+          </Button>
         </Panel>
       )}
       <Panel title={copy.admin}>
         <Field label={copy.tenant}>
           <input value={draft} onChange={(e) => setDraft(e.target.value)} />
         </Field>
-        <button
+        <Button
+          variant="outline"
           onClick={() => {
             setTenant(draft.trim());
             setRevisionOffsets([0]);
@@ -698,7 +716,7 @@ export function MarketplaceAdministration() {
           }}
         >
           {copy.load}
-        </button>
+        </Button>
         <p>{copy.pinned}</p>
         {installs.isError && <p role="alert">{copy.unavailable}</p>}
         {tenant && !installs.isError && (
@@ -746,7 +764,8 @@ export function MarketplaceAdministration() {
                 <RecordView value={item.entry} />
               </details>
               {[true, false].map((enabled) => (
-                <button
+                <Button
+                  variant="outline"
                   key={String(enabled)}
                   disabled={!enabled && !item.approved}
                   onClick={() =>
@@ -769,7 +788,7 @@ export function MarketplaceAdministration() {
                   }
                 >
                   {enabled ? copy.approve : copy.revoke}
-                </button>
+                </Button>
               ))}
             </article>
           ))}
@@ -789,7 +808,8 @@ export function MarketplaceAdministration() {
                 onChange={(e) => setLegacyVersion(e.target.value)}
               />
             </Field>
-            <button
+            <Button
+              variant="outline"
               disabled={!legacyId}
               onClick={() =>
                 void run(() =>
@@ -802,7 +822,7 @@ export function MarketplaceAdministration() {
               }
             >
               {copy.adopt}
-            </button>
+            </Button>
           </details>
         )}
       </Panel>

@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, authenticatedFetch } from "./transport";
@@ -123,7 +124,8 @@ export function DashboardIdentityAdministration() {
                 onChange={(event) => setSubject(event.target.value)}
               />
             </label>
-            <button
+            <Button
+              variant="outline"
               disabled={busy || !tenant || !subject}
               onClick={() => {
                 void act(() =>
@@ -139,8 +141,9 @@ export function DashboardIdentityAdministration() {
               }}
             >
               {english ? "Approve mapping" : "紐づけを承認"}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="outline"
               disabled={busy}
               onClick={() => {
                 void act(() =>
@@ -152,7 +155,7 @@ export function DashboardIdentityAdministration() {
               }}
             >
               {english ? "Reject" : "却下"}
-            </button>
+            </Button>
           </div>
         ))}
       <h3>{english ? "Mappings" : "紐づけ"}</h3>
@@ -163,7 +166,8 @@ export function DashboardIdentityAdministration() {
             {mapping.tenant} / {mapping.subject}
           </span>
           {mapping.enabled && (
-            <button
+            <Button
+              variant="outline"
               disabled={busy}
               onClick={() => {
                 void act(() =>
@@ -181,23 +185,25 @@ export function DashboardIdentityAdministration() {
               }}
             >
               {english ? "Disable" : "無効化"}
-            </button>
+            </Button>
           )}
         </div>
       ))}
       <div className="auth-pagination">
-        <button
+        <Button
+          variant="outline"
           disabled={mappingOffset === 0 || mappings.isFetching}
           onClick={() =>
             setMappingOffset(Math.max(0, mappingOffset - MAPPING_PAGE_SIZE))
           }
         >
           {t("authPrevious")}
-        </button>
+        </Button>
         <span>
           {t("authPage")} {mappingOffset / MAPPING_PAGE_SIZE + 1}
         </span>
-        <button
+        <Button
+          variant="outline"
           disabled={
             (mappings.data?.length ?? 0) < MAPPING_PAGE_SIZE ||
             mappings.isFetching
@@ -205,7 +211,7 @@ export function DashboardIdentityAdministration() {
           onClick={() => setMappingOffset(mappingOffset + MAPPING_PAGE_SIZE)}
         >
           {t("authNext")}
-        </button>
+        </Button>
       </div>
       <h3>{english ? "Operator grants" : "operator 権限"}</h3>
       {(identities.data ?? []).map((item) => {
@@ -219,7 +225,8 @@ export function DashboardIdentityAdministration() {
               {item.subject} ({item.issuer})
             </span>
             {item.disabled_at && (
-              <button
+              <Button
+                variant="outline"
                 disabled={busy}
                 onClick={() => {
                   void act(async () => {
@@ -236,9 +243,10 @@ export function DashboardIdentityAdministration() {
                 {english
                   ? "Verify and restore identity"
                   : "外部 ID を確認して復旧"}
-              </button>
+              </Button>
             )}
-            <button
+            <Button
+              variant="outline"
               disabled={busy || (item.disabled_at !== null && !enabled)}
               onClick={() => {
                 void act(() =>
@@ -263,7 +271,7 @@ export function DashboardIdentityAdministration() {
                 : english
                   ? "Grant operator"
                   : "operator 権限を付与"}
-            </button>
+            </Button>
           </div>
         );
       })}

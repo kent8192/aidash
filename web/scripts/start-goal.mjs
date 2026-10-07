@@ -7,6 +7,7 @@ try {
   await page.addInitScript(() => {
     sessionStorage.setItem("aidash-session-id", "acceptance-browser-session");
     sessionStorage.setItem("aidash-context", "operator");
+    localStorage.setItem("aidash-locale", "ja-JP");
   });
   await page.route("**/auth/config", (route) =>
     route.fulfill({ json: { enabled: true } }),
@@ -40,9 +41,7 @@ try {
     }
   });
   await page.goto(process.env.AIDASH_E2E_URL ?? "http://127.0.0.1:18080");
-  await page
-    .getByRole("button", { name: "ゴールを作成して実行", exact: true })
-    .click();
+  await page.getByRole("button", { name: "新しい依頼", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog
     .getByLabel("タイトル", { exact: true })

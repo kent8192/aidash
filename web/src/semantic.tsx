@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { RecordView, useRecordLabels } from "./record-view";
 import { disambiguateLabels } from "./display-labels";
 import { useRef, useState, type FormEvent } from "react";
@@ -64,18 +65,31 @@ const semanticMessages: Record<string, string> = {
   "semantic index revision changed": "semanticRevisionChanged",
 };
 
-export function SemanticPage({ data }: { data: State }) {
-  const { t } = useI18n();
-  const [chosen, setChosen] = useState("");
-  const workspace =
-    data.workspaces.find((w) => w.id === chosen)?.id ??
-    data.workspaces[0]?.id ??
-    "";
+export function SemanticPage({
+  data,
+  workspaceId = "",
+}: {
+  data: State;
+  workspaceId?: string;
+}) {
+  const { t, locale } = useI18n();
+  const [chosen, setChosen] = useState<string | null>(null);
+  const requested = chosen ?? workspaceId;
+  const workspace = requested
+    ? (data.workspaces.find((w) => w.id === requested)?.id ?? "")
+    : (data.workspaces[0]?.id ?? "");
   return (
     <div className="semantic-page">
       <p className="muted">{t("semanticHelp")}</p>
       <Field label={t("workspace")}>
         <select value={workspace} onChange={(e) => setChosen(e.target.value)}>
+          {!workspace && (
+            <option value="">
+              {locale === "ja-JP"
+                ? "依頼を選択してください"
+                : "Choose a request"}
+            </option>
+          )}
           {data.workspaces.map((w) => (
             <option key={w.id} value={w.id}>
               {w.title}
@@ -244,7 +258,9 @@ function SemanticWorkspace({
         title={t("semanticIndex")}
         action={
           operator && (
-            <button onClick={openConfiguring}>{t("semanticConfigure")}</button>
+            <Button variant="outline" onClick={openConfiguring}>
+              {t("semanticConfigure")}
+            </Button>
           )
         }
       >
@@ -303,9 +319,13 @@ function SemanticWorkspace({
               <Field label={t("semanticFilters")}>
                 <input name="metadata" defaultValue="{}" />
               </Field>
-              <button className="primary" disabled={busy || !spec.enabled}>
+              <Button
+                variant="outline"
+                className="primary"
+                disabled={busy || !spec.enabled}
+              >
                 {t("semanticSearch")}
-              </button>
+              </Button>
             </form>
             {result && !entries.isError && (
               <div aria-live="polite">
@@ -338,9 +358,9 @@ function SemanticWorkspace({
           <Panel
             title={t("semanticSources")}
             action={
-              <button onClick={() => openEditing("new")}>
+              <Button variant="outline" onClick={() => openEditing("new")}>
                 {t("semanticAdd")}
-              </button>
+              </Button>
             }
           >
             {!entries.isError &&
@@ -359,10 +379,15 @@ function SemanticWorkspace({
                   )}
                   <p className="muted">{scopeLabel(entry.agent)}</p>
                   <div className="actions">
-                    <button disabled={busy} onClick={() => openEditing(entry)}>
+                    <Button
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => openEditing(entry)}
+                    >
                       {t("edit")}
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      variant="outline"
                       disabled={busy}
                       onClick={() =>
                         void mutate(() =>
@@ -373,10 +398,14 @@ function SemanticWorkspace({
                       }
                     >
                       {t("semanticReindex")}
-                    </button>
-                    <button disabled={busy} onClick={() => openDeleting(entry)}>
+                    </Button>
+                    <Button
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => openDeleting(entry)}
+                    >
                       {t("delete")}
-                    </button>
+                    </Button>
                   </div>
                 </article>
               ))}
@@ -465,7 +494,8 @@ function SemanticWorkspace({
           <p>
             <strong>{entryName(deleting)}</strong>
           </p>
-          <button
+          <Button
+            variant="outline"
             className="primary"
             disabled={busy}
             onClick={() =>
@@ -477,7 +507,7 @@ function SemanticWorkspace({
             }
           >
             {t("delete")}
-          </button>
+          </Button>
           {error && (
             <div className="error" role="alert">
               {describe(error)}
@@ -600,9 +630,9 @@ function IndexForm({
         />{" "}
         {t("semanticAutoOn")}
       </label>
-      <button className="primary" disabled={busy}>
+      <Button variant="outline" className="primary" disabled={busy}>
         {t("save")}
-      </button>
+      </Button>
     </form>
   );
 }
@@ -751,20 +781,25 @@ function EntryForm({
         </Field>
       )}
       {kind === "message" && olderMessages.hasNextPage && (
-        <button
+        <Button
+          variant="outline"
           type="button"
           disabled={olderMessages.isFetchingNextPage}
           onClick={() => void olderMessages.fetchNextPage()}
         >
           {t("semanticOlderMessages")}
-        </button>
+        </Button>
       )}
       {kind === "message" && olderMessages.isError && (
         <p role="alert">
           {olderMessages.error.message}{" "}
-          <button type="button" onClick={() => void olderMessages.refetch()}>
+          <Button
+            variant="outline"
+            type="button"
+            onClick={() => void olderMessages.refetch()}
+          >
             {t("retry")}
-          </button>
+          </Button>
         </p>
       )}
       <Field label={t("semanticAgent")}>
@@ -786,9 +821,9 @@ function EntryForm({
           {metadataError}
         </p>
       )}
-      <button className="primary" disabled={busy}>
+      <Button variant="outline" className="primary" disabled={busy}>
         {t("save")}
-      </button>
+      </Button>
     </form>
   );
 }

@@ -1,11 +1,16 @@
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "./components/ui/dialog";
+import { Badge as StatusBadge } from "./components/ui/badge";
+import {
   createContext,
   cloneElement,
   useId,
   type ReactElement,
   useContext,
-  useEffect,
-  useRef,
   type ReactNode,
 } from "react";
 import type { Entry, EntityRef, State, Discovery } from "./types";
@@ -94,7 +99,11 @@ export function useAgentLabel(data: State, discovery?: Discovery) {
 
 export function Badge({ value }: { value: string }) {
   const { t } = useI18n();
-  return <span className={`badge ${value.toLowerCase()}`}>{t(value)}</span>;
+  return (
+    <StatusBadge variant="outline" className={`badge ${value.toLowerCase()}`}>
+      {t(value)}
+    </StatusBadge>
+  );
 }
 export function JsonView({ value }: { value: unknown }) {
   return (
@@ -138,21 +147,25 @@ export function Modal({
   children: ReactNode;
   close: () => void;
 }) {
-  const ref = useRef<HTMLDialogElement>(null);
   const { t } = useI18n();
-  useEffect(() => {
-    ref.current?.showModal();
-  }, []);
   return (
-    <dialog ref={ref} onCancel={close}>
-      <div className="modal-heading">
-        <h2>{title}</h2>
-        <button className="icon-button" onClick={close} aria-label={t("close")}>
-          ×
-        </button>
-      </div>
-      <div className="modal-body">{children}</div>
-    </dialog>
+    <Dialog
+      open
+      onOpenChange={(value) => {
+        if (!value) close();
+      }}
+    >
+      <DialogContent
+        className="intent-dialog"
+        aria-describedby={undefined}
+        closeLabel={t("close")}
+      >
+        <DialogHeader className="modal-heading">
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        <div className="modal-body">{children}</div>
+      </DialogContent>
+    </Dialog>
   );
 }
 export function Panel({

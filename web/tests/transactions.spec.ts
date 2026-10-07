@@ -60,6 +60,10 @@ test("transaction dashboard survives reload during a partition, aborts safely an
     res.end(JSON.stringify({ error: "fixture partition" }));
   });
   await new Promise<void>((resolve) => peer.listen(0, "127.0.0.1", resolve));
+  const peerAddress = `127.0.0.1:${(peer.address() as AddressInfo).port}`;
+  const trustRow = page.locator(".generation-request").filter({
+    has: page.getByText(peerAddress, { exact: true }),
+  });
   let pending: string | undefined;
   try {
     const session = await api("/api/session");
@@ -69,7 +73,7 @@ test("transaction dashboard survives reload during a partition, aborts safely an
     });
     await api("/api/peers", {
       node_id: peerId,
-      endpoint: `http://127.0.0.1:${(peer.address() as AddressInfo).port}`,
+      endpoint: `http://${peerAddress}`,
       credential_env: "AIDASH_SECRET_TRANSACTION_FIXTURE",
       protocol_version: "0.1",
       enabled: true,
@@ -81,10 +85,12 @@ test("transaction dashboard survives reload during a partition, aborts safely an
     await page.goto("/transactions");
     await page.getByLabel("Peer node", { exact: true }).selectOption(peerId);
     await page
+      .locator("form")
+      .filter({ has: page.getByLabel("Peer node", { exact: true }) })
       .getByRole("button", { name: "Grant trust", exact: true })
       .click();
     await expect(
-      page.getByRole("button", { name: "Revoke trust", exact: true }),
+      trustRow.getByRole("button", { name: "Revoke trust", exact: true }),
     ).toBeVisible();
     const manifest = (remote: boolean, expected_revision = 0) => ({
       id: randomUUID(),
@@ -220,10 +226,10 @@ test("transaction dashboard survives reload during a partition, aborts safely an
     ).toEqual({});
     pending = undefined;
     await page.getByRole("button", { name: "Close", exact: true }).click();
-    await page
+    await trustRow
       .getByRole("button", { name: "Revoke trust", exact: true })
       .click();
-    await expect(page.getByText("Disabled", { exact: true })).toBeVisible();
+    await expect(trustRow.getByText("Disabled", { exact: true })).toBeVisible();
 
     const committed = manifest(false);
     await submit(committed);
@@ -257,7 +263,18 @@ test("transaction dashboard survives reload during a partition, aborts safely an
       (await api(`/api/workspaces/${workspace.id}`)).workspace.revision,
     ).toBe(1);
     await page.getByRole("button", { name: "Close", exact: true }).click();
+    await page
+      .getByRole("dialog", { name: "Progress and transactions", exact: true })
+      .getByRole("button", { name: "Close", exact: true })
+      .click();
+    await page.goto(
+      `/collaboration?channel=${encodeURIComponent(workspace.id)}`,
+    );
     await selectDashboardLanguage(page, "ja-JP");
+    await page.getByRole("button", { name: "状況を表示", exact: true }).click();
+    await page
+      .getByRole("button", { name: "整合性と復旧", exact: true })
+      .click();
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(
       page.getByRole("heading", { name: "分散トランザクション", exact: true }),

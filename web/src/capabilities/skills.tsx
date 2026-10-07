@@ -1,3 +1,4 @@
+import { Button } from "../components/ui/button";
 import { useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { useI18n } from "../ui";
@@ -55,7 +56,8 @@ export function SkillFiles({ run }: { run: string }) {
   return (
     <details className="core-panel">
       <summary>Skills</summary>
-      <button
+      <Button
+        variant="outline"
         type="button"
         onClick={() => {
           setEnabled(true);
@@ -63,7 +65,7 @@ export function SkillFiles({ run }: { run: string }) {
         }}
       >
         {ja ? "利用可能な Skill を表示" : "List available Skills"}
-      </button>
+      </Button>
       {query.data?.pages
         .flatMap((page) => page.skills)
         .map((skill) => (
@@ -73,15 +75,23 @@ export function SkillFiles({ run }: { run: string }) {
             <small>
               {skill.origin} · {skill.digest}
             </small>
-            <button type="button" onClick={() => void load(skill)}>
+            <Button
+              variant="outline"
+              type="button"
+              onClick={() => void load(skill)}
+            >
               {ja ? "内容を読み込む" : "Load instructions"}
-            </button>
+            </Button>
           </article>
         ))}
       {query.hasNextPage && (
-        <button type="button" onClick={() => void query.fetchNextPage()}>
+        <Button
+          variant="outline"
+          type="button"
+          onClick={() => void query.fetchNextPage()}
+        >
           {ja ? "さらに表示" : "Load more"}
-        </button>
+        </Button>
       )}
       {selected && (
         <div>
@@ -93,12 +103,13 @@ export function SkillFiles({ run }: { run: string }) {
           <ul>
             {inventory.map((file) => (
               <li key={file.path}>
-                <button
+                <Button
+                  variant="outline"
                   type="button"
                   onClick={() => void load(selected, file.path)}
                 >
                   {file.path}
-                </button>{" "}
+                </Button>{" "}
                 · {file.size} bytes
               </li>
             ))}
@@ -112,12 +123,13 @@ export function SkillFiles({ run }: { run: string }) {
             </p>
           )}
           {read?.next_offset != null && (
-            <button
+            <Button
+              variant="outline"
               type="button"
               onClick={() => void load(selected, read.path, read.next_offset)}
             >
               {ja ? "内容の続き" : "Continue reading"}
-            </button>
+            </Button>
           )}
         </div>
       )}

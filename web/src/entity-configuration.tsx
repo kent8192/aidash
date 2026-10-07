@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { useQuery } from "@tanstack/react-query";
 import { discover } from "./generated/aidash";
 import { ReferenceName } from "./record-view";
@@ -220,15 +221,17 @@ function Arguments({
               change={(children) => update(index, { children })}
             />
           )}
-          <button
+          <Button
+            variant="outline"
             type="button"
             onClick={() => change(fields.filter((_, i) => i !== index))}
           >
             {t("toolRemoveArgument")}
-          </button>
+          </Button>
         </fieldset>
       ))}
-      <button
+      <Button
+        variant="outline"
         type="button"
         onClick={() =>
           change([
@@ -250,7 +253,7 @@ function Arguments({
         }
       >
         {t("toolAddArgument")}
-      </button>
+      </Button>
     </fieldset>
   );
 }
@@ -522,17 +525,19 @@ export function EntityConfiguration({
                 <>
                   {remoteError && <p role="alert">{remoteError}</p>}
                   {remoteError && (
-                    <button
+                    <Button
+                      variant="outline"
                       type="button"
                       onClick={() => void discovery.refetch()}
                     >
                       {t("retry")}
-                    </button>
+                    </Button>
                   )}
                   {(manualRemote ||
                     remoteError ||
                     (!discovery.isPending && remoteAgents.length === 0)) && (
-                    <button
+                    <Button
+                      variant="outline"
                       type="button"
                       onClick={() => {
                         setManualRemote(!manualRemote);
@@ -545,7 +550,7 @@ export function EntityConfiguration({
                           ? "toolChooseRemoteAgent"
                           : "toolManualRemoteAgent",
                       )}
-                    </button>
+                    </Button>
                   )}
                   {manualRemote ? (
                     <>
