@@ -1,10 +1,6 @@
 //! Native operator staging and exact review selection on disposable services.
-mod common {
-	include!(concat!(
-		env!("CARGO_MANIFEST_DIR"),
-		"/src/apps/execution/tests/support/legacy.rs"
-	));
-}
+#[path = "../../execution/tests/support/legacy.rs"]
+mod common;
 use aidash_server::authorization::{Authorization, policy::PolicyBundle};
 use common::{TestEnvironment, request, test_environment};
 use rstest::rstest;
