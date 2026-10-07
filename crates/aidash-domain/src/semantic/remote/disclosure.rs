@@ -2,7 +2,7 @@
 use super::{ContractError, Receipt, Result, SourceRead};
 use crate::semantic::Failure;
 impl Receipt {
-	/// Drop only trailing matches. A result with candidates must never become an empty success.
+	/// Trim trailing results while preserving an ordinary match when native memory can shrink.
 	pub fn fit_budget(&mut self, budget: usize) -> Result<()> {
 		let receipt = self;
 		let had_matches = !receipt.result.matches.is_empty() || receipt.result.truncated;
@@ -28,7 +28,7 @@ impl Receipt {
 			if receipt.estimated_tokens <= budget {
 				break;
 			}
-			if receipt.result.matches.pop().is_none() {
+			if receipt.result.matches.len() <= 1 {
 				let mut removed = false;
 				if let Some(memory) = receipt.memory.as_mut() {
 					for bank in memory.banks.iter_mut().rev() {
@@ -47,6 +47,7 @@ impl Receipt {
 					return Err(ContractError::Semantic(Failure::ContextBudget));
 				}
 			} else {
+				receipt.result.matches.pop();
 				receipt.result.truncated = true;
 			}
 		}

@@ -18,7 +18,7 @@ cargo run -p aidash-server --bin aidash -- memory-recovery init \
   --directory /absolute/persistent/home-memory-recovery
 ```
 
-Compose and the GCP host installer run `memory-recovery init-if-missing` after
+Compose, `cargo make k8s-up` and the GCP host installer run `memory-recovery init-if-missing` after
 migrations and before starting the app. This explicit bootstrap initializes only
 an empty new-format Home with no ledger or epoch anchor. It validates existing
 state and preserves a closed serving gate. Partial, corrupt or mismatched state

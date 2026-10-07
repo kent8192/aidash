@@ -477,6 +477,7 @@ pub(crate) async fn run_mutate(
 	scope(store, lease, &mutation.bank, "memory.write").await?;
 	bank_provider(lease, &mutation.bank, &mutation.provider).await?;
 	let policy = policy(lease, &mutation.provider).await?;
+	validate_direct_mutation(lease, &mutation, &policy).await?;
 	repository::mutate(lease, &mutation, &policy.bounds).await
 }
 pub(crate) async fn run_recall(
@@ -614,11 +615,44 @@ pub async fn mutate(store: &Store, actor: &Actor, mutation: Mutation) -> Result<
 		scope(store, &mut lease, &mutation.bank, "memory.write").await?;
 		bank_provider(&mut lease, &mutation.bank, &mutation.provider).await?;
 		let policy = policy(&mut lease, &mutation.provider).await?;
-		mutation.validate(&policy)?;
+		validate_direct_mutation(&mut lease, &mutation, &policy).await?;
 		repository::mutate(&mut lease, &mutation, &policy.bounds).await
 	}
 	.await;
 	lease.finish(result).await
+}
+
+async fn validate_direct_mutation(
+	lease: &mut Lease<'_>,
+	mutation: &Mutation,
+	policy: &Policy,
+) -> Result<()> {
+	mutation.validate(policy)?;
+	for change in &mutation.changes {
+		match change {
+			Change::Add { content, .. } if content.kind.derived() => {
+				return Err(Error::Invalid(
+					"create derived memory through the derive operation".into(),
+				));
+			}
+			Change::Correct { id, content, .. } if content.kind.derived() => {
+				let existing = units::load(lease, *id, false)
+					.await?
+					.ok_or(Error::Forbidden)?;
+				if existing.bank != mutation.bank {
+					return Err(Error::Forbidden);
+				}
+				if existing.content.kind != content.kind
+					|| existing.content.mental_model != content.mental_model
+				{
+					return Err(Error::Invalid("change derived memory kind or recurring questions through the derive operation".into()));
+				}
+				units::authorize(lease, &mutation.bank, "memory.derive").await?;
+			}
+			_ => {}
+		}
+	}
+	Ok(())
 }
 pub async fn list(store: &Store, actor: &Actor, input: ReadBank) -> Result<Vec<Unit>> {
 	let mut lease = Lease::begin(store, actor).await?;

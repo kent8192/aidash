@@ -1313,6 +1313,7 @@ function UnitEditor({
           <Field label={ja ? "問い" : "Recurring question"}>
             <textarea
               required
+              readOnly
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
             />
@@ -1320,6 +1321,7 @@ function UnitEditor({
           <label>
             <input
               type="checkbox"
+              disabled
               checked={autoRefresh}
               onChange={(e) => setAutoRefresh(e.target.checked)}
             />

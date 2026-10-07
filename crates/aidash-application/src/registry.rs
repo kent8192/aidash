@@ -140,6 +140,36 @@ pub async fn validate_references(
 			}
 			references.push(referenced);
 		}
+		let mut providers: Vec<_> = config.memory.iter().cloned().collect();
+		for source in references.iter().filter(|entry| entry.kind == "source") {
+			let source: aidash_domain::memory::SourceConfig =
+				serde_json::from_value(source.config.clone())?;
+			providers.push(source.memory);
+		}
+		let mut embedding = None;
+		for provider in providers {
+			let provider = scope.definition(&provider.id, &provider.version).await?;
+			let provider: aidash_domain::memory::ProviderConfig =
+				serde_json::from_value(provider.config)?;
+			let role = scope
+				.definition(
+					&provider.policy.embedding.id,
+					&provider.policy.embedding.version,
+				)
+				.await?;
+			let configuration: aidash_domain::semantic::EmbeddingConfig =
+				serde_json::from_value(role.config)?;
+			if embedding
+				.as_ref()
+				.is_some_and(|previous| previous != &configuration)
+			{
+				return Err(Error::Invalid(
+					"an Agent's memory providers require compatible embedding configurations"
+						.into(),
+				));
+			}
+			embedding = Some(configuration);
+		}
 		validation.agent_prompt_headroom(&config, &references, &Value::Null)?;
 	}
 	let memory_references = match entry.kind.as_str() {

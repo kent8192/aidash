@@ -542,7 +542,7 @@ async fn semantic_sources_allow_the_pinned_provenance_limit_above_1024(
 		for _ in 0..2 {
 			let mut body = content("Pinned semantic provenance budget");
 			if layer > 0 {
-				body.kind = Kind::Observation;
+				body.kind = Kind::World;
 				body.evidence = support.clone();
 			}
 			last = Uuid::now_v7();

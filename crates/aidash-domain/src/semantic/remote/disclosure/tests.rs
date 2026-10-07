@@ -117,3 +117,105 @@ fn budget_too_small_for_receipt_provenance_is_rejected() {
 		Err(ContractError::Semantic(Failure::ContextBudget))
 	));
 }
+
+#[rstest]
+#[case(0)]
+#[case(1)]
+fn mixed_receipt_preserves_ordinary_provenance_before_trimming_native_units(
+	#[case] retained: usize,
+) {
+	use crate::registry::EntityRef;
+	use crate::semantic::remote::{
+		NativeBank, NativeBinding, NativeContext, NativeRecall, NativeRequest, Provider,
+	};
+	let mut value = receipt(1);
+	let reference = |id: &str| EntityRef {
+		id: id.into(),
+		version: "1.0.0".into(),
+	};
+	let bank = crate::memory::Bank {
+		home: value.home_node.clone(),
+		tenant: value.tenant.clone(),
+		workspace: value.workspace_id,
+		participant: Some(Uuid::from_u128(100)),
+	};
+	let provider = Provider {
+		node_id: value.home_node.clone(),
+		entry: reference("memory"),
+		digest: "provider".into(),
+		configuration_digest: "configuration".into(),
+	};
+	value.binding = Binding::RequiredHome {
+		home_lineage: vec![],
+		execution_lineage: vec![],
+		version: 1,
+		index_revision: 0,
+		index_digest: "index".into(),
+		embedding: Box::new(provider.clone()),
+		compactor: None,
+		native: Some(Box::new(NativeBinding {
+			selection: NativeRequest {
+				participant: bank.participant.unwrap(),
+				expected_revision: 1,
+				provider: provider.entry.clone(),
+			},
+			generation: None,
+			participant: crate::memory::Binding {
+				bank: bank.clone(),
+				participant_revision: 1,
+				agent: reference("agent"),
+				provider: provider.entry.clone(),
+			},
+			agent: provider.clone(),
+			banks: vec![NativeBank {
+				bank: bank.clone(),
+				provider: provider.clone(),
+				roles: vec![],
+				max_model_tokens: 8192,
+				max_context_tokens: 8192,
+				cache_max_age_seconds: 60,
+				cache_max_attempts: 2,
+			}],
+		})),
+	};
+	let units: Vec<crate::memory::Unit> = (0..3).map(|index| serde_json::from_value(json!({"id":Uuid::from_u128(110+index),"bank":bank,"revision":1,
+        "content":{"text":"native quotation / 記憶 ".repeat(100),"kind":"world","learning":"fact","verification":"unverified","mental_model":null,"occurred":null,"entities":[],"evidence":[],"links":[]},
+        "learned_at":value.retrieved_at,"updated_at":value.retrieved_at,"deleted":false,"stale":false})).unwrap()).collect();
+	value.memory = Some(NativeContext {
+		banks: vec![NativeRecall {
+			bank,
+			provider: provider.entry,
+			recall: crate::memory::Recall::Ready {
+				units: units.clone(),
+			},
+		}],
+	});
+	value.validate_native().unwrap();
+	let ordinary = value.result.matches[0].clone();
+	let mut minimum = value.clone();
+	minimum.memory.as_mut().unwrap().banks[0].recall = if retained == 0 {
+		crate::memory::Recall::NoSpace
+	} else {
+		crate::memory::Recall::Ready {
+			units: units[..retained].to_vec(),
+		}
+	};
+	minimum.fit_budget(100_000).unwrap();
+	let budget = minimum.estimated_tokens + 16;
+	value.fit_budget(budget).unwrap();
+	value.validate_native().unwrap();
+	assert_eq!(
+		serde_json::to_value(&value.result.matches).unwrap(),
+		json!([ordinary])
+	);
+	assert_eq!(value.sources.len(), 1);
+	assert_eq!(
+		value.sources[0].content_digest,
+		content_digest(&ordinary.text)
+	);
+	assert!(value.estimated_tokens <= budget);
+	assert_eq!(
+		value.memory.as_ref().unwrap().banks[0].recall,
+		minimum.memory.as_ref().unwrap().banks[0].recall
+	);
+}

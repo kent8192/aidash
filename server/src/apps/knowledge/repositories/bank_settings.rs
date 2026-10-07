@@ -105,6 +105,42 @@ pub(crate) async fn set(
 			));
 		}
 	}
+	if let Some(current) = current.as_ref() {
+		let previous = crate::semantic::native_memory::policy(lease, &current.provider).await?;
+		if policy.bounds.max_graph_visits < previous.bounds.max_graph_visits {
+			let rows = native::query(
+				&Query::select()
+					.column(Alias::new("evidence"))
+					.from(Alias::new("memory_units"))
+					.and_where(Expr::col("bank_id").eq(Expr::value(id)))
+					.and_where(Expr::col("deleted").eq(false))
+					.and_where(Expr::col("stale").eq(false))
+					.limit(policy.bounds.max_units as u64 + 1)
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_all(&mut **lease.tx())
+			.await?;
+			for row in rows {
+				let evidence: Vec<aidash_domain::memory::Evidence> = row.try_get("evidence")?;
+				match super::units::current(
+					lease,
+					bank.workspace,
+					&evidence,
+					policy.bounds.max_graph_visits,
+				)
+				.await
+				{
+					Ok(()) | Err(Error::Forbidden | Error::Conflict(_)) => {}
+					Err(Error::Invalid(_)) => {
+						return Err(Error::Conflict(
+							"replacement memory policy is below existing provenance".into(),
+						));
+					}
+					Err(error) => return Err(error),
+				}
+			}
+		}
+	}
 	let revision = expected
 		.checked_add(1)
 		.filter(|v| *v < i64::MAX)

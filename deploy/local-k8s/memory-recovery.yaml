@@ -1,0 +1,51 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aidash-memory-recovery-init
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        - name: directory
+          image: aidash:local
+          imagePullPolicy: IfNotPresent
+          command: [/bin/sh, -ec]
+          args:
+            - mkdir -p /recovery/home; chmod 700 /recovery/home; chown 10001:10001 /recovery/home
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL], add: [CHOWN, FOWNER] }
+          volumeMounts:
+            - { name: recovery, mountPath: /recovery }
+      containers:
+        - name: initialize
+          image: aidash:local
+          imagePullPolicy: IfNotPresent
+          command: [/bin/sh, -ec]
+          args:
+            - aidash migrate; exec aidash memory-recovery init-if-missing --directory /recovery/home
+          envFrom:
+            - secretRef: { name: aidash-local-app }
+          env:
+            - { name: AIDASH_NODE_ID, value: "aidash://node-a" }
+            - { name: AIDASH_MEMORY_RECOVERY_DIR, value: /recovery/home }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: recovery, mountPath: /recovery }
+      volumes:
+        - name: recovery
+          persistentVolumeClaim: { claimName: aidash-memory-recovery }

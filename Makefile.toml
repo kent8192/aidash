@@ -24,6 +24,7 @@ dependencies = [
   "k8s-restart-postgres",
   "k8s-wait-postgres",
   "k8s-wait-nats",
+  "k8s-memory-recovery",
   "k8s-helm",
   "k8s-restart-server",
   "k8s-restart-worker",
@@ -151,6 +152,16 @@ args = [
   "--timeout=300s",
 ]
 
+[tasks.k8s-memory-recovery]
+private = true
+script_runner = "sh"
+script = '''
+set -eu
+kubectl --kubeconfig .ignore/local-k8s/kubeconfig -n aidash-local delete job aidash-memory-recovery-init --ignore-not-found
+kubectl --kubeconfig .ignore/local-k8s/kubeconfig -n aidash-local apply -f deploy/local-k8s/memory-recovery.yaml
+kubectl --kubeconfig .ignore/local-k8s/kubeconfig -n aidash-local wait --for=condition=complete job/aidash-memory-recovery-init --timeout=300s
+'''
+
 [tasks.k8s-helm]
 private = true
 command = "helm"
@@ -167,6 +178,10 @@ args = [
   "node.id=aidash://node-a",
   "--set-string",
   "existingSecret=aidash-local-app",
+  "--set-string",
+  "memoryRecovery.existingClaim=aidash-memory-recovery",
+  "--set-string",
+  "memoryRecovery.directory=/var/lib/aidash/memory-recovery/home",
   "--set-string",
   "image.repository=aidash",
   "--set-string",

@@ -287,9 +287,6 @@ pub(crate) async fn mutate_origin(
 			range.start = range.start.trunc_subsecs(6);
 			range.end = range.end.trunc_subsecs(6);
 		}
-		if retained > bounds.max_units {
-			return Err(Error::Conflict("memory bank storage limit reached".into()));
-		}
 		if !unit.deleted {
 			units::unexpired(lease, &unit).await?;
 			units::current(
@@ -351,6 +348,10 @@ pub(crate) async fn mutate_origin(
 		}
 		super::purge::history(lease, &unit, &policy.retention).await?;
 		result.push(unit);
+	}
+	// Capacity applies to the atomic final state, including batched replacements.
+	if retained > bounds.max_units {
+		return Err(Error::Conflict("memory bank storage limit reached".into()));
 	}
 	// Impact discovery is bounded and complete before any result may leave the transaction.
 	fence_dependents(

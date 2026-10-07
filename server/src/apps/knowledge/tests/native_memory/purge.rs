@@ -39,7 +39,7 @@ async fn purge_erases_transitive_quotes_after_history_retention_expires(
 	for _ in 0..3 {
 		let mut body = content("Quoted private deletion source / 消去する引用");
 		if let Some(parent) = chain.last() {
-			body.kind = Kind::Observation;
+			body.kind = Kind::World;
 			body.evidence = vec![parent.evidence()];
 		}
 		let mut input = mutation(

@@ -452,7 +452,7 @@ async fn native_remote_run_reads_use_the_pinned_provenance_limit_above_1024(
 				id: last,
 				content: Content {
 					text: "Current bounded Run provenance".into(),
-					kind: Kind::Observation,
+					kind: Kind::World,
 					learning: Learning::Fact,
 					verification: Verification::Unverified,
 					mental_model: None,

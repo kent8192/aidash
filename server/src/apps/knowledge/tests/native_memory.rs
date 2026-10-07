@@ -19,6 +19,8 @@ use reinhardt::{
 use rstest::{fixture, rstest};
 use serde_json::json;
 use uuid::Uuid;
+#[path = "native_memory/admission.rs"]
+mod admission;
 #[path = "native_memory/policy_bounds.rs"]
 mod policy_bounds;
 #[path = "native_memory/precision.rs"]
@@ -68,7 +70,7 @@ async fn memory_ttl_withholds_units_and_dependents_before_cleanup_and_after_rest
 		.unwrap();
 	let derived = Uuid::now_v7();
 	let mut observation = content("期限のある知見に依存 / Depends on expiring findings");
-	observation.kind = Kind::Observation;
+	observation.kind = Kind::World;
 	observation.evidence = vec![original[0].evidence()];
 	memory::mutate(
 		&store,
@@ -797,7 +799,7 @@ async fn old_memory_archive_cannot_revive_deleted_corrected_or_dependent_bodies(
 	.await
 	.unwrap();
 	let mut derived = content("Quoted 東京の削除対象");
-	derived.kind = Kind::Observation;
+	derived.kind = Kind::World;
 	derived.evidence = vec![first.evidence()];
 	memory::mutate(
 		&store,
@@ -1691,7 +1693,7 @@ async fn unit_cas_receipts_participant_separation_and_derived_fences(
 		.is_empty()
 	);
 	let mut derived = content("Use the Tokyo subway.");
-	derived.kind = Kind::Observation;
+	derived.kind = Kind::World;
 	derived.evidence = vec![Evidence::Unit {
 		bank: bank.clone(),
 		id,
@@ -3419,7 +3421,6 @@ async fn listing_enforces_the_provenance_budget_separately_from_bank_unit_count(
 	for _ in 0..4 {
 		let mut value = content("Evidence chain exceeds the reduced listing budget");
 		if let Some(evidence) = previous {
-			value.kind = Kind::Observation;
 			value.evidence = vec![evidence];
 		}
 		last = Uuid::now_v7();
