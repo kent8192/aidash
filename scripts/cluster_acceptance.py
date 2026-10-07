@@ -13,7 +13,7 @@ import subprocess
 import time
 import uuid
 
-from golden_path import ROOT, TOKEN, PEER_TOKEN, api_request, entity, wait_for
+from golden_path import ROOT, TOKEN, PEER_TOKEN, api_request, entity, reconcile_uncertain_http, wait_for
 
 
 def main():
@@ -111,6 +111,7 @@ def main():
         kube("scale", "deployment/ops-b-aidash-worker", "--replicas=3")
         kube("scale", "deployment/ops-a-aidash-server", "--replicas=2")
         print("Killed remote worker after effect; scaled workers to three and servers to two", flush=True)
+        reconciled_key = reconcile_uncertain_http(base_b, before["id"], lambda: api_request(fixture_url, "/status")["effects"])
 
         def complete():
             value = api_request(base_a, f"/api/workspaces/{workspace}")
@@ -121,7 +122,7 @@ def main():
         assert len(snapshot["artifacts"]) == 4
         effects = api_request(fixture_url, "/status")
         assert len(effects["effects"]) == 3
-        assert max(effects["requests"].values()) >= 2
+        assert effects["requests"][reconciled_key] == 1, "An uncertain Unsafe HTTP invocation must not be replayed automatically"
         assert any(e["kind"] == "run.recovered" and e["data"].get("run_id") == recovered["id"] for e in api_request(base_b, "/api/events"))
         for node in ["a", "b"]:
             for role in ["server", "worker"]:

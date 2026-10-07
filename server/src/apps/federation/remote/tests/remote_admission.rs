@@ -35,6 +35,8 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	let (mut b, bu, bschema) = setup(&_test_environment).await;
 	b.config.node_id = "aidash://admission-host".into();
 	b.store.node_id = b.config.node_id.clone();
+	b.registry =
+		aidash_server::registry::Registry::new(b.store.pool.clone(), &b.config.node_id).unwrap();
 	let aa = common::peer_application(&mut a).await;
 	let ba = common::peer_application(&mut b).await;
 	let (mut ap, at, task) = bootstrap(&a, &aa, "http://localhost:1").await;

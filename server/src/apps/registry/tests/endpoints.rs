@@ -21,6 +21,12 @@ async fn registry_validation_and_query_filters_are_applied_before_persistence(
 ) {
 	// Arrange
 	let app = endpoint.await;
+	let seeded_definitions = app
+		.runtime
+		.registry
+		.list(&Default::default())
+		.await
+		.unwrap();
 	let mut invalid = skill.clone();
 	invalid["schema"] = json!({"type":"unknown-json-schema-type"});
 	// Act
@@ -50,7 +56,7 @@ async fn registry_validation_and_query_filters_are_applied_before_persistence(
 		.all_with_db(&mut app.database.lease.handle())
 		.await
 		.unwrap();
-	assert_eq!(records.len(), 1);
+	assert_eq!(records.len(), seeded_definitions.len() + 1);
 }
 
 #[rstest]
@@ -139,6 +145,12 @@ async fn registration_rolls_back_invalid_requests_and_replays_concurrent_retries
 ) {
 	// Arrange: one key survives a failed attempt, then two concurrent retries.
 	let app = endpoint.await;
+	let seeded_definitions = app
+		.runtime
+		.registry
+		.list(&Default::default())
+		.await
+		.unwrap();
 	let key = Uuid::new_v4();
 	app.operator
 		.set_header("Idempotency-Key", &key.to_string())
@@ -187,7 +199,7 @@ async fn registration_rolls_back_invalid_requests_and_replays_concurrent_retries
 			.await
 			.unwrap()
 			.len(),
-		1
+		seeded_definitions.len() + 1
 	);
 	let events = Event::objects()
 		.filter(Event::field_kind().eq("registry.registered".to_owned()))

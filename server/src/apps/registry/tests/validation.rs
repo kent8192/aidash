@@ -20,6 +20,12 @@ async fn malformed_registry_contracts_leave_no_definitions_or_events(
 	skill: Value,
 ) {
 	let app = endpoint.await;
+	let seeded_definitions = app
+		.runtime
+		.registry
+		.list(&Default::default())
+		.await
+		.unwrap();
 	let mut invalid = vec![];
 	for schema in [
 		json!({"type":7}),
@@ -66,13 +72,13 @@ async fn malformed_registry_contracts_leave_no_definitions_or_events(
 			assert_json(response, 400);
 		}
 	}
-	assert!(
-		Definition::objects()
-			.all()
-			.all_with_db(&mut app.database.lease.handle())
+	assert_eq!(
+		app.runtime
+			.registry
+			.list(&Default::default())
 			.await
-			.unwrap()
-			.is_empty()
+			.unwrap(),
+		seeded_definitions
 	);
 	assert!(
 		Event::objects()
@@ -114,6 +120,12 @@ async fn registry_nonblank_fields_follow_rust_unicode_whitespace(
 	skill: Value,
 ) {
 	let app = endpoint.await;
+	let seeded_definitions = app
+		.runtime
+		.registry
+		.list(&Default::default())
+		.await
+		.unwrap();
 	let whitespace: Vec<_> = (0..=0x10ffff)
 		.filter_map(char::from_u32)
 		.filter(|c| c.is_whitespace())
@@ -141,13 +153,13 @@ async fn registry_nonblank_fields_follow_rust_unicode_whitespace(
 			);
 		}
 	}
-	assert!(
-		Definition::objects()
-			.all()
-			.all_with_db(&mut app.database.lease.handle())
+	assert_eq!(
+		app.runtime
+			.registry
+			.list(&Default::default())
 			.await
-			.unwrap()
-			.is_empty()
+			.unwrap(),
+		seeded_definitions
 	);
 	for (index, content) in ["\t\u{a0}content\u{3000}\n", "\u{200b}"]
 		.into_iter()
@@ -487,7 +499,8 @@ async fn concurrent_installation_and_registry_republication_preserve_immutable_v
 		"http"
 	);
 	let stored = Definition::objects()
-		.all()
+		.filter(Definition::field_id().eq("endpoint-skill".to_owned()))
+		.filter(Definition::field_version().eq("1.0.0".to_owned()))
 		.get_with_db(&mut app.database.lease.handle())
 		.await
 		.unwrap();

@@ -184,6 +184,12 @@ async fn invalid_timeouts_and_unknown_fields_leave_no_registration(
 ) {
 	// Arrange
 	let app = endpoint.await;
+	let seeded_definitions = app
+		.runtime
+		.registry
+		.list(&Default::default())
+		.await
+		.unwrap();
 	let mut connection = app.database.lease.handle();
 	for (index, invalid) in invalid_configs.into_iter().enumerate() {
 		let mut value = timeout_model.clone();
@@ -223,13 +229,13 @@ async fn invalid_timeouts_and_unknown_fields_leave_no_registration(
 			"{error}"
 		);
 	}
-	assert!(
-		Definition::objects()
-			.all()
-			.all_with_db(&mut connection)
+	assert_eq!(
+		app.runtime
+			.registry
+			.list(&Default::default())
 			.await
-			.unwrap()
-			.is_empty()
+			.unwrap(),
+		seeded_definitions
 	);
 	assert!(
 		Installation::objects()

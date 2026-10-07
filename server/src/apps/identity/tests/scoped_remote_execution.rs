@@ -265,6 +265,8 @@ async fn scoped_pair(
 	let (mut b, bu, bschema) = setup(&test_environment).await;
 	b.config.node_id = "aidash://scoped-receiver".into();
 	b.store.node_id = b.config.node_id.clone();
+	b.registry =
+		aidash_server::registry::Registry::new(b.store.pool.clone(), &b.config.node_id).unwrap();
 	let model = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", model.local_addr().unwrap());
 	let model_state = ModelScript::default();
