@@ -16,7 +16,6 @@
   --ws-approval-text: #694c39;
   --green: var(--ws-green);
   --line: var(--ws-line);
-  --muted: var(--ws-muted);
   display: grid;
   grid-template:
     "header header" 42px "rail shell" minmax(0, 1fr)
@@ -1067,11 +1066,11 @@
   border-radius: 4px;
 }
 .workspace-status progress::-webkit-progress-value {
-  background: #89a475;
+  background: var(--primary);
   border-radius: 4px;
 }
 .workspace-status progress::-moz-progress-bar {
-  background: #89a475;
+  background: var(--primary);
   border-radius: 4px;
 }
 .workspace-section-heading {

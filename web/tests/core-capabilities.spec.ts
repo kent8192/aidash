@@ -227,6 +227,95 @@ async function core(page: Page) {
   return { ...fixture, calls, managed };
 }
 
+for (const outcome of ["match", "exhausted", "failed"] as const) {
+  test(`request working files page automatically until ${outcome}`, async ({
+    page,
+  }) => {
+    const { managed, errors } = await core(page);
+    const cursors: string[] = [];
+    let failed = outcome === "failed";
+    await page.route("**/api/working-files**", (route) => {
+      const cursor =
+        new URL(route.request().url()).searchParams.get("cursor") ?? "";
+      cursors.push(cursor);
+      if (!cursor)
+        return route.fulfill({
+          json: {
+            items: Array.from({ length: 50 }, (_, i) => ({
+              ...managed,
+              area_id: `other-${i}`,
+              workspace_id: "workspace-two",
+              agent_id: `Other request ${i}`,
+            })),
+            next_cursor: "page&two",
+          },
+        });
+      if (failed)
+        return route.fulfill({
+          status: 503,
+          json: { error: "Inventory temporarily unavailable" },
+        });
+      if (cursor === "page&two")
+        return route.fulfill({
+          json: {
+            items: [],
+            next_cursor: outcome === "exhausted" ? null : "page-three",
+          },
+        });
+      return route.fulfill({
+        json: {
+          items: [{ ...managed, agent_id: "Current request agent" }],
+          next_cursor: null,
+        },
+      });
+    });
+    await page.goto("/collaboration?channel=workspace-one");
+    await page.getByRole("button", { name: "Files", exact: true }).click();
+    const panel = page.locator(".core-panel").filter({
+      has: page.getByRole("heading", { name: "Working files", exact: true }),
+    });
+    await expect(panel).toBeVisible();
+    if (outcome === "failed") {
+      await expect(panel.getByRole("alert")).toContainText(
+        "Inventory temporarily unavailable",
+      );
+      expect(cursors).toEqual(["", "page&two"]);
+      failed = false;
+      await panel
+        .getByRole("button", { name: "Load more", exact: true })
+        .click();
+    }
+    if (outcome !== "exhausted")
+      await expect(
+        panel.getByRole("heading", {
+          name: "Current request agent",
+          exact: true,
+        }),
+      ).toBeVisible();
+    await expect(
+      panel.getByRole("button", { name: "Load more", exact: true }),
+    ).toHaveCount(0);
+    await expect(panel.getByRole("status")).toHaveCount(0);
+    await expect(
+      panel.getByRole("heading", { name: /Other request/ }),
+    ).toHaveCount(0);
+    if (outcome === "exhausted") {
+      await expect.poll(() => cursors).toEqual(["", "page&two"]);
+      await expect(panel.locator("article")).toHaveCount(0);
+    }
+    await panel
+      .getByRole("checkbox", {
+        name: "Show working files from all requests",
+        exact: true,
+      })
+      .check();
+    await expect(
+      panel.getByRole("heading", { name: /Other request/ }),
+    ).toHaveCount(50);
+    expect(errors).toEqual([]);
+  });
+}
+
 test("capability setup attaches a direct Skill and failed-extraction original to a new immutable version", async ({
   page,
 }, info) => {
@@ -413,6 +502,50 @@ async function openThread(page: Page) {
     .click();
   await expect(page.getByRole("heading", { name: "Agent work" })).toBeVisible();
 }
+
+test("retained-work Files link keeps the originating request instead of the first workspace", async ({
+  page,
+}) => {
+  const { errors } = await core(page);
+  await page.goto("/collaboration?channel=workspace-one");
+  const data = await page.evaluate(() =>
+    fetch("/api/state").then((response) => response.json()),
+  );
+  data.workspaces.reverse();
+  await page.route("**/api/state", (route) => route.fulfill({ json: data }));
+  await page.route("**/api/working-areas/*/session", (route) =>
+    route.fulfill({
+      json: {
+        active_run_id: null,
+        last_run_id: "run-0",
+        last_agent_version: "1.0.0",
+        queue: [],
+      },
+    }),
+  );
+  await openThread(page);
+  const files = page.getByRole("link", {
+    name: "Working file settings",
+    exact: true,
+  });
+  await expect(files).toHaveAttribute(
+    "href",
+    "/settings?view=workingFiles&channel=workspace-one",
+  );
+  await files.click();
+  await expect(page).toHaveURL(
+    /\/collaboration\?channel=workspace-one&view=files$/,
+  );
+  await expect(
+    page.getByRole("dialog", { name: "Files", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole("dialog")
+      .getByRole("heading", { name: "researcher", exact: true }),
+  ).toBeVisible();
+  expect(errors).toEqual([]);
+});
 
 test("queue, steer and stop remain usable; stale Python requires explicit acknowledgement", async ({
   page,

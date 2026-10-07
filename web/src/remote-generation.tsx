@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { useRef, useState } from "react";
 import type {
   RemoteGenerationInput,
@@ -130,7 +131,7 @@ export function RemoteGenerationAssignForm({
             <textarea name="reason" maxLength={4096} required />
           </Field>
         </fieldset>
-        <button disabled={busy || !!terminalPrepared}>
+        <Button variant="outline" disabled={busy || !!terminalPrepared}>
           {draft
             ? ja
               ? "同じ準備・承認状態を再確認"
@@ -138,11 +139,12 @@ export function RemoteGenerationAssignForm({
             : ja
               ? "Agent を準備"
               : "Prepare agent"}
-        </button>
+        </Button>
       </form>
       {error && <p role="alert">{error}</p>}
       {terminalPrepared && (
-        <button
+        <Button
+          variant="outline"
           type="button"
           disabled={busy}
           onClick={() => {
@@ -152,12 +154,17 @@ export function RemoteGenerationAssignForm({
           }}
         >
           {ja ? "新しい依頼を作成" : "Create a new intent"}
-        </button>
+        </Button>
       )}
       {draft && !terminalPrepared && (
-        <button type="button" disabled={busy} onClick={() => void cancel()}>
+        <Button
+          variant="outline"
+          type="button"
+          disabled={busy}
+          onClick={() => void cancel()}
+        >
           {ja ? "準備を中止" : "Cancel preparation"}
-        </button>
+        </Button>
       )}
       {prepared && (
         <>
@@ -287,9 +294,9 @@ export function RemoteGenerationAssignForm({
               </Field>
             </>
           )}
-          <button className="primary" disabled={busy}>
+          <Button variant="outline" className="primary" disabled={busy}>
             {ja ? "許可して実行" : "Authorize and execute"}
-          </button>
+          </Button>
         </form>
       )}
     </details>

@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { useState, type ReactNode } from "react";
 import {
   ArrowRight,
@@ -94,12 +95,16 @@ export function TrustCertifications({
             {icon}
             <h3>{title}</h3>
             <p>{description}</p>
-            <button className="trust-link" onClick={() => navigate(tab)}>
+            <Button
+              variant="outline"
+              className="trust-link"
+              onClick={() => navigate(tab)}
+            >
               {ja
                 ? "詳細を見る"
                 : `Go to ${tab[0].toUpperCase()}${tab.slice(1)}`}
               <ArrowRight size={14} />
-            </button>
+            </Button>
           </section>
         ))}
       </div>
@@ -235,7 +240,8 @@ export function TrustAudit({
           <ol className="trust-timeline">
             {page.items.map((item, index) => (
               <li key={`${eventKey(item)}:${index}`}>
-                <button
+                <Button
+                  variant="outline"
                   aria-pressed={selectedKey === eventKey(item)}
                   onClick={() => setSelectedKey(eventKey(item))}
                 >
@@ -249,7 +255,7 @@ export function TrustAudit({
                   <small>
                     {item.source} · {item.actor ?? "—"}
                   </small>
-                </button>
+                </Button>
               </li>
             ))}
           </ol>
@@ -277,7 +283,8 @@ export function TrustAudit({
           </TrustEmpty>
         )}
         <div className="trust-audit-pagination">
-          <button
+          <Button
+            variant="outline"
             disabled={offset === 0}
             onClick={() => {
               setSelectedKey(null);
@@ -285,7 +292,7 @@ export function TrustAudit({
             }}
           >
             {ja ? "最新に戻る" : "Back to latest"}
-          </button>
+          </Button>
           <span>
             {page
               ? page.items.length
@@ -293,7 +300,8 @@ export function TrustAudit({
                 : "0"
               : "—"}
           </span>
-          <button
+          <Button
+            variant="outline"
             disabled={page?.next_offset == null}
             onClick={() => {
               if (page?.next_offset != null) {
@@ -303,7 +311,7 @@ export function TrustAudit({
             }}
           >
             {ja ? "次の50件" : "Next 50"}
-          </button>
+          </Button>
         </div>
       </section>
       <section className="wb-card trust-event-details">

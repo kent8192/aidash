@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { openrouterModels } from "./generated/aidash";
@@ -111,7 +112,8 @@ export function OpenRouterModelPicker({
             aria-label={t("modelId")}
           >
             {matches.map((model, index) => (
-              <button
+              <Button
+                variant="outline"
                 type="button"
                 role="option"
                 id={`${listId}-${index}`}
@@ -127,7 +129,7 @@ export function OpenRouterModelPicker({
               >
                 <strong>{model.name}</strong>
                 <span>{model.id}</span>
-              </button>
+              </Button>
             ))}
             {!catalog.isPending && !catalog.isError && matches.length === 0 && (
               <p role="status">{t("modelNoMatches")}</p>
@@ -139,9 +141,13 @@ export function OpenRouterModelPicker({
       {catalog.isError && (
         <div role="alert">
           <p>{t("modelLoadError")}</p>
-          <button type="button" onClick={() => void catalog.refetch()}>
+          <Button
+            variant="outline"
+            type="button"
+            onClick={() => void catalog.refetch()}
+          >
             {t("retry")}
-          </button>
+          </Button>
         </div>
       )}
       <p className="muted">{t("modelCatalogHelp")}</p>

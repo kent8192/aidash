@@ -103,6 +103,7 @@ export default function MiniTopology({
         },
       ],
     });
+    const stopTheme = observeGraphTheme(cy);
     const observer = new ResizeObserver(() => {
       cy.resize();
       cy.zoom(1);
@@ -126,6 +127,7 @@ export default function MiniTopology({
     return () => {
       observer.disconnect();
       themeObserver.disconnect();
+      stopTheme();
       cy.destroy();
     };
   }, [elements]);
@@ -138,3 +140,4 @@ export default function MiniTopology({
     />
   );
 }
+import { observeGraphTheme } from "./graph-theme";

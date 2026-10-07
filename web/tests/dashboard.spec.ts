@@ -32,7 +32,7 @@ test("restarts the event stream when the tab selects another authority", async (
     });
   });
   await page.reload();
-  const selector = page.locator(".collab-topbar select").first();
+  const selector = page.locator(".account-popover select").first();
   await expect(selector).toHaveValue("operator");
   await expect.poll(() => contexts.includes("operator")).toBeTruthy();
   await page.locator(".account-popover > summary").click();
@@ -75,9 +75,10 @@ test("observes the two-node execution and all management screens", async ({
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await expect(page.locator(".stream-status")).toHaveText("接続中");
+  await expect(page.locator(".collab-rail")).toHaveCount(0);
   await expect(
-    page.locator(".collab-rail nav").first().getByRole("link"),
-  ).toHaveCount(2);
+    page.getByRole("button", { name: "新しい依頼", exact: true }),
+  ).toBeVisible();
   await page.goto("/graph");
   await page
     .getByLabel("グラフの視点", { exact: true })
@@ -89,7 +90,6 @@ test("observes the two-node execution and all management screens", async ({
   await expect(page.locator(".collab-run-grid button")).not.toHaveCount(0);
   for (const view of [
     "agents",
-    "generation",
     "clusters",
     "registry",
     "marketplace",
@@ -101,12 +101,13 @@ test("observes the two-node execution and all management screens", async ({
     );
     await expect(page.locator(".collab-settings h1")).toHaveText("設定");
   }
+  await page.goto("/settings?view=generation");
+  await expect(page).toHaveURL(/\/creator\?.*view=generation/);
+  await expect(page.locator(".generation-page")).toBeVisible();
   await page.goto("/collaboration");
   await selectDashboardLanguage(page, "en-US");
   await expect(
-    page
-      .locator(".collab-rail nav")
-      .getByRole("link", { name: "Collaboration", exact: true }),
+    page.getByRole("button", { name: "New request", exact: true }),
   ).toBeVisible();
   await page.screenshot({
     path: "../.ignore/dashboard-overview.png",
@@ -126,6 +127,7 @@ test("creates a workspace and task and receives live assignment changes", async 
   const name = `Browser workspace ${Date.now()}`;
   const taskName = `Browser research ${Date.now()}`;
   await page.goto("/collaboration");
+  await page.getByLabel("アカウント設定", { exact: true }).click();
   await page.getByRole("button", { name: "準備用チャンネル" }).click();
   await page
     .getByRole("dialog")
@@ -165,7 +167,7 @@ test("creates a workspace and task and receives live assignment changes", async 
     .getByRole("button", { name: "作成", exact: true })
     .click();
   await expect(page.getByRole("dialog")).not.toBeVisible();
-  await page.locator(".collab-task").filter({ hasText: taskName }).click();
+  await page.locator(".intent-task-row").filter({ hasText: taskName }).click();
   await page
     .getByRole("button", { name: "担当を割り当て", exact: true })
     .click();
@@ -199,7 +201,7 @@ test("creates a workspace and task and receives live assignment changes", async 
     .getByRole("dialog")
     .getByRole("button", { name: "担当を割り当て" })
     .click();
-  const row = page.locator(".collab-task").filter({ hasText: taskName });
+  const row = page.locator(".intent-task-row").filter({ hasText: taskName });
   await expect(row).toContainText("完了", { timeout: 30000 });
 });
 

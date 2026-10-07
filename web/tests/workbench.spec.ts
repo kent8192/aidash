@@ -467,7 +467,9 @@ for (const [viewport, locale] of [
       }),
     ).toBeVisible();
     await expect(page.locator(".trust-overview")).toBeVisible();
-    await expect(page.getByText("Research", { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("main").getByText("Research", { exact: true }),
+    ).toBeVisible();
     await page
       .locator(".wb-tabs")
       .getByRole("button", {
@@ -1062,9 +1064,9 @@ for (const width of [1280, 900, 640, 600, 541, 390]) {
         primary: getComputedStyle(element.querySelector(".wb-primary")!)
           .backgroundColor,
       }));
-      expect(colors.surface).toBe("rgb(245, 247, 243)");
+      expect(colors.surface).toBe("rgb(250, 250, 250)");
       expect(colors.card).toBe("rgb(255, 255, 255)");
-      expect(colors.primary).toBe("rgb(69, 107, 75)");
+      expect(colors.primary).toBe("rgb(199, 71, 48)");
     }
   });
 }

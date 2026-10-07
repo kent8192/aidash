@@ -1,24 +1,25 @@
+import { Button } from "../components/ui/button";
 import { ScopedMarketplace, MarketplaceAdministration } from "../marketplace";
-import { WorkingFileSettings } from "../capabilities/management";
+import { ToolSection } from "../integrated-tools";
 import { ReferenceName } from "../record-view";
 import { RecordView } from "../record-view";
 import type { ReactNode } from "react";
 import type { Package, State } from "../types";
 import { Badge, Panel, useEntityName, useI18n } from "../ui";
-import { GenerationPage } from "../generation";
+
 import { SemanticPage } from "../semantic";
-import { AuthorizationPage } from "../authorization";
-import { DashboardIdentityAdministration } from "../dashboard-identity";
+
 import { DeploymentPage } from "../deployment";
-import { TransactionsPage } from "../transactions";
+
 import { collaborationCopy } from "./copy";
-import { settingsSections, type SettingsSection } from "./model";
+import {
+  visibleSettingsSections,
+  type SettingsSection,
+  type IntegratedView,
+} from "./model";
 import type { Selection } from "./details";
 
-const operatorSections = new Set<SettingsSection>([
-  "authorization",
-  "deployment",
-]);
+const operatorSections = new Set<SettingsSection>(["deployment"]);
 
 function SettingsFrame({
   section,
@@ -45,48 +46,21 @@ function SettingsFrame({
           value={section}
           onChange={(event) => select(event.target.value as SettingsSection)}
         >
-          {settingsSections
+          {visibleSettingsSections
             .filter((value) => operator || !operatorSections.has(value))
             .map((value) => (
               <option value={value} key={value}>
-                {value === "node" ? copy.node : t(value)}
+                {value === "node"
+                  ? locale === "ja-JP"
+                    ? "一般"
+                    : "General"
+                  : t(value)}
               </option>
             ))}
         </select>
       </label>
       {children}
     </section>
-  );
-}
-
-export function TransactionSettings({
-  nodeId,
-  operator,
-  select,
-}: {
-  nodeId: string;
-  operator: boolean;
-  select: (section: SettingsSection) => void;
-}) {
-  return (
-    <SettingsFrame section="transactions" select={select} operator={operator}>
-      <TransactionsPage nodeId={nodeId} operator={operator} />
-    </SettingsFrame>
-  );
-}
-
-export function AuthoritySettings({
-  select,
-  entries,
-}: {
-  select: (section: SettingsSection) => void;
-  entries: State["registry"];
-}) {
-  return (
-    <SettingsFrame section="authorization" select={select} operator>
-      <DashboardIdentityAdministration />
-      <AuthorizationPage entries={entries} />
-    </SettingsFrame>
   );
 }
 
@@ -97,6 +71,8 @@ export function Configuration({
   open,
   packages,
   disconnect,
+  integration,
+  channel,
 }: {
   data: State;
   section: SettingsSection;
@@ -104,6 +80,8 @@ export function Configuration({
   open: (selection: Selection) => void;
   packages: Package[];
   disconnect: () => void;
+  integration?: IntegratedView;
+  channel?: string;
 }) {
   const { t, local, locale } = useI18n();
   const entityName = useEntityName(data.registry);
@@ -118,32 +96,12 @@ export function Configuration({
         </p>
       ) : (
         <>
-          {section === "workingFiles" &&
-            (operator ? (
-              <p role="status">
-                {locale === "ja-JP"
-                  ? "作業ファイルを管理するには、利用者アカウントで接続してください。"
-                  : "Connect with a user account to manage working files."}
-              </p>
-            ) : (
-              <WorkingFileSettings />
-            ))}
-          {section === "generation" && <GenerationPage data={data} />}
-          {section === "semantic" && <SemanticPage data={data} />}
-          {section === "authorization" && operator && (
-            <>
-              <DashboardIdentityAdministration />
-              <AuthorizationPage entries={data.registry} />
-            </>
-          )}
-          {section === "transactions" && operator && (
-            <TransactionsPage nodeId={data.node.id} />
-          )}
           {section === "deployment" && operator && <DeploymentPage />}
           {["agents", "registry", "clusters"].includes(section) && (
             <>
               {operator && (
-                <button
+                <Button
+                  variant="outline"
                   className="primary"
                   type="button"
                   onClick={() =>
@@ -153,7 +111,7 @@ export function Configuration({
                   }
                 >
                   {t("register")}
-                </button>
+                </Button>
               )}
               <div className="cards">
                 {data.registry
@@ -164,7 +122,8 @@ export function Configuration({
                         (section === "agents" ? "agent" : "cluster"),
                   )
                   .map((entry) => (
-                    <button
+                    <Button
+                      variant="outline"
                       type="button"
                       className="entity-card"
                       key={`${entry.kind}:${entry.id}@${entry.version}`}
@@ -176,10 +135,20 @@ export function Configuration({
                       <h3>{entityName(entry)}</h3>
                       <p>{local(entry.description)}</p>
                       <small>v{entry.version}</small>
-                    </button>
+                    </Button>
                   ))}
               </div>
             </>
+          )}
+          {section === "registry" && (
+            <ToolSection
+              title={
+                locale === "ja-JP" ? "検索ソースと索引" : "Sources and indexes"
+              }
+              initiallyOpen={integration === "semantic"}
+            >
+              <SemanticPage data={data} workspaceId={channel} />
+            </ToolSection>
           )}
           {section === "marketplace" &&
             !operator &&
@@ -194,16 +163,18 @@ export function Configuration({
           )}
           {section === "marketplace" && operator && (
             <>
-              <button
+              <Button
+                variant="outline"
                 className="primary"
                 type="button"
                 onClick={() => open({ kind: "publish" })}
               >
                 {t("publish")}
-              </button>
+              </Button>
               <div className="cards">
                 {packages.map((value) => (
-                  <button
+                  <Button
+                    variant="outline"
                     type="button"
                     className="entity-card"
                     key={`${value.id}@${value.version}`}
@@ -221,7 +192,7 @@ export function Configuration({
                         ? t("installed")
                         : t("details")}
                     </span>
-                  </button>
+                  </Button>
                 ))}
               </div>
             </>
@@ -256,12 +227,13 @@ export function Configuration({
                 <Panel
                   title={t("connectedNodes")}
                   action={
-                    <button
+                    <Button
+                      variant="outline"
                       type="button"
                       onClick={() => open({ kind: "peer" })}
                     >
                       {t("addPeer")}
-                    </button>
+                    </Button>
                   }
                 >
                   {data.peers.map((peer) => (
@@ -279,9 +251,9 @@ export function Configuration({
                 <summary>{t("metadata")}</summary>
                 <RecordView value={data.node} />
               </details>
-              <button type="button" onClick={disconnect}>
+              <Button variant="outline" type="button" onClick={disconnect}>
                 {copy.disconnect}
-              </button>
+              </Button>
             </>
           )}
         </>

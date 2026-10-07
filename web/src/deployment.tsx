@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { useQuery } from "@tanstack/react-query";
 import { deploymentStatus } from "./generated/aidash";
 import { Badge, Empty, Panel, useI18n } from "./ui";
@@ -13,7 +14,9 @@ export function DeploymentPage() {
     return (
       <div className="error" role="alert">
         <p>{t("deploymentUnavailable")}</p>
-        <button onClick={() => void status.refetch()}>{t("retry")}</button>
+        <Button variant="outline" onClick={() => void status.refetch()}>
+          {t("retry")}
+        </Button>
       </div>
     );
   if (!status.data) return <p>{t("loading")}</p>;

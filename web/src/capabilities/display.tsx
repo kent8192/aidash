@@ -1,3 +1,4 @@
+import { Button } from "../components/ui/button";
 import { useEffect, useState } from "react";
 import { useI18n } from "../ui";
 import { download, saveFile, type CoreFile } from "./client";
@@ -26,7 +27,8 @@ export function DisplayFile({ area, file }: { area: string; file: CoreFile }) {
         />
       )}
       {!preview && file.media_type === "image/png" && (
-        <button
+        <Button
+          variant="outline"
           type="button"
           onClick={async () => {
             try {
@@ -40,9 +42,10 @@ export function DisplayFile({ area, file }: { area: string; file: CoreFile }) {
           }}
         >
           {ja ? "画像を表示" : "Show image"}
-        </button>
+        </Button>
       )}
-      <button
+      <Button
+        variant="outline"
         type="button"
         onClick={async () => {
           try {
@@ -53,7 +56,7 @@ export function DisplayFile({ area, file }: { area: string; file: CoreFile }) {
         }}
       >
         {ja ? "出力をダウンロード" : "Download output"}
-      </button>
+      </Button>
       {error && <p role="alert">{error}</p>}
     </figure>
   );

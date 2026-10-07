@@ -1,3 +1,4 @@
+import { Button } from "./components/ui/button";
 import { RecordView } from "./record-view";
 import { useState } from "react";
 import { PeerMappings } from "./peer-mappings";
@@ -69,7 +70,7 @@ export function AuthorizationPage({ entries }: { entries: Entry[] }) {
         <Field label={t("tenant")}>
           <input name="tenant" required maxLength={256} />
         </Field>
-        <button>{t("open")}</button>
+        <Button variant="outline">{t("open")}</Button>
       </form>
       {tenant && (
         <TenantAuthorization key={tenant} tenant={tenant} entries={entries} />
@@ -180,14 +181,17 @@ function TenantAuthorization({
       {snapshot.isError && !missing && (
         <p role="alert" className="error">
           {snapshot.error.message}
-          <button onClick={() => void snapshot.refetch()}>{t("retry")}</button>
+          <Button variant="outline" onClick={() => void snapshot.refetch()}>
+            {t("retry")}
+          </Button>
         </p>
       )}
       {(current || missing) && (
         <Panel
           title={t("authPolicyBundle")}
           action={
-            <button
+            <Button
+              variant="outline"
               onClick={() => {
                 setError("");
                 setEditor(
@@ -205,7 +209,7 @@ function TenantAuthorization({
               }}
             >
               {t(current ? "authEditPolicy" : "authCreatePolicy")}
-            </button>
+            </Button>
           }
         >
           {current ? (
@@ -231,7 +235,8 @@ function TenantAuthorization({
           <Panel
             title={t("authCredentials")}
             action={
-              <button
+              <Button
+                variant="outline"
                 onClick={() => {
                   setError("");
                   setIssued(null);
@@ -239,7 +244,7 @@ function TenantAuthorization({
                 }}
               >
                 {t("authIssueCredential")}
-              </button>
+              </Button>
             }
           >
             <p className="auth-padding muted">{t("authCredentialsHelp")}</p>
@@ -278,7 +283,8 @@ function TenantAuthorization({
                     }
                   />
                   {!credential.revoked_at && (
-                    <button
+                    <Button
+                      variant="outline"
                       disabled={busy}
                       onClick={() => {
                         setError("");
@@ -286,7 +292,7 @@ function TenantAuthorization({
                       }}
                     >
                       {t("authRevoke")}
-                    </button>
+                    </Button>
                   )}
                 </div>
               ))}
@@ -326,7 +332,8 @@ function TenantAuthorization({
                     <Badge
                       value={binding.enabled ? "authApproved" : "authDisabled"}
                     />
-                    <button
+                    <Button
+                      variant="outline"
                       disabled={busy}
                       onClick={() =>
                         void mutate(() =>
@@ -344,7 +351,7 @@ function TenantAuthorization({
                       {t(
                         binding.enabled ? "authDisableApproval" : "authApprove",
                       )}
-                    </button>
+                    </Button>
                   </div>
                 ))}
               </>
@@ -432,9 +439,9 @@ function TenantAuthorization({
                 defaultValue={3600}
               />
             </Field>
-            <button className="primary" disabled={busy}>
+            <Button variant="outline" className="primary" disabled={busy}>
               {t("authIssueCredential")}
-            </button>
+            </Button>
           </form>
         </Modal>
       )}
@@ -455,9 +462,9 @@ function TenantAuthorization({
                 onFocus={(event) => event.target.select()}
               />
             </Field>
-            <button onClick={() => setIssued(null)}>
+            <Button variant="outline" onClick={() => setIssued(null)}>
               {t("authDismissToken")}
-            </button>
+            </Button>
           </div>
         </Modal>
       )}
@@ -475,7 +482,8 @@ function TenantAuthorization({
                 {error}
               </p>
             )}
-            <button
+            <Button
+              variant="outline"
               className="primary"
               disabled={busy}
               onClick={() =>
@@ -487,7 +495,7 @@ function TenantAuthorization({
               }
             >
               {t("authConfirmRevoke")}
-            </button>
+            </Button>
           </div>
         </Modal>
       )}
@@ -578,9 +586,14 @@ function PolicyEditor({
             snapshot={{ bundle: review, revision: snapshot.revision + 1 }}
           />
           <JsonView value={review} />
-          <button type="button" disabled={busy} onClick={() => setReview(null)}>
+          <Button
+            variant="outline"
+            type="button"
+            disabled={busy}
+            onClick={() => setReview(null)}
+          >
             {t("authBackToEdit")}
-          </button>
+          </Button>
         </>
       ) : (
         <Field label={t("authPolicyJson")}>
@@ -593,9 +606,9 @@ function PolicyEditor({
           />
         </Field>
       )}
-      <button className="primary" disabled={busy}>
+      <Button variant="outline" className="primary" disabled={busy}>
         {t(review ? "authApplyPolicy" : "authReviewPolicy")}
-      </button>
+      </Button>
     </form>
   );
 }
@@ -728,9 +741,9 @@ function EvaluationPanel({
             {t("authRecordDecision")}
           </label>
         </fieldset>
-        <button disabled={busy} className="primary">
+        <Button variant="outline" disabled={busy} className="primary">
           {t(audit ? "authEvaluateRecord" : "authDryRun")}
-        </button>
+        </Button>
         {error && (
           <p className="error" role="alert">
             {error}
@@ -804,7 +817,9 @@ function CatalogForm({
           ))}
         </select>
       </Field>
-      <button disabled={busy || !available.length}>{t("authApprove")}</button>
+      <Button variant="outline" disabled={busy || !available.length}>
+        {t("authApprove")}
+      </Button>
     </form>
   );
 }
@@ -865,16 +880,18 @@ function HistoryPanel({
         );
       })}
       <div className="auth-pagination">
-        <button
+        <Button
+          variant="outline"
           disabled={cursors.length === 1 || query.isFetching}
           onClick={() => setCursors(cursors.slice(0, -1))}
         >
           {t("authPrevious")}
-        </button>
+        </Button>
         <span>
           {t("authPage")} {cursors.length}
         </span>
-        <button
+        <Button
+          variant="outline"
           disabled={
             records?.length !== PAGE_SIZE ||
             !Number.isSafeInteger(next) ||
@@ -884,7 +901,7 @@ function HistoryPanel({
           onClick={() => setCursors([...cursors, next])}
         >
           {t("authNext")}
-        </button>
+        </Button>
       </div>
     </Panel>
   );

@@ -1,3 +1,4 @@
+import { Button } from "../components/ui/button";
 import { RemoteMemoryStatus, RemoteFollowUp } from "./remote-memory";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -47,9 +48,13 @@ export function RemoteExecutions({ task }: { task: string }) {
       <h3>{ja ? "遠隔実行" : "Remote execution"}</h3>
       {status.isError && <p role="alert">{status.error.message}</p>}
       {error && <p role="alert">{error}</p>}
-      <button type="button" onClick={() => void status.refetch()}>
+      <Button
+        variant="outline"
+        type="button"
+        onClick={() => void status.refetch()}
+      >
         {ja ? "状態を再読み込み" : "Refresh status"}
-      </button>
+      </Button>
       {(!status.isError ? status.data : undefined)?.map(
         ({ grant, execution, unavailable, semantic }) => {
           const expired =
@@ -127,42 +132,46 @@ export function RemoteExecutions({ task }: { task: string }) {
               {!terminal && (
                 <div className="button-row">
                   {live && (!execution || execution.phase === "ADMITTED") && (
-                    <button
+                    <Button
+                      variant="outline"
                       disabled={busy === grant.id}
                       onClick={() => void act(grant.id, "activate")}
                     >
                       {ja ? "起動を再試行" : "Retry activation"}
-                    </button>
+                    </Button>
                   )}
                   {execution && execution.phase !== "ADMITTED" && (
                     <>
                       {live &&
                         execution.control === "PAUSED" &&
                         semantic?.reason !== "invalidated" && (
-                          <button
+                          <Button
+                            variant="outline"
                             disabled={busy === grant.id}
                             onClick={() => void act(grant.id, "resume")}
                           >
                             {ja
                               ? "権限を再確認して再開"
                               : "Recheck authority and resume"}
-                          </button>
+                          </Button>
                         )}
                       {execution.control === "ACTIVE" && (
-                        <button
+                        <Button
+                          variant="outline"
                           disabled={busy === grant.id}
                           onClick={() => void act(grant.id, "pause")}
                         >
                           {ja ? "一時停止" : "Pause"}
-                        </button>
+                        </Button>
                       )}
                       {execution.control !== "CANCELLED" && (
-                        <button
+                        <Button
+                          variant="outline"
                           disabled={busy === grant.id}
                           onClick={() => void act(grant.id, "cancel")}
                         >
                           {ja ? "実行を中止" : "Cancel execution"}
-                        </button>
+                        </Button>
                       )}
                     </>
                   )}
@@ -239,7 +248,7 @@ function RemoteMessage({ task, grant }: { task: string; grant: string }) {
             : "Instruction acceptance confirmed."}
         </p>
       )}
-      <button disabled={busy || !content.trim()}>
+      <Button variant="outline" disabled={busy || !content.trim()}>
         {pending
           ? ja
             ? "同じ指示の受理を再確認"
@@ -247,7 +256,7 @@ function RemoteMessage({ task, grant }: { task: string; grant: string }) {
           : ja
             ? "追加指示を送る"
             : "Send instruction"}
-      </button>
+      </Button>
     </form>
   );
 }
