@@ -3,17 +3,64 @@ use super::*;
 use aidash_server::database::native;
 
 #[rstest]
+#[case("workspace")]
+#[case("settings")]
 #[tokio::test]
-async fn retention_skips_active_workspace_readers_and_retries_after_release(
+async fn retention_skips_a_full_busy_page_and_retries_after_release(
 	#[future] database: DatabaseFixture,
 	bounds: Bounds,
+	#[case] busy: &str,
 ) {
 	let database = database.await;
 	let (store, _, workspace) = setup(&database, bounds).await;
-	let bank = memory::create_participant(
+	let mut candidates = Vec::new();
+	for _ in 0..32 {
+		let bank = memory::create_participant(
+			&store,
+			&Actor::Operator,
+			workspace,
+			memory::CreateParticipant {
+				agent: reference("a"),
+			},
+		)
+		.await
+		.unwrap()
+		.bank;
+		candidates.push(review_delivery::candidate(&store, &bank).await);
+	}
+	let later_workspace = store
+		.create_workspace("Later bank", "Maintenance must reach this bank")
+		.await
+		.unwrap();
+	let mut db = database.lease.handle();
+	AuthorizationWorkspace::objects()
+		.create_with_conn(
+			&mut db,
+			&AuthorizationWorkspace::build()
+				.workspace_id(later_workspace.id)
+				.tenant("acme")
+				.owner_subject("operator")
+				.finish(),
+		)
+		.await
+		.unwrap();
+	let index = aidash_server::semantic::service::get_index(&store, &Actor::Operator, workspace)
+		.await
+		.unwrap();
+	aidash_server::semantic::service::configure(
+		&store,
+		later_workspace.id,
+		aidash_server::semantic::ConfigureIndex {
+			expected_revision: 0,
+			spec: serde_json::from_value(index.spec).unwrap(),
+		},
+	)
+	.await
+	.unwrap();
+	let later_bank = memory::create_participant(
 		&store,
 		&Actor::Operator,
-		workspace,
+		later_workspace.id,
 		memory::CreateParticipant {
 			agent: reference("a"),
 		},
@@ -21,68 +68,105 @@ async fn retention_skips_active_workspace_readers_and_retries_after_release(
 	.await
 	.unwrap()
 	.bank;
-	let candidate = review_delivery::candidate(&store, &bank).await;
+	let later = review_delivery::candidate(&store, &later_bank).await;
 	let old = chrono::Utc::now() - chrono::Duration::days(8);
 	let mut tx = native::begin(&store.pool).await.unwrap();
 	for query in [
 		Query::update()
 			.table(Alias::new("memory_candidates"))
 			.value(Alias::new("created_at"), old)
-			.and_where(Expr::col("id").eq(Expr::value(candidate)))
 			.to_string(PostgresQueryBuilder),
 		Query::update()
 			.table(Alias::new("memory_bank_settings"))
 			.value(Alias::new("next_maintenance"), old)
 			.to_string(PostgresQueryBuilder),
+		Query::update()
+			.table(Alias::new("memory_bank_settings"))
+			.value(
+				Alias::new("next_maintenance"),
+				old + chrono::Duration::days(1),
+			)
+			.and_where(
+				Expr::col("bank_id").in_subquery(
+					Query::select()
+						.column(Alias::new("id"))
+						.from(Alias::new("memory_banks"))
+						.and_where(Expr::col("workspace_id").eq(Expr::value(later_workspace.id)))
+						.to_owned(),
+				),
+			)
+			.to_string(PostgresQueryBuilder),
 	] {
 		native::query(&query).execute(&mut *tx).await.unwrap();
 	}
 	tx.commit().await.unwrap();
-	// An indexer retains this lock while acquiring another current-origin
-	// reader. A waiting maintenance writer would prevent that reader joining it.
 	let mut reader = native::begin(&store.pool).await.unwrap();
-	native::query(
-		&Query::select()
+	let mut locked = Query::select();
+	if busy == "workspace" {
+		locked
 			.column(Alias::new("id"))
 			.from(Alias::new("workspaces"))
-			.and_where(Expr::col("id").eq(Expr::value(workspace)))
-			.lock(reinhardt::query::LockType::Share)
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_one(&mut *reader)
-	.await
-	.unwrap();
+			.and_where(Expr::col("id").eq(Expr::value(workspace)));
+	} else {
+		locked
+			.column(Alias::new("bank_id"))
+			.from(Alias::new("memory_bank_settings"))
+			.and_where(
+				Expr::col("bank_id").in_subquery(
+					Query::select()
+						.column(Alias::new("id"))
+						.from(Alias::new("memory_banks"))
+						.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+						.to_owned(),
+				),
+			);
+	}
+	locked.lock(reinhardt::query::LockType::Share);
+	native::query(&locked.to_string(PostgresQueryBuilder))
+		.fetch_all(&mut *reader)
+		.await
+		.unwrap();
 	tokio::time::timeout(
 		std::time::Duration::from_secs(5),
 		aidash_server::semantic::worker::sweep(&store),
 	)
 	.await
-	.expect("maintenance must not queue a writer behind active workspace readers")
+	.expect("maintenance must skip the full busy page without waiting")
 	.unwrap();
-	let statement = Query::select()
-		.columns(["text", "state"].map(Alias::new))
-		.from(Alias::new("memory_candidates"))
-		.and_where(Expr::col("id").eq(Expr::value(candidate)))
-		.to_string(PostgresQueryBuilder);
-	let before = native::query(&statement)
+	async fn disposition(store: &Store, id: Uuid) -> (String, String) {
+		let row = native::query(
+			&Query::select()
+				.columns(["text", "state"].map(Alias::new))
+				.from(Alias::new("memory_candidates"))
+				.and_where(Expr::col("id").eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
 		.fetch_one(&store.pool)
 		.await
 		.unwrap();
+		(row.try_get("text").unwrap(), row.try_get("state").unwrap())
+	}
 	assert_eq!(
-		before.try_get::<String>("text").unwrap(),
-		"Candidate to review"
+		disposition(&store, later).await,
+		(String::new(), "invalidated".into()),
+		"an unlocked later bank must not starve behind 32 busy banks"
 	);
-	assert_eq!(before.try_get::<String>("state").unwrap(), "pending");
+	for id in &candidates {
+		assert_eq!(
+			disposition(&store, *id).await,
+			("Candidate to review".into(), "pending".into())
+		);
+	}
 	reader.rollback().await.unwrap();
 	aidash_server::semantic::worker::sweep(&store)
 		.await
 		.unwrap();
-	let after = native::query(&statement)
-		.fetch_one(&store.pool)
-		.await
-		.unwrap();
-	assert!(after.try_get::<String>("text").unwrap().is_empty());
-	assert_eq!(after.try_get::<String>("state").unwrap(), "invalidated");
+	for id in candidates {
+		assert_eq!(
+			disposition(&store, id).await,
+			(String::new(), "invalidated".into())
+		);
+	}
 }
 
 #[rstest]

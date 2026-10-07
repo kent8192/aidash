@@ -2179,6 +2179,7 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 #[case(true, true, "success")]
 #[case(false, false, "later_bank")]
 #[case(false, false, "reflection")]
+#[case(false, false, "commit_failure")]
 #[tokio::test]
 async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_correction(
 	#[future] database: DatabaseFixture,
@@ -2197,38 +2198,21 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	use std::sync::Arc;
 	let id = Uuid::now_v7();
 	let reflect = delivery == "reflection";
+	let reflection_id = Uuid::now_v7();
+	if reflect {
+		bounds.max_results = 1;
+	}
 	let captured = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
 	let received = captured.clone();
-	let journal_reset = Arc::new(std::sync::Mutex::new(None::<(Store, Uuid)>));
-	let reset = journal_reset.clone();
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
 	let provider = tokio::spawn(async move {
 		let model = post(move |Json(input): Json<serde_json::Value>| {
 			let received = received.clone();
-			let reset = reset.clone();
 			async move {
 				let context: serde_json::Value =
 					serde_json::from_str(input["messages"][1]["content"].as_str().unwrap())
 						.unwrap();
-				// The initial inference already consumed its context. Reset that
-				// fixture journal before it requests the failing reflection tool.
-				if reflect && context.get("current").is_some() {
-					let (store, run) = reset.lock().unwrap().clone().unwrap();
-					let mut tx = aidash_server::database::native::begin(&store.control_pool)
-						.await
-						.unwrap();
-					aidash_server::database::native::query(
-						&Query::delete()
-							.from_table(Alias::new("memory_run_reads"))
-							.and_where(Expr::col("run_id").eq(Expr::value(run)))
-							.to_string(PostgresQueryBuilder),
-					)
-					.execute(&mut *tx)
-					.await
-					.unwrap();
-					tx.commit().await.unwrap();
-				}
 				let mut calls = received.lock().unwrap();
 				calls.push(context);
 				let (name, arguments) = if calls.len() == 1 {
@@ -2238,7 +2222,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 						} else {
 							"memory_recall"
 						},
-						json!({"text":"東京 subway","time":null,"kinds":[],"max_tokens":8192}),
+						json!({"text":if reflect {"Reflection-only ancestor"} else {"東京 subway"},"time":null,"kinds":[],"max_tokens":8192}),
 					)
 				} else {
 					(
@@ -2369,6 +2353,62 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	aidash_server::semantic::worker::sweep(&store)
 		.await
 		.unwrap();
+	let projections = aidash_server::database::native::query(
+		&Query::select()
+			.columns(["state", "last_error"].map(Alias::new))
+			.from(Alias::new("semantic_entries"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(&store.pool)
+	.await
+	.unwrap();
+	for row in projections {
+		assert_eq!(
+			row.try_get::<String>("state").unwrap(),
+			"READY",
+			"initial Unit must be indexed before the delivery regression: {:?}",
+			row.try_get::<Option<String>>("last_error").unwrap()
+		);
+	}
+
+	if reflect {
+		memory::mutate(
+			&store,
+			&actor,
+			mutation(
+				&participant.bank,
+				Change::Add {
+					id: reflection_id,
+					content: content("Reflection-only ancestor"),
+				},
+			),
+		)
+		.await
+		.unwrap();
+		aidash_server::semantic::worker::sweep(&store)
+			.await
+			.unwrap();
+	}
+	if delivery == "commit_failure" {
+		// DDL exception: SeaQuery cannot express PostgreSQL deferred constraint
+		// triggers. Reject the enclosing task-snapshot commit after reads are
+		// staged, before inference, rather than failing the read insert.
+		let mut tx = aidash_server::database::native::begin(&store.pool)
+			.await
+			.unwrap();
+		let ddl = [
+			"CREATE FUNCTION reject_context_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture context commit failure'; END $$",
+			"CREATE CONSTRAINT TRIGGER reject_context_commit AFTER INSERT ON run_task_snapshots DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION reject_context_commit()",
+		];
+		for ddl in ddl {
+			aidash_server::database::native::query(ddl)
+				.execute(&mut *tx)
+				.await
+				.unwrap();
+		}
+		tx.commit().await.unwrap();
+	}
+
 	let task = store
 		.create_task(
 			workspace,
@@ -2428,7 +2468,6 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	.await
 	.unwrap();
 	let run = f.store.runs().await.unwrap().remove(0);
-	*journal_reset.lock().unwrap() = Some((f.store.clone(), run.id));
 	let worker = aidash_server::harness::Harness {
 		federation: f.clone(),
 	};
@@ -2437,7 +2476,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			tokio::time::timeout(std::time::Duration::from_secs(15), worker.worker_once())
 				.await
 				.expect("native inference and explicit recall must not deadlock");
-		if delivery != "later_bank" {
+		if !matches!(delivery, "later_bank" | "commit_failure") {
 			attempt.unwrap();
 		}
 		if (reflect && captured.lock().unwrap().len() > 1)
@@ -2448,10 +2487,10 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			break;
 		}
 	}
-	if delivery == "later_bank" {
+	if matches!(delivery, "later_bank" | "commit_failure") {
 		assert!(
 			captured.lock().unwrap().is_empty(),
-			"failed later Bank must prevent context delivery"
+			"failed Bank or enclosing commit must prevent context delivery"
 		);
 		let count: i64 = aidash_server::database::native::query_scalar(
 			&Query::select()
@@ -2469,6 +2508,16 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			count, 0,
 			"earlier successful Bank must leave no phantom read"
 		);
+		if delivery != "later_bank" {
+			let error = f.store.run(run.id).await.unwrap().error;
+			assert!(
+				error
+					.as_deref()
+					.is_some_and(|error| error.contains("fixture context")),
+				"the injected enclosing transaction failure must be reached: {error:?}"
+			);
+		}
+
 		provider.abort();
 		return;
 	}
@@ -2481,7 +2530,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		);
 		assert_eq!(
 			frames[1]["context"][0]["id"],
-			json!(id),
+			json!(reflection_id),
 			"reflection did recall the admitted Unit"
 		);
 		let reads = aidash_server::database::native::query(
@@ -2495,13 +2544,18 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		.await
 		.unwrap();
 		assert!(
-			reads.is_empty(),
-			"failed reflection must discard its staged recall roots"
+			reads.len() == 1 && reads[0].try_get::<Uuid>("unit_id").unwrap() == id,
+			"failed reflection must discard its new roots and retain successful inference reads"
 		);
 		provider.abort();
 		return;
 	}
-	assert_eq!(captured.lock().unwrap().len(), 1);
+	let run_error = f.store.run(run.id).await.unwrap().error;
+	assert_eq!(
+		captured.lock().unwrap().len(),
+		1,
+		"Run error: {run_error:?}"
+	);
 	let first = captured.lock().unwrap()[0]["current"]["semantic_memory"].clone();
 	assert_eq!(
 		first["memory"]["binding"]["bank"]["participant"],

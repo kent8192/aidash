@@ -5,22 +5,48 @@ use aidash_domain::{memory::*, registry::EntityRef};
 use chrono::{Duration, Utc};
 mod repairs;
 use reinhardt::query::{
-	Alias, ColumnRef, Expr, ExprTrait, LockBehavior, LockType, Order, PostgresQueryBuilder, Query,
-	QueryStatementBuilder,
+	Alias, ColumnRef, Expr, ExprTrait, JoinType, LockBehavior, LockType, Order,
+	PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
 
 pub(crate) async fn sweep(store: &Store) -> Result<()> {
+	// Filter busy banks before LIMIT: otherwise 32 active banks can permanently
+	// hide every later maintenance candidate. Claiming all joined rows with
+	// SKIP LOCKED also avoids waiting on settings readers or workspace writers.
+	// Release the discovery locks before each independently bounded pass, which
+	// reacquires and validates its own workspace/policy authority below.
+	let mut discovery = native::begin(&store.pool).await?;
 	let due = native::query(
 		&Query::select()
-			.column(ColumnRef::Asterisk)
+			.columns(
+				["bank_id", "provider_id", "provider_version", "revision"]
+					.map(|column| ("memory_bank_settings", column)),
+			)
 			.from(Alias::new("memory_bank_settings"))
-			.and_where(Expr::col("next_maintenance").lte(Expr::value(Utc::now())))
-			.order_by(Alias::new("next_maintenance"), Order::Asc)
+			.join(
+				JoinType::InnerJoin,
+				Alias::new("memory_banks"),
+				Expr::col(("memory_bank_settings", "bank_id")).equals(("memory_banks", "id")),
+			)
+			.join(
+				JoinType::InnerJoin,
+				Alias::new("workspaces"),
+				Expr::col(("memory_banks", "workspace_id")).equals(("workspaces", "id")),
+			)
+			.and_where(
+				Expr::col(("memory_bank_settings", "next_maintenance"))
+					.lte(Expr::value(Utc::now())),
+			)
+			.order_by(("memory_bank_settings", "next_maintenance"), Order::Asc)
+			.order_by(("memory_bank_settings", "bank_id"), Order::Asc)
+			.lock(LockType::Update)
+			.lock_behavior(LockBehavior::SkipLocked)
 			.limit(32)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(&store.pool)
+	.fetch_all(&mut *discovery)
 	.await?;
+	discovery.rollback().await?;
 	for item in due {
 		let id: uuid::Uuid = item.try_get("bank_id")?;
 		let provider = EntityRef {
@@ -51,7 +77,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 			// An indexer can retain a workspace reader while opening another
 			// current-origin reader. Queuing a writer behind it blocks that reader
 			// and creates a lock cycle across the indexer's independent scopes.
-			// Leave busy banks due for a later sweep without consuming a retry.
+			// Discovery skips busy banks before its page limit; recheck races here.
 			if native::query(
 				&Query::select()
 					.column(Alias::new("id"))
@@ -239,6 +265,30 @@ pub(crate) async fn sweep(store: &Store) -> Result<()> {
 			// A broken bank cannot monopolize the oldest due page. Advance
 			// only the exact observed provider/revision after rolling back.
 			let mut tx = native::begin(&store.pool).await?;
+			// A reader can arrive after the failed pass releases its workspace.
+			// Never queue a settings writer behind it while postponing a retry.
+			if native::query(
+				&Query::select()
+					.column(Alias::new("bank_id"))
+					.from(Alias::new("memory_bank_settings"))
+					.and_where(Expr::col("bank_id").eq(Expr::value(id)))
+					.and_where(
+						Expr::col("revision").eq(Expr::value(item.try_get::<i64>("revision")?)),
+					)
+					.and_where(Expr::col("provider_id").eq(provider.id.as_str()))
+					.and_where(Expr::col("provider_version").eq(provider.version.as_str()))
+					.lock(LockType::Update)
+					.lock_behavior(LockBehavior::SkipLocked)
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_optional(&mut *tx)
+			.await?
+			.is_none()
+			{
+				tx.rollback().await?;
+				continue;
+			}
+
 			native::query(
 				&Query::update()
 					.table(Alias::new("memory_bank_settings"))

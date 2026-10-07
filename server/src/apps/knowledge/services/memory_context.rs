@@ -195,7 +195,6 @@ pub(crate) async fn retrieve(
 
 /// Journal once after every Bank and the combined delivery envelope have succeeded.
 pub(crate) async fn complete(
-	store: &Store,
 	lease: &mut Lease<'_>,
 	run: &Run,
 	semantic: Option<Value>,
@@ -208,8 +207,7 @@ pub(crate) async fn complete(
 		.is_some_and(|value| value["memory"]["banks"].is_array())
 		&& !memory.delivered.is_empty()
 	{
-		super::super::repositories::memory_reads::record(store, lease, run.id, &memory.delivered)
-			.await?;
+		super::super::repositories::memory_reads::record(lease, run.id, &memory.delivered).await?;
 	}
 	Ok(output)
 }

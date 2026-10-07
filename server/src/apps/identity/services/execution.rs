@@ -494,7 +494,6 @@ impl Guard {
 		)
 		.await?;
 		crate::semantic::services::memory_context::complete(
-			store,
 			&mut crate::semantic::service::Lease::Inherited(&mut access),
 			&self.run,
 			semantic,

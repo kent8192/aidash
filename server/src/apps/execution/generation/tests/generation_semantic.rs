@@ -253,7 +253,29 @@ impl Fixture {
 		}
 
 		semantic::worker::sweep(&f.store).await.unwrap();
-		assert_eq!(embeddings.load(Ordering::SeqCst), 1);
+		let projections = aidash_server::database::native::query(
+			&reinhardt::query::Query::select()
+				.columns(["state", "last_error"].map(reinhardt::query::Alias::new))
+				.from(reinhardt::query::Alias::new("semantic_entries"))
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
+		.fetch_all(&f.store.pool)
+		.await
+		.unwrap();
+		let projections: Vec<_> = projections
+			.iter()
+			.map(|row| {
+				(
+					row.try_get::<String>("state").unwrap(),
+					row.try_get::<Option<String>>("last_error").unwrap(),
+				)
+			})
+			.collect();
+		assert_eq!(
+			embeddings.load(Ordering::SeqCst),
+			1,
+			"initial index status: {projections:?}"
+		);
 		let (status, task) = request(&app,&token,"POST",&format!("/api/workspaces/{workspace}/tasks"),json!({"title":"Vehicle research","description":"Use related memory","requirements":{"capability":"semantic.research"}})).await;
 		assert_eq!(status, 200, "{task}");
 		let task = Uuid::parse_str(task["id"].as_str().unwrap()).unwrap();

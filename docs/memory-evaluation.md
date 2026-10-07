@@ -62,10 +62,12 @@ all delivered Unit revisions. Automatic learning also reserves its complete
 would exceed that allowance fails atomically before adding dependencies.
 Local reads are staged across every declared bank and reflection step, then
 committed together only after the complete tool result or combined inference
-context succeeds and fits its delivery budget. Failed later-bank retrieval or
-reflection must leave no journal entries for the abandoned operation.
-Retention skips Workspaces with active readers and leaves them due for the next
-sweep, so maintenance cannot block an indexer's nested origin authority check.
+context succeeds and fits its delivery budget. The enclosing delivery transaction
+owns that commit; failed commit, later-bank retrieval, or reflection leaves no
+journal entries for the abandoned operation.
+Retention excludes banks with active Workspace or settings readers before its
+32-bank page limit, so busy banks cannot starve later maintenance candidates or
+block an indexer's nested origin authority check.
 Remote journals record only native Units retained in the final budget-fitted
 receipt, in the same transaction as the completed attempt and receipt. Failed
 finalization or commit leaves neither the receipt nor its native dependencies.

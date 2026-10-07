@@ -223,7 +223,7 @@ pub(crate) async fn operate_in(
 	if let Some(run) = run
 		&& !delivered.is_empty()
 	{
-		super::super::repositories::memory_reads::record(store, lease, run, &delivered).await?;
+		super::super::repositories::memory_reads::record(lease, run, &delivered).await?;
 	}
 	Ok(outcome)
 }

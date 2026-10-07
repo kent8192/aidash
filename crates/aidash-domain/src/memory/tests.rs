@@ -239,6 +239,44 @@ fn semantic_graph_uses_current_finite_vectors_and_bounded_same_bank_edges() {
 }
 
 #[test]
+fn graph_ranks_all_valid_explicit_and_semantic_neighbors_before_the_link_cap() {
+	let mut a = unit(1);
+	let weak = unit(2);
+	let strong = unit(3);
+	let mut settings = bounds();
+	settings.max_links = 1;
+	settings.max_graph_hops = 1;
+	let edge = super::graph::Edge {
+		source: a.id,
+		source_revision: a.revision,
+		target: Link {
+			target: strong.id,
+			revision: strong.revision,
+			kind: LinkKind::Semantic,
+			weight: 0.9,
+		},
+	};
+	for revision in [weak.revision, weak.revision + 1] {
+		a.content.links = vec![Link {
+			target: weak.id,
+			revision,
+			kind: LinkKind::Causes,
+			weight: 0.1,
+		}];
+		assert_eq!(
+			recall::graph_with_edges(
+				&[a.clone(), weak.clone(), strong.clone()],
+				&[a.id],
+				std::slice::from_ref(&edge),
+				&settings
+			),
+			vec![strong.id],
+			"weak or stale explicit links must not hide stronger semantic candidates"
+		);
+	}
+}
+
+#[test]
 fn causal_extraction_binds_only_admitted_batch_ids_and_keeps_claims_unverified() {
 	use extraction::{CausalRelation, Extraction};
 	let first = unit(1);

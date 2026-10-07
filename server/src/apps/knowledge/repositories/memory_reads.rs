@@ -1,6 +1,6 @@
 //! Canonical source revisions are independent of disposable search generations.
 use super::{access::Lease, bindings, units};
-use crate::{Error, Result, database::native, store::Store};
+use crate::{Error, Result, database::native};
 use aidash_domain::{
 	RunMetadata,
 	memory::{Evidence, Unit},
@@ -11,12 +11,20 @@ use reinhardt::query::{
 };
 use uuid::Uuid;
 
-pub(crate) async fn record(
-	store: &Store,
-	lease: &mut Lease<'_>,
-	run: Uuid,
-	selected: &[Unit],
-) -> Result<()> {
+pub(crate) async fn record(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Result<()> {
+	// The delivery transaction owns durability. A savepoint also prevents a
+	// rejected operation leaking staged roots when an inherited caller recovers.
+	let savepoint = format!("memory_reads_{}", Uuid::new_v4().simple());
+	lease.tx().savepoint(&savepoint).await?;
+	let result = record_in(lease, run, selected).await;
+	if result.is_err() {
+		lease.tx().rollback_to_savepoint(&savepoint).await?;
+	}
+	lease.tx().release_savepoint(&savepoint).await?;
+	result
+}
+
+async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Result<()> {
 	let metadata = crate::database::query_as::<RunMetadata>(
 		&Query::select()
 			.column(ColumnRef::Asterisk)
@@ -30,7 +38,6 @@ pub(crate) async fn record(
 		.await?
 		.ok_or(Error::Forbidden)?;
 	let policy = crate::semantic::native_memory::policy(lease, &binding.provider).await?;
-	let mut tx = native::begin(&store.control_pool).await?;
 	// Separate gate avoids upgrading the binding lock held by the calling scope.
 	native::query(
 		&Query::insert()
@@ -44,7 +51,7 @@ pub(crate) async fn record(
 			)
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&mut *tx)
+	.execute(&mut **lease.tx())
 	.await?;
 	native::query(
 		&Query::select()
@@ -54,7 +61,7 @@ pub(crate) async fn record(
 			.lock(LockType::Update)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_one(&mut *tx)
+	.fetch_one(&mut **lease.tx())
 	.await?;
 	for unit in selected {
 		native::query(
@@ -79,7 +86,7 @@ pub(crate) async fn record(
 				)
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&mut *tx)
+		.execute(&mut **lease.tx())
 		.await?;
 	}
 	// A future Run proof also visits the Run itself. Automatic learning validates
@@ -105,7 +112,7 @@ pub(crate) async fn record(
 			.limit(journal_visits as u64 + 1)
 			.to_string(PostgresQueryBuilder),
 	)
-	.fetch_all(&mut *tx)
+	.fetch_all(&mut **lease.tx())
 	.await?;
 	if reads.len() > journal_visits {
 		return Err(Error::Conflict(
@@ -133,7 +140,7 @@ pub(crate) async fn record(
 		}
 		result => result?,
 	}
-	tx.commit().await
+	Ok(())
 }
 
 pub(crate) async fn visible(lease: &mut Lease<'_>, run_id: Uuid) -> Result<bool> {

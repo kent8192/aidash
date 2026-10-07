@@ -82,18 +82,12 @@ pub fn graph_with_edges(
 		}
 		let unit = allowed[&id];
 		let mut neighbors = BTreeMap::<Uuid, f64>::new();
-		for link in unit
-			.content
-			.links
-			.iter()
-			.chain(
-				edges
-					.iter()
-					.filter(|edge| edge.source == unit.id && edge.source_revision == unit.revision)
-					.map(|edge| &edge.target),
-			)
-			.take(bounds.max_links)
-		{
+		for link in unit.content.links.iter().chain(
+			edges
+				.iter()
+				.filter(|edge| edge.source == unit.id && edge.source_revision == unit.revision)
+				.map(|edge| &edge.target),
+		) {
 			let Some(target) = allowed.get(&link.target) else {
 				continue;
 			};

@@ -535,12 +535,7 @@ impl ExecutionEnvironment for Environment<'_> {
 			)
 			.await?;
 			crate::semantic::services::memory_context::complete(
-				&self.federation.store,
-				&mut lease,
-				run,
-				semantic,
-				memory,
-				budget,
+				&mut lease, run, semantic, memory, budget,
 			)
 			.await
 		}
