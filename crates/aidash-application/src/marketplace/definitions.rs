@@ -13,7 +13,8 @@ pub fn refs(entry: &Entry, node: &str) -> Result<Vec<(EntityRef, String)>> {
 	match entry.kind.as_str() {
 		"agent" => {
 			let config: aidash_domain::registry::bindings::AgentBindings =
-				serde_json::from_value(entry.config.clone())?;
+				serde_json::from_value(entry.config.clone())
+					.map_err(|error| Error::Invalid(format!("invalid Agent bindings: {error}")))?;
 			config.validate()?;
 			refs.push((config.model, "model".into()));
 			refs.extend(
@@ -50,7 +51,8 @@ pub fn refs(entry: &Entry, node: &str) -> Result<Vec<(EntityRef, String)>> {
 		}
 		"tool" => {
 			let descriptor: aidash_domain::tool::providers::ToolDescriptor =
-				serde_json::from_value(entry.config.clone())?;
+				serde_json::from_value(entry.config.clone())
+					.map_err(|error| Error::Invalid(format!("invalid Tool descriptor: {error}")))?;
 			if let Some(lifecycle) = descriptor.lifecycle {
 				if lifecycle.poll.registry_node != node || lifecycle.cancel.registry_node != node {
 					return Err(Error::Forbidden);
@@ -220,6 +222,8 @@ pub async fn resolve(
 			"remove_default",
 			"cluster",
 			"schema_version",
+			"tools",
+			"skills",
 		],
 		"tool" if aidash_domain::tool::legacy_config(&entry.config)?.is_some() => {
 			&["transport", "node_id", "agent"]
@@ -420,16 +424,24 @@ impl crate::ports::bindings::BindingCatalog for Bindings<'_> {
 			.installation(&projection.installation)
 			.await?
 			.ok_or(Error::Forbidden)?;
-		if installation.active_revision != Some(projection.revision) {
+		if installation.tenant != projection.tenant
+			|| projection.revision > installation.latest_revision
+		{
 			return Err(Error::Forbidden);
 		}
+		// Staging validates exact, readable dependencies before activation.
+		// Execution admission separately requires active, individually approved
+		// revisions; preparing an Agent must not grant or imply that authority.
+		self.scope
+			.require_installation_read(&installation, projection.revision)
+			.await?;
 		let revision = self
 			.scope
 			.revision(&installation.id, projection.revision)
 			.await?;
-		self.scope
-			.catalog(&reference(&revision.entry), "registry.read")
-			.await?;
+		if revision.entry.installation.as_ref() != Some(projection) {
+			return Err(Error::Forbidden);
+		}
 		Ok(())
 	}
 	async fn source(&mut self, entry: &Entry) -> Result<()> {

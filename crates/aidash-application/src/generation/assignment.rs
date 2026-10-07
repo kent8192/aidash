@@ -232,6 +232,7 @@ pub async fn create_in(
 	if !definition.tags.iter().any(|t| t == "generated") {
 		definition.tags.push("generated".into());
 	}
+	definition.normalize_agent(scope.node_id())?;
 	validation.validate_in(&definition, true)?;
 	if !search.matches(&definition) {
 		return Err(Error::Invalid(

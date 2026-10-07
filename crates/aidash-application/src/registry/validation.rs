@@ -129,7 +129,9 @@ impl DefinitionValidation {
 			}
 			"tool" => {
 				let descriptor: aidash_domain::tool::providers::ToolDescriptor =
-					serde_json::from_value(e.config.clone())?;
+					serde_json::from_value(e.config.clone()).map_err(|error| {
+						Error::Invalid(format!("invalid Tool descriptor: {error}"))
+					})?;
 				self.contract(
 					&descriptor,
 					&aidash_domain::registry::bindings::QualifiedRef {

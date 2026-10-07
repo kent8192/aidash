@@ -29,6 +29,7 @@ async function editableDrafts(
   secondRevision = 7,
   paginated = false,
   subject = false,
+  withRestrictions = false,
 ) {
   await setup(page, { locale: "en-US", subject });
   const state = { failRefresh: false };
@@ -45,6 +46,21 @@ async function editableDrafts(
       config: {
         ...entry.config,
         instructions: index ? "Second draft" : "First draft",
+        bindings: withRestrictions
+          ? [
+              {
+                kind: "tool",
+                target: {
+                  registry_node: "aidash://home",
+                  id: "http",
+                  version: "1.0.0",
+                },
+                narrow: {
+                  allowed_hosts: [index ? "second.example" : "first.example"],
+                },
+              },
+            ]
+          : [],
       },
     },
     documents: [] as unknown[],
@@ -185,6 +201,53 @@ test("Creator discards edits and hydrates a selected draft with another revision
   expect(saves[0]).toMatchObject({
     id: "00000000-0000-7000-8000-000000000002",
     expected_revision: 7,
+  });
+});
+
+test("switching drafts keeps the selected Binding restrictions through save", async ({
+  page,
+}) => {
+  const { saves } = await editableDrafts(page, 7, false, false, true);
+  const restrictions = page.getByLabel("Restrictions (JSON)");
+  await expect(restrictions).toHaveValue('{"allowed_hosts":["first.example"]}');
+  await page
+    .locator(".wb-picker select")
+    .first()
+    .selectOption("second-agent@1.0.0");
+  await expect(restrictions).toHaveValue(
+    '{"allowed_hosts":["second.example"]}',
+  );
+  await page
+    .getByLabel("Additional instructions")
+    .fill("Verify the selected restrictions");
+  await restrictions.focus();
+  await page
+    .locator(".wb-actions")
+    .getByRole("button", { name: "Save draft", exact: true })
+    .click();
+  await expect.poll(() => saves.length).toBe(1);
+  expect(saves[0]).toMatchObject({
+    id: "00000000-0000-7000-8000-000000000002",
+    entry: {
+      config: { bindings: [{ narrow: { allowed_hosts: ["second.example"] } }] },
+    },
+  });
+  // Incomplete JSON stays editable without changing the saved restrictions.
+  await restrictions.fill('{"allowed_hosts":');
+  await expect(restrictions).toHaveValue('{"allowed_hosts":');
+  await restrictions.fill('{"allowed_hosts":["changed.example"]}');
+  await page.getByLabel("Additional instructions").focus();
+  await page
+    .locator(".wb-actions")
+    .getByRole("button", { name: "Save draft", exact: true })
+    .click();
+  await expect.poll(() => saves.length).toBe(2);
+  expect(saves[1]).toMatchObject({
+    entry: {
+      config: {
+        bindings: [{ narrow: { allowed_hosts: ["changed.example"] } }],
+      },
+    },
   });
 });
 

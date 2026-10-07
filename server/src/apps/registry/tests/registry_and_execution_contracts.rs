@@ -214,12 +214,12 @@ async fn installation_reconfiguration_keeps_manifest_and_events_idempotent(
 			&f.config.api_token,
 			"POST",
 			path,
-			json!({"digest":published["digest"],"config":{"endpoint":endpoint}}),
+			json!({"digest":published["digest"],"config":{"transport":{"transport":"http","endpoint":endpoint,"credential_env":null,"replay":"read_only"}}}),
 		)
 		.await;
 		assert_eq!(status, 200, "{body}");
 		assert_eq!(
-			f.registry.get("installed", "1.0.0").await.unwrap().config["endpoint"],
+			f.registry.get("installed", "1.0.0").await.unwrap().config["transport"]["endpoint"],
 			endpoint
 		);
 	}
@@ -538,7 +538,7 @@ async fn delegation_retry_and_run_message_have_one_durable_effect(
 #[rstest::rstest]
 fn remote_manifest_validates_secret_reference_without_resolving_it() {
 	let mut entry = tool("remote-secret");
-	entry.config["credential_env"] = json!("AIDASH_SECRET_REVIEW_REMOTE_ONLY_NOT_SET");
+	entry.config["transport"]["credential_env"] = json!("AIDASH_SECRET_REVIEW_REMOTE_ONLY_NOT_SET");
 	let manifest: aidash_server::transactions::Manifest = serde_json::from_value(json!({
         "id":Uuid::new_v4(),"coordinator":"aidash://a","isolation":"serializable",
         "deadline":chrono::Utc::now()+chrono::Duration::minutes(1),
@@ -1052,6 +1052,19 @@ async fn plugin_control_shaped_data_does_not_suspend_execution(
 	for _ in 0..12 {
 		if !harness.worker_once().await.unwrap() {
 			break;
+		}
+		let current = f.store.runs().await.unwrap().remove(0);
+		if let aidash_domain::RunState::Waiting(wait) = &current.state
+			&& let aidash_domain::WaitingState::ExternalApproval {
+				request_id, call, ..
+			} = wait.as_ref()
+		{
+			assert_eq!(call.name, "plugin_0");
+			assert_eq!(call.id, "call-1");
+			f.store
+				.answer(*request_id, json!({"approved":true}))
+				.await
+				.unwrap();
 		}
 	}
 	let run = f.store.runs().await.unwrap().remove(0);

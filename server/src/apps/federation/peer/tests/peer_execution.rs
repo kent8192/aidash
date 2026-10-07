@@ -106,7 +106,11 @@ async fn receiver_preflight_intersects_executor_and_mapping_without_admitting_a_
 	assert_eq!(result["node_id"], f.config.node_id);
 	assert_eq!(result["agent"]["id"], "research");
 	let definitions = result["definitions"].as_array().unwrap();
-	assert_eq!(definitions.len(), 3);
+	assert_eq!(
+		definitions.len(),
+		3 + aidash_domain::registry::bindings::REQUIRED_TOOLS.len()
+			+ aidash_domain::registry::bindings::DEFAULT_TOOLS.len()
+	);
 	for definition in definitions {
 		let entry = f
 			.registry

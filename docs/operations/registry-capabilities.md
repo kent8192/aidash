@@ -74,6 +74,11 @@ cluster coordinators require all three coordination tools.
 }
 ```
 
+Marketplace supports immutable native Memory/Source descriptor packages. Their
+configuration cannot replace the adapter or its pinned references; private
+documents remain separately stored and must be available with the exact digest
+on the installing Node.
+
 Memory reads are opt-in. `memory_write` does not enable reading. Supported native
 context declarations wrap the existing conversation/semantic memory, workspace
 retrieval, private-reference, original-reference and Skill adapters. Private
@@ -97,6 +102,10 @@ header and Provider contracts. Remote mandatory workspace and Human operations
 use Home authority under the exact task, grant, admission and Run. Unsupported
 remote defaults have persisted placement exclusions; explicit incompatible
 Bindings fail admission.
+
+The `task_delegate` Provider contract is local-only, so its implicit default is
+excluded on a remote executor. Calling a Home command directly does not restore
+an excluded operation or broaden that contract.
 
 Scoped Home Human requests are stored on the existing remote execution binding.
 Operator delegations keep their bounded journal on the existing task delegation,

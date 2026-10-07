@@ -115,6 +115,21 @@ async fn viewer(f: &Federation, app: &common::TestApplication) -> (Value, Uuid) 
 }
 
 /// Activation writes a receiver run and an admission, not a local workspace/task.
+struct FixtureDefinitions<'a>(&'a Federation);
+#[async_trait::async_trait]
+impl aidash_application::ports::registry::DefinitionLookup for FixtureDefinitions<'_> {
+	async fn definition(
+		&mut self,
+		id: &str,
+		version: &str,
+	) -> aidash_application::Result<aidash_domain::registry::Entry> {
+		self.0.registry.get(id, version).await.map_err(Into::into)
+	}
+	async fn overrides(&mut self, _: &str, _: &str) -> aidash_application::Result<Option<Value>> {
+		Ok(None)
+	}
+}
+
 async fn admitted_run(
 	f: &Federation,
 	template: &Task,
@@ -137,12 +152,34 @@ async fn admitted_run(
 	.fetch_one(f.store.pool.driver())
 	.await
 	.unwrap();
+	let agent_entry: aidash_domain::registry::Entry =
+		serde_json::from_value(agent.clone()).unwrap();
+	let snapshot = aidash_application::registry::bindings::resolve(
+		&mut aidash_application::registry::bindings::catalog::LookupCatalog {
+			definitions: &mut FixtureDefinitions(f),
+			node: &f.config.node_id,
+		},
+		&aidash_server::bootstrap::registry_validation(),
+		aidash_domain::registry::bindings::QualifiedRef {
+			registry_node: f.config.node_id.clone(),
+			id: agent_entry.id.clone(),
+			version: agent_entry.version.clone(),
+		},
+		&agent_entry,
+		true,
+	)
+	.await
+	.unwrap();
+	let context = aidash_server::context::Context {
+		binding_snapshot: Some(Box::new(snapshot.clone())),
+		..Default::default()
+	};
 	let grant = Uuid::new_v4();
 	let description = json!({
 		"grant_id":grant,"source_node":source,"target_node":f.config.node_id,
 		"source_tenant":"source-tenant","source_subject":"source-subject","task":task,
 		"inspection":{"node_id":f.config.node_id,"authority_digest":format!("sha256:{}", "0".repeat(64)),
-			"agent":agent,"definitions":[]},
+			"agent":agent,"definitions":[],"binding_snapshot":snapshot},
 		"expires_at":chrono::Utc::now() + chrono::Duration::hours(1),
 	});
 	sqlx::query(
@@ -195,10 +232,11 @@ async fn admitted_run(
 					"home_node",
 					"agent_id",
 					"agent_version",
+					"context",
 				]
 				.map(Alias::new),
 			)
-			.from_subquery(((1..=6).map(|index| Expr::cust(format!("${index}")))).fold(
+			.from_subquery(((1..=7).map(|index| Expr::cust(format!("${index}")))).fold(
 				reinhardt::query::Query::select(),
 				|mut select, expr| {
 					select.expr(expr);
@@ -213,6 +251,7 @@ async fn admitted_run(
 	.bind(source)
 	.bind("research")
 	.bind("1.0.0")
+	.bind(serde_json::to_value(context).unwrap())
 	.execute(f.store.pool.driver())
 	.await
 	.unwrap();

@@ -97,7 +97,7 @@ pub fn validate_override_keys(kind: &str, overrides: &Value) -> Result<()> {
 			"request_timeout_secs",
 		],
 		"cluster" => &["coordinator"],
-		"bundle" => &[],
+		"bundle" | "memory" | "source" => &[],
 		"skill" => &["instructions"],
 		// ToolConfig uses a tagged, deny_unknown_fields contract. The merged
 		// effective configuration is validated by Registry before any write.

@@ -379,7 +379,7 @@ async fn installed_agent_overrides_require_live_model_references(
 }
 
 #[rstest]
-#[case::tool("tool", json!({"transport":"http","endpoint":"http://localhost:9/base","credential_env":null,"replay":"read_only"}), vec![json!({"transport":"bogus"}),json!({"endpoint":7}),json!({"unexpected":true})], json!({"endpoint":"http://localhost:8/override"}))]
+#[case::tool("tool", json!({"transport":"http","endpoint":"http://localhost:9/base","credential_env":null,"replay":"read_only"}), vec![json!({"transport":{"transport":"bogus"}}),json!({"transport":{"transport":"http","endpoint":7,"credential_env":null,"replay":"read_only"}}),json!({"unexpected":true})], json!({"transport":{"transport":"http","endpoint":"http://localhost:8/override","credential_env":null,"replay":"read_only"}}))]
 #[case::skill("skill", json!({"instructions":"Base instructions"}), vec![json!({"instructions":7}),json!({"instructions":" \t\u{2003}"}),json!({"unexpected":true})], json!({"instructions":"Override instructions"}))]
 #[tokio::test]
 async fn invalid_installation_overrides_cannot_replace_saved_configuration(
@@ -392,7 +392,11 @@ async fn invalid_installation_overrides_cannot_replace_saved_configuration(
 ) {
 	let app = endpoint.await;
 	skill["kind"] = json!(kind);
-	skill["config"] = config;
+	skill["config"] = if kind == "tool" {
+		json!({"registry_node":app.runtime.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"fixture_http","tier":"integration","transport":config})
+	} else {
+		config
+	};
 	let published = assert_json(
 		app.operator
 			.post(
@@ -456,7 +460,7 @@ async fn concurrent_installation_and_registry_republication_preserve_immutable_v
 ) {
 	let app = endpoint.await;
 	skill["kind"] = json!("tool");
-	skill["config"] = json!({"transport":"http","endpoint":"http://localhost:9/base","credential_env":null,"replay":"read_only"});
+	skill["config"] = json!({"registry_node":app.runtime.config.node_id,"provider":"integration.http@1","operation":"invoke","default_alias":"fixture_http","tier":"integration","transport":{"transport":"http","endpoint":"http://localhost:9/base","credential_env":null,"replay":"read_only"}});
 	let published = assert_json(
 		app.operator
 			.post(
@@ -476,9 +480,8 @@ async fn concurrent_installation_and_registry_republication_preserve_immutable_v
 		200,
 	);
 	let mut changed = skill.clone();
-	changed["config"] = json!({"transport":"native","operation":"echo"});
-	let install =
-		json!({"digest":published["digest"],"config":{"endpoint":"http://localhost:8/override"}});
+	changed["config"]["transport"]["endpoint"] = json!("http://localhost:7/changed");
+	let install = json!({"digest":published["digest"],"config":{"transport":{"transport":"http","endpoint":"http://localhost:8/override","credential_env":null,"replay":"read_only"}}});
 	let (registration, installation) =
 		tokio::time::timeout(std::time::Duration::from_secs(10), async {
 			tokio::join!(
@@ -494,7 +497,7 @@ async fn concurrent_installation_and_registry_republication_preserve_immutable_v
 		.expect("publication and installation must complete without deadlock");
 	assert_json(registration.unwrap(), 409);
 	assert_eq!(
-		assert_json(installation.unwrap(), 200)["config"]["transport"],
+		assert_json(installation.unwrap(), 200)["config"]["transport"]["transport"],
 		"http"
 	);
 	let stored = Definition::objects()
@@ -512,7 +515,7 @@ async fn concurrent_installation_and_registry_republication_preserve_immutable_v
 		200,
 	);
 	assert_eq!(
-		effective["config"]["endpoint"],
-		install["config"]["endpoint"]
+		effective["config"]["transport"]["endpoint"],
+		install["config"]["transport"]["endpoint"]
 	);
 }

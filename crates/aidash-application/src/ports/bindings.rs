@@ -15,7 +15,9 @@ use std::sync::Arc;
 #[async_trait]
 pub trait BindingCatalog: Send {
 	async fn definition(&mut self, reference: &QualifiedRef) -> Result<Entry>;
-	/// New admission requires this exact revision to be active and approved.
+	/// New execution admission requires this revision to be active and approved.
+	/// A structural staging preview may check a readable pending revision, but
+	/// that preview cannot authorize activation or execution.
 	async fn installation(&mut self, projection: &Projection) -> Result<()>;
 	async fn source(&mut self, definition: &Entry) -> Result<()>;
 }

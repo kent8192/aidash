@@ -815,6 +815,10 @@ async fn worker_can_request_nested_generation_without_dropping_parent_authority(
 	let (_, token, _) = bootstrap(&f, &app, &endpoint).await;
 	let mut spec = definition(&app, &f.config.api_token).await;
 	spec["approval_required"] = json!(false);
+	spec["template"]["binding_normalization"] = Value::Null;
+	spec["template"]["config"]["bindings"].as_array_mut().unwrap().push(json!({
+		"kind":"tool", "target":{"registry_node":f.config.node_id,"id":"aidash.task_assign","version":"1.0.0"}
+	}));
 	assert_eq!(
 		request(
 			&app,
@@ -1861,8 +1865,23 @@ async fn generated_permission_attributes_deny_tools_without_losing_the_pending_c
 		.0,
 		200
 	);
-	for _ in 0..8 {
+	for _ in 0..12 {
 		worker.worker_once().await.unwrap();
+		let current = f.store.run(run.id).await.unwrap();
+		if let aidash_domain::RunState::Waiting(wait) = &current.state
+			&& let aidash_domain::WaitingState::ExternalApproval {
+				request_id, call, ..
+			} = wait.as_ref()
+		{
+			assert_eq!(call.name, "plugin_0");
+			f.store
+				.answer(*request_id, json!({"approved":true}))
+				.await
+				.unwrap();
+		}
+		if current.phase().as_str() == "COMPLETED" {
+			break;
+		}
 	}
 	assert_eq!(
 		f.store.run(run.id).await.unwrap().phase().as_str(),

@@ -164,6 +164,11 @@ impl RemoteFixture {
 		let (mut executor, executor_url, executor_schema) = setup(environment).await;
 		executor.config.node_id = "aidash://fence-executor".into();
 		executor.store.node_id = executor.config.node_id.clone();
+		executor.registry = aidash_server::registry::Registry::new(
+			executor.store.pool.clone(),
+			&executor.config.node_id,
+		)
+		.unwrap();
 		let outage = Arc::new(AtomicBool::new(false));
 		let home_app = common::application_with(home.clone(), |router| {
 			router.with_middleware(PromotionOutage(outage.clone()))

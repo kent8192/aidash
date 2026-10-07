@@ -1411,18 +1411,31 @@ async fn transaction_finalization_uses_the_actual_home_and_executor_admission(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn scoped_remote_agent_can_delegate_its_created_child_to_the_home_node(
+async fn scoped_remote_agent_cannot_delegate_through_an_excluded_default_operation(
 	#[future(awt)] scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
 	let run = p.run().await;
+	let excluded = run
+		.context
+		.binding_snapshot
+		.as_ref()
+		.unwrap()
+		.bindings
+		.iter()
+		.find(|binding| binding.definition.config["operation"] == "task_delegate")
+		.unwrap();
+	assert!(
+		excluded.excluded_reason.is_some(),
+		"the factual Provider contract is local-only"
+	);
 	let home = Home::new(p.b.clone(), run);
 	let child = home
 		.create_task(
 			"scoped-child-create",
 			&NewTask {
 				title: "Scoped delegated child".into(),
-				description: "Created under a remote run and delegated home".into(),
+				description: "Created under a remote run".into(),
 				requirements: json!({}),
 				dependencies: vec![],
 				parent_id: Some(p.task),
@@ -1434,67 +1447,29 @@ async fn scoped_remote_agent_can_delegate_its_created_child_to_the_home_node(
 		id: "research".into(),
 		version: "1.0.0".into(),
 	};
-	let delegation = home
-		.delegate_with_key(
-			"scoped-child-delegate",
-			child.id,
-			&p.a.config.node_id,
-			&agent,
-		)
-		.await
-		.unwrap();
-	assert_eq!(delegation.task_id, child.id);
-	assert_eq!(delegation.node_id, p.a.config.node_id);
-	assert_eq!(delegation.agent_id, agent.id);
-	assert_eq!(delegation.agent_version, agent.version);
-	assert!(delegation.delivered);
-
-	let rows: i64 = {
-		let query_bind_1 = child.id;
-		let query_bind_2 = &p.a.config.node_id;
-		sqlx::query_scalar(
-			&Query::select()
-				.expr(Expr::cust("COUNT(*)"))
-				.from(Alias::new("runs"))
-				.and_where(
-					Expr::col(Alias::new("task_id")).eq(SimpleExpr::CustomWithExpr(
-						"(?)".to_owned(),
-						vec![Expr::value(query_bind_1.to_owned()).into()],
-					)),
-				)
-				.and_where(
-					Expr::col(Alias::new("home_node")).eq(SimpleExpr::CustomWithExpr(
-						"(?)".to_owned(),
-						vec![Expr::value(query_bind_2.to_owned()).into()],
-					)),
-				)
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_one(p.a.store.pool.driver())
-		.await
+	// Calling Home directly cannot recover an operation deliberately excluded
+	// under Q23 or turn its descriptor into a broader remote contract.
+	for _ in 0..2 {
+		assert!(
+			home.delegate_with_key(
+				"scoped-child-delegate",
+				child.id,
+				&p.a.config.node_id,
+				&agent
+			)
+			.await
+			.is_err()
+		);
 	}
-	.unwrap();
-	assert_eq!(rows, 1, "a retry must not create a second delegated Run");
-	let replay = home
-		.delegate_with_key(
-			"scoped-child-delegate",
-			child.id,
-			&p.a.config.node_id,
-			&agent,
-		)
-		.await
-		.unwrap();
-	assert_eq!(replay.task_id, child.id);
-	assert_eq!(
-		p.a.store
+	assert!(
+		!p.a.store
 			.runs()
 			.await
 			.unwrap()
-			.into_iter()
-			.filter(|run| run.task_id == child.id && run.home_node == p.a.config.node_id)
-			.count(),
-		1
+			.iter()
+			.any(|run| run.task_id == child.id)
 	);
+	assert!(p.a.store.task(child.id).await.unwrap().owner.is_none());
 	p.close().await;
 }
 
@@ -3868,7 +3843,9 @@ async fn seed_remote_history(p: &Pair) {
 	}
 	{
 		let query_bind_1 = p.admission;
-		let query_bind_2 = common::context(json!({"history":history}));
+		let mut context = serde_json::to_value(p.run().await.context).unwrap();
+		context["history"] = json!(history);
+		let query_bind_2 = context;
 		let query_bind_3 = common::pending(aidash_server::domain::RunState::Thinking(
 			aidash_server::domain::ThinkingState::default(),
 		));

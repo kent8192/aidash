@@ -301,3 +301,40 @@ async fn malformed_conversation_target_and_missing_agent_subject_are_rejected(
 	));
 	assert!(!scope.calls.contains(&"snapshot".into()));
 }
+
+#[rstest]
+#[tokio::test]
+async fn terminal_delivery_does_not_reopen_the_failed_inference_context(
+	mut scope: Scope,
+	run: RunMetadata,
+) {
+	scope.fail = Some("snapshot".into());
+	authorize(&mut scope, &run, false).await.unwrap();
+	assert!(!scope.calls.contains(&"snapshot".into()));
+	assert!(!scope.calls.contains(&"context".into()));
+	assert_eq!(scope.calls.last().unwrap(), "pinned");
+	// The same broken context still prevents execution; delivery is not a
+	// compatibility or reconstruction path for a new model/tool turn.
+	assert!(matches!(
+		authorize(&mut scope, &run, true).await,
+		Err(Error::Port(_))
+	));
+}
+
+#[rstest]
+#[case("task.execute")]
+#[case("catalog:producer:agent.execute")]
+#[case("pinned")]
+#[tokio::test]
+async fn terminal_delivery_retains_current_task_agent_and_installation_authority(
+	mut scope: Scope,
+	run: RunMetadata,
+	#[case] boundary: &str,
+) {
+	scope.deny = Some(boundary.into());
+	assert!(matches!(
+		authorize(&mut scope, &run, false).await,
+		Err(Error::Forbidden)
+	));
+	assert!(!scope.calls.contains(&"snapshot".into()));
+}

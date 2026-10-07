@@ -42,6 +42,7 @@ async fn peer_journals_bound_previews_and_exclude_other_home_nodes(
 		.create_workspace("Journal", "Bounded observation")
 		.await
 		.unwrap();
+	crate::endpoint::register_fixture_agent(&app, "agent").await;
 	let now = Utc::now();
 	let mut observed_run = Uuid::nil();
 	for (home, count) in [("aidash://journal-home", 101), ("aidash://other-home", 1)] {

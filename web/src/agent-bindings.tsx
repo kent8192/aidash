@@ -32,6 +32,42 @@ export const defaults = [
   "workspace_message",
   "memory_write",
 ];
+function Restrictions({
+  id,
+  value,
+  change,
+  ja,
+}: {
+  id?: string;
+  value: Binding["narrow"];
+  change: (value: Binding["narrow"]) => void;
+  ja: boolean;
+}) {
+  const serialized = JSON.stringify(value ?? {});
+  const [draft, setDraft] = useState({ source: serialized, text: serialized });
+  if (draft.source !== serialized) {
+    setDraft({ source: serialized, text: serialized });
+  }
+  return (
+    <textarea
+      id={id}
+      value={draft.source === serialized ? draft.text : serialized}
+      onChange={(e) => setDraft({ source: serialized, text: e.target.value })}
+      onBlur={(e) => {
+        try {
+          const narrow = JSON.parse(e.target.value);
+          e.target.setCustomValidity("");
+          change(narrow);
+        } catch {
+          e.target.setCustomValidity(
+            ja ? "JSONを入力してください" : "Enter valid JSON",
+          );
+          e.target.reportValidity();
+        }
+      }}
+    />
+  );
+}
 export function AgentBindings({
   value,
   change,
@@ -163,20 +199,10 @@ export function AgentBindings({
             </Field>
           )}
           <Field label={ja ? "制限（JSON）" : "Restrictions (JSON)"}>
-            <textarea
-              defaultValue={JSON.stringify(binding.narrow ?? {})}
-              onBlur={(e) => {
-                try {
-                  const narrow = JSON.parse(e.target.value);
-                  e.target.setCustomValidity("");
-                  update(i, { narrow });
-                } catch {
-                  e.target.setCustomValidity(
-                    ja ? "JSONを入力してください" : "Enter valid JSON",
-                  );
-                  e.target.reportValidity();
-                }
-              }}
+            <Restrictions
+              value={binding.narrow}
+              change={(narrow) => update(i, { narrow })}
+              ja={ja}
             />
           </Field>
           {binding.kind === "bundle" && (

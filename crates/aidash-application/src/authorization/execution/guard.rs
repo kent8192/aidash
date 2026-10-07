@@ -40,6 +40,14 @@ pub async fn authorize(
 		&qualified_agent(scope.node_id(), &run.agent_id, &run.agent_version),
 	)?;
 	scope.check_pinned(&entry).await?;
+	if !read_context {
+		// Failure delivery only closes the Task under current Task, Agent and
+		// installation authority. It cannot infer, read Sources or invoke Tools.
+		// A damaged inference context must not strand that durable obligation.
+		return Ok(AgentConfig::from_definition(serde_json::from_value(
+			entry.config,
+		)?));
+	}
 	let snapshot = scope.binding_snapshot(run).await?;
 	let agent = AgentConfig::from_snapshot(&snapshot)?;
 	if read_context && agent.needs_context_authority() {

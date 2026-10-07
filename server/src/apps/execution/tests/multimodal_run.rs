@@ -270,6 +270,7 @@ async fn verify_expired_route_retry(
 	assert_eq!(status, 200, "{body}");
 	let mut agent = f.registry.get("research", "1.0.1").await.unwrap();
 	agent.version = "1.0.2".into();
+	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.0.2");
 	let (status, body) = request(app, operator, "POST", "/api/registry", json!(agent)).await;
 	assert_eq!(status, 200, "{body}");
@@ -357,6 +358,7 @@ async fn verify_separate_format_routes(
 	assert_eq!(status, 200, "{body}");
 	let mut agent = f.registry.get("research", "1.0.1").await.unwrap();
 	agent.version = "1.0.3".into();
+	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.0.3");
 	let (status, body) = request(app, operator, "POST", "/api/registry", json!(agent)).await;
 	assert_eq!(status, 200, "{body}");
@@ -534,6 +536,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	assert_eq!(status, 200, "{body}");
 	let mut agent = f.registry.get("research", "1.0.0").await.unwrap();
 	agent.version = "1.0.1".into();
+	agent.binding_normalization = None;
 	agent.config["model"]["version"] = json!("1.0.1");
 	let (status, body) = request(
 		&app,

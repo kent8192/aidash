@@ -276,9 +276,22 @@ async fn scoped_worker_preserves_pending_tool_across_revocation_and_resumes_with
 	let restarted = Harness {
 		federation: f.clone(),
 	};
-	for _ in 0..8 {
+	for _ in 0..12 {
 		restarted.worker_once().await.unwrap();
-		if f.store.run(run.id).await.unwrap().phase().as_str() == "COMPLETED" {
+		let current = f.store.run(run.id).await.unwrap();
+		if let aidash_domain::RunState::Waiting(wait) = &current.state
+			&& let aidash_domain::WaitingState::ExternalApproval {
+				request_id, call, ..
+			} = wait.as_ref()
+		{
+			assert_eq!(call.name, "plugin_0");
+			assert_eq!(call.id, "call-1");
+			f.store
+				.answer(*request_id, json!({"approved":true}))
+				.await
+				.unwrap();
+		}
+		if current.phase().as_str() == "COMPLETED" {
 			break;
 		}
 	}
@@ -738,7 +751,7 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 	let child = qualified_agent(&f.config.node_id, "child", "1.0.0");
 	policy["subjects"][&child] = json!({"kind":"agent"});
 	let parent = qualified_agent(&f.config.node_id, "research", "1.0.0");
-	policy["policies"].as_array_mut().unwrap().push(json!({"id":"parent-tool-deny","effect":"deny","subjects":{"ids":[parent]},"actions":["tool.invoke"],"resources":{"kinds":["tool"],"ids":["http"]}}));
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"parent-tool-deny","effect":"deny","subjects":{"ids":[parent]},"actions":["tool.invoke"],"resources":{"kinds":["tool"],"ids":[format!("{}/tools/http@1.0.0",f.config.node_id)]}}));
 	assert_eq!(
 		request(
 			&app,
@@ -754,6 +767,10 @@ async fn child_execution_retains_parent_authority_and_supports_credential_rotati
 	let mut entry =
 		serde_json::to_value(f.registry.get("research", "1.0.0").await.unwrap()).unwrap();
 	entry["id"] = json!("child");
+	entry
+		.as_object_mut()
+		.unwrap()
+		.remove("binding_normalization");
 	assert_eq!(
 		request(&app, &f.config.api_token, "POST", "/api/registry", entry)
 			.await
@@ -1105,6 +1122,30 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 		.await
 	}
 	.unwrap();
+	// Generic HTTP has no admitted replay guarantee and requires an exact
+	// human decision before the serialization boundary is exercised.
+	harness.worker_once().await.unwrap();
+	let waiting = f.store.run(run.id).await.unwrap();
+	let aidash_domain::RunState::Waiting(state) = &waiting.state else {
+		panic!("expected external tool approval, got {:?}", waiting.state);
+	};
+	let aidash_domain::WaitingState::ExternalApproval {
+		request_id, call, ..
+	} = state.as_ref()
+	else {
+		panic!("expected external tool approval, got {state:?}");
+	};
+	assert_eq!(call.name, "plugin_0");
+	assert_eq!(call.id, "effect");
+	f.store
+		.answer(*request_id, json!({"approved":true}))
+		.await
+		.unwrap();
+	harness.worker_once().await.unwrap();
+	assert!(matches!(
+		f.store.run(run.id).await.unwrap().state,
+		aidash_domain::RunState::ToolCall(_)
+	));
 	let worker = tokio::spawn(async move { harness.worker_once().await });
 	tokio::time::timeout(Duration::from_secs(5), entered.notified())
 		.await
@@ -1114,7 +1155,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 			.expr(reinhardt::query::Expr::cust("COUNT(*)"))
 			.from(reinhardt::query::Alias::new("authorization_decisions"))
 			.and_where(reinhardt::query::Expr::cust(
-				"action = 'tool.invoke' AND resource_id = 'http' AND decision ->> 'allowed' = 'true'",
+				"action = 'tool.invoke' AND resource_id = 'aidash://execution-test/tools/http@1.0.0' AND decision ->> 'allowed' = 'true'",
 			))
 			.to_string(reinhardt::query::PostgresQueryBuilder),
 	)

@@ -498,6 +498,29 @@ impl Guard {
 		content: &Value,
 	) -> Result<()> {
 		self.inference().await?;
+		if self.agent.core_capabilities.skills {
+			let binding = self
+				.run
+				.context
+				.binding_snapshot
+				.as_ref()
+				.ok_or_else(|| Error::Invalid("Run has no Binding snapshot".into()))?
+				.operation("skill_list")?;
+			let descriptor: aidash_domain::tool::providers::ToolDescriptor =
+				serde_json::from_value(binding.definition.config.clone())?;
+			let contract = descriptor.declared_contract(binding.identity.clone())?;
+			self.tool_contract(
+				&ToolCall {
+					id: "source-observation".into(),
+					name: binding.alias.clone().ok_or_else(|| {
+						Error::Invalid("Skill support binding has no alias".into())
+					})?,
+					arguments: json!({}),
+				},
+				&contract,
+			)
+			.await?;
+		}
 		if let Some(semantic) = content.get("semantic_memory").filter(|v| !v.is_null()) {
 			if self.remote.is_some() {
 				// Remote refresh verifies the retained source-disclosure journal on Home.

@@ -403,3 +403,88 @@ async fn mounted_skills_require_writable_capacity_before_operation_commit(
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 
 use reinhardt::query::SimpleExpr;
+
+#[rstest::rstest]
+#[tokio::test]
+async fn cached_skill_context_rechecks_descriptor_authority_before_model_retry(
+	#[future] test_environment: Arc<TestEnvironment>,
+) {
+	use std::sync::atomic::{AtomicUsize, Ordering};
+	let calls = Arc::new(AtomicUsize::new(0));
+	let seen = calls.clone();
+	let model = axum::Router::new().route(
+		"/v1/chat/completions",
+		axum::routing::post(move || {
+			let seen = seen.clone();
+			async move {
+				seen.fetch_add(1, Ordering::SeqCst);
+				(
+					http::StatusCode::INTERNAL_SERVER_ERROR,
+					axum::Json(json!({"error":"retry fixture"})),
+				)
+			}
+		}),
+	);
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let endpoint = format!("http://{}", listener.local_addr().unwrap());
+	let server = tokio::spawn(async move { axum::serve(listener, model).await.unwrap() });
+	let c =
+		build_core_fixture_at(test_environment.await, "aidash://execution-test", &endpoint).await;
+	let admitted = admit(&c).await;
+	let harness = aidash_server::harness::Harness {
+		federation: c.f.clone(),
+	};
+	harness.worker_once().await.unwrap();
+	harness.worker_once().await.unwrap();
+	assert_eq!(calls.load(Ordering::SeqCst), 1);
+	let retry = c.f.store.run(admitted.id).await.unwrap();
+	let observed = retry
+		.context
+		.source_observation
+		.as_ref()
+		.expect("Source read precedes model HTTP");
+	assert!(
+		!observed.content["skill_context"]
+			.as_str()
+			.unwrap()
+			.is_empty()
+	);
+	let content = observed.content.clone();
+	let mut policy = c.policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"withdraw-skill-list","effect":"deny","subjects":{"any":true},"actions":["tool.invoke"],"resources":{"kinds":["tool"],"ids":[aidash_domain::registry::bindings::QualifiedRef::builtin(&c.f.config.node_id,"skill_list").resource_id()]}}));
+	let (status, result) = request(
+		&c.app,
+		&c.f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":2,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+	let blocked = loop {
+		harness.worker_once().await.unwrap();
+		let current = c.f.store.run(admitted.id).await.unwrap();
+		if current.control == aidash_server::domain::RunControl::Paused {
+			break current;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"cached context must not bypass revoked authority: {current:?}"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+	};
+	assert_eq!(
+		calls.load(Ordering::SeqCst),
+		1,
+		"revocation must prevent redisclosure to the model"
+	);
+	assert_eq!(blocked.error.as_deref(), Some("execution authority denied"));
+	assert_eq!(
+		blocked.context.source_observation.as_ref().unwrap().content,
+		content,
+		"the retry retains its original observation"
+	);
+	server.abort();
+	c.close().await;
+}

@@ -7,6 +7,7 @@ use aidash_server::{
 };
 use common::TestApplication as Router;
 use common::{TestEnvironment, request, test_environment};
+use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -1508,8 +1509,8 @@ async fn new_runs_select_active_revision_and_restarted_runs_keep_exact_old_refer
 	let area_path = format!("/api/runs/{}/working-area", run.id);
 	let available = request(&app, &a, "GET", &area_path, Value::Null).await;
 	assert_eq!(
-		available.0, 404,
-		"the authorized Run has no working area: {available:?}"
+		available.0, 200,
+		"default file Tools require an admitted working area: {available:?}"
 	);
 	authorization
 		.set_catalog("a", &reference("model"), 1, false, "operator")
@@ -1739,6 +1740,26 @@ async fn readable_distribution_precedes_dependency_preparation_and_bindings_pin_
 	approve(&f, "b", &reference("model")).await;
 	let dependency = publish(&app, &a, "dependency").await;
 	let agent = request(&app, &a, "POST", "/api/marketplace/packages", json!({"source":reference("agent"),"package_id":"agent","author":"A","idempotency_key":Uuid::new_v4()})).await.1;
+	let published: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("document"))
+			.from(Alias::new("marketplace_versions"))
+			.and_where(Expr::col(Alias::new("key")).eq(Expr::value(agent["key"].as_str().unwrap())))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		published["dependencies"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|d| d["reference"]["id"] == "dependency")
+			.unwrap()["package"],
+		dependency["key"],
+		"the published exact dependency supplies its disclosure path"
+	);
 	for package in [&dependency, &agent] {
 		assert_eq!(
 			request(
@@ -3631,7 +3652,7 @@ async fn source_and_administration_pages_preserve_candidate_progress(
 		approve(&f, "a", &reference(&id)).await;
 	}
 	let mut authority = bundle("a", "user");
-	authority["policies"].as_array_mut().unwrap().push(json!({"id":"hide-sources","effect":"deny","subjects":{"any":true},"actions":["registry.export"],"resources":{"kinds":["tool"],"ids":["page-0","page-2"]}}));
+	authority["policies"].as_array_mut().unwrap().push(json!({"id":"hide-sources","effect":"deny","subjects":{"any":true},"actions":["registry.export"],"resources":{"kinds":["tool"],"ids":[format!("{}/tools/page-0@1.0.0",f.config.node_id),format!("{}/tools/page-2@1.0.0",f.config.node_id)]}}));
 	policy(&f, "a", 1, authority).await;
 	let response = app
 		.clone()

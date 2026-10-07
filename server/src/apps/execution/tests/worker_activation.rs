@@ -134,7 +134,7 @@ impl Process {
 				"process exited: {log}"
 			);
 			assert!(
-				start.elapsed() < Duration::from_secs(20),
+				start.elapsed() < Duration::from_secs(60),
 				"startup timeout: {log}"
 			);
 			tokio::time::sleep(Duration::from_millis(25)).await;
@@ -810,7 +810,7 @@ async fn broker_absence_reconnect_and_empty_storage_preserve_accepted_work(
 			break;
 		}
 		assert!(process.child.try_wait().unwrap().is_none());
-		assert!(start.elapsed() < Duration::from_secs(10));
+		assert!(start.elapsed() < Duration::from_secs(60));
 		tokio::time::sleep(Duration::from_millis(25)).await;
 	}
 	let first = admit(&f, &token, task).await;

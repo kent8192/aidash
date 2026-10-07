@@ -36,6 +36,20 @@ if [[ "$partition" != all ]]; then
   ((${#test_args[@]})) || exit 2
 fi
 if [[ "$partition" != foundation ]]; then
+  # Default file Tools and explicit Host packages need an admitted deployment.
+  # This profile owns only disposable test storage and never enables a host runner.
+  if [[ -z "${AIDASH_CAPABILITY_PROFILE:-}" ]]; then
+    capability_test_root=$(mktemp -d "${TMPDIR:-/tmp}/aidash-rust-profile.XXXXXX")
+    trap 'rm -rf "$capability_test_root"' EXIT
+    export AIDASH_CAPABILITY_PROFILE="$capability_test_root/profile.json"
+    python3 - "$capability_test_root" <<'PY_PROFILE'
+import json
+import pathlib
+import sys
+root = pathlib.Path(sys.argv[1])
+(root / "profile.json").write_text(json.dumps({"admission": True, "storage": str(root / "storage"), "outbound_origins": ["https://example.com"]}))
+PY_PROFILE
+  fi
   scripts/build-test-postgres.sh
 fi
 if "$coverage"; then

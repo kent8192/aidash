@@ -387,6 +387,11 @@ async fn remote_admission_recovers_home_history_before_new_input(
 	let (mut executor, executor_url, executor_schema) = setup(&test_environment).await;
 	executor.config.node_id = "aidash://ordered-run-message-executor".into();
 	executor.store.node_id = executor.config.node_id.clone();
+	executor.registry = aidash_server::registry::Registry::new(
+		executor.store.pool.clone(),
+		&executor.config.node_id,
+	)
+	.unwrap();
 
 	let mode = Arc::new(PeerMode {
 		old_peer: AtomicBool::new(false),
@@ -534,6 +539,11 @@ async fn remote_control_admits_before_delivery_and_rejects_late_side_effects(
 	let (mut executor, executor_url, executor_schema) = setup(&test_environment).await;
 	executor.config.node_id = "aidash://run-message-executor".into();
 	executor.store.node_id = executor.config.node_id.clone();
+	executor.registry = aidash_server::registry::Registry::new(
+		executor.store.pool.clone(),
+		&executor.config.node_id,
+	)
+	.unwrap();
 
 	let mode = Arc::new(PeerMode {
 		old_peer: AtomicBool::new(false),

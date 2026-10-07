@@ -95,6 +95,13 @@ async fn inspect_in(
 			"model" => "model.infer",
 			"cluster" => "cluster.execute",
 			"skill" => "skill.use",
+			"tool"
+				if snapshot.bindings.iter().any(|binding| {
+					binding.identity == pinned.identity && binding.excluded_reason.is_none()
+				}) =>
+			{
+				"tool.invoke"
+			}
 			_ => "registry.read",
 		};
 		let current = definition(

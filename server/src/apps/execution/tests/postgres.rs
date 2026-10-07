@@ -1393,7 +1393,8 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 		.unwrap();
 	let task = running_task(&store, &agent, workspace.id, None).await;
 	let harness = Harness { federation };
-	for _ in 0..20 {
+	// Four exact external approvals add durable waiting/resume transitions.
+	for _ in 0..40 {
 		let progress = harness.worker_once().await.unwrap();
 		if approve_fixture_call(&store).await {
 			continue;
@@ -1410,13 +1411,23 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 	assert_eq!(
 		run.phase().as_str(),
 		"COMPLETED",
-		"error={:?}, pending={}",
+		"error={:?}, pending={}, history={}",
 		run.error,
-		json!(run.state)["data"]
+		json!(run.state)["data"],
+		json!(run.context.history)
 	);
 	assert_eq!(
 		store.task(task.id).await.unwrap().status.as_str(),
 		"COMPLETED"
+	);
+	assert_eq!(
+		run.context
+			.history
+			.iter()
+			.filter(|event| matches!(event, aidash_server::context::ContextEvent::Tool { .. }))
+			.count(),
+		4,
+		"transport and schema errors each reach the next inference exactly once"
 	);
 	assert_eq!(
 		source_hits.load(Ordering::SeqCst),

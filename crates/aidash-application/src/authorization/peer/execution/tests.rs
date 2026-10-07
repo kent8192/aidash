@@ -16,6 +16,7 @@ struct Scope {
 	calls: Vec<(String, Vec<String>)>,
 	active: bool,
 	model_kind: String,
+	denied_action: Option<String>,
 }
 impl Scope {
 	fn new() -> Self {
@@ -30,6 +31,7 @@ impl Scope {
 			calls: vec![],
 			active: true,
 			model_kind: "model".into(),
+			denied_action: None,
 		}
 	}
 	fn call(&mut self, name: &str) {
@@ -78,6 +80,9 @@ impl PeerInspectionScope for Scope {
 	}
 	async fn entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
 		self.call(action);
+		if self.denied_action.as_deref() == Some(action) {
+			return Err(Error::Forbidden);
+		}
 		let snapshot = crate::test_support::snapshot("aidash://receiver", "agent");
 		let mut entry = snapshot
 			.definitions
@@ -190,6 +195,27 @@ async fn wrong_dependency_kind_cannot_become_an_admitted_definition() {
 	let result = inspect(&mut scope, "aidash://home", &input()).await;
 	assert!(
 		matches!(result, Err(Error::Invalid(ref message)) if message=="executor dependency has the wrong kind")
+	);
+	assert!(!scope.calls.iter().any(|(name, _)| name == "lineage"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn denied_bound_tool_invocation_prevents_remote_preflight() {
+	let mut scope = Scope::new();
+	scope.denied_action = Some("tool.invoke".into());
+	assert!(matches!(
+		inspect(&mut scope, "aidash://home", &input()).await,
+		Err(Error::Forbidden)
+	));
+	let (action, subjects) = scope.calls.last().unwrap();
+	assert_eq!(action, "tool.invoke");
+	assert_eq!(
+		subjects,
+		&[
+			"mapped".to_owned(),
+			qualified_agent("aidash://receiver", "agent", "1.0.0")
+		]
 	);
 	assert!(!scope.calls.iter().any(|(name, _)| name == "lineage"));
 }

@@ -50,6 +50,8 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	let (mut b, bu, bschema) = setup(&_test_environment).await;
 	b.config.node_id = "aidash://grant-host".into();
 	b.store.node_id = b.config.node_id.clone();
+	b.registry =
+		aidash_server::registry::Registry::new(b.store.pool.clone(), &b.config.node_id).unwrap();
 
 	let aa = common::application(a.clone()).await;
 	let ba = common::peer_application(&mut b).await;

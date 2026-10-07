@@ -801,7 +801,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
             }
         }))).await.unwrap();
 	});
-	let (mut policy, token, task) = common::bootstrap(&f, &app, &endpoint).await;
+	let (mut policy, token, task) = common::bootstrap_with_context(&f, &app, &endpoint, true).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	configure(
 		&app,

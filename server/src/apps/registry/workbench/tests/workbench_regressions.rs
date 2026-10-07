@@ -1178,19 +1178,21 @@ async fn oversized_agent_tool_workbench() -> Workbench {
 #[case(false, 200)]
 #[case(true, 400)]
 #[tokio::test]
-async fn creator_prompt_validation_charges_only_enabled_agent_tools(
+async fn creator_prompt_validation_charges_only_bound_agent_tools(
 	#[future(awt)] oversized_agent_tool_workbench: Workbench,
-	#[case] delegation: bool,
+	#[case] bound: bool,
 	#[case] expected: u16,
 ) {
 	let wb = oversized_agent_tool_workbench;
 	let mut entry = wb.draft["entry"].clone();
-	entry["config"]["bindings"] = json!([{"kind":"tool","target":{"registry_node":wb.f.config.node_id,"id":"oversized-agent-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}]);
-	entry["config"]["remove_default"] = if delegation {
-		json!([])
+	// Binding availability is independent of the task_delegate default.
+	entry["config"]["bindings"] = if bound {
+		json!([{"kind":"tool","target":{"registry_node":wb.f.config.node_id,"id":"oversized-agent-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}])
 	} else {
-		json!(["task_delegate"])
+		json!([])
 	};
+	entry["config"]["remove_default"] = json!([]);
+
 	entry["version"] = json!("1.0.1");
 	let saved = wb
 		.call(
@@ -1206,7 +1208,7 @@ async fn creator_prompt_validation_charges_only_enabled_agent_tools(
 			json!({"expected_revision":saved["revision"]}),
 		)
 		.await;
-	assert_eq!(validation["valid"], !delegation, "validation: {validation}");
+	assert_eq!(validation["valid"], !bound, "validation: {validation}");
 	let (status, body) = request(
 		&wb.app,
 		&wb.token,
@@ -1586,9 +1588,9 @@ async fn real_dispatch_rejects_effective_tool_isolation_changes(
 ) {
 	let (wb, started, digest) = installed_tool_waiting_for_dispatch;
 	let overlay = match change {
-		"endpoint" => json!({"endpoint":format!("{}/test-effect",wb.endpoint)}),
-		"replay" => json!({"replay":"unsafe"}),
-		"credential" => json!({"credential_env":"AIDASH_SECRET_TEST_PEER"}),
+		"endpoint" => json!({"transport":{"endpoint":format!("{}/test-effect",wb.endpoint)}}),
+		"replay" => json!({"transport":{"replay":"unsafe"}}),
+		"credential" => json!({"transport":{"credential_env":"AIDASH_SECRET_TEST_PEER"}}),
 		_ => unreachable!(),
 	};
 	wb.f.registry

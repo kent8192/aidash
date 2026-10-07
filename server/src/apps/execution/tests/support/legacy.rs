@@ -192,6 +192,23 @@ pub async fn bootstrap_with_context(
 	endpoint: &str,
 	semantic: bool,
 ) -> (Value, String, Uuid) {
+	bootstrap_with_resources(f, app, endpoint, semantic, false).await
+}
+#[allow(dead_code)]
+pub async fn bootstrap_with_area(
+	f: &Federation,
+	app: &TestApplication,
+	endpoint: &str,
+) -> (Value, String, Uuid) {
+	bootstrap_with_resources(f, app, endpoint, false, true).await
+}
+async fn bootstrap_with_resources(
+	f: &Federation,
+	app: &TestApplication,
+	endpoint: &str,
+	semantic: bool,
+	files: bool,
+) -> (Value, String, Uuid) {
 	let operator = &f.config.api_token;
 	let policy = policy(&f.config.node_id);
 	let (status, snapshot) = request(
@@ -235,7 +252,7 @@ pub async fn bootstrap_with_context(
 		(
 			"agent",
 			"research",
-			json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Test approved work","bindings":agent_bindings,"remove_default":["file_search","file_read"]}),
+			json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Test approved work","bindings":agent_bindings,"remove_default":if files {json!([])} else {json!(["file_search","file_read"])} }),
 		),
 	] {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"capabilities":[],"languages":["en"],"schema":{"type":"object"},"config":config});

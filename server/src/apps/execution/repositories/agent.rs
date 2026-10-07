@@ -489,6 +489,14 @@ impl ExecutionEnvironment for Environment<'_> {
 	}
 
 	async fn skill_context(&self, run: &Run) -> Result<String> {
+		let settings =
+			AgentConfig::from_snapshot(run.context.binding_snapshot.as_ref().ok_or_else(
+				|| aidash_application::Error::Invalid("Run has no Binding snapshot".into()),
+			)?)?;
+		// Support-tool availability does not opt in to mounted Skill Sources.
+		if !settings.core_capabilities.skills {
+			return Ok(String::new());
+		}
 		if let Some(authority) = self
 			.authority
 			.as_ref()

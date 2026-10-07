@@ -7,7 +7,7 @@ use common::{TestEnvironment, test_environment};
 
 use aidash_server::{federation::Federation, harness::Harness, semantic};
 use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::post};
-use common::{bootstrap, cleanup, request, setup};
+use common::{cleanup, request, setup};
 use serde_json::{Value, json};
 use std::sync::{
 	Arc,
@@ -94,7 +94,8 @@ impl Fixture {
 		let endpoint = format!("http://{}", listener.local_addr().unwrap());
 		let server = tokio::spawn(async move { axum::serve(listener, provider).await.unwrap() });
 		let app = common::application(f.clone()).await;
-		let (_, token, original_task) = bootstrap(&f, &app, &endpoint).await;
+		let (_, token, original_task) =
+			common::bootstrap_with_context(&f, &app, &endpoint, true).await;
 		let workspace = f.store.task(original_task).await.unwrap().workspace_id;
 		let (_, mut template) = request(
 			&app,
