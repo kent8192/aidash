@@ -116,3 +116,56 @@ fn bundle_substitutions_requalify_only_verified_members_to_the_receiving_node() 
 		])
 	);
 }
+
+#[rstest]
+#[case("outbound_get")]
+#[case("shell")]
+fn installed_descriptors_and_bound_lifecycle_match_the_receiving_node(#[case] operation: &str) {
+	use crate::{registry::bindings::QualifiedRef, tool::providers::*};
+	let publishing = "aidash://publisher";
+	let receiving = "aidash://receiver";
+	let descriptor = core_descriptor(publishing, operation).unwrap();
+	let bindings: Vec<_> = descriptor
+		.lifecycle
+		.as_ref()
+		.map_or_else(Vec::new, |lifecycle| {
+			[&lifecycle.poll, &lifecycle.cancel]
+				.into_iter()
+				.map(|reference| DependencyBinding {
+					source: reference.local(),
+					target: EntityRef {
+						id: format!("mkt-{}", reference.id),
+						version: reference.version.clone(),
+					},
+				})
+				.collect()
+		});
+	let mut installed = entry();
+	installed.id = format!("mkt-{operation}");
+	installed.config = serde_json::to_value(descriptor).unwrap();
+	rewrite(&mut installed, &bindings, receiving).unwrap();
+	let rewritten: ToolDescriptor = serde_json::from_value(installed.config).unwrap();
+	let identity = QualifiedRef {
+		registry_node: receiving.into(),
+		id: installed.id,
+		version: installed.version,
+	};
+	assert!(rewritten.declared_contract(identity.clone()).is_ok());
+	assert!(
+		rewritten
+			.declared_contract(QualifiedRef {
+				registry_node: publishing.into(),
+				..identity
+			})
+			.is_err()
+	);
+	if let Some(lifecycle) = rewritten.lifecycle {
+		for (reference, binding) in [&lifecycle.poll, &lifecycle.cancel]
+			.into_iter()
+			.zip(bindings)
+		{
+			assert_eq!(reference.registry_node, receiving);
+			assert_eq!(reference.local(), binding.target);
+		}
+	}
+}

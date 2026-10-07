@@ -741,6 +741,60 @@ async fn activation_cannot_add_or_replace_a_binding_graph_after_execution_starts
 }
 
 #[tokio::test]
+async fn another_nodes_valid_snapshot_cannot_be_admitted_or_dispatch_for_the_same_agent() {
+	let foreign = "aidash://node-b";
+	let mut catalog = Catalog::new();
+	catalog.entries = catalog
+		.entries
+		.into_iter()
+		.map(|(mut identity, mut entry)| {
+			identity.registry_node = foreign.into();
+			if entry.kind == "tool" {
+				let descriptor: ToolDescriptor = serde_json::from_value(entry.config).unwrap();
+				entry.config =
+					serde_json::to_value(core_descriptor(foreign, &descriptor.operation).unwrap())
+						.unwrap();
+			}
+			(identity, entry)
+		})
+		.collect();
+	let config = agent_config();
+	let saved = resolve(
+		&mut catalog,
+		&providers(),
+		QualifiedRef {
+			registry_node: foreign.into(),
+			..reference("agent")
+		},
+		&agent_entry(&config),
+		false,
+	)
+	.await
+	.unwrap();
+	saved.validate().unwrap();
+	let mut run = admitted_run().await;
+	run.context.binding_snapshot = None;
+	assert!(matches!(
+		run.bind(saved.clone()),
+		Err(aidash_domain::Error::Invalid(_))
+	));
+	assert!(run.context.binding_snapshot.is_none());
+
+	// Persisted or adapter-supplied context must pass the same qualified identity check.
+	run.context.binding_snapshot = Some(Box::new(saved));
+	let live = Arc::new(Live::new());
+	let resolver = execution::PinnedResolver {
+		providers: live.clone(),
+		authority: live.clone(),
+	};
+	assert!(matches!(
+		resolver.tools(&run).await,
+		Err(Error::Conflict(_))
+	));
+	assert_eq!(live.invocations.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn recovered_snapshots_must_match_the_agent_binding_closure_before_run_admission() {
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();

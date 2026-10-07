@@ -26,7 +26,10 @@ impl BindingResolver for PinnedResolver {
 			.as_ref()
 			.ok_or_else(|| Error::Invalid("Run has no admitted Binding snapshot".into()))?;
 		snapshot.validate()?;
-		if snapshot.agent.id != run.agent_id || snapshot.agent.version != run.agent_version {
+		if snapshot.agent.registry_node != run.home_node
+			|| snapshot.agent.id != run.agent_id
+			|| snapshot.agent.version != run.agent_version
+		{
 			return Err(Error::Conflict(
 				"Run Agent differs from its Binding snapshot".into(),
 			));
