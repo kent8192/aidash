@@ -413,7 +413,7 @@ export function Channel({
               runs={scopedRuns}
               waiting={scopedRequests.length}
               discovery={discovery}
-              open={open}
+              open={inspect}
               graph={() => graph()}
               showTasks={() => setTab("work")}
               expanded={true}

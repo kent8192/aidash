@@ -91,6 +91,46 @@ for (const kind of ["completed", "failed"]) {
     assert.equal(store.getSnapshot().recent.length, 0);
     assert.equal(store.getCurrent(id), undefined);
   });
+  test(`${kind} history and throttled requests survive temporary snapshot outages`, () => {
+    const store = new NoticeStore();
+    const first = entry("first", "approval");
+    store.observe(frame([entry("task")]));
+    store.observe(frame([entry("task"), first]));
+    store.takeBatch(0);
+    store.markRead();
+    const restored = frame([
+      entry("task", kind),
+      first,
+      entry("queued", "input"),
+    ]);
+    store.observe(restored);
+    const snapshot = store.getSnapshot();
+    const completed = snapshot.recent[0];
+    const queued = snapshot.pending.find((item) => item.target.id === "queued");
+    const delay = store.delay(100);
+    store.observe(null);
+    store.observe(null);
+    assert.equal(store.getSnapshot(), snapshot);
+    assert.equal(store.getSnapshot().unread, true);
+    assert.equal(store.getCurrent(completed.id), completed);
+    assert.equal(store.getCurrent(queued.id), queued);
+    assert.equal(store.delay(100), delay);
+    store.observe(restored);
+    assert.deepEqual(store.getSnapshot(), snapshot);
+    assert.deepEqual(store.takeBatch(100), []);
+    assert.deepEqual(
+      store.takeBatch(NOTICE_INTERVAL).map((item) => item.id),
+      [completed.id, queued.id],
+    );
+    store.observe(frame([], []));
+    assert.deepEqual(store.getSnapshot(), {
+      pending: [],
+      recent: [],
+      unread: false,
+    });
+    assert.equal(store.getCurrent(completed.id), undefined);
+    assert.equal(store.getCurrent(queued.id), undefined);
+  });
 }
 test("bursts are grouped and a second announcement waits for the global interval", () => {
   const store = new NoticeStore();

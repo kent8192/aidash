@@ -1217,6 +1217,51 @@ for (const locale of ["en-US", "ja-JP"] as const) {
   });
 }
 
+for (const action of ["task", "participant", "new task"] as const) {
+  test(`overview ${action} replaces the progress sheet with one dismissible dialog`, async ({
+    page,
+  }) => {
+    const { errors } = await setup(page);
+    await page.goto("/collaboration?channel=workspace-one");
+    const open = page.getByRole("button", {
+      name: "Show channel status",
+      exact: true,
+    });
+    await open.click();
+    const sheet = page.locator(".intent-progress-sheet");
+    if (action === "task")
+      await sheet.locator(".workspace-task-row").first().click();
+    else if (action === "participant")
+      await sheet.locator(".workspace-participant").first().click();
+    else
+      await sheet
+        .getByRole("button", { name: "Assign a task", exact: true })
+        .click();
+    await expect(sheet).toHaveCount(0);
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toHaveCount(1);
+    if (action === "task")
+      await expect(
+        dialog.getByRole("heading", { name: "Collect evidence", exact: true }),
+      ).toBeVisible();
+    else if (action === "participant")
+      await expect(dialog).toContainText("Thinking");
+    else {
+      await expect(dialog.getByLabel("Title", { exact: true })).toHaveValue("");
+      await expect(dialog.getByLabel("Workspace", { exact: true })).toHaveValue(
+        "workspace-one",
+      );
+    }
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await open.click();
+    await expect(sheet).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+}
+
 test("revoking a thread read hides cached replies without exposing another conversation", async ({
   page,
 }) => {

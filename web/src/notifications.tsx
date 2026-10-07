@@ -139,9 +139,11 @@ function frame(
             : "input",
       detail: request.prompt.slice(0, 180),
       workspaceTitle:
-        data.workspaces.find(
-          (workspace) => workspace.id === request.workspace_id,
-        )?.title ?? node,
+        node === data.node.id
+          ? (data.workspaces.find(
+              (workspace) => workspace.id === request.workspace_id,
+            )?.title ?? node)
+          : node,
       target: {
         kind: "human",
         id: request.id,

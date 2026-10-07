@@ -55,14 +55,8 @@ export class NoticeStore {
   }
 
   observe(frame: NoticeFrame | null) {
-    if (!frame) {
-      this.current.clear();
-      this.pendingToast.clear();
-      this.recent = [];
-      this.unread.clear();
-      this.publish([], []);
-      return;
-    }
+    // Missing data is a transient outage; authority changes replace the provider.
+    if (!frame) return;
     const scopes = new Set(frame.scopes);
     const current = new Map<string, Notice>();
     const entries = new Map<string, NoticeEntry>();

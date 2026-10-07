@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { State, Mesh } from "../src/types";
+import { NOTICE_INTERVAL } from "../src/notifications/model";
 import { setup } from "./collaboration-fixture";
 
 async function stateAfterLoad(page: Page) {
@@ -212,6 +213,12 @@ test("remote notices preserve node identity when request and workspace IDs colli
   await expect(page.locator(".intent-toast-open")).toContainText(
     "Remote node needs different evidence.",
   );
+  await expect(page.locator(".intent-toast-open")).toContainText(
+    "aidash://peer",
+  );
+  await expect(page.locator(".intent-toast-open")).not.toContainText(
+    "Research",
+  );
   await page.locator(".intent-toast-open").click();
   await expect(page).toHaveURL("/collaboration?channel=workspace-two");
   await expect(page.getByRole("dialog")).toHaveCount(1);
@@ -221,5 +228,70 @@ test("remote notices preserve node identity when request and workspace IDs colli
   await expect(page.getByRole("dialog")).not.toContainText(
     "Which market should I examine?",
   );
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Close", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Notifications", exact: true })
+    .click();
+  const remoteRow = page.locator(".intent-notification-row").filter({
+    hasText: "Remote node needs different evidence.",
+  });
+  await expect(remoteRow).toContainText("aidash://peer");
+  await expect(remoteRow).not.toContainText("Research");
+  await expect(
+    page.locator(".intent-notification-row").filter({
+      hasText: "Which market should I examine?",
+    }),
+  ).toContainText("Research");
+  expect(errors).toEqual([]);
+});
+
+test("recent updates and throttled requests survive a temporary state outage", async ({
+  page,
+}) => {
+  await page.clock.install();
+  const { errors } = await setup(page, { subject: true });
+  await page.goto("/collaboration?channel=workspace-one");
+  const data = await stateAfterLoad(page);
+  let unavailable = false;
+  await page.route("**/api/state", (route) =>
+    unavailable
+      ? route.fulfill({
+          status: 503,
+          json: { error: "temporary state outage" },
+        })
+      : route.fulfill({ json: data }),
+  );
+  addRequest(data, "first", "First approval");
+  await nextToast(page);
+  const announcedAt = await page.evaluate(() => Date.now());
+  await page
+    .getByRole("button", { name: "Dismiss notification", exact: true })
+    .click();
+  data.tasks[0] = { ...data.tasks[0], status: "COMPLETED", revision: 3 };
+  addRequest(data, "queued", "Approval queued before the outage");
+  await page.clock.runFor(5500);
+  await expect(page.locator(".intent-toast")).toHaveCount(0);
+  unavailable = true;
+  await page.clock.runFor(8000);
+  await expect(page.getByRole("alert")).toContainText("temporary state outage");
+  unavailable = false;
+  await page.clock.runFor(5500);
+  await expect(page.locator(".collab-composer textarea")).toBeVisible();
+  const now = await page.evaluate(() => Date.now());
+  await page.clock.runFor(
+    Math.max(0, announcedAt + NOTICE_INTERVAL - now) + 500,
+  );
+  await expect(page.locator(".intent-toast-open")).toContainText("2 updates");
+  await page.locator(".intent-toast-open").click();
+  const center = page.locator(".intent-notifications");
+  await expect(
+    center.getByRole("button", { name: /Task completed Collect evidence/ }),
+  ).toBeVisible();
+  await expect(
+    center.getByRole("button", { name: /Approval queued before the outage/ }),
+  ).toBeVisible();
   expect(errors).toEqual([]);
 });
