@@ -45,6 +45,13 @@ pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding]) -> Result<()> 
 			}
 			entry.config = serde_json::to_value(c)?;
 		}
+		"tool" if crate::tool::legacy_config(&entry.config)?.is_some() => {
+			let mut config = crate::tool::legacy_config(&entry.config)?.expect("legacy transport");
+			if let ToolConfig::Agent { agent, .. } = &mut config {
+				bind(agent, bindings);
+			}
+			entry.config = serde_json::to_value(config)?;
+		}
 		"tool" => {
 			let mut c: crate::tool::providers::ToolDescriptor =
 				serde_json::from_value(entry.config.clone())?;

@@ -143,7 +143,7 @@ pub async fn validate_references(
 			}
 		}
 	}
-	if entry.kind == "tool" {
+	if entry.kind == "tool" && aidash_domain::tool::legacy_config(&entry.config)?.is_none() {
 		let descriptor: aidash_domain::tool::providers::ToolDescriptor =
 			serde_json::from_value(entry.config.clone())?;
 		if descriptor.registry_node != node {
@@ -189,11 +189,21 @@ pub async fn validate_references(
 		}
 		validation.agent_prompt_headroom(&config, &references, &Value::Null)?;
 	}
-	if entry.kind == "tool"
-		&& let Some(ToolConfig::Agent { node_id, agent }) = serde_json::from_value::<
-			aidash_domain::tool::providers::ToolDescriptor,
-		>(entry.config.clone())?
-		.transport
+	let transport = if entry.kind == "tool" {
+		match aidash_domain::tool::legacy_config(&entry.config)? {
+			Some(transport) => Some(transport),
+			None => {
+				serde_json::from_value::<aidash_domain::tool::providers::ToolDescriptor>(
+					entry.config.clone(),
+				)
+				.map_err(|error| Error::Invalid(error.to_string()))?
+				.transport
+			}
+		}
+	} else {
+		None
+	};
+	if let Some(ToolConfig::Agent { node_id, agent }) = transport
 		&& node_id == node
 		&& scope
 			.executor_kind(&agent.id, &agent.version)

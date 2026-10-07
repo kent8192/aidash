@@ -25815,5 +25815,23 @@
     "json": true,
     "uuid_parameters": [],
     "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/marketplace/approval-sets",
+    "name": "marketplace-approve-set",
+    "source": "server/src/apps/marketplace/views/management.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
+  },
+  {
+    "method": "POST",
+    "path": "/api/marketplace/host-packages",
+    "name": "marketplace-host-packages",
+    "source": "server/src/apps/marketplace/views/management.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": []
   }
 ]

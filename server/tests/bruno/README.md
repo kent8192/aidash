@@ -1,6 +1,6 @@
 # Real API contracts with Bruno
 
-This collection exercises all 269 native method/path endpoints with 3–10 scenarios
+This collection exercises all 271 native method/path endpoints with 3–10 scenarios
 per endpoint. The checked-in `contracts.json` is compared with the real
 `manage showurls` output before requests start. `scenarios.json` identifies every
 request, including the external OIDC authorization hops. It checks the public health and

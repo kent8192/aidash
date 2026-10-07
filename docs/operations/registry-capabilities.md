@@ -6,6 +6,8 @@ The implementation is in progress. The required cutover work below identifies th
 
 Tools declare a registering Node, a versioned provider operation, a stable default model alias, a tier and supported narrowing. The provider owns effects, replay safety, fitting, continuation, disclosure and approval requirements. Generic HTTP/MCP calls remain `Unsafe` even if their transport configuration contains a stronger replay label. Native echo fixtures are not ordinary deployable integrations.
 
+Until the native Agent cutover, Registry and Marketplace retain strict validation of existing transport-tagged Tool definitions. These definitions keep their original execution path and are not converted into Provider descriptors or admitted by the new Binding resolver.
+
 Node startup seeds the 15 required/default builtin declarations at exact immutable versions. Seeding verifies existing bytes and fails the entire transaction on a reserved-name conflict. System catalog visibility does not add tenant resource grants. Builtins cannot be published, installed or mutated through Marketplace.
 
 ## Pending Host packages
@@ -17,7 +19,14 @@ An authenticated operator can request the exact generated groups with `POST /api
 ```json
 {
   "tenant": "example",
-  "groups": ["shell", "python", "outbound_get", "apply_patch", "file_share", "task_assign"],
+  "groups": [
+    "shell",
+    "python",
+    "outbound_get",
+    "apply_patch",
+    "file_share",
+    "task_assign"
+  ],
   "idempotency_key": "00000000-0000-4000-8000-000000000001"
 }
 ```

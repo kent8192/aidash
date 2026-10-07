@@ -134,6 +134,9 @@ impl DefinitionValidation {
 					));
 				}
 			}
+			"tool" if aidash_domain::tool::legacy_config(&e.config)?.is_some() => {
+				self.validate_tool(&e.config, local)?;
+			}
 			"tool" => {
 				let descriptor: aidash_domain::tool::providers::ToolDescriptor =
 					serde_json::from_value(e.config.clone())?;

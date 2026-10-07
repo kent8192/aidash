@@ -49,6 +49,18 @@ pub async fn seed(
 ) -> Result<()> {
 	for entry in entries(validation, node)? {
 		aidash_domain::registry::rules::validate_metadata(&entry, false)?;
+		// Restart may precede recovery of a prepared transaction. Even an
+		// INSERT that does nothing takes Registry's statement-level write guard.
+		match scope.definition(&entry.id, &entry.version).await {
+			Ok(saved) if saved == entry => continue,
+			Ok(_) => {
+				return Err(crate::Error::Conflict(
+					"system declaration bytes changed".into(),
+				));
+			}
+			Err(crate::Error::NotFound(_)) => {}
+			Err(error) => return Err(error),
+		}
 		scope.insert_definition(&entry).await?;
 	}
 	Ok(())

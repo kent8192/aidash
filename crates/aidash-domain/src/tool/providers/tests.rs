@@ -79,3 +79,19 @@ fn only_implicit_defaults_can_be_excluded_remotely() {
 			.is_none()
 	);
 }
+
+#[test]
+fn legacy_transport_tags_do_not_accept_descriptor_fields_or_convert_descriptors() {
+	let legacy = json!({"transport":"http","endpoint":"https://example.invalid","credential_env":null,"replay":"read_only"});
+	assert!(matches!(
+		crate::tool::legacy_config(&legacy).unwrap(),
+		Some(ToolConfig::Http { .. })
+	));
+	let mut mixed = legacy;
+	mixed["provider"] = json!("core.workspace@1");
+	assert!(crate::tool::legacy_config(&mixed).is_err());
+	let descriptor =
+		serde_json::to_value(core_descriptor("aidash://node-a", "workspace_read").unwrap())
+			.unwrap();
+	assert!(crate::tool::legacy_config(&descriptor).unwrap().is_none());
+}

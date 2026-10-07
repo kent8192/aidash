@@ -102,3 +102,49 @@ async fn bundle_members_must_exist_and_database_accepts_the_new_kind(
 	bundle.config["members"][0]["registry_node"] = json!("aidash://foreign");
 	assert!(registry.register(bundle).await.is_err());
 }
+
+#[rstest]
+#[tokio::test]
+async fn restart_seed_retains_definitions_during_pending_transaction_recovery(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_server::apps::federation::transactions::models::{
+		AtomicGate, AtomicParticipant, states::AtomicParticipantPhase,
+	};
+	let database = database.await;
+	let registry = registry(&database).await;
+	registry.seed_system().await.unwrap();
+	let original = registry.list(&Search::default()).await.unwrap();
+	let mut connection = database.lease.handle();
+	let participant = AtomicParticipant::build()
+		.coordinator("aidash://node")
+		.digest("restart-seed-fixture")
+		.manifest(json!({}).into())
+		.phase(AtomicParticipantPhase::Reserved)
+		.finish();
+	AtomicParticipant::objects()
+		.create_with_conn(&mut connection, &participant)
+		.await
+		.unwrap();
+	let mut gate = AtomicGate::objects()
+		.filter(AtomicGate::field_singleton().eq(true))
+		.get_with_db(&mut connection)
+		.await
+		.unwrap();
+	gate.transaction_id = Some(participant.id);
+	AtomicGate::objects()
+		.update_with_conn(&mut connection, &gate)
+		.await
+		.unwrap();
+	tokio::time::timeout(std::time::Duration::from_secs(5), registry.seed_system())
+		.await
+		.expect("restart seeding must not wait on the transaction write gate")
+		.unwrap();
+	assert_eq!(registry.list(&Search::default()).await.unwrap(), original);
+	let retained = AtomicGate::objects()
+		.filter(AtomicGate::field_singleton().eq(true))
+		.get_with_db(&mut connection)
+		.await
+		.unwrap();
+	assert_eq!(retained.transaction_id, gate.transaction_id);
+}

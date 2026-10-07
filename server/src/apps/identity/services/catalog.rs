@@ -74,7 +74,7 @@ pub(crate) fn resource(access: &Access, entry: &Entry) -> super::policy::Resourc
 		};
 		return access.resource(
 			"tool",
-			&identity.resource_id(),
+			identity.resource_id(),
 			aidash_application::authorization::catalog::attributes(entry),
 		);
 	}

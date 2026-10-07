@@ -18,6 +18,16 @@ pub fn refs(entry: &Entry, node: &str) -> Result<Vec<(EntityRef, String)>> {
 			refs.extend(config.skills.into_iter().map(|r| (r, "skill".into())));
 			refs.extend(config.cluster.into_iter().map(|r| (r, "cluster".into())));
 		}
+		"tool" if aidash_domain::tool::legacy_config(&entry.config)?.is_some() => {
+			if let Some(aidash_domain::tool::ToolConfig::Agent { node_id, agent }) =
+				aidash_domain::tool::legacy_config(&entry.config)?
+			{
+				if node_id != node {
+					return Err(Error::Forbidden);
+				}
+				refs.push((agent, "agent".into()));
+			}
+		}
 		"tool" => {
 			let descriptor: aidash_domain::tool::providers::ToolDescriptor =
 				serde_json::from_value(entry.config.clone())?;
@@ -184,6 +194,9 @@ pub async fn resolve(
 	// pass through the exact dependency bindings below (including tool kind).
 	let protected: &[&str] = match entry.kind.as_str() {
 		"agent" => &["model", "tools", "skills", "cluster"],
+		"tool" if aidash_domain::tool::legacy_config(&entry.config)?.is_some() => {
+			&["transport", "node_id", "agent"]
+		}
 		"tool" => &[
 			"registry_node",
 			"provider",

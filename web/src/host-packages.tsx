@@ -52,8 +52,10 @@ export function HostPackages({
   });
   useEffect(() => {
     if (catalog.isError) {
-      setReview(undefined);
-      setReceipt(undefined);
+      queueMicrotask(() => {
+        setReview(undefined);
+        setReceipt(undefined);
+      });
     }
   }, [catalog.isError]);
   async function perform(action: () => Promise<void>) {

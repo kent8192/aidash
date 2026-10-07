@@ -143,10 +143,10 @@ pub async fn provision(
 		validation.validate_in(entry, true)?;
 		let source = version(&input.tenant, node, entry, &entries)?;
 		manifest(&source)?;
-		if let Some(saved) = scope.version(&source.key).await? {
-			if key(&saved) != key(&source) {
-				return Err(conflict());
-			}
+		if let Some(saved) = scope.version(&source.key).await?
+			&& key(&saved) != key(&source)
+		{
+			return Err(conflict());
 		}
 		let installation = prospective_installation(&input.tenant, &source.key);
 		if let Some(saved) = scope.installation(&installation.id).await? {
