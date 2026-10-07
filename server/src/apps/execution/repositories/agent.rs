@@ -534,7 +534,15 @@ impl ExecutionEnvironment for Environment<'_> {
 				&agent,
 			)
 			.await?;
-			crate::semantic::services::memory_context::combine(semantic, memory, budget)
+			crate::semantic::services::memory_context::complete(
+				&self.federation.store,
+				&mut lease,
+				run,
+				semantic,
+				memory,
+				budget,
+			)
+			.await
 		}
 		.await;
 		lease.finish(result).await.map_err(Into::into)

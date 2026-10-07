@@ -593,7 +593,7 @@ async fn execute(
 			store,
 			lease: &mut lease,
 			models: &models,
-			run: None,
+			delivered: &mut Vec::new(),
 		};
 		match input {
 			Input::Learn { run, revision } => {

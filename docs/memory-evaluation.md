@@ -60,6 +60,10 @@ A Home Run's cumulative native read journal must fit its pinned provider's
 all delivered Unit revisions. Automatic learning also reserves its complete
 `max_evidence` input/output envelope, which includes the Run root. Recall that
 would exceed that allowance fails atomically before adding dependencies.
+Local reads are staged across every declared bank and reflection step, then
+committed together only after the complete tool result or combined inference
+context succeeds and fits its delivery budget. Failed later-bank retrieval or
+reflection must leave no journal entries for the abandoned operation.
 Remote journals record only native Units
 retained in the final budget-fitted receipt. A full candidate review queue leaves
 learning pending for retry after review frees capacity; this wait preserves the

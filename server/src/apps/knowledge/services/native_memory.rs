@@ -218,6 +218,24 @@ pub(crate) async fn operate_in(
 	input: Operation,
 	run: Option<Uuid>,
 ) -> Result<Outcome> {
+	let mut delivered = Vec::new();
+	let outcome = operate_staged(store, lease, input, run, &mut delivered).await?;
+	if let Some(run) = run
+		&& !delivered.is_empty()
+	{
+		super::super::repositories::memory_reads::record(store, lease, run, &delivered).await?;
+	}
+	Ok(outcome)
+}
+
+/// Stage source roots until the entire tool or combined inference context succeeds.
+pub(crate) async fn operate_staged(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	input: Operation,
+	run: Option<Uuid>,
+	delivered: &mut Vec<Unit>,
+) -> Result<Outcome> {
 	use super::super::repositories::{candidates, memory_scope::Scope, publications};
 	use aidash_application::ports::memory::MemoryScope;
 	repository::lock_workspace(lease, input.bank.workspace, input.action.writes()).await?;
@@ -384,7 +402,7 @@ pub(crate) async fn operate_in(
 		store,
 		lease,
 		models: &models,
-		run,
+		delivered,
 	};
 	match &input.action {
 		Action::Recall { query } => Ok(Outcome::Recall(

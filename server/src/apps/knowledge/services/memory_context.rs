@@ -36,6 +36,19 @@ pub(crate) fn workspace_budget(budget: usize) -> Result<usize> {
 	Ok(budget.saturating_sub(framing))
 }
 
+pub(crate) struct Context {
+	value: Option<Value>,
+	delivered: Vec<Unit>,
+}
+impl Context {
+	fn status(value: Option<Value>) -> Self {
+		Self {
+			value,
+			delivered: Vec::new(),
+		}
+	}
+}
+
 pub(crate) async fn retrieve(
 	store: &Store,
 	lease: &mut Lease<'_>,
@@ -44,12 +57,12 @@ pub(crate) async fn retrieve(
 	inputs: &[(InputRead, String)],
 	budget: usize,
 	agent: &AgentConfig,
-) -> Result<Option<Value>> {
+) -> Result<Context> {
 	if run.home_node != store.node_id {
 		return Err(Error::Forbidden);
 	}
 	if agent.memory.is_none() || agent.allow_cross_conversation_memory == Some(false) {
-		return bounded_status("disabled", budget);
+		return Ok(Context::status(bounded_status("disabled", budget)?));
 	}
 	crate::apps::execution::services::task_evidence::record(lease.tx(), run, task).await?;
 	let binding = bindings::load(&mut **lease.tx(), &run.metadata())
@@ -84,6 +97,7 @@ pub(crate) async fn retrieve(
 		query.push_str(text);
 	}
 	let boundary = json!({"task_revision":task.revision,"inputs":inputs.iter().map(|(read,_)|read).collect::<Vec<_>>(),"step":run.step,"run_revision":run.revision});
+	let mut delivered = Vec::new();
 	let mut envelope =
 		json!({"home":store.node_id,"binding":binding,"boundary":boundary,"banks":[]});
 	// UTF-8 bytes are the declared conservative tokenizer's token upper bound.
@@ -125,7 +139,7 @@ pub(crate) async fn retrieve(
 		let overhead = serde_json::to_vec(&trial)?.len();
 		if overhead > budget {
 			if ordinal == 0 {
-				return bounded_status("no_space", budget);
+				return Ok(Context::status(bounded_status("no_space", budget)?));
 			}
 			break;
 		}
@@ -147,7 +161,7 @@ pub(crate) async fn retrieve(
 			let key = serde_json::to_string(
 				&json!({"purpose":"inference-memory","boundary":boundary,"provider":provider,"bank":bank,"query":limited_query}),
 			)?;
-			let result = memory::operate_in(
+			let result = memory::operate_staged(
 				store,
 				lease,
 				Operation {
@@ -159,6 +173,7 @@ pub(crate) async fn retrieve(
 					},
 				},
 				Some(run.id),
+				&mut delivered,
 			)
 			.await?;
 			let Outcome::Recall(recall) = result else {
@@ -172,7 +187,31 @@ pub(crate) async fn retrieve(
 			return Err(Error::SemanticUnavailable);
 		}
 	}
-	Ok(Some(envelope))
+	Ok(Context {
+		value: Some(envelope),
+		delivered,
+	})
+}
+
+/// Journal once after every Bank and the combined delivery envelope have succeeded.
+pub(crate) async fn complete(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	run: &Run,
+	semantic: Option<Value>,
+	memory: Context,
+	budget: usize,
+) -> Result<Option<Value>> {
+	let output = combine(semantic, memory.value, budget)?;
+	if output
+		.as_ref()
+		.is_some_and(|value| value["memory"]["banks"].is_array())
+		&& !memory.delivered.is_empty()
+	{
+		super::super::repositories::memory_reads::record(store, lease, run.id, &memory.delivered)
+			.await?;
+	}
+	Ok(output)
 }
 
 /// Preserve existing Workspace context and include all wrapper bytes in the cap.

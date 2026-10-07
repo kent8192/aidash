@@ -184,7 +184,7 @@ pub async fn backup(store: &Store, directory: &Path, bank: Bank) -> Result<PathB
 		};
 		let archives = directory.join("archives");
 		std::fs::create_dir_all(&archives)?;
-		if prune(&archives, now)? >= MAX_ARCHIVES {
+		if prune(&mut lease, &archives, &store.node_id, ledger.epoch, now).await? >= MAX_ARCHIVES {
 			return Err(Error::Conflict(
 				"managed memory backup capacity reached".into(),
 			));
@@ -197,16 +197,48 @@ pub async fn backup(store: &Store, directory: &Path, bank: Bank) -> Result<PathB
 	lease.finish(result).await
 }
 
-fn prune(directory: &Path, now: DateTime<Utc>) -> Result<usize> {
+async fn prune(
+	lease: &mut Lease<'_>,
+	directory: &Path,
+	home: &str,
+	epoch: Uuid,
+	now: DateTime<Utc>,
+) -> Result<usize> {
 	let mut count = 0;
+	// Revisions pin restore eligibility. Retired archives must not occupy the
+	// global capacity after a policy upgrade, even with long original retention.
+	let mut policies = Vec::<(Bank, Option<(bank_settings::Settings, u32)>)>::new();
 	for entry in std::fs::read_dir(directory)? {
-		let entry = entry?;
-		let path = entry.path();
+		let path = entry?.path();
 		if path.extension().is_none_or(|extension| extension != "cbor") {
 			continue;
 		}
 		let archive: Archive = recovery::read(&path)?;
-		if archive.expires_at <= now {
+		let settings =
+			if let Some((_, settings)) = policies.iter().find(|(bank, _)| bank == &archive.bank) {
+				settings.clone()
+			} else {
+				let settings = match bank_settings::get(lease, &archive.bank).await? {
+					Some(settings) => {
+						let policy = native_memory::policy(lease, &settings.provider).await?;
+						Some((settings, policy.retention.backup_days))
+					}
+					None => None,
+				};
+				policies.push((archive.bank.clone(), settings.clone()));
+				settings
+			};
+		let eligible = settings.is_some_and(|(settings, days)| {
+			settings.revision == archive.settings_revision
+				&& settings.provider == archive.provider
+				&& archive.created_at + Duration::days(i64::from(days)) > now
+		});
+		if !eligible
+			|| archive.format != 1
+			|| archive.home != home
+			|| archive.epoch != epoch
+			|| archive.expires_at <= now
+		{
 			std::fs::remove_file(path)?;
 		} else {
 			count += 1;
@@ -254,6 +286,8 @@ pub async fn restore(store: &Store, directory: &Path, path: &Path) -> Result<Rep
 		if settings.revision != archive.settings_revision
 			|| settings.provider != archive.provider
 			|| archive.units.len() > policy.retention.max_unit_records
+			|| archive.created_at + Duration::days(i64::from(policy.retention.backup_days))
+				<= Utc::now()
 		{
 			return Err(Error::Conflict(
 				"live memory policy differs from the archive".into(),
@@ -351,24 +385,23 @@ async fn validate_writer(store: &Store, unit: &Unit, policy: &Policy) -> Result<
 		if record.home_node != unit.bank.home || record.workspace_id != unit.bank.workspace {
 			return Err(Error::Forbidden);
 		}
-		if let Some(mut access) =
-			crate::authorization::execution::access_for_run(store, &record.metadata(), true).await?
-		{
-			// Exact provider roles and generated origin allowance are rechecked
-			// before any rebuild can invoke a model. No reservation is refunded.
-			for (reference, kind) in [
-				(&policy.extraction, "model"),
-				(&policy.derivation, "model"),
-				(&policy.reflection, "model"),
-				(&policy.embedding, "embedding"),
-				(&policy.reranker, "reranker"),
-				(&policy.tokenizer, "tokenizer"),
-			] {
-				native_memory::definition(&mut Lease::Inherited(&mut access), reference, kind)
-					.await?;
-			}
-			access.finish(Ok(())).await?;
+		let mut access =
+			crate::authorization::execution::access_for_run(store, &record.metadata(), true)
+				.await?
+				.ok_or(Error::Forbidden)?;
+		// Exact provider roles and generated origin allowance are rechecked
+		// before any rebuild can invoke a model. No reservation is refunded.
+		for (reference, kind) in [
+			(&policy.extraction, "model"),
+			(&policy.derivation, "model"),
+			(&policy.reflection, "model"),
+			(&policy.embedding, "embedding"),
+			(&policy.reranker, "reranker"),
+			(&policy.tokenizer, "tokenizer"),
+		] {
+			native_memory::definition(&mut Lease::Inherited(&mut access), reference, kind).await?;
 		}
+		access.finish(Ok(())).await?;
 	}
 	let mut writer = Lease::restore(store, serde_json::to_value(origin.authority)?).await?;
 	let result = async {
@@ -668,12 +701,23 @@ async fn finish(
 	Ok(report)
 }
 
-pub fn prune_expired(store: &Store, directory: &Path) -> Result<()> {
+pub async fn prune_expired(store: &Store, directory: &Path) -> Result<()> {
 	let recovery = active_external(store, directory)?;
-	recovery.load()?;
+	let ledger = recovery.load()?;
 	let archives = directory.join("archives");
 	if archives.exists() {
-		prune(&archives, Utc::now())?;
+		let mut lease =
+			Lease::begin(store, &crate::authorization::identity::Actor::Operator).await?;
+		let result = prune(
+			&mut lease,
+			&archives,
+			&store.node_id,
+			ledger.epoch,
+			Utc::now(),
+		)
+		.await
+		.map(|_| ());
+		lease.finish(result).await?;
 	}
 	Ok(())
 }
@@ -793,7 +837,7 @@ impl reinhardt::commands::CapabilityCommand for Command {
 					);
 				}
 				Some("prune") => {
-					prune_expired(&store, directory)?;
+					prune_expired(&store, directory).await?;
 					println!("expired memory archives removed");
 				}
 				Some("prepare-restore") => {

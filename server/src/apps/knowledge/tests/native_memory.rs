@@ -29,6 +29,8 @@ mod precision;
 mod purge;
 #[path = "../../execution/tests/support/deployment.rs"]
 mod recovery_deployment;
+#[path = "native_memory/recovery_policy.rs"]
+mod recovery_policy;
 #[path = "native_memory/review_capacity.rs"]
 mod review_capacity;
 #[path = "native_memory/review_delivery.rs"]
@@ -358,7 +360,7 @@ async fn memory_restore_withholds_removed_primary_messages_and_prunes_expired_ar
 			.is_err()
 	);
 	assert!(expired.is_file());
-	recovery::prune_expired(&store, directory).unwrap();
+	recovery::prune_expired(&store, directory).await.unwrap();
 	assert!(
 		!expired.exists(),
 		"expiry physically removes the managed CBOR file"
@@ -2172,15 +2174,18 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 }
 
 #[rstest]
-#[case(false, false)]
-#[case(true, false)]
-#[case(true, true)]
+#[case(false, false, "success")]
+#[case(true, false, "success")]
+#[case(true, true, "success")]
+#[case(false, false, "later_bank")]
+#[case(false, false, "reflection")]
 #[tokio::test]
 async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_correction(
 	#[future] database: DatabaseFixture,
 	mut bounds: Bounds,
 	#[case] journal_bound: bool,
 	#[case] learning_enabled: bool,
+	#[case] delivery: &str,
 ) {
 	if journal_bound {
 		bounds.max_graph_visits = if learning_enabled { 9 } else { 2 };
@@ -2191,22 +2196,48 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	use axum::{Json, Router, routing::post};
 	use std::sync::Arc;
 	let id = Uuid::now_v7();
+	let reflect = delivery == "reflection";
 	let captured = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
 	let received = captured.clone();
+	let journal_reset = Arc::new(std::sync::Mutex::new(None::<(Store, Uuid)>));
+	let reset = journal_reset.clone();
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
 	let provider = tokio::spawn(async move {
 		let model = post(move |Json(input): Json<serde_json::Value>| {
 			let received = received.clone();
+			let reset = reset.clone();
 			async move {
 				let context: serde_json::Value =
 					serde_json::from_str(input["messages"][1]["content"].as_str().unwrap())
 						.unwrap();
+				// The initial inference already consumed its context. Reset that
+				// fixture journal before it requests the failing reflection tool.
+				if reflect && context.get("current").is_some() {
+					let (store, run) = reset.lock().unwrap().clone().unwrap();
+					let mut tx = aidash_server::database::native::begin(&store.control_pool)
+						.await
+						.unwrap();
+					aidash_server::database::native::query(
+						&Query::delete()
+							.from_table(Alias::new("memory_run_reads"))
+							.and_where(Expr::col("run_id").eq(Expr::value(run)))
+							.to_string(PostgresQueryBuilder),
+					)
+					.execute(&mut *tx)
+					.await
+					.unwrap();
+					tx.commit().await.unwrap();
+				}
 				let mut calls = received.lock().unwrap();
 				calls.push(context);
 				let (name, arguments) = if calls.len() == 1 {
 					(
-						"memory_recall",
+						if reflect {
+							"memory_reflect"
+						} else {
+							"memory_recall"
+						},
 						json!({"text":"東京 subway","time":null,"kinds":[],"max_tokens":8192}),
 					)
 				} else {
@@ -2232,10 +2263,50 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		(learning_enabled, false, false),
 	)
 	.await;
+	let agent_ref = if delivery == "later_bank" {
+		registry
+			.register(entry(
+				"source",
+				"shared-source",
+				json!({"scope":"workspace","memory":reference("p"),"max_tokens":8192}),
+			))
+			.await
+			.unwrap();
+		let mut incompatible = registry.get("p", "1.0.0").await.unwrap();
+		incompatible.id = "other-memory".into();
+		registry.register(incompatible).await.unwrap();
+		let shared = Bank {
+			home: store.node_id.clone(),
+			tenant: "acme".into(),
+			workspace,
+			participant: None,
+		};
+		memory::operate(
+			&store,
+			&Actor::Operator,
+			memory::Operation {
+				operation_id: Uuid::now_v7(),
+				provider: reference("other-memory"),
+				bank: shared,
+				action: memory::Action::ConfigureBank {
+					expected_revision: 0,
+				},
+			},
+		)
+		.await
+		.unwrap();
+		let mut agent = registry.get("a", "1.0.0").await.unwrap();
+		agent.id = "late-agent".into();
+		agent.config["sources"] = json!([reference("shared-source")]);
+		registry.register(agent).await.unwrap();
+		reference("late-agent")
+	} else {
+		reference("a")
+	};
 	let authorization = Authorization {
 		pool: store.pool.clone(),
 	};
-	let owner = qualified_agent(&store.node_id, "a", "1.0.0");
+	let owner = qualified_agent(&store.node_id, &agent_ref.id, &agent_ref.version);
 	let policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
 	authorization
 		.replace(
@@ -2252,6 +2323,18 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			.await
 			.unwrap();
 	}
+	if delivery == "later_bank" {
+		for reference in [
+			&agent_ref,
+			&reference("shared-source"),
+			&reference("other-memory"),
+		] {
+			authorization
+				.set_catalog("acme", reference, 0, true, "operator")
+				.await
+				.unwrap();
+		}
+	}
 	let issued = authorization
 		.issue_credential("acme", "alice", 3600, "operator")
 		.await
@@ -2265,7 +2348,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		&actor,
 		workspace,
 		memory::CreateParticipant {
-			agent: reference("a"),
+			agent: agent_ref.clone(),
 		},
 	)
 	.await
@@ -2340,24 +2423,83 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		identity,
 		task.id,
 		task.revision,
-		&reference("a"),
+		&agent_ref,
 	)
 	.await
 	.unwrap();
 	let run = f.store.runs().await.unwrap().remove(0);
+	*journal_reset.lock().unwrap() = Some((f.store.clone(), run.id));
 	let worker = aidash_server::harness::Harness {
 		federation: f.clone(),
 	};
 	for _ in 0..4 {
-		tokio::time::timeout(std::time::Duration::from_secs(15), worker.worker_once())
-			.await
-			.expect("native inference and explicit recall must not deadlock")
-			.unwrap();
-		if !captured.lock().unwrap().is_empty()
-			&& f.store.run(run.id).await.unwrap().phase().as_str() == "READY"
+		let attempt =
+			tokio::time::timeout(std::time::Duration::from_secs(15), worker.worker_once())
+				.await
+				.expect("native inference and explicit recall must not deadlock");
+		if delivery != "later_bank" {
+			attempt.unwrap();
+		}
+		if (reflect && captured.lock().unwrap().len() > 1)
+			|| (!reflect
+				&& !captured.lock().unwrap().is_empty()
+				&& f.store.run(run.id).await.unwrap().phase().as_str() == "READY")
 		{
 			break;
 		}
+	}
+	if delivery == "later_bank" {
+		assert!(
+			captured.lock().unwrap().is_empty(),
+			"failed later Bank must prevent context delivery"
+		);
+		let count: i64 = aidash_server::database::native::query_scalar(
+			&Query::select()
+				.expr(reinhardt::query::Func::count(
+					Expr::col(reinhardt::query::ColumnRef::Asterisk).into(),
+				))
+				.from(Alias::new("memory_run_reads"))
+				.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&f.store.pool)
+		.await
+		.unwrap();
+		assert_eq!(
+			count, 0,
+			"earlier successful Bank must leave no phantom read"
+		);
+		provider.abort();
+		return;
+	}
+	if reflect {
+		let frames = captured.lock().unwrap().clone();
+		assert_eq!(
+			frames.len(),
+			2,
+			"inference followed by the failing reflection model call"
+		);
+		assert_eq!(
+			frames[1]["context"][0]["id"],
+			json!(id),
+			"reflection did recall the admitted Unit"
+		);
+		let reads = aidash_server::database::native::query(
+			&Query::select()
+				.column(Alias::new("unit_id"))
+				.from(Alias::new("memory_run_reads"))
+				.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_all(&f.store.pool)
+		.await
+		.unwrap();
+		assert!(
+			reads.is_empty(),
+			"failed reflection must discard its staged recall roots"
+		);
+		provider.abort();
+		return;
 	}
 	assert_eq!(captured.lock().unwrap().len(), 1);
 	let first = captured.lock().unwrap()[0]["current"]["semantic_memory"].clone();
@@ -2369,6 +2511,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		first["memory"]["banks"][0]["recall"]["units"][0]["id"],
 		json!(id)
 	);
+
 	if journal_bound {
 		// Automatic learning may combine the Run proof with up to seven input/
 		// output sources: two Unit roots fit a Run-only proof at nine visits but
@@ -2800,13 +2943,15 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 }
 
 #[rstest]
-#[case(false)]
-#[case(true)]
+#[case(false, false)]
+#[case(true, false)]
+#[case(false, true)]
 #[tokio::test]
 async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results(
 	#[future] database: DatabaseFixture,
 	mut bounds: Bounds,
 	#[case] backpressure: bool,
+	#[case] recovery: bool,
 ) {
 	if backpressure {
 		bounds.max_candidates = 2;
@@ -2830,6 +2975,8 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
             capture.lock().unwrap().push(input);
             Json(json!({"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":serde_json::to_string(&json!({"facts":[result,pending],"causal":[]})).unwrap()}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}))
         }
+    })).route("/v1/embeddings", post(|Json(input): Json<serde_json::Value>| async move {
+        Json(json!({"model":input["model"],"data":[{"index":0,"embedding":[1.,0.1,0.]}],"usage":{"prompt_tokens":1}}))
     }));
 	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -3194,6 +3341,26 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	{
 		review.operation_id = mutation.operation_id;
 	}
+	let mut changed_kind = review.clone();
+	changed_kind.operation_id = Uuid::now_v7();
+	if let memory::Action::Review {
+		mutation: Some(mutation),
+		..
+	} = &mut changed_kind.action
+	{
+		mutation.operation_id = changed_kind.operation_id;
+		let Change::Add { content, .. } = &mut mutation.changes[0] else {
+			panic!("new reviewed Unit")
+		};
+		content.kind = Kind::World;
+	}
+	assert!(
+		matches!(
+			memory::operate(&store, &actor, changed_kind).await,
+			Err(aidash_server::Error::Invalid(_))
+		),
+		"Experience candidate cannot be admitted as World"
+	);
 	let memory::Outcome::Reviewed(Some(admitted)) = memory::operate(&store, &actor, review.clone())
 		.await
 		.unwrap()
@@ -3250,6 +3417,71 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 		after, origins,
 		"later human edits cannot erase origin-owned budget lineage"
 	);
+	if recovery {
+		use aidash_server::semantic::services::memory_recovery;
+		aidash_server::semantic::worker::sweep(&store)
+			.await
+			.unwrap();
+		let state: String = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("state"))
+				.from(Alias::new("semantic_entries"))
+				.and_where(Expr::col("id").eq(Expr::value(reviewed_id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&store.pool)
+		.await
+		.unwrap();
+		assert_eq!(
+			state, "READY",
+			"regression must exercise a reusable projection before grant removal"
+		);
+		let directory = database.recovery_directory.path();
+		let archive = memory_recovery::backup(&store, directory, participant.bank.clone())
+			.await
+			.unwrap();
+		let mut tx = native::begin(&store.pool).await.unwrap();
+		native::query(
+			&Query::delete()
+				.from_table(Alias::new("authorization_execution"))
+				.and_where(Expr::col("run_id").eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+		tx.commit().await.unwrap();
+		assert!(
+			matches!(
+				memory_recovery::backup(&store, directory, participant.bank.clone()).await,
+				Err(aidash_server::Error::Forbidden)
+			),
+			"missing origin grant rejects backup"
+		);
+		let report = memory_recovery::restore(&store, directory, &archive)
+			.await
+			.unwrap();
+		assert_eq!(
+			report.withheld, 1,
+			"ready projection cannot restore revoked origin authority"
+		);
+		let text: String = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("text"))
+				.from(Alias::new("memory_units"))
+				.and_where(Expr::col("id").eq(Expr::value(reviewed_id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&store.pool)
+		.await
+		.unwrap();
+		assert!(
+			text.is_empty(),
+			"revoked origin body is cleared before serving resumes"
+		);
+		server.abort();
+		return;
+	}
 	memory::mutate(
 		&store,
 		&Actor::Operator,

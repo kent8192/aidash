@@ -19,7 +19,7 @@ pub(crate) struct Scope<'a, 'scope> {
 	pub store: &'a Store,
 	pub lease: &'a mut Lease<'scope>,
 	pub models: &'a Models,
-	pub run: Option<Uuid>,
+	pub delivered: &'a mut Vec<Unit>,
 }
 impl Scope<'_, '_> {
 	async fn stamp(&mut self, bank: &Bank) -> Result<String> {
@@ -339,9 +339,7 @@ impl MemoryScope for Scope<'_, '_> {
 			.await?;
 			selected.push(unit);
 		}
-		if let Some(run) = self.run {
-			super::memory_reads::record(self.store, self.lease, run, &selected).await?;
-		}
+		self.delivered.extend(selected);
 		Ok(())
 	}
 }

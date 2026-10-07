@@ -65,7 +65,9 @@ cargo run -p aidash-server --bin aidash -- memory-recovery backup \
 ```
 
 The command prints the archive path. The pinned policy's `backup_days` governs
-expiry. Expired managed files are physically removed by backup/prune operations
+expiry. Backup/prune operations also retire archives whose exact bank policy
+revision has been superseded, and enforce the current policy's retention from
+the archive creation time. Expired managed files are physically removed by these operations
 and ordinary background maintenance. Archives have a 64 MiB file cap and the
 managed directory has a 128-archive admission cap. These are explicit storage
 guards, not approved Issue #73 service or performance targets.

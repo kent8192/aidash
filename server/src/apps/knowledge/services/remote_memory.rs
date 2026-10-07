@@ -312,7 +312,7 @@ pub(crate) async fn retrieve(
 				store: &runtime.store,
 				lease,
 				models: &models,
-				run: None,
+				delivered: &mut Vec::new(),
 			};
 			engine.recall(&mut scope, &declared.bank, &query).await?
 		};

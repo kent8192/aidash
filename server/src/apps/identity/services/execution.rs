@@ -493,7 +493,15 @@ impl Guard {
 			&self.agent,
 		)
 		.await?;
-		crate::semantic::services::memory_context::combine(semantic, memory, budget)
+		crate::semantic::services::memory_context::complete(
+			store,
+			&mut crate::semantic::service::Lease::Inherited(&mut access),
+			&self.run,
+			semantic,
+			memory,
+			budget,
+		)
+		.await
 	}
 
 	pub async fn human_read(&self, id: Uuid) -> Result<()> {

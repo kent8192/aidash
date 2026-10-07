@@ -54,7 +54,8 @@ impl SemanticIndexingRepository for NativeIndexing {
 			crate::semantic::services::memory_recovery::prune_expired(
 				&self.store,
 				std::path::Path::new(&directory),
-			)?;
+			)
+			.await?;
 		}
 		super::retention::sweep(&self.store).await?;
 		super::purge::sweep(&self.store).await?;

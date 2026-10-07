@@ -78,7 +78,9 @@ pub trait MemoryScope: Send {
 	) -> Result<Vec<Uuid>>;
 	/// Revalidate authorization and each selected Unit's exact revision and content provenance.
 	/// Evidence contains selected Unit roots only; validate each root's content with its
-	/// admitted graph bound, then journal those roots. A policy change requires a retry.
+	/// admitted graph bound, then stage those roots until the complete delivery succeeds.
+	/// Failed recall/reflection or combined context must not persist read dependencies.
+	/// A policy change requires a retry.
 	async fn deliver(
 		&mut self,
 		bank: &Bank,

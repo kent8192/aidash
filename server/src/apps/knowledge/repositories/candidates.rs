@@ -406,7 +406,8 @@ pub(crate) async fn review(
 			bounds.max_graph_visits,
 		)
 		.await?;
-		if content.kind.derived()
+		if content.kind != item.content.kind
+			|| content.kind.derived()
 			|| item
 				.content
 				.evidence
