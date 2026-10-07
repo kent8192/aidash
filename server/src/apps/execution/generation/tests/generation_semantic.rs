@@ -336,7 +336,9 @@ impl Fixture {
 	}
 	async fn remember_source(&self, ordinal: usize) -> Uuid {
 		self.remember.store(ordinal, Ordering::SeqCst);
-		tokio::time::timeout(std::time::Duration::from_secs(5), async {
+		// Match drive's coverage allowance: native context and generated-origin
+		// checks span multiple worker turns and real database/provider boundaries.
+		tokio::time::timeout(std::time::Duration::from_secs(20), async {
 			let worker = Harness {
 				federation: self.f.clone(),
 			};
@@ -366,7 +368,7 @@ impl Fixture {
 			}
 		})
 		.await
-		.expect("memory_mutate must persist the generated authority without deadlock")
+		.unwrap_or_else(|_| panic!("memory_mutate did not persist source {ordinal} within 20s; embedding calls={}, inference calls={}", self.embeddings.load(Ordering::SeqCst), self.inference.load(Ordering::SeqCst)))
 	}
 	async fn usage(&self) -> Value {
 		let (status, value) = request(

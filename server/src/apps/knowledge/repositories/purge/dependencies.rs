@@ -91,34 +91,38 @@ pub(super) async fn erase(
 		for id in runs {
 			support = support.add(contains("run", id));
 		}
-		// Historical lineage is retained even when a later correction changes support.
-		let rows = native::query(
-			&Query::select()
-				.distinct()
-				.columns(["unit_id", "bank_id"].map(Alias::new))
-				.from(Alias::new("memory_history"))
-				.and_where(Expr::col("bank_id").in_subquery(workspace_banks()))
-				.cond_where(support.clone())
-				.limit(bounds.max_graph_visits as u64 + 1)
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_all(&mut **lease.tx())
-		.await?;
-		if rows.len() > bounds.max_graph_visits {
-			return Err(Error::Conflict(
-				"historical memory purge impact exceeds its declared bound".into(),
-			));
-		}
-		for row in rows {
-			let dependent: Uuid = row.try_get("unit_id")?;
-			banks.insert(row.try_get("bank_id")?);
-			if seen.insert(dependent) {
-				if seen.len() > bounds.max_graph_visits {
-					return Err(Error::Conflict(
-						"memory purge graph exceeds its declared bound".into(),
-					));
+		// Current lineage survives history expiry. Historical revisions also track
+		// old quotations when an independent correction changes current support.
+		for (table, identity) in [("memory_units", "id"), ("memory_history", "unit_id")] {
+			let rows = native::query(
+				&Query::select()
+					.distinct()
+					.expr_as(Expr::col(identity), Alias::new("unit_id"))
+					.column(Alias::new("bank_id"))
+					.from(Alias::new(table))
+					.and_where(Expr::col("bank_id").in_subquery(workspace_banks()))
+					.cond_where(support.clone())
+					.limit(bounds.max_graph_visits as u64 + 1)
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_all(&mut **lease.tx())
+			.await?;
+			if rows.len() > bounds.max_graph_visits {
+				return Err(Error::Conflict(
+					"memory purge impact exceeds its declared bound".into(),
+				));
+			}
+			for row in rows {
+				let dependent: Uuid = row.try_get("unit_id")?;
+				banks.insert(row.try_get("bank_id")?);
+				if seen.insert(dependent) {
+					if seen.len() > bounds.max_graph_visits {
+						return Err(Error::Conflict(
+							"memory purge graph exceeds its declared bound".into(),
+						));
+					}
+					pending.push_back(dependent);
 				}
-				pending.push_back(dependent);
 			}
 		}
 		let candidate_rows = native::query(

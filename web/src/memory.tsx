@@ -154,6 +154,20 @@ export function MemoryWorkspace({
   const providerRef = provider
     ? { id: provider.id, version: provider.version }
     : undefined;
+  const providerDefinition = providers.find(
+    (entry) => providerRef && refKey(entry) === refKey(providerRef),
+  );
+  const contextBound = (
+    providerDefinition?.config.policy as
+      | { bounds?: { max_context_tokens?: number } }
+      | undefined
+  )?.bounds?.max_context_tokens;
+  const contextTokens =
+    typeof contextBound === "number" &&
+    Number.isSafeInteger(contextBound) &&
+    contextBound > 0
+      ? Math.min(4096, contextBound)
+      : 0;
   const bank: Bank = chosen?.bank ?? {
     home: data.node.id,
     tenant,
@@ -677,9 +691,15 @@ export function MemoryWorkspace({
           <form
             onSubmit={(e) => {
               e.preventDefault();
+              if (!contextTokens) return;
               operate({
                 action: "recall",
-                query: { text: query, time: null, kinds: [], max_tokens: 4096 },
+                query: {
+                  text: query,
+                  time: null,
+                  kinds: [],
+                  max_tokens: contextTokens,
+                },
               });
             }}
           >
@@ -690,10 +710,20 @@ export function MemoryWorkspace({
                 required
               />
             </Field>
-            <button disabled={blocked}>{text("Recall", "検索")}</button>
+            {!contextTokens && (
+              <p role="status">
+                {text(
+                  "This memory policy is unavailable.",
+                  "この記憶ポリシーは利用できません。",
+                )}
+              </p>
+            )}
+            <button disabled={blocked || !contextTokens}>
+              {text("Recall", "検索")}
+            </button>
             <button
               type="button"
-              disabled={blocked || !query.trim()}
+              disabled={blocked || !contextTokens || !query.trim()}
               onClick={() =>
                 operate({
                   action: "reflect",
@@ -701,7 +731,7 @@ export function MemoryWorkspace({
                     text: query,
                     time: null,
                     kinds: [],
-                    max_tokens: 4096,
+                    max_tokens: contextTokens,
                   },
                 })
               }

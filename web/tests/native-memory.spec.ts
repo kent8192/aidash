@@ -12,6 +12,7 @@ type FixtureBody = {
     expected_revision?: number;
     before?: number | null;
     after?: string | null;
+    query?: { max_tokens: number };
   };
   changes?: {
     content: {
@@ -26,6 +27,7 @@ async function fixture(
   locale: "en-US" | "ja-JP",
   paged = false,
   visual = false,
+  contextTokens = 4096,
 ) {
   await installBearerDashboard(page, "fixture-token");
   await page.addInitScript(
@@ -87,7 +89,9 @@ async function fixture(
     ],
     registry: [
       entry("agent", "agent", { memory: ref("memory"), model: ref("model") }),
-      entry("memory", "memory"),
+      entry("memory", "memory", {
+        policy: { bounds: { max_context_tokens: contextTokens } },
+      }),
       entry("model", "model"),
       entry("embedding", "embedding"),
       entry("reranker", "reranker"),
@@ -240,6 +244,8 @@ async function fixture(
     }
     if (path.endsWith("/memory/operate")) {
       const action = body.action.action;
+      if (action === "recall" || action === "reflect")
+        writes.push({ url: path, body });
       if (action === "history") {
         writes.push({ url: path, body });
         return route.fulfill({
@@ -374,6 +380,59 @@ async function fixture(
 }
 
 for (const locale of ["en-US", "ja-JP"] as const) {
+  test(`recall and reflection respect the exact private and shared context cap (${locale})`, async ({
+    page,
+  }) => {
+    const f = await fixture(page, locale, false, false, 512);
+    const ja = locale === "ja-JP";
+    for (const privateBank of [true, false]) {
+      if (!privateBank) {
+        await page
+          .getByLabel(ja ? "記憶の所有者" : "Memory bank")
+          .selectOption("");
+        await page
+          .getByLabel(ja ? "テナント" : "Tenant", { exact: true })
+          .fill("acme");
+        await page
+          .getByLabel(
+            ja ? "メモリプロバイダのバージョン" : "Memory provider version",
+          )
+          .selectOption("memory@1.0.0");
+      }
+      await page
+        .getByLabel(ja ? "記憶の検索・考察" : "Recall or reflect")
+        .fill("Current evidence");
+      for (const action of ["recall", "reflect"]) {
+        const request = page.waitForRequest(
+          (request) =>
+            request.url().endsWith("/memory/operate") &&
+            request.postDataJSON()?.action?.action === action,
+        );
+        await page
+          .getByRole("button", {
+            name:
+              action === "recall"
+                ? ja
+                  ? "検索"
+                  : "Recall"
+                : ja
+                  ? "根拠付きで考察"
+                  : "Reflect with cited evidence",
+            exact: true,
+          })
+          .click();
+        expect((await request).postDataJSON().action.query.max_tokens).toBe(
+          512,
+        );
+      }
+    }
+    expect(
+      f.writes.filter((write) =>
+        ["recall", "reflect"].includes(write.body.action?.action ?? ""),
+      ),
+    ).toHaveLength(4);
+  });
+
   test(`memory Registry pins all six roles and an explicit graph cutoff (${locale})`, async ({
     page,
   }) => {

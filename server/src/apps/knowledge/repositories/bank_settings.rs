@@ -71,16 +71,27 @@ pub(crate) async fn set(
 	}
 	// Workspace mutation locks also cover policy replacement. Tombstones count
 	// toward record capacity; every non-deleted row counts toward live capacity.
+	// Mutation receipts and model operations remain durable after body retention.
 	// Rejection rolls back both settings and any participant update in this lease.
 	let policy = crate::semantic::native_memory::policy(lease, provider).await?;
-	for (live_only, cap) in [
-		(false, policy.retention.max_unit_records),
-		(true, policy.bounds.max_units),
+	for (table, live_only, cap) in [
+		("memory_units", false, policy.retention.max_unit_records),
+		("memory_units", true, policy.bounds.max_units),
+		(
+			"memory_receipts",
+			false,
+			policy.retention.max_model_operations,
+		),
+		(
+			"memory_model_operations",
+			false,
+			policy.retention.max_model_operations,
+		),
 	] {
 		let mut query = Query::select();
 		query
 			.expr(Func::count(Expr::col(ColumnRef::Asterisk).into()))
-			.from(Alias::new("memory_units"))
+			.from(Alias::new(table))
 			.and_where(Expr::col("bank_id").eq(Expr::value(id)));
 		if live_only {
 			query.and_where(Expr::col("deleted").eq(false));

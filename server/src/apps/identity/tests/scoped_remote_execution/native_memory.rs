@@ -416,6 +416,19 @@ async fn native_remote_run_reads_use_the_pinned_provenance_limit_above_1024(
 	};
 	let p = scoped_pair;
 	first_native_context(&p).await;
+	// This case isolates the declared provenance bound. Coverage makes its
+	// deliberate 1596-visit graph slower than the normal HTTP/peer deadlines.
+	let deadline = std::time::Duration::from_secs(180);
+	p.aa.context
+		.set_singleton(reinhardt::di::KeyedFactoryOutput::<
+			reinhardt::di::SelfKey<aidash_server::http::Protection>,
+			aidash_server::http::Protection,
+		>::new(aidash_server::http::Protection::new(
+			aidash_server::http::Settings {
+				timeout: deadline,
+				..Default::default()
+			},
+		)));
 	let fixture = p.native.as_ref().unwrap();
 	let mut bank: Bank = serde_json::from_value(fixture["bank"].clone()).unwrap();
 	bank.participant = None;
@@ -489,7 +502,7 @@ async fn native_remote_run_reads_use_the_pinned_provenance_limit_above_1024(
 			"{}/federation/v0.1/scoped/dependencies/verify",
 			p.a.config.endpoint
 		))
-		.timeout(std::time::Duration::from_secs(90))
+		.timeout(deadline)
 		.bearer_auth(std::env::var("AIDASH_SECRET_TEST_PEER").unwrap())
 		.header("x-aidash-node", &p.b.config.node_id)
 		.header("x-aidash-protocol", "0.1")

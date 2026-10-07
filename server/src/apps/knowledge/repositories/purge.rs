@@ -212,7 +212,7 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 				} else {
 					attempts
 				};
-				let state = if max_retries.is_none_or(|limit| attempt as usize <= limit) {
+				let state = if max_retries.is_none_or(|limit| (attempt as usize) < limit) {
 					"pending"
 				} else {
 					"failed"

@@ -192,6 +192,214 @@ async fn smaller_storage_policy_rolls_back_shared_changes_and_participant_upgrad
 }
 
 #[rstest]
+#[case(false, false)]
+#[case(false, true)]
+#[case(true, false)]
+#[case(true, true)]
+#[tokio::test]
+async fn smaller_operation_policy_preserves_durable_capacity_and_participant_revision(
+	#[future] database: DatabaseFixture,
+	mut bounds: Bounds,
+	#[case] participant: bool,
+	#[case] model_operations: bool,
+) {
+	// Admit the model's full output reservation before injecting transport failure.
+	bounds.max_model_tokens = 32_768;
+	let database = database.await;
+	let (store, registry, workspace) = setup(&database, bounds.clone()).await;
+	let bank = if participant {
+		memory::create_participant(
+			&store,
+			&Actor::Operator,
+			workspace,
+			memory::CreateParticipant {
+				agent: reference("a"),
+			},
+		)
+		.await
+		.unwrap()
+		.bank
+	} else {
+		Bank {
+			home: store.node_id.clone(),
+			tenant: "acme".into(),
+			workspace,
+			participant: None,
+		}
+	};
+	let id = Uuid::now_v7();
+	let admitted = memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&bank,
+			Change::Add {
+				id,
+				content: content("Operation capacity fixture"),
+			},
+		),
+	)
+	.await
+	.unwrap()
+	.remove(0);
+	if model_operations {
+		// Failed model calls still retain durable operation identities and charges.
+		for _ in 0..3 {
+			assert!(
+				memory::operate(
+					&store,
+					&Actor::Operator,
+					memory::Operation {
+						operation_id: Uuid::now_v7(),
+						provider: reference("p"),
+						bank: bank.clone(),
+						action: memory::Action::Retain {
+							text: "Operation capacity fixture".into(),
+							evidence: vec![admitted.evidence()],
+						},
+					}
+				)
+				.await
+				.is_err()
+			);
+		}
+	} else {
+		for revision in 1..=2 {
+			memory::mutate(
+				&store,
+				&Actor::Operator,
+				mutation(
+					&bank,
+					Change::Correct {
+						id,
+						expected_revision: revision,
+						content: content("Corrected capacity fixture"),
+					},
+				),
+			)
+			.await
+			.unwrap();
+		}
+	}
+	let table = if model_operations {
+		"memory_model_operations"
+	} else {
+		"memory_receipts"
+	};
+	let count: i64 = native::query_scalar(
+		&Query::select()
+			.expr(reinhardt::query::Func::count(Expr::col("bank_id").into()))
+			.from(Alias::new(table))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&store.pool)
+	.await
+	.unwrap();
+	assert_eq!(
+		count, 3,
+		"three durable operations must precede the policy change"
+	);
+	let mut replacement = config(&database).await;
+	replacement["policy"]["retention"]["max_model_operations"] = json!(2);
+	registry
+		.register(entry("memory", "small", replacement))
+		.await
+		.unwrap();
+	let settings = || memory::Operation {
+		operation_id: Uuid::now_v7(),
+		provider: reference("p"),
+		bank: bank.clone(),
+		action: memory::Action::Settings,
+	};
+	let memory::Outcome::Settings(Some(before)) =
+		memory::operate(&store, &Actor::Operator, settings())
+			.await
+			.unwrap()
+	else {
+		panic!("existing settings")
+	};
+	let result = if participant {
+		let mut agent = entry(
+			"agent",
+			"a",
+			json!({"model":reference("m"),"instructions":"Use bounded memory","tools":[],"skills":[],"memory":reference("small"),"allow_memory_write":true}),
+		);
+		agent.version = "1.1.0".into();
+		registry.register(agent).await.unwrap();
+		memory::upgrade_participant(
+			&store,
+			&Actor::Operator,
+			bank.clone(),
+			memory::UpgradeParticipant {
+				agent: EntityRef {
+					id: "a".into(),
+					version: "1.1.0".into(),
+				},
+				expected_revision: 1,
+			},
+		)
+		.await
+		.map(|_| ())
+	} else {
+		memory::operate(
+			&store,
+			&Actor::Operator,
+			memory::Operation {
+				operation_id: Uuid::now_v7(),
+				provider: reference("small"),
+				bank: bank.clone(),
+				action: memory::Action::ConfigureBank {
+					expected_revision: before.revision,
+				},
+			},
+		)
+		.await
+		.map(|_| ())
+	};
+	assert!(
+		matches!(result, Err(aidash_server::Error::Conflict(message)) if message == "replacement memory policy is below existing bank storage")
+	);
+	let memory::Outcome::Settings(Some(after)) =
+		memory::operate(&store, &Actor::Operator, settings())
+			.await
+			.unwrap()
+	else {
+		panic!("retained settings")
+	};
+	assert_eq!(
+		(after.provider, after.revision),
+		(before.provider, before.revision)
+	);
+	if participant {
+		let retained = memory::upgrade_participant(
+			&store,
+			&Actor::Operator,
+			bank.clone(),
+			memory::UpgradeParticipant {
+				agent: reference("a"),
+				expected_revision: 1,
+			},
+		)
+		.await
+		.unwrap();
+		assert_eq!(retained.agent, reference("a"));
+	}
+	memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&bank,
+			Change::Delete {
+				id,
+				expected_revision: if model_operations { 1 } else { 3 },
+			},
+		),
+	)
+	.await
+	.unwrap();
+}
+
+#[rstest]
 #[tokio::test]
 async fn expiry_drains_in_batches_no_larger_than_mutation_capacity(
 	#[future] database: DatabaseFixture,
