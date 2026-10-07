@@ -17,6 +17,7 @@ impl BindingSnapshot {
 			.collect::<Vec<_>>();
 		let mut expected = BTreeMap::<QualifiedRef, NormalizedBinding>::new();
 		let mut source_skill_support = false;
+		let mut decision_hooks = BTreeSet::new();
 		while let Some((mut normalized, mut ancestry, lifecycle)) = pending.pop() {
 			let binding = &mut normalized.binding;
 			let entry = &definitions
@@ -29,6 +30,7 @@ impl BindingSnapshot {
 				BindingKind::Skill => "skill",
 				BindingKind::Memory => "memory",
 				BindingKind::Source => "source",
+				BindingKind::Decider => "decider",
 			};
 			if entry.kind != kind {
 				return Err(Error::Invalid(
@@ -129,6 +131,24 @@ impl BindingSnapshot {
 						));
 					}
 				}
+			} else if binding.kind == BindingKind::Decider {
+				let config: crate::decision::DeciderConfig =
+					serde_json::from_value(entry.config.clone())?;
+				config.validate()?;
+				binding.validate()?;
+				if binding.target.registry_node != self.agent.registry_node
+					|| !decision_hooks.insert(config.hook)
+				{
+					return Err(Error::Invalid(
+						"duplicate hook or non-execution-node Decider Binding".into(),
+					));
+				}
+				binding
+					.narrow
+					.decision
+					.clone()
+					.unwrap_or_default()
+					.validate(&config)?;
 			} else {
 				if binding.narrow != Narrowing::default() {
 					return Err(Error::Invalid(
@@ -208,6 +228,17 @@ impl BindingSnapshot {
 				{
 					return Err(Error::Invalid(
 						"Tool snapshot differs from its placement or Provider contract".into(),
+					));
+				}
+			} else if expected.binding.kind == BindingKind::Decider {
+				let config: crate::decision::DeciderConfig =
+					serde_json::from_value(saved.definition.config.clone())?;
+				if saved.provider_contract_digest.as_deref() != Some(&config.contract_digest()?)
+					|| saved.provider_implementation.as_deref() != Some(crate::decision::PROVIDER)
+					|| saved.excluded_reason.is_some()
+				{
+					return Err(Error::Invalid(
+						"Decider snapshot differs from its provider/builder contracts".into(),
 					));
 				}
 			}

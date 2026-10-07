@@ -84,6 +84,16 @@ struct Providers {
 	unavailable: Option<String>,
 }
 impl ProviderCatalog for Providers {
+	fn decision_implementation(
+		&self,
+		config: &aidash_domain::decision::DeciderConfig,
+	) -> Result<String> {
+		config.validate()?;
+		if self.unavailable.as_deref() == Some("decision") {
+			return Err(Error::Invalid("DECISION_PROVIDER_UNAVAILABLE".into()));
+		}
+		Ok(aidash_domain::decision::PROVIDER.into())
+	}
 	fn contract(
 		&self,
 		descriptor: &ToolDescriptor,
@@ -1071,4 +1081,116 @@ async fn bundle_selection_rejects_same_id_on_different_nodes_or_versions() {
 		});
 		assert!(snapshot(&mut catalog, &config, false).await.is_err());
 	}
+}
+
+fn decider_config() -> Value {
+	json!({"hook":"compaction","answer_type":"noul","description":"Preserve needed history",
+        "provider_contract":"typesafe.jev/1","endpoint":"https://example.test/systemone","model":"jev-1.13.0",
+        "credential_env":"AIDASH_SECRET_JEV","builder":"aidash.compaction/1","option_source":"history_event/1",
+        "rule":"compaction.keep/1","keep_threshold":"3fe0000000000000","mode":"enforce"})
+}
+fn decider_binding(id: &str) -> Binding {
+	serde_json::from_value(json!({"kind":"decider","target":reference(id),"narrow":{"decision":{"keep_threshold":"3fd0000000000000","preserve_recent":8}}})).unwrap()
+}
+#[tokio::test]
+async fn explicit_decider_snapshot_pins_provider_builder_model_and_narrowing() {
+	let mut catalog = Catalog::new();
+	catalog.insert(entry("decider", "decider", decider_config()));
+	let mut config = agent_config();
+	config.bindings.push(decider_binding("decider"));
+	let saved = snapshot(&mut catalog, &config, false).await.unwrap();
+	saved.validate().unwrap();
+	let bound = saved
+		.decider(aidash_domain::decision::Hook::Compaction)
+		.unwrap();
+	assert_eq!(bound.pin.identity, reference("decider"));
+	assert_eq!(bound.config.model, "jev-1.13.0");
+	assert_eq!(bound.restrictions.preserve_recent, 8);
+	assert_eq!(bound.restrictions.keep_threshold.value(), 0.25);
+	catalog
+		.entries
+		.get_mut(&reference("decider"))
+		.unwrap()
+		.config["model"] = json!("jev-1.14.0");
+	assert_eq!(
+		saved
+			.decider(aidash_domain::decision::Hook::Compaction)
+			.unwrap()
+			.config
+			.model,
+		"jev-1.13.0"
+	);
+	let mut corrupt = saved.clone();
+	corrupt
+		.bindings
+		.iter_mut()
+		.find(|b| b.definition.kind == "decider")
+		.unwrap()
+		.provider_contract_digest = Some("a".repeat(64));
+	assert!(corrupt.validate().is_err());
+	corrupt = saved;
+	corrupt
+		.bindings
+		.iter_mut()
+		.find(|b| b.definition.kind == "decider")
+		.unwrap()
+		.narrow
+		.decision
+		.as_mut()
+		.unwrap()
+		.preserve_recent = 6;
+	assert!(corrupt.validate().is_err());
+}
+#[tokio::test]
+async fn duplicate_decider_hooks_and_unavailable_node_implementations_fail_admission() {
+	let mut catalog = Catalog::new();
+	catalog.insert(entry("decider", "decider", decider_config()));
+	catalog.insert(entry("other", "decider", decider_config()));
+	let mut config = agent_config();
+	config.bindings.push(decider_binding("decider"));
+	config.bindings.push(decider_binding("other"));
+	assert!(snapshot(&mut catalog, &config, false).await.is_err());
+	config.bindings.pop();
+	let unavailable = Providers {
+		unavailable: Some("decision".into()),
+	};
+	assert!(
+		resolve(
+			&mut catalog,
+			&unavailable,
+			reference("agent"),
+			&agent_entry(&config),
+			false
+		)
+		.await
+		.is_err()
+	);
+	let saved = snapshot(&mut catalog, &config, true).await.unwrap();
+	assert_eq!(
+		saved
+			.decider(aidash_domain::decision::Hook::Compaction)
+			.unwrap()
+			.pin
+			.identity
+			.registry_node,
+		NODE
+	);
+}
+#[test]
+fn decider_bindings_reject_deletion_widening_and_tool_only_fields() {
+	for narrow in [
+		json!({"decision":{"keep_threshold":"3fe3333333333333"}}),
+		json!({"decision":{"preserve_recent":5}}),
+		json!({"allowed_hosts":["example.test"]}),
+		json!({"limits":{"max_calls":10}}),
+	] {
+		let binding: Binding = serde_json::from_value(
+			json!({"kind":"decider","target":reference("decider"),"narrow":narrow}),
+		)
+		.unwrap();
+		assert!(binding.validate().is_err());
+	}
+	let mut tool = Binding::tool(reference("tool"));
+	tool.narrow.decision = Some(Default::default());
+	assert!(tool.validate().is_err());
 }

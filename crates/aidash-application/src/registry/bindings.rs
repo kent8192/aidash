@@ -53,6 +53,7 @@ pub async fn resolve(
 	let mut aliases = BTreeSet::new();
 	let mut operations = BTreeSet::new();
 	let mut source_skill_support = false;
+	let mut decision_hooks = BTreeSet::new();
 	for (reference, kind) in std::iter::once((&config.model, "model"))
 		.chain(config.cluster.iter().map(|r| (r, "cluster")))
 	{
@@ -225,11 +226,36 @@ pub async fn resolve(
 					});
 				}
 			}
+		} else if kind == BindingKind::Decider {
+			if entry.kind != "decider"
+				|| target.registry_node != agent.registry_node
+				|| origin != BindingOrigin::Explicit
+			{
+				return Err(Error::Invalid(
+					"Decider requires an explicit execution-node Binding".into(),
+				));
+			}
+			let config: aidash_domain::decision::DeciderConfig =
+				serde_json::from_value(entry.config.clone())?;
+			config.validate()?;
+			if !decision_hooks.insert(config.hook) {
+				return Err(Error::Invalid(
+					"an Agent must bind at most one Decider per hook".into(),
+				));
+			}
+			effective_narrow
+				.decision
+				.clone()
+				.unwrap_or_default()
+				.validate(&config)?;
+			provider_contract_digest = Some(config.contract_digest()?);
+			provider_implementation = Some(providers.decision_implementation(&config)?);
 		} else {
 			let expected = match kind {
 				BindingKind::Skill => "skill",
 				BindingKind::Memory => "memory",
 				BindingKind::Source => "source",
+				BindingKind::Decider => "decider",
 				_ => unreachable!(),
 			};
 			if entry.kind != expected {

@@ -56,6 +56,7 @@ pub fn definition_references(
 					BindingKind::Skill => "skill",
 					BindingKind::Memory => "memory",
 					BindingKind::Source => "source",
+					BindingKind::Decider => "decider",
 				};
 				result.push((normalized.binding.target, kind.into()));
 			}
@@ -277,6 +278,8 @@ impl QualifiedRef {
 #[serde(default, deny_unknown_fields)]
 pub struct Narrowing {
 	#[serde(skip_serializing_if = "Option::is_none")]
+	pub decision: Option<crate::decision::Restrictions>,
+	#[serde(skip_serializing_if = "Option::is_none")]
 	pub allowed_hosts: Option<BTreeSet<String>>,
 	#[serde(skip_serializing_if = "BTreeMap::is_empty")]
 	pub scope: BTreeMap<String, BTreeSet<String>>,
@@ -305,6 +308,19 @@ impl Narrowing {
 				.or_insert(*ceiling);
 		}
 		let result = Self {
+			decision: match (&self.decision, &other.decision) {
+				(Some(a), Some(b)) => Some(crate::decision::Restrictions {
+					keep_threshold: if a.keep_threshold.value() <= b.keep_threshold.value() {
+						a.keep_threshold
+					} else {
+						b.keep_threshold
+					},
+					preserve_recent: a.preserve_recent.max(b.preserve_recent),
+					forbid_apply: a.forbid_apply || b.forbid_apply,
+				}),
+				(Some(a), None) | (None, Some(a)) => Some(a.clone()),
+				(None, None) => None,
+			},
 			allowed_hosts,
 			scope,
 			limits,
@@ -379,6 +395,7 @@ pub enum BindingKind {
 	Skill,
 	Memory,
 	Source,
+	Decider,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -406,6 +423,25 @@ impl Binding {
 	}
 	pub fn validate(&self) -> Result<()> {
 		self.target.validate()?;
+		if self.kind == BindingKind::Decider {
+			if self.narrow.allowed_hosts.is_some()
+				|| !self.narrow.scope.is_empty()
+				|| !self.narrow.limits.is_empty()
+				|| self
+					.narrow
+					.decision
+					.as_ref()
+					.is_some_and(|r| r.keep_threshold.value() > 0.5 || r.preserve_recent < 6)
+			{
+				return Err(Error::Invalid(
+					"invalid Decider Binding restrictions".into(),
+				));
+			}
+		} else if self.narrow.decision.is_some() {
+			return Err(Error::Invalid(
+				"decision restrictions require a Decider Binding".into(),
+			));
+		}
 		if let Some(alias) = &self.alias {
 			validate_alias(alias)?;
 		}
@@ -539,6 +575,37 @@ impl ResolvedDefinition {
 	}
 }
 impl BindingSnapshot {
+	/// Reconstruct an explicit exact Decider from the retained admission closure.
+	pub fn decider(&self, hook: crate::decision::Hook) -> Result<crate::decision::BoundDecider> {
+		self.validate()?;
+		let mut found = None;
+		for binding in self
+			.bindings
+			.iter()
+			.filter(|b| b.definition.kind == "decider")
+		{
+			let config: crate::decision::DeciderConfig =
+				serde_json::from_value(binding.definition.config.clone())?;
+			if config.hook != hook {
+				continue;
+			}
+			let pin = crate::decision::DeciderPin {
+				identity: binding.identity.clone(),
+				definition_digest: binding.digest.clone(),
+				configuration_digest: config.digest()?,
+			};
+			pin.check(&binding.definition)?;
+			let bound = crate::decision::BoundDecider {
+				pin,
+				config,
+				restrictions: binding.narrow.decision.clone().unwrap_or_default(),
+			};
+			if found.replace(bound).is_some() {
+				return Err(Error::Invalid("duplicate retained Decider hook".into()));
+			}
+		}
+		found.ok_or_else(|| Error::Invalid("Run has no explicit Decider for this hook".into()))
+	}
 	pub fn validate(&self) -> Result<()> {
 		self.agent.validate()?;
 		if self.schema_version != BINDING_SCHEMA
@@ -644,6 +711,16 @@ impl BindingSnapshot {
 				{
 					return Err(Error::Invalid(
 						"Tool snapshot lacks alias or Provider evidence".into(),
+					));
+				}
+			} else if binding.definition.kind == "decider" {
+				if binding.alias.is_some()
+					|| binding.excluded_reason.is_some()
+					|| binding.provider_contract_digest.is_none()
+					|| binding.provider_implementation.is_none()
+				{
+					return Err(Error::Invalid(
+						"Decider snapshot lacks exact Provider evidence".into(),
 					));
 				}
 			} else if binding.alias.is_some()
