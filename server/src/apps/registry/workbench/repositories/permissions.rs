@@ -48,7 +48,24 @@ impl PermissionScope for Scope {
 		entry: &aidash_domain::registry::Entry,
 	) -> aidash_application::Result<aidash_domain::registry::bindings::BindingSnapshot> {
 		let node = self.node.clone();
-		crate::apps::registry::repositories::bindings::preview(&mut *self.tx, &node, entry).await
+		aidash_application::registry::bindings::resolve(
+			&mut aidash_application::registry::bindings::catalog::LookupCatalog {
+				definitions: &mut super::authority::Scope {
+					tx: &mut *self.tx,
+					actor: &self.actor,
+				},
+				node: &node,
+			},
+			&crate::bootstrap::registry_validation(),
+			aidash_domain::registry::bindings::QualifiedRef {
+				registry_node: node.clone(),
+				id: entry.id.clone(),
+				version: entry.version.clone(),
+			},
+			entry,
+			false,
+		)
+		.await
 	}
 	async fn require_inspection(&mut self, entry: &EntityRef) -> Result<()> {
 		aidash_application::registry::workbench::inspection::require(

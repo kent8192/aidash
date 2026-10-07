@@ -8,9 +8,14 @@ struct Scope {
 	superseded: Vec<Uuid>,
 	persisted: Option<Area>,
 	events: Vec<(String, Value)>,
+	snapshot: Option<aidash_domain::registry::bindings::BindingSnapshot>,
+	area: Option<Area>,
 }
 #[async_trait::async_trait]
 impl FileScopePort for Scope {
+	fn binding_snapshot(&self) -> Result<&aidash_domain::registry::bindings::BindingSnapshot> {
+		self.snapshot.as_ref().ok_or(Error::Forbidden)
+	}
 	fn limits(&self) -> Result<Limits> {
 		Ok(Limits {
 			working_bytes: 1_000_000,
@@ -24,25 +29,41 @@ impl FileScopePort for Scope {
 		0
 	}
 	fn resource(&self, _kind: &str, _id: &str, _attributes: Value) -> Resource {
-		panic!("unexpected resource effect")
+		assert!(self.snapshot.is_some());
+		Resource {
+			tenant: "tenant".into(),
+			kind: _kind.into(),
+			id: _id.into(),
+			attributes: _attributes,
+		}
 	}
 	async fn entry(&mut self, _reference: &EntityRef, _action: &str) -> Result<Entry> {
-		panic!("unexpected entry effect")
+		let snapshot = self.binding_snapshot()?;
+		assert_eq!(_reference, &snapshot.agent.local());
+		Ok(snapshot
+			.definitions
+			.iter()
+			.find(|d| d.identity == snapshot.agent)
+			.unwrap()
+			.definition
+			.clone())
 	}
 	async fn check_pinned(&mut self, _entry: &Entry) -> Result<()> {
-		panic!("unexpected check_pinned effect")
+		assert!(self.snapshot.is_some());
+		Ok(())
 	}
 	async fn effective(&mut self, _reference: &EntityRef) -> Result<Entry> {
 		panic!("unexpected effective effect")
 	}
 	async fn require(&mut self, _resource: &Resource, _action: &str) -> Result<()> {
-		panic!("unexpected require effect")
+		assert!(self.snapshot.is_some());
+		Ok(())
 	}
 	async fn serialize_sharing(&mut self) -> Result<()> {
 		panic!("unexpected serialize_sharing effect")
 	}
 	async fn for_run(&mut self, _run: &RunMetadata) -> Result<Area> {
-		panic!("unexpected for_run effect")
+		Ok(self.area.as_ref().expect("admitted area").clone())
 	}
 	async fn authorize(&mut self, _area: &Area, _action: &str) -> Result<()> {
 		panic!("unexpected authorize effect")
@@ -51,7 +72,8 @@ impl FileScopePort for Scope {
 		panic!("unexpected current_run effect")
 	}
 	async fn require_current(&mut self, _area: &Area, _run: &RunMetadata) -> Result<()> {
-		panic!("unexpected require_current effect")
+		assert!(self.snapshot.is_some());
+		Ok(())
 	}
 	async fn execute(
 		&mut self,
@@ -156,6 +178,8 @@ fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 			superseded: vec![],
 			persisted: None,
 			events: vec![],
+			snapshot: None,
+			area: None,
 		},
 		area,
 		file,
@@ -330,4 +354,79 @@ async fn publication_tombstones_only_removed_working_objects() {
 			json!({"area_id":area.id,"revision":5,"generation":7})
 		)]
 	);
+}
+
+fn invoke_fixture(operation: &str, narrow: Value) -> (Scope, RunMetadata, FileEntry) {
+	let (mut scope, area, file) = fixture(b"abcdefgh");
+	let node = "aidash://local";
+	let mut agent = crate::test_support::agent("agent");
+	let mut binding = crate::test_support::binding("tool", node, &format!("aidash.{operation}"));
+	binding["narrow"] = narrow;
+	agent.config["bindings"] = json!([binding]);
+	let tool = crate::test_support::entry(
+		&format!("aidash.{operation}"),
+		"tool",
+		json!(aidash_domain::tool::providers::core_descriptor(node, operation).unwrap()),
+	);
+	scope.snapshot = Some(crate::test_support::resolve(
+		node,
+		&agent,
+		false,
+		vec![tool],
+	));
+	let run = RunMetadata {
+		id: Uuid::new_v4(),
+		task_id: Uuid::new_v4(),
+		workspace_id: area.workspace_id,
+		home_node: node.into(),
+		agent_id: agent.id,
+		agent_version: agent.version,
+		phase: aidash_domain::RunPhase::Ready,
+		control: aidash_domain::RunControl::Active,
+		step: 0,
+		revision: 1,
+		observed_input_seq: 0,
+		ledger_worker_ready: true,
+		error: None,
+		lease_owner: None,
+		lease_until: None,
+		updated_at: chrono::Utc::now(),
+	};
+	scope.area = Some(area);
+	(scope, run, file)
+}
+#[rstest::rstest]
+#[case("outbound_get", json!({"allowed_hosts":["example.com"]}), json!({"url":"https://outside.example/data"}))]
+#[case("file_read", json!({"scope":{"representation":["text"]}}), json!({"representation":"model_input"}))]
+#[case("file_read", json!({"limits":{"max_bytes":3}}), json!({"max_bytes":4}))]
+#[tokio::test]
+async fn direct_invocations_reject_inputs_outside_admitted_binding_before_effects(
+	#[case] operation: &str,
+	#[case] narrow: Value,
+	#[case] input: Value,
+) {
+	let (mut scope, run, _) = invoke_fixture(operation, narrow);
+	scope.area = None;
+	assert!(matches!(
+		invoke(&mut scope, &run, operation, input, "request").await,
+		Err(Error::Domain(aidash_domain::Error::Invalid(_)))
+	));
+	assert_eq!(scope.opens, 0);
+	assert!(scope.events.is_empty());
+}
+#[tokio::test]
+async fn direct_file_read_applies_the_admitted_limit_when_input_omits_it() {
+	let (mut scope, run, file) = invoke_fixture("file_read", json!({"limits":{"max_bytes":3}}));
+	let result = invoke(
+		&mut scope,
+		&run,
+		"file_read",
+		json!({"file_id":file.file_id,"representation":"text","expected_digest":file.digest}),
+		"request",
+	)
+	.await
+	.unwrap();
+	assert_eq!(result.result["content"], "abc");
+	assert_eq!(result.result["next_offset"], 3);
+	assert_eq!(scope.opens, 1);
 }

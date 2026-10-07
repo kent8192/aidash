@@ -64,18 +64,12 @@ pub async fn invoke(
 	key: &str,
 ) -> Result<Envelope> {
 	settings(scope, run).await?;
-	scope.binding_snapshot()?.operation(name)?;
+	let binding = scope.binding_snapshot()?.operation(name)?.clone();
+	let mut input = input;
+	binding.narrow.apply(&mut input)?;
 	scope
 		.require(
-			&scope.resource(
-				"tool",
-				&scope
-					.binding_snapshot()?
-					.operation(name)?
-					.identity
-					.resource_id(),
-				json!({}),
-			),
+			&scope.resource("tool", &binding.identity.resource_id(), json!({})),
 			"tool.invoke",
 		)
 		.await?;

@@ -38,6 +38,19 @@ test.beforeEach(async ({ page }) => {
               tags: [],
               skills: [],
             },
+            ...["1.0.0", "2.0.0"].map((version) => ({
+              id: "shared-tool",
+              version,
+              kind: "tool",
+              name: { en: "Shared tool" },
+              description: { en: "Fixture" },
+              config: {},
+              schema: {},
+              capabilities: [],
+              languages: [],
+              tags: [],
+              skills: [],
+            })),
           ],
           workspaces: [],
           tasks: [],
@@ -551,4 +564,32 @@ test("peer discovery errors allow an explicit remote reference", async ({
     id: "researcher",
     version: "3.0.0",
   });
+});
+
+test("bundle members allow one version per ID and reenable siblings on removal", async ({
+  page,
+}) => {
+  const dialog = page.getByRole("dialog");
+  await dialog
+    .getByLabel("Description", { exact: true })
+    .fill("Bundle fixture");
+  await dialog.getByLabel("Entity type").selectOption("bundle");
+  const first = dialog.getByRole("checkbox", { name: "Shared tool · 1.0.0" });
+  const second = dialog.getByRole("checkbox", { name: "Shared tool · 2.0.0" });
+  await first.check();
+  await expect(second).toBeDisabled();
+  await first.uncheck();
+  await expect(second).toBeEnabled();
+  await second.check();
+  await expect(first).toBeDisabled();
+  const posted = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/registry") && request.method() === "POST",
+  );
+  await dialog
+    .getByRole("button", { name: "Register entity", exact: true })
+    .click();
+  expect((await posted).postDataJSON().config.members).toEqual([
+    { registry_node: "aidash://test", id: "shared-tool", version: "2.0.0" },
+  ]);
 });

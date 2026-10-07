@@ -352,3 +352,67 @@ async fn public_agent_closures_are_authenticated_and_offers_pin_exact_receiver_d
 		.unwrap();
 	assert_eq!(client.get(path).await.unwrap().status_code(), 401);
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn operator_permission_inspection_resolves_foreign_agents_without_subject_imports(
+	#[future]
+	#[from(endpoint::endpoint)]
+	#[with("aidash://inspection-home")]
+	home: EndpointFixture,
+	#[future]
+	#[from(endpoint::endpoint)]
+	#[with("aidash://inspection-child")]
+	child: EndpointFixture,
+) {
+	if !isolated::isolated_process(&[(PEER_ENV, PEER_SECRET)]).await {
+		return;
+	}
+	let home = home.await;
+	let child = child.await;
+	endpoint::register_fixture_agent(&home, "parent").await;
+	endpoint::register_fixture_agent(&child, "public-child").await;
+	for (owner, peer) in [(&home, &child), (&child, &home)] {
+		let record = Peer::build()
+			.node_id(&peer.runtime.config.node_id)
+			.endpoint(&peer.server.url)
+			.credential_env(PEER_ENV)
+			.protocol_version("0.2")
+			.enabled(true)
+			.finish();
+		Peer::objects()
+			.create_with_conn(&mut owner.database.lease.handle(), &record)
+			.await
+			.unwrap();
+	}
+	let tool = json!({"id":"foreign-tool","version":"1.0.0","kind":"tool","name":{"en":"Foreign child"},"description":{"en":"Pinned public child"},"config":{"registry_node":home.runtime.config.node_id,"provider":"integration.agent@1","operation":"invoke","default_alias":"foreign_child","tier":"integration","transport":{"transport":"agent","node_id":child.runtime.config.node_id,"agent":{"id":"public-child","version":"1.0.0"}}}});
+	let registered = operator(&home, "/api/registry", tool).await;
+	assert_eq!(registered.0, 200, "{}", registered.1);
+	let mut parent = home.runtime.registry.get("parent", "1.0.0").await.unwrap();
+	parent.version = "1.0.1".into();
+	parent.binding_normalization = None;
+	parent.config["bindings"] = json!([{"kind":"tool","target":{"registry_node":home.runtime.config.node_id,"id":"foreign-tool","version":"1.0.0"},"narrow":{}}]);
+	home.runtime.registry.register(parent).await.unwrap();
+	let subject = endpoint::subject(&home, "reader").await;
+	let path = "/api/workbench/versions/parent/1.0.1/permissions";
+	let input = json!({"tenant":"endpoint","subject":"reader"});
+	let report = operator(&home, path, input.clone()).await;
+	assert_eq!(report.0, 200, "{}", report.1);
+	assert!(
+		report.1["rows"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|row| row["reference"]["id"] == "foreign-tool")
+	);
+	assert!(report.1["rows"].as_array().unwrap().iter().all(|row| {
+		!row["reference"]["id"]
+			.as_str()
+			.unwrap()
+			.starts_with("public-child")
+	}));
+	assert_eq!(
+		decoded(subject.post(path, &input, "json").await.unwrap()).0,
+		403
+	);
+}

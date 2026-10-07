@@ -481,6 +481,10 @@ export function EntityConfiguration({
                   <input
                     type="checkbox"
                     checked={members.includes(key)}
+                    disabled={members.some(
+                      (member) =>
+                        member !== key && member.startsWith(`${entry.id}@`),
+                    )}
                     onChange={(e) =>
                       setMembers(
                         e.target.checked

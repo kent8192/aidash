@@ -27,12 +27,18 @@ pub async fn inspect(
 		return Err(Error::NotFound("agent version".into()));
 	}
 	let snapshot = scope.bindings(&entry).await?;
-	let components = snapshot.definitions.iter().map(|d| {
-		(
-			d.identity.local(),
-			crate::registry::bindings::component_action(&d.definition.kind),
-		)
-	});
+	// Receiver definitions retain their Node qualifier. Home can preview its own
+	// dispatch permission, while the receiver evaluates its resource authority.
+	let components = snapshot
+		.definitions
+		.iter()
+		.filter(|d| d.identity.registry_node == repository.node_id())
+		.map(|d| {
+			(
+				d.identity.local(),
+				crate::registry::bindings::component_action(&d.definition.kind),
+			)
+		});
 	let mut rows = Vec::new();
 	let mut policy_revision = 0;
 	for (reference, action) in components {
@@ -110,7 +116,7 @@ pub async fn inspect(
         requested_capabilities: entry.capabilities,
         rows,
         workspace_read,
-        note:"Component-level decisions use the worker execution context and include required Registry reads; task and execution admission require further checks. No universal permission or Trust assessment is implied.".into(),
+        note:"Component-level decisions use this Node's worker execution context and include required Registry reads; foreign receivers evaluate their own dependencies. Task and execution admission require further checks. No universal permission or Trust assessment is implied.".into(),
     })
 }
 #[cfg(test)]
