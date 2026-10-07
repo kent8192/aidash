@@ -355,10 +355,12 @@ export function EntityForm({
                   }
                 : kind === "embedding"
                   ? {
-                      provider: "openai",
+                      provider: s("embedding_provider"),
                       endpoint: s("endpoint"),
                       credential_env: d.has("embedding_credentials")
-                        ? "AIDASH_SECRET_EMBEDDING"
+                        ? s("embedding_provider") === "openrouter"
+                          ? "AIDASH_SECRET_OPENROUTER"
+                          : "AIDASH_SECRET_EMBEDDING"
                         : null,
                       model: s("model_id"),
                       model_version: s("model_version"),
@@ -569,19 +571,29 @@ export function EntityForm({
         ) : kind === "embedding" ? (
           <>
             <p className="muted">{t("embeddingRegistryHelp")}</p>
+            <Field label={t("provider")}>
+              <select name="embedding_provider" defaultValue="openrouter">
+                <option value="openrouter">OpenRouter</option>
+                <option value="openai">{t("openaiCompatible")}</option>
+              </select>
+            </Field>
             <Field label={t("endpoint")}>
               <input
                 name="endpoint"
                 type="url"
                 required
-                placeholder="https://provider.example/v1"
+                defaultValue="https://openrouter.ai/api/v1"
               />
             </Field>
             <Field label={t("modelId")}>
-              <input name="model_id" required />
+              <input
+                name="model_id"
+                required
+                defaultValue="google/gemini-embedding-2"
+              />
             </Field>
             <Field label={t("embeddingModelVersion")}>
-              <input name="model_version" required />
+              <input name="model_version" required defaultValue="1.0.0" />
             </Field>
             <Field label={t("embeddingDimensions")}>
               <input
@@ -590,10 +602,15 @@ export function EntityForm({
                 required
                 min={1}
                 max={8192}
+                defaultValue={3072}
               />
             </Field>
             <label className="check">
-              <input type="checkbox" name="embedding_credentials" />
+              <input
+                type="checkbox"
+                name="embedding_credentials"
+                defaultChecked
+              />
               {t("configuredCredentials")}
             </label>
           </>

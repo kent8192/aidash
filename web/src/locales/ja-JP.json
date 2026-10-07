@@ -473,7 +473,7 @@
   "generationEmbeddingPerAgent": "Agentごとの埋め込み呼び出し上限",
   "generationEmbeddingBudget": "埋め込み呼び出しの総予算",
   "generationEmbeddingCalls": "埋め込み試行数",
-  "embeddingRegistryHelp": "セマンティックインデックスで使用する埋め込みプロバイダー、モデル・バージョン、次元数を登録します。生成ポリシーで選択する前に、このコンポーネントのバージョンをテナントで承認してください。",
+  "embeddingRegistryHelp": "セマンティックインデックスで使用する埋め込みプロバイダー、モデル・バージョン、次元数を登録します。OpenRouterの既定値はGemini Embedding 2・3072次元で、AIDASH_SECRET_OPENROUTERを使用します。生成ポリシーで選択する前に、このコンポーネントのバージョンをテナントで承認してください。",
   "embeddingModelVersion": "埋め込みモデルのバージョン",
   "embeddingDimensions": "埋め込みの次元数",
   "authPeerMappings": "接続ノードの主体対応付け",

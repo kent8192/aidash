@@ -56,8 +56,12 @@ pub async fn embed(
 		model: String,
 		data: Vec<EmbeddingDatum>,
 	}
-	if config.provider != "openai" {
-		return Err(Error::Invalid("unsupported embedding provider".into()));
+	config.validate_parameters()?;
+	let mut body = json!({"model":config.model,"input":text,"encoding_format":"float"});
+	if config.provider == "openrouter" {
+		// Gemini defaults to 3072 dimensions unless the approved size is sent.
+		body["dimensions"] = json!(config.dimensions);
+		body["provider"] = json!({"zdr":true});
 	}
 	let request = credential(
 		credentials,
@@ -69,13 +73,13 @@ pub async fn embed(
 		)?,
 		&config.credential_env,
 	)?
-	.json(&json!({"model":config.model,"input":text,"encoding_format":"float"}));
+	.json(&body);
 	let response = request.send().await.map_err(crate::http_error)?;
 	if !response.status().is_success() {
 		use aidash_domain::semantic::Failure;
 		return Err(Error::RemoteSemantic(match response.status().as_u16() {
 			408 | 429 | 500..=599 => Failure::Unavailable,
-			401 | 403 => Failure::Configuration,
+			401..=403 => Failure::Configuration,
 			_ => Failure::ProviderContract,
 		}));
 	}
@@ -121,3 +125,6 @@ impl EmbeddingProvider for SemanticClient {
 		embed(self.credentials.as_ref(), &self.client, config, text).await
 	}
 }
+
+#[cfg(test)]
+mod tests;

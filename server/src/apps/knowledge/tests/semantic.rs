@@ -313,8 +313,11 @@ async fn dispose(f: aidash_server::federation::Federation, url: &str, schema: &s
 }
 
 #[rstest::rstest]
+#[case::openai("openai")]
+#[case::openrouter("openrouter")]
 #[tokio::test]
 async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
+	#[case] provider: &str,
 	#[future(awt)]
 	#[from(test_environment)]
 	_test_environment: std::sync::Arc<TestEnvironment>,
@@ -325,6 +328,7 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 	let (_, token, task) = common::bootstrap(&f, &app, &endpoint).await;
 	let workspace = f.store.task(task).await.unwrap().workspace_id;
 	let mut config = spec(&endpoint);
+	config.embedding.provider = provider.into();
 	let first = configure(&app, &f.config.api_token, workspace, &config, 0).await;
 	assert_eq!(
 		configure(&app, &f.config.api_token, workspace, &config, 0).await["revision"],

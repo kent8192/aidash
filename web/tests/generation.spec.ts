@@ -175,6 +175,10 @@ test("generation dashboard manages policy, approval, completion and retained his
     await registryDialog
       .getByLabel("エンティティの種類")
       .selectOption("embedding");
+    await registryDialog
+      .locator('[name="embedding_provider"]')
+      .selectOption("openai");
+    await registryDialog.locator('[name="embedding_credentials"]').uncheck();
     await expect(registryDialog.getByLabel("エンティティID")).toHaveCount(0);
     await registryDialog.getByLabel("名前").fill("Approved embedding");
     await registryDialog.getByLabel("説明").fill("Local semantic provider");

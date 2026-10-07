@@ -1395,6 +1395,12 @@ async fn compactor_and_embedding_configs_reject_undecodable_shapes(
 		"dimensions":1536
 	});
 	insert_entry(f.store.pool.driver(), &entry).await.unwrap();
+	entry["id"] = json!("openrouter-embedding");
+	entry["config"]["provider"] = json!("openrouter");
+	entry["config"]["endpoint"] = json!("https://openrouter.ai/api/v1");
+	entry["config"]["model"] = json!("google/gemini-embedding-2");
+	entry["config"]["dimensions"] = json!(3072);
+	insert_entry(f.store.pool.driver(), &entry).await.unwrap();
 	cleanup(f, &url, &schema).await;
 }
 

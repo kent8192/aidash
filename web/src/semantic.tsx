@@ -513,7 +513,7 @@ function IndexForm({
         const values = new FormData(e.currentTarget);
         void submit({
           embedding: {
-            provider: "openai",
+            provider: String(values.get("embeddingProvider")),
             endpoint: String(values.get("embedding")),
             credential_env: String(values.get("embeddingSecret")) || null,
             model: String(values.get("model")),
@@ -535,34 +535,50 @@ function IndexForm({
       }}
     >
       <p className="muted">{t("semanticConfigHelp")}</p>
+      <Field label={t("provider")}>
+        <select
+          name="embeddingProvider"
+          defaultValue={previous?.embedding.provider ?? "openrouter"}
+        >
+          <option value="openrouter">OpenRouter</option>
+          <option value="openai">{t("openaiCompatible")}</option>
+        </select>
+      </Field>
       <Field label={t("semanticEmbeddingEndpoint")}>
         <input
           name="embedding"
           type="url"
           required
-          defaultValue={previous?.embedding.endpoint ?? ""}
-          placeholder="https://api.openai.com/v1"
+          defaultValue={
+            previous?.embedding.endpoint ?? "https://openrouter.ai/api/v1"
+          }
         />
       </Field>
       <Field label={t("semanticEmbeddingSecret")}>
         <input
           name="embeddingSecret"
-          defaultValue={previous?.embedding.credential_env ?? ""}
-          placeholder="AIDASH_SECRET_EMBEDDING"
+          defaultValue={
+            previous
+              ? (previous.embedding.credential_env ?? "")
+              : "AIDASH_SECRET_OPENROUTER"
+          }
+          placeholder="AIDASH_SECRET_OPENROUTER"
         />
       </Field>
       <Field label={t("semanticModel")}>
         <input
           name="model"
           required
-          defaultValue={previous?.embedding.model ?? ""}
+          defaultValue={
+            previous?.embedding.model ?? "google/gemini-embedding-2"
+          }
         />
       </Field>
       <Field label={t("semanticModelVersion")}>
         <input
           name="version"
           required
-          defaultValue={previous?.embedding.model_version ?? ""}
+          defaultValue={previous?.embedding.model_version ?? "1.0.0"}
         />
       </Field>
       <Field label={t("semanticDimensions")}>
@@ -572,7 +588,7 @@ function IndexForm({
           min={1}
           max={8192}
           required
-          defaultValue={previous?.embedding.dimensions ?? 1536}
+          defaultValue={previous?.embedding.dimensions ?? 3072}
         />
       </Field>
       <label>

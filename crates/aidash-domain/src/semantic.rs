@@ -90,7 +90,7 @@ pub struct VectorFilter<'a> {
 impl EmbeddingConfig {
 	/// Provider definition invariants do not read credentials or contact a provider.
 	pub fn validate_parameters(&self) -> crate::Result<()> {
-		if self.provider != "openai"
+		if !matches!(self.provider.as_str(), "openai" | "openrouter")
 			|| self.model.trim().is_empty()
 			|| self.model.len() > 256
 			|| self.model_version.trim().is_empty()

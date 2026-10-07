@@ -57,6 +57,10 @@ test("semantic dashboard configures, searches, migrates and deletes persistent s
       .getByRole("button", { name: "Configure index", exact: true })
       .click();
     await page
+      .locator('select[name="embeddingProvider"]')
+      .selectOption("openai");
+    await page.locator('input[name="embeddingSecret"]').fill("");
+    await page
       .getByLabel("Embedding API endpoint", { exact: true })
       .fill(endpoint);
     await page
