@@ -11,7 +11,25 @@ use reinhardt::query::{
 };
 use uuid::Uuid;
 
-pub(crate) async fn record(store: &Store, run: Uuid, selected: &[Unit]) -> Result<()> {
+pub(crate) async fn record(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	run: Uuid,
+	selected: &[Unit],
+) -> Result<()> {
+	let metadata = crate::database::query_as::<RunMetadata>(
+		&Query::select()
+			.column(ColumnRef::Asterisk)
+			.from(Alias::new("runs"))
+			.and_where(Expr::col("id").eq(Expr::value(run)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut **lease.tx())
+	.await?;
+	let binding = bindings::load(&mut **lease.tx(), &metadata)
+		.await?
+		.ok_or(Error::Forbidden)?;
+	let policy = crate::semantic::native_memory::policy(lease, &binding.provider).await?;
 	let mut tx = native::begin(&store.control_pool).await?;
 	// Separate gate avoids upgrading the binding lock held by the calling scope.
 	native::query(
@@ -63,6 +81,53 @@ pub(crate) async fn record(store: &Store, run: Uuid, selected: &[Unit]) -> Resul
 		)
 		.execute(&mut *tx)
 		.await?;
+	}
+	// A future Run proof also visits the Run itself. Admit only a cumulative
+	// journal whose complete unit graphs fit the remaining provenance allowance.
+	let reads = native::query(
+		&Query::select()
+			.columns(["unit_id", "revision"].map(Alias::new))
+			.from(Alias::new("memory_run_reads"))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.order_by(Alias::new("unit_id"), Order::Asc)
+			.order_by(Alias::new("revision"), Order::Asc)
+			.limit(policy.bounds.max_graph_visits as u64)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(&mut *tx)
+	.await?;
+	if reads.len() >= policy.bounds.max_graph_visits {
+		return Err(Error::Conflict(
+			"Run memory read journal exceeds its provenance bound".into(),
+		));
+	}
+	let mut evidence = Vec::with_capacity(reads.len());
+	for read in reads {
+		let unit = units::load(lease, read.try_get("unit_id")?, false)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		evidence.push(Evidence::Unit {
+			bank: unit.bank,
+			id: unit.id,
+			revision: read.try_get("revision")?,
+		});
+	}
+	match units::current(
+		lease,
+		metadata.workspace_id,
+		&evidence,
+		policy.bounds.max_graph_visits - 1,
+	)
+	.await
+	{
+		Err(Error::Invalid(message))
+			if message == "memory evidence traversal exceeds its bound" =>
+		{
+			return Err(Error::Conflict(
+				"Run memory read journal exceeds its provenance bound".into(),
+			));
+		}
+		result => result?,
 	}
 	tx.commit().await
 }

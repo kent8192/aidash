@@ -247,8 +247,6 @@ pub(crate) async fn retrieve(
 	budget: usize,
 ) -> Result<NativeContext> {
 	stamp(&runtime.store, lease, binding).await?;
-	let capacity =
-		super::super::repositories::remote_memory_reads::capacity(lease, binding).await?;
 	let mut context = NativeContext { banks: vec![] };
 	for declared in &binding.banks {
 		let policy = memory::policy(lease, &declared.provider.entry).await?;
@@ -328,13 +326,20 @@ pub(crate) async fn retrieve(
 			));
 		}
 	}
-	super::super::repositories::remote_memory_reads::record(
-		&runtime.store,
-		operation.grant_id,
-		binding,
-		&context,
-		capacity,
-	)
-	.await?;
 	Ok(context)
+}
+
+pub(crate) async fn record(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	binding: &NativeBinding,
+	grant: Uuid,
+	context: &NativeContext,
+) -> Result<()> {
+	let capacity =
+		super::super::repositories::remote_memory_reads::capacity(lease, binding).await?;
+	super::super::repositories::remote_memory_reads::record(
+		store, grant, binding, context, capacity,
+	)
+	.await
 }

@@ -194,15 +194,17 @@ test("generation dashboard manages policy, approval, completion and retained his
     await registryDialog
       .getByLabel("埋め込みの次元数", { exact: true })
       .fill("3");
-    const registration = page.waitForResponse(
-      (response) =>
-        response.url().endsWith("/api/registry") &&
-        response.request().method() === "POST",
-    );
+    const registration = page
+      .waitForResponse(
+        (response) =>
+          response.url().endsWith("/api/registry") &&
+          response.request().method() === "POST",
+      )
+      .then((response) => response.json());
     await registryDialog
       .getByRole("button", { name: "エンティティを登録", exact: true })
       .click();
-    const embedder = (await (await registration).json()).id as string;
+    const embedder = (await registration).id as string;
     await expect(registryDialog).toHaveCount(0);
     expect((await api(`/api/registry/${embedder}/1.0.0`)).config).toEqual(
       embeddingConfig,

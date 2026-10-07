@@ -54,3 +54,11 @@ real. This does not test OIDC login. Generated review/indexing retain the
 original origin allowance/lifetime; retirement follows pending review/indexing
 drain and current authority denies subsequent disclosure. HTTP-only `learning`
 exercises the same canonical Run/evidence/accounting without a browser.
+
+A Home Run's cumulative native read journal must fit its pinned provider's
+`max_graph_visits`, including the Run root and the complete support graphs of
+all delivered Unit revisions. Recall that would exceed that allowance fails
+atomically before adding dependencies. Remote journals record only native Units
+retained in the final budget-fitted receipt. A full candidate review queue leaves
+learning pending for retry after review frees capacity; this wait preserves the
+charged model receipt and does not consume a model failure attempt.

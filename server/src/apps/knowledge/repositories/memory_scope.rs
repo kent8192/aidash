@@ -340,7 +340,7 @@ impl MemoryScope for Scope<'_, '_> {
 			selected.push(unit);
 		}
 		if let Some(run) = self.run {
-			super::memory_reads::record(self.store, run, &selected).await?;
+			super::memory_reads::record(self.store, self.lease, run, &selected).await?;
 		}
 		Ok(())
 	}

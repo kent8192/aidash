@@ -214,4 +214,20 @@ impl SemanticSearchScope for Scope {
 			Ok(None)
 		}
 	}
+	async fn record_native_context(
+		&mut self,
+		binding: &aidash_domain::semantic::remote::Binding,
+		operation: &Operation,
+		context: &aidash_domain::semantic::remote::NativeContext,
+	) -> Result<()> {
+		crate::apps::knowledge::services::remote_memory::record(
+			&self.runtime.store,
+			&mut self.lease,
+			binding.native().ok_or(NativeError::Forbidden)?,
+			operation.grant_id,
+			context,
+		)
+		.await
+		.map_err(Into::into)
+	}
 }

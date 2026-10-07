@@ -462,8 +462,10 @@ async fn process(store: &Store, id: Uuid) -> Result<bool> {
 		row.try_get("authority")?,
 	)
 	.await;
+	let backpressure = matches!(&outcome, Err(Error::Conflict(message)) if message == super::candidates::QUEUE_FULL);
 	let (state, error) = match &outcome {
 		Ok(()) => ("complete", None),
+		Err(Error::Conflict(_)) if backpressure => ("pending", Some("candidate_queue_full")),
 		Err(Error::Forbidden | Error::Conflict(_)) => {
 			("blocked", Some("authority_or_source_changed"))
 		}
@@ -483,6 +485,8 @@ async fn process(store: &Store, id: Uuid) -> Result<bool> {
 			.table(Alias::new("memory_engine_jobs"))
 			.value(Alias::new("state"), state)
 			.value(Alias::new("last_error"), error)
+			// Waiting for human review does not consume a model failure attempt.
+			.value(Alias::new("attempts"), (attempts + usize::from(!backpressure)) as i32)
 			.value(
 				Alias::new("next_attempt"),
 				Utc::now() + Duration::seconds(30),

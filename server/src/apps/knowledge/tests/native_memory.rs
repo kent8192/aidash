@@ -35,6 +35,8 @@ mod review_capacity;
 mod review_delivery;
 #[path = "native_memory/review_lifecycle.rs"]
 mod review_lifecycle;
+#[path = "native_memory/review_pressure.rs"]
+mod review_pressure;
 #[path = "native_memory/review_regressions.rs"]
 mod review_regressions;
 
@@ -2170,11 +2172,18 @@ async fn four_arm_recall_is_native_bounded_and_model_calls_are_memoized(
 }
 
 #[rstest]
+#[case(false)]
+#[case(true)]
 #[tokio::test]
 async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own_correction(
 	#[future] database: DatabaseFixture,
-	bounds: Bounds,
+	mut bounds: Bounds,
+	#[case] journal_bound: bool,
 ) {
+	if journal_bound {
+		bounds.max_graph_visits = 2;
+		bounds.max_results = 2;
+	}
 	use aidash_domain::{NewTask, qualified_agent};
 	use aidash_server::{authorization::Authorization, config::Config, federation::Federation};
 	use axum::{Json, Router, routing::post};
@@ -2352,6 +2361,54 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		first["memory"]["banks"][0]["recall"]["units"][0]["id"],
 		json!(id)
 	);
+	if journal_bound {
+		let next = content("東京の追加根拠。 Another subway source.");
+		let extra = Uuid::now_v7();
+		memory::mutate(
+			&f.store,
+			&actor,
+			mutation(
+				&participant.bank,
+				Change::Add {
+					id: extra,
+					content: next,
+				},
+			),
+		)
+		.await
+		.unwrap();
+		aidash_server::semantic::worker::sweep(&f.store)
+			.await
+			.unwrap();
+		for _ in 0..4 {
+			let _ = tokio::time::timeout(std::time::Duration::from_secs(15), worker.worker_once())
+				.await
+				.unwrap();
+		}
+		assert_eq!(
+			captured.lock().unwrap().len(),
+			1,
+			"over-bound recall must not reach another inference"
+		);
+		let reads = aidash_server::database::native::query(
+			&Query::select()
+				.column(Alias::new("unit_id"))
+				.from(Alias::new("memory_run_reads"))
+				.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_all(&f.store.pool)
+		.await
+		.unwrap();
+		assert_eq!(
+			reads.len(),
+			1,
+			"rejected recall rolls back all added journal dependencies"
+		);
+		assert_eq!(reads[0].try_get::<Uuid>("unit_id").unwrap(), id);
+		provider.abort();
+		return;
+	}
 	let latest = "最新の入力: 地下鉄の料金も確認してください。";
 	f.store
 		.accept_run_message(run.id, "alice", latest, "latest", 4096)
@@ -2739,11 +2796,18 @@ async fn durable_derived_jobs_refresh_questions_and_never_revive_deleted_sources
 }
 
 #[rstest]
+#[case(false)]
+#[case(true)]
 #[tokio::test]
 async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results(
 	#[future] database: DatabaseFixture,
 	mut bounds: Bounds,
+	#[case] backpressure: bool,
 ) {
+	if backpressure {
+		bounds.max_candidates = 2;
+		bounds.max_results = 2;
+	}
 	use aidash_server::database::native;
 	use axum::{Json, Router, routing::post};
 	use std::sync::{Arc, Mutex};
@@ -3052,11 +3116,16 @@ async fn learning_rejects_uncertain_effects_and_reads_complete_canonical_results
 	.await
 	.unwrap();
 	tx.commit().await.unwrap();
-	let memory::Outcome::Candidates(candidates) =
+	let outcome = if backpressure {
+		memory::Outcome::Candidates(
+			review_pressure::retry_learning(&store, &participant.bank, &proof).await,
+		)
+	} else {
 		memory::operate(&store, &Actor::Operator, operation)
 			.await
 			.unwrap()
-	else {
+	};
+	let memory::Outcome::Candidates(candidates) = outcome else {
 		panic!("learning must return review candidates")
 	};
 	assert_eq!(candidates.len(), 2);

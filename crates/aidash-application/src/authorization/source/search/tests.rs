@@ -410,8 +410,15 @@ impl JournalScope for JournalLease {
 	async fn dispatched(&mut self, _: &Attempt, _: &Value) -> Result<u64> {
 		panic!("unexpected dispatched effect in disclosure scenario")
 	}
-	async fn record_source(&mut self, _: &Receipt, _: &SourceRead) -> Result<()> {
-		panic!("unexpected record_source effect in disclosure scenario")
+	async fn record_source(&mut self, receipt: &Receipt, source: &SourceRead) -> Result<()> {
+		assert!(receipt.binding.native().is_some());
+		assert_eq!(source.entry_id, Uuid::from_u128(90));
+		assert_eq!(source.revision, 1);
+		assert_eq!(
+			source.content_digest,
+			content_digest("Ordinary source retained with its exact proof")
+		);
+		Ok(())
 	}
 	async fn complete_operation(&mut self, receipt: &Receipt) -> Result<()> {
 		self.trace.lock().unwrap().push("complete");
@@ -428,13 +435,17 @@ impl JournalScope for JournalLease {
 		_: &JournalRecord,
 		_: i32,
 		_: Option<i64>,
-		_: &str,
-		_: &str,
+		state: &str,
+		error: &str,
 	) -> Result<()> {
-		panic!("unexpected fail_operation effect in disclosure scenario")
+		assert_eq!(state, "PAUSED");
+		assert_eq!(error, "context_budget");
+		self.record.lock().unwrap().state = state.into();
+		Ok(())
 	}
-	async fn fail_attempt(&mut self, _: &Attempt, _: &str) -> Result<()> {
-		panic!("unexpected fail_attempt effect in disclosure scenario")
+	async fn fail_attempt(&mut self, _: &Attempt, error: &str) -> Result<()> {
+		assert_eq!(error, "context_budget");
+		Ok(())
 	}
 	async fn resume_records(&mut self, _: Uuid, _: Uuid) -> Result<Vec<JournalRecord>> {
 		panic!("unexpected resume_records effect in disclosure scenario")
@@ -455,6 +466,7 @@ struct Authority {
 	opened: usize,
 }
 struct Repository {
+	native: Option<NativeFixture>,
 	trace: Trace,
 	authority: Arc<Mutex<Authority>>,
 	journal: Journal,
@@ -467,6 +479,7 @@ impl Repository {
 	fn new() -> Self {
 		let trace = Trace::default();
 		Self {
+			native: None,
 			trace: trace.clone(),
 			authority: Default::default(),
 			journal: Journal::new(trace),
@@ -483,6 +496,7 @@ impl Repository {
 	}
 }
 struct Scope {
+	native: Option<NativeFixture>,
 	trace: Trace,
 	authority: Arc<Mutex<Authority>>,
 	denied: Option<&'static str>,
@@ -526,11 +540,15 @@ impl SemanticSearchRepository for Repository {
 		authority.opened += 1;
 		authority.active += 1;
 		let mut description = description();
+		if let Some(native) = &self.native {
+			description.semantic = native.binding.clone();
+		}
 		if self.denied == Some("disabled") {
 			description.semantic = Binding::Disabled {};
 		}
 		Ok((
 			Scope {
+				native: self.native.clone(),
 				trace: self.trace.clone(),
 				authority: self.authority.clone(),
 				denied: self.denied,
@@ -608,7 +626,12 @@ impl SemanticSearchScope for Scope {
 		);
 		assert_eq!(controls.model.id, "model");
 		self.trace.lock().unwrap().push("candidates");
-		retrieval::prepare(&mut EmptyRetrieval, workspace, input, Some(controls)).await
+		let mut prepared =
+			retrieval::prepare(&mut EmptyRetrieval, workspace, input, Some(controls)).await?;
+		if let Some(native) = &self.native {
+			prepared.result.matches = vec![native.ordinary.clone()];
+		}
+		Ok(prepared)
 	}
 	async fn reserve_home(&mut self, _: &Usage) -> Result<Vec<Reserved>> {
 		panic!("empty candidates must not debit Home allowance")
@@ -627,6 +650,169 @@ impl SemanticSearchScope for Scope {
 			"finish_denied"
 		});
 		result
+	}
+	async fn native_stamp(&mut self, _: &Binding) -> Result<Option<String>> {
+		Ok(self.native.as_ref().map(|_| "native".into()))
+	}
+	async fn native_context(
+		&mut self,
+		_: &str,
+		_: &Binding,
+		_: &Operation,
+		budget: usize,
+	) -> Result<Option<aidash_domain::semantic::remote::NativeContext>> {
+		let context = self.native.as_ref().unwrap().context.clone();
+		assert!(
+			serde_json::to_vec(&context)?.len() <= budget,
+			"fixture context respects retrieval's wire allowance"
+		);
+		Ok(Some(context))
+	}
+	async fn record_native_context(
+		&mut self,
+		_: &Binding,
+		_: &Operation,
+		context: &aidash_domain::semantic::remote::NativeContext,
+	) -> Result<()> {
+		self.native
+			.as_ref()
+			.unwrap()
+			.recorded
+			.lock()
+			.unwrap()
+			.push(context.clone());
+		Ok(())
+	}
+}
+
+#[derive(Clone)]
+struct NativeFixture {
+	binding: Binding,
+	context: aidash_domain::semantic::remote::NativeContext,
+	ordinary: aidash_domain::semantic::results::Match,
+	recorded: Arc<Mutex<Vec<aidash_domain::semantic::remote::NativeContext>>>,
+}
+impl NativeFixture {
+	fn new() -> Self {
+		use aidash_domain::semantic::remote::{
+			NativeBank, NativeBinding, NativeContext, NativeRecall, NativeRequest,
+		};
+		let bank = aidash_domain::memory::Bank {
+			home: "aidash://home".into(),
+			tenant: "tenant".into(),
+			workspace: task().workspace_id,
+			participant: Some(Uuid::from_u128(100)),
+		};
+		let mut bound = binding();
+		let Binding::RequiredHome {
+			native, embedding, ..
+		} = &mut bound
+		else {
+			unreachable!()
+		};
+		let mut provider = (**embedding).clone();
+		provider.entry.id = "memory".into();
+		*native = Some(Box::new(NativeBinding {
+			selection: NativeRequest {
+				participant: bank.participant.unwrap(),
+				expected_revision: 1,
+				provider: provider.entry.clone(),
+			},
+			generation: None,
+			participant: aidash_domain::memory::Binding {
+				bank: bank.clone(),
+				participant_revision: 1,
+				agent: provider.entry.clone(),
+				provider: provider.entry.clone(),
+			},
+			agent: provider.clone(),
+			banks: vec![NativeBank {
+				bank: bank.clone(),
+				provider: provider.clone(),
+				roles: vec![],
+				max_model_tokens: 8192,
+				max_context_tokens: 8192,
+				cache_max_age_seconds: 60,
+				cache_max_attempts: 2,
+			}],
+		}));
+		let units = (0..2).map(|index| serde_json::from_value(json!({
+			"id":Uuid::from_u128(110+index),"bank":bank,"revision":1,
+			"content":{"text":"Delivered native quotation / 記憶 ".repeat(16),"kind":"world","learning":"fact","verification":"unverified","mental_model":null,"occurred":null,"entities":[],"evidence":[],"links":[]},
+			"learned_at":Utc.timestamp_opt(0,0).unwrap(),"updated_at":Utc.timestamp_opt(0,0).unwrap(),"deleted":false,"stale":false
+		})).unwrap()).collect();
+		Self {
+			binding: bound,
+			context: NativeContext {
+				banks: vec![NativeRecall {
+					bank,
+					provider: provider.entry,
+					recall: aidash_domain::memory::Recall::Ready { units },
+				}],
+			},
+			ordinary: aidash_domain::semantic::results::Match {
+				entry_id: Uuid::from_u128(90),
+				revision: 1,
+				source: json!({"kind":"memory"}),
+				agent: None,
+				metadata: json!({}),
+				text: "Ordinary source retained with its exact proof".into(),
+				score: 0.75,
+			},
+			recorded: Default::default(),
+		}
+	}
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+#[tokio::test]
+async fn native_dependencies_follow_final_budget_fitting_and_failed_receipts_record_nothing(
+	#[case] fail: bool,
+) {
+	let mut native = NativeFixture::new();
+	if fail {
+		native.context.banks[0].recall = aidash_domain::memory::Recall::NoSpace;
+	}
+	let mut reference = cached_receipt("candidate");
+	reference.binding = native.binding.clone();
+	reference.memory = Some(native.context.clone());
+	reference.result.matches = vec![native.ordinary.clone()];
+	reference.fit_budget(100_000).unwrap();
+	let mut op = operation();
+	op.max_tokens = reference.estimated_tokens - 1;
+	let mut repo = Repository::new();
+	repo.native = Some(native.clone());
+	{
+		let mut record = repo.journal.record.lock().unwrap();
+		record.digest = op.digest().unwrap();
+		record.binding = json!({"operation":op,"semantic":native.binding});
+	}
+	let result = search(&repo, "aidash://receiver", op).await;
+	let recorded = native.recorded.lock().unwrap();
+	if fail {
+		assert!(matches!(
+			result,
+			Err(Error::RemoteSemantic(Failure::ContextBudget))
+		));
+		assert!(
+			recorded.is_empty(),
+			"failed receipts create no native dependencies"
+		);
+	} else {
+		let receipt = result.unwrap();
+		let context = receipt.memory.unwrap();
+		let aidash_domain::memory::Recall::Ready { units } = &context.banks[0].recall else {
+			panic!("one native unit fits")
+		};
+		assert_eq!(units.len(), 1);
+		assert_eq!(receipt.result.matches.len(), 1);
+		assert_eq!(
+			*recorded,
+			vec![context],
+			"journal records only the exact delivered native context"
+		);
 	}
 }
 #[rstest]

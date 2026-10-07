@@ -9,6 +9,8 @@ use reinhardt::query::{
 };
 use uuid::Uuid;
 
+pub(crate) const QUEUE_FULL: &str = "candidate review queue is full";
+
 pub(crate) fn human(lease: &mut Lease<'_>) -> Result<()> {
 	if let Some(access) = lease.access() {
 		let subject = access
@@ -226,7 +228,7 @@ pub(crate) async fn propose(
 		.scalar_one(&mut **lease.tx())
 		.await?;
 		if count >= bounds.max_candidates as i64 {
-			return Err(Error::Conflict("candidate review queue is full".into()));
+			return Err(Error::Conflict(QUEUE_FULL.into()));
 		}
 		let now = Utc::now();
 		let mut columns = ["id", "bank_id", "revision", "run"]
