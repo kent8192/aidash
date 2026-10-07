@@ -41,9 +41,8 @@ storage, extraction, retrieval, correction and accounting contract. They do not
 approve production model quality, prices or Issue #73/#122 numerical targets.
 
 The frozen fixture currently extracts all four expected labels in each locale
-and retrieves three of four useful labels (recall 0.75). The
-[verification ledger](memory-verification.md) records
-the exact profile and evidence. This is not production threshold approval.
+and retrieves three of four useful labels (recall 0.75). These synthetic results
+do not approve production thresholds.
 
 For actual completed-Run-to-human-review acceptance, run
 `scripts/test-cluster.sh kubernetes native-memory learning-ui` with web

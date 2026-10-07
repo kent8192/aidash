@@ -1,9 +1,6 @@
 # New-format memory recovery
 
-This managed memory-only profile has local native database and two-node
-acceptance evidence for Issue #125. Check the
-[verification ledger](memory-verification.md) before
-using an acceptance result as release evidence.
+This guide covers the managed memory-only recovery profile for Issue #125.
 
 Each logical Home has a dedicated persistent `AIDASH_MEMORY_RECOVERY_DIR`.
 HTTP and worker processes for the same Home share this directory. PostgreSQL
