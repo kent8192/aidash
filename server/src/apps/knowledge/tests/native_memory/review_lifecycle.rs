@@ -82,13 +82,16 @@ async fn missing_index_rejects_bank_pinning_without_admitting_content(
 }
 
 #[rstest]
-#[case(Kind::Observation)]
-#[case(Kind::MentalModel)]
+#[case(Kind::Observation, None)]
+#[case(Kind::MentalModel, None)]
+#[case(Kind::MentalModel, Some(false))]
+#[case(Kind::MentalModel, Some(true))]
 #[tokio::test]
 async fn stale_manual_derivations_retire_without_age_expiry(
 	#[future] database: DatabaseFixture,
 	mut bounds: Bounds,
 	#[case] kind: Kind,
+	#[case] exhausted_repair: Option<bool>,
 ) {
 	bounds.max_units = 2;
 	bounds.max_candidates = 2;
@@ -109,7 +112,14 @@ async fn stale_manual_derivations_retire_without_age_expiry(
 		axum::serve(listener, app).await.unwrap();
 	});
 	let database = database.await;
-	let (store, _, workspace) = setup_endpoint(&database, bounds, &endpoint).await;
+	let attempts = bounds.max_retries as i32;
+	let (store, _, workspace) = setup_endpoint_flags(
+		&database,
+		bounds,
+		&endpoint,
+		(false, false, exhausted_repair.is_some()),
+	)
+	.await;
 	let bank = memory::create_participant(
 		&store,
 		&Actor::Operator,
@@ -141,7 +151,7 @@ async fn stale_manual_derivations_retire_without_age_expiry(
 	if kind == Kind::MentalModel {
 		draft.mental_model = Some(MentalModel {
 			question: "Recurring question?".into(),
-			automatic_refresh: false,
+			automatic_refresh: exhausted_repair.is_some(),
 		});
 	}
 	let id = Uuid::now_v7();
@@ -179,6 +189,29 @@ async fn stale_manual_derivations_retire_without_age_expiry(
 	)
 	.await
 	.unwrap();
+	if let Some(exhausted) = exhausted_repair {
+		let mut tx = native::begin(&store.pool).await.unwrap();
+		native::query(
+			&Query::update()
+				.table(Alias::new("memory_engine_jobs"))
+				.value(Alias::new("state"), "running")
+				.value(
+					Alias::new("attempts"),
+					if exhausted { attempts } else { attempts - 1 },
+				)
+				.value(Alias::new("claim"), Uuid::now_v7())
+				.value(
+					Alias::new("next_attempt"),
+					chrono::Utc::now() - chrono::Duration::seconds(1),
+				)
+				.and_where(Expr::col("kind").eq("mental_model"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+		tx.commit().await.unwrap();
+	}
 	aidash_server::semantic::worker::sweep(&store)
 		.await
 		.unwrap();
@@ -193,22 +226,24 @@ async fn stale_manual_derivations_retire_without_age_expiry(
 	.await
 	.unwrap();
 	assert!(
-		row.try_get::<bool>("deleted").unwrap(),
-		"manual derived rows without repair work must release live capacity"
+		row.try_get::<bool>("deleted").unwrap() == (exhausted_repair != Some(false)),
+		"only expired claims with retry allowance preserve stale derived rows"
 	);
-	memory::mutate(
-		&store,
-		&Actor::Operator,
-		mutation(
-			&bank,
-			Change::Add {
-				id: Uuid::now_v7(),
-				content: content("Replacement knowledge fits after stale retirement"),
-			},
-		),
-	)
-	.await
-	.unwrap();
+	if exhausted_repair != Some(false) {
+		memory::mutate(
+			&store,
+			&Actor::Operator,
+			mutation(
+				&bank,
+				Change::Add {
+					id: Uuid::now_v7(),
+					content: content("Replacement knowledge fits after stale retirement"),
+				},
+			),
+		)
+		.await
+		.unwrap();
+	}
 	server.abort();
 }
 
@@ -216,12 +251,29 @@ async fn stale_manual_derivations_retire_without_age_expiry(
 #[tokio::test]
 async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 	#[future] database: DatabaseFixture,
-	bounds: Bounds,
+	mut bounds: Bounds,
 ) {
 	use aidash_domain::NewTask;
 	let page = bounds.max_graph_visits;
+	bounds.max_units = 2 * page + 4;
 	let database = database.await;
 	let (store, _, workspace) = setup(&database, bounds).await;
+	let index = aidash_server::semantic::service::get_index(&store, &Actor::Operator, workspace)
+		.await
+		.unwrap();
+	let mut spec = index.configuration().unwrap();
+	// Match this regression's admitted bank size within the public index bound.
+	spec.max_sources = 2 * page + 4;
+	aidash_server::semantic::service::configure(
+		&store,
+		workspace,
+		aidash_server::semantic::ConfigureIndex {
+			expected_revision: index.revision,
+			spec,
+		},
+	)
+	.await
+	.unwrap();
 	let bank = memory::create_participant(
 		&store,
 		&Actor::Operator,
@@ -354,6 +406,39 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 			native::query(&query).execute(&mut *tx).await.unwrap();
 		}
 		tx.commit().await.unwrap();
+		let quoted = memory::mutate(
+			&store,
+			&Actor::Operator,
+			mutation(
+				&bank,
+				Change::Add {
+					id: Uuid::now_v7(),
+					content: content(&format!("Independent current body {ordinal}")),
+				},
+			),
+		)
+		.await
+		.unwrap()
+		.remove(0);
+		let mut tx = native::begin(&store.pool).await.unwrap();
+		native::query(
+			&Query::update()
+				.table(Alias::new("memory_history"))
+				.value(
+					Alias::new("evidence"),
+					json!([Evidence::Run {
+						id: last_run,
+						revision: 1,
+						digest: "historic".into()
+					}]),
+				)
+				.and_where(Expr::col("unit_id").eq(Expr::value(quoted.id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+		tx.commit().await.unwrap();
 	}
 	// Independently corrected current bodies no longer quote the source. Their
 	// historical evidence lies past two journal pages and still must be erased.
@@ -456,6 +541,28 @@ async fn purge_pages_reader_and_publication_journals_beyond_graph_capacity(
 	)
 	.await
 	.unwrap();
-	assert_eq!(remaining.len(), 2);
+	assert_eq!(remaining.len(), 2 * page + 3);
 	assert!(remaining.iter().all(|unit| !unit.content.text.is_empty()));
+}
+
+#[rstest]
+#[tokio::test]
+async fn registry_rejects_a_memory_policy_above_the_semantic_compute_allowance(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	let database = database.await;
+	let (_, registry, _) = setup(&database, bounds).await;
+	let mut embedding = registry.get("e", "1.0.0").await.unwrap();
+	embedding.id = "large-embedding".into();
+	embedding.config["dimensions"] = json!(3072);
+	registry.register(embedding).await.unwrap();
+	let mut provider = registry.get("p", "1.0.0").await.unwrap();
+	provider.id = "oversized-memory".into();
+	provider.config["policy"]["embedding"] = json!(reference("large-embedding"));
+	provider.config["policy"]["bounds"]["max_units"] = json!(2048);
+	provider.config["policy"]["retention"]["max_unit_records"] = json!(2048);
+	assert!(matches!(registry.register(provider).await,
+        Err(aidash_server::Error::Invalid(message)) if message.contains("compute allowance")));
+	assert!(registry.get("oversized-memory", "1.0.0").await.is_err());
 }

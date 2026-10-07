@@ -2,8 +2,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0009_memory_role_references", "registry")
-		.add_dependency("registry", "0008_memory_roles")
+	Migration::new("0012_memory_role_references", "registry")
+		.add_dependency("registry", "0011_memory_roles")
 		.add_operation(Operation::CreateTable {
 			name: "registry_memory_role_refs".into(),
 			columns: vec![
@@ -24,8 +24,8 @@ pub(super) fn migration() -> Migration {
 		})
 		// Trigger functions cannot be represented by the typed migration API.
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0009_memory_role_references.sql").into(),
-			reverse_sql: Some(include_str!("sql/backward/0009_memory_role_references.sql").into()),
+			sql: include_str!("sql/forward/0012_memory_role_references.sql").into(),
+			reverse_sql: Some(include_str!("sql/backward/0012_memory_role_references.sql").into()),
 		})
 		.atomic(true)
 }

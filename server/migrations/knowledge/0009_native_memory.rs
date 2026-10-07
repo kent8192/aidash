@@ -4,7 +4,7 @@ use reinhardt::db::migrations::{FieldType, prelude::*};
 pub(super) fn migration() -> Migration {
 	Migration::new("0009_native_memory", "knowledge")
 		.add_dependency("knowledge", "0008_postgres_vectors")
-		.add_dependency("registry", "0008_memory_roles")
+		.add_dependency("registry", "0011_memory_roles")
 		.add_operation(Operation::CreateTable { name: "memory_participants".to_owned(), columns: vec![ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true).with_primary_key(true), ColumnDefinition::new("home", FieldType::Text).with_not_null(true), ColumnDefinition::new("tenant", FieldType::Text).with_not_null(true), ColumnDefinition::new("workspace_id", FieldType::Uuid).with_not_null(true),
 			ColumnDefinition::new("principal", FieldType::Text).with_not_null(true), ColumnDefinition::new("agent_id", FieldType::Text).with_not_null(true), ColumnDefinition::new("agent_version", FieldType::Text).with_not_null(true), ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true), ColumnDefinition::new("deleted", FieldType::Boolean).with_not_null(true)], constraints: vec![
 			Constraint::Check { name: "memory_participant_revision".to_owned(), expression: "revision > 0".to_owned() }, Constraint::ForeignKey { name: "memory_participant_workspace".to_owned(), columns: vec!["workspace_id".to_owned()], referenced_table: "workspaces".to_owned(), referenced_columns: vec!["id".to_owned()], on_delete: ForeignKeyAction::NoAction, on_update: ForeignKeyAction::NoAction, deferrable: None },

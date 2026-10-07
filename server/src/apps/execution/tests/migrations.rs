@@ -73,7 +73,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		12
+		13
 	);
 	let tables = migrations
 		.iter()
@@ -113,7 +113,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 						("knowledge", "0024_openrouter_embeddings") => {
 							Some("semantic_indexes_revision")
 						}
-						("registry", "0011_openrouter_embeddings") => {
+						("registry", "0014_openrouter_embeddings") => {
 							Some("registry_embedding_config")
 						}
 						_ => None,
@@ -540,7 +540,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		12
+		13
 	);
 }
 

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 277,
+  "endpoint_count": 279,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -11106,6 +11106,78 @@
       "required_checks": [
         "Exact HTTP 403",
         "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1030 marketplace-approve-set - Anonymous request is rejected",
+      "file": "contracts/1030-marketplace-approve-set.bru",
+      "endpoint": "POST /api/marketplace/approval-sets",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1031 marketplace-approve-set - Wrong JSON media type is rejected",
+      "file": "contracts/1031-marketplace-approve-set.bru",
+      "endpoint": "POST /api/marketplace/approval-sets",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1032 marketplace-approve-set - Malformed JSON cannot reach the use case",
+      "file": "contracts/1032-marketplace-approve-set.bru",
+      "endpoint": "POST /api/marketplace/approval-sets",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1033 marketplace-host-packages - Anonymous request is rejected",
+      "file": "contracts/1033-marketplace-host-packages.bru",
+      "endpoint": "POST /api/marketplace/host-packages",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1034 marketplace-host-packages - Wrong JSON media type is rejected",
+      "file": "contracts/1034-marketplace-host-packages.bru",
+      "endpoint": "POST /api/marketplace/host-packages",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1035 marketplace-host-packages - Malformed JSON cannot reach the use case",
+      "file": "contracts/1035-marketplace-host-packages.bru",
+      "endpoint": "POST /api/marketplace/host-packages",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     }
   ]

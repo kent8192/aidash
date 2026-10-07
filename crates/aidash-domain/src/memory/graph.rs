@@ -12,6 +12,24 @@ pub struct Edge {
 	pub target: Link,
 }
 
+// Admission budgets the worst-case dot products independently of graph output caps.
+const MAX_SIMILARITY_SCALARS: usize = 32 * 1024 * 1024;
+
+pub fn validate_capacity(bounds: &Bounds, dimensions: usize) -> Result<()> {
+	if dimensions == 0
+		|| bounds
+			.max_units
+			.checked_mul(bounds.max_units)
+			.and_then(|pairs| pairs.checked_mul(dimensions))
+			.is_none_or(|scalars| scalars > MAX_SIMILARITY_SCALARS)
+	{
+		return Err(Error::Invalid(
+			"memory semantic graph exceeds its compute allowance".into(),
+		));
+	}
+	Ok(())
+}
+
 pub fn semantic(
 	units: &[Unit],
 	vectors: &BTreeMap<Uuid, Vec<f32>>,
@@ -43,6 +61,20 @@ pub fn semantic(
 			})) {
 		return Err(Error::Invalid("invalid semantic graph embeddings".into()));
 	}
+	validate_capacity(bounds, dimension.max(1))?;
+	let norms: BTreeMap<_, _> = vectors
+		.iter()
+		.map(|(id, values)| {
+			(
+				*id,
+				values
+					.iter()
+					.map(|value| f64::from(*value).powi(2))
+					.sum::<f64>()
+					.sqrt(),
+			)
+		})
+		.collect();
 	let minimum = f64::from(min_similarity_millionths) / 1_000_000.;
 	let mut result = vec![];
 	for source in units {
@@ -58,14 +90,7 @@ pub fn semantic(
 				.zip(right)
 				.map(|(a, b)| f64::from(*a) * f64::from(*b))
 				.sum();
-			let norm = |values: &[f32]| {
-				values
-					.iter()
-					.map(|v| f64::from(*v).powi(2))
-					.sum::<f64>()
-					.sqrt()
-			};
-			let similarity = (dot / (norm(left) * norm(right))).clamp(-1., 1.);
+			let similarity = (dot / (norms[&source.id] * norms[&target.id])).clamp(-1., 1.);
 			// Identical finite vectors can round just below one after normalization.
 			if similarity >= minimum || (minimum == 1. && similarity >= 1. - 1e-12) {
 				neighbors.push(Link {

@@ -1401,6 +1401,7 @@ async fn embedded_worker_child() {
 			api_token: "fixture".into(),
 			web_dir: "web/dist".into(),
 			lease_seconds: 30,
+			default_host_packages: vec![],
 			oidc: None,
 		},
 		client: reqwest::Client::new(),

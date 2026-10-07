@@ -56,6 +56,16 @@ pub async fn authorize(
 	let mut scope = repository.lease().await?;
 	let current;
 	let authorization = match &contract.identity {
+		ToolIdentity::Descriptor(reference) => {
+			let entry = scope.catalog(&reference.local(), "tool.invoke").await?;
+			let descriptor: aidash_domain::tool::providers::ToolDescriptor =
+				serde_json::from_value(entry.config)?;
+			current = descriptor.declared_contract(reference.clone())?;
+			if current != *contract {
+				return Err(Error::Conflict("admitted provider contract changed".into()));
+			}
+			&current.authorization
+		}
 		ToolIdentity::Registry(reference) => {
 			if !configuration.tools.contains(reference) {
 				return Err(Error::Forbidden);

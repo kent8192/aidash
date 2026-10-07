@@ -18,6 +18,19 @@ pub(super) struct Authorities {
 	pub leases: Vec<OriginLease>,
 }
 
+impl Authorities {
+	fn require_leases(&self) -> Result<()> {
+		if self
+			.runs
+			.iter()
+			.any(|run| !self.leases.iter().any(|lease| lease.run == Some(*run)))
+		{
+			return Err(Error::Forbidden);
+		}
+		Ok(())
+	}
+}
+
 impl Models {
 	pub(super) async fn add_source_origins<'a>(
 		&self,
@@ -57,18 +70,26 @@ impl Models {
 				"memory origin lineage exceeds its allowance".into(),
 			));
 		}
+		let mut leases = Vec::new();
+		let mut admitted = BTreeSet::new();
 		for run in runs {
-			if authorities.runs.contains(&run) {
+			if authorities.runs.contains(&run)
+				&& authorities
+					.leases
+					.iter()
+					.any(|lease| lease.run == Some(run))
+			{
 				continue;
 			}
-			if let Some(access) = self.current_origin(run).await? {
-				authorities.leases.push(OriginLease {
-					run: Some(run),
-					access,
-				});
-			}
-			authorities.runs.insert(run);
+			let access = self.current_origin(run).await?.ok_or(Error::Forbidden)?;
+			leases.push(OriginLease {
+				run: Some(run),
+				access,
+			});
+			admitted.insert(run);
 		}
+		authorities.leases.extend(leases);
+		authorities.runs.extend(admitted);
 		Ok(())
 	}
 	async fn current_origin(&self, run: Uuid) -> Result<Option<Access>> {
@@ -120,6 +141,7 @@ impl Models {
 	/// Check before cached results, provider I/O, and publication after I/O.
 	pub(super) async fn require_origins(&self, model: Option<&EntityRef>) -> Result<()> {
 		let mut authorities = self.inference.lock().await;
+		authorities.require_leases()?;
 		for OriginLease { run, access } in &mut authorities.leases {
 			if let Some(run) = run {
 				*access = self.current_origin(*run).await?.ok_or(Error::Forbidden)?;
@@ -152,6 +174,7 @@ impl Models {
 		output: u32,
 	) -> Result<Option<crate::generation::budget::Reservation>> {
 		let mut authorities = self.inference.lock().await;
+		authorities.require_leases()?;
 		let Some(run) = self.run.or_else(|| authorities.runs.first().copied()) else {
 			return Ok(None);
 		};
@@ -178,6 +201,7 @@ impl Models {
 		origin: crate::generation::embedding::Origin,
 	) -> Result<Option<crate::generation::embedding::Reservation>> {
 		let mut authorities = self.inference.lock().await;
+		authorities.require_leases()?;
 		let mut accesses: Vec<_> = authorities
 			.leases
 			.iter_mut()
@@ -192,5 +216,26 @@ impl Models {
 			origin,
 		)
 		.await
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn a_recorded_run_without_an_origin_lease_cannot_reach_provider_budgeting() {
+		let authorities = Authorities {
+			runs: BTreeSet::from([Uuid::now_v7()]),
+			leases: vec![],
+		};
+		assert!(matches!(
+			authorities.require_leases(),
+			Err(Error::Forbidden)
+		));
+		let manual = Authorities {
+			runs: BTreeSet::new(),
+			leases: vec![],
+		};
+		assert!(manual.require_leases().is_ok());
 	}
 }

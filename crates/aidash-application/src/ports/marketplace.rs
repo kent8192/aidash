@@ -181,6 +181,9 @@ pub trait OperatorScope: StagingScope {
 	async fn installation(&mut self, id: &str) -> Result<Option<Installation>>;
 	async fn revision(&mut self, id: &str, revision: i64) -> Result<Revision>;
 	async fn approved(&mut self, tenant: &str, reference: &EntityRef) -> Result<bool>;
+	async fn catalog_revision(&mut self, _tenant: &str, _reference: &EntityRef) -> Result<i64> {
+		Err(crate::Error::Forbidden)
+	}
 	async fn set_approval(
 		&mut self,
 		tenant: &str,

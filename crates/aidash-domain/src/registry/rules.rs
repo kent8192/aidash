@@ -97,6 +97,7 @@ pub fn validate_override_keys(kind: &str, overrides: &Value) -> Result<()> {
 			"request_timeout_secs",
 		],
 		"cluster" => &["coordinator"],
+		"bundle" => &[],
 		"skill" => &["instructions"],
 		// ToolConfig uses a tagged, deny_unknown_fields contract. The merged
 		// effective configuration is validated by Registry before any write.
@@ -120,7 +121,7 @@ pub fn validate_metadata(e: &Entry, local: bool) -> Result<()> {
 	let schema = json!({"type":"object","required":["id","version","kind","name","description","capabilities","tags","languages","schema","config"],
         "properties":{
             "id":{"type":"string","pattern":"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$"},
-            "version":{"type":"string"}, "kind":{"enum":["agent","model","tool","skill","cluster","node","compactor","embedding","memory","source","reranker","tokenizer"]},
+            "version":{"type":"string"}, "kind":{"enum":["agent","model","tool","skill","cluster","node","compactor","embedding","bundle","memory","source","reranker","tokenizer"]},
             "name":{"type":"object","minProperties":1,"additionalProperties":{"type":"string","minLength":1}},
             "description":{"type":"object","minProperties":1,"additionalProperties":{"type":"string"}},
             "capabilities":{"type":"array","items":{"type":"string"},"uniqueItems":true},

@@ -317,15 +317,11 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	let (f, url, schema) = setup(&_test_environment).await;
 	let app = common::application(f.clone()).await;
 	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	assert_eq!(
-		request(&app, &token, "GET", "/api/registry", Value::Null)
-			.await
-			.1
-			.as_array()
-			.unwrap()
-			.len(),
-		3
-	);
+	let builtin_count = aidash_domain::registry::bindings::REQUIRED_TOOLS.len()
+		+ aidash_domain::registry::bindings::DEFAULT_TOOLS.len();
+	let (status, catalog) = request(&app, &token, "GET", "/api/registry", Value::Null).await;
+	assert_eq!(status, 200, "{catalog}");
+	assert_eq!(catalog.as_array().unwrap().len(), 3 + builtin_count);
 	assert_eq!(
 		request(&app, &token, "POST", "/api/discover", json!({}))
 			.await
@@ -358,9 +354,15 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	)
 	.await;
 	let other_token = other_credential["token"].as_str().unwrap();
-	assert_eq!(
-		request(&app, other_token, "GET", "/api/registry", Value::Null).await,
-		(200, json!([]))
+	let (status, other_catalog) =
+		request(&app, other_token, "GET", "/api/registry", Value::Null).await;
+	assert_eq!(status, 200, "{other_catalog}");
+	let other_catalog = other_catalog.as_array().unwrap();
+	assert_eq!(other_catalog.len(), builtin_count);
+	assert!(
+		other_catalog
+			.iter()
+			.all(|entry| { entry["tags"].as_array().unwrap().contains(&json!("system")) })
 	);
 	assert_eq!(
 		request(

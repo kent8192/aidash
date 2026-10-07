@@ -646,9 +646,9 @@ async fn background_indexing_retains_failed_charges_across_recovery_and_cannot_o
 	assert_eq!(fixture.usage().await["embedding_calls"], 1);
 	fixture.response_mode.store(1, Ordering::SeqCst);
 	// sweep also performs native retention, purge, and durable engine maintenance.
-	// Match the other coverage-backed fixture deadlines while retaining a finite
-	// bound that catches lock cycles across the two concurrent workers.
-	tokio::time::timeout(std::time::Duration::from_secs(20), async {
+	// Allow coverage instrumentation of all maintenance passes while retaining
+	// a finite bound that catches lock cycles across the concurrent workers.
+	tokio::time::timeout(std::time::Duration::from_secs(60), async {
 		let (first, second) = tokio::join!(
 			semantic::worker::sweep(&fixture.f.store),
 			semantic::worker::sweep(&fixture.f.store)
@@ -1854,9 +1854,97 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 		"READY",
 		"the retained origin must authorize the successful retry"
 	);
+	let bank_identity: aidash_domain::memory::Bank =
+		serde_json::from_value(metadata["bank"].clone()).unwrap();
+	let provider: aidash_domain::registry::EntityRef =
+		serde_json::from_value(metadata["provider"].clone()).unwrap();
+	let read = aidash_server::semantic::native_memory::ReadBank {
+		bank: bank_identity.clone(),
+		provider: provider.clone(),
+	};
+	let learned = aidash_server::semantic::native_memory::list(
+		&fixture.f.store,
+		&aidash_server::authorization::identity::Actor::Operator,
+		read,
+	)
+	.await
+	.unwrap();
+	let source = learned
+		.iter()
+		.find(|unit| unit.id == entry)
+		.unwrap()
+		.clone();
+	let mut unrelated = source.content.clone();
+	unrelated.text = "Unrelated prior knowledge".into();
+	unrelated.evidence.clear();
+	unrelated.links.clear();
+	let other = aidash_server::semantic::native_memory::mutate(
+		&fixture.f.store,
+		&aidash_server::authorization::identity::Actor::Operator,
+		aidash_domain::memory::Mutation {
+			operation_id: Uuid::now_v7(),
+			provider: provider.clone(),
+			bank: bank_identity.clone(),
+			changes: vec![aidash_domain::memory::Change::Add {
+				id: Uuid::now_v7(),
+				content: unrelated,
+			}],
+		},
+	)
+	.await
+	.unwrap()
+	.remove(0);
+	let mut tx = native::begin(&fixture.f.store.pool).await.unwrap();
+	native::query(
+		&Query::update()
+			.table(Alias::new("semantic_entries"))
+			.value(Alias::new("state"), "ERROR")
+			.and_where(Expr::col("id").eq(Expr::value(other.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
 	aidash_server::generation::provision::reconcile(&fixture.f)
 		.await
 		.unwrap();
 	assert_eq!(status().await.unwrap(), "COMPLETED");
+	aidash_server::semantic::native_memory::mutate(
+		&fixture.f.store,
+		&aidash_server::authorization::identity::Actor::Operator,
+		aidash_domain::memory::Mutation {
+			operation_id: Uuid::now_v7(),
+			provider: provider.clone(),
+			bank: bank_identity.clone(),
+			changes: vec![aidash_domain::memory::Change::Delete {
+				id: other.id,
+				expected_revision: other.revision,
+			}],
+		},
+	)
+	.await
+	.unwrap();
+	let calls = fixture.inference.load(Ordering::SeqCst);
+	let operation_id = Uuid::now_v7();
+	let mut derived = source.content.clone();
+	derived.kind = aidash_domain::memory::Kind::Observation;
+	derived.evidence = vec![source.evidence()];
+	let (code, response) = request(
+		&fixture.app,
+		&fixture.f.config.api_token,
+		"POST",
+		&format!("/api/workspaces/{}/memory/operate", fixture.workspace),
+		json!({"operation_id":operation_id,"provider":provider,"bank":bank_identity,
+            "action":{"action":"derive","kind":"observation","sources":[source.evidence()],
+                "mutation":{"operation_id":operation_id,"provider":provider,"bank":bank_identity,
+                    "changes":[{"operation":"add","id":Uuid::now_v7(),"content":derived}]}}}),
+	)
+	.await;
+	assert_eq!(
+		code, 403,
+		"retired source origins must deny model work: {response}"
+	);
+	assert_eq!(fixture.inference.load(Ordering::SeqCst), calls);
 	fixture.dispose().await;
 }

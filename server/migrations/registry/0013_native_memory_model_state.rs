@@ -5,7 +5,7 @@
 use reinhardt::db::migrations::FieldType;
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0010_native_memory_model_state", "registry")
+	Migration::new("0013_native_memory_model_state", "registry")
         .add_operation(Operation::DropConstraintDefinition {
             table: "registry".to_string(),
             constraint: Constraint::EnumDomain {
@@ -15,12 +15,17 @@ pub(super) fn migration() -> Migration {
                     repr: ModelEnumRepr::String,
                     values: vec![
                         ModelEnumValue::String("agent".to_string()),
+                        ModelEnumValue::String("bundle".to_string()),
                         ModelEnumValue::String("cluster".to_string()),
                         ModelEnumValue::String("compactor".to_string()),
                         ModelEnumValue::String("embedding".to_string()),
+                        ModelEnumValue::String("memory".to_string()),
                         ModelEnumValue::String("model".to_string()),
                         ModelEnumValue::String("node".to_string()),
+                        ModelEnumValue::String("reranker".to_string()),
                         ModelEnumValue::String("skill".to_string()),
+                        ModelEnumValue::String("source".to_string()),
+                        ModelEnumValue::String("tokenizer".to_string()),
                         ModelEnumValue::String("tool".to_string())
                     ],
                 },
@@ -38,7 +43,7 @@ pub(super) fn migration() -> Migration {
             table: "registry".to_string(),
             constraint: Constraint::Check {
                 name: "registry_kind_check".to_string(),
-                expression: "kind IN ('agent','model','tool','skill','cluster','node','compactor','embedding','memory','source','reranker','tokenizer')"
+                expression: "kind IN ('agent','model','tool','skill','cluster','node','compactor','embedding','bundle','memory','source','reranker','tokenizer')"
                     .to_string(),
             },
         })
@@ -54,6 +59,7 @@ pub(super) fn migration() -> Migration {
                     repr: ModelEnumRepr::String,
                     values: vec![
                         ModelEnumValue::String("agent".to_string()),
+                        ModelEnumValue::String("bundle".to_string()),
                         ModelEnumValue::String("cluster".to_string()),
                         ModelEnumValue::String("compactor".to_string()),
                         ModelEnumValue::String("embedding".to_string()),
@@ -69,7 +75,7 @@ pub(super) fn migration() -> Migration {
                 },
             },
         })
-        .add_dependency("registry", "0009_memory_role_references")
+        .add_dependency("registry", "0012_memory_role_references")
         .atomic(true)
         .with_initial(None)
         .state_only(true)

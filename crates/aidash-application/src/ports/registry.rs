@@ -13,6 +13,17 @@ use uuid::Uuid;
 /// Input contracts advertised by the capability runner are shared with prompt budgeting.
 pub trait CoreToolCatalog: Send + Sync {
 	fn specifications(&self, config: &CoreCapabilities) -> BTreeMap<String, ToolSpec>;
+	fn provider_available(
+		&self,
+		descriptor: &aidash_domain::tool::providers::ToolDescriptor,
+	) -> Result<()> {
+		if descriptor.tier == aidash_domain::tool::providers::ToolTier::Host {
+			return Err(crate::Error::Invalid(
+				"PROVIDER_UNAVAILABLE: host provider is not admitted".into(),
+			));
+		}
+		Ok(())
+	}
 }
 
 /// The caller owns the scope and its authority locks through protected writes.

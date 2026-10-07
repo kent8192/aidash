@@ -3,7 +3,7 @@ use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0011_memory_jobs", "knowledge")
  .add_dependency("knowledge", "0010_native_search_contract")
- .add_dependency("registry", "0009_memory_role_references")
+ .add_dependency("registry", "0012_memory_role_references")
 .add_operation(Operation::CreateTable { name: "memory_model_operations".into(), columns: vec![
 ColumnDefinition::new("id", FieldType::Uuid).with_not_null(true),
 ColumnDefinition::new("bank_id", FieldType::Uuid).with_not_null(true),

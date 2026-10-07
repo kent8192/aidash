@@ -280,6 +280,8 @@ async fn scoped_pair(
 			memory_recovery_directories.push(directory);
 		}
 	}
+	b.registry =
+		aidash_server::registry::Registry::new(b.store.pool.clone(), &b.config.node_id).unwrap();
 	let model = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let endpoint = format!("http://{}", model.local_addr().unwrap());
 	let model_state = ModelScript::default();
@@ -721,7 +723,45 @@ async fn native_remote_fixture(
 		let bank: Bank = serde_json::from_value(participant["bank"].clone()).unwrap();
 		let provider: aidash_domain::registry::EntityRef =
 			serde_json::from_value(provider.clone()).unwrap();
-		// Admit canonical units before adding the separate disposable index.
+		// Model loss of the disposable index after valid bank admission. Canonical
+		// grant dependencies must remain readable across projection reconstruction,
+		// independently of the HTTP index's maximum 1,024 projected sources.
+		let mut tx = aidash_server::database::native::begin(&a.store.pool)
+			.await
+			.unwrap();
+		aidash_server::database::native::query(
+			&Query::delete()
+				.from_table(Alias::new("semantic_points"))
+				.and_where(
+					Expr::col("entry_id").in_subquery(
+						Query::select()
+							.column(Alias::new("id"))
+							.from(Alias::new("semantic_entries"))
+							.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+							.to_owned(),
+					),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+		for table in [
+			"semantic_entries",
+			"semantic_collections",
+			"semantic_indexes",
+		] {
+			aidash_server::database::native::query(
+				&Query::delete()
+					.from_table(Alias::new(table))
+					.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *tx)
+			.await
+			.unwrap();
+		}
+		tx.commit().await.unwrap();
 		for batch in 0..5 {
 			let changes = (0..if batch == 4 { 1 } else { 256 })
 				.map(|offset| Change::Add {
@@ -830,17 +870,14 @@ async fn semantic_fixture(
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	if !large_journal {
-		let (status, body) = request(app, &a.config.api_token, "POST", &format!("/api/workspaces/{workspace}/semantic/index"), json!({"expected_revision":0,"spec":{
+	let (status, body) = request(app, &a.config.api_token, "POST", &format!("/api/workspaces/{workspace}/semantic/index"), json!({"expected_revision":0,"spec":{
 		"embedding":embedding,"vector":{"provider":"postgres","endpoint":"local","credential_env":null},
 		"enabled":true,"auto_context":!native,"max_sources":100,"max_results":10,"max_result_tokens":if native {32768} else {4096},"max_input_bytes":32768
 	}})).await;
-		assert_eq!(status, 200, "{body}");
-	}
+	assert_eq!(status, 200, "{body}");
 
 	let mut first = Uuid::nil();
-	// The journal fixture admits its canonical bank before configuring the
-	// disposable index. Ordinary context tests create their index first.
+	// Every canonical bank requires an enabled index, including paged journals.
 	if !large_journal {
 		for (key, owner, text) in [
 			("shared", None, "Iridium archive marker: ochre falcon."),

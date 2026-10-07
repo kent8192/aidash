@@ -10,20 +10,20 @@ use async_trait::async_trait;
 use rstest::rstest;
 use std::collections::BTreeMap;
 
-struct OperatorFixture {
-	inner: Fixture,
-	principal: Principal,
+pub(super) struct OperatorFixture {
+	pub(super) inner: Fixture,
+	pub(super) principal: Principal,
 	state: Compatibility,
-	approved: BTreeSet<(String, String)>,
+	pub(super) approved: BTreeSet<(String, String)>,
 	overlays: BTreeMap<String, Entry>,
 	records: BTreeMap<String, (String, String)>,
 	config: BTreeMap<String, Value>,
 	requests: BTreeMap<String, Value>,
-	events: Vec<(String, Value)>,
-	approvals: Vec<(String, EntityRef, i64, bool)>,
+	pub(super) events: Vec<(String, Value)>,
+	pub(super) approvals: Vec<(String, EntityRef, i64, bool)>,
 }
 impl OperatorFixture {
-	fn new() -> Self {
+	pub(super) fn new() -> Self {
 		let mut scope = Self {
 			inner: published(),
 			principal: Principal::Operator,
@@ -54,7 +54,7 @@ impl OperatorFixture {
 		let digest = format!("sha256:{:x}", Sha256::digest(bytes.as_bytes()));
 		self.records.insert(id.into(), (bytes, digest));
 	}
-	async fn installed() -> (Self, String) {
+	pub(super) async fn installed() -> (Self, String) {
 		let mut scope = Self::new();
 		let request = input(&scope.inner);
 		let installation =
@@ -176,6 +176,18 @@ impl OperatorScope for OperatorFixture {
 				.remove(&(reference.id.clone(), reference.version.clone()));
 		}
 		Ok(())
+	}
+	async fn catalog_revision(&mut self, _: &str, reference: &EntityRef) -> Result<i64> {
+		Ok(
+			if self
+				.approved
+				.contains(&(reference.id.clone(), reference.version.clone()))
+			{
+				1
+			} else {
+				0
+			},
+		)
 	}
 	async fn save_installation(&mut self, installation: &Installation) -> Result<()> {
 		self.inner.record("save_installation")?;
@@ -547,8 +559,7 @@ async fn transitive_legacy_overlay_is_rejected_instead_of_freezing_different_exe
 	let mut scope = OperatorFixture::new();
 	let mut root = entry("source");
 	root.kind = "tool".into();
-	root.config =
-		json!({"transport":"agent","node_id":"node","agent":{"id":"dependency","version":"1.0.0"}});
+	root.config = json!({"registry_node":"aidash://node","provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":"node","agent":{"id":"dependency","version":"1.0.0"}}});
 	scope.inner.entries.insert("source".into(), root);
 	let dependency = entry("dependency");
 	scope

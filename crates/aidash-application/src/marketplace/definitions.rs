@@ -18,9 +18,31 @@ pub fn refs(entry: &Entry, node: &str) -> Result<Vec<(EntityRef, String)>> {
 			refs.extend(config.skills.into_iter().map(|r| (r, "skill".into())));
 			refs.extend(config.cluster.into_iter().map(|r| (r, "cluster".into())));
 		}
+		"tool" if aidash_domain::tool::legacy_config(&entry.config)?.is_some() => {
+			if let Some(aidash_domain::tool::ToolConfig::Agent { node_id, agent }) =
+				aidash_domain::tool::legacy_config(&entry.config)?
+			{
+				if node_id != node {
+					return Err(Error::Forbidden);
+				}
+				refs.push((agent, "agent".into()));
+			}
+		}
 		"tool" => {
-			if let aidash_domain::tool::ToolConfig::Agent { node_id, agent } =
-				serde_json::from_value(entry.config.clone())?
+			let descriptor: aidash_domain::tool::providers::ToolDescriptor =
+				serde_json::from_value(entry.config.clone())?;
+			if let Some(lifecycle) = descriptor.lifecycle {
+				if lifecycle.poll.registry_node != node || lifecycle.cancel.registry_node != node {
+					return Err(Error::Forbidden);
+				}
+				refs.extend(
+					[lifecycle.poll, lifecycle.cancel]
+						.into_iter()
+						.map(|r| (r.local(), "tool".into())),
+				);
+			}
+			if let Some(aidash_domain::tool::ToolConfig::Agent { node_id, agent }) =
+				descriptor.transport
 			{
 				// A remote reference is verified by the existing peer protocol, never
 				// guessed from a same-named local row. Distribution has no remote fetch.
@@ -29,6 +51,24 @@ pub fn refs(entry: &Entry, node: &str) -> Result<Vec<(EntityRef, String)>> {
 				}
 				refs.push((agent, "agent".into()));
 			}
+		}
+		"bundle" => {
+			let bundle: aidash_domain::registry::bindings::BundleConfig =
+				serde_json::from_value(entry.config.clone())?;
+			bundle.validate()?;
+			if bundle
+				.members
+				.iter()
+				.any(|reference| reference.registry_node != node)
+			{
+				return Err(Error::Forbidden);
+			}
+			refs.extend(
+				bundle
+					.members
+					.into_iter()
+					.map(|r| (r.local(), String::new())),
+			);
 		}
 		"cluster" => {
 			let c: ClusterConfig = serde_json::from_value(entry.config.clone())?;
@@ -98,6 +138,7 @@ pub async fn publication_graph(
 	let mut result = vec![];
 	while let Some((r, kind)) = queue.pop() {
 		let entry = scope.catalog(&r, "registry.read").await?;
+		crate::registry::system::reject_distribution(&entry)?;
 		scope.require_export(&entry).await?;
 		if !kind.is_empty() && entry.kind != kind {
 			return Err(Error::Forbidden);
@@ -154,7 +195,17 @@ pub async fn resolve(
 	// pass through the exact dependency bindings below (including tool kind).
 	let protected: &[&str] = match entry.kind.as_str() {
 		"agent" => &["model", "tools", "skills", "cluster"],
-		"tool" => &["transport", "node_id", "agent"],
+		"tool" if aidash_domain::tool::legacy_config(&entry.config)?.is_some() => {
+			&["transport", "node_id", "agent"]
+		}
+		"tool" => &[
+			"registry_node",
+			"provider",
+			"operation",
+			"transport",
+			"lifecycle",
+		],
+		"bundle" => &["members"],
 		"cluster" => &["coordinator"],
 		_ => &[],
 	};
@@ -164,7 +215,16 @@ pub async fn resolve(
 		));
 	}
 	overlay_config(&mut entry.config, config)?;
-	let direct = refs(&entry, node)?;
+	// Frozen bundle qualifiers name the publishing Node. Inspect them there;
+	// only verified dependency substitutions become receiving-Node references.
+	let direct = refs(
+		&entry,
+		if entry.kind == "bundle" {
+			&source.repository
+		} else {
+			node
+		},
+	)?;
 	let mut bindings = vec![];
 	let mut seen = BTreeSet::new();
 	for binding in submitted {
@@ -233,7 +293,7 @@ pub async fn resolve(
 			target,
 		});
 	}
-	rewrite(&mut entry, &bindings)?;
+	rewrite(&mut entry, &bindings, node)?;
 	let mut roots = refs(&entry, node).map_err(|_| Error::Forbidden)?;
 	roots.extend(bindings.iter().map(|b| (b.target.clone(), String::new())));
 	let graph = local_graph(scope, roots, node).await?;

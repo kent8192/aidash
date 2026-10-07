@@ -25,11 +25,13 @@ pub fn content(entry: &Entry) -> String {
 	entry.installation = None;
 	key(&entry)
 }
-pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding]) -> Result<()> {
-	fn bind(reference: &mut EntityRef, bindings: &[DependencyBinding]) {
+pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding], node: &str) -> Result<()> {
+	fn bind(reference: &mut EntityRef, bindings: &[DependencyBinding]) -> bool {
 		if let Some(binding) = bindings.iter().find(|b| b.source == *reference) {
 			*reference = binding.target.clone();
+			return true;
 		}
+		false
 	}
 	match entry.kind.as_str() {
 		"agent" => {
@@ -45,10 +47,44 @@ pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding]) -> Result<()> 
 			}
 			entry.config = serde_json::to_value(c)?;
 		}
-		"tool" => {
-			let mut c: ToolConfig = serde_json::from_value(entry.config.clone())?;
-			if let ToolConfig::Agent { agent, .. } = &mut c {
+		"tool" if crate::tool::legacy_config(&entry.config)?.is_some() => {
+			let mut config = crate::tool::legacy_config(&entry.config)?.expect("legacy transport");
+			if let ToolConfig::Agent { agent, .. } = &mut config {
 				bind(agent, bindings);
+			}
+			entry.config = serde_json::to_value(config)?;
+		}
+		"tool" => {
+			crate::configuration::validate_node_id(node)?;
+			let mut c: crate::tool::providers::ToolDescriptor =
+				serde_json::from_value(entry.config.clone())?;
+			c.registry_node = node.into();
+			if let Some(ToolConfig::Agent { agent, .. }) = &mut c.transport {
+				bind(agent, bindings);
+			}
+			if let Some(lifecycle) = &mut c.lifecycle {
+				for reference in [&mut lifecycle.poll, &mut lifecycle.cancel] {
+					let mut local = reference.local();
+					if bind(&mut local, bindings) {
+						reference.registry_node = node.into();
+						reference.id = local.id;
+						reference.version = local.version;
+					}
+				}
+			}
+			entry.config = serde_json::to_value(c)?;
+		}
+		"bundle" => {
+			crate::configuration::validate_node_id(node)?;
+			let mut c: crate::registry::bindings::BundleConfig =
+				serde_json::from_value(entry.config.clone())?;
+			for reference in &mut c.members {
+				let mut local = reference.local();
+				if bind(&mut local, bindings) {
+					reference.registry_node = node.into();
+					reference.id = local.id;
+					reference.version = local.version;
+				}
 			}
 			entry.config = serde_json::to_value(c)?;
 		}

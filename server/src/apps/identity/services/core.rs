@@ -67,6 +67,62 @@ impl Authorization {
 			.await?)
 	}
 
+	/// The protected tenant-creation route stages configured packages in the
+	/// policy transaction. Updates and process restarts never enter this path.
+	pub(crate) async fn replace_with_host_defaults(
+		&self,
+		store: &crate::store::Store,
+		groups: &[String],
+		tenant: &str,
+		expected_revision: i64,
+		bundle: PolicyBundle,
+		actor: &str,
+	) -> Result<(
+		Snapshot,
+		Option<aidash_application::marketplace::operations::host_packages::PendingHostPackages>,
+	)> {
+		aidash_application::authorization::validate_replacement(
+			tenant,
+			expected_revision,
+			&bundle,
+			actor,
+		)?;
+		let mut tx = crate::database::native::begin(&self.pool).await?;
+		let revision = AuthorizationBundle::replace(
+			&mut tx,
+			tenant,
+			expected_revision,
+			serde_json::to_value(&bundle)?,
+			actor,
+		)
+		.await?;
+		let pending = if expected_revision == 0 && !groups.is_empty() {
+			let validation = crate::bootstrap::registry_validation();
+			Some(
+				aidash_application::marketplace::operations::host_packages::provision(
+					&mut crate::bootstrap::marketplace_operator_scope(
+						store,
+						&mut tx,
+						aidash_domain::identity::Principal::Operator,
+					),
+					&validation,
+					&validation,
+					&aidash_application::marketplace::operations::host_packages::HostPackages {
+						tenant: tenant.into(),
+						groups: groups.to_vec(),
+						idempotency_key: uuid::Uuid::new_v4(),
+					},
+					&store.node_id,
+				)
+				.await?,
+			)
+		} else {
+			None
+		};
+		tx.commit().await?;
+		Ok((Snapshot { revision, bundle }, pending))
+	}
+
 	pub(crate) async fn load(
 		tx: &mut crate::database::native::Transaction,
 		tenant: &str,

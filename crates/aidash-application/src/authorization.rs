@@ -29,13 +29,7 @@ impl Authorization {
 		bundle: PolicyBundle,
 		actor: &str,
 	) -> Result<Snapshot> {
-		bundle.validate()?;
-		identifier(actor)?;
-		if bundle.tenant != tenant || expected_revision < 0 || expected_revision == i64::MAX {
-			return Err(Error::Invalid(
-				"tenant mismatch or invalid expected revision".into(),
-			));
-		}
+		validate_replacement(tenant, expected_revision, &bundle, actor)?;
 		let mut transaction = self.store.begin().await?;
 		let revision = transaction
 			.replace(tenant, expected_revision, &bundle, actor)
@@ -78,6 +72,23 @@ impl Authorization {
 		transaction.commit().await?;
 		Ok(decision)
 	}
+}
+
+/// Native compound effects use the same validation before opening their transaction.
+pub fn validate_replacement(
+	tenant: &str,
+	expected_revision: i64,
+	bundle: &PolicyBundle,
+	actor: &str,
+) -> Result<()> {
+	bundle.validate()?;
+	identifier(actor)?;
+	if bundle.tenant != tenant || expected_revision < 0 || expected_revision == i64::MAX {
+		return Err(Error::Invalid(
+			"tenant mismatch or invalid expected revision".into(),
+		));
+	}
+	Ok(())
 }
 
 pub mod catalog;

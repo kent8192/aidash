@@ -749,6 +749,12 @@ pub(super) async fn recorded_run(
 	bank: &Bank,
 	units: &[Uuid],
 ) -> (aidash_server::authorization::workspace::Workspaces, Uuid) {
+	// Workspace inspection now resolves built-in capabilities through Registry.
+	aidash_server::registry::Registry::new(store.pool.clone(), &store.node_id)
+		.unwrap()
+		.seed_system()
+		.await
+		.unwrap();
 	let authorization = aidash_server::authorization::Authorization {
 		pool: store.pool.clone(),
 	};

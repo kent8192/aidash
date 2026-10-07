@@ -21,13 +21,13 @@ BEGIN
   INSERT INTO registry_memory_role_refs
    SELECT NEW.id, NEW.version, 'sources', ordinal::integer, 'source', value->>'id', value->>'version'
    FROM jsonb_array_elements(COALESCE(config->'sources', '[]'::jsonb)) WITH ORDINALITY AS ref(value, ordinal);
- ELSIF NEW.kind = 'memory' THEN
+ ELSIF NEW.kind = 'memory' AND config ? 'engine' THEN
   FOREACH role IN ARRAY ARRAY['extraction','derivation','reflection','embedding','reranker','tokenizer'] LOOP
    expected := CASE WHEN role IN ('extraction','derivation','reflection') THEN 'model' ELSE role END;
    binding := config->'policy'->role;
    INSERT INTO registry_memory_role_refs VALUES (NEW.id, NEW.version, role, 1, expected, binding->>'id', binding->>'version');
   END LOOP;
- ELSIF NEW.kind = 'source' THEN
+ ELSIF NEW.kind = 'source' AND config ? 'scope' THEN
   INSERT INTO registry_memory_role_refs VALUES (NEW.id, NEW.version, 'memory', 1, 'memory', config#>>'{memory,id}', config#>>'{memory,version}');
  ELSIF NEW.kind = 'reranker' AND config->>'provider' = 'model' THEN
   INSERT INTO registry_memory_role_refs VALUES (NEW.id, NEW.version, 'model', 1, 'model', config#>>'{model,id}', config#>>'{model,version}');

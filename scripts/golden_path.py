@@ -53,6 +53,22 @@ def wait_for(fn, timeout=120, label="condition"):
     raise AssertionError(f"Timed out waiting for {label}: {last}")
 
 
+def reconcile_uncertain_http(base, run_id, effects):
+    """Confirm a lost HTTP result from the fixture's recorded external receipt."""
+    def uncertain():
+        run = api_request(base, f"/api/runs/{run_id}")["run"]
+        if run["phase"] == "WAITING" and run["state"]["data"]["reason"] == "reconciliation":
+            return run["state"]["data"]
+        return None
+
+    waiting = wait_for(uncertain, label="uncertain HTTP invocation after Worker crash")
+    key = waiting["key"]
+    receipts = effects()
+    assert key in receipts, "Reconciliation requires the exact external invocation receipt"
+    api_request(base, f"/api/human-requests/{waiting['request_id']}/answer", {"result": receipts[key]})
+    return key
+
+
 def entity(kind, identifier, config, capability="web.search"):
     return {
         "id": identifier, "version": "1.0.0", "kind": kind,
@@ -357,6 +373,7 @@ def main():
         remote_worker.wait(timeout=10)
         print("Killed Node B worker after the remote tool effect, before result persistence", flush=True)
         remote_worker = launch(node_b, db_b, port_b, "worker")
+        reconciled_key = reconcile_uncertain_http(base_b, before["id"], lambda: dict(fixture.effects))
 
         def complete():
             snapshot = api_request(base_a, f"/api/workspaces/{workspace}")
@@ -372,7 +389,7 @@ def main():
         assert any(e["kind"] == "run.recovered" and e["data"].get("run_id") == recovered["id"] for e in api_request(base_b, "/api/events"))
         assert len(snapshot["artifacts"]) == 4
         assert len(fixture.effects) == 3
-        assert max(fixture.requests.values()) >= 2, "A remote invocation should have been replayed with the same key"
+        assert fixture.requests[reconciled_key] == 1, "An uncertain Unsafe HTTP invocation must not be replayed automatically"
         assert fixture.provider_calls["openrouter"] > 0
         wait_for(lambda: any(e["type"] == "task.completed" for e in stream_events), label="SSE result delivery")
         pending_events = int(psql(db_a, queries["pending_events"]))

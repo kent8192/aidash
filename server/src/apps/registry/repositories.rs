@@ -25,6 +25,21 @@ pub struct Registry {
 	node_id: String,
 }
 impl Registry {
+	pub async fn seed_system(&self) -> Result<()> {
+		self.db
+			.atomic(async |tx| {
+				Ok(aidash_application::registry::system::seed(
+					&mut OrmScope {
+						db: tx,
+						node: &self.node_id,
+					},
+					&crate::bootstrap::registry_validation(),
+					&self.node_id,
+				)
+				.await?)
+			})
+			.await
+	}
 	pub fn new(pool: impl Into<crate::database::native::Pool>, node_id: &str) -> Result<Self> {
 		let lease = DatabaseConnectionLease::register(pool.into().connection())?;
 		Ok(Self {

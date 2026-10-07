@@ -93,6 +93,38 @@ async fn requested_shutdown_wins_over_a_service_observing_the_same_signal() {
 }
 
 #[rstest::rstest]
+#[tokio::test]
+async fn requested_shutdown_takes_precedence_over_a_completed_service() {
+	let drained = Arc::new(AtomicBool::new(false));
+	let completed = drained.clone();
+	let mut supervisor = Supervisor::new(Duration::from_secs(20));
+	let mut token = supervisor.stop_token();
+	supervisor.spawn_worker(async move {
+		token.stopped().await;
+		completed.store(true, Ordering::SeqCst);
+		Ok(())
+	});
+	let (finished, ready) = oneshot::channel();
+	supervisor.spawn_service(async move {
+		finished.send(()).unwrap();
+		Ok(())
+	});
+	ready.await.unwrap();
+
+	let admission_closed = Arc::new(AtomicBool::new(false));
+	let closed = admission_closed.clone();
+	let result = supervisor
+		.run_with_shutdown(async {}, move || {
+			closed.store(true, Ordering::SeqCst);
+		})
+		.await;
+
+	assert!(result.is_ok(), "{result:?}");
+	assert!(admission_closed.load(Ordering::SeqCst));
+	assert!(drained.load(Ordering::SeqCst));
+}
+
+#[rstest::rstest]
 #[tokio::test(start_paused = true)]
 async fn drain_timeout_aborts_uncooperative_workers() {
 	let released = Arc::new(AtomicBool::new(false));

@@ -14,6 +14,9 @@ pub struct MessageReadCoverage {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Context {
+	/// Installed before activation and retained through every execution boundary.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub binding_snapshot: Option<Box<crate::registry::bindings::BindingSnapshot>>,
 	pub summary: String,
 	// Older run messages are summarized in bounded pages before task execution.
 	// Keep this separately from ordinary context compaction summaries.

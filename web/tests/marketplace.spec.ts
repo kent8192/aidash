@@ -2,6 +2,243 @@ import { test, expect } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 
 for (const locale of ["en-US", "ja-JP"] as const) {
+  test(`operator reviews an exact pending Host approval set (${locale})`, async ({
+    page,
+  }) => {
+    await installBearerDashboard(page, "fixture");
+    await page.addInitScript(
+      (value) => localStorage.setItem("aidash-locale", value),
+      locale,
+    );
+    const ja = locale === "ja-JP";
+    let catalogRevision = 7;
+    let activationRevision = 3;
+    const row = (id: string) => ({
+      installation: {
+        id,
+        tenant: "a",
+        package_key: `package-${id}`,
+        latest_revision: 2,
+        active_revision: null,
+        activation_revision: activationRevision,
+      },
+      revision: 2,
+      digest: `digest-${id}`,
+      entry: {
+        id: `mkt-${id}`,
+        version: "1.0.0",
+        kind: id === "bundle" ? "bundle" : "tool",
+        name: { en: id },
+        description: { en: "Node operation" },
+        config:
+          id === "bundle"
+            ? {
+                members: [
+                  {
+                    registry_node: "aidash://node",
+                    id: "mkt-task",
+                    version: "1.0.0",
+                  },
+                ],
+              }
+            : {
+                registry_node: "aidash://node",
+                provider: "core.tasks@1",
+                operation: "task_assign",
+                default_alias: "task_assign",
+                tier: "host",
+                narrow: {},
+              },
+        schema: {},
+        tags: [],
+        skills: [],
+        languages: [],
+        capabilities: [],
+      },
+      config: {},
+      dependencies: [],
+      bindings: [],
+      approved: false,
+      actions: [],
+    });
+    const selections: unknown[] = [];
+    let denied = false;
+    let prepared: Record<string, unknown> | undefined;
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/events/stream") return route.abort();
+      if (path === "/api/session")
+        return route.fulfill({
+          json: { access: { kind: "operator" }, node_id: "aidash://node" },
+        });
+      if (path === "/api/mesh")
+        return route.fulfill({ json: { nodes: [], errors: [] } });
+      if (path === "/api/state")
+        return route.fulfill({
+          json: {
+            access: { kind: "operator" },
+            node: {
+              id: "aidash://node",
+              endpoint: "http://localhost",
+              protocol_version: "0.1",
+              capabilities: [],
+              clusters: [],
+            },
+            registry: [],
+            workspaces: [],
+            tasks: [],
+            artifacts: [],
+            events: [],
+            runs: [],
+            conversations: [],
+            human_requests: [],
+            installations: [],
+            peers: [],
+          },
+        });
+      if (path === "/api/marketplace/compatibility")
+        return route.fulfill({
+          json: { enabled: true, revision: 2, contract: 1 },
+        });
+      if (path === "/api/marketplace/administration")
+        return route.fulfill({ json: [row("bundle"), row("task")] });
+      if (path === "/api/authorization/a/catalog")
+        return denied
+          ? route.fulfill({ status: 403, json: { error: "forbidden" } })
+          : route.fulfill({
+              json: ["bundle", "task"].map((id) => ({
+                entry_id: `mkt-${id}`,
+                entry_version: "1.0.0",
+                revision: catalogRevision,
+                enabled: false,
+                tenant: "a",
+              })),
+            });
+      if (path === "/api/marketplace/host-packages") {
+        prepared = route.request().postDataJSON();
+        return route.fulfill({
+          json: {
+            installations: [row("bundle"), row("task")],
+            unavailable: { shell: "runner unavailable" },
+          },
+        });
+      }
+      if (path === "/api/marketplace/approval-sets") {
+        selections.push(route.request().postDataJSON());
+        catalogRevision = 8;
+        activationRevision = 4;
+        return route.fulfill({
+          status: 409,
+          json: { error: "stale selection" },
+        });
+      }
+      return route.fulfill({ json: [] });
+    });
+    await page.goto("/marketplace");
+    const administration = page.locator("section.panel").filter({
+      has: page.getByRole("heading", {
+        name: ja ? "テナント導入の承認" : "Tenant installation approval",
+        exact: true,
+      }),
+    });
+    await administration
+      .getByLabel(ja ? "テナント" : "Tenant", { exact: true })
+      .fill("a");
+    await administration
+      .getByRole("button", { name: ja ? "読み込み" : "Load", exact: true })
+      .click();
+    const host = administration.locator("section.panel").filter({
+      has: page.getByRole("heading", {
+        name: ja ? "Host パッケージ" : "Host packages",
+        exact: true,
+      }),
+    });
+    await expect(
+      host.getByLabel("mkt-task@1.0.0", { exact: true }),
+    ).toBeEnabled();
+    await host.getByLabel("shell", { exact: true }).check();
+    await host.getByLabel("task_assign", { exact: true }).check();
+    await host
+      .getByRole("button", {
+        name: ja ? "承認待ちを作成" : "Prepare pending packages",
+        exact: true,
+      })
+      .click();
+    await expect(
+      host.getByText("shell: runner unavailable", { exact: true }),
+    ).toBeVisible();
+    expect(prepared).toMatchObject({
+      tenant: "a",
+      groups: ["shell", "task_assign"],
+    });
+    expect(prepared?.idempotency_key).toEqual(expect.any(String));
+    await host.getByLabel("mkt-bundle@1.0.0", { exact: true }).check();
+    await host.getByLabel("mkt-task@1.0.0", { exact: true }).check();
+    const approve = host.getByRole("button", {
+      name: ja
+        ? "選択した対象を承認して有効化"
+        : "Approve and activate selected set",
+      exact: true,
+    });
+    await expect(host.locator(".host-package-selection")).toContainText(
+      '"id": "mkt-task"',
+    );
+    await approve.click();
+    await expect.poll(() => selections.length).toBe(1);
+    expect(selections[0]).toEqual({
+      tenant: "a",
+      installations: ["bundle", "task"].map((id) => ({
+        installation: id,
+        revision: 2,
+        digest: `digest-${id}`,
+        expected_activation_revision: 3,
+      })),
+      approvals: ["bundle", "task"].map((id) => ({
+        reference: { id: `mkt-${id}`, version: "1.0.0" },
+        expected_catalog_revision: 7,
+      })),
+    });
+    await expect(
+      host.getByRole("status").filter({
+        hasText: ja ? "承認対象が変更" : "reviewed selection changed",
+      }),
+    ).toBeVisible();
+    // A repeated action cannot silently substitute refreshed approval fences.
+    await approve.click();
+    await expect.poll(() => selections.length).toBe(2);
+    expect(selections[1]).toEqual(selections[0]);
+    await host
+      .getByRole("button", {
+        name: ja ? "承認対象を再読み込み" : "Reload approval selection",
+        exact: true,
+      })
+      .click();
+    await expect(approve).toBeDisabled();
+    await host.getByLabel("mkt-task@1.0.0", { exact: true }).check();
+    await approve.click();
+    await expect.poll(() => selections.length).toBe(3);
+    expect(selections[2]).toMatchObject({
+      installations: [
+        { installation: "task", expected_activation_revision: 4 },
+      ],
+      approvals: [{ expected_catalog_revision: 8 }],
+    });
+    // Revocation clears the retained review content and pending receipt.
+    denied = true;
+    await host
+      .getByRole("button", {
+        name: ja ? "承認対象を再読み込み" : "Reload approval selection",
+        exact: true,
+      })
+      .click();
+    await expect(host.getByRole("alert")).toBeVisible();
+    await expect(host.getByText("mkt-task@1.0.0", { exact: true })).toHaveCount(
+      0,
+    );
+  });
+}
+
+for (const locale of ["en-US", "ja-JP"] as const) {
   test(`scoped Marketplace stages and publishes exact definitions (${locale})`, async ({
     page,
   }, testInfo) => {

@@ -29,10 +29,21 @@ pub(super) async fn pending(
 							.add(Expr::col("attempts").lt(policy.bounds.max_retries as i32)),
 					)
 					.add(
-						Condition::all()
-							.add(Expr::col("state").eq("running"))
-							.add(Expr::col("next_attempt").gt(Expr::value(chrono::Utc::now())))
-							.add(Expr::col("attempts").lte(policy.bounds.max_retries as i32)),
+						Condition::all().add(Expr::col("state").eq("running")).add(
+							Condition::any()
+								.add(Expr::col("attempts").lt(policy.bounds.max_retries as i32))
+								.add(
+									Condition::all()
+										.add(
+											Expr::col("next_attempt")
+												.gt(Expr::value(chrono::Utc::now())),
+										)
+										.add(
+											Expr::col("attempts")
+												.eq(policy.bounds.max_retries as i32),
+										),
+								),
+						),
 					),
 			)
 			.limit(policy.retention.max_model_operations as u64 + 1)

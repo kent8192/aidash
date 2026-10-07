@@ -29,6 +29,7 @@ pub(crate) async fn current(
 	if !spec.enabled || serde_json::to_value(&spec.embedding)? != serde_json::to_value(embedding)? {
 		return Err(Error::SemanticUnavailable);
 	}
+	aidash_domain::memory::graph::validate_capacity(&policy.bounds, embedding.dimensions)?;
 	let mut vectors = BTreeMap::new();
 	for unit in units {
 		let entry = native::query(

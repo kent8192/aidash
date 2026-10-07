@@ -4,9 +4,10 @@ use crate::{
 	capabilities::CoreCapabilities,
 	registry::{AgentConfig, EntityRef},
 };
+use serde::Serialize;
 use serde_json::Value;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ToolEffect {
 	/// Addressed user resources remain unchanged; audit receipts are allowed.
 	ReadOnly,
@@ -15,31 +16,31 @@ pub enum ToolEffect {
 	/// No replay guarantee; severity and approval are separate declarations.
 	Unsafe,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ToolUseMode {
 	Ordinary,
 	MessageCatchUp,
 	MediaPending,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum DisclosureBoundary {
 	Local,
 	Home,
 	External,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum Continuation {
 	Ordinary,
 	Human,
 	Wait,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ResultFitting {
 	WorkspaceRecord,
 	SkillText,
 	Observation,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum AgentFlag {
 	TaskCreation,
 	Delegation,
@@ -60,7 +61,7 @@ impl AgentFlag {
 		}
 	}
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum CorePermission {
 	Files,
 	Shell,
@@ -83,12 +84,13 @@ impl CorePermission {
 		}
 	}
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum ToolIdentity {
 	Builtin(String),
 	Registry(EntityRef),
+	Descriptor(crate::registry::bindings::QualifiedRef),
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum ResourceTarget {
 	Workspace,
 	Task,
@@ -97,7 +99,7 @@ pub enum ResourceTarget {
 	Argument(&'static str),
 	ArgumentUuid(&'static str),
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum AuthorizationRequirement {
 	Resource {
 		action: &'static str,
@@ -111,13 +113,13 @@ pub enum AuthorizationRequirement {
 		agent: EntityRef,
 	},
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ToolAuthorization {
 	pub flag: Option<AgentFlag>,
 	pub core: Option<CorePermission>,
 	pub requirements: Vec<AuthorizationRequirement>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ToolBehavior {
 	pub effect: ToolEffect,
 	pub fitting: Option<ResultFitting>,
@@ -148,7 +150,7 @@ impl ToolBehavior {
 			&& output["metadata"]["file_id"] == input["file_id"]
 	}
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ToolContract {
 	pub identity: ToolIdentity,
 	pub authorization: ToolAuthorization,
@@ -162,15 +164,9 @@ impl ToolContract {
 	}
 	pub fn registry(reference: EntityRef, config: &ToolConfig) -> Self {
 		let (effect, approval, disclosure) = match config {
-			ToolConfig::Http { replay, .. } | ToolConfig::Mcp { replay, .. } => (
-				match replay.as_str() {
-					"read_only" => ToolEffect::ReadOnly,
-					"idempotent" => ToolEffect::Idempotent,
-					_ => ToolEffect::Unsafe,
-				},
-				replay != "read_only",
-				DisclosureBoundary::External,
-			),
+			ToolConfig::Http { .. } | ToolConfig::Mcp { .. } => {
+				(ToolEffect::Unsafe, true, DisclosureBoundary::External)
+			}
 			ToolConfig::Agent { .. } => (ToolEffect::Idempotent, false, DisclosureBoundary::Home),
 			ToolConfig::Native { operation, .. } => (
 				ToolEffect::ReadOnly,
@@ -488,8 +484,8 @@ mod tests {
 			version: "1".into(),
 		};
 		for (replay, effect, approval, safe) in [
-			("read_only", ToolEffect::ReadOnly, false, true),
-			("idempotent", ToolEffect::Idempotent, true, true),
+			("read_only", ToolEffect::Unsafe, true, false),
+			("idempotent", ToolEffect::Unsafe, true, false),
 			("unsafe", ToolEffect::Unsafe, true, false),
 		] {
 			let contract = ToolContract::registry(

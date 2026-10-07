@@ -188,3 +188,5 @@ pub mod knowledge;
 pub mod skill_import;
 
 pub mod workbench;
+
+pub mod bindings;

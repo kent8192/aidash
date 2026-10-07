@@ -650,3 +650,15 @@ fn aliases_require_distinct_nonempty_bounded_source_names() {
 	content.entities[0].aliases = vec![" ".into()];
 	assert!(content.validate(&bounds()).is_err());
 }
+
+#[test]
+fn semantic_graph_admission_bounds_vector_work_before_scoring() {
+	let mut limits = bounds();
+	limits.max_units = 2048;
+	assert!(super::graph::validate_capacity(&limits, 3072).is_err());
+	assert!(super::graph::validate_capacity(&limits, 3).is_ok());
+	limits.max_units = 64;
+	assert!(super::graph::validate_capacity(&limits, 3072).is_ok());
+	limits.max_units = usize::MAX;
+	assert!(super::graph::validate_capacity(&limits, 8192).is_err());
+}
