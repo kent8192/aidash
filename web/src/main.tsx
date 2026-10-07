@@ -705,7 +705,9 @@ function Dashboard({
               : undefined;
           if (!item && !task) return;
           if (
-            data?.workspaces.some(
+            data &&
+            target.node === data.node.id &&
+            data.workspaces.some(
               (workspace) => workspace.id === target.workspace,
             )
           )

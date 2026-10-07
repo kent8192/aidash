@@ -1,6 +1,13 @@
 import { Button } from "../components/ui/button";
 import { ThreadCapabilities } from "../capabilities/thread";
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -42,6 +49,16 @@ type DraftFile = { key: string; file: File; uploaded?: ChannelAttachment };
 type Draft = { text: string; files: DraftFile[] };
 type Drafts = Record<string, Draft>;
 const emptyDraft: Draft = { text: "", files: [] };
+
+function latestMessageTop(scroll: HTMLElement, message: HTMLElement | null) {
+  if (!message) return 0;
+  const end =
+    message.getBoundingClientRect().bottom -
+    scroll.getBoundingClientRect().top +
+    scroll.scrollTop -
+    scroll.clientTop;
+  return Math.max(0, end - scroll.clientHeight);
+}
 
 /** Only inline composer syntax is interpreted. React escapes all other content. */
 export function MessageText({ text }: { text: string }) {
@@ -155,6 +172,7 @@ function ConversationFeed({
   const [error, setError] = useState(""),
     [sent, setSent] = useState(false);
   const scroll = useRef<HTMLDivElement>(null),
+    latest = useRef<HTMLElement>(null),
     textarea = useRef<HTMLTextAreaElement>(null),
     fileInput = useRef<HTMLInputElement>(null);
   const follow = useRef(true);
@@ -180,14 +198,13 @@ function ConversationFeed({
       ? allMessages.filter((message) => message.thread_id !== null)
       : allMessages;
   const latestMessageId = messages.at(-1)?.message.id;
-  function scrollToLatest() {
+  const scrollToLatest = useCallback(() => {
     const element = scroll.current;
-    if (element) element.scrollTop = element.scrollHeight;
-  }
+    if (element) element.scrollTop = latestMessageTop(element, latest.current);
+  }, []);
   useEffect(() => {
-    if (visible && follow.current && scroll.current)
-      scroll.current.scrollTop = scroll.current.scrollHeight;
-  }, [latestMessageId, thread, visible]);
+    if (visible && follow.current) scrollToLatest();
+  }, [latestMessageId, thread, visible, scrollToLatest]);
 
   async function openThread(message: ChannelMessage) {
     if (inFlight.current) return;
@@ -374,10 +391,10 @@ function ConversationFeed({
               const element = scroll.current;
               if (element) {
                 follow.current =
-                  element.scrollHeight -
-                    element.scrollTop -
-                    element.clientHeight <
-                  80;
+                  Math.abs(
+                    latestMessageTop(element, latest.current) -
+                      element.scrollTop,
+                  ) < 80;
                 setNearBottom(follow.current);
               }
             }}
@@ -438,6 +455,7 @@ function ConversationFeed({
                     </div>
                   )}
                   <article
+                    ref={index === messages.length - 1 ? latest : undefined}
                     className={`collab-message ${sender.kind}`}
                     id={`${thread ? "thread-" : ""}message-${message.id}`}
                   >

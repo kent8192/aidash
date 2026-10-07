@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { setup } from "./collaboration-fixture";
+import type { ChannelMessagePage } from "../src/generated/models";
 
 for (const locale of ["en-US", "ja-JP"] as const) {
   test(`remote assignment pins the selected memory providers in ${locale}`, async ({
@@ -1085,17 +1086,136 @@ test("a same-length refreshed page follows a new latest message", async ({
   await expect(page.locator(".collab-message")).toHaveCount(40);
   await expect
     .poll(async () =>
-      page
-        .locator(".collab-messages")
-        .evaluate(
-          (element) =>
-            element.scrollHeight - element.scrollTop - element.clientHeight <
-            80,
-        ),
+      page.locator(".collab-messages").evaluate((element) => {
+        const messages = element.querySelectorAll(".collab-message");
+        const latest = messages[messages.length - 1];
+        return (
+          Math.abs(
+            latest.getBoundingClientRect().bottom -
+              element.getBoundingClientRect().bottom,
+          ) < 5
+        );
+      }),
     )
     .toBe(true);
   expect(errors).toEqual([]);
 });
+
+test("message following keeps context after the latest message and respects reading older history", async ({
+  page,
+}) => {
+  const { errors } = await setup(page, { olderMessages: 39 });
+  await page.goto("/collaboration?channel=workspace-one");
+  const feed = page.locator(".collab-messages");
+  await expect(feed.locator(".collab-message")).toHaveCount(40);
+  await expect
+    .poll(() =>
+      feed.evaluate((element) => {
+        const latest = element.querySelectorAll(".collab-message")[39];
+        const bottom = element.getBoundingClientRect().bottom;
+        return (
+          Math.abs(latest.getBoundingClientRect().bottom - bottom) < 5 &&
+          element.scrollHeight - element.scrollTop - element.clientHeight > 80
+        );
+      }),
+    )
+    .toBe(true);
+  const history: ChannelMessagePage = await page.evaluate(() =>
+    fetch("/api/workspaces/workspace-one/message-history").then((response) =>
+      response.json(),
+    ),
+  );
+  await page.route(
+    "**/api/workspaces/workspace-one/message-history**",
+    (route) => route.fulfill({ json: history }),
+  );
+  await feed.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  const latest = history.messages.at(-1)!;
+  latest.message = {
+    ...latest.message,
+    id: "manual-reading-update",
+    content: "Update while reading older history.",
+  };
+  await expect(feed.locator("#message-manual-reading-update")).toBeAttached();
+  expect(await feed.evaluate((element) => element.scrollTop)).toBeLessThan(10);
+  await page
+    .getByRole("button", { name: "Jump to latest messages", exact: true })
+    .click();
+  latest.message = {
+    ...latest.message,
+    id: "following-update",
+    content: "Update after resuming following.",
+  };
+  await expect(feed.locator("#message-following-update")).toBeAttached();
+  await expect
+    .poll(() =>
+      feed.evaluate((element) => {
+        const latest = element.querySelector("#message-following-update")!;
+        return (
+          Math.abs(
+            latest.getBoundingClientRect().bottom -
+              element.getBoundingClientRect().bottom,
+          ) < 5
+        );
+      }),
+    )
+    .toBe(true);
+  await expect(
+    page.getByRole("button", { name: "Jump to latest messages", exact: true }),
+  ).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+for (const locale of ["en-US", "ja-JP"] as const) {
+  test(`progress overview remains reachable after every detail tab in ${locale}`, async ({
+    page,
+  }) => {
+    const ja = locale === "ja-JP";
+    if (ja) await page.setViewportSize({ width: 390, height: 1000 });
+    const { errors } = await setup(page, { locale });
+    await page.goto("/collaboration?channel=workspace-one");
+    const open = page.getByRole("button", {
+      name: ja ? "状況を表示" : "Show channel status",
+      exact: true,
+    });
+    await open.click();
+    const sheet = page.locator(".intent-progress-sheet");
+    const nav = sheet.locator(".intent-progress-nav");
+    const pause = sheet.getByRole("button", {
+      name: ja
+        ? "このチャンネルの実行を一時停止"
+        : "Pause runs in this channel",
+      exact: true,
+    });
+    await expect(pause).toBeVisible();
+    for (const name of ja
+      ? ["タスクと成果物", "成果物", "実行履歴"]
+      : ["Tasks and results", "Artifacts", "Execution history"]) {
+      await nav.getByRole("button", { name, exact: true }).click();
+      await expect(pause).toHaveCount(0);
+      await nav
+        .getByRole("button", { name: ja ? "概要" : "Overview", exact: true })
+        .click();
+      await expect(pause).toBeVisible();
+    }
+    await nav
+      .getByRole("button", {
+        name: ja ? "タスクと成果物" : "Tasks and results",
+        exact: true,
+      })
+      .click();
+    await sheet
+      .getByRole("button", { name: ja ? "閉じる" : "Close", exact: true })
+      .click();
+    await expect(sheet).toHaveCount(0);
+    await open.click();
+    await expect(pause).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+}
 
 test("revoking a thread read hides cached replies without exposing another conversation", async ({
   page,

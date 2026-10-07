@@ -192,7 +192,7 @@ test("toasts are rate limited, deduplicated and cleared with queued updates on a
   expect(errors).toEqual([]);
 });
 
-test("remote notices preserve node identity even when request IDs collide", async ({
+test("remote notices preserve node identity when request and workspace IDs collide", async ({
   page,
 }) => {
   await page.clock.install();
@@ -213,6 +213,7 @@ test("remote notices preserve node identity even when request IDs collide", asyn
     "Remote node needs different evidence.",
   );
   await page.locator(".intent-toast-open").click();
+  await expect(page).toHaveURL("/collaboration?channel=workspace-two");
   await expect(page.getByRole("dialog")).toHaveCount(1);
   await expect(page.getByRole("dialog")).toContainText(
     "Remote node needs different evidence.",

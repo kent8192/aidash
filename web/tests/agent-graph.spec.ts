@@ -203,6 +203,27 @@ test("shows typed version-pinned relationships and opens existing details", asyn
   expect(errors).toEqual([]);
 });
 
+for (const width of [1440, 900, 390]) {
+  test(`agent graph Radix dialog uses the available width at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 1000 });
+    const { errors } = await setup(page);
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.locator(".agent-graph")).toBeVisible();
+    const gutter = await page.evaluate(
+      () => 2 * parseFloat(getComputedStyle(document.documentElement).fontSize),
+    );
+    await expect
+      .poll(async () => (await dialog.boundingBox())?.width)
+      .toBeCloseTo(Math.min(1120, width - gutter), 0);
+    const bounds = await dialog.boundingBox();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+    expect(errors).toEqual([]);
+  });
+}
+
 test("filters runtime separately and follows a task from the list", async ({
   page,
 }) => {

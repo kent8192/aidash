@@ -1,5 +1,5 @@
 import { Button } from "../components/ui/button";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "../transport";
 import { Field, useI18n } from "../ui";
@@ -230,13 +230,23 @@ export function WorkingFileSettings({
     initialPageParam: "",
     queryFn: ({ pageParam, signal }) =>
       apiFetch<Page>(
-        `/api/working-files${pageParam ? `?cursor=${pageParam}` : ""}`,
+        `/api/working-files${pageParam ? `?cursor=${encodeURIComponent(pageParam)}` : ""}`,
         { signal },
       ),
     getNextPageParam: (p) => p.next_cursor ?? undefined,
     refetchInterval: 3000,
     retry: false,
   });
+  const areas = (query.data?.pages.flatMap((page) => page.items) ?? []).filter(
+    (area) => allWorkspaces || !workspace || area.workspace_id === workspace,
+  );
+  const searching = Boolean(
+    workspace && !allWorkspaces && areas.length === 0 && query.hasNextPage,
+  );
+  const { isFetching, isError, fetchNextPage } = query;
+  useEffect(() => {
+    if (searching && !isFetching && !isError) void fetchNextPage();
+  }, [searching, isFetching, isError, fetchNextPage]);
   return (
     <>
       <section className="core-panel">
@@ -259,22 +269,17 @@ export function WorkingFileSettings({
           </label>
         )}
         {query.isError && <p role="alert">{query.error.message}</p>}
-        {query.isPending && (
+        {(query.isPending || (searching && !query.isError)) && (
           <p role="status">{ja ? "読み込み中…" : "Loading…"}</p>
         )}
-        {query.data?.pages
-          .flatMap((p) => p.items)
-          .filter(
-            (area) =>
-              allWorkspaces || !workspace || area.workspace_id === workspace,
-          )
-          .map((area) => (
-            <AreaLifecycle key={area.area_id} area={area} />
-          ))}
+        {areas.map((area) => (
+          <AreaLifecycle key={area.area_id} area={area} />
+        ))}
         {query.hasNextPage && (
           <Button
             variant="outline"
             type="button"
+            disabled={query.isFetchingNextPage}
             onClick={() => void query.fetchNextPage()}
           >
             {ja ? "さらに表示" : "Load more"}

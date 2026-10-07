@@ -225,7 +225,10 @@ export function Channel({
               variant="outline"
               aria-label={words.details}
               aria-expanded={statusOpen}
-              onClick={() => setStatusOpen(true)}
+              onClick={() => {
+                setTab("conversation");
+                setStatusOpen(true);
+              }}
             >
               <PanelRight size={16} />
               <span>{locale === "ja-JP" ? "進捗を見る" : "View progress"}</span>
@@ -364,6 +367,13 @@ export function Channel({
             <SheetDescription>{workspace.title}</SheetDescription>
           </SheetHeader>
           <nav className="intent-progress-nav" aria-label={workspace.title}>
+            <Button
+              variant="ghost"
+              onClick={() => setTab("conversation")}
+              aria-pressed={tab === "conversation"}
+            >
+              {locale === "ja-JP" ? "概要" : "Overview"}
+            </Button>
             <Button
               variant="ghost"
               onClick={() => setTab("work")}
