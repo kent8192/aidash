@@ -232,6 +232,29 @@ async fn redirects_and_failures_do_not_create_unreserved_requests() {
 	assert!(client.dispatch(&request).await.is_err());
 	assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn successful_http_with_invalid_answers_is_a_contract_violation() {
+	for body in [
+		json!({"model":"jev-1.13.0","answers":{}}),
+		json!({"model":"jev-1.14.0","answers":{"q0":{"noul":0.5}}}),
+	] {
+		let router = Router::new().route(
+			"/systemone",
+			post(move || {
+				let body = body.clone();
+				async move { Json(body) }
+			}),
+		);
+		let (endpoint, _server) = server(router).await;
+		let client = provider(&endpoint, None);
+		let request = client.plan(&json!({}), &questions(1)).unwrap().remove(0);
+		assert!(matches!(
+			client.dispatch(&request).await,
+			Err(DispatchError::InvalidAnswers)
+		));
+	}
+}
 #[test]
 fn prepared_body_cannot_change_the_model_or_question_map() {
 	let client = provider("https://example.test/systemone", None);

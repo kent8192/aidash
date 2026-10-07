@@ -168,7 +168,17 @@ impl Evidence {
 			}
 			_ => {}
 		}
-		if self.fit.retained.checked_add(self.fit.dropped) != Some(self.history_length)
+		let proposed_reason = if self.restrictions.forbid_apply {
+			Reason::Forbidden
+		} else if self.fit.proposed > self.fit.window {
+			Reason::Insufficient
+		} else {
+			Reason::Fits
+		};
+		if self.reason != proposed_reason
+			|| self.outcome == Outcome::Rejected
+				&& (self.mode != Mode::Enforce || self.reason == Reason::Fits)
+			|| self.fit.retained.checked_add(self.fit.dropped) != Some(self.history_length)
 			|| self.fit.truncated > self.fit.retained
 			|| self.fit.before <= self.fit.window
 			|| self.outcome == Outcome::Applied

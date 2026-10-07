@@ -2,7 +2,7 @@
 use crate::{Error, Result};
 use aidash_application::ports::{
 	Credentials,
-	decision::{DecisionProvider, PreparedRequest},
+	decision::{DecisionProvider, DispatchError, PreparedRequest},
 };
 use aidash_domain::decision::*;
 use async_trait::async_trait;
@@ -162,7 +162,10 @@ impl DecisionProvider for JevDecisionProvider {
 			.map_err(|_| Error::Invalid("invalid decision HTTP request".into()))?;
 		Ok(())
 	}
-	async fn dispatch(&self, request: &PreparedRequest) -> Result<BTreeMap<String, Probability>> {
+	async fn dispatch(
+		&self,
+		request: &PreparedRequest,
+	) -> std::result::Result<BTreeMap<String, Probability>, DispatchError> {
 		self.preflight(request)?;
 		let response = self
 			.request(request)?
@@ -173,7 +176,8 @@ impl DecisionProvider for JevDecisionProvider {
 			return Err(Error::External(format!(
 				"decision provider returned HTTP {}",
 				response.status().as_u16()
-			)));
+			))
+			.into());
 		}
 		// serde_json recursion limits protect parsing structure, not payload size.
 		// There is deliberately no fixed response byte limit or retained raw body.
@@ -182,6 +186,7 @@ impl DecisionProvider for JevDecisionProvider {
 			.await
 			.map_err(|_| Error::External("decision response unavailable".into()))?;
 		validate_response(&self.config.model, &request.questions, &body)
+			.map_err(|_| DispatchError::InvalidAnswers)
 	}
 }
 

@@ -180,16 +180,30 @@ impl DecisionGate<'_> {
 				));
 			}
 			let result = self.provider.dispatch(request).await;
-			let (status, answers) = match result {
+			let (mut status, mut answers, mut failure) = match result {
 				Ok(answers) if validate_answers(&request.questions, &answers).is_ok() => {
-					(AttemptStatus::Answered, Some(answers))
+					(AttemptStatus::Answered, Some(answers), None)
 				}
-				Ok(_) => (AttemptStatus::Failed, None),
-				Err(_) => (AttemptStatus::Uncertain, None),
+				Ok(_) | Err(DispatchError::InvalidAnswers) => {
+					(AttemptStatus::Failed, None, Some(Reason::InvalidAnswers))
+				}
+				Err(DispatchError::ProviderFailure(_)) => (
+					AttemptStatus::Uncertain,
+					None,
+					Some(Reason::ProviderFailure),
+				),
 			};
-			self.journal
+			if self
+				.journal
 				.finish_attempt(&permit, answers.as_ref(), status)
-				.await?;
+				.await
+				.is_err()
+			{
+				// The call remains charged, but its answer is not a durable recovery source.
+				status = AttemptStatus::Uncertain;
+				answers = None;
+				failure = Some(Reason::ProviderFailure);
+			}
 			Ok::<_, Error>((
 				AttemptEvidence {
 					id: record.attempt,
@@ -200,13 +214,14 @@ impl DecisionGate<'_> {
 				},
 				answers,
 				current,
+				failure,
 			))
 		}))
 		.await;
-		let mut failed = false;
+		let mut failure = None;
 		for attempt in attempts {
 			match attempt {
-				Ok((record, answers, current)) => {
+				Ok((record, answers, current, reason)) => {
 					evidence.attempts.push(record);
 					restrictions = restrictions.intersect(&current.restrictions, &config)?;
 					let expiry = current
@@ -218,25 +233,36 @@ impl DecisionGate<'_> {
 					};
 					if let Some(answers) = answers {
 						evidence.answers.extend(answers);
-					} else {
-						failed = true;
 					}
+					failure = failure.or(reason);
 				}
-				Err(_) => failed = true,
+				Err(Error::Forbidden) => failure = Some(Reason::Forbidden),
+				Err(_) => failure = failure.or(Some(Reason::ProviderFailure)),
 			}
 		}
-		if failed || validate_answers(&evidence.questions, &evidence.answers).is_err() {
-			evidence.reason = Reason::ProviderFailure;
+		if failure.is_none() && validate_answers(&evidence.questions, &evidence.answers).is_err() {
+			failure = Some(Reason::InvalidAnswers);
+		}
+		if let Some(reason) = failure {
+			evidence.reason = reason;
 			self.journal.commit(&evidence, None, None).await?;
 			return Err(Error::Invalid(
 				"decision requests did not produce complete durable answers".into(),
 			));
 		}
 		// Current stricter rules may retain more events, but never change the pin or mode.
-		let current = self
+		let current = match self
 			.authority
 			.check(input.boundary, input.decider, &input.disclosure.sources)
-			.await?;
+			.await
+		{
+			Ok(current) => current,
+			Err(error) => {
+				evidence.reason = Reason::Forbidden;
+				self.journal.commit(&evidence, None, None).await?;
+				return Err(error);
+			}
+		};
 		restrictions = restrictions.intersect(&current.restrictions, &config)?;
 		let current_expiry = current
 			.state_retention
@@ -300,11 +326,23 @@ impl DecisionGate<'_> {
 		} else {
 			Outcome::Rejected
 		};
-		let retained = state_expiry.map(|expires_at| RetainedState {
-			id: Uuid::new_v4(),
-			digest: state_digest,
-			expires_at,
-			state: built.state,
+		let retained = state_expiry.and_then(|expires_at| {
+			let state_id = Uuid::new_v4();
+			if expires_at <= self.journal.now() {
+				evidence.state = StateReference::Expired {
+					id: state_id,
+					digest: state_digest.clone(),
+					expired_at: expires_at,
+				};
+				None
+			} else {
+				Some(RetainedState {
+					id: state_id,
+					digest: state_digest,
+					expires_at,
+					state: built.state,
+				})
+			}
 		});
 		if let Some(state) = &retained {
 			evidence.state = StateReference::Retained {

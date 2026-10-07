@@ -67,13 +67,17 @@ struct Fixture {
 	saved: Mutex<Saved>,
 	budget: usize,
 	invalid: bool,
+	invalid_response: bool,
 	fail_transport: bool,
 	fail_finish: bool,
+	fail_finish_result: bool,
 	fail_commit: bool,
 	wrong_receipt: bool,
 	revoke_after_dispatch: bool,
 	denied: AtomicBool,
 	retain_state: bool,
+	commit_time: Option<DateTime<Utc>>,
+	expire_at_commit: bool,
 	stricter_after_dispatch: bool,
 	keep: Probability,
 	keep_call: Option<Probability>,
@@ -98,13 +102,17 @@ impl Fixture {
 			}),
 			budget: usize::MAX,
 			invalid: false,
+			invalid_response: false,
 			fail_transport: false,
 			fail_finish: false,
+			fail_finish_result: false,
 			fail_commit: false,
 			wrong_receipt: false,
 			revoke_after_dispatch: false,
 			denied: AtomicBool::new(false),
 			retain_state: false,
+			commit_time: None,
+			expire_at_commit: false,
 			stricter_after_dispatch: false,
 			keep: Probability::new(0.0).unwrap(),
 			keep_call: None,
@@ -157,6 +165,9 @@ impl DecisionAuthority for Fixture {
 }
 #[async_trait]
 impl DecisionJournal for Fixture {
+	fn now(&self) -> DateTime<Utc> {
+		self.commit_time.unwrap_or_else(Utc::now)
+	}
 	async fn reserve(&self, record: &DispatchRecord) -> Result<DispatchPermit> {
 		let mut saved = self.saved.lock().unwrap();
 		if saved.permits.len() >= self.budget {
@@ -188,7 +199,14 @@ impl DecisionJournal for Fixture {
 		status: AttemptStatus,
 	) -> Result<()> {
 		assert!(self.saved.lock().unwrap().permits.contains(permit));
-		if self.fail_finish {
+		if self.fail_finish
+			|| self.fail_finish_result
+				&& permit
+					.record
+					.questions
+					.iter()
+					.any(|q| q.ends_with("_result"))
+		{
 			return Err(Error::External("journal failed".into()));
 		}
 		assert_eq!(answers.is_some(), status == AttemptStatus::Answered);
@@ -207,6 +225,11 @@ impl DecisionJournal for Fixture {
 		if self.fail_commit {
 			return Err(Error::Conflict("worker lease lost".into()));
 		}
+		if self.denied.load(Ordering::SeqCst) {
+			assert_eq!(evidence.outcome, Outcome::Rejected);
+			assert_eq!(evidence.reason, Reason::Forbidden);
+			assert!(context.is_none() && state.is_none());
+		}
 		assert_eq!(
 			state.is_some(),
 			matches!(evidence.state, StateReference::Retained { .. })
@@ -214,10 +237,28 @@ impl DecisionJournal for Fixture {
 		if let Some(state) = state {
 			assert_eq!(digest(&state.state), evidence.state_digest);
 		}
+		let mut committed = evidence.clone();
+		let state = state.filter(|state| {
+			let now = if self.expire_at_commit {
+				state.expires_at
+			} else {
+				self.now()
+			};
+			if state.expires_at <= now {
+				committed.state = StateReference::Expired {
+					id: state.id,
+					digest: state.digest.clone(),
+					expired_at: state.expires_at,
+				};
+				false
+			} else {
+				true
+			}
+		});
 		let mut saved = self.saved.lock().unwrap();
 		saved.applied += usize::from(context.is_some());
 		saved.states += usize::from(state.is_some());
-		saved.evidence.push(evidence.clone());
+		saved.evidence.push(committed);
 		Ok(())
 	}
 	async fn expire_states(&self, _: DateTime<Utc>) -> Result<usize> {
@@ -255,7 +296,10 @@ impl DecisionProvider for Fixture {
 	fn preflight(&self, _: &PreparedRequest) -> Result<()> {
 		Ok(())
 	}
-	async fn dispatch(&self, request: &PreparedRequest) -> Result<BTreeMap<String, Probability>> {
+	async fn dispatch(
+		&self,
+		request: &PreparedRequest,
+	) -> std::result::Result<BTreeMap<String, Probability>, DispatchError> {
 		// Assert reservation-before-I/O and exact physical request digest.
 		assert!(
 			self.saved
@@ -274,7 +318,10 @@ impl DecisionProvider for Fixture {
 			self.denied.store(true, Ordering::SeqCst);
 		}
 		if self.fail_transport {
-			return Err(Error::External("RAW_PRIVATE_PROVIDER_BODY".into()));
+			return Err(Error::External("RAW_PRIVATE_PROVIDER_BODY".into()).into());
+		}
+		if self.invalid_response {
+			return Err(DispatchError::InvalidAnswers);
 		}
 		if self.invalid {
 			return Ok(BTreeMap::new());
@@ -551,6 +598,187 @@ async fn failed_invalid_incomplete_or_unpersisted_answers_preserve_original_cont
 				.contains("RAW_PRIVATE_PROVIDER_BODY")
 		);
 	}
+}
+
+#[tokio::test]
+async fn failed_finalization_preserves_every_dispatched_attempt_and_receipt() {
+	for partial in [false, true] {
+		let fixture = Fixture {
+			fail_finish: !partial,
+			fail_finish_result: partial,
+			..Fixture::new(Mode::Enforce)
+		};
+		let (result, context, original) =
+			evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
+		assert!(result.is_err());
+		assert_eq!(context.history, original.history);
+		let saved = fixture.saved.lock().unwrap();
+		let evidence = &saved.evidence[0];
+		assert_eq!(evidence.outcome, Outcome::Rejected);
+		assert_eq!(evidence.reason, Reason::ProviderFailure);
+		assert_eq!(evidence.summary().attempts, 6);
+		assert_eq!(fixture.calls.load(Ordering::SeqCst), 6);
+		assert_eq!(saved.answers, if partial { 3 } else { 0 });
+		assert_eq!(evidence.answers.len(), saved.answers);
+		for permit in &saved.permits {
+			let attempt = evidence
+				.attempts
+				.iter()
+				.find(|a| a.id == permit.record.attempt)
+				.unwrap();
+			assert_eq!(attempt.request_digest, permit.record.request_digest);
+			assert_eq!(attempt.questions, permit.record.questions);
+			assert_eq!(attempt.owner_receipts, permit.owner_receipts);
+			let answered = partial && permit.record.questions[0].ends_with("_call");
+			assert_eq!(
+				attempt.status,
+				if answered {
+					AttemptStatus::Answered
+				} else {
+					AttemptStatus::Uncertain
+				}
+			);
+		}
+	}
+}
+
+#[tokio::test]
+async fn contract_violations_and_transport_failures_have_distinct_rejection_reasons() {
+	for kind in 0..3 {
+		let fixture = Fixture {
+			invalid: kind == 0,
+			invalid_response: kind == 1,
+			fail_transport: kind == 2,
+			..Fixture::new(Mode::Enforce)
+		};
+		let (result, context, original) =
+			evaluate(&fixture, Mode::Enforce, 80_000, disclosure()).await;
+		assert!(result.is_err());
+		assert_eq!(context.history, original.history);
+		let saved = fixture.saved.lock().unwrap();
+		let evidence = &saved.evidence[0];
+		assert_eq!(
+			evidence.reason,
+			if kind == 2 {
+				Reason::ProviderFailure
+			} else {
+				Reason::InvalidAnswers
+			}
+		);
+		assert_eq!(evidence.summary().attempts, 6);
+		assert!(evidence.answers.is_empty());
+		assert!(evidence.attempts.iter().all(|a| a.status
+			== if kind == 2 {
+				AttemptStatus::Uncertain
+			} else {
+				AttemptStatus::Failed
+			}));
+	}
+}
+
+#[tokio::test]
+async fn post_dispatch_revocation_commits_rejected_evidence_without_context_or_state() {
+	for mode in [Mode::Enforce, Mode::Shadow] {
+		let fixture = Fixture {
+			revoke_after_dispatch: true,
+			retain_state: true,
+			..Fixture::new(mode)
+		};
+		let (result, context, original) = evaluate(&fixture, mode, 80_000, disclosure()).await;
+		assert!(matches!(result, Err(Error::Forbidden)));
+		assert_eq!(context.history, original.history);
+		let saved = fixture.saved.lock().unwrap();
+		assert_eq!(saved.applied, 0);
+		assert_eq!(saved.states, 0);
+		assert_eq!(saved.evidence.len(), 1);
+		let evidence = &saved.evidence[0];
+		assert_eq!(evidence.outcome, Outcome::Rejected);
+		assert_eq!(evidence.reason, Reason::Forbidden);
+		assert_eq!(evidence.summary().attempts, 6);
+		assert_eq!(evidence.answers.len(), 6);
+		assert!(
+			evidence
+				.attempts
+				.iter()
+				.all(|a| a.status == AttemptStatus::Answered)
+		);
+	}
+}
+
+#[tokio::test]
+async fn elapsed_state_deadlines_leave_only_an_expired_reference() {
+	for mode in [Mode::Enforce, Mode::Shadow] {
+		for during_commit in [false, true] {
+			let now = Utc::now();
+			let fixture = Fixture {
+				retain_state: true,
+				commit_time: (!during_commit).then_some(now + chrono::Duration::days(2)),
+				expire_at_commit: during_commit,
+				..Fixture::new(mode)
+			};
+			let mut view = disclosure();
+			let deadline = now + chrono::Duration::days(1);
+			view.source_expiry = Some(deadline);
+			evaluate(&fixture, mode, 80_000, view).await.0.unwrap();
+			let saved = fixture.saved.lock().unwrap();
+			assert_eq!(saved.states, 0);
+			let evidence = &saved.evidence[0];
+			assert!(
+				matches!(evidence.state, StateReference::Expired { expired_at, .. } if expired_at == deadline)
+			);
+			assert_eq!(evidence.replay().unwrap(), evidence.branches);
+		}
+	}
+}
+
+#[tokio::test]
+async fn replay_rejects_impossible_reason_fit_and_mode_combinations() {
+	let fixture = Fixture::new(Mode::Enforce);
+	let fixture_shadow = Fixture::new(Mode::Shadow);
+	for (fixture, mode, window) in [
+		(&fixture, Mode::Enforce, 80_000),
+		(&fixture, Mode::Enforce, 1),
+		(&fixture_shadow, Mode::Shadow, 1),
+	] {
+		let _ = evaluate(fixture, mode, window, disclosure()).await;
+		let evidence = fixture
+			.saved
+			.lock()
+			.unwrap()
+			.evidence
+			.last()
+			.unwrap()
+			.clone();
+		assert_eq!(evidence.replay().unwrap(), evidence.branches);
+	}
+	let applied = fixture.saved.lock().unwrap().evidence[0].clone();
+	for reason in [
+		Reason::Fits,
+		Reason::Insufficient,
+		Reason::Forbidden,
+		Reason::ProviderFailure,
+		Reason::InvalidAnswers,
+		Reason::NoCandidates,
+	] {
+		let mut corrupt = applied.clone();
+		corrupt.outcome = Outcome::Rejected;
+		corrupt.reason = reason;
+		assert!(corrupt.replay().is_err(), "rejected/{reason:?}");
+	}
+	let mut insufficient = applied.clone();
+	insufficient.outcome = Outcome::Rejected;
+	insufficient.reason = Reason::Insufficient;
+	insufficient.fit.proposed = insufficient.fit.window + 1;
+	assert_eq!(insufficient.replay().unwrap(), insufficient.branches);
+	insufficient.mode = Mode::Shadow;
+	assert!(insufficient.replay().is_err());
+	let mut forbidden = applied;
+	forbidden.outcome = Outcome::Rejected;
+	forbidden.reason = Reason::Forbidden;
+	forbidden.restrictions.forbid_apply = true;
+	assert_eq!(forbidden.replay().unwrap(), forbidden.branches);
+	forbidden.reason = Reason::Insufficient;
+	assert!(forbidden.replay().is_err());
 }
 #[tokio::test]
 async fn live_stricter_protection_replays_the_actual_preserved_branch() {

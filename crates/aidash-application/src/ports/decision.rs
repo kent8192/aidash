@@ -53,6 +53,15 @@ impl PreparedRequest {
 	}
 }
 
+/// Safe dispatch categories; raw responses and transport errors never enter evidence.
+#[derive(Debug, thiserror::Error)]
+pub enum DispatchError {
+	#[error(transparent)]
+	ProviderFailure(#[from] crate::Error),
+	#[error("invalid decision answers")]
+	InvalidAnswers,
+}
+
 #[async_trait]
 pub trait DecisionProvider: Send + Sync {
 	fn configuration_digest(&self) -> Result<String>;
@@ -63,7 +72,10 @@ pub trait DecisionProvider: Send + Sync {
 	/// Credentials never enter the returned body or error messages.
 	fn preflight(&self, request: &PreparedRequest) -> Result<()>;
 	/// One physical HTTP attempt, with strict model/type/coverage/finite-probability checks.
-	async fn dispatch(&self, request: &PreparedRequest) -> Result<BTreeMap<String, Probability>>;
+	async fn dispatch(
+		&self,
+		request: &PreparedRequest,
+	) -> std::result::Result<BTreeMap<String, Probability>, DispatchError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +105,10 @@ pub struct RetainedState {
 
 #[async_trait]
 pub trait DecisionJournal: Send + Sync {
+	/// The persistence clock, also used to discard state that expired during dispatch.
+	fn now(&self) -> DateTime<Utc> {
+		Utc::now()
+	}
 	/// Every owner atomically checks pinned/current allowances and durably charges all
 	/// local generated ancestors. Waits for all remote owner receipts and commits the
 	/// dispatch record before returning. Concurrent reservations must not overspend.
@@ -106,10 +122,15 @@ pub trait DecisionJournal: Send + Sync {
 		answers: Option<&BTreeMap<String, Probability>>,
 		status: AttemptStatus,
 	) -> Result<()>;
-	/// Rechecks lease, input/run revisions, exact pins and current source/invocation
-	/// authority inside the commit boundary. Applied context, evidence and optional
-	/// state commit atomically; errors must leave the authoritative Run unchanged.
+	/// Rechecks lease, input/run revisions and exact pins inside the commit boundary.
+	/// Applying context or retaining state also requires current source/invocation
+	/// authority. Revocation must still permit recording a fenced rejection without
+	/// context or full state, preserving previously dispatched attempts for recovery.
+	/// Applied context, evidence and optional state commit atomically; errors must
+	/// leave the authoritative Run unchanged.
 	/// Shadow/rejected records use None and must never replace execution context.
+	/// At the atomic write, compare state.expires_at with the persistence clock. If
+	/// elapsed, omit the state bytes and persist an Expired reference in the evidence.
 	async fn commit(
 		&self,
 		evidence: &Evidence,
