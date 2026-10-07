@@ -43,6 +43,18 @@ tokens. Enabled type and relation filters use the primary accent; disabled
 filters use a neutral track and visible thumb. Its shadow and scrollbar also
 follow the active theme.
 
+## Screenshots
+
+These screenshots use synthetic API fixtures rather than production data.
+The before view was rendered from base commit `6b886aac`; the after views
+were rendered from implementation commit `28f54eed`.
+
+- [Before: desktop workspace](intent-first-ui/before-light.png)
+- [After: desktop conversation](intent-first-ui/after-light.png)
+- [After: mobile conversation](intent-first-ui/after-mobile.png)
+- [After: light Graph View filters](intent-first-ui/graph-filters-light.png)
+- [After: dark Graph View filters](intent-first-ui/graph-filters-dark.png)
+
 ## Product requirements
 
 The Notion v0.1 functional requirements were audited at implementation time:
