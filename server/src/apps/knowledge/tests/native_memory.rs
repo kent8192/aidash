@@ -3394,15 +3394,14 @@ async fn observation_consolidation_keeps_conflicts_and_recomputes_surviving_evid
 
 #[rstest]
 #[tokio::test]
-async fn listing_uses_the_provenance_budget_separately_from_bank_unit_count(
+async fn listing_enforces_the_provenance_budget_separately_from_bank_unit_count(
 	#[future] database: DatabaseFixture,
-	mut bounds: Bounds,
+	bounds: Bounds,
 ) {
+	use aidash_server::apps::registry::models::Definition;
 	let database = database.await;
-	bounds.max_units = 2;
-	bounds.max_graph_visits = 8;
 	let (store, _, workspace) = setup(&database, bounds).await;
-	let private = memory::create_participant(
+	let bank = memory::create_participant(
 		&store,
 		&Actor::Operator,
 		workspace,
@@ -3413,24 +3412,22 @@ async fn listing_uses_the_provenance_budget_separately_from_bank_unit_count(
 	.await
 	.unwrap()
 	.bank;
-	let shared = Bank {
-		participant: None,
-		..private.clone()
-	};
 	let mut previous = None;
-	for _ in 0..3 {
-		let mut value = content("Shared evidence chain");
+	let mut last = Uuid::nil();
+	for _ in 0..4 {
+		let mut value = content("Evidence chain exceeds the reduced listing budget");
 		if let Some(evidence) = previous {
 			value.kind = Kind::Observation;
 			value.evidence = vec![evidence];
 		}
+		last = Uuid::now_v7();
 		let units = memory::mutate(
 			&store,
 			&Actor::Operator,
 			mutation(
-				&shared,
+				&bank,
 				Change::Add {
-					id: Uuid::now_v7(),
+					id: last,
 					content: value,
 				},
 			),
@@ -3439,29 +3436,147 @@ async fn listing_uses_the_provenance_budget_separately_from_bank_unit_count(
 		.unwrap();
 		previous = Some(units[0].evidence());
 	}
-	let id = Uuid::now_v7();
-	let mut value = content("Private observation with three evidence ancestors");
-	value.kind = Kind::Observation;
-	value.evidence = vec![previous.unwrap()];
-	memory::mutate(
+	// Fixture a reduced current policy after admission, without discarding history.
+	let mut db = database.lease.handle();
+	let mut provider = Definition::objects()
+		.filter(Definition::field_id().eq("p".to_string()))
+		.filter(Definition::field_version().eq("1.0.0".to_string()))
+		.get_with_db(&mut db)
+		.await
+		.unwrap();
+	let limits = &mut provider.metadata.0["config"]["policy"]["bounds"];
+	limits["max_graph_visits"] = json!(2);
+	Definition::objects()
+		.update_with_conn(&mut db, &provider)
+		.await
+		.unwrap();
+	let read = memory::ReadBank {
+		provider: reference("p"),
+		bank,
+	};
+	assert!(matches!(
+		memory::list(&store, &Actor::Operator, read.clone()).await,
+		Err(aidash_server::Error::Invalid(message)) if message == "memory evidence traversal exceeds its bound"
+	));
+	provider.metadata.0["config"]["policy"]["bounds"]["max_graph_visits"] = json!(8);
+	Definition::objects()
+		.update_with_conn(&mut db, &provider)
+		.await
+		.unwrap();
+	let units = memory::list(&store, &Actor::Operator, read).await.unwrap();
+	assert_eq!(units.len(), 4);
+	assert!(units.iter().any(|unit| unit.id == last));
+}
+
+#[rstest]
+#[tokio::test]
+async fn participant_memory_requires_an_enabled_provider_initially_and_after_upgrade(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	let database = database.await;
+	let (store, registry, workspace) = setup(&database, bounds).await;
+	let disabled =
+		json!({"model":reference("m"),"instructions":"Memory is disabled","tools":[],"skills":[]});
+	registry
+		.register(entry("agent", "disabled", disabled.clone()))
+		.await
+		.unwrap();
+	let initial = memory::create_participant(
 		&store,
 		&Actor::Operator,
-		mutation(&private, Change::Add { id, content: value }),
-	)
-	.await
-	.unwrap();
-	let units = memory::list(
-		&store,
-		&Actor::Operator,
-		memory::ReadBank {
-			provider: reference("p"),
-			bank: private,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("disabled"),
 		},
 	)
 	.await
 	.unwrap();
-	assert_eq!(
-		units.iter().map(|unit| unit.id).collect::<Vec<_>>(),
-		vec![id]
-	);
+	let enabled = memory::create_participant(
+		&store,
+		&Actor::Operator,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap();
+	memory::mutate(
+		&store,
+		&Actor::Operator,
+		mutation(
+			&enabled.bank,
+			Change::Add {
+				id: Uuid::now_v7(),
+				content: content("Previously enabled memory"),
+			},
+		),
+	)
+	.await
+	.unwrap();
+	let mut version = entry("agent", "a", disabled);
+	version.version = "1.1.0".into();
+	registry.register(version).await.unwrap();
+	let upgraded = memory::upgrade_participant(
+		&store,
+		&Actor::Operator,
+		enabled.bank,
+		memory::UpgradeParticipant {
+			agent: EntityRef {
+				id: "a".into(),
+				version: "1.1.0".into(),
+			},
+			expected_revision: 1,
+		},
+	)
+	.await
+	.unwrap();
+	for bank in [initial.bank, upgraded.bank] {
+		let read = memory::list(
+			&store,
+			&Actor::Operator,
+			memory::ReadBank {
+				provider: reference("p"),
+				bank: bank.clone(),
+			},
+		)
+		.await;
+		assert!(matches!(read, Err(aidash_server::Error::Conflict(_))));
+		let write = memory::mutate(
+			&store,
+			&Actor::Operator,
+			mutation(
+				&bank,
+				Change::Add {
+					id: Uuid::now_v7(),
+					content: content("Must not be accepted"),
+				},
+			),
+		)
+		.await;
+		assert!(matches!(write, Err(aidash_server::Error::Conflict(_))));
+		let recall = memory::operate(
+			&store,
+			&Actor::Operator,
+			memory::Operation {
+				operation_id: Uuid::now_v7(),
+				provider: reference("p"),
+				bank,
+				action: memory::Action::Recall {
+					query: RecallQuery {
+						text: "Memory".into(),
+						time: None,
+						kinds: vec![],
+						max_tokens: 1024,
+					},
+				},
+			},
+		)
+		.await;
+		assert!(
+			matches!(recall, Err(aidash_server::Error::Conflict(_))),
+			"disabled participants cannot call model roles"
+		);
+	}
 }

@@ -10784,10 +10784,10 @@
       "file": "contracts/1002-memory-operate.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/operate",
       "scenario": "Incomplete native memory envelope is rejected",
-      "status": 400,
+      "status": 422,
       "required_checks": [
         "Rejected input preserves committed workspace state",
-        "Exact HTTP 400",
+        "Exact HTTP 422",
         "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     },
@@ -10832,10 +10832,10 @@
       "file": "contracts/1006-memory-participant-upgrade.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/participants/{participant}/upgrade",
       "scenario": "Incomplete native memory envelope is rejected",
-      "status": 400,
+      "status": 422,
       "required_checks": [
         "Rejected input preserves committed workspace state",
-        "Exact HTTP 400",
+        "Exact HTTP 422",
         "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     },
@@ -10880,10 +10880,10 @@
       "file": "contracts/1010-memory-units.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/units/query",
       "scenario": "Incomplete native memory envelope is rejected",
-      "status": 400,
+      "status": 422,
       "required_checks": [
         "Rejected input preserves committed workspace state",
-        "Exact HTTP 400",
+        "Exact HTTP 422",
         "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     },
@@ -10928,10 +10928,10 @@
       "file": "contracts/1014-memory-mutate.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/units/mutate",
       "scenario": "Incomplete native memory envelope is rejected",
-      "status": 400,
+      "status": 422,
       "required_checks": [
         "Rejected input preserves committed workspace state",
-        "Exact HTTP 400",
+        "Exact HTTP 422",
         "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     },
@@ -10976,10 +10976,10 @@
       "file": "contracts/1018-memory-participant.bru",
       "endpoint": "POST /api/workspaces/{workspace}/memory/participants",
       "scenario": "Incomplete native memory envelope is rejected",
-      "status": 400,
+      "status": 422,
       "required_checks": [
         "Rejected input preserves committed workspace state",
-        "Exact HTTP 400",
+        "Exact HTTP 422",
         "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     },
@@ -11010,10 +11010,9 @@
       "file": "contracts/1021-memory-participants.bru",
       "endpoint": "GET /api/workspaces/{workspace}/memory/participants",
       "scenario": "Application read preserves the typed response contract",
-      "status": 404,
+      "status": 200,
       "required_checks": [
-        "Exact HTTP 404",
-        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Exact HTTP 200",
         "Application read preserves the typed response contract contract"
       ]
     },
@@ -11069,10 +11068,10 @@
       "file": "contracts/1026-memory-participant-assignment.bru",
       "endpoint": "POST /api/workspaces/{workspace}/tasks/{task}/memory-participant",
       "scenario": "Incomplete native memory envelope is rejected",
-      "status": 400,
+      "status": 422,
       "required_checks": [
         "Rejected input preserves committed workspace state",
-        "Exact HTTP 400",
+        "Exact HTTP 422",
         "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     },
@@ -11099,15 +11098,14 @@
       ]
     },
     {
-      "name": "1029 memory-participant-current - Application read preserves the typed response contract",
+      "name": "1029 memory-participant-current - Missing scoped authority cannot disclose application data",
       "file": "contracts/1029-memory-participant-current.bru",
       "endpoint": "GET /api/workspaces/{workspace}/tasks/{task}/memory-participant",
-      "scenario": "Application read preserves the typed response contract",
-      "status": 404,
+      "scenario": "Missing scoped authority cannot disclose application data",
+      "status": 403,
       "required_checks": [
-        "Exact HTTP 404",
-        "Rejection is diagnostic and does not disclose SQL or credentials",
-        "Application read preserves the typed response contract contract"
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
       ]
     }
   ]

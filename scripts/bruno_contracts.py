@@ -662,7 +662,7 @@ def render():
                 immutable=True,
             )
             if route["source"] == "server/src/apps/knowledge/views/memory.rs":
-                add(endpoint, "Incomplete native memory envelope is rejected", 400,
+                add(endpoint, "Incomplete native memory envelope is rejected", 422,
                     headers=OPERATOR, body="{}", immutable=True)
 
             continue
@@ -749,6 +749,7 @@ def render():
         # and Marketplace subject dispatch. Operator credentials cannot replace
         # a subject or browser-bound graph grant.
         denied_reads = {
+            "memory-participant-current",
             "remote-semantic-home-provenance",
             "remote-semantic-run-provenance",
             "remote_execution_list",
@@ -787,6 +788,9 @@ def render():
                 + (".items" if route["name"] == "workbench-version-audit" else "")
                 + ").to.eql([]);"
             )
+        if route["name"] == "memory-participants":
+            status = 200
+            checks += 'expect(res.getBody()).to.eql({items:[],next:null});'
         if path == "/api/session":
             checks += 'expect(res.getBody().access.kind).to.equal("operator");'
         if path == "/api/tasks":

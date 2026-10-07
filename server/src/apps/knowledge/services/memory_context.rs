@@ -10,6 +10,14 @@ use crate::{
 use aidash_domain::{memory::*, semantic::InputRead};
 use serde_json::{Value, json};
 
+/// Leave enough room for the combined envelope and a complete minimal status.
+/// Reserve both null placeholders conservatively before ordinary retrieval.
+pub(crate) fn workspace_budget(budget: usize) -> Result<usize> {
+	let framing =
+		serde_json::to_vec(&json!({"workspace":null,"memory":{"status":"no_space"}}))?.len();
+	Ok(budget.saturating_sub(framing))
+}
+
 pub(crate) async fn retrieve(
 	store: &Store,
 	lease: &mut Lease<'_>,
@@ -189,3 +197,7 @@ fn bounded_status(status: &str, budget: usize) -> Result<Option<Value>> {
 	}
 	Ok(Some(value))
 }
+
+#[cfg(test)]
+#[path = "memory_context/tests.rs"]
+mod tests;

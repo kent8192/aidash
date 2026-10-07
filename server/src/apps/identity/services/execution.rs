@@ -457,6 +457,11 @@ impl Guard {
 		inputs: &[(crate::semantic::remote::InputRead, String)],
 		budget: usize,
 	) -> Result<Option<Value>> {
+		let workspace_budget = if self.remote.is_some() {
+			budget
+		} else {
+			crate::semantic::services::memory_context::workspace_budget(budget)?
+		};
 		let semantic = aidash_application::execution::semantic_context::retrieve(
 			&crate::bootstrap::run_semantic_repository(
 				store,
@@ -467,7 +472,7 @@ impl Guard {
 			),
 			task,
 			inputs,
-			budget,
+			workspace_budget,
 		)
 		.await
 		.map_err(Error::from)?;

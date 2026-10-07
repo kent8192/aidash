@@ -516,7 +516,7 @@ impl ExecutionEnvironment for Environment<'_> {
 			&mut lease,
 			run,
 			&query,
-			budget,
+			crate::semantic::services::memory_context::workspace_budget(budget)?,
 			&agent,
 		)
 		.await;

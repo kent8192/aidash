@@ -95,6 +95,26 @@ class Cluster:
                               input=json.dumps(value) if isinstance(value, dict) else value,
                               capture_output=True, text=True, env=self.env, check=check)
 
+    def install_extensions(self, database):
+        # Commit extension creation, then warm the crash-safe worker before index
+        # DDL. Each psql attempt is a fresh backend; only preparing is retryable.
+        statements = [
+            "CREATE EXTENSION IF NOT EXISTS pg_jsonschema WITH SCHEMA public; CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pgroonga;",
+            self.queries["pgroonga_ready"],
+        ]
+        deadline = time.monotonic() + 30
+        for statement in statements:
+            while True:
+                result = self.kube("exec", "postgres-0", "--", "psql", "-U", "aidash", "-d", database,
+                    "-v", "ON_ERROR_STOP=1", "-c", statement, check=False)
+                with (self.directory / "extension-bootstrap.log").open("a") as log:
+                    log.write(f"{database}: {result.returncode}\n{result.stdout}{result.stderr}\n")
+                if result.returncode == 0:
+                    break
+                if "pgroonga_crash_safer is preparing" not in result.stderr or time.monotonic() >= deadline:
+                    raise RuntimeError(f"extension bootstrap failed for {database}: {result.stderr}")
+                time.sleep(0.1)
+
     def apply(self, value):
         self.kube("apply", "-f", "-", value=value)
 
@@ -259,8 +279,7 @@ class Cluster:
                 "-v", "ON_ERROR_STOP=1", "-f", "-", value=f"CREATE ROLE tx_{node} LOGIN PASSWORD '{password}';\nCREATE DATABASE tx_{node} OWNER tx_{node};\n")
             # The extension requires administrator privileges; application
             # migrations and runtime access keep the database-scoped role.
-            self.kube("exec", "postgres-0", "--", "psql", "-U", "aidash", "-d", f"tx_{node}",
-                "-v", "ON_ERROR_STOP=1", "-c", "CREATE EXTENSION pg_jsonschema WITH SCHEMA public; CREATE EXTENSION vector; CREATE EXTENSION pgroonga;")
+            self.install_extensions(f"tx_{node}")
             self.apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": f"tx-{node}"},
                 "stringData": {"DATABASE_URL": f"postgres://tx_{node}:{password}@postgres:5432/tx_{node}",
                 "AIDASH_API_TOKEN": self.token, **{f"AIDASH_SECRET_TRANSACTION_{peer:02}": self.peer_tokens[peer] for peer in (range(1, count) if node == 0 else [node])}}})

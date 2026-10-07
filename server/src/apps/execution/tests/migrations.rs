@@ -324,7 +324,7 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 		String::from_utf8_lossy(&output.stderr)
 	);
 	let after = FilesystemSource::new(&root).all_migrations().await.unwrap();
-	assert_eq!(after.len(), 47);
+	assert_eq!(after.len(), before.len() + 1);
 	for migration in &before {
 		let retained = after
 			.iter()

@@ -1,5 +1,5 @@
 meta {
-  name: 1029 memory-participant-current - Application read preserves the typed response contract
+  name: 1029 memory-participant-current - Missing scoped authority cannot disclose application data
   type: http
   seq: 1029
 }
@@ -16,7 +16,6 @@ headers {
 }
 
 tests {
-  test("Exact HTTP 404", function () { expect(res.getStatus()).to.equal(404); });
-  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |operator_token|peer_token/); });
-  test("Application read preserves the typed response contract contract", function () { expect(res.getHeader("content-type")).to.include("application/json"); });
+  test("Exact HTTP 403", function () { expect(res.getStatus()).to.equal(403); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"forbidden"}); });
 }

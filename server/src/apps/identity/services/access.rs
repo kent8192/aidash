@@ -242,7 +242,10 @@ impl Access {
 			identity: std::mem::replace(&mut self.identity, identity),
 			subjects: std::mem::replace(&mut self.subjects, subjects),
 			context: std::mem::replace(&mut self.context, json!({})),
-			environment: self.environment.clone(),
+			environment: std::mem::replace(
+				&mut self.environment,
+				json!({"node_id":self.node_id,"transport":"worker"}),
+			),
 			read_run: self.read_run.take(),
 			read_grant: self.read_grant.take(),
 			approved_catalog: std::mem::take(&mut self.approved_catalog),
@@ -672,3 +675,7 @@ impl Access {
 		))
 	}
 }
+
+#[cfg(test)]
+#[path = "access/tests.rs"]
+mod tests;

@@ -1025,7 +1025,7 @@ pub(super) fn migration() -> Migration {
                 .with_auto_increment(false).with_default(None).with_generated(None)
                 .with_domain_option(None)
             ],
-            constraints: vec![Constraint::PrimaryKey { name: "memory_pkey".into(), columns: vec!["agent_id".into(), "agent_version".into(), "workspace_id".into(), "home_node".into()] }],
+			constraints: vec![Constraint::PrimaryKey { name: "memory_next_pkey".into(), columns: vec!["agent_id".into(), "agent_version".into(), "workspace_id".into(), "home_node".into()] }],
             without_rowid: None,
             interleave_in_parent: None,
             partition: None,

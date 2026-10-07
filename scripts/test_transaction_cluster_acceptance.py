@@ -125,6 +125,45 @@ class TransactionPartitionTests(unittest.TestCase):
             cluster.close.assert_called_once_with()
 
 
+class ExtensionBootstrapTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.cluster = object.__new__(Cluster)
+        self.cluster.directory = pathlib.Path(self.directory.name)
+        self.cluster.queries = {"pgroonga_ready": "generated readiness query"}
+
+    def test_preparing_is_retried_on_a_fresh_psql_backend(self):
+        self.cluster.kube = Mock(side_effect=[
+            subprocess.CompletedProcess([], 1, "", "ERROR: pgroonga_crash_safer is preparing"),
+            subprocess.CompletedProcess([], 0, "CREATE EXTENSION", ""),
+            subprocess.CompletedProcess([], 0, "ready", ""),
+        ])
+        with patch("transaction_cluster_acceptance.time.sleep") as sleep:
+            self.cluster.install_extensions("tx_6")
+        self.assertEqual(self.cluster.kube.call_count, 3)
+        self.assertTrue(all(not call.kwargs["check"] for call in self.cluster.kube.call_args_list))
+        sleep.assert_called_once_with(0.1)
+        self.assertEqual(self.cluster.kube.call_args_list[-1].args[-1], "generated readiness query")
+        self.assertIn("pgroonga_crash_safer is preparing",
+                      (self.cluster.directory / "extension-bootstrap.log").read_text())
+
+    def test_permanent_extension_errors_surface_with_diagnostics(self):
+        self.cluster.kube = Mock(return_value=subprocess.CompletedProcess([], 1, "", "ERROR: extension is not available"))
+        with patch("transaction_cluster_acceptance.time.sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "extension is not available"):
+                self.cluster.install_extensions("tx_6")
+        sleep.assert_not_called()
+        self.cluster.kube.assert_called_once()
+
+    def test_preparing_retry_is_bounded(self):
+        self.cluster.kube = Mock(return_value=subprocess.CompletedProcess([], 1, "", "ERROR: pgroonga_crash_safer is preparing"))
+        with patch("transaction_cluster_acceptance.time.monotonic", side_effect=[0, 31]):
+            with self.assertRaisesRegex(RuntimeError, "pgroonga_crash_safer is preparing"):
+                self.cluster.install_extensions("tx_6")
+        self.cluster.kube.assert_called_once()
+
+
 class PortForwardTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

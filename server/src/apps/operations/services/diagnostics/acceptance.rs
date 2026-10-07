@@ -39,6 +39,7 @@ pub(super) fn document() -> serde_json::Value {
 			.to_string(PostgresQueryBuilder)
 	};
 	serde_json::json!({"pending_events":pending,"inbox":inbox,
+			"pgroonga_ready":Query::select().expr(SimpleExpr::FunctionCall("pgroonga_command".into_iden(), vec![Expr::value("status").into()])).to_string(PostgresQueryBuilder),
 			"tx_authority_control":Query::select().expr(Expr::cust("set_config('aidash.transaction_control','authority',true)")).to_string(PostgresQueryBuilder),
 			"tx_disable_peer":Query::update().table(Alias::new("peers")).value(Alias::new("enabled"),false).and_where(Expr::col(Alias::new("node_id")).eq("aidash://tx-01")).to_string(PostgresQueryBuilder),
 			"tx_peer":evidence("peers", &["node_id","enabled"], "node_id='aidash://tx-01'"),

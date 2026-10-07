@@ -592,11 +592,7 @@ pub(crate) async fn bank_provider(
 		)
 		.await?;
 		let config: crate::registry::AgentConfig = serde_json::from_value(agent.config)?;
-		if config
-			.memory
-			.as_ref()
-			.is_some_and(|accepted| accepted != provider)
-		{
+		if config.memory.as_ref() != Some(provider) {
 			return Err(Error::Conflict(
 				"memory provider differs from the participant's accepted Agent version".into(),
 			));

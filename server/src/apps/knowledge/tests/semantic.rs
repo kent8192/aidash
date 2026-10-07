@@ -769,7 +769,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	}
 	.unwrap();
 	assert_eq!(count, 1);
-	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-original-memory","effect":"deny","subjects":{"ids":["alice"]},"actions":["memory.read"],"resources":{"kinds":["memory"]}}));
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-inline-semantic-memory","effect":"deny","subjects":{"ids":["alice"]},"actions":["semantic.read"],"resources":{"kinds":["semantic"]}}));
 	assert_eq!(
 		request(
 			&app,
@@ -794,7 +794,7 @@ async fn semantic_context_is_provenanced_and_revocation_hides_run_journals(
 	assert_eq!(
 		visible.as_array().unwrap().len(),
 		0,
-		"semantic reads require the original memory permission"
+		"inline source reads require the semantic entry permission"
 	);
 	policy["policies"].as_array_mut().unwrap().pop();
 	assert_eq!(

@@ -1,11 +1,12 @@
 //! PostgreSQL fixture with the same JSON Schema extension as production.
+use reinhardt::query::QueryStatementBuilder as _;
 use reinhardt::test::testcontainers::{
 	ContainerAsync, GenericImage, ImageExt,
 	core::{IntoContainerPort, WaitFor},
 	runners::AsyncRunner,
 };
 use rstest::fixture;
-use sqlx::PgPool;
+use sqlx::{Connection, PgPool};
 use std::{sync::Arc, time::Duration};
 
 #[fixture]
@@ -25,7 +26,13 @@ pub async fn postgres_container() -> (ContainerAsync<GenericImage>, Arc<PgPool>,
 		.with_env_var("POSTGRES_PASSWORD", "fixture-password")
 		.with_env_var("POSTGRES_DB", "aidash")
 		.with_mapped_port(host_port, 5432.tcp())
-		.with_cmd(["postgres", "-c", "max_connections=400"])
+		.with_cmd([
+			"postgres",
+			"-c",
+			"max_connections=400",
+			"-c",
+			"max_worker_processes=256",
+		])
 		.with_startup_timeout(Duration::from_secs(120));
 	drop(reservation);
 	let container = image.start().await.expect("build the test target of deploy/postgres/Dockerfile as aidash-orm-test-postgres:17-pg-jsonschema-0.3.4 before database tests");
@@ -61,7 +68,42 @@ pub async fn apply_migrations(
 	connection: reinhardt::db::backends::DatabaseConnection,
 	migrations: &[reinhardt::db::migrations::Migration],
 ) {
+	// Extension creation commits before the first PGroonga feature starts its
+	// per-database recovery worker. Warm that worker before index DDL, following
+	// https://pgroonga.github.io/reference/modules/pgroonga-crash-safer.html.
+	// CREATE EXTENSION is administrative fixture DDL unsupported by SeaQuery.
+	let pool = connection.clone().into_postgres().unwrap();
+	let probe = reinhardt::query::Query::select()
+		.expr(reinhardt::query::SimpleExpr::FunctionCall(
+			reinhardt::query::IntoIden::into_iden("pgroonga_command"),
+			vec![reinhardt::query::Expr::value("status").into()],
+		))
+		.to_string(reinhardt::query::PostgresQueryBuilder);
 	let started = std::time::Instant::now();
+	loop {
+		let mut session = pool.acquire().await.unwrap().detach();
+		let result = async {
+			sqlx::query("CREATE EXTENSION IF NOT EXISTS pgroonga")
+				.execute(&mut session)
+				.await?;
+			sqlx::query(&probe).execute(&mut session).await?;
+			Ok::<(), sqlx::Error>(())
+		}
+		.await;
+		session.close().await.unwrap();
+		match result {
+			Ok(()) => break,
+			Err(error)
+				if error
+					.to_string()
+					.contains("pgroonga_crash_safer is preparing")
+					&& started.elapsed() < Duration::from_secs(30) =>
+			{
+				tokio::time::sleep(Duration::from_millis(100)).await;
+			}
+			Err(error) => panic!("initialize fixture PGroonga recovery worker: {error}"),
+		}
+	}
 	loop {
 		match reinhardt::db::migrations::executor::DatabaseMigrationExecutor::new(
 			connection.clone(),
@@ -76,6 +118,18 @@ pub async fn apply_migrations(
 					.contains("pgroonga_crash_safer is preparing")
 					&& started.elapsed() < Duration::from_secs(30) =>
 			{
+				// PGroonga remembers a failed initialization in that backend.
+				// Retry on fresh sessions rather than reusing a poisoned pool slot.
+				let pool = connection.clone().into_postgres().unwrap();
+				for _ in 0..pool.size() {
+					pool.acquire()
+						.await
+						.unwrap()
+						.detach()
+						.close()
+						.await
+						.unwrap();
+				}
 				tokio::time::sleep(Duration::from_millis(100)).await;
 			}
 			Err(error) => panic!("apply native migrations to the isolated database: {error}"),
