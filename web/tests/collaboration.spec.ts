@@ -565,6 +565,37 @@ test("conversation is the landing view, with contextual progress and account set
   expect(errors).toEqual([]);
 });
 
+test("new request preserves the Japanese conversation creation contract", async ({
+  page,
+}) => {
+  const { errors } = await setup(page, { locale: "ja-JP" });
+  let payload: unknown;
+  await page.route("**/api/conversations", (route) => {
+    payload = route.request().postDataJSON();
+    return route.fulfill({ json: { workspace: { id: "workspace-two" } } });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "新しい依頼", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("タイトル", { exact: true }).fill("競合調査");
+  await dialog
+    .getByLabel("ゴール", { exact: true })
+    .fill("Rustフレームワークを比較して");
+  await dialog.getByRole("combobox").selectOption("researcher@1.0.0");
+  await dialog
+    .getByRole("button", { name: "新しいゴール", exact: true })
+    .click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page).toHaveURL(/channel=workspace-two/);
+  expect(payload).toEqual({
+    title: "競合調査",
+    goal: "Rustフレームワークを比較して",
+    target: { id: "researcher", version: "1.0.0" },
+    target_kind: "agent",
+  });
+  expect(errors).toEqual([]);
+});
+
 test("failed message keeps its draft and idempotency key on retry", async ({
   page,
 }) => {
@@ -1214,14 +1245,21 @@ test("search, notifications, thread navigation and persisted theme work", async 
   await expect(page.getByRole("link", { name: "# Planning" })).toBeVisible();
   await page.getByRole("searchbox", { name: "Search history" }).fill("");
   await page
-    .getByLabel("Requests awaiting your input", { exact: true })
+    .getByRole("button", { name: "Notifications", exact: true })
     .click();
   await page
-    .locator(".workspace-popover-body")
-    .getByRole("button", { name: "Which market should I examine?" })
+    .locator(".intent-notifications")
+    .getByRole("button", { name: /Which market should I examine\?/ })
     .click();
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await page.keyboard.press("Escape");
+  await expect(page.locator(".intent-notifications")).toHaveCount(0);
+  await expect(
+    page.getByRole("dialog", { name: "Human input", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Close", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.getByLabel("Account settings", { exact: true }).click();
   await page.getByRole("button", { name: "Dark theme", exact: true }).click();
   await expect(page.locator(".collab-app")).toHaveAttribute(

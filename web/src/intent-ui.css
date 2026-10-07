@@ -854,6 +854,70 @@ button[data-slot="button"][data-variant="ghost"]:hover {
   min-height: 48px;
 }
 
+.intent-toast {
+  width: min(360px, calc(100vw - 24px));
+}
+.intent-toast-card {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: 0 6px 28px color-mix(in srgb, var(--foreground) 12%, transparent);
+}
+button.intent-toast-open,
+button.intent-notification-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  height: auto;
+  padding: 10px;
+  text-align: left;
+  white-space: normal;
+  justify-content: flex-start;
+}
+button.intent-toast-open {
+  flex: 1;
+  min-width: 0;
+}
+.intent-toast-open > svg,
+.intent-notification-row > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--primary);
+}
+.intent-toast-open > span,
+.intent-notification-row > span {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.intent-toast-open small,
+.intent-notification-row small {
+  color: var(--muted-foreground);
+}
+.intent-notifications {
+  width: min(420px, 100vw);
+  max-width: none;
+  overflow-y: auto;
+}
+.intent-notifications section {
+  margin-top: 24px;
+}
+.intent-notifications h3 {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  margin: 0 0 8px;
+}
+button.intent-notification-row {
+  width: 100%;
+  margin-bottom: 6px;
+}
+
 /* Rich registration rows need intrinsic height rather than a single-line button size. */
 .entity-card,
 .workspace-card,
